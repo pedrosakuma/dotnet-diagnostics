@@ -45,7 +45,36 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         {
             tool.Description.Should().NotBeNullOrWhiteSpace($"tool {tool.Name} must document itself for the LLM");
             tool.JsonSchema.ValueKind.Should().Be(JsonValueKind.Object);
+            tool.Title.Should().NotBeNullOrWhiteSpace(
+                $"tool {tool.Name} must declare a Title — surfaced in Claude Code / Copilot CLI pickers");
+            // Tool names must satisfy the 2025-11-25 regex [A-Za-z0-9_\-.] (1–128 chars).
+            tool.Name.Should().MatchRegex("^[A-Za-z0-9_\\-.]{1,128}$");
         }
+    }
+
+    [Fact]
+    public async Task Initialize_AdvertisesServerInfoAndInstructions()
+    {
+        // Pin the spec version we advertise so a future SDK bump that changes the default
+        // doesn't silently degrade the negotiated version.
+        var clientOptions = new ModelContextProtocol.Client.McpClientOptions
+        {
+            ProtocolVersion = "2025-11-25",
+        };
+
+        await using var client = await ConnectAsync(clientOptions);
+
+        client.ServerInfo.Should().NotBeNull();
+        client.ServerInfo!.Name.Should().Be("dotnet-diagnostics-mcp");
+        client.ServerInfo.Title.Should().Be(".NET Diagnostics");
+        client.ServerInfo.Description.Should().NotBeNullOrWhiteSpace(
+            "serverInfo.description is required for low-context LLMs to identify what this server is for");
+        client.ServerInfo.WebsiteUrl.Should().Be("https://github.com/pedrosakuma/dotnet-diagnostics-mcp");
+
+        client.ServerInstructions.Should().NotBeNullOrWhiteSpace(
+            "instructions are surfaced verbatim by clients on session start");
+        client.ServerInstructions.Should().Contain("list_dotnet_processes",
+            "instructions must steer the model to the documented call order");
     }
 
     [Fact]
@@ -260,7 +289,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         result.IsError.Should().Be(true);
     }
 
-    private async Task<McpClient> ConnectAsync()
+    private async Task<McpClient> ConnectAsync(ModelContextProtocol.Client.McpClientOptions? clientOptions = null)
     {
         var httpClient = _factory.CreateClient();
         httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", AuthedFactory.Token);
@@ -278,7 +307,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             httpClient,
             ownsHttpClient: true);
 
-        return await McpClient.CreateAsync(transport, cancellationToken: CancellationToken.None);
+        return await McpClient.CreateAsync(transport, clientOptions, cancellationToken: CancellationToken.None);
     }
 
     private static readonly JsonSerializerOptions DeserializeOptions = new()
