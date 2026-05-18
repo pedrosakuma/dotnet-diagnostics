@@ -72,10 +72,22 @@ builder.Services
             (`durationSeconds`) and bound result lists (`topN`, `maxRecent`, `maxEvents`)
             to keep responses small. Tools are read-only except `collect_process_dump`,
             which writes a dump file to disk and is marked Destructive.
+
+            This server never requests Elicitation: every tool ships with sensible
+            defaults for every parameter except `processId` (and `providerName` for
+            `collect_event_source`). Pick a default and re-run with refined arguments
+            if the first attempt is too noisy or too sparse — the response `hints`
+            will tell you how.
+
+            For a longer playbook (HTTP latency, exception storms, GC retention,
+            NativeAOT caveats), read the `diag://guides/investigation` resource or
+            invoke one of the Prompts (`diagnose-slow-app`, `diagnose-memory-growth`,
+            `diagnose-exception-storm`).
             """;
     })
     .WithHttpTransport()
     .WithTools<DiagnosticTools>()
+    .WithPrompts<DotnetDiagnosticsMcp.Server.Prompts.DiagnosticPrompts>()
     .WithResources<DotnetDiagnosticsMcp.Server.Resources.InvestigationGuideResources>();
 
 var app = builder.Build();

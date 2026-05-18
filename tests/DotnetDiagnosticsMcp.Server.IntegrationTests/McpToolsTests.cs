@@ -42,20 +42,88 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             "collect_event_source",
             "collect_process_dump");
 
+        // Tools may only require `processId` (and `providerName` for collect_event_source).
+        // Anything else must have a default so clients without elicitation can call the tool
+        // unattended. Spec 2025-11-25 deprecates elicitation via MRTR; we must degrade gracefully.
+        var allowedRequired = new Dictionary<string, string[]>
+        {
+            ["list_dotnet_processes"] = Array.Empty<string>(),
+            ["get_process_info"] = new[] { "processId" },
+            ["get_diagnostic_capabilities"] = new[] { "processId" },
+            ["snapshot_counters"] = new[] { "processId" },
+            ["collect_cpu_sample"] = new[] { "processId" },
+            ["collect_exceptions"] = new[] { "processId" },
+            ["collect_gc_events"] = new[] { "processId" },
+            ["collect_event_source"] = new[] { "processId", "providerName" },
+            ["collect_process_dump"] = new[] { "processId" },
+        };
+
         foreach (var tool in tools)
         {
             tool.Description.Should().NotBeNullOrWhiteSpace($"tool {tool.Name} must document itself for the LLM");
             tool.JsonSchema.ValueKind.Should().Be(JsonValueKind.Object);
             tool.Title.Should().NotBeNullOrWhiteSpace(
                 $"tool {tool.Name} must declare a Title — surfaced in Claude Code / Copilot CLI pickers");
-            // Tool names must satisfy the 2025-11-25 regex [A-Za-z0-9_\-.] (1–128 chars).
             tool.Name.Should().MatchRegex("^[A-Za-z0-9_\\-.]{1,128}$");
-            // Every tool must publish an outputSchema so type-aware clients can parse the
-            // structured response without a model round-trip (2025-11-25).
             tool.ReturnJsonSchema.Should().NotBeNull(
                 $"tool {tool.Name} must declare an outputSchema (UseStructuredContent = true)");
             tool.ReturnJsonSchema!.Value.ValueKind.Should().Be(JsonValueKind.Object);
+
+            var required = tool.JsonSchema.TryGetProperty("required", out var req) && req.ValueKind == JsonValueKind.Array
+                ? req.EnumerateArray().Select(e => e.GetString()!).ToArray()
+                : Array.Empty<string>();
+            required.Should().BeEquivalentTo(allowedRequired[tool.Name],
+                $"tool {tool.Name} must keep optional parameters defaulted so the client can call it without elicitation");
         }
+    }
+
+    [Fact]
+    public async Task ListPrompts_ExposesDiagnosticPlaybooks()
+    {
+        await using var client = await ConnectAsync();
+
+        var prompts = await client.ListPromptsAsync(cancellationToken: CancellationToken.None);
+
+        prompts.Select(p => p.Name).Should().BeEquivalentTo(
+            "diagnose-slow-app",
+            "diagnose-memory-growth",
+            "diagnose-exception-storm");
+
+        foreach (var prompt in prompts)
+        {
+            prompt.Description.Should().NotBeNullOrWhiteSpace($"prompt {prompt.Name} must document itself");
+            prompt.Title.Should().NotBeNullOrWhiteSpace($"prompt {prompt.Name} must declare a Title for pickers");
+        }
+    }
+
+    [Fact]
+    public async Task GetPrompt_RendersDiagnoseSlowAppWithProcessId()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.GetPromptAsync(
+            "diagnose-slow-app",
+            new Dictionary<string, object?> { ["processId"] = 4242 },
+            cancellationToken: CancellationToken.None);
+
+        result.Messages.Should().NotBeEmpty();
+        var text = string.Join("\n", result.Messages
+            .Select(m => m.Content)
+            .OfType<ModelContextProtocol.Protocol.TextContentBlock>()
+            .Select(b => b.Text));
+        text.Should().Contain("4242", "prompt body must interpolate the supplied processId");
+        text.Should().Contain("snapshot_counters", "prompt must steer the LLM through the standard tool chain");
+    }
+
+    [Fact]
+    public async Task ListResources_ExposesInvestigationGuide()
+    {
+        await using var client = await ConnectAsync();
+
+        var resources = await client.ListResourcesAsync(cancellationToken: CancellationToken.None);
+
+        resources.Should().Contain(r => r.Uri == "diag://guides/investigation",
+            "the investigation playbook must be reachable as a Resource");
     }
 
     [Fact]
