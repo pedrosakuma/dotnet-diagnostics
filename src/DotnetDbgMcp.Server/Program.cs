@@ -1,4 +1,9 @@
+using DotnetDbgMcp.Core.Capabilities;
+using DotnetDbgMcp.Core.Counters;
+using DotnetDbgMcp.Core.CpuSampling;
+using DotnetDbgMcp.Core.ProcessDiscovery;
 using DotnetDbgMcp.Server.Auth;
+using DotnetDbgMcp.Server.Tools;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -9,9 +14,15 @@ builder.Logging.AddSimpleConsole(o =>
     o.TimestampFormat = "HH:mm:ss.fff ";
 });
 
+builder.Services.AddSingleton<IProcessDiscovery, LocalProcessDiscovery>();
+builder.Services.AddSingleton<ICapabilityDetector, CapabilityDetector>();
+builder.Services.AddSingleton<ICounterCollector, EventPipeCounterCollector>();
+builder.Services.AddSingleton<ICpuSampler, EventPipeCpuSampler>();
+
 builder.Services
     .AddMcpServer()
-    .WithHttpTransport();
+    .WithHttpTransport()
+    .WithTools<DiagnosticTools>();
 
 var app = builder.Build();
 
