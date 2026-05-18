@@ -1,0 +1,357 @@
+# Tool reference
+
+Every tool exposed by `dotnet-dbg-mcp` is listed here with its purpose, parameters,
+return shape, runtime requirements, and a sample invocation. All tools are
+delivered over Streamable HTTP at `POST /mcp` and require an
+`Authorization: Bearer <token>` header (see [client-setup.md](./client-setup.md)).
+
+> Return shapes link back to the C# record definitions in
+> [`src/DotnetDbgMcp.Core`](../src/DotnetDbgMcp.Core), which are the source of
+> truth for field names and types.
+
+## Quick index
+
+| Tool | Cost | Requires CoreCLR? | Side effects |
+|---|---|---|---|
+| [`list_dotnet_processes`](#list_dotnet_processes) | cheap | no | none |
+| [`get_process_info`](#get_process_info) | cheap | no | none |
+| [`get_diagnostic_capabilities`](#get_diagnostic_capabilities) | ~2 s | no | opens a short EventPipe probe |
+| [`snapshot_counters`](#snapshot_counters) | window-bound | no | opens an EventPipe session |
+| [`collect_cpu_sample`](#collect_cpu_sample) | window-bound | **yes** | EventPipe + temp `.nettrace` on disk |
+| [`collect_exceptions`](#collect_exceptions) | window-bound | no | EventPipe session |
+| [`collect_gc_events`](#collect_gc_events) | window-bound | no | EventPipe session |
+| [`collect_event_source`](#collect_event_source) | window-bound | no | EventPipe session |
+| [`collect_process_dump`](#collect_process_dump) | seconds–minutes | no | **writes a dump file to disk** |
+
+"Window-bound" means the duration is the dominant cost; the tool will block for
+~`durationSeconds`.
+
+---
+
+## `list_dotnet_processes`
+
+Lists every .NET process on the local machine that exposes a Diagnostic IPC
+endpoint (Unix socket on Linux, named pipe on Windows).
+
+**Parameters:** none.
+
+**Returns:** array of `DotnetProcess`:
+
+```json
+[
+  {
+    "processId": 12345,
+    "commandLine": "/usr/bin/dotnet /app/MyApi.dll",
+    "operatingSystem": "linux",
+    "processArchitecture": "x64",
+    "runtimeVersion": "10.0.0",
+    "managedEntrypointAssemblyName": "MyApi"
+  }
+]
+```
+
+**Notes:** processes that respond too slowly or whose IPC endpoint is
+unreachable are silently omitted.
+
+---
+
+## `get_process_info`
+
+Returns metadata for a single PID.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int` | — | Target process id |
+
+**Returns:** a single `DotnetProcess` (same shape as above) or `null` if the
+process is gone / unreachable.
+
+---
+
+## `get_diagnostic_capabilities`
+
+Probes the target by opening a short EventPipe session against the
+`Microsoft-DotNETCore-SampleProfiler` provider. The presence/absence of sample
+events is used to classify the runtime as **CoreCLR** vs **NativeAOT**.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int` | — | Target process id |
+
+**Returns:** `DiagnosticCapabilities`:
+
+```json
+{
+  "processId": 12345,
+  "runtime": "CoreClr",
+  "runtimeVersion": "10.0.0",
+  "canReadEventCounters": true,
+  "canSampleCpu": true,
+  "canCollectGcDump": true,
+  "canCollectExceptions": true,
+  "canCollectHttpActivity": true,
+  "canCollectCustomEventSource": true,
+  "canCollectProcessDump": true,
+  "notes": "CoreCLR runtime detected via SampleProfiler events."
+}
+```
+
+**Notes:** always call this **first** in a session. The result tells the LLM
+(or human) which other tools can be used on the target. NativeAOT will return
+`runtime = "NativeAot"` and `canSampleCpu = false`.
+
+---
+
+## `snapshot_counters`
+
+Subscribes to one or more EventCounter providers and returns the latest value
+seen per counter over a fixed window.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int` | — | Target process id |
+| `durationSeconds` | `int` | `5` | Collection window. Must be ≥ 1. |
+| `providers` | `string[]?` | see below | EventSource provider names |
+| `intervalSeconds` | `int` | `1` | Per-provider refresh interval |
+
+When `providers` is null/empty the defaults are:
+`System.Runtime`, `Microsoft.AspNetCore.Hosting`, `Microsoft-AspNetCore-Server-Kestrel`.
+
+**Returns:** `CounterSnapshot`:
+
+```json
+{
+  "processId": 12345,
+  "startedAt": "2026-05-18T20:00:00Z",
+  "duration": "00:00:05",
+  "counters": [
+    {
+      "provider": "System.Runtime",
+      "name": "cpu-usage",
+      "displayName": "CPU Usage",
+      "value": 23.4,
+      "unit": "%",
+      "kind": "Mean"
+    }
+  ]
+}
+```
+
+---
+
+## `collect_cpu_sample`
+
+Captures a CPU sample via the `Microsoft-DotNETCore-SampleProfiler` provider,
+writes a temporary `.nettrace`, parses it with `TraceLog` and aggregates the
+top-N hotspots by inclusive and exclusive sample counts.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int` | — | Target process id |
+| `durationSeconds` | `int` | `10` | Sampling window. ≥ 1. |
+| `topN` | `int` | `25` | Maximum hotspots returned. ≥ 1. |
+
+**Returns:** `CpuSample`:
+
+```json
+{
+  "processId": 12345,
+  "startedAt": "2026-05-18T20:00:00Z",
+  "duration": "00:00:10",
+  "totalSamples": 4218,
+  "topHotspots": [
+    {
+      "frame": { "module": "MyApi", "method": "MyApi.Service.DoWork(int)" },
+      "inclusiveSamples": 1820,
+      "exclusiveSamples": 320
+    }
+  ]
+}
+```
+
+**Requires CoreCLR.** Returns `not_supported` style behaviour (empty samples) on
+NativeAOT — confirm via `get_diagnostic_capabilities` first.
+
+**Sampling rate** is the runtime default (~1 kHz). A 10-second window typically
+yields a few thousand samples; bump `durationSeconds` for sparse workloads.
+
+---
+
+## `collect_exceptions`
+
+Subscribes to the runtime `Exception` keyword and captures every managed
+exception thrown by the process during the window.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int` | — | Target process id |
+| `durationSeconds` | `int` | `10` | Window length |
+| `maxRecent` | `int` | `100` | Maximum exception details to return |
+
+**Returns:** `ExceptionSnapshot`:
+
+```json
+{
+  "processId": 12345,
+  "startedAt": "2026-05-18T20:00:00Z",
+  "duration": "00:00:10",
+  "totalExceptions": 42,
+  "byType": [
+    { "exceptionType": "System.InvalidOperationException", "count": 30 },
+    { "exceptionType": "System.TimeoutException", "count": 12 }
+  ],
+  "recent": [
+    {
+      "timestamp": "2026-05-18T20:00:01.123Z",
+      "exceptionType": "System.InvalidOperationException",
+      "exceptionMessage": "Sequence contains no elements",
+      "exceptionHResult": "0x80131509",
+      "threadId": 17
+    }
+  ]
+}
+```
+
+**Notes:** also catches "first-chance" exceptions caught by the app — useful
+for detecting error rates much higher than the response logs suggest.
+
+---
+
+## `collect_gc_events`
+
+Subscribes to the runtime `GC` keyword, pairs `GCStart`/`GCStop` events and
+returns aggregate + per-collection details.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int` | — | Target process id |
+| `durationSeconds` | `int` | `10` | Window length |
+| `maxEvents` | `int` | `200` | Cap on individual GC events returned |
+
+**Returns:** `GcSummary`:
+
+```json
+{
+  "processId": 12345,
+  "startedAt": "2026-05-18T20:00:00Z",
+  "duration": "00:00:10",
+  "totalCollections": 18,
+  "totalPauseTime": "00:00:00.0420000",
+  "maxPauseTime": "00:00:00.0150000",
+  "generations": [
+    { "generation": 0, "count": 14 },
+    { "generation": 1, "count": 3 },
+    { "generation": 2, "count": 1 }
+  ],
+  "events": [
+    {
+      "timestamp": "2026-05-18T20:00:01.500Z",
+      "generation": 0,
+      "reason": "AllocSmall",
+      "type": "NonConcurrentGC",
+      "pauseDuration": "00:00:00.0021000"
+    }
+  ]
+}
+```
+
+**Notes:** to capture a full gcdump (heap snapshot), use `collect_process_dump`
+with `dumpType = "WithHeap"` and analyze offline with `dotnet-dump`.
+
+---
+
+## `collect_event_source`
+
+Generic passthrough that opens an EventPipe session for any EventSource by
+name and captures the events it emits in the window. Use for HTTP activity
+(`System.Net.Http`), Kestrel/Hosting/Logging events, or app-defined sources.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int` | — | Target process id |
+| `providerName` | `string` | — | EventSource provider name |
+| `durationSeconds` | `int` | `10` | Window length |
+| `keywords` | `long` | `-1` | Keyword mask. `-1` = all |
+| `eventLevel` | `int` | `5` | 0=LogAlways…5=Verbose |
+| `maxEvents` | `int` | `200` | Cap on captured events |
+
+**Returns:** `EventSourceCapture`:
+
+```json
+{
+  "processId": 12345,
+  "provider": "System.Net.Http",
+  "startedAt": "2026-05-18T20:00:00Z",
+  "duration": "00:00:10",
+  "totalEvents": 128,
+  "events": [
+    {
+      "timestamp": "2026-05-18T20:00:00.500Z",
+      "provider": "System.Net.Http",
+      "eventName": "RequestStart",
+      "level": "Informational",
+      "payload": { "scheme": "https", "host": "api.example.com", "port": "443" }
+    }
+  ]
+}
+```
+
+**Tips:**
+
+- `System.Net.Http` — outbound HTTP request/response timing
+- `Microsoft.AspNetCore.Hosting` — request pipeline events
+- `Microsoft-AspNetCore-Server-Kestrel` — connection lifecycle
+- `Microsoft-Extensions-Logging` — structured app logs flowing through ILogger
+
+---
+
+## `collect_process_dump`
+
+Writes a process dump to disk via the diagnostic IPC channel.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int` | — | Target process id |
+| `dumpType` | `string` | `"Mini"` | `Mini` / `Triage` / `WithHeap` / `Full` |
+| `outputDirectory` | `string?` | `<temp>/dotnet-dbg-mcp` | Where to write the file |
+
+**Returns:** `DumpResult`:
+
+```json
+{
+  "processId": 12345,
+  "dumpType": "Mini",
+  "filePath": "/tmp/dotnet-dbg-mcp/dump_pid12345_Mini_20260518T200000Z.dmp",
+  "fileSizeBytes": 28311552,
+  "createdAt": "2026-05-18T20:00:00Z"
+}
+```
+
+**Cost / size:**
+
+| Type | Approx. size for a 200 MB workload | Use when |
+|---|---|---|
+| `Mini` | ~30 MB | crash triage, thread state |
+| `Triage` | ~30 MB | minimal, strings stripped |
+| `WithHeap` | full workload + heap (200+ MB) | leak/heap investigation |
+| `Full` | largest | last resort, full address space |
+
+**Side effects:** **writes to disk** on the server. In a sidecar topology the
+file lives on the sidecar container's filesystem — mount a PVC if you expect
+to capture more than transient dumps.

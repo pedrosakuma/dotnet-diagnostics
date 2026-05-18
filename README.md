@@ -2,7 +2,9 @@
 
 [![CI](https://github.com/dotnet-dbg-mcp/dotnet-dbg-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/dotnet-dbg-mcp/dotnet-dbg-mcp/actions/workflows/ci.yml)
 
-> **Status:** very early — Phase 1 (foundation) complete. Diagnostic tooling not yet implemented.
+> **Status:** MCP server functional with 9 diagnostic tools. End-to-end tests
+> pass. See [`docs/`](./docs) for the tool reference and investigation
+> playbooks.
 
 An **MCP server** that lets an LLM perform on-demand performance diagnostics on running
 **.NET 10** applications — locally or in Kubernetes — **without any modification to the
@@ -35,6 +37,24 @@ tests/
   DotnetDbgMcp.Server.IntegrationTests/
 ```
 
+## Tools at a glance
+
+| Tool | Purpose |
+|---|---|
+| `list_dotnet_processes` / `get_process_info` | Discover .NET processes via diagnostic IPC |
+| `get_diagnostic_capabilities` | Detect CoreCLR vs NativeAOT and what's usable |
+| `snapshot_counters` | EventCounters over a window (cpu, memory, requests, ...) |
+| `collect_cpu_sample` | Top-N CPU hotspots (inclusive/exclusive) — **CoreCLR only** |
+| `collect_exceptions` | Managed exceptions thrown in a window, aggregated by type |
+| `collect_gc_events` | GC pauses + per-generation counts |
+| `collect_event_source` | Generic EventSource passthrough (HTTP, Kestrel, custom) |
+| `collect_process_dump` | Write a Mini / Triage / WithHeap / Full dump to disk |
+
+Full schemas and return shapes: [`docs/tool-reference.md`](./docs/tool-reference.md).
+Common investigation recipes: [`docs/investigation-playbooks.md`](./docs/investigation-playbooks.md).
+Client setup (C# SDK, GUI clients, curl): [`docs/client-setup.md`](./docs/client-setup.md).
+Kubernetes sidecar: [`deploy/k8s/README.md`](./deploy/k8s/README.md).
+
 ## Build & test
 
 ```bash
@@ -66,7 +86,7 @@ Phases:
 3. ✅ MCP server MVP wired to Core
 4. ✅ Advanced tools (GC, exceptions, custom EventSources, dumps)
 5. ✅ Kubernetes sidecar topology + manifests (see [`deploy/k8s/`](./deploy/k8s))
-6. ⏳ Documentation polish (tool reference, investigation playbooks)
+6. ✅ Documentation polish (tool reference, investigation playbooks, client setup)
 7. ⏳ Future: cloud-native integrations (Azure / AWS / GCP), NativeAOT fallback profiling, ClrMD dump inspection
 
 ## License
