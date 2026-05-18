@@ -61,12 +61,12 @@ dotnet run --project src/DotnetDbgMcp.Server
 See [`docs/`](./docs) (to be filled in) and the planning notes in the session workspace.
 Phases:
 
-1. ✅ Foundation (this commit)
-2. ⏳ Core diagnostics (process discovery, capability detection, counters, CPU sampling)
-3. ⏳ MCP server MVP wired to Core
-4. ⏳ Advanced tools (GC, exceptions, HTTP/ASP.NET, custom EventSources, dumps)
-5. ⏳ Kubernetes sidecar + manifests + integration tests in Docker
-6. ⏳ Documentation polish
+1. ✅ Foundation
+2. ✅ Core diagnostics (process discovery, capability detection, counters, CPU sampling)
+3. ✅ MCP server MVP wired to Core
+4. ✅ Advanced tools (GC, exceptions, custom EventSources, dumps)
+5. ✅ Kubernetes sidecar topology + manifests (see [`deploy/k8s/`](./deploy/k8s))
+6. ⏳ Documentation polish (tool reference, investigation playbooks)
 7. ⏳ Future: cloud-native integrations (Azure / AWS / GCP), NativeAOT fallback profiling, ClrMD dump inspection
 
 ## License

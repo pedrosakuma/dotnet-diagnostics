@@ -1,0 +1,15 @@
+# Ignore everything by default…
+*
+
+# …then re-include only what the Dockerfile actually needs.
+!global.json
+!Directory.Build.props
+!Directory.Packages.props
+!src/
+
+# Drop build artefacts from any subtree that gets copied.
+**/bin/
+**/obj/
+**/.vs/
+**/.idea/
+**/*.user

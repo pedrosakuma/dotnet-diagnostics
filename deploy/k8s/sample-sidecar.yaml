@@ -1,0 +1,134 @@
+# Example: deploy dotnet-dbg-mcp as a sidecar next to a .NET 10 web API.
+#
+# Key pod-level requirements that make the diagnostic IPC attach work:
+#   * shareProcessNamespace: true  -> the sidecar can see the app's PIDs
+#   * shared emptyDir over /tmp    -> both containers see the same
+#                                     /tmp/dotnet-diagnostic-<pid> socket
+#
+# Neither the target app's image nor its code needs any modification.
+#
+# To rotate the bearer token, edit the Secret and restart the pod.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dbgmcp-demo
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dbgmcp-bearer
+  namespace: dbgmcp-demo
+type: Opaque
+stringData:
+  # Replace with `openssl rand -hex 32` output. Never commit a real token.
+  token: "replace-me-with-a-strong-random-token"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-api
+  namespace: dbgmcp-demo
+  labels:
+    app: sample-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-api
+  template:
+    metadata:
+      labels:
+        app: sample-api
+    spec:
+      # Required so the sidecar's DiagnosticsClient.GetPublishedProcesses()
+      # can see the target process and connect to its diagnostic socket.
+      shareProcessNamespace: true
+
+      volumes:
+        # Shared emptyDir mounted at /tmp in both containers; .NET creates the
+        # diagnostic IPC socket at /tmp/dotnet-diagnostic-<pid> on Linux, so
+        # mounting the same volume gives the sidecar access to it.
+        - name: diag-tmp
+          emptyDir: {}
+
+      containers:
+        # ----- 1. Target application (replace with your own image) -----
+        - name: app
+          image: ghcr.io/example/sample-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: ASPNETCORE_URLS
+              value: http://0.0.0.0:8080
+            # Required for EventPipe/diagnostic IPC. Default is 1 but be explicit.
+            - name: DOTNET_EnableDiagnostics
+              value: "1"
+          volumeMounts:
+            - name: diag-tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+
+        # ----- 2. dotnet-dbg-mcp sidecar -----
+        - name: dbgmcp
+          image: ghcr.io/example/dotnet-dbg-mcp:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: mcp
+          env:
+            - name: ASPNETCORE_URLS
+              value: http://0.0.0.0:8080
+            - name: MCP_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dbgmcp-bearer
+                  key: token
+          volumeMounts:
+            # Sees the same /tmp as the app, including the diagnostic socket.
+            - name: diag-tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            # Diagnostic captures can be allocation-heavy briefly; cap to protect
+            # the noisy-neighbour scenario but leave room for traces.
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-api-dbgmcp
+  namespace: dbgmcp-demo
+  labels:
+    app: sample-api
+spec:
+  type: ClusterIP
+  selector:
+    app: sample-api
+  ports:
+    - name: mcp
+      port: 8787
+      targetPort: mcp
