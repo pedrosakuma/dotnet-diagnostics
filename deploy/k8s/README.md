@@ -1,4 +1,4 @@
-# Deploying dotnet-dbg-mcp on Kubernetes
+# Deploying dotnet-diagnostics-mcp on Kubernetes
 
 This folder contains a working sidecar topology that lets an LLM (via an MCP
 client) attach to a .NET application running in a Pod without modifying the
@@ -7,7 +7,7 @@ application's image or code.
 ## Files
 
 - [`sample-sidecar.yaml`](./sample-sidecar.yaml) — Namespace, Secret (bearer
-  token), Deployment with **target app + dbgmcp sidecar** and a ClusterIP
+  token), Deployment with **target app + diagnosticsmcp sidecar** and a ClusterIP
   Service that exposes the MCP endpoint.
 
 ## Why these pod-level settings are required
@@ -55,7 +55,7 @@ The Service exposes the sidecar on `ClusterIP:8787`. From a developer machine
 the simplest path is `kubectl port-forward`:
 
 ```bash
-kubectl -n dbgmcp-demo port-forward svc/sample-api-dbgmcp 8787:8787
+kubectl -n diagnosticsmcp-demo port-forward svc/sample-api-diagnosticsmcp 8787:8787
 ```
 
 Then point an MCP-aware client at `http://localhost:8787/mcp` with the bearer
@@ -73,8 +73,8 @@ token. For an LLM-based investigation, the model will typically:
 From the repo root:
 
 ```bash
-docker build -t ghcr.io/example/dotnet-dbg-mcp:latest -f deploy/Dockerfile .
-docker push ghcr.io/example/dotnet-dbg-mcp:latest
+docker build -t ghcr.io/example/dotnet-diagnostics-mcp:latest -f deploy/Dockerfile .
+docker push ghcr.io/example/dotnet-diagnostics-mcp:latest
 ```
 
 Replace the image reference in `sample-sidecar.yaml` with your own registry

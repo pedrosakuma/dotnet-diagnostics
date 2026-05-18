@@ -1,4 +1,4 @@
-# Bad-code scenarios — exercising dotnet-dbg-mcp end-to-end
+# Bad-code scenarios — exercising dotnet-diagnostics-mcp end-to-end
 
 `samples/BadCodeSample/` is a minimal API where every endpoint triggers a
 different, well-known .NET anti-pattern. Use it to validate that the MCP
@@ -11,21 +11,21 @@ We run **three** containers in the same Docker network, with the sample +
 sidecar sharing a PID namespace and `/tmp` (mirroring the K8s sidecar):
 
 ```bash
-docker network create dbgmcp-net 2>/dev/null || true
+docker network create diagmcp-net 2>/dev/null || true
 docker volume  create badcode-tmp >/dev/null
 
-docker run -d --name badcode --network dbgmcp-net \
+docker run -d --name badcode --network diagmcp-net \
   -v badcode-tmp:/tmp \
   -p 18180:8080 \
   badcode-sample:dev
 
-docker run -d --name badcode-mcp --network dbgmcp-net \
+docker run -d --name badcode-mcp --network diagmcp-net \
   --pid=container:badcode \
   -v badcode-tmp:/tmp \
   --user 0 \
   -e MCP_BEARER_TOKEN=dev-token \
   -p 18887:8080 \
-  dotnet-dbg-mcp:dev
+  dotnet-diagnostics-mcp:dev
 ```
 
 Trigger a scenario from your shell (the `badcode` container exposes the API on

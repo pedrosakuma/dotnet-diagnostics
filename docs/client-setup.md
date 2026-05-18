@@ -1,6 +1,6 @@
 # Client setup
 
-`dotnet-dbg-mcp` speaks MCP over **Streamable HTTP** at `POST /mcp`, with a
+`dotnet-diagnostics-mcp` speaks MCP over **Streamable HTTP** at `POST /mcp`, with a
 required `Authorization: Bearer <token>` header. Any MCP-aware client that
 supports HTTP transports can drive it.
 
@@ -10,7 +10,7 @@ This doc covers the three most common ways to connect.
 
 ```bash
 export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"
-dotnet run --project src/DotnetDbgMcp.Server
+dotnet run --project src/DotnetDiagnosticsMcp.Server
 # Server listens on http://localhost:5000 (or whatever ASP.NET picks)
 ```
 
@@ -53,7 +53,7 @@ var processes = await client.CallToolAsync(
     arguments: null);
 ```
 
-See [`tests/DotnetDbgMcp.Server.IntegrationTests/McpToolsTests.cs`](../tests/DotnetDbgMcp.Server.IntegrationTests/McpToolsTests.cs)
+See [`tests/DotnetDiagnosticsMcp.Server.IntegrationTests/McpToolsTests.cs`](../tests/DotnetDiagnosticsMcp.Server.IntegrationTests/McpToolsTests.cs)
 for a full working example covering every tool.
 
 ## 3. Connect from Claude Desktop / a generic MCP client
@@ -80,7 +80,7 @@ For sidecar deployments, replace `localhost:5000` with the `kubectl port-forward
 target:
 
 ```bash
-kubectl -n dbgmcp-demo port-forward svc/sample-api-dbgmcp 8787:8787
+kubectl -n diagnosticsmcp-demo port-forward svc/sample-api-diagnosticsmcp 8787:8787
 # then point the client at http://localhost:8787/mcp
 ```
 

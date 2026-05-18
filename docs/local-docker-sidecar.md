@@ -12,30 +12,30 @@ Two images, two containers, one shared `/tmp` volume + a shared PID namespace
 From the repo root:
 
 ```bash
-docker build -t dotnet-dbg-mcp:dev -f deploy/Dockerfile .
+docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
 docker build -t coreclr-sample:dev   -f samples/CoreClrSample/Dockerfile .
 ```
 
 ## Run the topology
 
 ```bash
-docker network create dbgmcp-net 2>/dev/null || true
-docker volume  create dbgmcp-tmp >/dev/null
+docker network create diagmcp-net 2>/dev/null || true
+docker volume  create diagnosticsmcp-tmp >/dev/null
 
 # 1) the target app — owns PID 1 in the shared namespace
-docker run -d --name sample --network dbgmcp-net \
-  -v dbgmcp-tmp:/tmp \
+docker run -d --name sample --network diagmcp-net \
+  -v diagnosticsmcp-tmp:/tmp \
   -p 18080:8080 \
   coreclr-sample:dev
 
 # 2) the MCP sidecar — joins sample's PID namespace and /tmp volume
-docker run -d --name mcp --network dbgmcp-net \
+docker run -d --name mcp --network diagmcp-net \
   --pid=container:sample \
-  -v dbgmcp-tmp:/tmp \
+  -v diagnosticsmcp-tmp:/tmp \
   --user 0 \
   -e MCP_BEARER_TOKEN=dev-token \
   -p 18787:8080 \
-  dotnet-dbg-mcp:dev
+  dotnet-diagnostics-mcp:dev
 ```
 
 `--user 0` is the easy path for local validation because the sample image runs
@@ -93,6 +93,6 @@ curl -fsS -X POST http://127.0.0.1:18787/mcp \
 
 ```bash
 docker rm -f mcp sample
-docker volume rm dbgmcp-tmp
-docker network rm dbgmcp-net
+docker volume rm diagnosticsmcp-tmp
+docker network rm diagmcp-net
 ```

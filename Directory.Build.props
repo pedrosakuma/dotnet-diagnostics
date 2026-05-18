@@ -9,10 +9,10 @@
     <AnalysisLevel>latest-recommended</AnalysisLevel>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
-    <Company>dotnet-dbg-mcp</Company>
-    <Product>dotnet-dbg-mcp</Product>
-    <Authors>dotnet-dbg-mcp contributors</Authors>
-    <RepositoryUrl>https://github.com/$(Company)/dotnet-dbg-mcp</RepositoryUrl>
+    <Company>dotnet-diagnostics-mcp</Company>
+    <Product>dotnet-diagnostics-mcp</Product>
+    <Authors>dotnet-diagnostics-mcp contributors</Authors>
+    <RepositoryUrl>https://github.com/pedrosakuma/dotnet-diagnostics-mcp</RepositoryUrl>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>

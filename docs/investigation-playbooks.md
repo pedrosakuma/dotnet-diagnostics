@@ -1,7 +1,7 @@
 # Investigation playbooks
 
 Concrete, tool-by-tool recipes for the most common diagnostics scenarios an
-LLM (or a human) can drive through `dotnet-dbg-mcp`. Each playbook starts from
+LLM (or a human) can drive through `dotnet-diagnostics-mcp`. Each playbook starts from
 a symptom and walks through the tool calls in order.
 
 > **Always start with these two calls:**
@@ -69,7 +69,7 @@ doesn't drop, you have surviving objects (leak or long-lived cache).
 `collect_process_dump` with `dumpType = "WithHeap"`. Analyze offline:
 
 ```bash
-dotnet dump analyze /tmp/dotnet-dbg-mcp/dump_pid12345_WithHeap_*.dmp
+dotnet dump analyze /tmp/dotnet-diagnostics-mcp/dump_pid12345_WithHeap_*.dmp
 > dumpheap -stat
 > gcroot <addr>
 ```
@@ -145,7 +145,7 @@ instance" investigations.
 
 ## Adapting playbooks for the LLM
 
-When wiring `dotnet-dbg-mcp` into an LLM-driven agent, encode this priority as
+When wiring `dotnet-diagnostics-mcp` into an LLM-driven agent, encode this priority as
 a system message:
 
 > Always call `get_diagnostic_capabilities` before any window-bound tool.

@@ -1,7 +1,7 @@
-# Multi-stage Dockerfile for dotnet-dbg-mcp server.
+# Multi-stage Dockerfile for dotnet-diagnostics-mcp server.
 #
-# Build:  docker build -t dotnet-dbg-mcp:dev -f deploy/Dockerfile .
-# Run:    docker run --rm -p 8787:8080 -e MCP_BEARER_TOKEN=changeme dotnet-dbg-mcp:dev
+# Build:  docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
+# Run:    docker run --rm -p 8787:8080 -e MCP_BEARER_TOKEN=changeme dotnet-diagnostics-mcp:dev
 #
 # When deployed as a Kubernetes sidecar, the server attaches to the target .NET
 # process via its Diagnostic IPC socket; see deploy/k8s/README.md for the
@@ -14,15 +14,15 @@ WORKDIR /src
 
 # Bring in the files needed to restore first so the layer caches well.
 COPY global.json Directory.Build.props Directory.Packages.props .editorconfig ./
-COPY src/DotnetDbgMcp.Core/DotnetDbgMcp.Core.csproj src/DotnetDbgMcp.Core/
-COPY src/DotnetDbgMcp.Server/DotnetDbgMcp.Server.csproj src/DotnetDbgMcp.Server/
+COPY src/DotnetDiagnosticsMcp.Core/DotnetDiagnosticsMcp.Core.csproj src/DotnetDiagnosticsMcp.Core/
+COPY src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj src/DotnetDiagnosticsMcp.Server/
 
-RUN dotnet restore src/DotnetDbgMcp.Server/DotnetDbgMcp.Server.csproj
+RUN dotnet restore src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj
 
 # Copy the rest of the source needed by the server project.
 COPY src/ src/
 
-RUN dotnet publish src/DotnetDbgMcp.Server/DotnetDbgMcp.Server.csproj \
+RUN dotnet publish src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj \
     -c Release \
     -o /app/publish \
     --no-restore \
@@ -38,16 +38,16 @@ ENV ASPNETCORE_URLS=http://0.0.0.0:8080 \
 
 # Non-root user for least privilege. The sidecar still needs PID visibility on the
 # *target* container to use DiagnosticsClient — see deploy/k8s/README.md.
-RUN groupadd --system --gid 10001 dbgmcp \
- && useradd --system --uid 10001 --gid dbgmcp --create-home --shell /usr/sbin/nologin dbgmcp
+RUN groupadd --system --gid 10001 diagnosticsmcp \
+ && useradd --system --uid 10001 --gid diagnosticsmcp --create-home --shell /usr/sbin/nologin diagnosticsmcp
 
 COPY --from=build /app/publish ./
-RUN chown -R dbgmcp:dbgmcp /app
-USER dbgmcp
+RUN chown -R diagnosticsmcp:diagnosticsmcp /app
+USER diagnosticsmcp
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1
 
-ENTRYPOINT ["dotnet", "DotnetDbgMcp.Server.dll"]
+ENTRYPOINT ["dotnet", "DotnetDiagnosticsMcp.Server.dll"]

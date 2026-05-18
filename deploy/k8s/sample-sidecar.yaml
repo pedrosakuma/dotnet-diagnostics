@@ -1,4 +1,4 @@
-# Example: deploy dotnet-dbg-mcp as a sidecar next to a .NET 10 web API.
+# Example: deploy dotnet-diagnostics-mcp as a sidecar next to a .NET 10 web API.
 #
 # Key pod-level requirements that make the diagnostic IPC attach work:
 #   * shareProcessNamespace: true  -> the sidecar can see the app's PIDs
@@ -17,13 +17,13 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: dbgmcp-demo
+  name: diagnosticsmcp-demo
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name: dbgmcp-bearer
-  namespace: dbgmcp-demo
+  name: diagnosticsmcp-bearer
+  namespace: diagnosticsmcp-demo
 type: Opaque
 stringData:
   # Replace with `openssl rand -hex 32` output. Never commit a real token.
@@ -33,7 +33,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sample-api
-  namespace: dbgmcp-demo
+  namespace: diagnosticsmcp-demo
   labels:
     app: sample-api
 spec:
@@ -91,9 +91,9 @@ spec:
               cpu: "1"
               memory: 512Mi
 
-        # ----- 2. dotnet-dbg-mcp sidecar -----
-        - name: dbgmcp
-          image: ghcr.io/example/dotnet-dbg-mcp:latest
+        # ----- 2. dotnet-diagnostics-mcp sidecar -----
+        - name: diagnosticsmcp
+          image: ghcr.io/example/dotnet-diagnostics-mcp:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -104,7 +104,7 @@ spec:
             - name: MCP_BEARER_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: dbgmcp-bearer
+                  name: diagnosticsmcp-bearer
                   key: token
           volumeMounts:
             # Sees the same /tmp as the app, including the diagnostic socket.
@@ -135,8 +135,8 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: sample-api-dbgmcp
-  namespace: dbgmcp-demo
+  name: sample-api-diagnosticsmcp
+  namespace: diagnosticsmcp-demo
   labels:
     app: sample-api
 spec:

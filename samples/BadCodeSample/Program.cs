@@ -4,7 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 
 // BadCodeSample — a deliberately-broken minimal API used to exercise the
-// dotnet-dbg-mcp tools. Every endpoint triggers a different anti-pattern that
+// dotnet-diagnostics-mcp tools. Every endpoint triggers a different anti-pattern that
 // should be detectable end-to-end via the MCP server (counters, cpu sampling,
 // exceptions, GC events, EventSource passthrough, dump).
 //
@@ -41,7 +41,7 @@ app.MapGet("/cpu-burn", (int? ms) =>
 {
     var budget = TimeSpan.FromMilliseconds(ms ?? 2000);
     var sw = System.Diagnostics.Stopwatch.StartNew();
-    var input = Encoding.UTF8.GetBytes("dotnet-dbg-mcp cpu burn payload");
+    var input = Encoding.UTF8.GetBytes("dotnet-diagnostics-mcp cpu burn payload");
     long iterations = 0;
     while (sw.Elapsed < budget)
     {

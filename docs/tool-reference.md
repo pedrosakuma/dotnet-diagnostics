@@ -1,12 +1,12 @@
 # Tool reference
 
-Every tool exposed by `dotnet-dbg-mcp` is listed here with its purpose, parameters,
+Every tool exposed by `dotnet-diagnostics-mcp` is listed here with its purpose, parameters,
 return shape, runtime requirements, and a sample invocation. All tools are
 delivered over Streamable HTTP at `POST /mcp` and require an
 `Authorization: Bearer <token>` header (see [client-setup.md](./client-setup.md)).
 
 > Return shapes link back to the C# record definitions in
-> [`src/DotnetDbgMcp.Core`](../src/DotnetDbgMcp.Core), which are the source of
+> [`src/DotnetDiagnosticsMcp.Core`](../src/DotnetDiagnosticsMcp.Core), which are the source of
 > truth for field names and types.
 
 ## Quick index
@@ -329,7 +329,7 @@ Writes a process dump to disk via the diagnostic IPC channel.
 |---|---|---|---|
 | `processId` | `int` | — | Target process id |
 | `dumpType` | `string` | `"Mini"` | `Mini` / `Triage` / `WithHeap` / `Full` |
-| `outputDirectory` | `string?` | `<temp>/dotnet-dbg-mcp` | Where to write the file |
+| `outputDirectory` | `string?` | `<temp>/dotnet-diagnostics-mcp` | Where to write the file |
 
 **Returns:** `DumpResult`:
 
@@ -337,7 +337,7 @@ Writes a process dump to disk via the diagnostic IPC channel.
 {
   "processId": 12345,
   "dumpType": "Mini",
-  "filePath": "/tmp/dotnet-dbg-mcp/dump_pid12345_Mini_20260518T200000Z.dmp",
+  "filePath": "/tmp/dotnet-diagnostics-mcp/dump_pid12345_Mini_20260518T200000Z.dmp",
   "fileSizeBytes": 28311552,
   "createdAt": "2026-05-18T20:00:00Z"
 }

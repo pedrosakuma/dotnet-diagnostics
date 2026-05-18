@@ -1,6 +1,6 @@
-# dotnet-dbg-mcp
+# dotnet-diagnostics-mcp
 
-[![CI](https://github.com/dotnet-dbg-mcp/dotnet-dbg-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/dotnet-dbg-mcp/dotnet-dbg-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/dotnet-diagnostics-mcp/dotnet-diagnostics-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/dotnet-diagnostics-mcp/dotnet-diagnostics-mcp/actions/workflows/ci.yml)
 
 > **Status:** MCP server functional with 9 diagnostic tools. End-to-end tests
 > pass. See [`docs/`](./docs) for the tool reference and investigation
@@ -27,14 +27,14 @@ It builds on the existing .NET diagnostics pipeline (`Microsoft.Diagnostics.NETC
 
 ```
 src/
-  DotnetDbgMcp.Core/        # diagnostic primitives (process discovery, EventPipe sessions, parsing)
-  DotnetDbgMcp.Server/      # ASP.NET Core host + MCP tools + bearer auth
+  DotnetDiagnosticsMcp.Core/        # diagnostic primitives (process discovery, EventPipe sessions, parsing)
+  DotnetDiagnosticsMcp.Server/      # ASP.NET Core host + MCP tools + bearer auth
 samples/
   CoreClrSample/            # plain ASP.NET Core webapi used as a target for testing
   NativeAotSample/          # webapi with PublishAot=true and EventSourceSupport=true
 tests/
-  DotnetDbgMcp.Core.Tests/
-  DotnetDbgMcp.Server.IntegrationTests/
+  DotnetDiagnosticsMcp.Core.Tests/
+  DotnetDiagnosticsMcp.Server.IntegrationTests/
 ```
 
 ## Tools at a glance
@@ -73,7 +73,7 @@ The MCP server requires a Bearer token on every request to `/mcp/*` (the `/healt
 
 ```bash
 export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"
-dotnet run --project src/DotnetDbgMcp.Server
+dotnet run --project src/DotnetDiagnosticsMcp.Server
 ```
 
 ## Roadmap
