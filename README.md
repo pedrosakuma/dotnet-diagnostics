@@ -1,6 +1,6 @@
 # dotnet-diagnostics-mcp
 
-[![CI](https://github.com/dotnet-diagnostics-mcp/dotnet-diagnostics-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/dotnet-diagnostics-mcp/dotnet-diagnostics-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/actions/workflows/ci.yml)
 
 > **Status:** MCP server functional with 9 diagnostic tools. End-to-end tests
 > pass. See [`docs/`](./docs) for the tool reference and investigation
