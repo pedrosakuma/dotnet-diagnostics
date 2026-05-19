@@ -305,9 +305,18 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             .ToList();
 
         var root = builder.Build();
-        var symbolSource = total > 0
-            ? NativeAotSymbolDemangler.SymbolSource.ElfDemangled // Closest equivalent for "PDB-resolved"
-            : NativeAotSymbolDemangler.SymbolSource.Unknown;
+
+        // Classify symbol source: if any frame was resolved to a real method name via PDB,
+        // report PdbResolved; if only addresses, report Stripped.
+        var hasResolved = hotspots.Any(h =>
+            !h.Frame.Method.StartsWith("0x", StringComparison.Ordinal) &&
+            !h.Frame.Method.StartsWith("[0x", StringComparison.Ordinal) &&
+            h.Frame.Method != "[unknown]");
+        var symbolSource = total == 0
+            ? NativeAotSymbolDemangler.SymbolSource.Unknown
+            : hasResolved
+                ? NativeAotSymbolDemangler.SymbolSource.PdbResolved
+                : NativeAotSymbolDemangler.SymbolSource.Stripped;
 
         var summary = new CpuSample(processId, startedAt, duration, total, hotspots);
         var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, null, null, symbolSource);

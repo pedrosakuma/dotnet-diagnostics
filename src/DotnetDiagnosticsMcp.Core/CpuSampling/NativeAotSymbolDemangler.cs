@@ -281,6 +281,8 @@ public static class NativeAotSymbolDemangler
         Native,
         /// <summary>Synthetic / stripped — perf returned <c>[unknown]</c> or an address.</summary>
         Stripped,
+        /// <summary>Resolved via Windows PDB / DIA (ETW kernel profiling path).</summary>
+        PdbResolved,
     }
 
     /// <summary>Classifies a perf-emitted symbol so the artifact can carry a coarse source
