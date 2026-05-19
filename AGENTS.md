@@ -111,15 +111,24 @@ dotnet … collect_exceptions  # synchronous
 
 `tests/DotnetDiagnosticsMcp.Core.Tests/LiveCoreClrProcessTests.cs` spawns the `CoreClrSample` webapi by invoking its published DLL directly (`dotnet …/CoreClrSample.dll`) and attaches to the resulting PID. The fixture deliberately avoids `dotnet run`, which creates a wrapper host process whose PID is not the application. Required: .NET 10 SDK on `PATH`, ability to bind to `127.0.0.1:0`, and ~10s of runtime. CI runs both Linux and Windows runners.
 
-### 🎯 One MCP tool per concept (≤10 tools per context)
+### 🎯 One MCP tool per concept (≤10 typical; document why each addition is essential)
 
-Anthropic recommends ≤10 tools per LLM context. We currently have 9. **Don't add tools speculatively**. New capabilities should either:
+Anthropic recommends ≤10 tools per LLM context. We currently have 18 (the four Phase 7 additions —
+`get_call_tree`, `start_investigation`, `export_investigation_summary`, `compare_to_baseline`,
+`get_collection_status`, `cancel_collection`, `inspect_live_heap`, `query_heap_snapshot` — each
+unlock a specific drilldown or workflow the LLM cannot otherwise reach). **Don't add tools
+speculatively**. New capabilities should either:
 
 1. Extend an existing tool with a parameter, or
 2. Be exposed as a Resource (`audience=["assistant"]`) or Prompt, not a Tool, or
-3. Be split with `mcp-drilldown` so a single "summary" tool drives optional "detail" tools through a `handle`.
+3. Follow the **"split collector, unified drilldown"** pattern: separate collectors per backend
+   (e.g. `inspect_dump` vs `inspect_live_heap`) register a single `HeapSnapshotArtifact` in the
+   shared `IDiagnosticHandleStore`, and a single `query_heap_snapshot(handle, view, …)` tool
+   answers parameterized follow-up questions. This keeps the tool surface flat while letting the
+   LLM ask narrowly-scoped questions without re-paying the collection cost.
 
-See Phase 7 issue [#8 `mcp-drilldown`](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/8).
+See Phase 7 issues [#8 `mcp-drilldown`](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/8)
+and [#24 wave 1 heap drilldown](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/24).
 
 ## Phase 7 — what is being designed and why
 

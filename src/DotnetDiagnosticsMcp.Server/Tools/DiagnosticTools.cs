@@ -553,29 +553,46 @@ public sealed class DiagnosticTools
         "use WithHeap or Full.")]
     public static async Task<DiagnosticResult<DumpInspection>> InspectDump(
         IDumpInspector inspector,
+        IDiagnosticHandleStore handles,
         [Description("Absolute path to a previously-captured .dmp file. Required.")] string dumpFilePath,
         [Description("Number of types to return in each top-N list (bytes / instances). Defaults to 20.")] int topTypes = 20,
-        [Description("When true, walks a short GC retention chain for each of the top-5 types by bytes. Off by default — slower.")] bool includeRetentionPaths = false,
+        [Description("When true, walks a short GC retention chain for the top retained types. Off by default — slower.")] bool includeRetentionPaths = false,
         [Description("Cap on retention-chain depth when retention paths are enabled. Defaults to 8.")] int retentionPathLimit = 8,
         CancellationToken cancellationToken = default)
     {
-        var inspection = await inspector.InspectAsync(
+        var snapshot = await inspector.InspectAsync(
             dumpFilePath,
             new DumpInspectionOptions(TopTypes: topTypes, IncludeRetentionPaths: includeRetentionPaths, RetentionPathLimit: retentionPathLimit),
             cancellationToken).ConfigureAwait(false);
 
+        var handle = handles.Register(snapshot.ProcessId, HeapSnapshotKind, snapshot, HeapSnapshotHandleTtl);
+        var inspection = snapshot.ToDumpInspection(topTypes, handle.Id);
+
         var topByBytes = inspection.TopTypesByBytes;
         var summary = topByBytes.Count == 0
-            ? $"Inspected {dumpFilePath} — runtime {inspection.Runtime.Name} {inspection.Runtime.Version}, heap walk produced no objects."
-            : $"Inspected {dumpFilePath} — heap {inspection.Heap.TotalBytes:N0} bytes; top retained type: `{topByBytes[0].TypeFullName}` ({topByBytes[0].TotalBytesPercent}% / {topByBytes[0].InstanceCount:N0} instances).";
+            ? $"Inspected {dumpFilePath} — runtime {inspection.Runtime.Name} {inspection.Runtime.Version}, heap walk produced no objects. Snapshot handle: `{handle.Id}`."
+            : $"Inspected {dumpFilePath} — heap {inspection.Heap.TotalBytes:N0} bytes; top retained type: `{topByBytes[0].TypeFullName}` ({topByBytes[0].TotalBytesPercent}% / {topByBytes[0].InstanceCount:N0} instances). Snapshot handle: `{handle.Id}`.";
 
-        NextActionHint? hint = null;
+        var hint = BuildHeapDrilldownHint(handle.Id, topByBytes);
+        return hint is null
+            ? DiagnosticResult.Ok(inspection, summary)
+            : DiagnosticResult.Ok(inspection, summary, hint);
+    }
+
+    private static readonly TimeSpan HeapSnapshotHandleTtl = TimeSpan.FromMinutes(10);
+    internal const string HeapSnapshotKind = "heap-snapshot";
+
+    private static NextActionHint? BuildHeapDrilldownHint(string handle, IReadOnlyList<TypeStat> topByBytes)
+    {
+        // Prefer the cross-MCP handoff to dotnet-assembly-mcp when a type identity is available —
+        // that pivots the LLM from "what is retained" to "what's the type definition / methods".
         var topWithHandoff = topByBytes.FirstOrDefault(t => t.Identity is { ModuleVersionId: not null, MetadataToken: not null });
         if (topWithHandoff is { Identity: { } id })
         {
-            hint = new NextActionHint(
+            return new NextActionHint(
                 "dotnet-assembly-mcp.get_method",
-                $"Pivot to assembly inspection for the top retained type `{id.TypeFullName}` via the (mvid, token) handoff.",
+                $"Pivot to assembly inspection for the top retained type `{id.TypeFullName}` via the (mvid, token) handoff. " +
+                $"Use query_heap_snapshot(handle=\"{handle}\", view=\"retention-paths\") to expand retention without re-walking.",
                 new Dictionary<string, object?>
                 {
                     ["moduleVersionId"] = id.ModuleVersionId,
@@ -585,9 +602,15 @@ public sealed class DiagnosticTools
                 });
         }
 
-        return hint is null
-            ? DiagnosticResult.Ok(inspection, summary)
-            : DiagnosticResult.Ok(inspection, summary, hint);
+        // Fallback: at least point at the local drilldown tool.
+        return new NextActionHint(
+            "query_heap_snapshot",
+            "Drill into the snapshot (e.g. richer top-N, retention paths filtered by type) without re-walking the heap.",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = handle,
+                ["view"] = "top-types",
+            });
     }
 
     [McpServerTool(
@@ -607,41 +630,138 @@ public sealed class DiagnosticTools
         "dotnet-assembly-mcp's get_type. Use inspect_dump when you need an artifact to keep, share or re-inspect.")]
     public static async Task<DiagnosticResult<LiveHeapInspection>> InspectLiveHeap(
         IDumpInspector inspector,
+        IDiagnosticHandleStore handles,
         [Description("Operating system process id of the target .NET process.")] int processId,
         [Description("Number of types to return in each top-N list (bytes / instances). Defaults to 20.")] int topTypes = 20,
-        [Description("When true, walks a short GC retention chain for each of the top-5 types by bytes. Off by default — slower and lengthens the suspend window.")] bool includeRetentionPaths = false,
+        [Description("When true, walks a short GC retention chain for the top retained types. Off by default — slower and lengthens the suspend window.")] bool includeRetentionPaths = false,
         [Description("Cap on retention-chain depth when retention paths are enabled. Defaults to 8.")] int retentionPathLimit = 8,
         CancellationToken cancellationToken = default)
     {
-        var inspection = await inspector.InspectLiveAsync(
+        var snapshot = await inspector.InspectLiveAsync(
             processId,
             new DumpInspectionOptions(TopTypes: topTypes, IncludeRetentionPaths: includeRetentionPaths, RetentionPathLimit: retentionPathLimit),
             cancellationToken).ConfigureAwait(false);
 
+        var handle = handles.Register(processId, HeapSnapshotKind, snapshot, HeapSnapshotHandleTtl);
+        var inspection = snapshot.ToLiveHeapInspection(topTypes, handle.Id);
+
         var topByBytes = inspection.TopTypesByBytes;
         var summary = topByBytes.Count == 0
-            ? $"Attached to pid {processId} for {inspection.SuspendDuration.TotalMilliseconds:N0} ms — runtime {inspection.Runtime.Name} {inspection.Runtime.Version}, heap walk produced no objects."
-            : $"Attached to pid {processId} for {inspection.SuspendDuration.TotalMilliseconds:N0} ms — heap {inspection.Heap.TotalBytes:N0} bytes; top retained type: `{topByBytes[0].TypeFullName}` ({topByBytes[0].TotalBytesPercent}% / {topByBytes[0].InstanceCount:N0} instances).";
+            ? $"Attached to pid {processId} for {inspection.SuspendDuration.TotalMilliseconds:N0} ms — runtime {inspection.Runtime.Name} {inspection.Runtime.Version}, heap walk produced no objects. Snapshot handle: `{handle.Id}`."
+            : $"Attached to pid {processId} for {inspection.SuspendDuration.TotalMilliseconds:N0} ms — heap {inspection.Heap.TotalBytes:N0} bytes; top retained type: `{topByBytes[0].TypeFullName}` ({topByBytes[0].TotalBytesPercent}% / {topByBytes[0].InstanceCount:N0} instances). Snapshot handle: `{handle.Id}`.";
 
-        NextActionHint? hint = null;
-        var topWithHandoff = topByBytes.FirstOrDefault(t => t.Identity is { ModuleVersionId: not null, MetadataToken: not null });
-        if (topWithHandoff is { Identity: { } id })
-        {
-            hint = new NextActionHint(
-                "dotnet-assembly-mcp.get_method",
-                $"Pivot to assembly inspection for the top retained type `{id.TypeFullName}` via the (mvid, token) handoff.",
-                new Dictionary<string, object?>
-                {
-                    ["moduleVersionId"] = id.ModuleVersionId,
-                    ["metadataToken"] = id.MetadataToken,
-                    ["typeFullName"] = id.TypeFullName,
-                    ["assemblyPathHint"] = id.ModulePath,
-                });
-        }
-
+        var hint = BuildHeapDrilldownHint(handle.Id, topByBytes);
         return hint is null
             ? DiagnosticResult.Ok(inspection, summary)
             : DiagnosticResult.Ok(inspection, summary, hint);
+    }
+
+    [McpServerTool(
+        Name = "query_heap_snapshot",
+        Title = "Drill into a heap snapshot",
+        Destructive = false,
+        ReadOnly = true,
+        Idempotent = true,
+        UseStructuredContent = true)]
+    [Description(
+        "Returns a slice of a heap snapshot previously captured by inspect_dump or inspect_live_heap, addressed by its handle. " +
+        "Lets the LLM ask for a richer top-N (snapshot retains ~200 types), retention paths filtered by type substring, or the full " +
+        "snapshot metadata — without paying the walk cost a second time. Views: " +
+        "`top-types` (expand the inline top-N to up to snapshot capacity), " +
+        "`retention-paths` (filter the walked retention chains by target type substring; requires the original inspect call to have set includeRetentionPaths=true). " +
+        "Handles expire ~10 minutes after the capture and are invalidated when the target process exits.")]
+    public static DiagnosticResult<HeapSnapshotQueryResult> QueryHeapSnapshot(
+        IDiagnosticHandleStore handles,
+        [Description("Snapshot handle returned by inspect_dump or inspect_live_heap.")] string handle,
+        [Description("Which slice of the snapshot to return: 'top-types' or 'retention-paths'.")] string view = "top-types",
+        [Description("For view='top-types': maximum number of types to return per ranking (bytes/instances). Capped by the snapshot's retained top-N.")] int topN = 50,
+        [Description("For view='top-types': ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
+        [Description("For view='retention-paths': case-insensitive substring matched against TypeFullName to narrow the returned chains.")] string? typeFullName = null)
+    {
+        if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<HeapSnapshotQueryResult>(nameof(handle), "is required");
+        if (topN < 1) return InvalidArg<HeapSnapshotQueryResult>(nameof(topN), "must be >= 1");
+
+        var snapshot = handles.TryGet<HeapSnapshotArtifact>(handle);
+        if (snapshot is null)
+        {
+            return DiagnosticResult.Fail<HeapSnapshotQueryResult>(
+                $"Handle '{handle}' is unknown or expired.",
+                new DiagnosticError("HandleExpired", "Heap snapshot handles live ~10min and are invalidated when the target process exits.", handle),
+                new NextActionHint("inspect_live_heap", "Re-attach and re-walk to issue a fresh handle.",
+                    new Dictionary<string, object?> { ["processId"] = "<pid>" }));
+        }
+
+        var normalizedView = view.Trim().ToLowerInvariant();
+        return normalizedView switch
+        {
+            "top-types" => QueryTopTypes(snapshot, handle, topN, rankBy),
+            "retention-paths" => QueryRetentionPaths(snapshot, handle, typeFullName, topN),
+            _ => InvalidArg<HeapSnapshotQueryResult>(nameof(view), $"must be 'top-types' or 'retention-paths' (got '{view}')"),
+        };
+    }
+
+    private static DiagnosticResult<HeapSnapshotQueryResult> QueryTopTypes(
+        HeapSnapshotArtifact snapshot, string handle, int topN, string rankBy)
+    {
+        var normalizedRank = rankBy.Trim().ToLowerInvariant();
+        IReadOnlyList<TypeStat> source = normalizedRank switch
+        {
+            "instances" => snapshot.TopTypesByInstances,
+            "bytes" or "" => snapshot.TopTypesByBytes,
+            _ => Array.Empty<TypeStat>(),
+        };
+        if (source.Count == 0 && normalizedRank is not ("instances" or "bytes" or ""))
+        {
+            return InvalidArg<HeapSnapshotQueryResult>(nameof(rankBy), $"must be 'bytes' or 'instances' (got '{rankBy}')");
+        }
+
+        var slice = source.Take(topN).ToArray();
+        var origin = snapshot.Origin.ToString();
+        var summary = slice.Length == 0
+            ? $"Snapshot '{handle}' has no recorded top types — heap walk produced 0 objects."
+            : $"Returning {slice.Length} types ranked by {(normalizedRank == "instances" ? "instance count" : "retained bytes")} from snapshot '{handle}' ({origin}, captured {snapshot.CapturedAt:u}, pid {snapshot.ProcessId}). Top: `{slice[0].TypeFullName}` ({slice[0].TotalBytesPercent}% / {slice[0].InstanceCount:N0} instances).";
+
+        var result = new HeapSnapshotQueryResult(handle, "top-types", origin, snapshot.ProcessId, snapshot.CapturedAt)
+        {
+            TopTypes = slice,
+            RankBy = normalizedRank.Length == 0 ? "bytes" : normalizedRank,
+        };
+        return DiagnosticResult.Ok(result, summary);
+    }
+
+    private static DiagnosticResult<HeapSnapshotQueryResult> QueryRetentionPaths(
+        HeapSnapshotArtifact snapshot, string handle, string? typeFullName, int topN)
+    {
+        var origin = snapshot.Origin.ToString();
+        if (snapshot.RetentionPaths is null || snapshot.RetentionPaths.Count == 0)
+        {
+            return DiagnosticResult.Fail<HeapSnapshotQueryResult>(
+                $"Snapshot '{handle}' was captured without retention paths.",
+                new DiagnosticError("RetentionPathsMissing",
+                    "Re-run inspect_dump or inspect_live_heap with includeRetentionPaths=true to populate the snapshot's retention data.",
+                    handle),
+                new NextActionHint("inspect_live_heap",
+                    "Re-walk with includeRetentionPaths=true to populate retention chains for the top retained types.",
+                    new Dictionary<string, object?> { ["processId"] = snapshot.ProcessId, ["includeRetentionPaths"] = true }));
+        }
+
+        IEnumerable<RetentionPath> filtered = snapshot.RetentionPaths;
+        if (!string.IsNullOrWhiteSpace(typeFullName))
+        {
+            filtered = filtered.Where(p => p.TargetTypeFullName.Contains(typeFullName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var slice = filtered.Take(topN).ToArray();
+        var summary = slice.Length == 0
+            ? $"No retention paths in snapshot '{handle}' match filter '{typeFullName ?? "<none>"}'."
+            : $"Returning {slice.Length} retention path(s) from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}). Top target: `{slice[0].TargetTypeFullName}` (chain depth {slice[0].Chain.Count}).";
+
+        var result = new HeapSnapshotQueryResult(handle, "retention-paths", origin, snapshot.ProcessId, snapshot.CapturedAt)
+        {
+            RetentionPaths = slice,
+            FilterTypeFullName = typeFullName,
+        };
+        return DiagnosticResult.Ok(result, summary);
     }
 
     [McpServerTool(

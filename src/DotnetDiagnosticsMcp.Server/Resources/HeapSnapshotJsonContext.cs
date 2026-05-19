@@ -1,0 +1,19 @@
+using System.Text.Json.Serialization;
+using DotnetDiagnosticsMcp.Core.Dump;
+
+namespace DotnetDiagnosticsMcp.Server.Resources;
+
+internal sealed record HeapSnapshotErrorPayload(string Kind, string Error);
+
+[JsonSourceGenerationOptions(
+    WriteIndented = false,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(HeapSnapshotArtifact))]
+[JsonSerializable(typeof(HeapSnapshotErrorPayload))]
+[JsonSerializable(typeof(TypeStat))]
+[JsonSerializable(typeof(TypeIdentity))]
+[JsonSerializable(typeof(RetentionPath))]
+[JsonSerializable(typeof(RetentionFrame))]
+[JsonSerializable(typeof(DumpRuntimeInfo))]
+[JsonSerializable(typeof(DumpHeapSummary))]
+internal sealed partial class HeapSnapshotJsonContext : JsonSerializerContext;

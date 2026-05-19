@@ -29,7 +29,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         _logger = logger ?? NullLogger<ClrMdDumpInspector>.Instance;
     }
 
-    public Task<DumpInspection> InspectAsync(
+    public Task<HeapSnapshotArtifact> InspectAsync(
         string dumpFilePath,
         DumpInspectionOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -41,17 +41,14 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         }
 
         var opts = options ?? new DumpInspectionOptions();
-        if (opts.TopTypes <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(options), "TopTypes must be positive.");
-        }
+        ValidateOptions(opts);
 
         // ClrMD is fully synchronous; wrap in Task.Run so the caller's async context isn't
         // blocked on a multi-second heap walk for a large dump.
         return Task.Run(() => Inspect(dumpFilePath, opts, cancellationToken), cancellationToken);
     }
 
-    public Task<LiveHeapInspection> InspectLiveAsync(
+    public Task<HeapSnapshotArtifact> InspectLiveAsync(
         int processId,
         DumpInspectionOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -62,17 +59,23 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         }
 
         var opts = options ?? new DumpInspectionOptions();
-        if (opts.TopTypes <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(options), "TopTypes must be positive.");
-        }
+        ValidateOptions(opts);
 
         return Task.Run(() => InspectLive(processId, opts, cancellationToken), cancellationToken);
     }
 
-    private LiveHeapInspection InspectLive(int processId, DumpInspectionOptions opts, CancellationToken ct)
+    private static void ValidateOptions(DumpInspectionOptions opts)
+    {
+        if (opts.TopTypes <= 0) throw new ArgumentOutOfRangeException(nameof(opts), "TopTypes must be positive.");
+        if (opts.SnapshotTopTypes <= 0) throw new ArgumentOutOfRangeException(nameof(opts), "SnapshotTopTypes must be positive.");
+        if (opts.RetentionPathLimit <= 0) throw new ArgumentOutOfRangeException(nameof(opts), "RetentionPathLimit must be positive.");
+        if (opts.SnapshotRetentionPathTargets <= 0) throw new ArgumentOutOfRangeException(nameof(opts), "SnapshotRetentionPathTargets must be positive.");
+    }
+
+    private HeapSnapshotArtifact InspectLive(int processId, DumpInspectionOptions opts, CancellationToken ct)
     {
         var warnings = new List<string>();
+        var capturedAt = DateTimeOffset.UtcNow;
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         // suspend=true pauses the target for the lifetime of the DataTarget. We dispose
@@ -82,85 +85,106 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             ?? throw new InvalidOperationException($"Process {processId} does not expose a CLR runtime (NativeAOT or non-managed).");
         using var runtime = clrInfo.CreateRuntime();
 
-        var runtimeInfo = new DumpRuntimeInfo(
+        var runtimeInfo = BuildRuntimeInfo(target, clrInfo, runtime);
+
+        if (!runtime.Heap.CanWalkHeap)
+        {
+            warnings.Add("Heap walk is unavailable for this runtime state (CanWalkHeap=false). Retry once the GC is in a quiescent state.");
+            sw.Stop();
+            return new HeapSnapshotArtifact(
+                Origin: HeapSnapshotOrigin.Live,
+                ProcessId: processId,
+                CapturedAt: capturedAt,
+                WalkDuration: sw.Elapsed,
+                Runtime: runtimeInfo,
+                Heap: EmptyHeap(),
+                TopTypesByBytes: Array.Empty<TypeStat>(),
+                TopTypesByInstances: Array.Empty<TypeStat>())
+            {
+                Warnings = warnings,
+            };
+        }
+
+        var (byBytes, byInstances, heapSummary, retention) = SummarizeRuntime(runtime, opts, warnings, ct);
+        sw.Stop();
+
+        return new HeapSnapshotArtifact(
+            Origin: HeapSnapshotOrigin.Live,
+            ProcessId: processId,
+            CapturedAt: capturedAt,
+            WalkDuration: sw.Elapsed,
+            Runtime: runtimeInfo,
+            Heap: heapSummary,
+            TopTypesByBytes: byBytes,
+            TopTypesByInstances: byInstances)
+        {
+            RetentionPaths = retention,
+            Warnings = warnings.Count > 0 ? warnings : null,
+        };
+    }
+
+    private static DumpRuntimeInfo BuildRuntimeInfo(DataTarget target, ClrInfo clrInfo, ClrRuntime runtime) =>
+        new(
             Name: clrInfo.Flavor.ToString(),
             Version: clrInfo.Version.ToString(),
             Architecture: target.DataReader.Architecture.ToString(),
             IsServerGC: runtime.Heap.IsServer,
             HeapCount: runtime.Heap.SubHeaps.Length);
 
-        if (!runtime.Heap.CanWalkHeap)
-        {
-            warnings.Add("Heap walk is unavailable for this runtime state (CanWalkHeap=false). Retry once the GC is in a quiescent state.");
-            sw.Stop();
-            return new LiveHeapInspection(
-                ProcessId: processId,
-                SuspendDuration: sw.Elapsed,
-                Runtime: runtimeInfo,
-                Heap: EmptyHeap(),
-                TopTypesByBytes: Array.Empty<TypeStat>(),
-                TopTypesByInstances: Array.Empty<TypeStat>(),
-                RetentionPaths: null,
-                Warnings: warnings);
-        }
-
-        var (byBytes, byInstances, heapSummary, retention) = SummarizeRuntime(runtime, opts, warnings, ct);
-        sw.Stop();
-
-        return new LiveHeapInspection(
-            ProcessId: processId,
-            SuspendDuration: sw.Elapsed,
-            Runtime: runtimeInfo,
-            Heap: heapSummary,
-            TopTypesByBytes: byBytes,
-            TopTypesByInstances: byInstances,
-            RetentionPaths: retention,
-            Warnings: warnings.Count > 0 ? warnings : null);
-    }
-
-    private DumpInspection Inspect(string dumpFilePath, DumpInspectionOptions opts, CancellationToken ct)
+    private HeapSnapshotArtifact Inspect(string dumpFilePath, DumpInspectionOptions opts, CancellationToken ct)
     {
         var fileInfo = new FileInfo(dumpFilePath);
         var warnings = new List<string>();
+        var capturedAt = DateTimeOffset.UtcNow;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
 
         using var target = DataTarget.LoadDump(dumpFilePath);
         var clrInfo = target.ClrVersions.FirstOrDefault()
             ?? throw new InvalidOperationException("Dump does not contain a CLR runtime.");
         using var runtime = clrInfo.CreateRuntime();
 
-        var runtimeInfo = new DumpRuntimeInfo(
-            Name: clrInfo.Flavor.ToString(),
-            Version: clrInfo.Version.ToString(),
-            Architecture: target.DataReader.Architecture.ToString(),
-            IsServerGC: runtime.Heap.IsServer,
-            HeapCount: runtime.Heap.SubHeaps.Length);
+        var runtimeInfo = BuildRuntimeInfo(target, clrInfo, runtime);
+        var processIdFromDump = unchecked((int)target.DataReader.ProcessId);
 
         if (!runtime.Heap.CanWalkHeap)
         {
             warnings.Add("Heap walk is unavailable for this dump (CanWalkHeap=false). " +
                 "Capture a WithHeap or Full dump for full inspection.");
-            return new DumpInspection(
-                FilePath: dumpFilePath,
-                FileSizeBytes: fileInfo.Length,
+            sw.Stop();
+            return new HeapSnapshotArtifact(
+                Origin: HeapSnapshotOrigin.Dump,
+                ProcessId: processIdFromDump,
+                CapturedAt: capturedAt,
+                WalkDuration: sw.Elapsed,
                 Runtime: runtimeInfo,
                 Heap: EmptyHeap(),
                 TopTypesByBytes: Array.Empty<TypeStat>(),
-                TopTypesByInstances: Array.Empty<TypeStat>(),
-                RetentionPaths: null,
-                Warnings: warnings);
+                TopTypesByInstances: Array.Empty<TypeStat>())
+            {
+                DumpFilePath = dumpFilePath,
+                DumpFileSizeBytes = fileInfo.Length,
+                Warnings = warnings,
+            };
         }
 
         var (byBytes, byInstances, heapSummary, retention) = SummarizeRuntime(runtime, opts, warnings, ct);
+        sw.Stop();
 
-        return new DumpInspection(
-            FilePath: dumpFilePath,
-            FileSizeBytes: fileInfo.Length,
+        return new HeapSnapshotArtifact(
+            Origin: HeapSnapshotOrigin.Dump,
+            ProcessId: processIdFromDump,
+            CapturedAt: capturedAt,
+            WalkDuration: sw.Elapsed,
             Runtime: runtimeInfo,
             Heap: heapSummary,
             TopTypesByBytes: byBytes,
-            TopTypesByInstances: byInstances,
-            RetentionPaths: retention,
-            Warnings: warnings.Count > 0 ? warnings : null);
+            TopTypesByInstances: byInstances)
+        {
+            DumpFilePath = dumpFilePath,
+            DumpFileSizeBytes = fileInfo.Length,
+            RetentionPaths = retention,
+            Warnings = warnings.Count > 0 ? warnings : null,
+        };
     }
 
     private (IReadOnlyList<TypeStat> ByBytes, IReadOnlyList<TypeStat> ByInstances, DumpHeapSummary Heap, IReadOnlyList<RetentionPath>? Retention) SummarizeRuntime(
@@ -169,22 +193,26 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         var (typeStats, totalBytes) = WalkHeap(runtime, ct);
         var heapSummary = SummarizeHeap(runtime);
 
+        // The snapshot retains a richer top-N so follow-up drilldown queries (e.g. ask for top-100
+        // when the tool returned top-20 inline) don't pay the walk cost a second time.
+        var snapshotTopN = Math.Max(opts.TopTypes, opts.SnapshotTopTypes);
+
         var byBytes = typeStats.Values
             .OrderByDescending(s => s.Bytes)
-            .Take(opts.TopTypes)
+            .Take(snapshotTopN)
             .Select(s => ToTypeStat(s, totalBytes))
             .ToArray();
 
         var byInstances = typeStats.Values
             .OrderByDescending(s => s.Count)
-            .Take(opts.TopTypes)
+            .Take(snapshotTopN)
             .Select(s => ToTypeStat(s, totalBytes))
             .ToArray();
 
         IReadOnlyList<RetentionPath>? retention = null;
         if (opts.IncludeRetentionPaths)
         {
-            retention = ResolveRetentionPaths(runtime, byBytes, opts.RetentionPathLimit, warnings, ct);
+            retention = ResolveRetentionPaths(runtime, byBytes, opts.RetentionPathLimit, opts.SnapshotRetentionPathTargets, warnings, ct);
         }
 
         return (byBytes, byInstances, heapSummary, retention);
@@ -310,6 +338,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         ClrRuntime runtime,
         IReadOnlyList<TypeStat> topByBytes,
         int depthLimit,
+        int targetCount,
         List<string> warnings,
         CancellationToken ct)
     {
@@ -317,7 +346,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         // For each target type we then pick the largest instance and walk back to a root.
         // This is approximate (a real !gcroot does a full search) but cheap and "good enough"
         // to point the LLM at where to dig deeper.
-        var targets = new HashSet<string>(topByBytes.Take(5).Select(t => t.TypeFullName), StringComparer.Ordinal);
+        var targets = new HashSet<string>(topByBytes.Take(targetCount).Select(t => t.TypeFullName), StringComparer.Ordinal);
         if (targets.Count == 0) return Array.Empty<RetentionPath>();
 
         var sampleInstances = new Dictionary<string, ClrObject>(StringComparer.Ordinal);

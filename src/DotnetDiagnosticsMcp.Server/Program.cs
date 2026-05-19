@@ -101,7 +101,8 @@ builder.Services
     .WithTools<DiagnosticTools>()
     .WithPrompts<DotnetDiagnosticsMcp.Server.Prompts.DiagnosticPrompts>()
     .WithResources<DotnetDiagnosticsMcp.Server.Resources.InvestigationGuideResources>()
-    .WithResources<DotnetDiagnosticsMcp.Server.Resources.TraceSessionResources>();
+    .WithResources<DotnetDiagnosticsMcp.Server.Resources.TraceSessionResources>()
+    .WithResources<DotnetDiagnosticsMcp.Server.Resources.HeapSnapshotResources>();
 
 var app = builder.Build();
 
