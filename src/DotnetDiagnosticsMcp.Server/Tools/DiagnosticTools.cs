@@ -252,7 +252,23 @@ public sealed class DiagnosticTools
                     new Dictionary<string, object?> { ["handle"] = jobHandle.Id }));
         }
 
-        var result = await sampler.SampleAsync(processId, TimeSpan.FromSeconds(durationSeconds), topN, srcOpts, cancellationToken).ConfigureAwait(false);
+        CpuSampleResult result;
+        try
+        {
+            result = await sampler.SampleAsync(processId, TimeSpan.FromSeconds(durationSeconds), topN, srcOpts, cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("elevation", StringComparison.OrdinalIgnoreCase) ||
+                                                    ex.Message.Contains("privilege", StringComparison.OrdinalIgnoreCase) ||
+                                                    ex.Message.Contains("perf", StringComparison.OrdinalIgnoreCase) ||
+                                                    ex.Message.Contains("NativeAOT", StringComparison.OrdinalIgnoreCase))
+        {
+            return DiagnosticResult.Fail<CpuSample>(
+                ex.Message,
+                new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
+                new NextActionHint("get_diagnostic_capabilities", "Check capability matrix to confirm what's available for this process.",
+                    new Dictionary<string, object?> { ["processId"] = processId }));
+        }
+
         var sample = result.Summary;
         var top = sample.TopHotspots.Count > 0 ? sample.TopHotspots[0] : null;
         var handle = handles.Register(processId, "cpu-sample", result.Artifact, CpuSampleHandleTtl);

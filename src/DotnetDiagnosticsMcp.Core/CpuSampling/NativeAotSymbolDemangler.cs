@@ -290,6 +290,8 @@ public static class NativeAotSymbolDemangler
         Native,
         /// <summary>Synthetic / stripped — perf returned <c>[unknown]</c> or an address.</summary>
         Stripped,
+        /// <summary>Resolved via Windows PDB / DIA (ETW kernel profiling path).</summary>
+        PdbResolved,
         /// <summary>Trace mixed multiple distinct sources (e.g. some frames stripped, others
         /// demangled). The LLM should not assume uniform quality across the trace.</summary>
         Mixed,
