@@ -73,4 +73,22 @@ public sealed class PerfBinaryResolverTests
     {
         PerfBinaryResolver.ProbePerfVersion("/bin/true").Should().BeFalse();
     }
+
+    [Fact]
+    public void CompareKernelVersionDescending_OrdersByNumericComponentsNotOrdinalString()
+    {
+        // Ordinal: "linux-tools-6.8..." sorts BEFORE "linux-tools-6.11..." because '8' > '1'.
+        // We need the opposite: 6.11 is the newer kernel and must come first.
+        var arr = new[]
+        {
+            "linux-tools-6.8.0-60-generic",
+            "linux-tools-6.11.0-1-generic",
+            "linux-tools-5.15.0-100-generic",
+        };
+        Array.Sort(arr, PerfBinaryResolver.CompareKernelVersionDescending);
+        arr.Should().Equal(
+            "linux-tools-6.11.0-1-generic",
+            "linux-tools-6.8.0-60-generic",
+            "linux-tools-5.15.0-100-generic");
+    }
 }

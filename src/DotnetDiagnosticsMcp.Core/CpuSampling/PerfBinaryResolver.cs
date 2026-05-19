@@ -76,13 +76,62 @@ internal static class PerfBinaryResolver
             yield break;
         }
 
-        Array.Sort(versioned, static (a, b) => string.CompareOrdinal(
-            Path.GetFileName(b), Path.GetFileName(a)));
+        Array.Sort(versioned, static (a, b) => CompareKernelVersionDescending(
+            Path.GetFileName(a), Path.GetFileName(b)));
 
         foreach (var dir in versioned)
         {
             yield return Path.Combine(dir, "perf");
         }
+    }
+
+    /// <summary>
+    /// Compares two <c>linux-tools-X.Y.Z-N-FLAVOUR</c> directory names so that the
+    /// newer kernel version sorts first. Ordinal string comparison would put
+    /// <c>linux-tools-6.8.0-60</c> before <c>linux-tools-6.11.0-1</c>, which is
+    /// the opposite of what we want.
+    /// </summary>
+    internal static int CompareKernelVersionDescending(string left, string right)
+    {
+        // a is sorted before b iff this returns negative. We want descending, so we
+        // compare b's components against a's.
+        var leftParts = ParseKernelVersion(left);
+        var rightParts = ParseKernelVersion(right);
+        var max = Math.Max(leftParts.Length, rightParts.Length);
+        for (var i = 0; i < max; i++)
+        {
+            var l = i < leftParts.Length ? leftParts[i] : -1;
+            var r = i < rightParts.Length ? rightParts[i] : -1;
+            if (l != r) return r.CompareTo(l);
+        }
+        return string.CompareOrdinal(right, left);
+    }
+
+    private static int[] ParseKernelVersion(string dirName)
+    {
+        var rest = dirName.StartsWith(LinuxToolsPrefix, StringComparison.Ordinal)
+            ? dirName.AsSpan(LinuxToolsPrefix.Length)
+            : dirName.AsSpan();
+        var numbers = new List<int>(capacity: 4);
+        int i = 0;
+        while (i < rest.Length)
+        {
+            if (char.IsDigit(rest[i]))
+            {
+                int start = i;
+                while (i < rest.Length && char.IsDigit(rest[i])) i++;
+                if (int.TryParse(rest[start..i], System.Globalization.NumberStyles.Integer,
+                        System.Globalization.CultureInfo.InvariantCulture, out var n))
+                {
+                    numbers.Add(n);
+                }
+            }
+            else
+            {
+                i++;
+            }
+        }
+        return numbers.ToArray();
     }
 
     /// <summary>
