@@ -4,6 +4,7 @@ using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
+using DotnetDiagnosticsMcp.Core.Threads;
 using FluentAssertions;
 
 namespace DotnetDiagnosticsMcp.Core.Tests;
@@ -237,6 +238,27 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         {
             try { Directory.Delete(dumpDir, recursive: true); } catch { /* best-effort */ }
         }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ThreadSnapshot_InspectLive_EnumeratesManagedThreads()
+    {
+        EnsureSampleRunning();
+
+        var inspector = new ClrMdThreadSnapshotInspector();
+        var snapshot = await inspector.InspectLiveAsync(
+            Pid,
+            new ThreadSnapshotOptions(MaxFramesPerThread: 32),
+            CancellationToken.None);
+
+        snapshot.Origin.Should().Be(ThreadSnapshotOrigin.Live);
+        snapshot.ProcessId.Should().Be(Pid);
+        snapshot.RuntimeName.Should().NotBeNullOrEmpty();
+        snapshot.Threads.Should().NotBeEmpty("a running ASP.NET process has at least the main + GC + finalizer threads");
+        snapshot.Threads.Should().Contain(t => t.IsFinalizer, "every CoreCLR process has a finalizer thread");
+        snapshot.Threads.Where(t => t.Frames.Count > 0).Should().NotBeEmpty(
+            "at least one thread should have a captured managed stack");
+        snapshot.Locks.Should().NotBeNull();
     }
 
     private void EnsureSampleRunning()

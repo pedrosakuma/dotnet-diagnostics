@@ -29,6 +29,7 @@ builder.Services.AddSingleton<IGcCollector, EventPipeGcCollector>();
 builder.Services.AddSingleton<IEventSourceCollector, EventPipeEventSourceCollector>();
 builder.Services.AddSingleton<IProcessDumper, DiagnosticsClientDumper>();
 builder.Services.AddSingleton<IDumpInspector, ClrMdDumpInspector>();
+builder.Services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.IThreadSnapshotInspector, DotnetDiagnosticsMcp.Core.Threads.ClrMdThreadSnapshotInspector>();
 builder.Services.AddSingleton<DotnetDiagnosticsMcp.Core.Investigation.IInvestigationPlanner>(_ =>
     new DotnetDiagnosticsMcp.Core.Investigation.InvestigationPlanner());
 builder.Services.AddSingleton<DotnetDiagnosticsMcp.Core.Memory.IProvenanceCollector, DotnetDiagnosticsMcp.Core.Memory.EnvironmentProvenanceCollector>();
@@ -102,7 +103,8 @@ builder.Services
     .WithPrompts<DotnetDiagnosticsMcp.Server.Prompts.DiagnosticPrompts>()
     .WithResources<DotnetDiagnosticsMcp.Server.Resources.InvestigationGuideResources>()
     .WithResources<DotnetDiagnosticsMcp.Server.Resources.TraceSessionResources>()
-    .WithResources<DotnetDiagnosticsMcp.Server.Resources.HeapSnapshotResources>();
+    .WithResources<DotnetDiagnosticsMcp.Server.Resources.HeapSnapshotResources>()
+    .WithResources<DotnetDiagnosticsMcp.Server.Resources.ThreadSnapshotResources>();
 
 var app = builder.Build();
 

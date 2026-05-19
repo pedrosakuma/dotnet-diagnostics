@@ -11,6 +11,7 @@ using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Investigation;
 using DotnetDiagnosticsMcp.Core.Memory;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
+using DotnetDiagnosticsMcp.Core.Threads;
 using Microsoft.Diagnostics.NETCore.Client;
 using ModelContextProtocol.Server;
 
@@ -824,6 +825,192 @@ public sealed class DiagnosticTools
         };
         return DiagnosticResult.Ok(result, summary);
     }
+
+    private static readonly TimeSpan ThreadSnapshotHandleTtl = TimeSpan.FromMinutes(10);
+    internal const string ThreadSnapshotKind = "thread-snapshot";
+
+    [McpServerTool(
+        Name = "collect_thread_snapshot",
+        Title = "Capture managed threads + locks from a live process or dump",
+        Destructive = false,
+        ReadOnly = true,
+        Idempotent = false,
+        UseStructuredContent = true)]
+    [Description(
+        "Captures a single-point-in-time snapshot of all managed threads (state, stack frames with " +
+        "MethodIdentity handoff, inferred wait reason) plus the SyncBlock-based lock graph (object " +
+        "address, owning thread, waiter count). Exactly ONE of processId or dumpFilePath must be " +
+        "supplied: processId attaches via ClrMD with suspend (typically sub-second on ≤100 threads); " +
+        "dumpFilePath analyses an already-captured WithHeap/Full dump offline. Returns inline " +
+        "threads-summary + lock-graph headlines plus a handle (~10min TTL) the LLM can drill into " +
+        "via query_thread_snapshot. Dump-origin handles are NOT evicted when the producer PID exits.")]
+    public static async Task<DiagnosticResult<ThreadSnapshotQueryResult>> CollectThreadSnapshot(
+        IThreadSnapshotInspector inspector,
+        IDiagnosticHandleStore handles,
+        [Description("Operating system process id of the target .NET process. Mutually exclusive with dumpFilePath.")] int? processId = null,
+        [Description("Absolute path to a previously-captured .dmp file. Mutually exclusive with processId.")] string? dumpFilePath = null,
+        [Description("Maximum stack frames captured per thread. Defaults to 64.")] int maxFramesPerThread = 64,
+        [Description("Include runtime frames (PInvoke trampolines, etc.) without an associated managed method. Off by default.")] bool includeRuntimeFrames = false,
+        [Description("Include pure native frames where ClrMD cannot resolve a method. Off by default.")] bool includeNativeFrames = false,
+        CancellationToken cancellationToken = default)
+    {
+        var hasPid = processId.HasValue && processId.Value > 0;
+        var hasDump = !string.IsNullOrWhiteSpace(dumpFilePath);
+        if (hasPid == hasDump)
+        {
+            return InvalidArg<ThreadSnapshotQueryResult>(
+                hasPid ? nameof(dumpFilePath) : nameof(processId),
+                "exactly one of processId or dumpFilePath must be supplied");
+        }
+        if (maxFramesPerThread < 1) return InvalidArg<ThreadSnapshotQueryResult>(nameof(maxFramesPerThread), "must be >= 1");
+
+        var opts = new ThreadSnapshotOptions(maxFramesPerThread, includeRuntimeFrames, includeNativeFrames);
+        ThreadSnapshotArtifact snapshot;
+        bool evictOnExit;
+        if (hasPid)
+        {
+            snapshot = await inspector.InspectLiveAsync(processId!.Value, opts, cancellationToken).ConfigureAwait(false);
+            evictOnExit = true;
+        }
+        else
+        {
+            snapshot = await inspector.InspectDumpAsync(dumpFilePath!, opts, cancellationToken).ConfigureAwait(false);
+            evictOnExit = false;
+        }
+
+        var handle = handles.Register(snapshot.ProcessId, ThreadSnapshotKind, snapshot, ThreadSnapshotHandleTtl, evictWhenProcessExits: evictOnExit);
+        var origin = snapshot.Origin.ToString().ToLowerInvariant();
+        var blocked = snapshot.Threads.Count(t => t.IsLikelyBlocked);
+        var contended = snapshot.Locks.Count(l => l.IsContended);
+        var summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Use query_thread_snapshot(view=top-blocked|threads-summary|stack|lock-graph).";
+        var summaryView = new ThreadSnapshotQueryResult(handle.Id, "threads-summary", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
+        {
+            Threads = snapshot.Threads.Take(25).ToArray(),
+            Locks = snapshot.Locks.Take(25).ToArray(),
+        };
+
+        var hint = blocked > 0 || contended > 0
+            ? new NextActionHint("query_thread_snapshot",
+                "Drill into the top blocked threads or the contended lock graph.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "top-blocked" })
+            : null;
+
+        return hint is null
+            ? DiagnosticResult.Ok(summaryView, summary)
+            : DiagnosticResult.Ok(summaryView, summary, hint);
+    }
+
+    [McpServerTool(
+        Name = "query_thread_snapshot",
+        Title = "Drill into a thread + lock snapshot",
+        Destructive = false,
+        ReadOnly = true,
+        Idempotent = true,
+        UseStructuredContent = true)]
+    [Description(
+        "Returns a slice of a thread snapshot previously captured by collect_thread_snapshot, addressed by its handle. Views: " +
+        "`threads-summary` (every managed thread with state + top frame), " +
+        "`stack` (full captured frames of one thread — requires `threadId`, the managed thread id), " +
+        "`lock-graph` (every SyncBlock that is held or contended, sorted by waiter count then recursion), " +
+        "`top-blocked` (threads ranked by IsLikelyBlocked then LockCount — fastest path to spot contention). " +
+        "Handles expire ~10 minutes after capture; live-origin handles are invalidated when the target PID exits.")]
+    public static DiagnosticResult<ThreadSnapshotQueryResult> QueryThreadSnapshot(
+        IDiagnosticHandleStore handles,
+        [Description("Snapshot handle returned by collect_thread_snapshot.")] string handle,
+        [Description("Which slice to return: 'threads-summary', 'stack', 'lock-graph' or 'top-blocked'.")] string view = "top-blocked",
+        [Description("For view='stack': managed thread id (ManagedThreadId) to return frames for. Ignored by other views.")] int? threadId = null,
+        [Description("Maximum entries returned by views that produce a ranked list ('threads-summary', 'top-blocked', 'lock-graph'). Defaults to 50.")] int topN = 50)
+    {
+        if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<ThreadSnapshotQueryResult>(nameof(handle), "is required");
+        if (topN < 1) return InvalidArg<ThreadSnapshotQueryResult>(nameof(topN), "must be >= 1");
+
+        var snapshot = handles.TryGet<ThreadSnapshotArtifact>(handle);
+        if (snapshot is null)
+        {
+            return DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
+                $"Handle '{handle}' is unknown or expired.",
+                new DiagnosticError("HandleExpired", "Thread snapshot handles live ~10min; live-origin handles are also invalidated when the target PID exits.", handle),
+                new NextActionHint("collect_thread_snapshot", "Re-capture to issue a fresh handle.",
+                    new Dictionary<string, object?> { ["processId"] = "<pid>" }));
+        }
+
+        var origin = snapshot.Origin.ToString().ToLowerInvariant();
+        var normalized = view.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "threads-summary" => QueryThreadsSummary(snapshot, handle, origin, topN),
+            "stack" => QueryThreadStack(snapshot, handle, origin, threadId),
+            "lock-graph" => QueryLockGraph(snapshot, handle, origin, topN),
+            "top-blocked" => QueryTopBlocked(snapshot, handle, origin, topN),
+            _ => InvalidArg<ThreadSnapshotQueryResult>(nameof(view), $"must be 'threads-summary', 'stack', 'lock-graph' or 'top-blocked' (got '{view}')"),
+        };
+    }
+
+    private static DiagnosticResult<ThreadSnapshotQueryResult> QueryThreadsSummary(
+        ThreadSnapshotArtifact snapshot, string handle, string origin, int topN)
+    {
+        var ordered = snapshot.Threads.Take(topN).ToArray();
+        var summary = $"Returning {ordered.Length}/{snapshot.Threads.Count} thread(s) from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}).";
+        return DiagnosticResult.Ok(
+            new ThreadSnapshotQueryResult(handle, "threads-summary", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration) { Threads = ordered },
+            summary);
+    }
+
+    private static DiagnosticResult<ThreadSnapshotQueryResult> QueryThreadStack(
+        ThreadSnapshotArtifact snapshot, string handle, string origin, int? threadId)
+    {
+        if (threadId is null)
+        {
+            return InvalidArg<ThreadSnapshotQueryResult>(nameof(threadId), "is required for view='stack'");
+        }
+        var thread = snapshot.Threads.FirstOrDefault(t => t.ManagedThreadId == threadId.Value);
+        if (thread is null)
+        {
+            return DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
+                $"Managed thread {threadId.Value} not present in snapshot '{handle}'.",
+                new DiagnosticError("ThreadNotFound", "The captured snapshot does not contain this managed thread id.", threadId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                new NextActionHint("query_thread_snapshot",
+                    "List the captured threads first.",
+                    new Dictionary<string, object?> { ["handle"] = handle, ["view"] = "threads-summary" }));
+        }
+        var summary = $"Stack of managed thread {thread.ManagedThreadId} (OS {thread.OSThreadId}, state {thread.State}) from snapshot '{handle}' — {thread.Frames.Count} frame(s).";
+        return DiagnosticResult.Ok(
+            new ThreadSnapshotQueryResult(handle, "stack", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
+            {
+                Thread = thread,
+                ThreadId = thread.ManagedThreadId,
+            },
+            summary);
+    }
+
+    private static DiagnosticResult<ThreadSnapshotQueryResult> QueryLockGraph(
+        ThreadSnapshotArtifact snapshot, string handle, string origin, int topN)
+    {
+        var ordered = snapshot.Locks.Take(topN).ToArray();
+        var summary = ordered.Length == 0
+            ? $"Snapshot '{handle}' contains no held or contended SyncBlocks."
+            : $"Returning {ordered.Length}/{snapshot.Locks.Count} SyncBlock(s) from snapshot '{handle}'. Most contended: object 0x{ordered[0].ObjectAddress:x} ({ordered[0].ObjectTypeFullName ?? "<unknown>"}) — {ordered[0].WaitingThreadCount} waiter(s).";
+        return DiagnosticResult.Ok(
+            new ThreadSnapshotQueryResult(handle, "lock-graph", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration) { Locks = ordered },
+            summary);
+    }
+
+    private static DiagnosticResult<ThreadSnapshotQueryResult> QueryTopBlocked(
+        ThreadSnapshotArtifact snapshot, string handle, string origin, int topN)
+    {
+        var ordered = snapshot.Threads
+            .OrderByDescending(t => t.IsLikelyBlocked)
+            .ThenByDescending(t => t.LockCount)
+            .ThenByDescending(t => t.Frames.Count)
+            .Take(topN)
+            .ToArray();
+        var blocked = ordered.Count(t => t.IsLikelyBlocked);
+        var summary = $"Returning {ordered.Length} thread(s) from snapshot '{handle}' ranked by likely-blocked then LockCount — {blocked} flagged as likely blocked.";
+        return DiagnosticResult.Ok(
+            new ThreadSnapshotQueryResult(handle, "top-blocked", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration) { Threads = ordered },
+            summary);
+    }
+
 
     [McpServerTool(
         Name = "start_investigation",
