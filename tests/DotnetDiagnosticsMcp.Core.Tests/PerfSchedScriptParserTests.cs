@@ -119,4 +119,26 @@ public sealed class PerfSchedScriptParserTests
         spans.Should().ContainSingle();
         spans[0].PrevState.Should().Be("S");
     }
+
+    [Fact]
+    public void FlushPending_EmitsCensoredSpanForUnclosedTargetOut()
+    {
+        // Same scenario as the orphan test but with flushPending: thread blocked through
+        // the whole window should appear as a lower-bound (censored) span instead of
+        // disappearing from the report.
+        const string script = """
+                    target  1000 [001]   1.000000: sched:sched_switch: prev_comm=target prev_pid=1000 prev_prio=120 prev_state=S ==> next_comm=swapper/1 next_pid=0 next_prio=120
+                            ffffffff81234567 schedule+0x0 ([kernel.kallsyms])
+
+                    other   2000 [002]   1.500000: sched:sched_switch: prev_comm=other prev_pid=2000 prev_prio=120 prev_state=R ==> next_comm=swapper/2 next_pid=0 next_prio=120
+
+            """;
+
+        var (spans, _) = PerfSchedScriptParser.Parse(script, new HashSet<int> { 1000 }, flushPending: true);
+
+        spans.Should().ContainSingle("the orphan OUT should be flushed as a censored span at maxTs=1.5s");
+        spans[0].IsCensored.Should().BeTrue();
+        spans[0].Tid.Should().Be(1000);
+        spans[0].DurationMicros.Should().Be(500_000, "1.500000 − 1.000000 = 0.5s lower bound");
+    }
 }

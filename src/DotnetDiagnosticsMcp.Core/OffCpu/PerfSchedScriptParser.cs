@@ -29,7 +29,16 @@ internal static class PerfSchedScriptParser
     /// and returns the closed off-CPU spans plus the total switch count that was attributed
     /// to the target (used for capture-density sanity checks).
     /// </summary>
-    public static (IReadOnlyList<OffCpuSpan> Spans, long SchedSwitches) Parse(string output, HashSet<int> targetTids)
+    /// <param name="output">Raw <c>perf script</c> stdout.</param>
+    /// <param name="targetTids">Kernel TIDs belonging to the target process; OUT/IN events outside this set are ignored.</param>
+    /// <param name="flushPending">
+    /// When <c>true</c>, any pending OUT for a target TID that never paired with an IN is emitted
+    /// as a <see cref="OffCpuSpan.IsCensored"/> span with duration = (max observed timestamp − OUT timestamp).
+    /// This captures long blockers (locks held nearly the whole window, I/O that outlasts the capture)
+    /// which would otherwise vanish from the report. Default <c>false</c> preserves the strict
+    /// closed-pair semantics for unit tests.
+    /// </param>
+    public static (IReadOnlyList<OffCpuSpan> Spans, long SchedSwitches) Parse(string output, HashSet<int> targetTids, bool flushPending = false)
     {
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(targetTids);
@@ -39,6 +48,7 @@ internal static class PerfSchedScriptParser
         var pending = new Dictionary<int, (double Ts, string State, List<OffCpuFrame> Stack, string Comm)>();
         var spans = new List<OffCpuSpan>();
         long switches = 0;
+        double maxTs = double.MinValue;
 
         var i = 0;
         while (i < lines.Length)
@@ -73,6 +83,7 @@ internal static class PerfSchedScriptParser
 
             var prevIsTarget = targetTids.Contains(ev.PrevTid);
             var nextIsTarget = targetTids.Contains(ev.NextTid);
+            if (ev.TimestampSeconds > maxTs) maxTs = ev.TimestampSeconds;
 
             // IN side: close any pending OUT for the next task.
             if (nextIsTarget && pending.Remove(ev.NextTid, out var pendingOut))
@@ -91,6 +102,26 @@ internal static class PerfSchedScriptParser
             {
                 switches++;
                 pending[ev.PrevTid] = (ev.TimestampSeconds, NormalizeState(ev.PrevState), ev.Stack, ev.PrevComm);
+            }
+        }
+
+        // Flush pending target-OUTs as censored spans (lower-bound duration up to capture end).
+        // Without this, threads blocked for nearly the entire window disappear from the report.
+        if (flushPending && maxTs > double.MinValue)
+        {
+            foreach (var kv in pending)
+            {
+                if (!targetTids.Contains(kv.Key)) continue;
+                var p = kv.Value;
+                var durMicros = (long)Math.Max(0, Math.Round((maxTs - p.Ts) * 1_000_000.0));
+                if (durMicros <= 0) continue;
+                spans.Add(new OffCpuSpan(
+                    Tid: kv.Key,
+                    Comm: p.Comm,
+                    DurationMicros: durMicros,
+                    PrevState: p.State,
+                    BlockingStack: p.Stack,
+                    IsCensored: true));
             }
         }
 
@@ -238,4 +269,4 @@ internal static class PerfSchedScriptParser
 }
 
 /// <summary>One paired off-CPU span: thread went OUT at <c>ts</c> with <c>BlockingStack</c>, came back IN <c>DurationMicros</c> µs later.</summary>
-internal sealed record OffCpuSpan(int Tid, string Comm, long DurationMicros, string PrevState, IReadOnlyList<OffCpuFrame> BlockingStack);
+internal sealed record OffCpuSpan(int Tid, string Comm, long DurationMicros, string PrevState, IReadOnlyList<OffCpuFrame> BlockingStack, bool IsCensored = false);

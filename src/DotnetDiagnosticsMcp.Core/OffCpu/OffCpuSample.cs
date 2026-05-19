@@ -13,6 +13,9 @@ namespace DotnetDiagnosticsMcp.Core.OffCpu;
 /// <param name="TopBlockingStacks">Up to topN stacks ranked by inclusive off-CPU microseconds.</param>
 /// <param name="SchedSwitches">Total <c>sched_switch</c> events attributed to the target (sanity check the LLM can use to confirm capture density).</param>
 /// <param name="SymbolSource">Resolution quality across all frames (mirrors the on-CPU sampler's flag so the LLM can reason about kernel-vs-user symbol coverage).</param>
+/// <param name="CensoredSpans">Number of off-CPU spans whose IN event was never seen before capture ended; <see cref="TotalOffCpuMicros"/> includes their lower-bound contribution.</param>
+/// <param name="CensoredOffCpuMicros">Subset of <see cref="TotalOffCpuMicros"/> attributable to censored spans (truncated at capture end).</param>
+/// <param name="Notes">Best-effort warnings (size caps hit, late-attribution, partial TID set, etc.) so the LLM can disclose data-quality caveats.</param>
 public sealed record OffCpuSnapshot(
     int ProcessId,
     DateTimeOffset StartedAt,
@@ -21,7 +24,10 @@ public sealed record OffCpuSnapshot(
     int DistinctThreads,
     IReadOnlyList<OffCpuStackHotspot> TopBlockingStacks,
     long SchedSwitches,
-    string SymbolSource);
+    string SymbolSource,
+    long CensoredSpans = 0,
+    long CensoredOffCpuMicros = 0,
+    IReadOnlyList<string>? Notes = null);
 
 /// <summary>A blocking stack ranked by the total micros spent off-CPU below it.</summary>
 public sealed record OffCpuStackHotspot(
@@ -48,7 +54,10 @@ public sealed record OffCpuSnapshotArtifact(
     long SchedSwitches,
     IReadOnlyList<OffCpuStackHotspot> Stacks,
     IReadOnlyList<OffCpuThreadView> Threads,
-    string SymbolSource);
+    string SymbolSource,
+    long CensoredSpans = 0,
+    long CensoredOffCpuMicros = 0,
+    IReadOnlyList<string>? Notes = null);
 
 /// <summary>Per-thread off-CPU rollup ranked by total micros blocked.</summary>
 public sealed record OffCpuThreadView(

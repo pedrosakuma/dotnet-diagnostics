@@ -88,23 +88,55 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
             throw new InvalidOperationException(
                 $"Could not enumerate any TID under /proc/{processId}/task. The process may have exited.");
         }
+        var initialTidCount = targetTids.Count;
 
         var perfDataPath = Path.Combine(Path.GetTempPath(),
             $"diagnosticsmcp-offcpu-{processId}-{Guid.NewGuid():N}.data");
         var startedAt = DateTimeOffset.UtcNow;
+        var notes = new List<string>();
 
         try
         {
             await RecordAsync(perfDataPath, duration, cancellationToken).ConfigureAwait(false);
+
+            // Re-snapshot TIDs post-record and union: catches threads that were created
+            // during the sampling window. Short-lived threads that both start and exit
+            // inside the window are still missed; we surface that as a Note.
+            var postTids = ReadTargetTids(processId);
+            var newTidCount = 0;
+            foreach (var t in postTids)
+            {
+                if (targetTids.Add(t)) newTidCount++;
+            }
+            if (newTidCount > 0)
+            {
+                notes.Add($"{newTidCount} thread(s) appeared after capture start; their pre-creation off-CPU events (if any) are excluded. Short-lived threads that ended before the post-capture rescan are not attributed.");
+            }
+
+            // perf.data size sanity check — system-wide sched_switch + DWARF is expensive on busy hosts.
+            try
+            {
+                var sizeBytes = new FileInfo(perfDataPath).Length;
+                if (sizeBytes >= PerfDataMaxBytes)
+                {
+                    notes.Add($"perf.data hit the {PerfDataMaxBytes / (1024 * 1024)} MiB cap; capture stopped early — results cover less than the requested {duration.TotalSeconds:F0}s. Consider a shorter window on busy hosts.");
+                }
+            }
+            catch { /* best effort */ }
+
             var script = await RunScriptAsync(perfDataPath, cancellationToken).ConfigureAwait(false);
-            var (spans, switches) = PerfSchedScriptParser.Parse(script, targetTids);
-            return Aggregate(processId, startedAt, duration, spans, switches, topN);
+            var (spans, switches) = PerfSchedScriptParser.Parse(script, targetTids, flushPending: true);
+            return Aggregate(processId, startedAt, duration, spans, switches, topN, notes);
         }
         finally
         {
             TryDelete(perfDataPath);
         }
     }
+
+    // 512 MiB is generous for the default 10s window but bounds disaster on a multi-minute
+    // capture on a 96-core box doing thousands of context switches per second.
+    private const long PerfDataMaxBytes = 512L * 1024 * 1024;
 
     private static HashSet<int> ReadTargetTids(int pid)
     {
@@ -139,7 +171,7 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         // -e sched:sched_switch: the only tracepoint we currently parse.
         // --call-graph dwarf: user-space DWARF unwinding so we capture user frames, not just the
         // first kernel frame. Bigger perf.data but accuracy-critical for blocking-stack attribution.
-        var args = $"record -a -e sched:sched_switch --call-graph dwarf -o \"{outputPath}\" -- sleep {seconds}";
+        var args = $"record -a -e sched:sched_switch --call-graph dwarf --max-size={PerfDataMaxBytes} -o \"{outputPath}\" -- sleep {seconds}";
         _logger.LogDebug("Spawning perf for off-CPU capture: {Bin} {Args}", ResolvePerfPath()!, args);
 
         using var process = new Process
@@ -216,16 +248,24 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         TimeSpan duration,
         IReadOnlyList<OffCpuSpan> spans,
         long schedSwitches,
-        int topN)
+        int topN,
+        IReadOnlyList<string>? notes = null)
     {
         // Stack aggregation key = leaf->root string join so identical blocking points collapse.
         var byStack = new Dictionary<string, (long Micros, long Count, Dictionary<string, long> States, List<OffCpuFrame> Frames)>(StringComparer.Ordinal);
         var byThread = new Dictionary<int, (string Comm, long Micros, long Switches, Dictionary<string, long> LeafCounts)>();
         long totalMicros = 0;
+        long censoredCount = 0;
+        long censoredMicros = 0;
 
         foreach (var span in spans)
         {
             totalMicros += span.DurationMicros;
+            if (span.IsCensored)
+            {
+                censoredCount++;
+                censoredMicros += span.DurationMicros;
+            }
 
             // Root→leaf string (perf prints leaf→root; reverse for human-friendly stacks).
             var frames = new List<OffCpuFrame>(span.BlockingStack.Count);
@@ -282,6 +322,14 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
             .OrderByDescending(t => t.OffCpuMicros)
             .ToList();
 
+        var notesList = notes is { Count: > 0 } ? notes : null;
+        if (censoredCount > 0)
+        {
+            var n = new List<string>(notesList ?? Array.Empty<string>());
+            n.Add($"{censoredCount} span(s) ({censoredMicros} µs) were censored: the thread was still blocked when the capture window ended, so the duration is a lower bound.");
+            notesList = n;
+        }
+
         var summary = new OffCpuSnapshot(
             ProcessId: processId,
             StartedAt: startedAt,
@@ -290,7 +338,10 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
             DistinctThreads: byThread.Count,
             TopBlockingStacks: stacks.Take(topN).ToList(),
             SchedSwitches: schedSwitches,
-            SymbolSource: "perf-sched-dwarf");
+            SymbolSource: "perf-sched-dwarf",
+            CensoredSpans: censoredCount,
+            CensoredOffCpuMicros: censoredMicros,
+            Notes: notesList);
 
         var artifact = new OffCpuSnapshotArtifact(
             ProcessId: processId,
@@ -300,7 +351,10 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
             SchedSwitches: schedSwitches,
             Stacks: stacks,
             Threads: threads,
-            SymbolSource: "perf-sched-dwarf");
+            SymbolSource: "perf-sched-dwarf",
+            CensoredSpans: censoredCount,
+            CensoredOffCpuMicros: censoredMicros,
+            Notes: notesList);
 
         return new OffCpuSampleResult(summary, artifact);
     }
