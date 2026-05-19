@@ -32,6 +32,22 @@ internal static class PerfScriptParser
     {
         ArgumentNullException.ThrowIfNull(output);
 
+        // Optionally restrict to a single OS process. `perf record -p <pid>` records all
+        // tasks (threads) of <pid>; the textual header that `perf script` produces, however,
+        // reports the per-thread TID, NOT the parent PID. Filtering with samplePid != processId
+        // therefore dropped every threadpool/GC/network worker sample and only kept frames that
+        // happened to be running on the thread whose TID equals the PID (typically just the
+        // main thread). To preserve correctness when the caller passes a non-zero processId
+        // we now compare against the set of TIDs currently belonging to that process — read
+        // once at parse start from /proc/<pid>/task. When unavailable (non-Linux, or process
+        // already exited) we honor any TID that perf reports (effectively trusting the upstream
+        // -p filter), which is still tighter than "no filter".
+        HashSet<int>? acceptedTids = null;
+        if (processId != 0)
+        {
+            acceptedTids = TryReadProcessTids(processId);
+        }
+
         var samples = new List<PerfSample>();
         var lines = output.Split('\n');
         var i = 0;
@@ -60,7 +76,7 @@ internal static class PerfScriptParser
             }
 
             var samplePid = TryExtractPid(header);
-            if (processId != 0 && samplePid != 0 && samplePid != processId)
+            if (acceptedTids is { } tids && samplePid != 0 && !tids.Contains(samplePid))
             {
                 // Skip this sample's frames.
                 i = SkipToBlank(lines, i + 1);
@@ -96,6 +112,32 @@ internal static class PerfScriptParser
     }
 
     private static readonly char[] HeaderSeparators = new[] { ' ', '\t' };
+
+    private static HashSet<int>? TryReadProcessTids(int processId)
+    {
+        try
+        {
+            var taskDir = $"/proc/{processId}/task";
+            if (!Directory.Exists(taskDir)) return null;
+            var set = new HashSet<int>();
+            foreach (var dir in Directory.EnumerateDirectories(taskDir))
+            {
+                var name = Path.GetFileName(dir);
+                if (int.TryParse(name, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tid))
+                {
+                    set.Add(tid);
+                }
+            }
+
+            // Always accept the PID itself even if the task directory was racing.
+            set.Add(processId);
+            return set;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
 
     private static int TryExtractPid(string header)
     {

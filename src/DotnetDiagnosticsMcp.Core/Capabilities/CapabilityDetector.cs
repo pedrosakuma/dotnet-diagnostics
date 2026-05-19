@@ -33,7 +33,8 @@ public sealed class CapabilityDetector : ICapabilityDetector
         var runtimeVersion = snapshot?.ClrProductVersionString ?? string.Empty;
 
         var probe = await ProbeSampleProfilerAsync(client, cancellationToken).ConfigureAwait(false);
-        var runtime = ClassifyRuntime(snapshot, probe);
+        var loadedModules = LoadedModuleInspector.TryGetSignature(processId);
+        var runtime = ClassifyRuntime(snapshot, probe, loadedModules);
 
         var perfAvailable = _perfSampler is not null && _perfSampler.IsAvailable();
         var canSampleCpu = (runtime == RuntimeFlavor.CoreClr && probe.SampleEventsReceived > 0) ||
@@ -146,21 +147,38 @@ public sealed class CapabilityDetector : ICapabilityDetector
         return new ProbeResult(SessionStarted: true, SampleEventsReceived: received, FailureReason: null);
     }
 
-    private static RuntimeFlavor ClassifyRuntime(ProcessInfoSnapshot? snapshot, ProbeResult probe)
+    private static RuntimeFlavor ClassifyRuntime(ProcessInfoSnapshot? snapshot, ProbeResult probe, LoadedModuleSignature? modules)
     {
         if (!probe.SessionStarted)
         {
             return RuntimeFlavor.Unknown;
         }
 
-        // SampleProfiler is a strong CoreCLR-only signal.
+        // Strongest signal: inspect loaded modules of the target process. CoreCLR-hosted apps
+        // always load libcoreclr.so / coreclr.dll; a self-contained NativeAOT binary never does.
+        // The previous heuristic ("any EventPipe event => CoreCLR") misclassified NativeAOT
+        // because the runtime still emits provider manifests / metadata over EventPipe even when
+        // SampleProfiler is a no-op.
+        if (modules is { } sig)
+        {
+            if (sig.HasCoreClr)
+            {
+                return RuntimeFlavor.CoreClr;
+            }
+
+            if (sig.Inspected && !sig.HasCoreClr)
+            {
+                return RuntimeFlavor.NativeAot;
+            }
+        }
+
+        // Fallbacks when we couldn't inspect loaded modules (permission, foreign OS, etc.):
+        // SampleProfiler emitting samples is still a strong CoreCLR-only signal.
         if (probe.SampleEventsReceived > 0)
         {
             return RuntimeFlavor.CoreClr;
         }
 
-        // The PortableRuntimeIdentifier on NativeAOT often reflects the published RID;
-        // and SampleProfiler does not emit events under AOT today.
         if (snapshot is null)
         {
             return RuntimeFlavor.Unknown;

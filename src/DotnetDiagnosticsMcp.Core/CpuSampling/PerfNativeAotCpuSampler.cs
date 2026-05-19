@@ -120,7 +120,11 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
     private async Task RecordAsync(int pid, string outputPath, TimeSpan duration, CancellationToken ct)
     {
         var seconds = Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
-        var args = $"record -F {_samplingFrequencyHz} -g -p {pid} -o \"{outputPath}\" -- sleep {seconds}";
+        // NativeAOT binaries may not always emit frame pointers; dwarf unwinding is required
+        // for reliable callstacks. The trade-off is larger perf.data files, but the cap is
+        // implicit in the sampling window. See https://github.com/pedrosakuma/dotnet-diagnostics-mcp
+        // notes on NativeAOT validation for the bug history.
+        var args = $"record -F {_samplingFrequencyHz} --call-graph dwarf -p {pid} -o \"{outputPath}\" -- sleep {seconds}";
         _logger.LogDebug("Spawning perf: {Bin} {Args}", _perfPath, args);
 
         using var process = new Process
