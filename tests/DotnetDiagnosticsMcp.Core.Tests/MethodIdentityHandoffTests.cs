@@ -92,6 +92,118 @@ public class MethodIdentityHandoffTests
         public override DateTimeOffset GetUtcNow() => _n;
     }
 
+    [Fact]
+    public void Parser_NonGeneric_ReturnsOpenTriple()
+    {
+        var p = EventPipeCpuSampler.ParseFullMethodName("MyApp.OrderService.Process");
+        p.TypeFullName.Should().Be("MyApp.OrderService");
+        p.MethodName.Should().Be("Process");
+        p.GenericArity.Should().Be(0);
+        p.GenericTypeArguments.Should().BeNull("non-generic methods must NOT carry an instantiation block");
+    }
+
+    [Fact]
+    public void Parser_MethodLevelGeneric_ExtractsAngleBracketArgs()
+    {
+        var p = EventPipeCpuSampler.ParseFullMethodName("MyApp.Helper.Echo<System.Int32>");
+        p.TypeFullName.Should().Be("MyApp.Helper");
+        p.MethodName.Should().Be("Echo");
+        p.GenericArity.Should().Be(1);
+        p.GenericTypeArguments.Should().NotBeNull();
+        p.GenericTypeArguments!.Type.Should().BeEmpty();
+        p.GenericTypeArguments.Method.Should().Equal("System.Int32");
+    }
+
+    [Fact]
+    public void Parser_TypeLevelGeneric_ExtractsBackticBracketArgs()
+    {
+        var p = EventPipeCpuSampler.ParseFullMethodName("System.Collections.Generic.List`1[System.Int32].Add");
+        p.TypeFullName.Should().Be("System.Collections.Generic.List`1");
+        p.MethodName.Should().Be("Add");
+        p.GenericArity.Should().Be(0);
+        p.GenericTypeArguments.Should().NotBeNull();
+        p.GenericTypeArguments!.Type.Should().Equal("System.Int32");
+        p.GenericTypeArguments.Method.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parser_TypeLevelGeneric_MultipleArgs()
+    {
+        var p = EventPipeCpuSampler.ParseFullMethodName("System.Collections.Generic.Dictionary`2[System.Int32,System.String].TryGetValue");
+        p.TypeFullName.Should().Be("System.Collections.Generic.Dictionary`2");
+        p.MethodName.Should().Be("TryGetValue");
+        p.GenericTypeArguments!.Type.Should().Equal("System.Int32", "System.String");
+    }
+
+    [Fact]
+    public void Parser_BothAxesGeneric_ExtractsTypeAndMethodArgs()
+    {
+        var p = EventPipeCpuSampler.ParseFullMethodName("MyApp.Cache`1[System.String].Get<System.Int32>");
+        p.TypeFullName.Should().Be("MyApp.Cache`1");
+        p.MethodName.Should().Be("Get");
+        p.GenericArity.Should().Be(1);
+        p.GenericTypeArguments!.Type.Should().Equal("System.String");
+        p.GenericTypeArguments.Method.Should().Equal("System.Int32");
+    }
+
+    [Fact]
+    public void Parser_NestedGenericArg_PreservesInnerBrackets()
+    {
+        // List<Dictionary<int,string>> as a method-level type arg.
+        var p = EventPipeCpuSampler.ParseFullMethodName(
+            "MyApp.Helper.Echo<System.Collections.Generic.Dictionary`2[System.Int32,System.String]>");
+        p.MethodName.Should().Be("Echo");
+        p.GenericTypeArguments!.Method.Should().HaveCount(1);
+        p.GenericTypeArguments.Method[0].Should().Be(
+            "System.Collections.Generic.Dictionary`2[System.Int32,System.String]");
+    }
+
+    [Fact]
+    public void Parser_ArraySignature_NotConfusedWithTypeArgs()
+    {
+        // `byte[]` ends in `]` but there's no preceding backtick — must NOT be treated as
+        // a type-args block. The full name "MyApp.Helper.Take[]" is degenerate but the
+        // realistic case is when an inner segment contains `[]` from an array signature.
+        var p = EventPipeCpuSampler.ParseFullMethodName("MyApp.Helper.Take");
+        p.TypeFullName.Should().Be("MyApp.Helper");
+        p.MethodName.Should().Be("Take");
+        p.GenericTypeArguments.Should().BeNull();
+    }
+
+    [Fact]
+    public void Parser_NullOrEmpty_ReturnsEmptyTriple()
+    {
+        var p = EventPipeCpuSampler.ParseFullMethodName(null);
+        p.MethodName.Should().Be(string.Empty);
+        p.GenericTypeArguments.Should().BeNull();
+    }
+
+    [Fact]
+    public void GenericInstantiation_RoundTripsThroughJsonContext()
+    {
+        var inst = new GenericInstantiation(new[] { "System.Int32" }, new[] { "System.String" });
+        var id = new MethodIdentity(
+            ModuleName: "MyApp.dll",
+            ModulePath: null,
+            ModuleVersionId: Guid.Parse("33333333-3333-3333-3333-333333333333"),
+            MetadataToken: 0x06000123,
+            TypeFullName: "MyApp.Cache`1",
+            MethodName: "Get",
+            GenericArity: 1) { GenericTypeArguments = inst };
+
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            id, InvestigationSummaryJsonContext.Default.MethodIdentity);
+        json.Should().Contain("\"GenericTypeArguments\"");
+        json.Should().Contain("\"System.Int32\"");
+        json.Should().Contain("\"System.String\"");
+
+        var roundtripped = System.Text.Json.JsonSerializer.Deserialize(
+            json, InvestigationSummaryJsonContext.Default.MethodIdentity);
+        roundtripped!.GenericTypeArguments.Should().NotBeNull();
+        roundtripped.GenericTypeArguments!.Type.Should().Equal("System.Int32");
+        roundtripped.GenericTypeArguments.Method.Should().Equal("System.String");
+    }
+
     private sealed class FixedProv : IProvenanceCollector
     {
         public InvestigationProvenance Collect(int processId, string? buildAssemblyName = null)

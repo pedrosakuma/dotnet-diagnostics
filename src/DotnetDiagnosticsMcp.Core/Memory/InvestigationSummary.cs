@@ -96,7 +96,30 @@ public sealed record MethodIdentity(
     int? MetadataToken,
     string? TypeFullName,
     string MethodName,
-    int GenericArity);
+    int GenericArity)
+{
+    /// <summary>
+    /// Closed generic instantiation captured at sample time, when the producer can extract
+    /// the type-arg sequence structurally from the runtime trace (issue #21 — coordinates
+    /// with <c>dotnet-assembly-mcp</c>'s closed-signature resolution). Null when the method
+    /// is non-generic OR when the producer couldn't recover the instantiation (e.g. native
+    /// frames, NativeAOT, malformed FullMethodName) — consumers fall back to the open def.
+    /// Type-arg strings are CLR reflection-style full names without assembly qualification
+    /// (e.g. <c>System.Collections.Generic.List`1[System.Int32]</c>; nested types with
+    /// <c>+</c>; arrays <c>T[]</c>/<c>T[,]</c>).
+    /// </summary>
+    public GenericInstantiation? GenericTypeArguments { get; init; }
+}
+
+/// <summary>Closed generic instantiation for a single <see cref="MethodIdentity"/>.
+/// <see cref="Type"/> carries the declaring type's type-args (length matches the open
+/// type's generic arity); <see cref="Method"/> carries the method's own type-args (length
+/// matches <see cref="MethodIdentity.GenericArity"/>). Either list may be empty when only
+/// the other axis is generic. Both lists are never null when this record is emitted —
+/// emit the parent <see cref="MethodIdentity.GenericTypeArguments"/> as null instead.</summary>
+public sealed record GenericInstantiation(
+    IReadOnlyList<string> Type,
+    IReadOnlyList<string> Method);
 
 /// <summary>Optional declaration that this investigation targets / proposes a fix.</summary>
 public sealed record InvestigationFixTarget(

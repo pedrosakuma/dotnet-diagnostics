@@ -19,5 +19,6 @@ namespace DotnetDiagnosticsMcp.Core.Memory;
 [JsonSerializable(typeof(SymbolRef))]
 [JsonSerializable(typeof(SourceLocation))]
 [JsonSerializable(typeof(MethodIdentity))]
+[JsonSerializable(typeof(GenericInstantiation))]
 [JsonSerializable(typeof(InvestigationFixTarget))]
 public sealed partial class InvestigationSummaryJsonContext : JsonSerializerContext;

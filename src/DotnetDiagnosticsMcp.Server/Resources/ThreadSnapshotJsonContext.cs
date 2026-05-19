@@ -15,4 +15,5 @@ internal sealed record ThreadSnapshotErrorPayload(string Kind, string Error);
 [JsonSerializable(typeof(ManagedStackFrame))]
 [JsonSerializable(typeof(MonitorLockState))]
 [JsonSerializable(typeof(MethodIdentity))]
+[JsonSerializable(typeof(GenericInstantiation))]
 internal sealed partial class ThreadSnapshotJsonContext : JsonSerializerContext;

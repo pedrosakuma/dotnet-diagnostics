@@ -85,7 +85,54 @@ app.MapGet("/parse", () =>
 })
 .WithName("ParseThings");
 
+// Generic fixture (issue #21 — handoff contract closed instantiations). The hot loop
+// exercises both type-level (Box<int>, Box<string>) and method-level (Echo<int>,
+// Echo<string>) closed generics so the CPU sampler emits two distinct MethodIdentity
+// rows per open MethodDef.
+app.MapGet("/generics", (int? iterations) =>
+{
+    var n = iterations ?? 50_000;
+    var sumI = 0L;
+    var sumS = 0L;
+    for (var i = 0; i < n; i++)
+    {
+        var boxI = new Box<int> { Value = i };
+        sumI += boxI.Wrap();
+        sumI += GenericFixture.Echo(i);
+
+        var boxS = new Box<string> { Value = "x" };
+        sumS += boxS.Wrap().Length;
+        sumS += GenericFixture.Echo("x").Length;
+    }
+    return Results.Json(new { sumI, sumS });
+})
+.WithName("GenericInstantiations");
+
 app.Run();
+
+sealed class Box<T>
+{
+    public T? Value { get; set; }
+    public int Wrap()
+    {
+        // Trivial work that dominates samples when called in a tight loop.
+        var s = Value?.ToString() ?? string.Empty;
+        var h = 0;
+        for (var i = 0; i < s.Length; i++) h = unchecked(h * 31 + s[i]);
+        return h;
+    }
+}
+
+static class GenericFixture
+{
+    public static T Echo<T>(T value)
+    {
+        // Force the JIT to specialize so each instantiation shows up as a distinct MethodID.
+        var s = value?.ToString() ?? string.Empty;
+        if (s.Length < 0) throw new InvalidOperationException();
+        return value;
+    }
+}
 
 record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
 {

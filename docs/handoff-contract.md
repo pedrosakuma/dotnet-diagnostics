@@ -43,6 +43,26 @@ JSON summary as `HotspotSummary.Identity`):
 | `TypeFullName`    | `string?` | display              | Declaring type FQN (`Namespace.Outer+Inner`)                             |
 | `MethodName`      | `string`  | display              | Bare method name (no signature)                                          |
 | `GenericArity`    | `int`     | sanity-check         | Number of generic method parameters; `0` for non-generic methods         |
+| `GenericTypeArguments` | `GenericInstantiation?` | closed-signature drilldown | Closed instantiation when the producer can extract it structurally from the trace — see below. `null` for non-generic methods AND for any frame where the producer couldn't recover the instantiation (consumer falls back to the open def) |
+
+### `GenericInstantiation` (issue #21)
+
+| Field    | Type            | Description                                                                          |
+|----------|-----------------|--------------------------------------------------------------------------------------|
+| `Type`   | `string[]`      | Declaring type's closed type-args (length matches the open type's generic arity)     |
+| `Method` | `string[]`      | Method's own closed type-args (length matches `GenericArity`)                        |
+
+Type-arg strings are CLR reflection-style full names with **no assembly qualification**:
+nested types use `+`, arrays use `T[]` / `T[,]`, nested generics keep their backtick-arity
+form (e.g. `System.Collections.Generic.List`1[System.Int32]`). Either list may be empty
+when only the other axis is generic; both lists are never null when the parent
+`GenericTypeArguments` is non-null.
+
+This is the producer-side companion of `dotnet-assembly-mcp`'s §3.5 closed-signature
+resolution (`get_method` with `genericTypeArguments` / `genericMethodArguments`). When
+emitted, two distinct closed instantiations of the same `MethodDef` arrive as **two
+separate** `MethodIdentity` rows so the LLM can ask the assembly MCP to render each one's
+closed signature independently.
 
 The `(mvid, token)` pair is the only field required by the consumer. Everything else is a
 sanity-check label so a human (or the LLM) can confirm "this is the right method" without

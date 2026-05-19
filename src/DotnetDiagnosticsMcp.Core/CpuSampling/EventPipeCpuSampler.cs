@@ -241,7 +241,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 : (moduleFile?.Name is { Length: > 0 } n ? n : modules.GetValueOrDefault(key, string.Empty));
 
             var token = method.MethodToken;
-            var (typeFull, methodName, arity) = SplitFullMethodName(method.FullMethodName);
+            var parsed = ParseFullMethodName(method.FullMethodName);
             var mvid = _mvidReader.TryRead(modulePath);
 
             // Skip frames where we have nothing useful for the handoff at all
@@ -261,55 +261,193 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 ModulePath: modulePath,
                 ModuleVersionId: mvid,
                 MetadataToken: token > 0 ? token : null,
-                TypeFullName: typeFull,
-                MethodName: methodName,
-                GenericArity: arity);
+                TypeFullName: parsed.TypeFullName,
+                MethodName: parsed.MethodName,
+                GenericArity: parsed.GenericArity)
+            {
+                GenericTypeArguments = parsed.GenericTypeArguments,
+            };
         }
         return result;
     }
 
+    /// <summary>Result of parsing a TraceEvent <c>FullMethodName</c> into the handoff shape.</summary>
+    internal readonly record struct ParsedFullMethodName(
+        string? TypeFullName,
+        string MethodName,
+        int GenericArity,
+        DotnetDiagnosticsMcp.Core.Memory.GenericInstantiation? GenericTypeArguments);
+
     /// <summary>
-    /// Splits a TraceEvent <c>FullMethodName</c> (shape: <c>Namespace.Type.Method</c>; generic
-    /// methods may surface as <c>Type.Method&lt;T&gt;</c> depending on the runtime) into the
-    /// (typeFullName, methodName, genericArity) tuple consumed by the handoff contract.
+    /// Splits a TraceEvent <c>FullMethodName</c> into <c>(typeFullName, methodName,
+    /// genericArity, genericTypeArguments)</c>. The runtime emits closed generic
+    /// instantiations in two distinct shapes — type-level args appear as
+    /// <c>` + arity + [arg1,arg2]</c> in the type segment (e.g.
+    /// <c>System.Collections.Generic.List`1[System.Int32].Add</c>), method-level args
+    /// appear as a trailing <c>&lt;arg1,arg2&gt;</c> on the method segment (e.g.
+    /// <c>MyApp.Helper.Echo&lt;System.Int32&gt;</c>). Both axes can occur together. Args
+    /// are returned verbatim (already in CLR reflection-style FQN since that's the runtime's
+    /// canonical form) — no normalization, no inference, no assembly qualification.
     /// </summary>
-    internal static (string? TypeFullName, string MethodName, int GenericArity) SplitFullMethodName(string? fullName)
+    /// <remarks>
+    /// Issue #21. The (TypeFullName, MethodName, GenericArity) triple alone matches the open
+    /// definition (MethodDef token); <see cref="ParsedFullMethodName.GenericTypeArguments"/>
+    /// carries the closed instantiation when recoverable. Returns null
+    /// <c>GenericTypeArguments</c> for non-generic methods, for shapes the parser doesn't
+    /// recognise, and for any frame missing structural type-arg info — consumers fall back
+    /// to the open def with no degradation vs. pre-#21 behaviour.
+    /// </remarks>
+    internal static ParsedFullMethodName ParseFullMethodName(string? fullName)
     {
-        if (string.IsNullOrEmpty(fullName)) return (null, string.Empty, 0);
+        if (string.IsNullOrEmpty(fullName))
+        {
+            return new ParsedFullMethodName(null, string.Empty, 0, null);
+        }
 
         var name = fullName!;
+        var methodArgs = Array.Empty<string>();
         var arity = 0;
-        var genericOpen = name.IndexOf('<', StringComparison.Ordinal);
-        if (genericOpen >= 0)
+
+        // Method-level generic args: trailing <...>. Has to be parsed against the full
+        // raw string before any other slicing, because the < / > nest with type-level
+        // args in pathological cases (a method-level arg that is itself a generic type).
+        if (name.Length > 0 && name[^1] == '>')
         {
-            var genericClose = name.LastIndexOf('>');
-            if (genericClose > genericOpen)
+            var open = FindMatchingAngleBracket(name, name.Length - 1);
+            if (open > 0)
             {
-                var genericArgs = name.Substring(genericOpen + 1, genericClose - genericOpen - 1);
-                arity = CountTopLevelCommas(genericArgs) + 1;
-                name = name.Remove(genericOpen, genericClose - genericOpen + 1);
+                var args = name.Substring(open + 1, name.Length - open - 2);
+                methodArgs = SplitTopLevelCommas(args);
+                arity = methodArgs.Length;
+                name = name.Substring(0, open);
             }
         }
 
-        var lastDot = name.LastIndexOf('.');
+        var lastDot = FindLastTopLevelDot(name);
         if (lastDot <= 0 || lastDot == name.Length - 1)
         {
-            return (null, name, arity);
+            return new ParsedFullMethodName(
+                null,
+                name,
+                arity,
+                BuildGenericInstantiation(Array.Empty<string>(), methodArgs));
         }
 
-        return (name[..lastDot], name[(lastDot + 1)..], arity);
+        var typePart = name.Substring(0, lastDot);
+        var methodPart = name.Substring(lastDot + 1);
+
+        // Type-level generic args: `<arity>[arg1,arg2] suffix on (any segment of) the type
+        // part. We keep the leading `<arity> as part of TypeFullName so the open type FQN
+        // round-trips, and lift the bracketed args into GenericTypeArguments.Type.
+        var typeArgs = ExtractTypeBracketArgs(ref typePart!);
+
+        return new ParsedFullMethodName(
+            typePart,
+            methodPart,
+            arity,
+            BuildGenericInstantiation(typeArgs, methodArgs));
     }
 
-    private static int CountTopLevelCommas(string s)
+    private static DotnetDiagnosticsMcp.Core.Memory.GenericInstantiation? BuildGenericInstantiation(string[] typeArgs, string[] methodArgs)
     {
-        int depth = 0, count = 0;
-        foreach (var c in s)
+        if (typeArgs.Length == 0 && methodArgs.Length == 0) return null;
+        return new DotnetDiagnosticsMcp.Core.Memory.GenericInstantiation(typeArgs, methodArgs);
+    }
+
+    /// <summary>Returns the index of the <c>&lt;</c> matching the <c>&gt;</c> at
+    /// <paramref name="closeIndex"/>, ignoring brackets nested inside <c>[ ]</c> (which
+    /// belong to type-level args). Returns -1 when unbalanced.</summary>
+    private static int FindMatchingAngleBracket(string s, int closeIndex)
+    {
+        var depth = 0;
+        for (var i = closeIndex; i >= 0; i--)
         {
-            if (c == '<') depth++;
-            else if (c == '>') depth--;
-            else if (c == ',' && depth == 0) count++;
+            switch (s[i])
+            {
+                case '>': depth++; break;
+                case '<':
+                    depth--;
+                    if (depth == 0) return i;
+                    break;
+            }
         }
-        return count;
+        return -1;
+    }
+
+    /// <summary>Finds the last <c>.</c> that is NOT inside <c>[ ]</c> or <c>&lt; &gt;</c>.</summary>
+    private static int FindLastTopLevelDot(string s)
+    {
+        var angle = 0;
+        var square = 0;
+        for (var i = s.Length - 1; i >= 0; i--)
+        {
+            var c = s[i];
+            if (c == ']') square++;
+            else if (c == '[') square--;
+            else if (c == '>') angle++;
+            else if (c == '<') angle--;
+            else if (c == '.' && angle == 0 && square == 0) return i;
+        }
+        return -1;
+    }
+
+    /// <summary>If <paramref name="typePart"/> ends with a <c>[arg1,arg2]</c> attached to a
+    /// generic-arity backtick segment (e.g. <c>List`1[System.Int32]</c>), strips the
+    /// bracketed list, mutates <paramref name="typePart"/> to drop it, and returns the
+    /// args. Otherwise returns an empty array and leaves the input alone.</summary>
+    private static string[] ExtractTypeBracketArgs(ref string typePart)
+    {
+        if (typePart.Length == 0 || typePart[^1] != ']') return Array.Empty<string>();
+        var open = -1;
+        var depth = 0;
+        for (var i = typePart.Length - 1; i >= 0; i--)
+        {
+            var c = typePart[i];
+            if (c == ']') depth++;
+            else if (c == '[')
+            {
+                depth--;
+                if (depth == 0) { open = i; break; }
+            }
+        }
+        if (open <= 0) return Array.Empty<string>();
+        // Guard: only treat the suffix as type-args when it follows a backtick segment.
+        // Otherwise it's a regular CLR array signature (T[]) which we must preserve.
+        var preceding = typePart.AsSpan(0, open);
+        if (preceding.IndexOf('`') < 0) return Array.Empty<string>();
+
+        var args = typePart.Substring(open + 1, typePart.Length - open - 2);
+        var split = SplitTopLevelCommas(args);
+        typePart = typePart.Substring(0, open);
+        return split;
+    }
+
+    /// <summary>Splits a string on commas that are NOT inside <c>[ ]</c> or <c>&lt; &gt;</c>.
+    /// Trims surrounding whitespace from each entry. Returns an empty array for empty input.</summary>
+    private static string[] SplitTopLevelCommas(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return Array.Empty<string>();
+        var result = new List<string>();
+        var angle = 0;
+        var square = 0;
+        var start = 0;
+        for (var i = 0; i < s.Length; i++)
+        {
+            var c = s[i];
+            switch (c)
+            {
+                case '<': angle++; break;
+                case '>': angle--; break;
+                case '[': square++; break;
+                case ']': square--; break;
+                case ',' when angle == 0 && square == 0:
+                    result.Add(s.Substring(start, i - start).Trim());
+                    start = i + 1;
+                    break;
+            }
+        }
+        result.Add(s.Substring(start).Trim());
+        return result.ToArray();
     }
 
     private Dictionary<DotnetDiagnosticsMcp.Core.Memory.SymbolRef, DotnetDiagnosticsMcp.Core.Memory.SourceLocation> ResolveSources(
