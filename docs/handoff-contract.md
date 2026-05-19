@@ -134,3 +134,29 @@ arrived here from a CPU sample, an exception stack, or a future GC artifact.
 The schema is part of the diagnostic summary (`schemaVersion` field on the exported
 investigation summary). Additive fields on `MethodIdentity` are non-breaking; field
 removals or semantic changes require a `schemaVersion` bump.
+
+## TypeIdentity (dump inspection)
+
+`inspect_dump` emits a sibling identity shape on top retained types so the LLM can
+hand off straight from a heap walk to `dotnet-assembly-mcp` without parsing type
+names.
+
+```
+TypeIdentity {
+  ModuleVersionId : Guid     // MVID of the defining managed module
+  MetadataToken   : int      // TypeDef token (table 0x02)
+  ModuleName      : string   // file name only
+  ModulePath      : string?  // best-effort full path (resolves PDB / symbols)
+  TypeFullName    : string   // namespace + name, display-only sanity check
+}
+```
+
+Same producer/consumer responsibilities as `MethodIdentity`: the `(ModuleVersionId,
+MetadataToken)` pair is the trust boundary; everything else is a display label.
+ClrMD reads the MVID directly from the loaded module path (cached per path); when
+the file is unreachable, `ModuleVersionId` is `null` and the consumer must refuse
+the handoff with `module_not_resolvable`.
+
+The intended consumer hop today is `dotnet-assembly-mcp.load_assembly` followed by
+inspection of the type's methods via `get_method` for each token of interest. A
+future `get_type(mvid, typeToken)` tool on the assembly side will close the loop.

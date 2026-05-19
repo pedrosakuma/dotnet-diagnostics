@@ -26,6 +26,7 @@ builder.Services.AddSingleton<IExceptionCollector, EventPipeExceptionCollector>(
 builder.Services.AddSingleton<IGcCollector, EventPipeGcCollector>();
 builder.Services.AddSingleton<IEventSourceCollector, EventPipeEventSourceCollector>();
 builder.Services.AddSingleton<IProcessDumper, DiagnosticsClientDumper>();
+builder.Services.AddSingleton<IDumpInspector, ClrMdDumpInspector>();
 builder.Services.AddSingleton<DotnetDiagnosticsMcp.Core.Investigation.IInvestigationPlanner>(_ =>
     new DotnetDiagnosticsMcp.Core.Investigation.InvestigationPlanner());
 builder.Services.AddSingleton<DotnetDiagnosticsMcp.Core.Memory.IProvenanceCollector, DotnetDiagnosticsMcp.Core.Memory.EnvironmentProvenanceCollector>();

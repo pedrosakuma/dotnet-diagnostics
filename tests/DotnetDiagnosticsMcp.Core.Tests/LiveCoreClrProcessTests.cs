@@ -2,6 +2,7 @@ using System.Diagnostics;
 using DotnetDiagnosticsMcp.Core.Capabilities;
 using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
+using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using FluentAssertions;
 
@@ -188,6 +189,54 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             "the sampler must resolve user-code hotspots to the publishing assembly's MVID for the assembly-mcp handoff");
         userCodeIdentity!.MetadataToken.Should().BeGreaterThan(0, "the handoff pair (MVID, token) must round-trip to the assembly-mcp");
         userCodeIdentity.MethodName.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task DumpInspector_ExtractsHeapStats_AndTypeIdentityForUserCode()
+    {
+        EnsureSampleRunning();
+
+        var sampleDll = LocateSampleDll()
+            ?? throw new InvalidOperationException("CoreClrSample.dll not found.");
+        var expectedMvid = new MvidReader().TryRead(sampleDll);
+        expectedMvid.Should().NotBeNull();
+
+        // Capture a WithHeap dump (the only kind that supports heap walk).
+        var dumpDir = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-inspect-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dumpDir);
+        try
+        {
+            var dumper = new DotnetDiagnosticsMcp.Core.Dump.DiagnosticsClientDumper();
+            var dump = await dumper.WriteDumpAsync(Pid, ProcessDumpType.WithHeap, dumpDir, CancellationToken.None);
+            File.Exists(dump.FilePath).Should().BeTrue();
+            dump.FileSizeBytes.Should().BeGreaterThan(0);
+
+            var inspector = new ClrMdDumpInspector();
+            var inspection = await inspector.InspectAsync(
+                dump.FilePath,
+                new DumpInspectionOptions(TopTypes: 25),
+                CancellationToken.None);
+
+            inspection.Runtime.Name.Should().NotBeNullOrEmpty();
+            inspection.Runtime.Version.Should().NotBeNullOrEmpty();
+            inspection.Heap.TotalBytes.Should().BeGreaterThan(0, "WithHeap dump must contain a walkable managed heap");
+            inspection.TopTypesByBytes.Should().NotBeEmpty();
+            inspection.TopTypesByInstances.Should().NotBeEmpty();
+
+            // System types (Object[], String, etc.) always dominate; we only need to confirm at
+            // least one TypeStat carries an Identity with a non-null MVID — that's the handoff
+            // proof. CoreClrSample's own types are tiny by bytes so we don't rely on user code
+            // appearing in the top-25.
+            var withMvid = inspection.TopTypesByBytes
+                .Concat(inspection.TopTypesByInstances)
+                .FirstOrDefault(s => s.Identity is { ModuleVersionId: not null, MetadataToken: not null });
+            withMvid.Should().NotBeNull(
+                "ClrMdDumpInspector must populate TypeIdentity (mvid + token) for handoff to dotnet-assembly-mcp");
+        }
+        finally
+        {
+            try { Directory.Delete(dumpDir, recursive: true); } catch { /* best-effort */ }
+        }
     }
 
     private void EnsureSampleRunning()

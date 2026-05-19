@@ -6,6 +6,7 @@
 
   <ItemGroup Label="Diagnostics">
     <PackageVersion Include="Microsoft.Diagnostics.NETCore.Client" Version="0.2.661903" />
+    <PackageVersion Include="Microsoft.Diagnostics.Runtime" Version="3.1.512801" />
     <PackageVersion Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.2.2" />
   </ItemGroup>
 

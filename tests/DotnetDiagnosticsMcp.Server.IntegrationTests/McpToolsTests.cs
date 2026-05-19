@@ -41,6 +41,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             "collect_gc_events",
             "collect_event_source",
             "collect_process_dump",
+            "inspect_dump",
             "get_call_tree",
             "start_investigation",
             "export_investigation_summary",
@@ -60,6 +61,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             ["collect_gc_events"] = new[] { "processId" },
             ["collect_event_source"] = new[] { "processId", "providerName" },
             ["collect_process_dump"] = new[] { "processId" },
+            ["inspect_dump"] = new[] { "dumpFilePath" },
             ["get_call_tree"] = new[] { "handle" },
             ["start_investigation"] = new[] { "processId" },
             ["export_investigation_summary"] = new[] { "handle" },
@@ -82,6 +84,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             "dumpRequiresApproval", "format", "topHotspots", "buildAssemblyName",
             "previousInvestigationId", "fixCommitSha", "fixPullRequestUrl", "fixDescription", "notes",
             "resolveSourceLines", "symbolPath", "maxResolvedSources",
+            "topTypes", "includeRetentionPaths", "retentionPathLimit",
         };
 
         foreach (var tool in tools)

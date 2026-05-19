@@ -480,10 +480,71 @@ public sealed class DiagnosticTools
         CancellationToken cancellationToken = default)
     {
         var dump = await dumper.WriteDumpAsync(processId, dumpType, outputDirectory, cancellationToken).ConfigureAwait(false);
+        var hint = dumpType == ProcessDumpType.Mini
+            ? new NextActionHint("inspect_dump",
+                "Mini dump captured — heap walk unavailable. Re-capture with dumpType='WithHeap' for full inspection.",
+                new Dictionary<string, object?> { ["dumpFilePath"] = dump.FilePath })
+            : new NextActionHint("inspect_dump",
+                "Inspect the dump's managed heap for top-retained types + handoff payload to dotnet-assembly-mcp.",
+                new Dictionary<string, object?> { ["dumpFilePath"] = dump.FilePath, ["topTypes"] = 20 });
         return DiagnosticResult.Ok(
             dump,
             $"Wrote {dumpType} dump for pid {dump.ProcessId} to {dump.FilePath} ({dump.FileSizeBytes:N0} bytes).",
-            new NextActionHint("list_dotnet_processes", "No further automated drill-down — analyze the dump offline with dotnet-dump analyze."));
+            hint);
+    }
+
+    [McpServerTool(
+        Name = "inspect_dump",
+        Title = "Inspect a process dump's managed heap",
+        Destructive = false,
+        ReadOnly = true,
+        Idempotent = true,
+        UseStructuredContent = true)]
+    [Description(
+        "Walks the managed heap of a previously-captured WithHeap/Full dump (produced by " +
+        "collect_process_dump or any compatible source) using ClrMD. Returns aggregated runtime/heap " +
+        "totals plus top types by retained bytes and instance count. Each TypeStat carries a TypeIdentity " +
+        "(ModuleVersionId + MetadataToken) ready to hand off verbatim to dotnet-assembly-mcp's get_type " +
+        "(or get_method on the type's members) without name parsing. Offline and read-only — does not " +
+        "touch the live process. Mini and Triage dumps return runtime metadata only; for heap inspection " +
+        "use WithHeap or Full.")]
+    public static async Task<DiagnosticResult<DumpInspection>> InspectDump(
+        IDumpInspector inspector,
+        [Description("Absolute path to a previously-captured .dmp file. Required.")] string dumpFilePath,
+        [Description("Number of types to return in each top-N list (bytes / instances). Defaults to 20.")] int topTypes = 20,
+        [Description("When true, walks a short GC retention chain for each of the top-5 types by bytes. Off by default — slower.")] bool includeRetentionPaths = false,
+        [Description("Cap on retention-chain depth when retention paths are enabled. Defaults to 8.")] int retentionPathLimit = 8,
+        CancellationToken cancellationToken = default)
+    {
+        var inspection = await inspector.InspectAsync(
+            dumpFilePath,
+            new DumpInspectionOptions(TopTypes: topTypes, IncludeRetentionPaths: includeRetentionPaths, RetentionPathLimit: retentionPathLimit),
+            cancellationToken).ConfigureAwait(false);
+
+        var topByBytes = inspection.TopTypesByBytes;
+        var summary = topByBytes.Count == 0
+            ? $"Inspected {dumpFilePath} — runtime {inspection.Runtime.Name} {inspection.Runtime.Version}, heap walk produced no objects."
+            : $"Inspected {dumpFilePath} — heap {inspection.Heap.TotalBytes:N0} bytes; top retained type: `{topByBytes[0].TypeFullName}` ({topByBytes[0].TotalBytesPercent}% / {topByBytes[0].InstanceCount:N0} instances).";
+
+        NextActionHint? hint = null;
+        var topWithHandoff = topByBytes.FirstOrDefault(t => t.Identity is { ModuleVersionId: not null, MetadataToken: not null });
+        if (topWithHandoff is { Identity: { } id })
+        {
+            hint = new NextActionHint(
+                "dotnet-assembly-mcp.get_method",
+                $"Pivot to assembly inspection for the top retained type `{id.TypeFullName}` via the (mvid, token) handoff.",
+                new Dictionary<string, object?>
+                {
+                    ["moduleVersionId"] = id.ModuleVersionId,
+                    ["metadataToken"] = id.MetadataToken,
+                    ["typeFullName"] = id.TypeFullName,
+                    ["assemblyPathHint"] = id.ModulePath,
+                });
+        }
+
+        return hint is null
+            ? DiagnosticResult.Ok(inspection, summary)
+            : DiagnosticResult.Ok(inspection, summary, hint);
     }
 
     [McpServerTool(
