@@ -101,7 +101,7 @@ app.MapGet("/generics", (int? iterations) =>
         sumI += GenericFixture.Echo(i);
 
         var boxS = new Box<string> { Value = "x" };
-        sumS += boxS.Wrap().Length;
+        sumS += boxS.Wrap();
         sumS += GenericFixture.Echo("x").Length;
     }
     return Results.Json(new { sumI, sumS });
