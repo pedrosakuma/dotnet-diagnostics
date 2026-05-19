@@ -33,6 +33,7 @@ docker run -d --name mcp --network diagmcp-net \
   --pid=container:sample \
   -v diagnosticsmcp-tmp:/tmp \
   --user 0 \
+  --cap-add SYS_PTRACE \
   -e MCP_BEARER_TOKEN=dev-token \
   -p 18787:8080 \
   dotnet-diagnostics-mcp:dev
@@ -42,6 +43,37 @@ docker run -d --name mcp --network diagmcp-net \
 as root and creates `/tmp/dotnet-diagnostic-1` owned by root. In Kubernetes,
 the recommended setup is to run **both** containers as the same non-root UID
 (the sample manifest pins UID/GID `10001` and sets `fsGroup: 10001`).
+
+### Heads up: ClrMD tools need `CAP_SYS_PTRACE` on Linux
+
+`collect_thread_snapshot`, `inspect_live_heap`, `inspect_dump` (for live PIDs)
+and `collect_process_dump` all attach via ClrMD, which under the hood issues
+`ptrace(PTRACE_ATTACH, …)`. Matching UIDs alone is **not** enough on Linux:
+the kernel's [Yama LSM](https://www.kernel.org/doc/Documentation/admin-guide/LSM/Yama.rst)
+defaults `kernel.yama.ptrace_scope=1` on Debian/Ubuntu/WSL, which blocks
+same-UID peer attach. You will see a structured error like:
+
+```json
+{ "error": { "kind": "PermissionDenied",
+             "message": "Could not PTRACE_ATTACH to any thread of the process N." } }
+```
+
+Mitigations, in order of preference for local Docker:
+
+- Pass `--cap-add SYS_PTRACE` to the **sidecar** container (it is the one that
+  performs the ptrace call). The target container does not need it.
+- Or relax the host (affects everything on the box):
+  `sudo sysctl -w kernel.yama.ptrace_scope=0`.
+- Or run the sidecar as root **and** as a parent of the target — covers the
+  Yama "parent only" mode (`ptrace_scope=1`).
+
+For Kubernetes, see [`deploy/k8s/sample-sidecar.yaml`](../deploy/k8s/sample-sidecar.yaml):
+add `capabilities.add: ["SYS_PTRACE"]` to the sidecar container's
+`securityContext`, alongside the existing UID alignment.
+
+EventPipe-based tools (`snapshot_counters`, `collect_cpu_sample`,
+`collect_exceptions`, `collect_gc_events`, `collect_event_source`) do **not**
+need `CAP_SYS_PTRACE` — they go through the diagnostic IPC socket only.
 
 ## Smoke-test the MCP endpoint
 

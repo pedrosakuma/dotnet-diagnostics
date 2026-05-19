@@ -26,6 +26,38 @@ delivered over Streamable HTTP at `POST /mcp` and require an
 "Window-bound" means the duration is the dominant cost; the tool will block for
 ~`durationSeconds`.
 
+### Linux runtime requirements
+
+EventPipe-based tools (the ones listed in the index above) only need the
+diagnostic IPC socket, which works as long as the MCP server runs as the
+**same UID** as the target process. ClrMD-backed tools added since the MVP —
+`collect_thread_snapshot`, `inspect_live_heap`, `inspect_dump` against a live
+PID, and `collect_process_dump` — additionally call `ptrace(PTRACE_ATTACH, …)`
+under the hood. On Linux, matching UIDs is **not** sufficient when the host's
+`kernel.yama.ptrace_scope` is `1` (the Debian/Ubuntu/WSL default): the kernel
+blocks same-UID peer attach.
+
+If a request lands in that state you'll get a structured error envelope (see
+issue #32):
+
+```json
+{ "error": { "kind": "PermissionDenied",
+             "message": "Could not PTRACE_ATTACH to any thread of the process N." } }
+```
+
+Mitigations:
+
+- **Docker:** add `--cap-add SYS_PTRACE` to the **sidecar** container.
+- **Kubernetes:** set `capabilities.add: ["SYS_PTRACE"]` on the sidecar
+  container's `securityContext` (see [`deploy/k8s/sample-sidecar.yaml`](../deploy/k8s/sample-sidecar.yaml)).
+- **Bare host / local dev:** `sudo sysctl -w kernel.yama.ptrace_scope=0`, or
+  run the MCP server as root.
+
+When ptrace cannot be granted, fall back to `collect_process_dump` +
+`inspect_dump` (the dump capture runs in the target's own process, so it does
+not require ptrace from the sidecar — but writing the dump file is still
+gated on the diagnostic socket UID).
+
 ---
 
 ## `list_dotnet_processes`

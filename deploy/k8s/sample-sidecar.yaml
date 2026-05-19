@@ -95,6 +95,17 @@ spec:
         - name: diagnosticsmcp
           image: ghcr.io/example/dotnet-diagnostics-mcp:latest
           imagePullPolicy: IfNotPresent
+          # ClrMD-backed tools (collect_thread_snapshot, inspect_live_heap,
+          # inspect_dump on live PIDs, collect_process_dump) attach via
+          # ptrace(2). Matching UIDs is NOT enough on Linux when the host's
+          # kernel.yama.ptrace_scope is 1 (Debian/Ubuntu default). Grant
+          # CAP_SYS_PTRACE so the sidecar can attach to its same-pod peer.
+          # EventPipe-only tools (counters, cpu_sample, exceptions, gc) do
+          # not need it.
+          securityContext:
+            capabilities:
+              add:
+                - SYS_PTRACE
           ports:
             - containerPort: 8080
               name: mcp

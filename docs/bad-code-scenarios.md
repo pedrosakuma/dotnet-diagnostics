@@ -23,10 +23,19 @@ docker run -d --name badcode-mcp --network diagmcp-net \
   --pid=container:badcode \
   -v badcode-tmp:/tmp \
   --user 0 \
+  --cap-add SYS_PTRACE \
   -e MCP_BEARER_TOKEN=dev-token \
   -p 18887:8080 \
   dotnet-diagnostics-mcp:dev
 ```
+
+> `--cap-add SYS_PTRACE` is required for the ClrMD-backed tools
+> (`collect_thread_snapshot`, `inspect_live_heap`,
+> `inspect_dump` against a live PID and `collect_process_dump`). Without it,
+> these tools return a structured `PermissionDenied` error on hosts where
+> `kernel.yama.ptrace_scope=1` (Debian/Ubuntu/WSL default). EventPipe-only
+> tools work without it. See [`docs/local-docker-sidecar.md`](./local-docker-sidecar.md)
+> for the full mitigation matrix.
 
 Trigger a scenario from your shell (the `badcode` container exposes the API on
 `http://127.0.0.1:18180`) **at the same time** as you collect from the MCP
