@@ -45,7 +45,9 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             "get_call_tree",
             "start_investigation",
             "export_investigation_summary",
-            "compare_to_baseline");
+            "compare_to_baseline",
+            "get_collection_status",
+            "cancel_collection");
 
         // Tools may only require `processId` (and `providerName` for collect_event_source,
         // `handle` for get_call_tree). Anything else must have a default so clients without
@@ -66,6 +68,8 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             ["start_investigation"] = new[] { "processId" },
             ["export_investigation_summary"] = new[] { "handle" },
             ["compare_to_baseline"] = new[] { "baselineSummaryJson", "currentSummaryJson" },
+            ["get_collection_status"] = new[] { "handle" },
+            ["cancel_collection"] = new[] { "handle" },
         };
 
         // The spirit of elicit-graceful: no user-facing parameter (durationSeconds, topN,
@@ -85,6 +89,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             "previousInvestigationId", "fixCommitSha", "fixPullRequestUrl", "fixDescription", "notes",
             "resolveSourceLines", "symbolPath", "maxResolvedSources",
             "topTypes", "includeRetentionPaths", "retentionPathLimit",
+            "runAsJob",
         };
 
         foreach (var tool in tools)

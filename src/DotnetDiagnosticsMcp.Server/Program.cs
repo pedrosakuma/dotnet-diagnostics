@@ -36,6 +36,7 @@ builder.Services.AddSingleton<DotnetDiagnosticsMcp.Core.Memory.IInvestigationSum
 builder.Services.AddSingleton<DotnetDiagnosticsMcp.Core.Memory.ISummaryComparer, DotnetDiagnosticsMcp.Core.Memory.SummaryComparer>();
 builder.Services.AddSingleton<DotnetDiagnosticsMcp.Core.Drilldown.IDiagnosticHandleStore>(_ =>
     new DotnetDiagnosticsMcp.Core.Drilldown.MemoryDiagnosticHandleStore(maxEntries: 32));
+builder.Services.AddSingleton<DotnetDiagnosticsMcp.Core.Jobs.ICollectionJobRunner, DotnetDiagnosticsMcp.Core.Jobs.CollectionJobRunner>();
 builder.Services.AddHostedService<DotnetDiagnosticsMcp.Server.Hosting.HandleEvictionBackgroundService>();
 
 builder.Services

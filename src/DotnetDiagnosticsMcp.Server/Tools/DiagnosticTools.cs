@@ -189,16 +189,19 @@ public sealed class DiagnosticTools
         "Captures a CPU sample from the target process and returns the top-N hotspots aggregated by method. " +
         "On CoreCLR uses EventPipe SampleProfiler (managed frames with mvid+token handoff). " +
         "On NativeAOT (Linux) falls back to 'perf record' when available — frames are native symbols only, MethodIdentity is null. " +
-        "Each hotspot reports both inclusive and exclusive sample counts. Run after snapshot_counters shows elevated cpu-usage.")]
+        "Each hotspot reports both inclusive and exclusive sample counts. Run after snapshot_counters shows elevated cpu-usage. " +
+        "Set runAsJob=true to schedule the collection on the server and poll with get_collection_status — useful for long durationSeconds windows that would otherwise hold the MCP request open.")]
     public static async Task<DiagnosticResult<CpuSample>> CollectCpuSample(
         ICpuSampler sampler,
         IDiagnosticHandleStore handles,
+        DotnetDiagnosticsMcp.Core.Jobs.ICollectionJobRunner jobs,
         [Description("Operating system process id of the target .NET process.")] int processId,
         [Description("Duration of the sampling window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of hotspots to return. Must be >= 1. Defaults to 25.")] int topN = 25,
         [Description("If true, attempts to resolve top hotspots to file:line via PDB / SourceLink. Lazy: only the top-N hotspots are resolved (capped by maxResolvedSources). Off by default — requires PDBs alongside the assemblies or a reachable symbol path.")] bool resolveSourceLines = false,
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to the symbol reader (e.g. '/symbols;srv*https://msdl.microsoft.com/download/symbols'). Ignored when resolveSourceLines=false.")] string? symbolPath = null,
         [Description("Cap on how many top hotspots get source-resolved. Must be >= 1. Defaults to 10.")] int maxResolvedSources = 10,
+        [Description("If true, runs the collection as a background job. Returns immediately with a job handle; poll get_collection_status(handle) until status='completed' to retrieve the CpuSample result. Defaults to false (synchronous).")] bool runAsJob = false,
         CancellationToken cancellationToken = default)
     {
         if (durationSeconds < 1) return InvalidArg<CpuSample>(nameof(durationSeconds), "must be >= 1");
@@ -208,6 +211,45 @@ public sealed class DiagnosticTools
         var srcOpts = resolveSourceLines
             ? new SourceResolutionOptions(Enabled: true, SymbolPath: symbolPath, MaxResolved: maxResolvedSources)
             : null;
+
+        if (runAsJob)
+        {
+            // Detach: the job outlives the MCP request, so we must not cancel it when the
+            // request token trips. The runner's own cancel hook is what stops it.
+            var jobTtl = TimeSpan.FromSeconds(durationSeconds) + CpuSampleHandleTtl;
+            var jobHandle = jobs.Start(
+                processId,
+                "cpu-sample-job",
+                jobTtl,
+                async ct =>
+                {
+                    var jobResult = await sampler.SampleAsync(processId, TimeSpan.FromSeconds(durationSeconds), topN, srcOpts, ct).ConfigureAwait(false);
+                    var jobSample = jobResult.Summary;
+                    var jobTop = jobSample.TopHotspots.Count > 0 ? jobSample.TopHotspots[0] : null;
+                    var dataHandle = handles.Register(processId, "cpu-sample", jobResult.Artifact, CpuSampleHandleTtl);
+                    var summaryText = jobTop is not null
+                        ? $"Captured {jobSample.TotalSamples} samples over {durationSeconds}s. Top method: {jobTop.Frame.Method} ({jobTop.InclusiveSamples} inclusive / {jobTop.ExclusiveSamples} exclusive). Drill into the full call tree with get_call_tree(handle=\"{dataHandle.Id}\")."
+                        : $"Captured {jobSample.TotalSamples} samples but no method aggregation surfaced — increase durationSeconds or verify the target is under load.";
+                    return DiagnosticResult.OkWithHandle(
+                        jobSample,
+                        summaryText,
+                        dataHandle.Id,
+                        dataHandle.ExpiresAt,
+                        new NextActionHint("get_call_tree", "Walk the merged caller→callee tree built from the same samples.",
+                            new Dictionary<string, object?> { ["handle"] = dataHandle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 }));
+                });
+
+            return DiagnosticResult.OkWithHandle<CpuSample>(
+                data: null!,
+                $"CPU sampling job started (handle {jobHandle.Id}). Poll get_collection_status(handle=\"{jobHandle.Id}\") after ~{durationSeconds}s to retrieve the result.",
+                jobHandle.Id,
+                jobHandle.ExpiresAt,
+                new NextActionHint("get_collection_status", "Poll the background CPU sampling job until status='completed'.",
+                    new Dictionary<string, object?> { ["handle"] = jobHandle.Id }),
+                new NextActionHint("cancel_collection", "Abort the background CPU sampling job if the symptom changed.",
+                    new Dictionary<string, object?> { ["handle"] = jobHandle.Id }));
+        }
+
         var result = await sampler.SampleAsync(processId, TimeSpan.FromSeconds(durationSeconds), topN, srcOpts, cancellationToken).ConfigureAwait(false);
         var sample = result.Summary;
         var top = sample.TopHotspots.Count > 0 ? sample.TopHotspots[0] : null;
@@ -732,9 +774,118 @@ public sealed class DiagnosticTools
                 new Dictionary<string, object?> { ["durationSeconds"] = 20 }));
     }
 
+    [McpServerTool(
+        Name = "get_collection_status",
+        Title = "Get background collection status",
+        Destructive = false,
+        ReadOnly = true,
+        Idempotent = true,
+        UseStructuredContent = true)]
+    [Description(
+        "Polls the status of a background collection started with runAsJob=true (e.g. collect_cpu_sample). " +
+        "Returns the current lifecycle phase (running, completed, failed, canceled), elapsed time, and the " +
+        "final DiagnosticResult once the job terminates. Until then poll periodically (the started job's " +
+        "response message contains the expected duration).")]
+    public static DiagnosticResult<CollectionStatusReport> GetCollectionStatus(
+        IDiagnosticHandleStore handles,
+        [Description("Job handle returned by the original collect_* call with runAsJob=true.")] string handle)
+    {
+        if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<CollectionStatusReport>(nameof(handle), "is required");
+
+        var job = handles.TryGet<DotnetDiagnosticsMcp.Core.Jobs.CollectionJob>(handle);
+        if (job is null)
+        {
+            return DiagnosticResult.Fail<CollectionStatusReport>(
+                $"No collection job found for handle '{handle}'. Either it expired (TTL elapsed), was invalidated when the target process exited, or never existed.",
+                new DiagnosticError("HandleNotFound", $"Unknown or expired handle '{handle}'."),
+                new NextActionHint("collect_cpu_sample", "Restart the collection — pass runAsJob=true to get a fresh handle.",
+                    new Dictionary<string, object?> { ["runAsJob"] = true }));
+        }
+
+        var snap = job.Snapshot();
+        var report = new CollectionStatusReport(
+            Handle: snap.Handle,
+            Kind: snap.Kind,
+            ProcessId: snap.ProcessId,
+            Status: snap.Status.ToString().ToLowerInvariant(),
+            StartedAt: snap.StartedAt,
+            CompletedAt: snap.CompletedAt,
+            ElapsedSeconds: snap.ElapsedSeconds,
+            Result: snap.Result,
+            Error: snap.Error);
+
+        var summary = snap.Status switch
+        {
+            DotnetDiagnosticsMcp.Core.Jobs.CollectionJobStatus.Running =>
+                $"Job '{snap.Kind}' still running ({snap.ElapsedSeconds:F1}s elapsed). Poll again shortly.",
+            DotnetDiagnosticsMcp.Core.Jobs.CollectionJobStatus.Completed =>
+                $"Job '{snap.Kind}' completed in {snap.ElapsedSeconds:F1}s. The full DiagnosticResult is embedded in the result field.",
+            DotnetDiagnosticsMcp.Core.Jobs.CollectionJobStatus.Failed =>
+                $"Job '{snap.Kind}' failed after {snap.ElapsedSeconds:F1}s: {snap.Error?.Message ?? "unknown error"}.",
+            DotnetDiagnosticsMcp.Core.Jobs.CollectionJobStatus.Canceled =>
+                $"Job '{snap.Kind}' was canceled after {snap.ElapsedSeconds:F1}s.",
+            _ => $"Job '{snap.Kind}' status: {snap.Status}.",
+        };
+
+        var hints = snap.IsTerminal
+            ? Array.Empty<NextActionHint>()
+            : new[]
+            {
+                new NextActionHint("get_collection_status", "Poll again — the job has not finished.",
+                    new Dictionary<string, object?> { ["handle"] = snap.Handle }),
+                new NextActionHint("cancel_collection", "Abort the job if you no longer need the result.",
+                    new Dictionary<string, object?> { ["handle"] = snap.Handle }),
+            };
+
+        return DiagnosticResult.Ok(report, summary, hints);
+    }
+
+    [McpServerTool(
+        Name = "cancel_collection",
+        Title = "Cancel background collection",
+        Destructive = false,
+        ReadOnly = true,
+        Idempotent = true,
+        UseStructuredContent = true)]
+    [Description(
+        "Signals a background collection job (started with runAsJob=true) to stop. Cancellation is " +
+        "cooperative — the underlying collector may take a moment to unwind. The job's status will " +
+        "eventually transition to 'canceled'; poll get_collection_status to confirm.")]
+    public static DiagnosticResult<CancelCollectionReport> CancelCollection(
+        DotnetDiagnosticsMcp.Core.Jobs.ICollectionJobRunner jobs,
+        [Description("Job handle returned by the original collect_* call with runAsJob=true.")] string handle)
+    {
+        if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<CancelCollectionReport>(nameof(handle), "is required");
+
+        var requested = jobs.Cancel(handle);
+        var report = new CancelCollectionReport(handle, requested);
+        var summary = requested
+            ? $"Cancellation requested for job '{handle}'. Poll get_collection_status to confirm the final state."
+            : $"No active job found for handle '{handle}'. It may have already completed or expired.";
+
+        return DiagnosticResult.Ok(report, summary,
+            new NextActionHint("get_collection_status", "Confirm the job reached a terminal state.",
+                new Dictionary<string, object?> { ["handle"] = handle }));
+    }
+
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)
         => DiagnosticResult.Fail<T>(
             $"Argument '{parameterName}' {requirement}.",
             new DiagnosticError("InvalidArgument", $"Argument '{parameterName}' {requirement}.", parameterName),
             new NextActionHint("get_diagnostic_capabilities", "Re-issue with valid arguments. See tool schema for ranges and defaults."));
 }
+
+/// <summary>Tool-facing projection of a <see cref="DotnetDiagnosticsMcp.Core.Jobs.CollectionJobSnapshot"/>.</summary>
+public sealed record CollectionStatusReport(
+    string Handle,
+    string Kind,
+    int ProcessId,
+    string Status,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? CompletedAt,
+    double ElapsedSeconds,
+    object? Result,
+    DiagnosticError? Error);
+
+/// <summary>Tool-facing acknowledgement of a cancel_collection call.</summary>
+public sealed record CancelCollectionReport(string Handle, bool CancellationRequested);
