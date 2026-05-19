@@ -29,8 +29,11 @@ namespace DotnetDiagnosticsMcp.Core.CpuSampling;
 public sealed class PerfNativeAotCpuSampler : ICpuSampler
 {
     private readonly ILogger<PerfNativeAotCpuSampler> _logger;
-    private readonly string _perfPath;
+    private readonly string _configuredPath;
     private readonly int _samplingFrequencyHz;
+    private string? _resolvedPath;
+    private bool _resolutionAttempted;
+    private readonly object _resolveLock = new();
 
     public PerfNativeAotCpuSampler(
         ILogger<PerfNativeAotCpuSampler>? logger = null,
@@ -38,41 +41,43 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         int samplingFrequencyHz = 99)
     {
         _logger = logger ?? NullLogger<PerfNativeAotCpuSampler>.Instance;
-        _perfPath = perfPath;
+        _configuredPath = perfPath;
         _samplingFrequencyHz = samplingFrequencyHz;
     }
 
+    private string? ResolvePerfPath()
+    {
+        if (_resolutionAttempted) return _resolvedPath;
+        lock (_resolveLock)
+        {
+            if (_resolutionAttempted) return _resolvedPath;
+            _resolvedPath = PerfBinaryResolver.Resolve(
+                _configuredPath,
+                PerfBinaryResolver.EnumerateDefaultLinuxToolsCandidates,
+                PerfBinaryResolver.ProbePerfVersion);
+            _resolutionAttempted = true;
+            if (_resolvedPath is not null && !string.Equals(_resolvedPath, _configuredPath, StringComparison.Ordinal))
+            {
+                _logger.LogInformation(
+                    "Configured perf path '{Configured}' was unusable; resolved to '{Resolved}' from linux-tools candidates.",
+                    _configuredPath, _resolvedPath);
+            }
+            return _resolvedPath;
+        }
+    }
+
     /// <summary>
-    /// Returns true when the host can run this sampler. Cheap probe — checks the OS, that
-    /// the configured <c>perf</c> binary exists and runs <c>--version</c> successfully.
+    /// Returns true when the host can run this sampler. Cheap probe — checks the OS and
+    /// resolves a working <c>perf</c> binary (trying the configured path first, then
+    /// <c>/usr/lib/linux-tools-*/perf</c> on Debian/Ubuntu/WSL where <c>/usr/bin/perf</c>
+    /// is often a wrapper that requires <c>linux-tools-$(uname -r)</c> to be installed).
     /// Does NOT verify <c>perf_event_paranoid</c>; that surfaces as a "Permission denied"
     /// at the first sample attempt and is reported back to the LLM in the error payload.
     /// </summary>
     public bool IsAvailable()
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) return false;
-        try
-        {
-            using var p = Process.Start(new ProcessStartInfo
-            {
-                FileName = _perfPath,
-                Arguments = "--version",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            });
-            if (p is null) return false;
-            if (!p.WaitForExit(2000))
-            {
-                try { p.Kill(true); } catch { /* best effort */ }
-                return false;
-            }
-            return p.ExitCode == 0;
-        }
-        catch
-        {
-            return false;
-        }
+        return ResolvePerfPath() is not null;
     }
 
     public async Task<CpuSampleResult> SampleAsync(
@@ -128,13 +133,13 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         // implicit in the sampling window. See https://github.com/pedrosakuma/dotnet-diagnostics-mcp
         // notes on NativeAOT validation for the bug history.
         var args = $"record -F {_samplingFrequencyHz} --call-graph dwarf -p {pid} -o \"{outputPath}\" -- sleep {seconds}";
-        _logger.LogDebug("Spawning perf: {Bin} {Args}", _perfPath, args);
+        _logger.LogDebug("Spawning perf: {Bin} {Args}", ResolvePerfPath()!, args);
 
         using var process = new Process
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = _perfPath,
+                FileName = ResolvePerfPath()!,
                 Arguments = args,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -171,7 +176,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = _perfPath,
+                FileName = ResolvePerfPath()!,
                 Arguments = args,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

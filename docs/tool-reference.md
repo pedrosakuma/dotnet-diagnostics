@@ -228,6 +228,17 @@ reports the aggregate symbol-resolution quality of `topHotspots`:
 **Requires CoreCLR.** Returns `not_supported` style behaviour (empty samples) on
 NativeAOT — confirm via `get_diagnostic_capabilities` first.
 
+**NativeAOT fallback** uses the Linux `perf` profiler. On Debian/Ubuntu/WSL the
+distro ships a wrapper at `/usr/bin/perf` that fails unless the matching
+`linux-tools-$(uname -r)` package is installed. The sampler auto-discovers a
+working binary by probing `/usr/lib/linux-tools-*/perf` (kernel-matched first,
+then newest-first); when nothing usable is found, `IsAvailable` returns false
+and the tool reports `not_supported`. Install with:
+
+```bash
+sudo apt install linux-tools-$(uname -r) linux-tools-generic
+```
+
 **Sampling rate** is the runtime default (~1 kHz). A 10-second window typically
 yields a few thousand samples; bump `durationSeconds` for sparse workloads.
 
