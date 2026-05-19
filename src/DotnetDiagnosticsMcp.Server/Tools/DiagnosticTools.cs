@@ -683,9 +683,13 @@ public sealed class DiagnosticTools
         InvestigationSummary baseline, current;
         try
         {
-            baseline = System.Text.Json.JsonSerializer.Deserialize<InvestigationSummary>(baselineSummaryJson)
+            baseline = System.Text.Json.JsonSerializer.Deserialize(
+                    baselineSummaryJson,
+                    DotnetDiagnosticsMcp.Core.Memory.InvestigationSummaryJsonContext.Default.InvestigationSummary)
                 ?? throw new InvalidOperationException("baseline summary deserialized to null");
-            current = System.Text.Json.JsonSerializer.Deserialize<InvestigationSummary>(currentSummaryJson)
+            current = System.Text.Json.JsonSerializer.Deserialize(
+                    currentSummaryJson,
+                    DotnetDiagnosticsMcp.Core.Memory.InvestigationSummaryJsonContext.Default.InvestigationSummary)
                 ?? throw new InvalidOperationException("current summary deserialized to null");
         }
         catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException)

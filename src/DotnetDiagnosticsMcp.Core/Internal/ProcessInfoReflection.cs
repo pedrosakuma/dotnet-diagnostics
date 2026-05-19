@@ -54,6 +54,12 @@ internal static class ProcessInfoReflection
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(
+        "AOT", "IL2070",
+        Justification = "The target type is an internal runtime-shaped record from " +
+            "Microsoft.Diagnostics.NETCore.Client whose properties cannot be statically annotated. " +
+            "Reflection here is a best-effort bridge; callers always fall back to System.Diagnostics.Process " +
+            "when TryGet returns null (e.g. when the trimmer removes the underlying property).")]
     private static T? GetPropertyValue<T>(object instance, Type type, string name)
     {
         var prop = type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);

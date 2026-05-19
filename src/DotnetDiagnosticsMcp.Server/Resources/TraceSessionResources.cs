@@ -15,12 +15,6 @@ namespace DotnetDiagnosticsMcp.Server.Resources;
 [McpServerResourceType]
 public sealed class TraceSessionResources
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = false,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-    };
-
     [McpServerResource(
         UriTemplate = "trace://session/{handle}",
         Name = "trace-session",
@@ -37,21 +31,21 @@ public sealed class TraceSessionResources
         var cpu = handles.TryGet<CpuSampleTraceArtifact>(handle);
         if (cpu is not null)
         {
-            return JsonSerializer.Serialize(new
-            {
-                kind = "cpu-sample",
-                processId = cpu.ProcessId,
-                startedAt = cpu.StartedAt,
-                duration = cpu.Duration,
-                totalSamples = cpu.TotalSamples,
-                root = cpu.Root,
-            }, JsonOptions);
+            return JsonSerializer.Serialize(
+                new CpuSampleSessionPayload(
+                    Kind: "cpu-sample",
+                    ProcessId: cpu.ProcessId,
+                    StartedAt: cpu.StartedAt,
+                    Duration: cpu.Duration,
+                    TotalSamples: cpu.TotalSamples,
+                    Root: cpu.Root),
+                TraceSessionJsonContext.Default.CpuSampleSessionPayload);
         }
 
-        return JsonSerializer.Serialize(new
-        {
-            kind = "unknown",
-            error = $"Handle '{handle}' is unknown or expired. Re-run the collector to issue a fresh handle.",
-        }, JsonOptions);
+        return JsonSerializer.Serialize(
+            new UnknownSessionPayload(
+                Kind: "unknown",
+                Error: $"Handle '{handle}' is unknown or expired. Re-run the collector to issue a fresh handle."),
+            TraceSessionJsonContext.Default.UnknownSessionPayload);
     }
 }

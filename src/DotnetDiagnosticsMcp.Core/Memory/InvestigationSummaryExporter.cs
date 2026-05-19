@@ -32,12 +32,6 @@ public sealed record ExportedInvestigationSummary(
 
 public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
 {
-    private static readonly JsonSerializerOptions JsonOpts = new()
-    {
-        WriteIndented = true,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-    };
-
     private readonly IProvenanceCollector _provenance;
     private readonly TimeProvider _clock;
     private readonly Func<string> _idFactory;
@@ -111,7 +105,7 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
         var rendered = request.Format switch
         {
             SummaryFormat.Markdown => RenderMarkdown(summary, request.Handle),
-            _ => JsonSerializer.Serialize(summary, JsonOpts),
+            _ => JsonSerializer.Serialize(summary, InvestigationSummaryJsonContext.Default.InvestigationSummary),
         };
 
         return new ExportedInvestigationSummary(summary, request.Format, rendered);
