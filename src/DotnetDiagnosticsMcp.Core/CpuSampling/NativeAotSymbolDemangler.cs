@@ -45,17 +45,28 @@ public static class NativeAotSymbolDemangler
     {
         if (string.IsNullOrEmpty(mangled)) return mangled ?? string.Empty;
 
-        // C / P/Invoke / loader symbols — not managed, never mangle.
-        if (LooksLikeNativeSymbol(mangled)) return mangled;
+        // Positive evidence gate (fix for #29 review #1 + #2): only rewrite strings that
+        // actually look like NativeAOT-mangled managed names. Everything else — already-
+        // demangled strings, C/P-Invoke names like pthread_mutex_lock, libc, kernel — is
+        // returned unchanged so Demangle is safely idempotent on its own output.
+        if (!LooksLikeNativeAotMangled(mangled)) return mangled;
 
-        // Special-case boxed unbox stubs: "<Boxed>Foo__<unbox>Foo__Bar" → "Foo.Bar (boxed)".
-        // Drop the duplicated body and keep the trailing managed name only.
+        // Boxed unbox stubs: "<Boxed>X__<unbox>Y__M". When X == Y the stub forwards directly
+        // and we collapse to "X.M (boxed)". When they differ (explicit interface impls) we
+        // preserve both halves so the call site stays unambiguous.
         if (mangled.StartsWith("<Boxed>", StringComparison.Ordinal))
         {
             var unboxIdx = mangled.IndexOf("__<unbox>", StringComparison.Ordinal);
             if (unboxIdx > 0)
             {
+                var boxedHalf = mangled["<Boxed>".Length..unboxIdx];
                 var tail = mangled[(unboxIdx + "__<unbox>".Length)..];
+                var tailFirstDouble = IndexOfDoubleUnderscore(tail, 0);
+                var unboxTypeHalf = tailFirstDouble >= 0 ? tail[..tailFirstDouble] : tail;
+                if (!string.Equals(boxedHalf, unboxTypeHalf, StringComparison.Ordinal))
+                {
+                    return Demangle(boxedHalf) + " → " + Demangle(tail) + " (boxed)";
+                }
                 return Demangle(tail) + " (boxed)";
             }
         }
@@ -65,25 +76,13 @@ public static class NativeAotSymbolDemangler
             return Demangle(mangled["unbox_".Length..]) + " (unbox)";
         }
 
-        // C++ ItaniumABI vtables and similar.
-        if (mangled.StartsWith("_ZTV", StringComparison.Ordinal) ||
-            mangled.StartsWith("_ZTI", StringComparison.Ordinal) ||
-            mangled.StartsWith("_ZTS", StringComparison.Ordinal))
-        {
-            return mangled;
-        }
-
-        var working = mangled;
-
         // S_P_CoreLib_X_Y__Method → System.Private.CoreLib + X.Y.Method.
-        // Done before the generic recursion because the prefix itself contains underscores
-        // we want to collapse atomically.
-        if (working.StartsWith("S_P_CoreLib_", StringComparison.Ordinal))
+        if (mangled.StartsWith("S_P_CoreLib_", StringComparison.Ordinal))
         {
-            return "System.Private.CoreLib." + DemangleCore(working["S_P_CoreLib_".Length..]);
+            return "System.Private.CoreLib." + DemangleCore(mangled["S_P_CoreLib_".Length..]);
         }
 
-        return DemangleCore(working);
+        return DemangleCore(mangled);
     }
 
     private static string DemangleCore(string mangled)
@@ -236,13 +235,10 @@ public static class NativeAotSymbolDemangler
         return s.Length > 0;
     }
 
-    /// <summary>True when the symbol does not look like a NativeAOT-mangled managed method —
-    /// in those cases the demangler should pass the input through unchanged.</summary>
-    private static bool LooksLikeNativeSymbol(string s)
+    /// <summary>Recognises well-known C / loader / kernel symbols that should always
+    /// pass through Demangle unchanged regardless of underscore content.</summary>
+    private static bool IsKnownNativeSymbol(string s)
     {
-        // P/Invoke imports keep their C name, e.g. "CryptoNative_Foo", "SystemNative_Bar".
-        // Detect the "<libname>Native_" prefix conservatively: leading PascalCase chunk
-        // followed by "Native_" is a strong native marker.
         if (s.StartsWith("CryptoNative_", StringComparison.Ordinal) ||
             s.StartsWith("SystemNative_", StringComparison.Ordinal) ||
             s.StartsWith("GlobalizationNative_", StringComparison.Ordinal) ||
@@ -253,7 +249,6 @@ public static class NativeAotSymbolDemangler
             return true;
         }
 
-        // Common libc / kernel frames.
         if (s.StartsWith("__libc_", StringComparison.Ordinal) ||
             s.StartsWith("__GI_", StringComparison.Ordinal) ||
             s.StartsWith("[k", StringComparison.Ordinal) ||
@@ -262,14 +257,28 @@ public static class NativeAotSymbolDemangler
             return true;
         }
 
-        // No underscore AND no dot → single-token C symbol like "realloc".
-        if (s.IndexOf('_') < 0 && s.IndexOf('.') < 0) return true;
+        // C++ ItaniumABI manglings — not managed.
+        if (s.StartsWith("_Z", StringComparison.Ordinal)) return true;
 
         return false;
     }
 
+    /// <summary>True when the symbol carries positive evidence of NativeAOT mangling. Names
+    /// without these markers (e.g. <c>pthread_mutex_lock</c>, <c>clock_gettime</c>,
+    /// or an already-demangled <c>HeaderDictionary.get_ContentLength</c>) are not rewritten
+    /// — they pass through Demangle unchanged.</summary>
+    private static bool LooksLikeNativeAotMangled(string s)
+    {
+        if (IsKnownNativeSymbol(s)) return false;
+        return s.StartsWith("S_P_", StringComparison.Ordinal)
+            || s.StartsWith("<Boxed>", StringComparison.Ordinal)
+            || s.StartsWith("unbox_", StringComparison.Ordinal)
+            || s.Contains("__", StringComparison.Ordinal);
+    }
+
     /// <summary>Provenance of a frame's display name. Threaded into <c>CpuSampleTraceArtifact</c>
     /// so the LLM knows whether to trust the name as-is or treat it as a heuristic guess.</summary>
+    [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<SymbolSource>))]
     public enum SymbolSource
     {
         Unknown = 0,
@@ -283,6 +292,9 @@ public static class NativeAotSymbolDemangler
         Stripped,
         /// <summary>Resolved via Windows PDB / DIA (ETW kernel profiling path).</summary>
         PdbResolved,
+        /// <summary>Trace mixed multiple distinct sources (e.g. some frames stripped, others
+        /// demangled). The LLM should not assume uniform quality across the trace.</summary>
+        Mixed,
     }
 
     /// <summary>Classifies a perf-emitted symbol so the artifact can carry a coarse source
@@ -292,29 +304,29 @@ public static class NativeAotSymbolDemangler
         if (string.IsNullOrEmpty(symbol)) return SymbolSource.Stripped;
         if (symbol == "[unknown]" || symbol.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
             return SymbolSource.Stripped;
-        if (LooksLikeNativeSymbol(symbol)) return SymbolSource.Native;
-        // Heuristic: a NativeAOT-mangled symbol contains "__" or starts with "S_P_".
-        if (symbol.StartsWith("S_P_", StringComparison.Ordinal) ||
-            symbol.Contains("__", StringComparison.Ordinal) ||
-            symbol.StartsWith("<Boxed>", StringComparison.Ordinal))
-        {
-            return SymbolSource.ElfMangled;
-        }
-        return SymbolSource.ElfDemangled;
+        if (IsKnownNativeSymbol(symbol)) return SymbolSource.Native;
+        if (LooksLikeNativeAotMangled(symbol)) return SymbolSource.ElfMangled;
+        // No NativeAOT markers and not a known native prefix: a name with '.' looks like an
+        // already-demangled managed display string; otherwise treat as a C symbol.
+        if (symbol.Contains('.', StringComparison.Ordinal)) return SymbolSource.ElfDemangled;
+        return SymbolSource.Native;
     }
 
-    /// <summary>Combines two source labels into the coarser of the two. Used to roll up
-    /// per-frame classifications into a single trace-level provenance flag.</summary>
+    /// <summary>Combines two source labels for trace-level rollup. Identical labels collapse;
+    /// ElfMangled+ElfDemangled both indicate managed names and collapse to ElfDemangled (the
+    /// artifact ships demangled strings); any other combination of distinct concrete sources
+    /// produces <see cref="SymbolSource.Mixed"/> so the consumer knows quality is not uniform.</summary>
     public static SymbolSource Combine(SymbolSource a, SymbolSource b)
     {
         if (a == SymbolSource.Unknown) return b;
         if (b == SymbolSource.Unknown) return a;
         if (a == b) return a;
-        // Different non-unknown sources → "mixed" via a sentinel: callers expect a single
-        // enum, so the lowest ordinal that is not Unknown is used as the dominant one.
-        // For our purposes Mangled trumps Native trumps Demangled trumps Stripped because
-        // mangled is the most actionable signal for the LLM (it can ask for a demangle pass).
-        return (SymbolSource)Math.Min((int)a, (int)b);
+        if ((a == SymbolSource.ElfMangled && b == SymbolSource.ElfDemangled) ||
+            (a == SymbolSource.ElfDemangled && b == SymbolSource.ElfMangled))
+        {
+            return SymbolSource.ElfDemangled;
+        }
+        return SymbolSource.Mixed;
     }
 
     // Reserved for future use: surface culture-invariant numeric formatting helpers.

@@ -29,8 +29,11 @@ namespace DotnetDiagnosticsMcp.Core.CpuSampling;
 public sealed class PerfNativeAotCpuSampler : ICpuSampler
 {
     private readonly ILogger<PerfNativeAotCpuSampler> _logger;
-    private readonly string _perfPath;
+    private readonly string _configuredPath;
     private readonly int _samplingFrequencyHz;
+    private string? _resolvedPath;
+    private bool _resolutionAttempted;
+    private readonly object _resolveLock = new();
 
     public PerfNativeAotCpuSampler(
         ILogger<PerfNativeAotCpuSampler>? logger = null,
@@ -38,41 +41,43 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         int samplingFrequencyHz = 99)
     {
         _logger = logger ?? NullLogger<PerfNativeAotCpuSampler>.Instance;
-        _perfPath = perfPath;
+        _configuredPath = perfPath;
         _samplingFrequencyHz = samplingFrequencyHz;
     }
 
+    private string? ResolvePerfPath()
+    {
+        if (_resolutionAttempted) return _resolvedPath;
+        lock (_resolveLock)
+        {
+            if (_resolutionAttempted) return _resolvedPath;
+            _resolvedPath = PerfBinaryResolver.Resolve(
+                _configuredPath,
+                PerfBinaryResolver.EnumerateDefaultLinuxToolsCandidates,
+                PerfBinaryResolver.ProbePerfVersion);
+            _resolutionAttempted = true;
+            if (_resolvedPath is not null && !string.Equals(_resolvedPath, _configuredPath, StringComparison.Ordinal))
+            {
+                _logger.LogInformation(
+                    "Configured perf path '{Configured}' was unusable; resolved to '{Resolved}' from linux-tools candidates.",
+                    _configuredPath, _resolvedPath);
+            }
+            return _resolvedPath;
+        }
+    }
+
     /// <summary>
-    /// Returns true when the host can run this sampler. Cheap probe — checks the OS, that
-    /// the configured <c>perf</c> binary exists and runs <c>--version</c> successfully.
+    /// Returns true when the host can run this sampler. Cheap probe — checks the OS and
+    /// resolves a working <c>perf</c> binary (trying the configured path first, then
+    /// <c>/usr/lib/linux-tools-*/perf</c> on Debian/Ubuntu/WSL where <c>/usr/bin/perf</c>
+    /// is often a wrapper that requires <c>linux-tools-$(uname -r)</c> to be installed).
     /// Does NOT verify <c>perf_event_paranoid</c>; that surfaces as a "Permission denied"
     /// at the first sample attempt and is reported back to the LLM in the error payload.
     /// </summary>
     public bool IsAvailable()
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) return false;
-        try
-        {
-            using var p = Process.Start(new ProcessStartInfo
-            {
-                FileName = _perfPath,
-                Arguments = "--version",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            });
-            if (p is null) return false;
-            if (!p.WaitForExit(2000))
-            {
-                try { p.Kill(true); } catch { /* best effort */ }
-                return false;
-            }
-            return p.ExitCode == 0;
-        }
-        catch
-        {
-            return false;
-        }
+        return ResolvePerfPath() is not null;
     }
 
     public async Task<CpuSampleResult> SampleAsync(
@@ -106,8 +111,11 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         {
             await RecordAsync(processId, perfDataPath, duration, cancellationToken).ConfigureAwait(false);
             var script = await RunScriptAsync(perfDataPath, cancellationToken).ConfigureAwait(false);
-            var (total, hotspots, root, symbolSource) = Aggregate(script, processId, topN);
-            var summary = new CpuSample(processId, startedAt, duration, total, hotspots);
+            // Trust perf record -p <pid> for process scoping. Passing processId=0 here avoids
+            // a /proc/<pid>/task post-hoc race that would discard samples from threadpool /
+            // GC workers that exited between recording and parsing.
+            var (total, hotspots, root, symbolSource) = Aggregate(script, processId: 0, topN);
+            var summary = new CpuSample(processId, startedAt, duration, total, hotspots) { SymbolSource = symbolSource };
             var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, null, null, symbolSource);
             return new CpuSampleResult(summary, artifact);
         }
@@ -120,14 +128,18 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
     private async Task RecordAsync(int pid, string outputPath, TimeSpan duration, CancellationToken ct)
     {
         var seconds = Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
-        var args = $"record -F {_samplingFrequencyHz} -g -p {pid} -o \"{outputPath}\" -- sleep {seconds}";
-        _logger.LogDebug("Spawning perf: {Bin} {Args}", _perfPath, args);
+        // NativeAOT binaries may not always emit frame pointers; dwarf unwinding is required
+        // for reliable callstacks. The trade-off is larger perf.data files, but the cap is
+        // implicit in the sampling window. See https://github.com/pedrosakuma/dotnet-diagnostics-mcp
+        // notes on NativeAOT validation for the bug history.
+        var args = $"record -F {_samplingFrequencyHz} --call-graph dwarf -p {pid} -o \"{outputPath}\" -- sleep {seconds}";
+        _logger.LogDebug("Spawning perf: {Bin} {Args}", ResolvePerfPath()!, args);
 
         using var process = new Process
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = _perfPath,
+                FileName = ResolvePerfPath()!,
                 Arguments = args,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -164,7 +176,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = _perfPath,
+                FileName = ResolvePerfPath()!,
                 Arguments = args,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -206,6 +218,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         var builder = new CallTreeBuilder();
         long total = 0;
         var aggregatedSource = NativeAotSymbolDemangler.SymbolSource.Unknown;
+        var anyMangledFrameDemangled = false;
 
         foreach (var sample in samples)
         {
@@ -218,11 +231,18 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             for (var i = sample.Frames.Count - 1; i >= 0; i--)
             {
                 var f = sample.Frames[i];
-                aggregatedSource = NativeAotSymbolDemangler.Combine(aggregatedSource, NativeAotSymbolDemangler.Classify(f.Symbol));
+                var classification = NativeAotSymbolDemangler.Classify(f.Symbol);
+                aggregatedSource = NativeAotSymbolDemangler.Combine(aggregatedSource, classification);
                 if (!displayCache.TryGetValue(f.Symbol, out var demangled))
                 {
                     demangled = NativeAotSymbolDemangler.Demangle(f.Symbol);
                     displayCache[f.Symbol] = demangled;
+                    if (classification == NativeAotSymbolDemangler.SymbolSource.ElfMangled &&
+                        !ReferenceEquals(demangled, f.Symbol) &&
+                        !string.Equals(demangled, f.Symbol, StringComparison.Ordinal))
+                    {
+                        anyMangledFrameDemangled = true;
+                    }
                 }
                 var key = string.IsNullOrEmpty(f.Module) ? demangled : f.Module + "!" + demangled;
                 rootToLeaf.Add((key, f.Module, demangled));
@@ -264,11 +284,14 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             })
             .ToList();
 
-        // If any frame was demangled, promote the rolled-up label to ElfDemangled because
-        // the artifact now ships demangled strings even when individual frames were raw.
-        if (aggregatedSource == NativeAotSymbolDemangler.SymbolSource.ElfMangled && displayCache.Any(kv => kv.Key != kv.Value))
+        // Promote ElfMangled → ElfDemangled only when at least one mangled frame was actually
+        // rewritten by the demangler (review-fix: previous "any cached display changed" check
+        // could promote on the back of an unrelated non-mangled frame).
+        if (anyMangledFrameDemangled)
         {
-            aggregatedSource = NativeAotSymbolDemangler.SymbolSource.ElfDemangled;
+            aggregatedSource = NativeAotSymbolDemangler.Combine(
+                aggregatedSource,
+                NativeAotSymbolDemangler.SymbolSource.ElfDemangled);
         }
 
         return (total, hotspots, builder.Build(), aggregatedSource);

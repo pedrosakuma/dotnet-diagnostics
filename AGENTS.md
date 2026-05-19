@@ -88,6 +88,16 @@ The .NET diagnostic IPC socket at `/tmp/dotnet-diagnostic-<pid>` inherits the **
 - **Local dev**: `docker run --user 0 …` on the sidecar (target runs as root).
 - **K8s**: pod-level `securityContext` with matching `runAsUser` + `runAsGroup` + `fsGroup`. See [`deploy/k8s/sample-sidecar.yaml`](./deploy/k8s/sample-sidecar.yaml).
 
+### 🪪 `CAP_SYS_PTRACE` for ClrMD-backed tools — UID alone is not enough on Linux
+
+`collect_thread_snapshot`, `inspect_live_heap`, `inspect_dump` (against a live PID) and `collect_process_dump` attach via `ptrace(2)`. On Linux with `kernel.yama.ptrace_scope=1` (Debian/Ubuntu/WSL default) same-UID peer attach is blocked.
+
+- **Docker (local)**: `--cap-add SYS_PTRACE` on the **sidecar** container.
+- **K8s**: `capabilities.add: ["SYS_PTRACE"]` on the sidecar container's `securityContext`. See [`deploy/k8s/sample-sidecar.yaml`](./deploy/k8s/sample-sidecar.yaml).
+- **Bare host**: `sudo sysctl -w kernel.yama.ptrace_scope=0`.
+
+Failure surfaces as a structured `PermissionDenied` envelope (see #32). EventPipe-based tools (counters, cpu_sample, exceptions, gc, event_source) do **not** need `CAP_SYS_PTRACE`.
+
 ### 🐳 `.dockerignore` must re-include `.editorconfig`
 
 Our `.dockerignore` starts with `*` (deny-all) and re-includes specific paths. **If you remove the `!.editorconfig` line, the publish breaks** with CA1848/CA1873 errors because the analyzer suppressions live in `.editorconfig`. Same applies to `!samples/` for sample images.

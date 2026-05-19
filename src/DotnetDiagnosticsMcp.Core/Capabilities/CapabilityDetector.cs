@@ -38,11 +38,17 @@ public sealed class CapabilityDetector : ICapabilityDetector
         var runtimeVersion = snapshot?.ClrProductVersionString ?? string.Empty;
 
         var probe = await ProbeSampleProfilerAsync(client, cancellationToken).ConfigureAwait(false);
-        var runtime = ClassifyRuntime(snapshot, probe);
+        var loadedModules = LoadedModuleInspector.TryGetSignature(processId);
+        var runtime = ClassifyRuntime(snapshot, probe, loadedModules);
 
         var perfAvailable = _perfSampler is not null && _perfSampler.IsAvailable();
         var etwAvailable = _etwSampler is not null && _etwSampler.IsAvailable();
-        var canSampleCpu = (runtime == RuntimeFlavor.CoreClr && probe.SampleEventsReceived > 0) ||
+        // CoreCLR always supports SampleProfiler; whether the 2-second probe happened to
+        // catch a Thread/Sample event is a function of workload, not capability. As long
+        // as we classified the runtime as CoreCLR (preferably from module inspection,
+        // otherwise from the SampleProfiler probe itself) we can sample CPU. NativeAOT
+        // relies on an out-of-process sampler (perf on Linux, ETW on Windows).
+        var canSampleCpu = (runtime == RuntimeFlavor.CoreClr) ||
                            (runtime == RuntimeFlavor.NativeAot && (perfAvailable || etwAvailable));
         var canCollectGcDump = runtime == RuntimeFlavor.CoreClr;
         var canReadCounters = probe.SessionStarted;
@@ -112,19 +118,35 @@ public sealed class CapabilityDetector : ICapabilityDetector
 
     private static async Task<ProbeResult> DrainProbeAsync(EventPipeSession session, CancellationToken ct)
     {
-        long received = 0;
+        long anyEvents = 0;
+        long sampleEvents = 0;
         var counter = new System.Threading.SemaphoreSlim(0, 1);
 
         var sourceTask = Task.Run(() =>
         {
             using var source = new Microsoft.Diagnostics.Tracing.EventPipeEventSource(session.EventStream);
+            // AllEvents covers manifests + metadata + every payload event, so it is reliable
+            // for detecting "the session started and the runtime is streaming something". Used
+            // only for the SessionStarted signal and to gate the wait.
             source.AllEvents += _ =>
             {
-                if (System.Threading.Interlocked.Increment(ref received) == 1)
+                if (System.Threading.Interlocked.Increment(ref anyEvents) == 1)
                 {
                     counter.Release();
                 }
             };
+
+            // Real SampleProfiler samples are a strong CoreCLR-only signal. NativeAOT is
+            // a no-op for this provider, but its EventPipe stream still emits manifests
+            // and metadata events — counting those here previously caused a misclassification
+            // regression when /proc inspection wasn't possible (e.g. foreign OS or restricted
+            // containers). Track sample events explicitly so the classifier fallback can
+            // distinguish "the runtime is alive on EventPipe" from "the runtime actually
+            // emits SampleProfiler samples".
+            source.Dynamic.AddCallbackForProviderEvent(
+                "Microsoft-DotNETCore-SampleProfiler",
+                "Thread/Sample",
+                _ => System.Threading.Interlocked.Increment(ref sampleEvents));
 
             try
             {
@@ -149,24 +171,41 @@ public sealed class CapabilityDetector : ICapabilityDetector
         await Task.Delay(TimeSpan.FromMilliseconds(250), ct).ConfigureAwait(false);
 
         _ = sourceTask;
-        return new ProbeResult(SessionStarted: true, SampleEventsReceived: received, FailureReason: null);
+        return new ProbeResult(SessionStarted: true, SampleEventsReceived: sampleEvents, FailureReason: null);
     }
 
-    private static RuntimeFlavor ClassifyRuntime(ProcessInfoSnapshot? snapshot, ProbeResult probe)
+    private static RuntimeFlavor ClassifyRuntime(ProcessInfoSnapshot? snapshot, ProbeResult probe, LoadedModuleSignature? modules)
     {
         if (!probe.SessionStarted)
         {
             return RuntimeFlavor.Unknown;
         }
 
-        // SampleProfiler is a strong CoreCLR-only signal.
+        // Strongest signal: inspect loaded modules of the target process. CoreCLR-hosted apps
+        // always load libcoreclr.so / coreclr.dll; a self-contained NativeAOT binary never does.
+        // The previous heuristic ("any EventPipe event => CoreCLR") misclassified NativeAOT
+        // because the runtime still emits provider manifests / metadata over EventPipe even when
+        // SampleProfiler is a no-op.
+        if (modules is { } sig)
+        {
+            if (sig.HasCoreClr)
+            {
+                return RuntimeFlavor.CoreClr;
+            }
+
+            if (sig.Inspected && !sig.HasCoreClr)
+            {
+                return RuntimeFlavor.NativeAot;
+            }
+        }
+
+        // Fallbacks when we couldn't inspect loaded modules (permission, foreign OS, etc.):
+        // SampleProfiler emitting samples is still a strong CoreCLR-only signal.
         if (probe.SampleEventsReceived > 0)
         {
             return RuntimeFlavor.CoreClr;
         }
 
-        // The PortableRuntimeIdentifier on NativeAOT often reflects the published RID;
-        // and SampleProfiler does not emit events under AOT today.
         if (snapshot is null)
         {
             return RuntimeFlavor.Unknown;

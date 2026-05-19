@@ -26,6 +26,38 @@ delivered over Streamable HTTP at `POST /mcp` and require an
 "Window-bound" means the duration is the dominant cost; the tool will block for
 ~`durationSeconds`.
 
+### Linux runtime requirements
+
+EventPipe-based tools (the ones listed in the index above) only need the
+diagnostic IPC socket, which works as long as the MCP server runs as the
+**same UID** as the target process. ClrMD-backed tools added since the MVP —
+`collect_thread_snapshot`, `inspect_live_heap`, `inspect_dump` against a live
+PID, and `collect_process_dump` — additionally call `ptrace(PTRACE_ATTACH, …)`
+under the hood. On Linux, matching UIDs is **not** sufficient when the host's
+`kernel.yama.ptrace_scope` is `1` (the Debian/Ubuntu/WSL default): the kernel
+blocks same-UID peer attach.
+
+If a request lands in that state you'll get a structured error envelope (see
+issue #32):
+
+```json
+{ "error": { "kind": "PermissionDenied",
+             "message": "Could not PTRACE_ATTACH to any thread of the process N." } }
+```
+
+Mitigations:
+
+- **Docker:** add `--cap-add SYS_PTRACE` to the **sidecar** container.
+- **Kubernetes:** set `capabilities.add: ["SYS_PTRACE"]` on the sidecar
+  container's `securityContext` (see [`deploy/k8s/sample-sidecar.yaml`](../deploy/k8s/sample-sidecar.yaml)).
+- **Bare host / local dev:** `sudo sysctl -w kernel.yama.ptrace_scope=0`, or
+  run the MCP server as root.
+
+When ptrace cannot be granted, fall back to `collect_process_dump` +
+`inspect_dump` (the dump capture runs in the target's own process, so it does
+not require ptrace from the sidecar — but writing the dump file is still
+gated on the diagnostic socket UID).
+
 ---
 
 ## `list_dotnet_processes`
@@ -173,12 +205,39 @@ top-N hotspots by inclusive and exclusive sample counts.
       "inclusiveSamples": 1820,
       "exclusiveSamples": 320
     }
-  ]
+  ],
+  "symbolSource": "ElfDemangled"
 }
 ```
 
+`symbolSource` is populated for **NativeAOT** samples only (see #35) and
+reports the aggregate symbol-resolution quality of `topHotspots`:
+
+- `ElfDemangled` — every managed frame went through the demangler. Trust the
+  names as-is.
+- `ElfMangled` — perf returned managed-looking symbols but demangling did not
+  apply (e.g. lookup table missing). Names are still usable but may be `S_P_…`-style.
+- `Native` — frames are non-managed (libc / P/Invoke / kernel). Expected for
+  threadpool/GC threads.
+- `Stripped` — perf returned `[unknown]` or raw addresses; names are not
+  actionable. Likely missing build-id / PDB on the host.
+- `Mixed` — quality varies across `topHotspots`. Inspect per-frame.
+- `Unknown` / omitted — CoreCLR sample (the EventPipe path resolves managed
+  names directly; this field does not apply).
+
 **Requires CoreCLR.** Returns `not_supported` style behaviour (empty samples) on
 NativeAOT — confirm via `get_diagnostic_capabilities` first.
+
+**NativeAOT fallback** uses the Linux `perf` profiler. On Debian/Ubuntu/WSL the
+distro ships a wrapper at `/usr/bin/perf` that fails unless the matching
+`linux-tools-$(uname -r)` package is installed. The sampler auto-discovers a
+working binary by probing `/usr/lib/linux-tools-*/perf` (kernel-matched first,
+then newest-first); when nothing usable is found, `IsAvailable` returns false
+and the tool reports `not_supported`. Install with:
+
+```bash
+sudo apt install linux-tools-$(uname -r) linux-tools-generic
+```
 
 **Sampling rate** is the runtime default (~1 kHz). A 10-second window typically
 yields a few thousand samples; bump `durationSeconds` for sparse workloads.
@@ -218,12 +277,19 @@ exception thrown by the process during the window.
       "exceptionHResult": "0x80131509",
       "threadId": 17
     }
-  ]
+  ],
+  "recentCap": 100
 }
 ```
 
 **Notes:** also catches "first-chance" exceptions caught by the app — useful
 for detecting error rates much higher than the response logs suggest.
+
+`totalExceptions` and `byType` are always exact for the window. `recent` is
+capped to `maxRecent` (default `100`, echoed back as `recentCap`); when
+`totalExceptions > recentCap` it contains the first `recentCap` exceptions
+observed, not a random sample. Raise `maxRecent` for storms where the tail
+matters; lower it when you only want a quick signal.
 
 ---
 
