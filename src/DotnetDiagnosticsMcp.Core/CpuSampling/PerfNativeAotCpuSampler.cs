@@ -206,6 +206,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         var builder = new CallTreeBuilder();
         long total = 0;
         var aggregatedSource = NativeAotSymbolDemangler.SymbolSource.Unknown;
+        var anyMangledFrameDemangled = false;
 
         foreach (var sample in samples)
         {
@@ -218,11 +219,18 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             for (var i = sample.Frames.Count - 1; i >= 0; i--)
             {
                 var f = sample.Frames[i];
-                aggregatedSource = NativeAotSymbolDemangler.Combine(aggregatedSource, NativeAotSymbolDemangler.Classify(f.Symbol));
+                var classification = NativeAotSymbolDemangler.Classify(f.Symbol);
+                aggregatedSource = NativeAotSymbolDemangler.Combine(aggregatedSource, classification);
                 if (!displayCache.TryGetValue(f.Symbol, out var demangled))
                 {
                     demangled = NativeAotSymbolDemangler.Demangle(f.Symbol);
                     displayCache[f.Symbol] = demangled;
+                    if (classification == NativeAotSymbolDemangler.SymbolSource.ElfMangled &&
+                        !ReferenceEquals(demangled, f.Symbol) &&
+                        !string.Equals(demangled, f.Symbol, StringComparison.Ordinal))
+                    {
+                        anyMangledFrameDemangled = true;
+                    }
                 }
                 var key = string.IsNullOrEmpty(f.Module) ? demangled : f.Module + "!" + demangled;
                 rootToLeaf.Add((key, f.Module, demangled));
@@ -264,11 +272,14 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             })
             .ToList();
 
-        // If any frame was demangled, promote the rolled-up label to ElfDemangled because
-        // the artifact now ships demangled strings even when individual frames were raw.
-        if (aggregatedSource == NativeAotSymbolDemangler.SymbolSource.ElfMangled && displayCache.Any(kv => kv.Key != kv.Value))
+        // Promote ElfMangled → ElfDemangled only when at least one mangled frame was actually
+        // rewritten by the demangler (review-fix: previous "any cached display changed" check
+        // could promote on the back of an unrelated non-mangled frame).
+        if (anyMangledFrameDemangled)
         {
-            aggregatedSource = NativeAotSymbolDemangler.SymbolSource.ElfDemangled;
+            aggregatedSource = NativeAotSymbolDemangler.Combine(
+                aggregatedSource,
+                NativeAotSymbolDemangler.SymbolSource.ElfDemangled);
         }
 
         return (total, hotspots, builder.Build(), aggregatedSource);

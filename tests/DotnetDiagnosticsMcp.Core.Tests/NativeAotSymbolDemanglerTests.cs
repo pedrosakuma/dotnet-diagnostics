@@ -119,11 +119,89 @@ public class NativeAotSymbolDemanglerTests
     [InlineData("0x7fa1234abcde", NativeAotSymbolDemangler.SymbolSource.Stripped)]
     [InlineData("__libc_start_main", NativeAotSymbolDemangler.SymbolSource.Native)]
     [InlineData("CryptoNative_BioRead", NativeAotSymbolDemangler.SymbolSource.Native)]
+    [InlineData("pthread_mutex_lock", NativeAotSymbolDemangler.SymbolSource.Native)]
+    [InlineData("clock_gettime", NativeAotSymbolDemangler.SymbolSource.Native)]
+    [InlineData("epoll_wait", NativeAotSymbolDemangler.SymbolSource.Native)]
     [InlineData("S_P_CoreLib_System_String__Equals", NativeAotSymbolDemangler.SymbolSource.ElfMangled)]
     [InlineData("Microsoft_AspNetCore_Http_T__M", NativeAotSymbolDemangler.SymbolSource.ElfMangled)]
     [InlineData("MyType.MyMethod", NativeAotSymbolDemangler.SymbolSource.ElfDemangled)]
     public void Classify_ReturnsExpectedSource(string? symbol, NativeAotSymbolDemangler.SymbolSource expected)
     {
         NativeAotSymbolDemangler.Classify(symbol).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("pthread_mutex_lock")]
+    [InlineData("clock_gettime")]
+    [InlineData("epoll_wait")]
+    [InlineData("malloc_trim")]
+    [InlineData("curl_easy_perform")]
+    public void Demangle_GenericNativeFunctionsWithUnderscores_PassThrough(string nativeSymbol)
+    {
+        // Review fix #1: `_` in C symbol names must not be converted to '.' just because the
+        // hardcoded native prefix allowlist doesn't list every libc / PInvoke function.
+        NativeAotSymbolDemangler.Demangle(nativeSymbol).Should().Be(nativeSymbol);
+    }
+
+    [Theory]
+    [InlineData("MyNamespace.Type.get_Value")]
+    [InlineData("HeaderDictionary.get_ContentLength")]
+    [InlineData("System.String.Equals")]
+    public void Demangle_AlreadyDemangledNames_AreReturnedUnchanged(string display)
+    {
+        // Review fix #2: Demangle must be idempotent on its own output. Previously names
+        // containing `_` (e.g. property accessor get_X) had the underscore rewritten to '.'.
+        NativeAotSymbolDemangler.Demangle(display).Should().Be(display);
+        NativeAotSymbolDemangler.Demangle(NativeAotSymbolDemangler.Demangle(display)).Should().Be(display);
+    }
+
+    [Fact]
+    public void Demangle_IsIdempotent_OnMangledInputAfterFirstPass()
+    {
+        const string mangled = "S_P_CoreLib_System_String__Equals";
+        var first = NativeAotSymbolDemangler.Demangle(mangled);
+        var second = NativeAotSymbolDemangler.Demangle(first);
+        second.Should().Be(first);
+    }
+
+    [Fact]
+    public void Demangle_BoxedUnboxStub_MismatchedHalves_PreservesBoth()
+    {
+        // Review fix #4: when the boxed and unbox halves differ (explicit interface impl
+        // pattern), neither half can be silently discarded.
+        var result = NativeAotSymbolDemangler.Demangle(
+            "<Boxed>IFoo__<unbox>ConcreteFoo__M");
+
+        result.Should().EndWith(" (boxed)");
+        result.Should().Contain("IFoo");
+        result.Should().Contain("ConcreteFoo");
+        result.Should().Contain("M");
+    }
+
+    [Fact]
+    public void Combine_DistinctConcreteSources_ReturnsMixed()
+    {
+        // Review fix #3: a trace mixing stripped/native/managed frames must not silently
+        // present as fully symbolized.
+        NativeAotSymbolDemangler.Combine(
+            NativeAotSymbolDemangler.SymbolSource.ElfDemangled,
+            NativeAotSymbolDemangler.SymbolSource.Stripped)
+            .Should().Be(NativeAotSymbolDemangler.SymbolSource.Mixed);
+
+        NativeAotSymbolDemangler.Combine(
+            NativeAotSymbolDemangler.SymbolSource.Native,
+            NativeAotSymbolDemangler.SymbolSource.Stripped)
+            .Should().Be(NativeAotSymbolDemangler.SymbolSource.Mixed);
+    }
+
+    [Fact]
+    public void Combine_MangledAndDemangled_CollapsesToDemangled()
+    {
+        // Both indicate managed names; the artifact ships demangled strings, so the rollup
+        // should reflect that quality level rather than reporting Mixed.
+        NativeAotSymbolDemangler.Combine(
+            NativeAotSymbolDemangler.SymbolSource.ElfMangled,
+            NativeAotSymbolDemangler.SymbolSource.ElfDemangled)
+            .Should().Be(NativeAotSymbolDemangler.SymbolSource.ElfDemangled);
     }
 }
