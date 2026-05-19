@@ -106,7 +106,10 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         {
             await RecordAsync(processId, perfDataPath, duration, cancellationToken).ConfigureAwait(false);
             var script = await RunScriptAsync(perfDataPath, cancellationToken).ConfigureAwait(false);
-            var (total, hotspots, root, symbolSource) = Aggregate(script, processId, topN);
+            // Trust perf record -p <pid> for process scoping. Passing processId=0 here avoids
+            // a /proc/<pid>/task post-hoc race that would discard samples from threadpool /
+            // GC workers that exited between recording and parsing.
+            var (total, hotspots, root, symbolSource) = Aggregate(script, processId: 0, topN);
             var summary = new CpuSample(processId, startedAt, duration, total, hotspots);
             var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, null, null, symbolSource);
             return new CpuSampleResult(summary, artifact);

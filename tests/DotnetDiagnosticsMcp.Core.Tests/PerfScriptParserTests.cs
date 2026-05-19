@@ -1,3 +1,4 @@
+using System.Linq;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using FluentAssertions;
 using Xunit;
@@ -90,6 +91,30 @@ public class PerfScriptParserTests
         var samples = PerfScriptParser.Parse(output);
         samples.Should().HaveCount(1);
         samples[0].Frames.Single().Symbol.Should().Be("RealFrame");
+    }
+
+    [Fact]
+    public void Parser_WithoutProcessIdFilter_KeepsAllSamples()
+    {
+        // Regression: previously the perf-sampler path passed the target PID to Parse(),
+        // which filtered out every sample whose header TID differed from the PID. Now the
+        // sampler trusts perf record -p PID and passes processId=0; Parse() must accept
+        // every sample regardless of TID.
+        const string output = """
+            worker-thread  90001 [001] 12345.6: cpu-clock:
+                            ffff00000001 worker_a (/lib/libfoo.so)
+
+            gc-thread      90002 [002] 12345.7: cpu-clock:
+                            ffff00000002 gc_b (/lib/libfoo.so)
+
+            main           42    [000] 12345.8: cpu-clock:
+                            ffff00000003 main_c (/lib/libfoo.so)
+
+            """;
+
+        var samples = PerfScriptParser.Parse(output, processId: 0);
+        samples.Should().HaveCount(3);
+        samples.Select(s => s.Frames[0].Symbol).Should().BeEquivalentTo(["worker_a", "gc_b", "main_c"]);
     }
 
     [Fact]
