@@ -136,6 +136,28 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         result.Artifact.Root.Children.Should().NotBeEmpty("the call-tree artifact must capture at least one stack");
     }
 
+    [Fact]
+    public async Task CpuSampler_ResolvesSourceLines_WhenEnabled()
+    {
+        EnsureSampleRunning();
+
+        var sampler = new EventPipeCpuSampler();
+        var result = await sampler.SampleAsync(
+            Pid,
+            TimeSpan.FromSeconds(3),
+            topN: 25,
+            sourceResolution: new SourceResolutionOptions(Enabled: true, SymbolPath: null, MaxResolved: 10),
+            cancellationToken: CancellationToken.None);
+
+        // Wiring contract: with resolveSourceLines enabled, the artifact always carries a
+        // non-null ResolvedSources map. Whether it's populated depends on the runtime's
+        // ability to locate PDBs (env-dependent — framework binaries usually ship without
+        // PDBs side-by-side, so an empty dictionary is acceptable degradation, not failure).
+        result.Artifact.ResolvedSources.Should().NotBeNull();
+        result.Artifact.ResolvedSources.Should().NotBeEmpty(
+            "with PDBs side-by-side the sampler should auto-discover the symbol path and resolve at least one hotspot");
+    }
+
     private void EnsureSampleRunning()
     {
         if (_sampleProcess is null || _sampleProcess.HasExited)

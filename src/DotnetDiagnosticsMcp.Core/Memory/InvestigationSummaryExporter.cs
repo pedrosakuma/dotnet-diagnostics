@@ -76,12 +76,17 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
             .OrderByDescending(g => g.Exclusive)
             .ThenByDescending(g => g.Inclusive)
             .Take(request.TopHotspots)
-            .Select(g => new HotspotSummary(
-                Symbol: g.Symbol,
-                InclusiveSamples: g.Inclusive,
-                ExclusiveSamples: g.Exclusive,
-                InclusivePercent: Math.Round(100.0 * g.Inclusive / total, 2),
-                ExclusivePercent: Math.Round(100.0 * g.Exclusive / total, 2)))
+            .Select(g =>
+            {
+                artifact.ResolvedSources.TryGetValue(g.Symbol, out var src);
+                return new HotspotSummary(
+                    Symbol: g.Symbol,
+                    InclusiveSamples: g.Inclusive,
+                    ExclusiveSamples: g.Exclusive,
+                    InclusivePercent: Math.Round(100.0 * g.Inclusive / total, 2),
+                    ExclusivePercent: Math.Round(100.0 * g.Exclusive / total, 2),
+                    Source: src);
+            })
             .ToArray();
 
         var findings = new InvestigationFindings(
@@ -156,15 +161,31 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
         var f = s.Findings;
         sb.Append("- Samples: `").Append(f.TotalSamples).Append("` over `").Append(f.Duration.TotalSeconds).AppendLine("s`");
         sb.AppendLine();
-        sb.AppendLine("| # | Method | Module | Incl % | Excl % |");
-        sb.AppendLine("|---|---|---|---:|---:|");
+        sb.AppendLine("| # | Method | Module | Incl % | Excl % | Source |");
+        sb.AppendLine("|---|---|---|---:|---:|---|");
         var i = 1;
         foreach (var h in f.TopHotspots)
         {
             sb.Append("| ").Append(i++).Append(" | `").Append(h.Symbol.MethodFullName)
               .Append("` | `").Append(h.Symbol.Module).Append("` | ")
               .Append(h.InclusivePercent).Append(" | ")
-              .Append(h.ExclusivePercent).AppendLine(" |");
+              .Append(h.ExclusivePercent).Append(" | ");
+            if (h.Source is { } src)
+            {
+                if (!string.IsNullOrEmpty(src.SourceLink))
+                {
+                    sb.Append('[').Append(src.File ?? "?");
+                    if (src.StartLine is int ln) sb.Append(':').Append(ln);
+                    sb.Append("](").Append(src.SourceLink).Append(')');
+                }
+                else if (src.File is not null)
+                {
+                    sb.Append('`').Append(src.File);
+                    if (src.StartLine is int ln) sb.Append(':').Append(ln);
+                    sb.Append('`');
+                }
+            }
+            sb.AppendLine(" |");
         }
         sb.AppendLine();
 

@@ -61,9 +61,17 @@ public sealed record HotspotSummary(
     long InclusiveSamples,
     long ExclusiveSamples,
     double InclusivePercent,
-    double ExclusivePercent);
+    double ExclusivePercent,
+    SourceLocation? Source = null);
 
 public sealed record SymbolRef(string Module, string MethodFullName);
+
+/// <summary>
+/// Source-level resolution for a hotspot. Populated lazily for top-N frames only — the
+/// sampler skips deep stacks to keep cost predictable. <c>SourceLink</c> is the SourceLink
+/// HTTP URL embedded in the PDB when available, ready to paste into a PR comment.
+/// </summary>
+public sealed record SourceLocation(string? File, int? StartLine, string? SourceLink);
 
 /// <summary>Optional declaration that this investigation targets / proposes a fix.</summary>
 public sealed record InvestigationFixTarget(

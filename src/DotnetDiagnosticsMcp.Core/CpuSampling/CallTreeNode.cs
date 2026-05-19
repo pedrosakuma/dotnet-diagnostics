@@ -18,11 +18,22 @@ public sealed record CallTreeView(
 /// <summary>
 /// In-memory artifact registered under a handle when the CPU sampler completes. The summary
 /// (returned to the LLM by <c>collect_cpu_sample</c>) is intentionally compact; the full tree
-/// here is what <c>get_call_tree</c> walks on follow-up calls.
+/// here is what <c>get_call_tree</c> walks on follow-up calls. <see cref="ResolvedSources"/>
+/// holds optional source-level resolution (file:line, SourceLink) for top-N hotspots — keyed
+/// by <c>(module, methodFullName)</c> so the exporter can attach the location without walking
+/// the whole tree.
 /// </summary>
 public sealed record CpuSampleTraceArtifact(
     int ProcessId,
     DateTimeOffset StartedAt,
     TimeSpan Duration,
     long TotalSamples,
-    CallTreeNode Root);
+    CallTreeNode Root,
+    IReadOnlyDictionary<DotnetDiagnosticsMcp.Core.Memory.SymbolRef, DotnetDiagnosticsMcp.Core.Memory.SourceLocation>? ResolvedSources = null)
+{
+    public IReadOnlyDictionary<DotnetDiagnosticsMcp.Core.Memory.SymbolRef, DotnetDiagnosticsMcp.Core.Memory.SourceLocation> ResolvedSources { get; init; }
+        = ResolvedSources ?? EmptyResolved;
+
+    private static readonly IReadOnlyDictionary<DotnetDiagnosticsMcp.Core.Memory.SymbolRef, DotnetDiagnosticsMcp.Core.Memory.SourceLocation> EmptyResolved
+        = new Dictionary<DotnetDiagnosticsMcp.Core.Memory.SymbolRef, DotnetDiagnosticsMcp.Core.Memory.SourceLocation>();
+}

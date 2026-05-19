@@ -195,12 +195,19 @@ public sealed class DiagnosticTools
         [Description("Operating system process id of the target .NET process.")] int processId,
         [Description("Duration of the sampling window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of hotspots to return. Must be >= 1. Defaults to 25.")] int topN = 25,
+        [Description("If true, attempts to resolve top hotspots to file:line via PDB / SourceLink. Lazy: only the top-N hotspots are resolved (capped by maxResolvedSources). Off by default — requires PDBs alongside the assemblies or a reachable symbol path.")] bool resolveSourceLines = false,
+        [Description("Optional NT_SYMBOL_PATH-style search path forwarded to the symbol reader (e.g. '/symbols;srv*https://msdl.microsoft.com/download/symbols'). Ignored when resolveSourceLines=false.")] string? symbolPath = null,
+        [Description("Cap on how many top hotspots get source-resolved. Must be >= 1. Defaults to 10.")] int maxResolvedSources = 10,
         CancellationToken cancellationToken = default)
     {
         if (durationSeconds < 1) return InvalidArg<CpuSample>(nameof(durationSeconds), "must be >= 1");
         if (topN < 1) return InvalidArg<CpuSample>(nameof(topN), "must be >= 1");
+        if (maxResolvedSources < 1) return InvalidArg<CpuSample>(nameof(maxResolvedSources), "must be >= 1");
 
-        var result = await sampler.SampleAsync(processId, TimeSpan.FromSeconds(durationSeconds), topN, cancellationToken).ConfigureAwait(false);
+        var srcOpts = resolveSourceLines
+            ? new SourceResolutionOptions(Enabled: true, SymbolPath: symbolPath, MaxResolved: maxResolvedSources)
+            : null;
+        var result = await sampler.SampleAsync(processId, TimeSpan.FromSeconds(durationSeconds), topN, srcOpts, cancellationToken).ConfigureAwait(false);
         var sample = result.Summary;
         var top = sample.TopHotspots.Count > 0 ? sample.TopHotspots[0] : null;
         var handle = handles.Register(processId, "cpu-sample", result.Artifact, CpuSampleHandleTtl);

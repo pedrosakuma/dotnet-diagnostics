@@ -81,6 +81,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             "intervalSeconds", "symptom", "hypothesis", "baseline", "maxToolCalls",
             "dumpRequiresApproval", "format", "topHotspots", "buildAssemblyName",
             "previousInvestigationId", "fixCommitSha", "fixPullRequestUrl", "fixDescription", "notes",
+            "resolveSourceLines", "symbolPath", "maxResolvedSources",
         };
 
         foreach (var tool in tools)
