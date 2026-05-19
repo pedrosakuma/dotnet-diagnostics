@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent template for dotnet-diagnostics-mcp on macOS.
+
+  Install:
+    cp deploy/supervisors/macos/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist \
+      ~/Library/LaunchAgents/
+    # Replace placeholders below before bootstrap:
+    sed -i '' "s|{{HOME}}|$HOME|g; s|{{MCP_BEARER_TOKEN}}|$(openssl rand -hex 32)|g" \
+      ~/Library/LaunchAgents/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist
+    launchctl bootstrap gui/$UID \
+      ~/Library/LaunchAgents/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist
+    launchctl enable gui/$UID/io.github.pedrosakuma.dotnet-diagnostics-mcp
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.github.pedrosakuma.dotnet-diagnostics-mcp</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{HOME}}/.dotnet/tools/dotnet-diagnostics-mcp</string>
+        <string>--urls</string>
+        <string>http://127.0.0.1:8787</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MCP_BEARER_TOKEN</key>
+        <string>{{MCP_BEARER_TOKEN}}</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>{{HOME}}/Library/Logs/dotnet-diagnostics-mcp.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{HOME}}/Library/Logs/dotnet-diagnostics-mcp.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

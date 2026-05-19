@@ -9,6 +9,17 @@ using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Server.Auth;
 using DotnetDiagnosticsMcp.Server.Tools;
 
+// --health-check (issue #27): probe-only client mode. Used by supervisor units
+// (systemd ExecStartPre, Scheduled Task pre-check, container HEALTHCHECK,
+// K8s readiness probe) to confirm a running instance answers /health. Exits 0
+// when reachable + 200, 1 on any failure. Honours --urls (first value) to know
+// which scheme/host/port to hit, defaulting to http://127.0.0.1:8787 — the
+// canonical local default documented in consumer-install.md.
+if (args.Contains("--health-check"))
+{
+    return await DotnetDiagnosticsMcp.Server.HealthCheckCommand.RunAsync(args).ConfigureAwait(false);
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Logging.AddSimpleConsole(o =>
@@ -115,6 +126,7 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 app.MapMcp("/mcp");
 
 app.Run();
+return 0;
 
 namespace DotnetDiagnosticsMcp.Server
 {

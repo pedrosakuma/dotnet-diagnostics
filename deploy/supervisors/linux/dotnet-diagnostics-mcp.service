@@ -1,0 +1,21 @@
+[Unit]
+Description=dotnet-diagnostics-mcp (local MCP server for .NET diagnostics)
+Documentation=https://github.com/pedrosakuma/dotnet-diagnostics-mcp/blob/main/docs/consumer-install.md
+After=default.target
+
+[Service]
+Type=simple
+# %h expands to the user's home directory at runtime.
+ExecStart=%h/.dotnet/tools/dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
+# Optional readiness gate. Removes the small window between systemd reporting
+# "active" and the HTTP listener actually accepting connections.
+ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do %h/.dotnet/tools/dotnet-diagnostics-mcp --health-check --urls http://127.0.0.1:8787 && exit 0; sleep 1; done; exit 1'
+Restart=on-failure
+RestartSec=2s
+# Set a strong token before `systemctl --user daemon-reload`. The server will
+# generate an ephemeral one if unset, but that disappears on restart and breaks
+# clients with a hard-coded Authorization header.
+Environment=MCP_BEARER_TOKEN=change-me-to-a-long-random-hex-string
+
+[Install]
+WantedBy=default.target

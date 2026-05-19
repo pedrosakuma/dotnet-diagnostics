@@ -16,6 +16,10 @@
     <PackageReference Include="ModelContextProtocol" />
   </ItemGroup>
 
+    <ItemGroup>
+      <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\DotnetDiagnosticsMcp.Server\DotnetDiagnosticsMcp.Server.csproj" />
   </ItemGroup>

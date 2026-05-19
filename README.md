@@ -56,6 +56,31 @@ Client setup (C# SDK, GUI clients, curl): [`docs/client-setup.md`](./docs/client
 Kubernetes sidecar: [`deploy/k8s/README.md`](./deploy/k8s/README.md).
 Azure (App Service + Container Apps) recipes: [`deploy/azure/README.md`](./deploy/azure/README.md).
 
+## Install (consumers)
+
+Three distributions of the MCP server, all wire-compatible. Pick whichever fits your environment best — see [`docs/consumer-install.md`](./docs/consumer-install.md) for the full walkthrough including supervisor templates (systemd, Windows Scheduled Task, launchd) and `mcp-config.json` snippets.
+
+```bash
+# .NET global tool (requires .NET 10 SDK)
+dotnet tool install -g DotnetDiagnosticsMcp.Server
+dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
+
+# Container (no SDK needed; predictable filesystem)
+docker run -d --restart unless-stopped -p 127.0.0.1:8787:8787 \
+  -e MCP_BEARER_TOKEN=$(openssl rand -hex 32) \
+  ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:latest
+
+# Or grab a self-contained single-file binary for your OS/arch from the Releases page.
+```
+
+Health probe used by every supervisor (and the container's `HEALTHCHECK`):
+
+```bash
+dotnet-diagnostics-mcp --health-check --urls http://127.0.0.1:8787
+```
+
+The companion [`pedrosakuma/dotnet-assembly-mcp`](https://github.com/pedrosakuma/dotnet-assembly-mcp) is **optional in a dev environment** after #28 — `MethodIdentity` payloads now carry a resolved `SourceLocation` whenever a PDB is reachable on the diagnostics box, so the LLM can open `File:Line` directly. The partner is the right call for stripped binaries, decompilation, and call-graph queries.
+
 ## Build & test
 
 ```bash
@@ -77,12 +102,11 @@ export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"
 dotnet run --project src/DotnetDiagnosticsMcp.Server
 ```
 
-### Local shared instance (recommended for dev)
+### Contributor setup (shared dev instance)
 
-The HTTP transport is multi-client, so a single shared MCP instance on
-`127.0.0.1:8787` serves any number of concurrent clients (multiple `gh copilot`
-sessions, editors, etc). Use the lifecycle wrapper for an idempotent,
-deterministic local setup:
+> Looking for a consumer install? See the [Install](#install-consumers) section above.
+
+The HTTP transport is multi-client, so a single shared MCP instance on `127.0.0.1:8787` serves any number of concurrent clients (multiple `gh copilot` sessions, editors, etc). Use the lifecycle wrapper for an idempotent, deterministic local setup against the current source checkout:
 
 ```bash
 scripts/local-mcp.sh start     # builds (Release) + starts in background; idempotent
