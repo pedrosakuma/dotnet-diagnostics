@@ -1,0 +1,27 @@
+{
+  "spec": {
+    "ephemeralContainers": [
+      {
+        "name": "diag",
+        "image": "dotnet-diagnostics-mcp:dev",
+        "imagePullPolicy": "IfNotPresent",
+        "targetContainerName": "app",
+        "stdin": false,
+        "tty": false,
+        "command": ["dotnet", "DotnetDiagnosticsMcp.Server.dll"],
+        "env": [
+          { "name": "ASPNETCORE_URLS", "value": "http://0.0.0.0:8787" },
+          { "name": "MCP_BEARER_TOKEN", "value": "devtoken" }
+        ],
+        "volumeMounts": [
+          { "name": "diag-tmp", "mountPath": "/tmp" }
+        ],
+        "securityContext": {
+          "runAsUser": 10001,
+          "runAsGroup": 10001,
+          "runAsNonRoot": true
+        }
+      }
+    ]
+  }
+}

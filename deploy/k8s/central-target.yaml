@@ -1,0 +1,81 @@
+# Central / on-demand topology: target Deployment WITHOUT sidecar.
+#
+# Compared to sample-sidecar.yaml the target Pod does NOT include the
+# diagnosticsmcp container; it is injected ON DEMAND via:
+#
+#   kubectl debug -n diagnosticsmcp-central -c diag \
+#       --image=dotnet-diagnostics-mcp:dev \
+#       --image-pull-policy=IfNotPresent \
+#       --target=app \
+#       deploy/sample-target -- dotnet DotnetDiagnosticsMcp.Server.dll
+#
+# `--target=app` makes the ephemeral container share the PID namespace of the
+# `app` container, so the diagnostic IPC socket created by the runtime at
+# /tmp/dotnet-diagnostic-<pid> is reachable by the MCP server even without
+# `shareProcessNamespace` at the Pod level.
+#
+# This removes the recurring cost (memory, CPU, attack surface) of a sidecar
+# on every Pod and limits diagnostics resource usage to the moment an
+# investigation is actually happening.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: diagnosticsmcp-central
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-target
+  namespace: diagnosticsmcp-central
+  labels:
+    app: sample-target
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-target
+  template:
+    metadata:
+      labels:
+        app: sample-target
+    spec:
+      # Note: NO shareProcessNamespace and NO sidecar. The ephemeral debug
+      # container injected via `kubectl debug --target=app` joins the target
+      # container's PID namespace directly, which is enough for the .NET
+      # diagnostic IPC handshake.
+      containers:
+        - name: app
+          image: coreclr-sample:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: ASPNETCORE_URLS
+              value: http://0.0.0.0:8080
+            - name: DOTNET_EnableDiagnostics
+              value: "1"
+          # Diagnostic IPC socket lives at /tmp/dotnet-diagnostic-<pid>-...
+          # Mounting an emptyDir here lets an ephemeral debug container (which
+          # shares PID namespace but NOT mount namespace) read the socket when
+          # it mounts the same emptyDir at /tmp.
+          volumeMounts:
+            - name: diag-tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+      # Pin to a non-root UID so the diagnostic socket is readable by any
+      # ephemeral container that runs as the same UID/GID (or via fsGroup).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      volumes:
+        - name: diag-tmp
+          emptyDir: {}

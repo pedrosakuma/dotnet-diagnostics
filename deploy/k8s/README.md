@@ -8,7 +8,19 @@ application's image or code.
 
 - [`sample-sidecar.yaml`](./sample-sidecar.yaml) — Namespace, Secret (bearer
   token), Deployment with **target app + diagnosticsmcp sidecar** and a ClusterIP
-  Service that exposes the MCP endpoint.
+  Service that exposes the MCP endpoint. **Always-on** topology.
+- [`central-target.yaml`](./central-target.yaml) — same target Deployment but
+  **without** a sidecar. Prepares the Pod (shared `/tmp` emptyDir, fixed UID)
+  so an ephemeral debug container can be attached on demand.
+- [`ephemeral-attach.patch.json`](./ephemeral-attach.patch.json) — `kubectl
+  patch --subresource=ephemeralcontainers` body that injects the MCP server
+  as an ephemeral container into a prepared target Pod.
+- [`CENTRAL-TOPOLOGY.md`](./CENTRAL-TOPOLOGY.md) — full design and
+  step-by-step recipe for the **on-demand** topology.
+
+Pick the sidecar topology when investigations are frequent or unattended; pick
+the central/on-demand topology when you want zero recurring overhead and are
+OK with the operator (or an external orchestrator) initiating each attach.
 
 ## Why these pod-level settings are required
 
