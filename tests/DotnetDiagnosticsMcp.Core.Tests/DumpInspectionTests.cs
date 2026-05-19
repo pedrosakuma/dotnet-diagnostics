@@ -39,12 +39,13 @@ public class DumpInspectionTests
         // The (mvid, metadataToken) pair is what dotnet-assembly-mcp consumes to resolve
         // a TypeDefinition without ambiguous name parsing.
         var mvid = Guid.NewGuid();
-        var identity = new TypeIdentity(
-            ModuleName: "MyApp.dll",
-            ModulePath: "/app/MyApp.dll",
-            ModuleVersionId: mvid,
-            MetadataToken: 0x02000042,
-            TypeFullName: "MyApp.Leak");
+        var identity = new TypeIdentity("MyApp.Leak")
+        {
+            ModuleName = "MyApp.dll",
+            ModulePath = "/app/MyApp.dll",
+            ModuleVersionId = mvid,
+            MetadataToken = 0x02000042,
+        };
 
         var stat = new TypeStat(
             TypeFullName: "MyApp.Leak",

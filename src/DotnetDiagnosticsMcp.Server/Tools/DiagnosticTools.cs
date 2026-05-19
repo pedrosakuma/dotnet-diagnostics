@@ -591,6 +591,60 @@ public sealed class DiagnosticTools
     }
 
     [McpServerTool(
+        Name = "inspect_live_heap",
+        Title = "Inspect a live .NET process's managed heap",
+        Destructive = false,
+        ReadOnly = true,
+        Idempotent = false,
+        UseStructuredContent = true)]
+    [Description(
+        "Attaches to a live .NET process via ClrMD and walks its managed heap WITHOUT writing a dump file. " +
+        "Returns the same top-N type / retention information as inspect_dump but skips the disk I/O of " +
+        "collect_process_dump. The target is suspended for the duration of the walk (typically sub-second " +
+        "for small heaps, can reach a few seconds for multi-GB heaps); plan accordingly for latency-sensitive " +
+        "workloads. Same UID constraint as the diagnostic socket applies — sidecar must run as the target's UID. " +
+        "Each TypeStat carries a TypeIdentity (ModuleVersionId + MetadataToken) ready to hand off verbatim to " +
+        "dotnet-assembly-mcp's get_type. Use inspect_dump when you need an artifact to keep, share or re-inspect.")]
+    public static async Task<DiagnosticResult<LiveHeapInspection>> InspectLiveHeap(
+        IDumpInspector inspector,
+        [Description("Operating system process id of the target .NET process.")] int processId,
+        [Description("Number of types to return in each top-N list (bytes / instances). Defaults to 20.")] int topTypes = 20,
+        [Description("When true, walks a short GC retention chain for each of the top-5 types by bytes. Off by default — slower and lengthens the suspend window.")] bool includeRetentionPaths = false,
+        [Description("Cap on retention-chain depth when retention paths are enabled. Defaults to 8.")] int retentionPathLimit = 8,
+        CancellationToken cancellationToken = default)
+    {
+        var inspection = await inspector.InspectLiveAsync(
+            processId,
+            new DumpInspectionOptions(TopTypes: topTypes, IncludeRetentionPaths: includeRetentionPaths, RetentionPathLimit: retentionPathLimit),
+            cancellationToken).ConfigureAwait(false);
+
+        var topByBytes = inspection.TopTypesByBytes;
+        var summary = topByBytes.Count == 0
+            ? $"Attached to pid {processId} for {inspection.SuspendDuration.TotalMilliseconds:N0} ms — runtime {inspection.Runtime.Name} {inspection.Runtime.Version}, heap walk produced no objects."
+            : $"Attached to pid {processId} for {inspection.SuspendDuration.TotalMilliseconds:N0} ms — heap {inspection.Heap.TotalBytes:N0} bytes; top retained type: `{topByBytes[0].TypeFullName}` ({topByBytes[0].TotalBytesPercent}% / {topByBytes[0].InstanceCount:N0} instances).";
+
+        NextActionHint? hint = null;
+        var topWithHandoff = topByBytes.FirstOrDefault(t => t.Identity is { ModuleVersionId: not null, MetadataToken: not null });
+        if (topWithHandoff is { Identity: { } id })
+        {
+            hint = new NextActionHint(
+                "dotnet-assembly-mcp.get_method",
+                $"Pivot to assembly inspection for the top retained type `{id.TypeFullName}` via the (mvid, token) handoff.",
+                new Dictionary<string, object?>
+                {
+                    ["moduleVersionId"] = id.ModuleVersionId,
+                    ["metadataToken"] = id.MetadataToken,
+                    ["typeFullName"] = id.TypeFullName,
+                    ["assemblyPathHint"] = id.ModulePath,
+                });
+        }
+
+        return hint is null
+            ? DiagnosticResult.Ok(inspection, summary)
+            : DiagnosticResult.Ok(inspection, summary, hint);
+    }
+
+    [McpServerTool(
         Name = "start_investigation",
         Title = "Plan a diagnostic investigation",
         Destructive = false,

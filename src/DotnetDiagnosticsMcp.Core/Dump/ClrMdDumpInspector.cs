@@ -51,6 +51,73 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         return Task.Run(() => Inspect(dumpFilePath, opts, cancellationToken), cancellationToken);
     }
 
+    public Task<LiveHeapInspection> InspectLiveAsync(
+        int processId,
+        DumpInspectionOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (processId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(processId), "Process id must be positive.");
+        }
+
+        var opts = options ?? new DumpInspectionOptions();
+        if (opts.TopTypes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "TopTypes must be positive.");
+        }
+
+        return Task.Run(() => InspectLive(processId, opts, cancellationToken), cancellationToken);
+    }
+
+    private LiveHeapInspection InspectLive(int processId, DumpInspectionOptions opts, CancellationToken ct)
+    {
+        var warnings = new List<string>();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // suspend=true pauses the target for the lifetime of the DataTarget. We dispose
+        // ASAP after the walk so the suspend window is bounded by walk duration.
+        using var target = DataTarget.AttachToProcess(processId, suspend: true);
+        var clrInfo = target.ClrVersions.FirstOrDefault()
+            ?? throw new InvalidOperationException($"Process {processId} does not expose a CLR runtime (NativeAOT or non-managed).");
+        using var runtime = clrInfo.CreateRuntime();
+
+        var runtimeInfo = new DumpRuntimeInfo(
+            Name: clrInfo.Flavor.ToString(),
+            Version: clrInfo.Version.ToString(),
+            Architecture: target.DataReader.Architecture.ToString(),
+            IsServerGC: runtime.Heap.IsServer,
+            HeapCount: runtime.Heap.SubHeaps.Length);
+
+        if (!runtime.Heap.CanWalkHeap)
+        {
+            warnings.Add("Heap walk is unavailable for this runtime state (CanWalkHeap=false). Retry once the GC is in a quiescent state.");
+            sw.Stop();
+            return new LiveHeapInspection(
+                ProcessId: processId,
+                SuspendDuration: sw.Elapsed,
+                Runtime: runtimeInfo,
+                Heap: EmptyHeap(),
+                TopTypesByBytes: Array.Empty<TypeStat>(),
+                TopTypesByInstances: Array.Empty<TypeStat>(),
+                RetentionPaths: null,
+                Warnings: warnings);
+        }
+
+        var (byBytes, byInstances, heapSummary, retention) = SummarizeRuntime(runtime, opts, warnings, ct);
+        sw.Stop();
+
+        return new LiveHeapInspection(
+            ProcessId: processId,
+            SuspendDuration: sw.Elapsed,
+            Runtime: runtimeInfo,
+            Heap: heapSummary,
+            TopTypesByBytes: byBytes,
+            TopTypesByInstances: byInstances,
+            RetentionPaths: retention,
+            Warnings: warnings.Count > 0 ? warnings : null);
+    }
+
     private DumpInspection Inspect(string dumpFilePath, DumpInspectionOptions opts, CancellationToken ct)
     {
         var fileInfo = new FileInfo(dumpFilePath);
@@ -83,8 +150,23 @@ public sealed class ClrMdDumpInspector : IDumpInspector
                 Warnings: warnings);
         }
 
-        var (typeStats, totalBytes) = WalkHeap(runtime, ct);
+        var (byBytes, byInstances, heapSummary, retention) = SummarizeRuntime(runtime, opts, warnings, ct);
 
+        return new DumpInspection(
+            FilePath: dumpFilePath,
+            FileSizeBytes: fileInfo.Length,
+            Runtime: runtimeInfo,
+            Heap: heapSummary,
+            TopTypesByBytes: byBytes,
+            TopTypesByInstances: byInstances,
+            RetentionPaths: retention,
+            Warnings: warnings.Count > 0 ? warnings : null);
+    }
+
+    private (IReadOnlyList<TypeStat> ByBytes, IReadOnlyList<TypeStat> ByInstances, DumpHeapSummary Heap, IReadOnlyList<RetentionPath>? Retention) SummarizeRuntime(
+        ClrRuntime runtime, DumpInspectionOptions opts, List<string> warnings, CancellationToken ct)
+    {
+        var (typeStats, totalBytes) = WalkHeap(runtime, ct);
         var heapSummary = SummarizeHeap(runtime);
 
         var byBytes = typeStats.Values
@@ -105,15 +187,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             retention = ResolveRetentionPaths(runtime, byBytes, opts.RetentionPathLimit, warnings, ct);
         }
 
-        return new DumpInspection(
-            FilePath: dumpFilePath,
-            FileSizeBytes: fileInfo.Length,
-            Runtime: runtimeInfo,
-            Heap: heapSummary,
-            TopTypesByBytes: byBytes,
-            TopTypesByInstances: byInstances,
-            RetentionPaths: retention,
-            Warnings: warnings.Count > 0 ? warnings : null);
+        return (byBytes, byInstances, heapSummary, retention);
     }
 
     private static (Dictionary<TypeKey, RawTypeStat> Stats, long TotalBytes) WalkHeap(ClrRuntime runtime, CancellationToken ct)
@@ -166,12 +240,13 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             return null;
         }
 
-        return new TypeIdentity(
-            ModuleName: moduleFileName,
-            ModulePath: modulePath,
-            ModuleVersionId: mvid,
-            MetadataToken: token > 0 ? token : null,
-            TypeFullName: raw.TypeName);
+        return new TypeIdentity(raw.TypeName)
+        {
+            ModuleName = moduleFileName,
+            ModulePath = modulePath,
+            ModuleVersionId = mvid,
+            MetadataToken = token > 0 ? token : null,
+        };
     }
 
     private Guid? TryReadMvid(string? assemblyPath)
@@ -323,21 +398,21 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         var visited = new HashSet<ulong> { current };
         truncated = false;
 
-        chain.Add(new RetentionFrame(instance.Type?.Name ?? "<unknown>", current, null));
+        chain.Add(new RetentionFrame(instance.Type?.Name ?? "<unknown>", current));
 
         for (var i = 0; i < depthLimit; i++)
         {
             if (!retainerMap.TryGetValue(current, out var step)) break;
             if (step.From == 0)
             {
-                chain.Add(new RetentionFrame("<root>", 0, step.RootKind ?? "Unknown"));
+                chain.Add(new RetentionFrame("<root>", 0) { RootKind = step.RootKind ?? "Unknown" });
                 return chain;
             }
             if (!visited.Add(step.From)) break;
             // We don't have the ClrObject in hand here; just record the address. Resolving
             // the type name requires another GetObject which we skip for cost — agent can
             // call back into the dump for the specific address if needed.
-            chain.Add(new RetentionFrame("<retainer>", step.From, null));
+            chain.Add(new RetentionFrame("<retainer>", step.From));
             current = step.From;
         }
 
