@@ -1,3 +1,4 @@
+using DotnetDiagnosticsMcp.Core.Container;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
@@ -20,15 +21,18 @@ public sealed class CapabilityDetector : ICapabilityDetector
     private readonly ILogger<CapabilityDetector> _logger;
     private readonly PerfNativeAotCpuSampler? _perfSampler;
     private readonly EtwNativeAotCpuSampler? _etwSampler;
+    private readonly IContainerSignalsCollector? _containerSignals;
 
     public CapabilityDetector(
         ILogger<CapabilityDetector>? logger = null,
         PerfNativeAotCpuSampler? perfSampler = null,
-        EtwNativeAotCpuSampler? etwSampler = null)
+        EtwNativeAotCpuSampler? etwSampler = null,
+        IContainerSignalsCollector? containerSignals = null)
     {
         _logger = logger ?? NullLogger<CapabilityDetector>.Instance;
         _perfSampler = perfSampler;
         _etwSampler = etwSampler;
+        _containerSignals = containerSignals;
     }
 
     public async Task<DiagnosticCapabilities> DetectAsync(int processId, CancellationToken cancellationToken = default)
@@ -59,6 +63,8 @@ public sealed class CapabilityDetector : ICapabilityDetector
 
         var notes = BuildNotes(runtime, probe, perfAvailable, etwAvailable);
 
+        var (inContainer, cgroupV2, canSeeThrottle) = await DetectContainerFlagsAsync(processId, cancellationToken).ConfigureAwait(false);
+
         return new DiagnosticCapabilities(
             ProcessId: processId,
             Runtime: runtime,
@@ -70,7 +76,30 @@ public sealed class CapabilityDetector : ICapabilityDetector
             CanCollectHttpActivity: canCollectHttp,
             CanCollectCustomEventSource: canCollectCustomEs,
             CanCollectProcessDump: canCollectDump,
-            Notes: notes);
+            Notes: notes)
+        {
+            InContainer = inContainer,
+            CgroupV2 = cgroupV2,
+            CanSeeThrottle = canSeeThrottle,
+        };
+    }
+
+    private async Task<(bool InContainer, bool CgroupV2, bool CanSeeThrottle)> DetectContainerFlagsAsync(int processId, CancellationToken ct)
+    {
+        if (_containerSignals is null) return (false, false, false);
+        try
+        {
+            var signals = await _containerSignals.CollectAsync(processId, ct).ConfigureAwait(false);
+            return (
+                InContainer: signals.InContainer,
+                CgroupV2: signals.CgroupVersion == CgroupVersion.V2,
+                CanSeeThrottle: signals.Cpu?.QuotaCores is > 0);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Container signal probe failed for pid {Pid} during capability detection.", processId);
+            return (false, false, false);
+        }
     }
 
     private async Task<ProbeResult> ProbeSampleProfilerAsync(DiagnosticsClient client, CancellationToken ct)

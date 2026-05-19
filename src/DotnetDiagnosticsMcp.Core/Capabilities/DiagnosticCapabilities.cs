@@ -24,4 +24,19 @@ public sealed record DiagnosticCapabilities(
     bool CanCollectHttpActivity,
     bool CanCollectCustomEventSource,
     bool CanCollectProcessDump,
-    string Notes);
+    string Notes)
+{
+    /// <summary>True when the target process is running inside a container envelope (its
+    /// unified-hierarchy cgroup path is not <c>/</c>). Init-only so legacy call sites continue
+    /// to compile.</summary>
+    public bool InContainer { get; init; }
+
+    /// <summary>True when the host exposes cgroup v2 (and therefore <c>get_container_signals</c>
+    /// can be called against this process). False on cgroup v1 hosts and Windows.</summary>
+    public bool CgroupV2 { get; init; }
+
+    /// <summary>True when reading <c>cpu.stat</c> / <c>cpu.max</c> is expected to succeed AND a
+    /// quota is configured — i.e. CPU throttling is observable. False when the cgroup has no
+    /// CPU quota (no quota → no throttling possible) or on non-Linux hosts.</summary>
+    public bool CanSeeThrottle { get; init; }
+}

@@ -30,6 +30,7 @@ builder.Logging.AddSimpleConsole(o =>
 });
 
 builder.Services.AddSingleton<IProcessDiscovery, LocalProcessDiscovery>();
+builder.Services.AddSingleton<DotnetDiagnosticsMcp.Core.Container.IContainerSignalsCollector, DotnetDiagnosticsMcp.Core.Container.CgroupV2SignalsCollector>();
 builder.Services.AddSingleton<ICapabilityDetector, CapabilityDetector>();
 builder.Services.AddSingleton<IProcessContextResolver, ProcessContextResolver>();
 builder.Services.AddSingleton<ICounterCollector, EventPipeCounterCollector>();
