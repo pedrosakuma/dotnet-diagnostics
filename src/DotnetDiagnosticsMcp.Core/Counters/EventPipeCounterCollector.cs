@@ -166,8 +166,8 @@ public sealed class EventPipeCounterCollector : ICounterCollector
             Name: name,
             DisplayName: string.IsNullOrEmpty(display) ? name : display,
             Value: value,
-            Unit: string.IsNullOrEmpty(unit) ? null : unit,
-            Kind: kind);
+            Kind: kind,
+            Unit: string.IsNullOrEmpty(unit) ? null : unit);
     }
 
     private static string AsString(IDictionary<string, object> data, string key)

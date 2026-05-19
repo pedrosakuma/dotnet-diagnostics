@@ -13,8 +13,8 @@ public sealed record CounterValue(
     string Name,
     string DisplayName,
     double Value,
-    string? Unit,
-    CounterKind Kind);
+    CounterKind Kind,
+    string? Unit = null);
 
 /// <summary>Final aggregation returned by <see cref="ICounterCollector"/>.</summary>
 public sealed record CounterSnapshot(

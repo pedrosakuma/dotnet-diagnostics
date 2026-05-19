@@ -13,11 +13,14 @@ namespace DotnetDiagnosticsMcp.Core;
 /// </remarks>
 public sealed record DiagnosticResult<T>(
     string Summary,
-    T? Data,
     IReadOnlyList<NextActionHint> Hints,
     DiagnosticError? Error = null)
 {
+    /// <summary>The typed diagnostic payload, omitted on failure responses.</summary>
+    public T? Data { get; init; }
+
     /// <summary>True when the call failed and <see cref="Error"/> is populated.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public bool IsError => Error is not null;
 
     /// <summary>
@@ -39,15 +42,15 @@ public static class DiagnosticResult
 {
     /// <summary>Successful response.</summary>
     public static DiagnosticResult<T> Ok<T>(T data, string summary, params NextActionHint[] hints)
-        => new(summary, data, hints);
+        => new(summary, hints) { Data = data };
 
     /// <summary>Successful response that also publishes a drill-down handle.</summary>
     public static DiagnosticResult<T> OkWithHandle<T>(T data, string summary, string handle, DateTimeOffset expiresAt, params NextActionHint[] hints)
-        => new(summary, data, hints) { Handle = handle, HandleExpiresAt = expiresAt };
+        => new(summary, hints) { Data = data, Handle = handle, HandleExpiresAt = expiresAt };
 
     /// <summary>Error response with a structured error and at least one recovery hint.</summary>
     public static DiagnosticResult<T> Fail<T>(string summary, DiagnosticError error, params NextActionHint[] hints)
-        => new(summary, default, hints, error);
+        => new(summary, hints, error);
 }
 
 /// <summary>
