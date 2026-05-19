@@ -108,6 +108,6 @@ public sealed class EventPipeExceptionCollector : IExceptionCollector
             Duration: duration,
             TotalExceptions: Volatile.Read(ref total),
             ByType: byType,
-            Recent: recent.ToList());
+            Recent: recent.ToList()) { RecentCap = maxRecent };
     }
 }

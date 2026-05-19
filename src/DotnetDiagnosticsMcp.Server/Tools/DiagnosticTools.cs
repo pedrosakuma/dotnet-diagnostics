@@ -404,7 +404,10 @@ public sealed class DiagnosticTools
     [Description(
         "Subscribes to the runtime Exception keyword on Microsoft-Windows-DotNETRuntime and " +
         "captures every managed exception thrown by the target process during the window. " +
-        "Returns total count, breakdown by exception type, and a bounded list of recent exception details. " +
+        "Returns total count (always exact), breakdown by exception type (always exact), and " +
+        "the first maxRecent individual exception details — when TotalExceptions exceeds " +
+        "maxRecent the Recent list is truncated to the head of the stream (the cap that was " +
+        "applied is echoed back as ExceptionSnapshot.RecentCap). " +
         "IMPORTANT: start this BEFORE the workload you want to observe — exceptions before the session opens are missed.")]
     public static async Task<DiagnosticResult<ExceptionSnapshot>> CollectExceptions(
         IExceptionCollector collector,

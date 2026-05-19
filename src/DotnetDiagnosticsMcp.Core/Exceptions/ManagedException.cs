@@ -18,4 +18,15 @@ public sealed record ExceptionSnapshot(
     TimeSpan Duration,
     int TotalExceptions,
     IReadOnlyList<ExceptionCount> ByType,
-    IReadOnlyList<ManagedExceptionEvent> Recent);
+    IReadOnlyList<ManagedExceptionEvent> Recent)
+{
+    /// <summary>
+    /// Cap applied to <see cref="Recent"/> during collection (the <c>maxRecent</c> argument to
+    /// <c>collect_exceptions</c>; default <c>100</c>). When <see cref="TotalExceptions"/>
+    /// exceeds this value, <see cref="Recent"/> is the truncated head of the stream (the first
+    /// N observed during the window) and the tail is dropped — counts in <see cref="ByType"/>
+    /// remain exact. Surfaced so the LLM can distinguish "fewer than the cap occurred" from
+    /// "more occurred but only the head is shown". See #36.
+    /// </summary>
+    public int RecentCap { get; init; }
+}

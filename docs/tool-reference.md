@@ -266,12 +266,19 @@ exception thrown by the process during the window.
       "exceptionHResult": "0x80131509",
       "threadId": 17
     }
-  ]
+  ],
+  "recentCap": 100
 }
 ```
 
 **Notes:** also catches "first-chance" exceptions caught by the app — useful
 for detecting error rates much higher than the response logs suggest.
+
+`totalExceptions` and `byType` are always exact for the window. `recent` is
+capped to `maxRecent` (default `100`, echoed back as `recentCap`); when
+`totalExceptions > recentCap` it contains the first `recentCap` exceptions
+observed, not a random sample. Raise `maxRecent` for storms where the tail
+matters; lower it when you only want a quick signal.
 
 ---
 
