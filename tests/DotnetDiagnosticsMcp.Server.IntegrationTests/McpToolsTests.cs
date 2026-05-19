@@ -154,6 +154,36 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         }
     }
 
+    [Theory]
+    [InlineData("diagnose-high-latency")]
+    [InlineData("diagnose-memory-growth")]
+    [InlineData("diagnose-5xx-errors")]
+    [InlineData("diagnose-slow-outbound-http")]
+    [InlineData("triage-nativeaot")]
+    [InlineData("diagnose-safely-in-prod")]
+    public async Task GetPrompt_RendersWellFormedToolCalls_ForEveryPrompt(string promptName)
+    {
+        await using var client = await ConnectAsync();
+
+        foreach (var args in new[]
+        {
+            (Dictionary<string, object?>?)null,
+            new Dictionary<string, object?> { ["processId"] = 1234 },
+        })
+        {
+            var result = await client.GetPromptAsync(promptName, args, cancellationToken: CancellationToken.None);
+            var text = string.Join("\n", result.Messages
+                .Select(m => m.Content)
+                .OfType<ModelContextProtocol.Protocol.TextContentBlock>()
+                .Select(b => b.Text));
+
+            text.Should().NotContain(", )", $"prompt {promptName} (args={(args is null ? "null" : "pid=1234")}) must not render a trailing comma before close-paren");
+            text.Should().NotContain("(,", $"prompt {promptName} (args={(args is null ? "null" : "pid=1234")}) must not render a leading comma after open-paren");
+            text.Should().NotContain(",,", $"prompt {promptName} (args={(args is null ? "null" : "pid=1234")}) must not render a double comma");
+            text.Should().NotContain("{{", $"prompt {promptName} (args={(args is null ? "null" : "pid=1234")}) must not leak unescaped interpolation placeholders");
+        }
+    }
+
     [Fact]
     public async Task GetPrompt_RendersDiagnoseHighLatencyWithProcessId()
     {

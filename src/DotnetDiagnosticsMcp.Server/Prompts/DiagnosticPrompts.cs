@@ -109,7 +109,7 @@ public sealed class DiagnosticPrompts
                  in favor of `collect_event_source(providerName="Microsoft-Windows-DotNETRuntime", {{pid.Arg}}durationSeconds={{win}})`
                  filtered to GC keywords (NativeAOT exposes the same provider).
 
-              3. If retention is suspected, call `inspect_live_heap({{pid.Arg}})` first — it is
+              3. If retention is suspected, call `inspect_live_heap({{pid.Arg.TrimEnd(',', ' ')}})` first — it is
                  much cheaper than a full dump and surfaces top-N retainers inline plus a
                  `HeapSnapshotHandle` for `query_heap_snapshot(handle, view="…")` drill-downs.
 
