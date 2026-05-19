@@ -110,6 +110,33 @@ Esse contrato é o equivalente "split collector, unified drilldown"
 — mesmo padrão que `inspect_dump`/`inspect_live_heap` → `query_heap_snapshot`
 e `collect_thread_snapshot` → `query_thread_snapshot`.
 
+### Kernel-side signals (`get_container_signals`)
+
+Mata o blind-spot mais comum em K8s: "app está lento, mas EventCounters dizem
+que CPU/memória estão ok" — na maior parte das vezes é **CPU throttling no
+cgroup**, invisível pelo runtime. `get_container_signals` lê cgroup v2 +
+`/proc/<pid>/oom_score` e devolve:
+
+- `Cpu`: `usage_usec`, `nr_periods`, `nr_throttled`, `throttled_usec`,
+  `ThrottlePercent` (canonical signal) e `QuotaCores` (null = unlimited).
+- `Memory`: `current`, `max`, `high`, `UsageFraction`, contadores
+  `oom_kill` / `max-hit` extraídos de `memory.events`.
+- `Pressure` (PSI): `cpu.some.avg10`, `memory.some/full.avg10`, `io.some/full.avg10`.
+- `Pids` e `oom_score`.
+
+Tudo best-effort: arquivos faltando (PSI em kernel antigo, sem limite de
+memória, container sem read em `memory.events`) viram entradas em `Notes`, não
+erro fatal. Em Windows / cgroup v1 / sem cgroup, devolve `InContainer=false`
++ `CgroupVersion` correto e `Notes` explicativo (job-object metrics ainda não
+foram wired).
+
+O `get_diagnostic_capabilities` ganhou 3 flags pra você saber se chamar vale a
+pena antes: `InContainer`, `CgroupV2`, `CanSeeThrottle` (true sse há quota
+configurada → throttling é observável).
+
+NextActionHints: throttle > 5% sugere `collect_cpu_sample` direto; memória >
+85% do limite sugere `inspect_live_heap` antes do OOM-kill.
+
 ## Quick index
 
 | Tool | Cost | Requires CoreCLR? | Side effects |
@@ -117,6 +144,7 @@ e `collect_thread_snapshot` → `query_thread_snapshot`.
 | [`list_dotnet_processes`](#list_dotnet_processes) | cheap | no | none |
 | [`get_process_info`](#get_process_info) | cheap | no | none |
 | [`get_diagnostic_capabilities`](#get_diagnostic_capabilities) | ~2 s | no | opens a short EventPipe probe |
+| [`get_container_signals`](#get_container_signals) | cheap | no | reads `/sys/fs/cgroup` + `/proc` files |
 | [`snapshot_counters`](#snapshot_counters) | window-bound | no | opens an EventPipe session |
 | [`collect_cpu_sample`](#collect_cpu_sample) | window-bound | **yes** | EventPipe + temp `.nettrace` on disk |
 | [`collect_exceptions`](#collect_exceptions) | window-bound | no | EventPipe session |

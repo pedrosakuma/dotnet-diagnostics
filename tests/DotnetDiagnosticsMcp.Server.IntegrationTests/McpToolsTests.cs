@@ -3,6 +3,7 @@ using System.Text.Json;
 using DotnetDiagnosticsMcp.Core;
 using DotnetDiagnosticsMcp.Core.Capabilities;
 using DotnetDiagnosticsMcp.Core.Collection;
+using DotnetDiagnosticsMcp.Core.Container;
 using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Dump;
@@ -53,7 +54,8 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             "compare_to_baseline",
             "get_collection_status",
             "cancel_collection",
-            "query_collection");
+            "query_collection",
+            "get_container_signals");
 
         // Tools that historically required `processId` are now bootstrap-implicit (issue #42):
         // when omitted the server auto-selects the lone .NET process visible to it. The only
@@ -83,6 +85,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             ["get_collection_status"] = new[] { "handle" },
             ["cancel_collection"] = new[] { "handle" },
             ["query_collection"] = new[] { "handle" },
+            ["get_container_signals"] = Array.Empty<string>(),
         };
 
         // The spirit of elicit-graceful: no user-facing parameter (durationSeconds, topN,
@@ -491,6 +494,29 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
                 // best effort cleanup
             }
         }
+    }
+
+    [Fact]
+    public async Task GetContainerSignals_RunsAgainstSelfHost()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "get_container_signals",
+            new Dictionary<string, object?>
+            {
+                ["processId"] = Environment.ProcessId,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var signals = DeserializeStructured<ContainerSignals>(result);
+        signals.Should().NotBeNull();
+        signals!.ProcessId.Should().Be(Environment.ProcessId);
+        signals.Notes.Should().NotBeNull();
+        // Behavior is platform-dependent: Linux test runners may or may not be in a container
+        // and may be on cgroup v1 or v2 — the only invariant is that the envelope deserializes
+        // and the tool surfaces partial results via the Notes contract.
     }
 
     [Fact]
