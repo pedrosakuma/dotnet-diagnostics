@@ -8,6 +8,11 @@
 # pod-level requirements (shareProcessNamespace + shared emptyDir over /tmp).
 
 ARG DOTNET_VERSION=10.0
+# Default runtime base is Microsoft's recommended Ubuntu Noble image. The lean
+# variant uses it as-is; the perf variant overrides RUNTIME_BASE to a Debian
+# bookworm-slim image (publish-container.yml passes this) because Ubuntu Noble
+# does not ship the `linux-perf` package, while Debian bookworm does.
+ARG RUNTIME_BASE=mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION}
 
 FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION} AS build
 WORKDIR /src
@@ -28,7 +33,7 @@ RUN dotnet publish src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.c
     --no-restore \
     /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION} AS runtime
+FROM ${RUNTIME_BASE} AS runtime
 WORKDIR /app
 
 # Kestrel listens on 8080 by default in our ASPNETCORE_URLS below.
