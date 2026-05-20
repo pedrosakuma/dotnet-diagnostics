@@ -1,12 +1,51 @@
 # Client setup
 
-`dotnet-diagnostics-mcp` speaks MCP over **Streamable HTTP** at `POST /mcp`, with a
-required `Authorization: Bearer <token>` header. Any MCP-aware client that
-supports HTTP transports can drive it.
+`dotnet-diagnostics-mcp` supports **two transports**:
+
+- **`--stdio`** (recommended for local dev): the MCP client (Copilot CLI, Claude
+  Desktop, Cursor, ...) spawns the server as a child process per session. No daemon,
+  no bearer token, no ports — every `dotnet tool update` + client reload picks up
+  the fresh binary automatically (see #74 for the motivation).
+- **Streamable HTTP** at `POST /mcp` with `Authorization: Bearer <token>`
+  (default; intended for Kubernetes sidecar / shared-server scenarios where one
+  long-running server is consumed by multiple clients or pods).
 
 This doc covers the three most common ways to connect.
 
 ## 1. Run the server
+
+### Option A — `--stdio` (local dev)
+
+You don't run the server yourself. Point the MCP client at the binary and it will
+spawn / tear down the process per session:
+
+```jsonc
+// ~/.copilot/mcp-config.json (Copilot CLI)
+{
+  "mcpServers": {
+    "dotnet-diagnostics": {
+      "type": "stdio",
+      "command": "dotnet-diagnostics-mcp",
+      "args": ["--stdio"],
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+```jsonc
+// Claude Desktop / Cursor (claude_desktop_config.json shape)
+{
+  "mcpServers": {
+    "dotnet-diagnostics": {
+      "command": "dotnet-diagnostics-mcp",
+      "args": ["--stdio"]
+    }
+  }
+}
+```
+
+### Option B — Streamable HTTP daemon (sidecar / shared deploy)
 
 ```bash
 export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"
