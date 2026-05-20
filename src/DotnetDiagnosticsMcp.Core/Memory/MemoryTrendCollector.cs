@@ -163,7 +163,7 @@ public sealed partial class MemoryTrendCollector : IMemoryTrendCollector
     private readonly record struct SmapsSnapshot(long RssKb, long PssKb, long AnonKb);
 
     /// <summary>
-    /// Reads <c>/proc/&lt;pid&gt;/smaps_rollup</c> (kernel ≥ 4.14). Returns null on
+    /// Reads <c>/proc/{pid}/smaps_rollup</c> (kernel ≥ 4.14). Returns null on
     /// <see cref="FileNotFoundException"/> / <see cref="DirectoryNotFoundException"/>
     /// (sets <paramref name="fileNotFound"/> = true) so the caller can fall back to
     /// <see cref="ReadSmapsAccumulated"/> without losing the error context.
@@ -205,7 +205,7 @@ public sealed partial class MemoryTrendCollector : IMemoryTrendCollector
     /// <summary>
     /// Fallback for kernels without <c>smaps_rollup</c> (kernel &lt; 4.14).
     /// Accumulates <c>Rss</c>, <c>Pss</c>, and <c>Anonymous</c> across all per-mapping
-    /// entries in <c>/proc/&lt;pid&gt;/smaps</c>. Produces the same totals as
+    /// entries in <c>/proc/{pid}/smaps</c>. Produces the same totals as
     /// <c>smaps_rollup</c> — just slower, because it reads a per-region file.
     /// </summary>
     private static SmapsSnapshot? ReadSmapsAccumulated(string path, List<string> notes)
@@ -229,9 +229,12 @@ public sealed partial class MemoryTrendCollector : IMemoryTrendCollector
         return new SmapsSnapshot(rss, pss, anon);
     }
 
-    // Parses a single line from smaps_rollup or smaps and updates the running totals in-place.
-    // Lines that are not Rss, Pss, or Anonymous fields (including mapping header lines in smaps)
-    // are silently skipped. accumulate=true sums across many mappings (smaps); false assigns (smaps_rollup).
+    /// <summary>
+    /// Parses a single line from smaps_rollup or smaps and updates the running totals in-place.
+    /// Lines that are not Rss, Pss, or Anonymous fields (including mapping header lines in smaps)
+    /// are silently skipped. When <paramref name="accumulate"/> is true the values are added to
+    /// the totals (smaps, many mappings); when false they are assigned (smaps_rollup, one entry).
+    /// </summary>
     private static void ParseSmapsLine(ReadOnlySpan<char> line,
         ref long rss, ref long pss, ref long anon, ref bool hasRss, bool accumulate)
     {

@@ -27,7 +27,7 @@ public sealed class MemoryTrendCollectorTests : IDisposable
     private MemoryTrendCollector NewCollector() =>
         new(logger: null, clock: null, procRoot: _procRoot);
 
-    /// <summary>Creates /proc/&lt;pid&gt;/smaps_rollup + stat — the normal case (kernel ≥ 4.14).</summary>
+    /// <summary>Creates /proc/{pid}/smaps_rollup + stat — the normal case (kernel ≥ 4.14).</summary>
     private string SetupPid(int pid, long rssKb, long pssKb, long anonKb, long minflt, long majflt)
     {
         var pidStr = pid.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -51,7 +51,7 @@ public sealed class MemoryTrendCollectorTests : IDisposable
     }
 
     /// <summary>
-    /// Creates /proc/&lt;pid&gt;/smaps (no smaps_rollup) — simulates kernel &lt; 4.14 fallback path.
+    /// Creates /proc/{pid}/smaps (no smaps_rollup) — simulates kernel &lt; 4.14 fallback path.
     /// The smaps file has two mappings whose field values sum to the provided totals.
     /// </summary>
     private string SetupPidWithSmapsOnly(int pid, long rssKb, long pssKb, long anonKb, long minflt, long majflt)
