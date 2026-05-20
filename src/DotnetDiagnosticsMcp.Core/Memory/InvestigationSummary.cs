@@ -20,7 +20,7 @@ public sealed record InvestigationSummary(
 }
 
 /// <summary>Where the observation was made — build + container provenance survive re-deploys.</summary>
-public sealed record InvestigationProvenance(string? Hostname)
+public sealed record InvestigationProvenance(string? Hostname = null)
 {
     public BuildProvenance? Build { get; init; }
     public ContainerProvenance? Container { get; init; }
@@ -31,18 +31,18 @@ public sealed record InvestigationProvenance(string? Hostname)
 /// is configured; that's what makes a summary diffable across rebuilds.
 /// </summary>
 public sealed record BuildProvenance(
-    string? AssemblyName,
-    string? AssemblyVersion,
-    string? InformationalVersion,
-    string? GitSha,
-    string? TargetFramework);
+    string? AssemblyName = null,
+    string? AssemblyVersion = null,
+    string? InformationalVersion = null,
+    string? GitSha = null,
+    string? TargetFramework = null);
 
 /// <summary>Kubernetes / container metadata captured from downward-API env vars.</summary>
 public sealed record ContainerProvenance(
-    string? Image,
-    string? Namespace,
-    string? PodName,
-    string? NodeName);
+    string? Image = null,
+    string? Namespace = null,
+    string? PodName = null,
+    string? NodeName = null);
 
 /// <summary>What the investigation surfaced. Symbol refs are module+methodFullName so they survive rebuilds.</summary>
 public sealed record InvestigationFindings(
@@ -79,7 +79,7 @@ public sealed record SymbolRef(string Module, string MethodFullName);
 /// <param name="StartLine">First non-hidden sequence point line for the method (1-based).</param>
 /// <param name="SourceLink">SourceLink-resolved HTTP URL, when the PDB ships one.</param>
 /// <param name="EndLine">Optional last sequence point line; null when the producer doesn't compute span end (issue #28).</param>
-public sealed record SourceLocation(string? File, int? StartLine, string? SourceLink, int? EndLine = null);
+public sealed record SourceLocation(string? File = null, int? StartLine = null, string? SourceLink = null, int? EndLine = null);
 
 /// <summary>
 /// Canonical, machine-readable identity of a managed method observed in a diagnostic
@@ -96,13 +96,13 @@ public sealed record SourceLocation(string? File, int? StartLine, string? Source
 /// <param name="MethodName">Bare method name (no signature).</param>
 /// <param name="GenericArity">Number of generic method parameters; 0 for non-generic methods.</param>
 public sealed record MethodIdentity(
-    string? ModuleName,
-    string? ModulePath,
-    Guid? ModuleVersionId,
-    int? MetadataToken,
-    string? TypeFullName,
     string MethodName,
-    int GenericArity)
+    int GenericArity,
+    string? ModuleName = null,
+    string? ModulePath = null,
+    Guid? ModuleVersionId = null,
+    int? MetadataToken = null,
+    string? TypeFullName = null)
 {
     /// <summary>
     /// Closed generic instantiation captured at sample time, when the producer can extract
