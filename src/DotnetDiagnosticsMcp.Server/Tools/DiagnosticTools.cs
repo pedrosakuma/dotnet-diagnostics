@@ -245,6 +245,70 @@ public sealed class DiagnosticTools
     }
 
     [McpServerTool(
+        Name = "get_memory_trend",
+        Title = "Sample process memory growth over a window",
+        Destructive = false,
+        ReadOnly = true,
+        Idempotent = false,
+        UseStructuredContent = true)]
+    [Description(
+        "Samples OS-level memory metrics (RSS, PSS, anonymous/private pages, page faults) " +
+        "at regular intervals over a configurable window, then computes per-second deltas and a " +
+        "growth verdict ('growing', 'stable', 'shrinking'). Works on any runtime — no EventPipe " +
+        "session required. " +
+        "On Linux reads /proc/<pid>/smaps_rollup (Rss, Pss, Anonymous) and /proc/<pid>/stat " +
+        "(minflt/majflt) for each sample. On Windows calls GetProcessMemoryInfo " +
+        "(WorkingSetSize, PrivateUsage, PageFaultCount). " +
+        "Use this as a lightweight memory-leak signal before reaching for heap dumps — it answers " +
+        "'is the process growing and how fast?' without walking the heap. " +
+        "processId is optional: when exactly one .NET process is reachable the server auto-selects it.")]
+    public static async Task<DiagnosticResult<MemoryTrend>> GetMemoryTrend(
+        IMemoryTrendCollector collector,
+        IProcessContextResolver resolver,
+        [Description("Operating system process id of the target process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Duration of the observation window in seconds. Must be >= 2. Defaults to 10.")] int durationSeconds = 10,
+        [Description("Interval between consecutive samples in seconds. Must be >= 1. Defaults to 2.")] int sampleEverySeconds = 2,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 2) return InvalidArg<MemoryTrend>(nameof(durationSeconds), "must be >= 2");
+        if (sampleEverySeconds < 1) return InvalidArg<MemoryTrend>(nameof(sampleEverySeconds), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<MemoryTrend>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+
+        var trend = await collector.CollectAsync(pid, durationSeconds, sampleEverySeconds, cancellationToken).ConfigureAwait(false);
+
+        var rssMiB = trend.Deltas.RssBytesPerSec / 1_048_576.0;
+        var summary = trend.Samples.Count < 2
+            ? $"Process {pid}: could not collect enough samples — check Notes for details."
+            : $"Process {pid} memory over {durationSeconds}s ({trend.Samples.Count} samples): " +
+              $"verdict={trend.Verdict}, " +
+              $"rss={trend.Samples[^1].RssBytes / 1_048_576.0:F1} MiB, " +
+              $"Δrss={rssMiB:+0.00;-0.00;0.00} MiB/s.";
+
+        var hints = trend.Verdict == "growing"
+            ? new[]
+            {
+                new NextActionHint("inspect_live_heap",
+                    $"RSS growing at {rssMiB:F2} MiB/s — inspect the live heap to identify dominant retainers.",
+                    new Dictionary<string, object?> { ["processId"] = pid, ["topTypes"] = 25 }),
+                new NextActionHint("get_container_signals",
+                    "Cross-check memory against cgroup limits before concluding it is a leak.",
+                    new Dictionary<string, object?> { ["processId"] = pid }),
+            }
+            : new[]
+            {
+                new NextActionHint("snapshot_counters",
+                    "Memory looks stable — check runtime counters for CPU/GC pressure.",
+                    new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 5 }),
+            };
+
+        var ok = DiagnosticResult.Ok(trend, summary, hints);
+        return WithContext(ok, resolved.Context);
+    }
+
+    [McpServerTool(
         Name = "snapshot_counters",
         Title = "Snapshot EventCounters",
         Destructive = false,
