@@ -167,8 +167,11 @@ public sealed class JitMapEmitter
                     "JitMapEmitter: rundown StopAsync exceeded {TimeoutMs}ms for pid {Pid}; emitting partial map.",
                     timeout.TotalMilliseconds, processId);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // Caller-triggered OperationCanceledException is intentionally excluded so it
+                // propagates up to the off-CPU sampler / MCP tool. Any other failure (broken
+                // pipe, session disposed mid-flight, …) is best-effort: log and continue.
                 _logger.LogDebug(ex, "JitMapEmitter: StopAsync failed for pid {Pid}.", processId);
             }
 

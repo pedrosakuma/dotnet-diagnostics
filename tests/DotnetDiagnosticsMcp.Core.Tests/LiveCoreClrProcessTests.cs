@@ -305,14 +305,17 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             result.Methods.Should().Contain(r => r.Identity.ModuleVersionId.HasValue,
                 "at least one rundown method should resolve its module MVID on disk");
 
-            // Sanity-check Resolve: pick the first range, ask for an address inside it,
-            // assert we get the same identity back. Address-based lookup is the parser's
-            // authoritative path so a broken Resolve would silently drop all enrichment.
+            // Sanity-check Resolve on the live data: pick the first range, ask for an address
+            // inside it, assert we get the same identity back. Address-based lookup is the
+            // parser's authoritative path so a broken Resolve would silently drop all enrichment.
+            // The end-exclusive boundary case is covered deterministically in
+            // JitMapResultResolveTests (an adjacent JIT range starting at sample.StartAddress +
+            // sample.Size is legal here and would make a boundary assertion flaky).
             var sample = result.Methods.First(r => r.Size > 0);
             result.Resolve(sample.StartAddress).Should().BeSameAs(sample.Identity,
                 "Resolve must return the range's identity for an address at the method start");
-            result.Resolve(sample.StartAddress + sample.Size).Should().BeNull(
-                "address one past the end of the range must not resolve into the next method");
+            result.Resolve(sample.StartAddress + (sample.Size / 2)).Should().BeSameAs(sample.Identity,
+                "Resolve must return the same identity for an address in the middle of the range");
         }
         finally
         {

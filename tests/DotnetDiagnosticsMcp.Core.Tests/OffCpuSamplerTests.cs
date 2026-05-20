@@ -215,3 +215,78 @@ worker     4242 [000] 100.500000: sched:sched_switch: prev_comm=swapper prev_pid
         spans[0].BlockingStack.Should().AllSatisfy(f => f.Identity.Should().BeNull());
     }
 }
+
+public sealed class JitMapResultResolveTests
+{
+    private static DotnetDiagnosticsMcp.Core.Memory.MethodIdentity Id(int token) =>
+        new(MethodName: $"M{token}", GenericArity: 0, MetadataToken: token);
+
+    private static JitMapResult Build(params (ulong start, uint size, int token)[] ranges) =>
+        new(
+            MapPath: "/tmp/test.map",
+            Methods: ranges.Select(r => new JitMapRange(r.start, r.size, Id(r.token))).ToList(),
+            MethodCount: ranges.Length);
+
+    [Fact]
+    public void Resolve_EmptyList_ReturnsNull() =>
+        Build().Resolve(0x1000).Should().BeNull();
+
+    [Fact]
+    public void Resolve_AddressBeforeFirstRange_ReturnsNull() =>
+        Build((0x2000, 0x100, 1)).Resolve(0x1FFF).Should().BeNull();
+
+    [Fact]
+    public void Resolve_AddressAtRangeStart_ReturnsIdentity()
+    {
+        var r = Build((0x2000, 0x100, 1));
+        r.Resolve(0x2000)!.MetadataToken.Should().Be(1);
+    }
+
+    [Fact]
+    public void Resolve_AddressInsideRange_ReturnsIdentity()
+    {
+        var r = Build((0x2000, 0x100, 1));
+        r.Resolve(0x2050)!.MetadataToken.Should().Be(1);
+    }
+
+    [Fact]
+    public void Resolve_AddressAtRangeEnd_IsExclusive()
+    {
+        // [0x2000, 0x2100) — address 0x2100 is one past the end.
+        var r = Build((0x2000, 0x100, 1));
+        r.Resolve(0x2100).Should().BeNull("range is end-exclusive — 0x2100 is not inside [0x2000, 0x2100)");
+    }
+
+    [Fact]
+    public void Resolve_AddressAtAdjacentRangeStart_PicksNextRange()
+    {
+        // Two adjacent ranges sharing a boundary: end of first == start of second.
+        // The boundary address belongs to the second range (start is inclusive).
+        var r = Build((0x2000, 0x100, 1), (0x2100, 0x100, 2));
+        r.Resolve(0x2100)!.MetadataToken.Should().Be(2, "boundary address starts the second range");
+        r.Resolve(0x20FF)!.MetadataToken.Should().Be(1, "byte just before the boundary still belongs to the first range");
+    }
+
+    [Fact]
+    public void Resolve_AddressBetweenGaps_ReturnsNull()
+    {
+        // Non-adjacent ranges with a hole between them.
+        var r = Build((0x2000, 0x100, 1), (0x3000, 0x100, 2));
+        r.Resolve(0x2500).Should().BeNull("address falls in the gap between two JIT'd methods");
+    }
+
+    [Fact]
+    public void Resolve_BinarySearch_HitsCorrectRangeInLargeList()
+    {
+        // Synthetic 1000-range list with 0x10 byte spacing — covers the binary search path
+        // (not linear scan) and proves overload disambiguation at scale.
+        var ranges = Enumerable.Range(0, 1000)
+            .Select(i => ((ulong)(0x10000UL + (ulong)(i * 0x10)), (uint)0x10, i + 1))
+            .ToArray();
+        var r = Build(ranges);
+        r.Resolve(0x10000UL + (500 * 0x10))!.MetadataToken.Should().Be(501);
+        r.Resolve(0x10000UL + (999 * 0x10) + 0x5)!.MetadataToken.Should().Be(1000);
+        r.Resolve(0xFFFF).Should().BeNull();
+        r.Resolve(0x10000UL + (1000 * 0x10)).Should().BeNull();
+    }
+}
