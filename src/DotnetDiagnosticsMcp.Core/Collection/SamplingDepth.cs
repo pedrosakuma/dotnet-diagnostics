@@ -39,25 +39,24 @@ public static class SamplingDepthExtensions
 {
     /// <summary>
     /// Returns the effective top-N for a ranked list (hotspots, blocking stacks, recent events)
-    /// at the given depth. Used by collectors that accept an explicit <c>topN</c> AND a
-    /// <c>depth</c> — the smaller of the two wins so the LLM can still cap the response.
+    /// at the given depth. An explicit user-supplied <paramref name="explicitTopN"/> always wins
+    /// (the LLM knows what it asked for); when omitted, the depth's default applies.
     /// </summary>
     /// <param name="depth">Requested depth.</param>
-    /// <param name="explicitTopN">User-supplied <c>topN</c>, or null when the tool didn't expose one.</param>
-    /// <param name="summaryDefault">Top-N for <see cref="SamplingDepth.Summary"/> (e.g. 3 hotspots, 5 recent exceptions).</param>
-    /// <param name="detailDefault">Top-N for <see cref="SamplingDepth.Detail"/> (the historical default, typically 25 / 100 / 200).</param>
+    /// <param name="explicitTopN">User-supplied <c>topN</c>, or <c>null</c>/<c>&lt;=0</c> when the caller didn't supply one.</param>
+    /// <param name="summaryDefault">Top-N for <see cref="SamplingDepth.Summary"/> (e.g. 3 hotspots).</param>
+    /// <param name="detailDefault">Top-N for <see cref="SamplingDepth.Detail"/> (historical default).</param>
     /// <param name="rawDefault">Top-N for <see cref="SamplingDepth.Raw"/>. Hard ceiling on the artifact-size axis.</param>
     public static int EffectiveTopN(this SamplingDepth depth, int? explicitTopN, int summaryDefault, int detailDefault, int rawDefault)
     {
-        var depthDefault = depth switch
+        if (explicitTopN is > 0) return explicitTopN.Value;
+        return depth switch
         {
             SamplingDepth.Summary => summaryDefault,
             SamplingDepth.Detail => detailDefault,
             SamplingDepth.Raw => rawDefault,
             _ => detailDefault,
         };
-        if (explicitTopN is null or <= 0) return depthDefault;
-        return Math.Min(explicitTopN.Value, depthDefault);
     }
 
     /// <summary>True when the LLM asked for at least <see cref="SamplingDepth.Detail"/> verbosity.</summary>
