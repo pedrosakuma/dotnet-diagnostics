@@ -1,0 +1,266 @@
+using System.Collections.Concurrent;
+using System.Diagnostics.Tracing;
+using System.Globalization;
+using System.Text;
+using DotnetDiagnosticsMcp.Core.CpuSampling;
+using DotnetDiagnosticsMcp.Core.Memory;
+using Microsoft.Diagnostics.NETCore.Client;
+using Microsoft.Diagnostics.Tracing;
+using Microsoft.Diagnostics.Tracing.Parsers;
+using Microsoft.Diagnostics.Tracing.Parsers.Clr;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace DotnetDiagnosticsMcp.Core.OffCpu;
+
+/// <summary>
+/// Emits a <c>/tmp/perf-&lt;pid&gt;.map</c> file describing every JIT-compiled managed method
+/// in a live .NET process, so that <c>perf script</c> can resolve user-mode stack frames
+/// to managed symbol names instead of raw hex addresses. This is the foundation of the
+/// off-CPU managed↔kernel stack merge: once <c>perf script</c> emits frames like
+/// <c>MyApp.OrderService.Checkout</c> the parser can attach a canonical
+/// <see cref="MethodIdentity"/> (MVID + MetadataToken) by name lookup against the rundown
+/// dictionary this emitter also returns.
+/// </summary>
+/// <remarks>
+/// <para>Mechanism: opens a short EventPipe session against the target PID with
+/// <c>requestRundown: true</c> and the runtime's <c>Jit</c> + <c>Loader</c> keywords.
+/// On <c>StopAsync</c> the runtime flushes <c>MethodDCStopVerbose</c> + <c>ModuleDCStopVerbose</c>
+/// events for every method/module currently loaded, which is the canonical mechanism the
+/// runtime itself uses for <c>dotnet-trace</c>'s perf-map mode. Each <c>MethodDCStop</c>
+/// carries the JIT start address, native code size, and the canonical method identity bits;
+/// we then write one line per method to <c>/tmp/perf-&lt;pid&gt;.map</c> in the format perf
+/// expects (<c>hexStart hexSize symbol</c>, space-separated). Subsequent <c>perf script</c>
+/// invocations will pick the file up via the <c>--symfs</c>-less default search path.</para>
+/// <para>Best-effort by design: if the EventPipe session fails to start (target process
+/// exited, diagnostic socket UID mismatch, NativeAOT), the off-CPU sampler still produces
+/// useful kernel+native stacks — the LLM just won't see managed method names in user frames.
+/// Callers should swallow exceptions from <see cref="EmitAsync"/> and continue.</para>
+/// </remarks>
+public sealed class JitMapEmitter
+{
+    private const string RuntimeProvider = "Microsoft-Windows-DotNETRuntime";
+    // Jit (0x10) | Loader (0x8). NgenKeyword (0x4) would also surface AOT/R2R methods but
+    // perf already resolves R2R native code via the assembly's own ELF symbols on Linux.
+    private const long JitMapKeywords = 0x10 | 0x8;
+
+    private readonly ILogger<JitMapEmitter> _logger;
+    private readonly MvidReader _mvidReader;
+
+    public JitMapEmitter(ILogger<JitMapEmitter>? logger = null, MvidReader? mvidReader = null)
+    {
+        _logger = logger ?? NullLogger<JitMapEmitter>.Instance;
+        _mvidReader = mvidReader ?? new MvidReader();
+    }
+
+    /// <summary>
+    /// Captures the runtime's JIT rundown for <paramref name="processId"/> and writes
+    /// <c>/tmp/perf-&lt;pid&gt;.map</c>. Returns a lookup that maps the same symbol string
+    /// emitted in the map file to a canonical <see cref="MethodIdentity"/>, ready for
+    /// stack-frame enrichment in <see cref="PerfSchedScriptParser"/>.
+    /// </summary>
+    /// <param name="processId">Target PID.</param>
+    /// <param name="rundownTimeout">
+    /// Upper bound on how long the emitter waits for the rundown events to drain after
+    /// requesting <c>StopAsync</c>. The runtime emits rundown synchronously on stop so 2s
+    /// is generous; the timeout exists only as a guard against a stuck event pump.
+    /// </param>
+    /// <param name="cancellationToken">Cooperative cancellation.</param>
+    /// <returns>The emitted <see cref="JitMapResult"/>, or <c>null</c> when the session
+    /// could not be opened (target exited, NativeAOT, permission denied).</returns>
+    public async Task<JitMapResult?> EmitAsync(
+        int processId,
+        TimeSpan? rundownTimeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        var timeout = rundownTimeout ?? TimeSpan.FromSeconds(2);
+        var providers = new[]
+        {
+            new EventPipeProvider(RuntimeProvider, EventLevel.Verbose, JitMapKeywords),
+        };
+
+        EventPipeSession? session;
+        try
+        {
+            var client = new DiagnosticsClient(processId);
+            session = await client
+                .StartEventPipeSessionAsync(providers, requestRundown: true, circularBufferMB: 64, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "JitMapEmitter: could not open EventPipe session for pid {Pid}.", processId);
+            return null;
+        }
+
+        // moduleId -> ILPath (canonical, on-disk path of the managed module).
+        var modulePaths = new ConcurrentDictionary<long, string>();
+        // perf-symbol-string -> canonical MethodIdentity. Populated as MethodDCStop events stream in.
+        var symbolToIdentity = new ConcurrentDictionary<string, MethodIdentity>(StringComparer.Ordinal);
+        // Pending records held until ModuleDCStop arrives so we can resolve the module path.
+        var pending = new ConcurrentBag<PendingJitMethod>();
+
+        var processingTask = Task.Run(() =>
+        {
+            try
+            {
+                using var source = new EventPipeEventSource(session.EventStream);
+                // Live JIT / module load events fire while the session is active.
+                source.Clr.MethodLoadVerbose += data => Record(data);
+                source.Clr.LoaderModuleLoad += data =>
+                {
+                    var path = data.ModuleILPath;
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        modulePaths[data.ModuleID] = path;
+                    }
+                };
+
+                // DC (data-collection / rundown) events fire on StopAsync for every method /
+                // module already loaded. These live on a separate parser dedicated to rundown.
+                var rundown = new ClrRundownTraceEventParser(source);
+                rundown.MethodDCStopVerbose += data => Record(data);
+                rundown.LoaderModuleDCStop += data =>
+                {
+                    var path = data.ModuleILPath;
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        modulePaths[data.ModuleID] = path;
+                    }
+                };
+
+                source.Process();
+
+                void Record(MethodLoadUnloadVerboseTraceData data)
+                {
+                    if (data.MethodStartAddress == 0 || data.MethodSize <= 0)
+                    {
+                        return;
+                    }
+                    pending.Add(new PendingJitMethod(
+                        StartAddress: (ulong)data.MethodStartAddress,
+                        Size: (uint)data.MethodSize,
+                        ModuleId: data.ModuleID,
+                        Token: data.MethodToken,
+                        TypeName: data.MethodNamespace ?? string.Empty,
+                        MethodName: data.MethodName ?? string.Empty));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "JitMapEmitter: event-source processing ended for pid {Pid}.", processId);
+            }
+        }, cancellationToken);
+
+        try
+        {
+            // Rundown is synchronous on StopAsync — events drain into the pump above.
+            using var stopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            stopCts.CancelAfter(timeout);
+            try
+            {
+                await session.StopAsync(stopCts.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogDebug(ex, "JitMapEmitter: StopAsync failed for pid {Pid}.", processId);
+            }
+
+            try
+            {
+                // Wait briefly for the pump to drain the post-stop event tail.
+                await processingTask.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Pump may have already exited or timed out; the bag already has what it has.
+            }
+        }
+        finally
+        {
+            session.Dispose();
+        }
+
+        var mapPath = Path.Combine(Path.GetTempPath(), $"perf-{processId}.map");
+        var written = WriteMap(mapPath, pending, modulePaths, symbolToIdentity);
+        if (written == 0)
+        {
+            _logger.LogDebug("JitMapEmitter: rundown returned no methods for pid {Pid}.", processId);
+        }
+
+        return new JitMapResult(mapPath, symbolToIdentity, written);
+    }
+
+    private int WriteMap(
+        string mapPath,
+        IEnumerable<PendingJitMethod> methods,
+        ConcurrentDictionary<long, string> modulePaths,
+        ConcurrentDictionary<string, MethodIdentity> symbolToIdentity)
+    {
+        using var writer = new StreamWriter(mapPath, append: false, Encoding.UTF8);
+        var count = 0;
+
+        foreach (var m in methods)
+        {
+            var symbol = FormatSymbol(m.TypeName, m.MethodName);
+            writer.Write(m.StartAddress.ToString("x", CultureInfo.InvariantCulture));
+            writer.Write(' ');
+            writer.Write(m.Size.ToString("x", CultureInfo.InvariantCulture));
+            writer.Write(' ');
+            writer.WriteLine(symbol);
+            count++;
+
+            modulePaths.TryGetValue(m.ModuleId, out var modulePath);
+            var moduleName = !string.IsNullOrEmpty(modulePath) ? Path.GetFileName(modulePath) : null;
+            var mvid = _mvidReader.TryRead(modulePath);
+            if (mvid is null && m.Token == 0 && string.IsNullOrEmpty(modulePath) && string.IsNullOrEmpty(moduleName))
+            {
+                continue;
+            }
+
+            // Use the same FullMethodName parser the on-CPU sampler uses so the LLM gets
+            // consistent (TypeFullName, MethodName, GenericArity, GenericTypeArguments) shapes
+            // regardless of which sampler produced the frame.
+            var parsed = EventPipeCpuSampler.ParseFullMethodName(symbol);
+            var identity = new MethodIdentity(
+                ModuleName: moduleName,
+                ModulePath: modulePath,
+                ModuleVersionId: mvid,
+                MetadataToken: m.Token > 0 ? (int)m.Token : null,
+                TypeFullName: parsed.TypeFullName ?? (string.IsNullOrEmpty(m.TypeName) ? null : m.TypeName),
+                MethodName: string.IsNullOrEmpty(parsed.MethodName) ? m.MethodName : parsed.MethodName,
+                GenericArity: parsed.GenericArity)
+            {
+                GenericTypeArguments = parsed.GenericTypeArguments,
+            };
+            symbolToIdentity[symbol] = identity;
+        }
+
+        return count;
+    }
+
+    private static string FormatSymbol(string typeName, string methodName)
+    {
+        if (string.IsNullOrEmpty(typeName)) return methodName;
+        if (string.IsNullOrEmpty(methodName)) return typeName;
+        return string.Concat(typeName, ".", methodName);
+    }
+
+    private readonly record struct PendingJitMethod(
+        ulong StartAddress,
+        uint Size,
+        long ModuleId,
+        long Token,
+        string TypeName,
+        string MethodName);
+}
+
+/// <summary>
+/// Output of <see cref="JitMapEmitter.EmitAsync"/>: path of the emitted perf-map plus the
+/// (symbol-name → identity) dictionary the parser uses to attach <see cref="MethodIdentity"/>
+/// to user frames coming out of <c>perf script</c>.
+/// </summary>
+public sealed record JitMapResult(
+    string MapPath,
+    IReadOnlyDictionary<string, MethodIdentity> Symbols,
+    int MethodCount);

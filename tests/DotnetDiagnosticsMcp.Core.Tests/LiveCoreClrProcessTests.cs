@@ -261,6 +261,56 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         snapshot.Locks.Should().NotBeNull();
     }
 
+    [Fact]
+    public async Task JitMapEmitter_EmitsPerfMap_WithManagedSymbols()
+    {
+        // Slice 2c Eixo B live coverage: against a real CoreClrSample process the emitter
+        // must (1) open a rundown session, (2) capture at least one MethodDCStop, (3) write
+        // /tmp/perf-<pid>.map in the perf format, (4) populate the symbol→identity dict.
+        // Linux-only: macOS does not have /tmp/perf-<pid>.map convention and Windows
+        // ETW already attaches managed names to user frames natively.
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        EnsureSampleRunning();
+
+        var emitter = new DotnetDiagnosticsMcp.Core.OffCpu.JitMapEmitter();
+        var result = await emitter.EmitAsync(Pid, rundownTimeout: TimeSpan.FromSeconds(5));
+
+        result.Should().NotBeNull("EventPipe rundown session against a running CoreCLR app must succeed");
+        result!.MapPath.Should().Be(Path.Combine(Path.GetTempPath(), $"perf-{Pid}.map"));
+        File.Exists(result.MapPath).Should().BeTrue("perf-<pid>.map file must be on disk for perf to consume");
+
+        try
+        {
+            result.MethodCount.Should().BeGreaterThan(0,
+                "the CLR rundown must enumerate at least a handful of already-JITted framework methods");
+            result.Symbols.Should().NotBeEmpty("the (symbol → MethodIdentity) dict must be populated for parser enrichment");
+
+            var lines = await File.ReadAllLinesAsync(result.MapPath);
+            lines.Should().NotBeEmpty();
+            // Format: "<hexStart> <hexSize> <symbol>" — assert at least one line parses cleanly.
+            var parsed = lines.Where(l => l.Length > 0)
+                              .Select(l => l.Split(' ', 3))
+                              .Where(p => p.Length == 3)
+                              .ToList();
+            parsed.Should().NotBeEmpty("at least one entry must follow the perf-map line format");
+            parsed[0][0].Should().MatchRegex("^[0-9a-fA-F]+$", "start address is a hex string");
+            parsed[0][1].Should().MatchRegex("^[0-9a-fA-F]+$", "size is a hex string");
+            parsed[0][2].Should().NotBeNullOrWhiteSpace();
+
+            // At least some symbols in the dict should carry an MVID — modules backing
+            // System.Private.CoreLib etc. exist on disk so MvidReader will read them.
+            result.Symbols.Values.Should().Contain(id => id.ModuleVersionId.HasValue,
+                "at least one rundown method should resolve its module MVID on disk");
+        }
+        finally
+        {
+            try { File.Delete(result.MapPath); } catch { /* best effort */ }
+        }
+    }
+
     private void EnsureSampleRunning()
     {
         if (_sampleProcess is null || _sampleProcess.HasExited)

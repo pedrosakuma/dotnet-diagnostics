@@ -38,7 +38,17 @@ internal static class PerfSchedScriptParser
     /// which would otherwise vanish from the report. Default <c>false</c> preserves the strict
     /// closed-pair semantics for unit tests.
     /// </param>
-    public static (IReadOnlyList<OffCpuSpan> Spans, long SchedSwitches) Parse(string output, HashSet<int> targetTids, bool flushPending = false)
+    /// <param name="symbolToIdentity">
+    /// Optional dictionary mapping the symbol string emitted by <c>perf script</c> (i.e. the JIT
+    /// method names written into <c>/tmp/perf-&lt;pid&gt;.map</c>) to its canonical
+    /// <see cref="DotnetDiagnosticsMcp.Core.Memory.MethodIdentity"/> handoff payload. Frames not
+    /// present in the dictionary keep <c>Identity = null</c> (native, kernel, or unresolved JIT).
+    /// </param>
+    public static (IReadOnlyList<OffCpuSpan> Spans, long SchedSwitches) Parse(
+        string output,
+        HashSet<int> targetTids,
+        bool flushPending = false,
+        IReadOnlyDictionary<string, DotnetDiagnosticsMcp.Core.Memory.MethodIdentity>? symbolToIdentity = null)
     {
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(targetTids);
@@ -76,7 +86,7 @@ internal static class PerfSchedScriptParser
                 // A line containing the sched_switch marker is the next event — let outer loop handle it.
                 if (line.Contains(" sched:sched_switch:", StringComparison.Ordinal)) break;
                 if (!char.IsWhiteSpace(line[0])) break;
-                var frame = ParseFrame(line);
+                var frame = ParseFrame(line, symbolToIdentity);
                 if (frame is not null) ev.Stack.Add(frame);
                 i++;
             }
@@ -237,7 +247,9 @@ internal static class PerfSchedScriptParser
         return int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : 0;
     }
 
-    private static OffCpuFrame? ParseFrame(string line)
+    private static OffCpuFrame? ParseFrame(
+        string line,
+        IReadOnlyDictionary<string, DotnetDiagnosticsMcp.Core.Memory.MethodIdentity>? symbolToIdentity = null)
     {
         // Indented: "    <hex addr> <symbol+offset> (<module>)" — same shape as the on-CPU parser.
         var trimmed = line.TrimStart();
@@ -264,7 +276,13 @@ internal static class PerfSchedScriptParser
         if (plus > 0) symbol = symbol[..plus];
 
         if (symbol.Length == 0) return null;
-        return new OffCpuFrame(Module: module, Method: symbol);
+        DotnetDiagnosticsMcp.Core.Memory.MethodIdentity? identity = null;
+        // When perf resolves a JIT'd user-frame via /tmp/perf-<pid>.map, the symbol string
+        // is exactly the "Type.Method" string we emitted from JitMapEmitter — so a direct
+        // dict hit suffices to attach the (MVID, MetadataToken) handoff payload. Native /
+        // kernel frames simply won't be in the dict and stay Identity=null.
+        symbolToIdentity?.TryGetValue(symbol, out identity);
+        return new OffCpuFrame(Module: module, Method: symbol, Identity: identity);
     }
 }
 
