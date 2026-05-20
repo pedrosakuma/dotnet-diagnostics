@@ -6,7 +6,7 @@
 
 `dotnet-diagnostics-mcp` is an **MCP server** that lets an LLM perform on-demand performance diagnostics on running **.NET 10** applications — locally or in a Kubernetes sidecar — **without any modification to the target app**.
 
-The server attaches to the .NET runtime diagnostic IPC socket and exposes 9 tools (process discovery, capability detection, EventCounters snapshot, CPU sampling, exception collection, GC events, EventSource passthrough, process dump) over Streamable HTTP with bearer-token auth.
+The server attaches to the .NET runtime diagnostic IPC socket and exposes 9 tools (process discovery, capability detection, EventCounters snapshot, CPU sampling, exception collection, GC events, EventSource passthrough, process dump) over either **Streamable HTTP** (default, with bearer-token auth — designed for sidecar / shared-deploy) or **stdio** (`--stdio`, recommended for local dev — the MCP client owns the process lifecycle, no daemon or bearer token; see issue #74).
 
 **Status:** MVP complete (Phases 1–6). Active work on Phase 7 is tracked in [issue #17](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/17) and the milestone [`Phase 7 — Roadmap`](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/milestone/1).
 
