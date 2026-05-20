@@ -286,7 +286,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         {
             result.MethodCount.Should().BeGreaterThan(0,
                 "the CLR rundown must enumerate at least a handful of already-JITted framework methods");
-            result.Symbols.Should().NotBeEmpty("the (symbol → MethodIdentity) dict must be populated for parser enrichment");
+            result.Methods.Should().NotBeEmpty("the per-method range list must be populated for parser enrichment");
 
             var lines = await File.ReadAllLinesAsync(result.MapPath);
             lines.Should().NotBeEmpty();
@@ -300,10 +300,19 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             parsed[0][1].Should().MatchRegex("^[0-9a-fA-F]+$", "size is a hex string");
             parsed[0][2].Should().NotBeNullOrWhiteSpace();
 
-            // At least some symbols in the dict should carry an MVID — modules backing
+            // At least some methods in the range list should carry an MVID — modules backing
             // System.Private.CoreLib etc. exist on disk so MvidReader will read them.
-            result.Symbols.Values.Should().Contain(id => id.ModuleVersionId.HasValue,
+            result.Methods.Should().Contain(r => r.Identity.ModuleVersionId.HasValue,
                 "at least one rundown method should resolve its module MVID on disk");
+
+            // Sanity-check Resolve: pick the first range, ask for an address inside it,
+            // assert we get the same identity back. Address-based lookup is the parser's
+            // authoritative path so a broken Resolve would silently drop all enrichment.
+            var sample = result.Methods.First(r => r.Size > 0);
+            result.Resolve(sample.StartAddress).Should().BeSameAs(sample.Identity,
+                "Resolve must return the range's identity for an address at the method start");
+            result.Resolve(sample.StartAddress + sample.Size).Should().BeNull(
+                "address one past the end of the range must not resolve into the next method");
         }
         finally
         {

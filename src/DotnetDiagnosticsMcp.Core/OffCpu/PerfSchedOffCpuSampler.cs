@@ -97,6 +97,11 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
             $"diagnosticsmcp-offcpu-{processId}-{Guid.NewGuid():N}.data");
         var startedAt = DateTimeOffset.UtcNow;
         var notes = new List<string>();
+        // Hoisted above the try so the finally block can clean up the perf-map even when
+        // emission succeeded but a later step (perf record / script / parse) threw. The
+        // emitter writes /tmp/perf-<pid>.map, so a stale map left behind for a recycled PID
+        // would contaminate a later capture's symbolization.
+        JitMapResult? jitMap = null;
 
         try
         {
@@ -104,7 +109,6 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
             // are visible to the kernel-side stack collector via perf's standard JIT-map path.
             // Best-effort: failure leaves us with native-only frames in managed code, but does
             // not block the sampling window. NativeAOT targets simply have nothing to emit.
-            JitMapResult? jitMap = null;
             try
             {
                 jitMap = await _jitMapEmitter.EmitAsync(processId, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -147,16 +151,21 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
             catch { /* best effort */ }
 
             var script = await RunScriptAsync(perfDataPath, cancellationToken).ConfigureAwait(false);
-            var symbols = jitMap?.Symbols;
-            var (spans, switches) = PerfSchedScriptParser.Parse(script, targetTids, flushPending: true, symbolToIdentity: symbols);
+            Func<ulong, DotnetDiagnosticsMcp.Core.Memory.MethodIdentity?>? resolver = jitMap is null
+                ? null
+                : jitMap.Resolve;
+            var (spans, switches) = PerfSchedScriptParser.Parse(script, targetTids, flushPending: true, addressResolver: resolver);
             return OffCpuAggregator.Aggregate(processId, startedAt, duration, spans, switches, topN, symbolSource: "perf-sched-dwarf", notes);
         }
         finally
         {
             TryDelete(perfDataPath);
-            // Leave /tmp/perf-<pid>.map in place: perf script may need it on re-runs and the
-            // file is small. The runtime overwrites it next time we emit, and the OS cleans
-            // /tmp on its own schedule.
+            // Delete /tmp/perf-<pid>.map so a recycled PID can't pick up stale managed
+            // symbols on the next capture (the OS would otherwise leave it until reboot).
+            if (jitMap is not null)
+            {
+                TryDelete(jitMap.MapPath);
+            }
         }
     }
 

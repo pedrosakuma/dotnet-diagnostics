@@ -130,15 +130,16 @@ public sealed class PerfSchedAggregateTests
 public sealed class PerfSchedScriptParserEnrichmentTests
 {
     [Fact]
-    public void ParseFrame_AttachesMethodIdentity_WhenSymbolMatchesPerfMapEntry()
+    public void ParseFrame_AttachesMethodIdentity_WhenAddressFallsWithinJitRange()
     {
         // Synthetic perf-script output covering one OUT/IN pair around a managed user frame
-        // whose symbol exactly matches the key the JitMapEmitter would have written into the
-        // perf-map. This exercises the dict lookup path without needing a live JIT.
+        // whose program-counter address falls inside the range JitMapEmitter would have
+        // emitted for the method. Address-based lookup is the authoritative path — two
+        // overloads share the rendered symbol string but live at distinct addresses.
         const string script = @"swapper     0 [000] 100.000000: sched:sched_switch: prev_comm=worker prev_pid=4242 prev_prio=120 prev_state=S ==> next_comm=swapper next_pid=0 next_prio=120
         ffffffff8100abcd schedule+0x0 ([kernel.kallsyms])
         7fabc1234567 pthread_cond_wait+0x0 (libc.so.6)
-        7fabc7654321 MyApp.OrderService.Checkout+0x0 (/app/MyApp.dll)
+        7fabc7654321 MyApp.OrderService.Checkout+0x10 (/app/MyApp.dll)
 
 worker     4242 [000] 100.500000: sched:sched_switch: prev_comm=swapper prev_pid=0 prev_prio=120 prev_state=R ==> next_comm=worker next_pid=4242 next_prio=120
 
@@ -151,21 +152,52 @@ worker     4242 [000] 100.500000: sched:sched_switch: prev_comm=swapper prev_pid
             ModuleVersionId: Guid.NewGuid(),
             MetadataToken: 0x06000123,
             TypeFullName: "MyApp.OrderService");
-        var symbols = new Dictionary<string, DotnetDiagnosticsMcp.Core.Memory.MethodIdentity>(StringComparer.Ordinal)
-        {
-            ["MyApp.OrderService.Checkout"] = identity,
-        };
+        // Range covers [0x7fabc7654321 .. 0x7fabc7654421); the frame address 0x7fabc7654321
+        // is the method start (offset +0x10 above is the in-method displacement).
+        const ulong methodStart = 0x7fabc7654321UL;
+        const uint methodSize = 0x100;
+        DotnetDiagnosticsMcp.Core.Memory.MethodIdentity? Resolve(ulong addr) =>
+            addr >= methodStart && addr < methodStart + methodSize ? identity : null;
         var tids = new HashSet<int> { 4242 };
 
-        var (spans, _) = PerfSchedScriptParser.Parse(script, tids, flushPending: false, symbolToIdentity: symbols);
+        var (spans, _) = PerfSchedScriptParser.Parse(script, tids, flushPending: false, addressResolver: Resolve);
 
         spans.Should().HaveCount(1);
         var stack = spans[0].BlockingStack;
         stack.Should().HaveCount(3);
         var managed = stack.Single(f => f.Method == "MyApp.OrderService.Checkout");
-        managed.Identity.Should().BeSameAs(identity, "the parser looks the symbol up in the perf-map dict and attaches the canonical handoff payload");
+        managed.Identity.Should().BeSameAs(identity, "the parser resolves the frame's PC address to the canonical handoff payload");
         stack.Where(f => f.Method != "MyApp.OrderService.Checkout")
-             .Should().AllSatisfy(f => f.Identity.Should().BeNull("kernel and native frames are not in the perf-map"));
+             .Should().AllSatisfy(f => f.Identity.Should().BeNull("kernel and native frame addresses fall outside any JIT'd managed range"));
+    }
+
+    [Fact]
+    public void ParseFrame_DisambiguatesOverloads_ByAddress()
+    {
+        // Two overloads of Checkout share the rendered "Type.Method" string but live at
+        // distinct addresses with distinct MethodIdentity payloads. Resolution by address
+        // must pick the correct overload — symbol-name lookup would silently collide.
+        const string script = @"swapper     0 [000] 100.000000: sched:sched_switch: prev_comm=worker prev_pid=4242 prev_prio=120 prev_state=S ==> next_comm=swapper next_pid=0 next_prio=120
+        7fabc0001000 MyApp.OrderService.Checkout+0x10 (/app/MyApp.dll)
+
+worker     4242 [000] 100.500000: sched:sched_switch: prev_comm=swapper prev_pid=0 prev_prio=120 prev_state=R ==> next_comm=worker next_pid=4242 next_prio=120
+
+";
+        var overloadA = new DotnetDiagnosticsMcp.Core.Memory.MethodIdentity(
+            MethodName: "Checkout", GenericArity: 0, MetadataToken: 0x06000111);
+        var overloadB = new DotnetDiagnosticsMcp.Core.Memory.MethodIdentity(
+            MethodName: "Checkout", GenericArity: 0, MetadataToken: 0x06000222);
+
+        DotnetDiagnosticsMcp.Core.Memory.MethodIdentity? Resolve(ulong addr)
+        {
+            if (addr >= 0x7fabc0001000UL && addr < 0x7fabc0001100UL) return overloadA;
+            if (addr >= 0x7fabc0002000UL && addr < 0x7fabc0002100UL) return overloadB;
+            return null;
+        }
+
+        var (spans, _) = PerfSchedScriptParser.Parse(script, new HashSet<int> { 4242 }, flushPending: false, addressResolver: Resolve);
+        spans.Single().BlockingStack.Single(f => f.Method == "MyApp.OrderService.Checkout")
+             .Identity!.MetadataToken.Should().Be(0x06000111, "the frame's PC address falls within overload A's range, not overload B's");
     }
 
     [Fact]

@@ -95,8 +95,6 @@ public sealed class JitMapEmitter
 
         // moduleId -> ILPath (canonical, on-disk path of the managed module).
         var modulePaths = new ConcurrentDictionary<long, string>();
-        // perf-symbol-string -> canonical MethodIdentity. Populated as MethodDCStop events stream in.
-        var symbolToIdentity = new ConcurrentDictionary<string, MethodIdentity>(StringComparer.Ordinal);
         // Pending records held until ModuleDCStop arrives so we can resolve the module path.
         var pending = new ConcurrentBag<PendingJitMethod>();
 
@@ -161,7 +159,15 @@ public sealed class JitMapEmitter
             {
                 await session.StopAsync(stopCts.Token).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException || cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Internal guard timeout fired — pump still has whatever rundown drained so far;
+                // emit a partial map rather than failing the whole off-CPU window.
+                _logger.LogDebug(
+                    "JitMapEmitter: rundown StopAsync exceeded {TimeoutMs}ms for pid {Pid}; emitting partial map.",
+                    timeout.TotalMilliseconds, processId);
+            }
+            catch (Exception ex)
             {
                 _logger.LogDebug(ex, "JitMapEmitter: StopAsync failed for pid {Pid}.", processId);
             }
@@ -182,25 +188,30 @@ public sealed class JitMapEmitter
         }
 
         var mapPath = Path.Combine(Path.GetTempPath(), $"perf-{processId}.map");
-        var written = WriteMap(mapPath, pending, modulePaths, symbolToIdentity);
-        if (written == 0)
+        var methods = WriteMap(mapPath, pending, modulePaths);
+        if (methods.Count == 0)
         {
             _logger.LogDebug("JitMapEmitter: rundown returned no methods for pid {Pid}.", processId);
         }
 
-        return new JitMapResult(mapPath, symbolToIdentity, written);
+        return new JitMapResult(mapPath, methods, methods.Count);
     }
 
-    private int WriteMap(
+    private List<JitMapRange> WriteMap(
         string mapPath,
         IEnumerable<PendingJitMethod> methods,
-        ConcurrentDictionary<long, string> modulePaths,
-        ConcurrentDictionary<string, MethodIdentity> symbolToIdentity)
+        ConcurrentDictionary<long, string> modulePaths)
     {
-        using var writer = new StreamWriter(mapPath, append: false, Encoding.UTF8);
-        var count = 0;
+        // Sort by start address so JitMapResult.Resolve can binary-search.
+        var ordered = methods
+            .Where(m => m.StartAddress != 0 && m.Size > 0)
+            .OrderBy(m => m.StartAddress)
+            .ToList();
 
-        foreach (var m in methods)
+        var ranges = new List<JitMapRange>(ordered.Count);
+        using var writer = new StreamWriter(mapPath, append: false, Encoding.UTF8);
+
+        foreach (var m in ordered)
         {
             var symbol = FormatSymbol(m.TypeName, m.MethodName);
             writer.Write(m.StartAddress.ToString("x", CultureInfo.InvariantCulture));
@@ -208,15 +219,10 @@ public sealed class JitMapEmitter
             writer.Write(m.Size.ToString("x", CultureInfo.InvariantCulture));
             writer.Write(' ');
             writer.WriteLine(symbol);
-            count++;
 
             modulePaths.TryGetValue(m.ModuleId, out var modulePath);
             var moduleName = !string.IsNullOrEmpty(modulePath) ? Path.GetFileName(modulePath) : null;
             var mvid = _mvidReader.TryRead(modulePath);
-            if (mvid is null && m.Token == 0 && string.IsNullOrEmpty(modulePath) && string.IsNullOrEmpty(moduleName))
-            {
-                continue;
-            }
 
             // Use the same FullMethodName parser the on-CPU sampler uses so the LLM gets
             // consistent (TypeFullName, MethodName, GenericArity, GenericTypeArguments) shapes
@@ -233,10 +239,10 @@ public sealed class JitMapEmitter
             {
                 GenericTypeArguments = parsed.GenericTypeArguments,
             };
-            symbolToIdentity[symbol] = identity;
+            ranges.Add(new JitMapRange(m.StartAddress, (uint)m.Size, identity));
         }
 
-        return count;
+        return ranges;
     }
 
     private static string FormatSymbol(string typeName, string methodName)
@@ -257,10 +263,51 @@ public sealed class JitMapEmitter
 
 /// <summary>
 /// Output of <see cref="JitMapEmitter.EmitAsync"/>: path of the emitted perf-map plus the
-/// (symbol-name → identity) dictionary the parser uses to attach <see cref="MethodIdentity"/>
-/// to user frames coming out of <c>perf script</c>.
+/// per-method address ranges. Use <see cref="Resolve"/> to map a frame address coming out of
+/// <c>perf script</c> back to its canonical <see cref="MethodIdentity"/>. Address-based lookup
+/// is required because the formatted symbol string is ambiguous for overloads — two overloads
+/// of the same method share the rendered <c>Type.Method</c> name but live at distinct addresses
+/// with distinct metadata tokens.
 /// </summary>
 public sealed record JitMapResult(
     string MapPath,
-    IReadOnlyDictionary<string, MethodIdentity> Symbols,
-    int MethodCount);
+    IReadOnlyList<JitMapRange> Methods,
+    int MethodCount)
+{
+    /// <summary>
+    /// Returns the <see cref="MethodIdentity"/> whose range <c>[StartAddress, StartAddress+Size)</c>
+    /// contains <paramref name="address"/>, or <c>null</c> when the address is not within any
+    /// JIT'd managed method (typically: native, kernel, or unresolved JIT frame).
+    /// </summary>
+    /// <remarks>
+    /// Binary search assumes <see cref="Methods"/> is sorted by <see cref="JitMapRange.StartAddress"/>
+    /// ascending — <see cref="JitMapEmitter"/> guarantees that ordering. Code-heap ranges are
+    /// non-overlapping by construction (the JIT allocates contiguous bytes per method body).
+    /// </remarks>
+    public MethodIdentity? Resolve(ulong address)
+    {
+        if (Methods.Count == 0) return null;
+        int lo = 0, hi = Methods.Count - 1, found = -1;
+        while (lo <= hi)
+        {
+            int mid = lo + ((hi - lo) >> 1);
+            if (Methods[mid].StartAddress <= address)
+            {
+                found = mid;
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid - 1;
+            }
+        }
+        if (found < 0) return null;
+        var m = Methods[found];
+        return address < m.StartAddress + m.Size ? m.Identity : null;
+    }
+}
+
+/// <summary>One JIT'd managed method body: covers byte range
+/// <c>[<see cref="StartAddress"/>, <see cref="StartAddress"/> + <see cref="Size"/>)</c>.
+/// Distinct ranges per overload — even when the formatted symbol string collides.</summary>
+public readonly record struct JitMapRange(ulong StartAddress, uint Size, MethodIdentity Identity);
