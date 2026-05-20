@@ -706,6 +706,86 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task GetCollectionStatus_UnknownHandle_PassesMcpOutputSchemaValidation()
+    {
+        // Regression for #61: the SDK validates structured tool output against the declared
+        // outputSchema. The client surfaced `McpError -32602: Structured content does not
+        // match the tool's output schema: data/data must have required property 'error'`
+        // because the JsonSchemaExporter marked nullable parameters of `CollectionStatusReport`
+        // (CompletedAt, Result, Error) as required, while the SDK serializes with
+        // JsonIgnoreCondition.WhenWritingNull and omitted them from the wire. Fix: add
+        // `= null` defaults to those parameters so the generator drops them from `required`.
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "get_collection_status",
+            new Dictionary<string, object?> { ["handle"] = "DEADBEEFDEADBEEFDEAD" },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Error.Should().NotBeNull("an unknown handle must surface a structured DiagnosticError");
+        envelope.Error!.Kind.Should().Be("HandleNotFound");
+        envelope.Hints.Should().NotBeEmpty();
+
+        // Belt-and-suspenders: assert the declared outputSchema does NOT require nullable
+        // properties that the serializer will omit. Catches future regressions where someone
+        // drops the `= null` default on a primary-ctor param of CollectionStatusReport.
+        var tools = await client.ListToolsAsync(cancellationToken: CancellationToken.None);
+        var status = tools.Single(t => t.Name == "get_collection_status");
+        var dataSchema = status.ReturnJsonSchema!.Value.GetProperty("properties").GetProperty("data");
+        var dataRequired = dataSchema.GetProperty("required").EnumerateArray().Select(e => e.GetString()!).ToArray();
+        dataRequired.Should().NotContain(new[] { "completedAt", "result", "error" },
+            "nullable properties must NOT be in `required` — the SDK omits null values on the wire (issue #61)");
+    }
+
+    [Fact]
+    public async Task GetCollectionStatus_RunningJob_PassesMcpOutputSchemaValidation()
+    {
+        // Regression for #61: when a real background job is in 'Running' or 'Completed'
+        // state, polling get_collection_status used to fail with McpError -32602
+        // "data/data must have required property 'error'" because the SDK's schema generator
+        // emits a required `error` property on the inner envelope wrapped inside
+        // `CollectionStatusReport.Result`. The MCP client throws before the response reaches
+        // the caller, so simply receiving a CallToolResult without exception proves the fix.
+        await using var client = await ConnectAsync();
+
+        var startResult = await client.CallToolAsync(
+            "collect_cpu_sample",
+            new Dictionary<string, object?>
+            {
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 3,
+                ["runAsJob"] = true,
+            },
+            cancellationToken: CancellationToken.None);
+
+        startResult.IsError.Should().NotBe(true);
+        var startEnvelope = DeserializeEnvelope(startResult);
+        startEnvelope!.Handle.Should().NotBeNullOrWhiteSpace("runAsJob=true must return a job handle");
+
+        // Poll while Running. The act of receiving the CallToolResult without the MCP
+        // client throwing McpError -32602 is the assertion.
+        var pollResult = await client.CallToolAsync(
+            "get_collection_status",
+            new Dictionary<string, object?> { ["handle"] = startEnvelope.Handle! },
+            cancellationToken: CancellationToken.None);
+        pollResult.IsError.Should().NotBe(true,
+            "polling a Running job must not violate the outputSchema (issue #61)");
+
+        // Wait for completion and poll again — the Completed path embeds the full
+        // DiagnosticResult<CpuSample> inside Result and exercised a different code path
+        // in the original repro.
+        await Task.Delay(TimeSpan.FromSeconds(5));
+        var finalResult = await client.CallToolAsync(
+            "get_collection_status",
+            new Dictionary<string, object?> { ["handle"] = startEnvelope.Handle! },
+            cancellationToken: CancellationToken.None);
+        finalResult.IsError.Should().NotBe(true,
+            "polling a Completed job must not violate the outputSchema (issue #61)");
+    }
+
+    [Fact]
     public async Task CallTool_RejectsInvalidArguments()
     {
         await using var client = await ConnectAsync();

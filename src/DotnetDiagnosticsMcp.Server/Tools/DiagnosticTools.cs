@@ -1805,8 +1805,8 @@ public sealed class DiagnosticTools
             ProcessId: snap.ProcessId,
             Status: snap.Status.ToString().ToLowerInvariant(),
             StartedAt: snap.StartedAt,
-            CompletedAt: snap.CompletedAt,
             ElapsedSeconds: snap.ElapsedSeconds,
+            CompletedAt: snap.CompletedAt,
             Result: snap.Result,
             Error: snap.Error);
 
@@ -2036,16 +2036,24 @@ public sealed class DiagnosticTools
 }
 
 /// <summary>Tool-facing projection of a <see cref="DotnetDiagnosticsMcp.Core.Jobs.CollectionJobSnapshot"/>.</summary>
+/// <remarks>
+/// Order matters: nullable parameters must have explicit <c>= null</c> defaults so the
+/// JSON schema generator (used by the MCP SDK to advertise <c>outputSchema</c>) does NOT
+/// mark them as required. The SDK serializes with <c>JsonIgnoreCondition.WhenWritingNull</c>,
+/// so a missing default produces "required + omitted" mismatches and clients (Copilot CLI,
+/// Claude Code) reject the response with <c>-32602 Structured content does not match the
+/// tool's output schema: data/data must have required property 'X'</c>. Regression: issue #61.
+/// </remarks>
 public sealed record CollectionStatusReport(
     string Handle,
     string Kind,
     int ProcessId,
     string Status,
     DateTimeOffset StartedAt,
-    DateTimeOffset? CompletedAt,
     double ElapsedSeconds,
-    object? Result,
-    DiagnosticError? Error);
+    DateTimeOffset? CompletedAt = null,
+    object? Result = null,
+    DiagnosticError? Error = null);
 
 /// <summary>Tool-facing acknowledgement of a cancel_collection call.</summary>
 public sealed record CancelCollectionReport(string Handle, bool CancellationRequested);
