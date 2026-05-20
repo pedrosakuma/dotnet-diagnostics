@@ -17,7 +17,7 @@ using DotnetDiagnosticsMcp.Core.Capabilities;
 public sealed record ProcessContext(
     int ProcessId,
     RuntimeFlavor Runtime,
-    string? RuntimeVersion,
     bool CanSampleCpu,
     bool CanCollectGcDump,
-    bool AutoResolved);
+    bool AutoResolved,
+    string? RuntimeVersion = null);

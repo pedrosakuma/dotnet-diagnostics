@@ -740,6 +740,55 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task StartInvestigation_BogusPid_ReturnsStructuredProcessNotFoundError()
+    {
+        // Regression for #72. Before the fix `start_investigation(processId=99999999)`
+        // returned a 200 with a partial `resolvedProcess` envelope that was missing
+        // the schema-required `runtimeVersion` field (because CapabilityDetector returns
+        // a blank DiagnosticCapabilities for non-existent PIDs and the SDK omits null
+        // values on the wire — same nullable-required family as #61/#70). Strict clients
+        // rejected the response and the LLM never learned the target was gone.
+        // The fix is two-pronged: (1) fail-fast in ProcessContextResolver when the PID
+        // is not running, returning a structured ProcessNotFound error, AND (2) make
+        // `ProcessContext.RuntimeVersion` schema-honest (default null) so any future
+        // partial-context path can't trip strict clients again.
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "start_investigation",
+            new Dictionary<string, object?> { ["processId"] = 99999999 },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Error.Should().NotBeNull("non-existent PID must surface a structured error, not a partial resolvedProcess");
+        envelope.Error!.Kind.Should().Be("ProcessNotFound");
+        envelope.ResolvedProcess.Should().BeNull("no ProcessContext should be attached when the PID does not exist");
+    }
+
+    [Fact]
+    public async Task StartInvestigation_OutputSchema_ResolvedProcessRuntimeVersionIsOptional()
+    {
+        // Defence-in-depth for #72. Even with the fail-fast guard, ProcessContext is a
+        // shared shape attached to every diagnostic response — the schema must honestly
+        // mark `runtimeVersion` as optional (nullable + default) so any code path that
+        // legitimately ships a context with a null version (e.g. an old runtime that
+        // doesn't expose ClrProductVersionString) doesn't break strict clients.
+        await using var client = await ConnectAsync();
+
+        var tools = await client.ListToolsAsync(cancellationToken: CancellationToken.None);
+        var start = tools.Single(t => t.Name == "start_investigation");
+        var schema = start.ReturnJsonSchema!.Value.GetProperty("properties");
+        if (schema.TryGetProperty("resolvedProcess", out var resolved) &&
+            resolved.TryGetProperty("required", out var requiredArr))
+        {
+            var required = requiredArr.EnumerateArray().Select(e => e.GetString()!).ToArray();
+            required.Should().NotContain("runtimeVersion",
+                "ProcessContext.RuntimeVersion is nullable and must not appear in `required` (#72)");
+        }
+    }
+
+    [Fact]
     public async Task StartInvestigation_OutputSchema_DoesNotMarkNullablesAsRequired()
     {
         // Regression for #70 (same family as #61). `InvestigationPlan` exposes nullable

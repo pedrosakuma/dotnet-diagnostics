@@ -95,6 +95,25 @@ public sealed class ProcessContextResolver : IProcessContextResolver
                 Error: null);
         }
 
+        // Fail-fast for non-existent / non-.NET PIDs (#72): without this guard
+        // CapabilityDetector happily returns a blank DiagnosticCapabilities for a PID
+        // that is not reachable, which gets stamped onto ResolvedProcess with
+        // RuntimeVersion=null and confuses both the LLM (no signal that the target is
+        // gone) and strict MCP clients (which historically rejected the partial envelope
+        // on schema grounds; that part is fixed by the ProcessContext schema patch in
+        // this same change). IProcessDiscovery.TryGetProcess returns null both for PIDs
+        // that simply don't exist and for PIDs that exist but don't expose a .NET
+        // diagnostic IPC endpoint — both are equally useless to the agent.
+        if (_discovery.TryGetProcess(pid) is null)
+        {
+            return new ProcessContextResolution(
+                Context: null,
+                Error: new DiagnosticError(
+                    "ProcessNotFound",
+                    $"No .NET process with pid {pid} is reachable on this host (either the pid is not running, it is not a .NET process, or the sidecar runs under a different UID than the target).",
+                    "Call list_dotnet_processes to discover currently-running .NET processes. In containers / Kubernetes, verify the sidecar shares the target's PID namespace and runs as the same UID."));
+        }
+
         DiagnosticCapabilities caps;
         try
         {
@@ -110,13 +129,27 @@ public sealed class ProcessContextResolver : IProcessContextResolver
                     ex.GetType().FullName));
         }
 
+        // The process exists but doesn't expose a .NET diagnostic IPC endpoint. Without
+        // this check the LLM would receive a fully-populated ProcessContext with
+        // Runtime=Unknown and every Can* flag false — easy to misread as "this .NET
+        // process supports nothing". A structured NotADotnetProcess error is unambiguous.
+        if (caps.Runtime == RuntimeFlavor.Unknown && string.IsNullOrEmpty(caps.RuntimeVersion))
+        {
+            return new ProcessContextResolution(
+                Context: null,
+                Error: new DiagnosticError(
+                    "NotADotnetProcess",
+                    $"Process {pid} is running but does not expose a .NET diagnostic IPC endpoint. Either it is not a .NET process, or the sidecar runs under a different UID than the target.",
+                    "Verify the target is .NET, that the sidecar runs as the same UID as the target, and (in containers / Kubernetes) that it shares the target's PID namespace."));
+        }
+
         var context = new ProcessContext(
             ProcessId: pid,
             Runtime: caps.Runtime,
-            RuntimeVersion: string.IsNullOrEmpty(caps.RuntimeVersion) ? null : caps.RuntimeVersion,
             CanSampleCpu: caps.CanSampleCpu,
             CanCollectGcDump: caps.CanCollectGcDump,
-            AutoResolved: autoResolved);
+            AutoResolved: autoResolved,
+            RuntimeVersion: string.IsNullOrEmpty(caps.RuntimeVersion) ? null : caps.RuntimeVersion);
 
         _cache[pid] = new CacheEntry(context, _clock.GetUtcNow() + _ttl);
         return new ProcessContextResolution(context, Error: null);
