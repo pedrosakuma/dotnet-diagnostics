@@ -1,24 +1,31 @@
-using System.Collections.Concurrent;
 using System.Diagnostics.Tracing;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
+using Microsoft.Diagnostics.Tracing.Etlx;
+using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DotnetDiagnosticsMcp.Core.CpuSampling;
 
 /// <summary>
-/// Collects allocation samples via the <c>GCAllocationTick</c> event from
-/// <c>Microsoft-Windows-DotNETRuntime</c> (keyword <c>GCKeyword=0x1</c>, level Verbose).
-/// This event fires roughly every 100 KB of total managed allocations and carries the
-/// <c>TypeName</c> of the most recently allocated object. It is available on both CoreCLR
-/// and NativeAOT, making it suitable for answering "who is allocating?" on runtimes where
-/// heap introspection via ClrMD is unavailable.
+/// Collects allocation samples by writing a <c>.nettrace</c> to disk then parsing it
+/// via <see cref="TraceLog"/>. Uses <c>GCAllocationTick</c> events from
+/// <c>Microsoft-Windows-DotNETRuntime</c> (GCKeyword=0x1, Verbose), which fire roughly
+/// every 100 KB of total managed allocations and carry the <c>TypeName</c> of the sampled
+/// object plus a call stack.
 /// </summary>
 /// <remarks>
-/// The sampling is statistical: each event samples the most recently allocated type when
-/// the 100 KB threshold is crossed. High-volume types will be sampled proportionally more
-/// often, making the top-N-by-bytes result a reliable proxy for actual allocation pressure.
+/// <para><b>CoreCLR</b>: <c>TypeName</c> is fully populated; call stacks resolve to managed
+/// method names via TraceEvent rundown. <c>MethodIdentity</c> (MVID + token) is emitted for
+/// top-N hotspot frames, enabling the assembly-mcp handoff.</para>
+/// <para><b>NativeAOT</b>: the GC fires <c>GCAllocationTick</c> events, but the
+/// <c>TypeName</c> field is empty — NativeAOT strips managed type metadata at compile time and
+/// does not populate this field. All events will roll up under <c>&lt;unknown&gt;</c>. Call
+/// stacks are still captured but contain native frame addresses. The call-tree handle is still
+/// registered so the LLM can drill into native allocation sites.</para>
+/// <para>The sampling rate is inherent to the GC (~one tick per 100 KB of total allocations);
+/// it is not tunable via EventPipe parameters.</para>
 /// </remarks>
 public sealed class EventPipeAllocationSampler
 {
@@ -31,17 +38,20 @@ public sealed class EventPipeAllocationSampler
     private const long GcKeyword = 0x1L;
 
     private readonly ILogger<EventPipeAllocationSampler> _logger;
+    private readonly MvidReader _mvidReader;
 
-    public EventPipeAllocationSampler(ILogger<EventPipeAllocationSampler>? logger = null)
+    public EventPipeAllocationSampler(ILogger<EventPipeAllocationSampler>? logger = null, MvidReader? mvidReader = null)
     {
         _logger = logger ?? NullLogger<EventPipeAllocationSampler>.Instance;
+        _mvidReader = mvidReader ?? new MvidReader();
     }
 
     /// <summary>
     /// Samples allocations in the target process for <paramref name="duration"/> and
-    /// aggregates the captured <c>GCAllocationTick</c> events into a top-N type summary.
+    /// aggregates the captured <c>GCAllocationTick</c> events into a top-N type summary plus
+    /// a merged call-tree artifact suitable for follow-up drill-down via <c>get_call_tree</c>.
     /// </summary>
-    public async Task<AllocationSample> SampleAsync(
+    public async Task<AllocationSampleResult> SampleAsync(
         int processId,
         TimeSpan duration,
         int topN = 25,
@@ -57,90 +67,260 @@ public sealed class EventPipeAllocationSampler
             throw new ArgumentOutOfRangeException(nameof(topN), "topN must be positive.");
         }
 
-        var providers = new[]
-        {
-            // Verbose GCKeyword enables GCAllocationTick, which fires every ~100 KB of managed
-            // allocations and carries TypeName, AllocationAmount64, and AllocationKind.
-            new EventPipeProvider(RuntimeProvider, EventLevel.Verbose, GcKeyword),
-        };
-
-        var client = new DiagnosticsClient(processId);
-        var session = await client
-            .StartEventPipeSessionAsync(providers, requestRundown: false, circularBufferMB: 128, cancellationToken)
-            .ConfigureAwait(false);
-
+        var tracePath = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-alloc-{processId}-{Guid.NewGuid():N}.nettrace");
         var startedAt = DateTimeOffset.UtcNow;
-        var byType = new ConcurrentDictionary<string, TypeAccumulator>(StringComparer.Ordinal);
-        long totalEvents = 0;
-        long totalBytes = 0;
-
-        var processingTask = Task.Run(() =>
-        {
-            try
-            {
-                using var source = new EventPipeEventSource(session.EventStream);
-                source.Clr.GCAllocationTick += traceEvent =>
-                {
-                    var typeName = traceEvent.TypeName;
-                    if (string.IsNullOrEmpty(typeName))
-                    {
-                        typeName = "<unknown>";
-                    }
-
-                    var bytes = traceEvent.AllocationAmount64;
-                    var kind = traceEvent.AllocationKind == Microsoft.Diagnostics.Tracing.Parsers.Clr.GCAllocationKind.Large
-                        ? HeapKind.Large
-                        : HeapKind.Small;
-
-                    Interlocked.Increment(ref totalEvents);
-                    Interlocked.Add(ref totalBytes, bytes);
-
-                    var acc = byType.GetOrAdd(typeName, static t => new TypeAccumulator(t));
-                    acc.Add(bytes, kind);
-                };
-
-                source.Process();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "EventPipe allocation source ended for pid {Pid}.", processId);
-            }
-        }, cancellationToken);
 
         try
         {
-            await Task.Delay(duration, cancellationToken).ConfigureAwait(false);
+            await CollectTraceAsync(processId, tracePath, duration, cancellationToken).ConfigureAwait(false);
+            var (summary, artifact) = Aggregate(tracePath, processId, startedAt, duration, topN);
+            return new AllocationSampleResult(summary, artifact);
+        }
+        finally
+        {
+            TryDelete(tracePath);
+        }
+    }
+
+    private static async Task CollectTraceAsync(int pid, string outputPath, TimeSpan duration, CancellationToken ct)
+    {
+        var providers = new[]
+        {
+            // Verbose GCKeyword enables GCAllocationTick (fires every ~100 KB of managed allocations).
+            // Default DotNETRuntime keywords supply the rundown events needed to resolve managed
+            // method names and IL tokens when the nettrace is re-opened via TraceLog.
+            new EventPipeProvider(RuntimeProvider, EventLevel.Verbose,
+                GcKeyword | (long)ClrTraceEventParser.Keywords.Default),
+        };
+
+        var client = new DiagnosticsClient(pid);
+        var session = await client
+            .StartEventPipeSessionAsync(providers, requestRundown: true, circularBufferMB: 256, ct)
+            .ConfigureAwait(false);
+
+        var copyTask = Task.Run(async () =>
+        {
+            await using var output = File.Create(outputPath);
+            await session.EventStream.CopyToAsync(output, ct).ConfigureAwait(false);
+        }, ct);
+
+        try
+        {
+            await Task.Delay(duration, ct).ConfigureAwait(false);
         }
         finally
         {
             try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
+            try { await copyTask.ConfigureAwait(false); } catch (Exception) { }
             session.Dispose();
         }
+    }
 
-        var totalEventsSnap = Volatile.Read(ref totalEvents);
-        var totalBytesSnap = Volatile.Read(ref totalBytes);
+    private (AllocationSample Summary, CpuSampleTraceArtifact Artifact) Aggregate(
+        string tracePath,
+        int pid,
+        DateTimeOffset startedAt,
+        TimeSpan duration,
+        int topN)
+    {
+        var etlxPath = TraceLog.CreateFromEventPipeDataFile(tracePath);
+        try
+        {
+            using var traceLog = new TraceLog(etlxPath);
+            var process = traceLog.Processes.LastProcessWithID(pid);
+            if (process is null)
+            {
+                _logger.LogDebug("Process {Pid} not found in trace.", pid);
+                return (EmptySummary(pid, startedAt, duration), EmptyArtifact(pid, startedAt, duration));
+            }
 
-        var topByBytes = byType.Values
-            .OrderByDescending(a => a.TotalBytes)
-            .Take(topN)
-            .Select(a => a.ToRecord())
-            .ToList();
+            // Per-type byte/event accumulators.
+            var byType = new Dictionary<string, TypeAccumulator>(StringComparer.Ordinal);
 
-        var topByCount = byType.Values
-            .OrderByDescending(a => a.EventCount)
-            .Take(topN)
-            .Select(a => a.ToRecord())
-            .ToList();
+            // Merged allocation call tree (all types combined, weighted by byte amount).
+            var rootBuilder = new CallTreeBuilder();
+            var modules = new Dictionary<string, string>(StringComparer.Ordinal);
+            var codeAddressByKey = new Dictionary<string, Microsoft.Diagnostics.Tracing.Etlx.TraceCodeAddress>(StringComparer.Ordinal);
 
-        return new AllocationSample(
-            processId,
-            startedAt,
-            duration,
-            totalEventsSnap,
-            totalBytesSnap,
-            topByBytes,
-            topByCount);
+            long totalEvents = 0;
+            long totalBytes = 0;
+
+            foreach (var traceEvent in process.EventsInProcess)
+            {
+                if (traceEvent.EventName != "GC/AllocationTick")
+                {
+                    continue;
+                }
+
+                var typeName = traceEvent.PayloadByName("TypeName") as string;
+                if (string.IsNullOrEmpty(typeName))
+                {
+                    // NativeAOT: TypeName field is empty. Preserve the event for count/bytes
+                    // aggregation but group under the sentinel so the LLM can see the total load.
+                    typeName = "<unknown>";
+                }
+
+                var amountObj = traceEvent.PayloadByName("AllocationAmount64");
+                var bytes = amountObj switch
+                {
+                    ulong ul => (long)ul,
+                    long l => l,
+                    uint ui => (long)ui,
+                    int i => (long)i,
+                    _ => 0L,
+                };
+
+                var kindObj = traceEvent.PayloadByName("AllocationKind");
+                var kind = kindObj switch
+                {
+                    uint ui => ui == 1 ? HeapKind.Large : HeapKind.Small,
+                    int i => i == 1 ? HeapKind.Large : HeapKind.Small,
+                    _ => HeapKind.Small,
+                };
+
+                totalEvents++;
+                totalBytes += bytes;
+
+                if (!byType.TryGetValue(typeName, out var acc))
+                {
+                    acc = new TypeAccumulator(typeName);
+                    byType[typeName] = acc;
+                }
+                acc.Add(bytes, kind);
+
+                // Build the merged allocation call tree.
+                var callStack = traceEvent.CallStack();
+                if (callStack is not null)
+                {
+                    var stackFrames = new List<(string Key, string Module, string Display)>();
+                    var frame = callStack;
+                    while (frame is not null)
+                    {
+                        var display = FormatFrame(frame);
+                        var module = frame.CodeAddress?.ModuleFile?.Name ?? string.Empty;
+                        var key = string.IsNullOrEmpty(module) ? display : module + "!" + display;
+                        stackFrames.Add((key, module, display));
+                        modules.TryAdd(key, module);
+                        if (frame.CodeAddress is not null)
+                        {
+                            codeAddressByKey.TryAdd(key, frame.CodeAddress);
+                        }
+                        frame = frame.Caller;
+                    }
+
+                    // stack is leaf→root; reverse to root→leaf for tree traversal.
+                    stackFrames.Reverse();
+                    if (stackFrames.Count > 0)
+                    {
+                        rootBuilder.AddStack(stackFrames, stackFrames[^1].Key);
+                    }
+                }
+            }
+
+            var topByBytes = byType.Values
+                .OrderByDescending(a => a.TotalBytes)
+                .Take(topN)
+                .Select(a => a.ToRecord())
+                .ToList();
+
+            var topByCount = byType.Values
+                .OrderByDescending(a => a.EventCount)
+                .Take(topN)
+                .Select(a => a.ToRecord())
+                .ToList();
+
+            // Build MethodIdentity for the top-N frames in the call tree (CoreCLR only;
+            // NativeAOT frames won't have IL tokens but the frame names are still surfaced).
+            var ranked = modules.Keys
+                .Where(k => codeAddressByKey.ContainsKey(k))
+                .Select(k => new KeyValuePair<string, long>(k, 0))
+                .ToArray();
+
+            var identities = BuildMethodIdentities(ranked, modules, codeAddressByKey);
+
+            var summary = new AllocationSample(pid, startedAt, duration, totalEvents, totalBytes, topByBytes, topByCount);
+            var artifact = new CpuSampleTraceArtifact(
+                pid, startedAt, duration, totalEvents,
+                rootBuilder.Build(),
+                ResolvedSources: null,
+                MethodIdentities: identities);
+            return (summary, artifact);
+        }
+        finally
+        {
+            TryDelete(etlxPath);
+        }
+    }
+
+    private Dictionary<DotnetDiagnosticsMcp.Core.Memory.SymbolRef, DotnetDiagnosticsMcp.Core.Memory.MethodIdentity> BuildMethodIdentities(
+        KeyValuePair<string, long>[] ranked,
+        Dictionary<string, string> modules,
+        Dictionary<string, Microsoft.Diagnostics.Tracing.Etlx.TraceCodeAddress> codeAddressByKey)
+    {
+        var result = new Dictionary<DotnetDiagnosticsMcp.Core.Memory.SymbolRef, DotnetDiagnosticsMcp.Core.Memory.MethodIdentity>();
+        foreach (var (key, _) in ranked)
+        {
+            if (!codeAddressByKey.TryGetValue(key, out var addr)) continue;
+            var method = addr.Method;
+            if (method is null) continue;
+
+            var moduleFile = method.MethodModuleFile;
+            var modulePath = moduleFile?.FilePath;
+            var moduleName = !string.IsNullOrEmpty(modulePath)
+                ? Path.GetFileName(modulePath)
+                : (moduleFile?.Name is { Length: > 0 } n ? n : modules.GetValueOrDefault(key, string.Empty));
+
+            var token = method.MethodToken;
+            var mvid = _mvidReader.TryRead(modulePath);
+
+            if (mvid is null && token == 0) continue;
+
+            var display = !string.IsNullOrEmpty(moduleName) && key.StartsWith(moduleName + "!", StringComparison.Ordinal)
+                ? key[(moduleName.Length + 1)..]
+                : key;
+            var symbol = new DotnetDiagnosticsMcp.Core.Memory.SymbolRef(moduleName, display);
+
+            if (result.ContainsKey(symbol)) continue;
+
+            var methodName = method.FullMethodName.Split('(')[0].Split('.').LastOrDefault() ?? string.Empty;
+            result[symbol] = new DotnetDiagnosticsMcp.Core.Memory.MethodIdentity(
+                MethodName: methodName,
+                GenericArity: 0,
+                ModuleName: moduleName,
+                ModulePath: modulePath,
+                ModuleVersionId: mvid,
+                MetadataToken: token != 0 ? token : null,
+                TypeFullName: null);
+        }
+        return result;
+    }
+
+    private static string FormatFrame(TraceCallStack frame)
+    {
+        var address = frame.CodeAddress;
+        if (address?.Method is { } method)
+        {
+            return method.FullMethodName;
+        }
+
+        if (address?.ModuleFile is { } module)
+        {
+            return $"{module.Name}!0x{address.Address:x}";
+        }
+
+        return $"0x{address?.Address ?? 0:x}";
+    }
+
+    private static AllocationSample EmptySummary(int pid, DateTimeOffset startedAt, TimeSpan duration)
+        => new(pid, startedAt, duration, 0, 0, Array.Empty<AllocatedType>(), Array.Empty<AllocatedType>());
+
+    private static CpuSampleTraceArtifact EmptyArtifact(int pid, DateTimeOffset startedAt, TimeSpan duration)
+        => new(pid, startedAt, duration, 0,
+            new CallTreeNode(new SampledFrame(string.Empty, "<root>"), 0, 0, Array.Empty<CallTreeNode>()));
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch (Exception) { }
     }
 
     private sealed class TypeAccumulator
@@ -153,24 +333,17 @@ public sealed class EventPipeAllocationSampler
         public TypeAccumulator(string typeName) => TypeName = typeName;
 
         public string TypeName { get; }
-        public long TotalBytes => Volatile.Read(ref _totalBytes);
-        public long EventCount => Volatile.Read(ref _eventCount);
+        public long TotalBytes => _totalBytes;
+        public long EventCount => _eventCount;
 
         public void Add(long bytes, HeapKind kind)
         {
-            Interlocked.Add(ref _totalBytes, bytes);
-            Interlocked.Increment(ref _eventCount);
-            if (kind == HeapKind.Large)
-                Interlocked.Increment(ref _largeCount);
-            else
-                Interlocked.Increment(ref _smallCount);
+            _totalBytes += bytes;
+            _eventCount++;
+            if (kind == HeapKind.Large) _largeCount++; else _smallCount++;
         }
 
         public AllocatedType ToRecord()
-        {
-            var large = Volatile.Read(ref _largeCount);
-            var small = Volatile.Read(ref _smallCount);
-            return new AllocatedType(TypeName, TotalBytes, EventCount, large > small ? HeapKind.Large : HeapKind.Small);
-        }
+            => new(TypeName, _totalBytes, _eventCount, _largeCount > _smallCount ? HeapKind.Large : HeapKind.Small);
     }
 }

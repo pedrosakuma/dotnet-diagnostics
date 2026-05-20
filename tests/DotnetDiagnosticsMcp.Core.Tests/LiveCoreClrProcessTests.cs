@@ -494,18 +494,22 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
                 topN: 25,
                 cancellationToken: CancellationToken.None);
 
-            result.TotalEvents.Should().BeGreaterThan(0,
+            result.Summary.TotalEvents.Should().BeGreaterThan(0,
                 "the /render workload performs heavy string allocations that must surface GCAllocationTick events");
-            result.TopByBytes.Should().NotBeEmpty(
+            result.Summary.TopByBytes.Should().NotBeEmpty(
                 "at least one type must be aggregated from GCAllocationTick events");
-            result.TopByCount.Should().NotBeEmpty();
+            result.Summary.TopByCount.Should().NotBeEmpty();
 
             // System.String dominates the /render endpoint's O(n²) concat workload.
-            result.TopByBytes.Should().Contain(t =>
+            result.Summary.TopByBytes.Should().Contain(t =>
                 t.TypeName.Contains("String", StringComparison.OrdinalIgnoreCase) ||
                 t.TypeName.Contains("Char", StringComparison.OrdinalIgnoreCase) ||
                 t.TypeName.Contains("Object", StringComparison.OrdinalIgnoreCase),
                 "the render workload allocates strings heavily — at least one string-related type must appear");
+
+            // Call-tree artifact should have captured call stacks from GCAllocationTick events.
+            result.Artifact.Root.Children.Should().NotBeEmpty(
+                "the allocation call-tree artifact must capture at least one stack when events were observed");
         }
         finally
         {

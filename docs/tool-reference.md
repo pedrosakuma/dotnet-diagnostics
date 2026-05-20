@@ -421,12 +421,19 @@ yields a few thousand samples; bump `durationSeconds` for sparse workloads.
 Captures allocation samples from the target process via `GCAllocationTick`
 events from `Microsoft-Windows-DotNETRuntime` (keyword `GCKeyword=0x1`, level
 Verbose). The GC fires this event roughly every **100 KB of total managed
-allocations** and includes the TypeName of the most recently allocated object.
+allocations** and carries the TypeName of the most recently allocated object
+plus a call stack. The call stack is accessible via `get_call_tree` using the
+handle returned by this tool.
 
-Unlike `inspect_live_heap` (which requires ClrMD and is unavailable on
-NativeAOT), this tool works on **both CoreCLR and NativeAOT** — making it the
-primary answer to "who is allocating?" on AOT deployments. See
-[`aot-coverage.md`](./aot-coverage.md) for the full NativeAOT diagnostic matrix.
+**CoreCLR**: TypeName is fully populated with managed type names. The call tree
+resolves to managed method names via rundown events. `MethodIdentity` (MVID +
+metadata token) is emitted for top-N frames, enabling the assembly-mcp handoff.
+
+**NativeAOT**: `GCAllocationTick` events fire, but the runtime **does not**
+populate the `TypeName` field — managed type metadata is stripped at compile
+time. All events roll up under `<unknown>`. The call tree is captured but
+contains native frame addresses only. See [`aot-coverage.md`](./aot-coverage.md)
+for the full NativeAOT diagnostic matrix.
 
 **Parameters:**
 
@@ -436,7 +443,7 @@ primary answer to "who is allocating?" on AOT deployments. See
 | `durationSeconds` | `int` | `10` | Sampling window. Must be ≥ 1. |
 | `topN` | `int` | `25` | Maximum types per ranked list. Must be ≥ 1. |
 
-**Returns:** `AllocationSample`:
+**Returns:** `AllocationSample` with a drilldown `handle`:
 
 ```json
 {
@@ -466,13 +473,13 @@ are sampled proportionally more often, making the top-N ranking statistically
 accurate for steady workloads.
 
 **Run after** `snapshot_counters` shows elevated `gen-0-gc-count`,
-`gen-1-gc-count`, or growing `gc-heap-size`.
+`gen-1-gc-count`, or growing `gc-heap-size`. Use `get_call_tree` with the
+returned handle to find which allocation sites are responsible.
 
 ---
 
 ## `collect_exceptions`
 
-Subscribes to the runtime `Exception` keyword and captures every managed
 exception thrown by the process during the window.
 
 **Parameters:**

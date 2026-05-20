@@ -436,12 +436,15 @@ public sealed class DiagnosticTools
     [Description(
         "Captures allocation samples from the target process and returns the top-N types by total allocated bytes " +
         "and by event count. Uses GCAllocationTick events from Microsoft-Windows-DotNETRuntime (GCKeyword=0x1, Verbose), " +
-        "which fire roughly every 100 KB of total managed allocations and carry the TypeName of the sampled object. " +
-        "Works on both CoreCLR and NativeAOT — answers 'who is allocating?' on AOT where ClrMD heap inspection is unavailable. " +
-        "Returns two ranked lists: TopByBytes (allocation pressure) and TopByCount (sampling frequency). " +
+        "which fire roughly every 100 KB of total managed allocations. " +
+        "On CoreCLR, TypeName is fully populated with managed type names. " +
+        "On NativeAOT, GCAllocationTick events fire but TypeName is empty — all events roll up under '<unknown>' " +
+        "and only the total event count and bytes are meaningful; use collect_cpu_sample for per-site attribution on AOT. " +
+        "Returns two ranked lists (TopByBytes, TopByCount) and a handle for call-site drill-down via get_call_tree. " +
         "Run after snapshot_counters shows elevated GC pressure or growing gen0/gen1 heap sizes.")]
     public static async Task<DiagnosticResult<AllocationSample>> CollectAllocationSample(
         EventPipeAllocationSampler sampler,
+        IDiagnosticHandleStore handles,
         IProcessContextResolver resolver,
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
         [Description("Duration of the sampling window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
@@ -456,10 +459,10 @@ public sealed class DiagnosticTools
         var pid = resolved.ProcessId;
         var ctx = resolved.Context;
 
-        AllocationSample sample;
+        AllocationSampleResult result;
         try
         {
-            sample = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, cancellationToken).ConfigureAwait(false);
+            result = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, cancellationToken).ConfigureAwait(false);
         }
         catch (InvalidOperationException ex)
         {
@@ -470,16 +473,29 @@ public sealed class DiagnosticTools
                     new Dictionary<string, object?> { ["processId"] = pid }));
         }
 
-        var topType = sample.TopByBytes.Count > 0 ? sample.TopByBytes[0] : null;
-        var summaryText = topType is not null
-            ? $"Captured {sample.TotalEvents} allocation events ({sample.TotalBytes:N0} bytes total) over {durationSeconds}s. " +
-              $"Top type by bytes: {topType.TypeName} ({topType.TotalBytes:N0} bytes, {topType.EventCount} events)."
-            : $"Captured {sample.TotalEvents} allocation events but no type aggregation surfaced — " +
-              $"increase durationSeconds or drive a workload that allocates during the window.";
+        var sample = result.Summary;
+        var handle = handles.Register(pid, "allocation-sample", result.Artifact, CpuSampleHandleTtl);
 
-        var ok = DiagnosticResult.Ok(
+        var topType = sample.TopByBytes.Count > 0 ? sample.TopByBytes[0] : null;
+        var unknownOnly = topType?.TypeName == "<unknown>" && sample.TopByBytes.Count == 1;
+        var summaryText = unknownOnly
+            ? $"Captured {sample.TotalEvents} allocation events ({sample.TotalBytes:N0} bytes total) over {durationSeconds}s, " +
+              $"but TypeName was empty for all events (expected on NativeAOT). " +
+              $"Drill into allocation call sites with get_call_tree(handle=\"{handle.Id}\") to see native allocation frames."
+            : topType is not null
+                ? $"Captured {sample.TotalEvents} allocation events ({sample.TotalBytes:N0} bytes total) over {durationSeconds}s. " +
+                  $"Top type by bytes: {topType.TypeName} ({topType.TotalBytes:N0} bytes, {topType.EventCount} events). " +
+                  $"Drill into allocation call sites with get_call_tree(handle=\"{handle.Id}\")."
+                : $"Captured {sample.TotalEvents} allocation events but no type aggregation surfaced — " +
+                  $"increase durationSeconds or drive a workload that allocates during the window.";
+
+        var ok = DiagnosticResult.OkWithHandle(
             sample,
             summaryText,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint("get_call_tree", "Walk the merged allocation call-site tree to find which code paths are allocating the most.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 }),
             new NextActionHint("collect_cpu_sample", "Cross-reference: identify hot CPU paths that correlate with the top allocating types.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
             new NextActionHint("collect_gc_events", "Observe GC pause frequency and generation distribution caused by this allocation load.",

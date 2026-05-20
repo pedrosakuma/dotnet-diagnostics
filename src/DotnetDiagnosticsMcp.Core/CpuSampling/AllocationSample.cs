@@ -24,8 +24,10 @@ public sealed record AllocatedType(
 /// <remarks>
 /// Backed by <c>GCAllocationTick</c> events from <c>Microsoft-Windows-DotNETRuntime</c>
 /// (GCKeyword=0x1, Verbose), which fire roughly every 100 KB of total managed allocations
-/// and carry the TypeName of the most recently allocated object. This event is available on
-/// both CoreCLR and NativeAOT.
+/// and carry the TypeName of the most recently allocated object.
+/// <b>CoreCLR</b>: TypeName is fully populated.
+/// <b>NativeAOT</b>: TypeName is empty — the event fires but the runtime does not populate
+/// the TypeName field; all events roll up under <c>&lt;unknown&gt;</c>.
 /// </remarks>
 public sealed record AllocationSample(
     int ProcessId,
@@ -35,3 +37,10 @@ public sealed record AllocationSample(
     long TotalBytes,
     IReadOnlyList<AllocatedType> TopByBytes,
     IReadOnlyList<AllocatedType> TopByCount);
+
+/// <summary>
+/// Combined result of an allocation sampling pass: the compact <see cref="AllocationSample"/>
+/// summary returned to the LLM, and a heavier <see cref="CpuSampleTraceArtifact"/> retained
+/// under a handle for drill-down queries via <c>get_call_tree</c>.
+/// </summary>
+public sealed record AllocationSampleResult(AllocationSample Summary, CpuSampleTraceArtifact Artifact);
