@@ -67,7 +67,7 @@ public sealed class LiveNativeAotThreadSnapshotTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
-    [Fact(Timeout = 300_000)]
+    [Fact(Timeout = 120_000)]
     public async Task RoutingInspector_OnLinuxNativeAot_ReturnsThreadSnapshotWithResolvedFrames()
     {
         if (!OperatingSystem.IsLinux())
@@ -104,12 +104,12 @@ public sealed class LiveNativeAotThreadSnapshotTests : IAsyncLifetime
 
         _ = Task.Run(async () =>
         {
-            try { using var err = _sampleProcess!.StandardError; while (await err.ReadLineAsync() is not null) { } }
+            try { while (await _sampleProcess!.StandardError.ReadLineAsync() is not null) { } }
             catch { /* best effort */ }
         });
         _ = Task.Run(async () =>
         {
-            try { using var output = _sampleProcess!.StandardOutput; while (await output.ReadLineAsync() is not null) { } }
+            try { while (await _sampleProcess!.StandardOutput.ReadLineAsync() is not null) { } }
             catch { /* best effort */ }
         });
 

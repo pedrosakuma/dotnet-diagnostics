@@ -139,7 +139,7 @@ public sealed class LinuxNativeThreadSnapshotInspector : IThreadSnapshotInspecto
         {
             throw new UnauthorizedAccessException(
                 $"Cannot collect native thread snapshot for pid {processId}: {ptrace.Reason} " +
-                "Perf-replay fallback is tracked in issue #92.");
+                "A perf-replay fallback is planned in issue #92 but not implemented in this slice.");
         }
 
         var selfUid = TryReadUid("/proc/self/status");
@@ -227,7 +227,7 @@ public sealed class LinuxNativeThreadSnapshotInspector : IThreadSnapshotInspecto
             {
                 throw new UnauthorizedAccessException(
                     $"eu-stack could not attach to pid {processId}: {stderr.Trim()} " +
-                    "Perf-replay fallback is tracked in issue #92.");
+                    "A perf-replay fallback is planned in issue #92 but not implemented in this slice.");
             }
 
             throw new InvalidOperationException(
@@ -414,7 +414,7 @@ public sealed class LinuxNativeThreadSnapshotInspector : IThreadSnapshotInspecto
     {
         if (string.IsNullOrWhiteSpace(symbol)) return symbol;
         var plus = symbol.LastIndexOf("+0x", StringComparison.OrdinalIgnoreCase);
-        if (plus <= 0)
+        if (plus < 0)
         {
             return NativeAotSymbolDemangler.Demangle(symbol);
         }
@@ -457,6 +457,7 @@ public sealed class LinuxNativeThreadSnapshotInspector : IThreadSnapshotInspecto
                 'D' => (stateLine ?? "D", true, true, "BlockedOnUninterruptibleIO"),
                 'T' => (stateLine ?? "T", true, true, "Stopped"),
                 'Z' => (stateLine ?? "Z", false, false, null),
+                'S' => ReportUnknownSleepingState(stateLine, wchan, tid, warnings),
                 _ => (stateLine ?? "Unknown", true, false, null),
             };
         }
@@ -465,6 +466,22 @@ public sealed class LinuxNativeThreadSnapshotInspector : IThreadSnapshotInspecto
             warnings.Add($"Could not read wait state for tid {tid}: {ex.GetType().Name}.");
             return ("Unknown", true, false, null);
         }
+    }
+
+    private static (string State, bool IsAlive, bool IsLikelyBlocked, string? Reason) ReportUnknownSleepingState(
+        string? stateLine,
+        string wchan,
+        int tid,
+        List<string> warnings)
+    {
+        if (!string.IsNullOrWhiteSpace(wchan) &&
+            !string.Equals(wchan, "0", StringComparison.Ordinal) &&
+            !string.Equals(wchan, "unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            warnings.Add($"tid {tid} is sleeping in wchan '{wchan}' (unmapped); wait reason left as unknown.");
+        }
+
+        return (stateLine ?? "S", true, false, null);
     }
 }
 
