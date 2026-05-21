@@ -61,6 +61,7 @@ tests/
 
 Full schemas and return shapes: [`docs/tool-reference.md`](./docs/tool-reference.md).
 Common investigation recipes: [`docs/investigation-playbooks.md`](./docs/investigation-playbooks.md).
+NativeAOT coverage matrix (tool × runtime × OS): [`docs/aot-coverage.md`](./docs/aot-coverage.md).
 Client setup (C# SDK, GUI clients, curl): [`docs/client-setup.md`](./docs/client-setup.md).
 Kubernetes sidecar: [`deploy/k8s/README.md`](./deploy/k8s/README.md).
 Azure (App Service + Container Apps) recipes: [`deploy/azure/README.md`](./deploy/azure/README.md).
