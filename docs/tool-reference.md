@@ -227,9 +227,10 @@ rodando.
   (`UserRequest` / `WrLpcReceive` / `WrQueue`...) vira o `PrevState` do span,
   mirror direto do `S/D/I` do Linux. Spans pendentes ao fim da janela viram
   censored (`IsCensored=true`) com duração lower-bound, igual ao Linux.
-  Requer **elevação administrativa** (ou `SeSystemProfilePrivilege`); sem isso
-  devolve `InvalidOperation` com hint pra rodar o sidecar como Administrator.
-  Pra produção, ver [`windows-sidecar-service.md`](./windows-sidecar-service.md)
+  Requer **BUILTIN\\Administrators** ou `SeSystemProfilePrivilege`; sem isso
+  devolve `PermissionDenied` com hint apontando os dois caminhos suportados
+  (`Administrators` **ou** `Profile system performance`). Pra produção, ver
+  [`windows-sidecar-service.md`](./windows-sidecar-service.md)
   (Windows Service com `LocalSystem` ou conta dedicada + privilégio único).
   `SymbolSource: "etw-cswitch-pdb"` (resolve PDBs locais + `_NT_SYMBOL_PATH`).
 - **Managed↔kernel stack merge:** ainda não — frames são puramente nativos /

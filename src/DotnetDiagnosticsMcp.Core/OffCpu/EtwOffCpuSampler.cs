@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Memory;
 using Microsoft.Diagnostics.Symbols;
@@ -66,21 +67,36 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
         _symbolPathBuilder = symbolPathBuilder ?? new SymbolPathBuilder();
     }
 
+    internal const string SystemProfilePrivilegeName = "SeSystemProfilePrivilege";
+    internal const string KernelLoggerPermissionDeniedMessage =
+        "NT Kernel Logger 'ContextSwitch' provider requires either BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance'). Grant one of those rights to the diagnostics sidecar account and restart the service.";
+
     [System.Runtime.Versioning.SupportedOSPlatformGuard("windows")]
     public bool IsAvailable()
     {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        if (!OperatingSystem.IsWindows())
         {
             _logger.LogTrace("ETW off-CPU sampler not available: not running on Windows.");
             return false;
         }
 
-        var elevated = TraceEventSession.IsElevated() == true;
-        if (!elevated)
+        try
         {
-            _logger.LogTrace("ETW off-CPU sampler not available: process is not elevated.");
+            var access = GetKernelLoggerAccess();
+            if (!HasKernelLoggerAccess(access.IsAdministrator, access.HasSystemProfilePrivilege))
+            {
+                _logger.LogTrace(
+                    "ETW off-CPU sampler not available: token is neither BUILTIN\\Administrators nor granted {Privilege}.",
+                    SystemProfilePrivilegeName);
+            }
+
+            return access.IsAllowed;
         }
-        return elevated;
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "ETW off-CPU sampler not available: failed to inspect Windows token privileges.");
+            return false;
+        }
     }
 
     public async Task<OffCpuSampleResult> SampleAsync(
@@ -100,10 +116,12 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
         }
         if (!IsAvailable())
         {
-            throw new InvalidOperationException(
-                "ETW kernel CSwitch profiling is not available. This requires Windows with administrative " +
-                "elevation (or SeSystemProfilePrivilege). Run the diagnostics sidecar as Administrator to " +
-                "enable off-CPU sampling via context-switch tracing.");
+            throw new UnauthorizedAccessException(KernelLoggerPermissionDeniedMessage);
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            EnsureSystemProfilePrivilegeEnabledIfPresent();
         }
 
         await s_etwGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -185,6 +203,11 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
         catch (Exception ex)
         {
             _logger.LogError(ex, "ETW off-CPU session '{Session}' failed.", sessionName);
+            if (IsKernelLoggerPermissionFailure(ex))
+            {
+                throw new UnauthorizedAccessException(KernelLoggerPermissionDeniedMessage, ex);
+            }
+
             throw new InvalidOperationException(
                 $"Failed to start or run ETW kernel CSwitch session. Ensure admin elevation and that " +
                 $"no conflicting kernel session is active. Details: {ex.Message}", ex);
@@ -406,6 +429,217 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
 
     private static string SafeProcessName(string? name)
         => string.IsNullOrEmpty(name) ? string.Empty : name!;
+
+    internal static bool HasKernelLoggerAccess(bool isAdministrator, bool hasSystemProfilePrivilege)
+        => isAdministrator || hasSystemProfilePrivilege;
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    internal static EtwKernelLoggerAccess GetKernelLoggerAccess()
+    {
+        using var identity = WindowsIdentity.GetCurrent(TokenAccessLevels.Query);
+        var principal = new WindowsPrincipal(identity);
+        var privilege = GetTokenPrivilegeState(identity.AccessToken, SystemProfilePrivilegeName);
+        return new EtwKernelLoggerAccess(
+            principal.IsInRole(WindowsBuiltInRole.Administrator),
+            privilege.IsPresent,
+            privilege.IsEnabled);
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static void EnsureSystemProfilePrivilegeEnabledIfPresent()
+    {
+        using var identity = WindowsIdentity.GetCurrent(TokenAccessLevels.Query | TokenAccessLevels.AdjustPrivileges);
+        var privilege = GetTokenPrivilegeState(identity.AccessToken, SystemProfilePrivilegeName);
+        if (!privilege.IsPresent || privilege.IsEnabled)
+        {
+            return;
+        }
+
+        var newState = new TOKEN_PRIVILEGES_SINGLE
+        {
+            PrivilegeCount = 1,
+            Privileges = new LUID_AND_ATTRIBUTES
+            {
+                Luid = privilege.Luid,
+                Attributes = NativeMethods.SE_PRIVILEGE_ENABLED,
+            },
+        };
+
+        var buffer = Marshal.AllocHGlobal(Marshal.SizeOf<TOKEN_PRIVILEGES_SINGLE>());
+        try
+        {
+            Marshal.StructureToPtr(newState, buffer, fDeleteOld: false);
+            Marshal.SetLastPInvokeError(0);
+            if (!NativeMethods.AdjustTokenPrivileges(identity.AccessToken, disableAllPrivileges: false, buffer, 0, IntPtr.Zero, IntPtr.Zero))
+            {
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastPInvokeError());
+            }
+
+            var lastError = Marshal.GetLastPInvokeError();
+            if (lastError == NativeMethods.ERROR_NOT_ALL_ASSIGNED)
+            {
+                throw new UnauthorizedAccessException(KernelLoggerPermissionDeniedMessage);
+            }
+
+            if (lastError != NativeMethods.ERROR_SUCCESS)
+            {
+                throw new System.ComponentModel.Win32Exception(lastError);
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static TokenPrivilegeState GetTokenPrivilegeState(Microsoft.Win32.SafeHandles.SafeAccessTokenHandle token, string privilegeName)
+    {
+        if (!NativeMethods.LookupPrivilegeValue(lpSystemName: null, privilegeName, out var expectedLuid))
+        {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastPInvokeError());
+        }
+
+        _ = NativeMethods.GetTokenInformation(token, TOKEN_INFORMATION_CLASS.TokenPrivileges, IntPtr.Zero, 0, out var requiredBytes);
+        var lastError = Marshal.GetLastPInvokeError();
+        if (requiredBytes == 0 || lastError != NativeMethods.ERROR_INSUFFICIENT_BUFFER)
+        {
+            throw new System.ComponentModel.Win32Exception(lastError);
+        }
+
+        var buffer = Marshal.AllocHGlobal((int)requiredBytes);
+        try
+        {
+            if (!NativeMethods.GetTokenInformation(token, TOKEN_INFORMATION_CLASS.TokenPrivileges, buffer, requiredBytes, out _))
+            {
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastPInvokeError());
+            }
+
+            var privilegeCount = Marshal.ReadInt32(buffer);
+            var current = IntPtr.Add(buffer, sizeof(uint));
+            var entrySize = Marshal.SizeOf<LUID_AND_ATTRIBUTES>();
+            for (var index = 0; index < privilegeCount; index++)
+            {
+                var privilege = Marshal.PtrToStructure<LUID_AND_ATTRIBUTES>(current);
+                if (privilege.Luid.LowPart == expectedLuid.LowPart && privilege.Luid.HighPart == expectedLuid.HighPart)
+                {
+                    return new TokenPrivilegeState(
+                        privilege.Luid,
+                        IsPresent: true,
+                        IsEnabled: (privilege.Attributes & NativeMethods.SE_PRIVILEGE_ENABLED) != 0);
+                }
+
+                current = IntPtr.Add(current, entrySize);
+            }
+
+            return new TokenPrivilegeState(expectedLuid, IsPresent: false, IsEnabled: false);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    private static bool IsKernelLoggerPermissionFailure(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is UnauthorizedAccessException)
+            {
+                return true;
+            }
+
+            if (current is System.ComponentModel.Win32Exception win32 &&
+                (win32.NativeErrorCode == NativeMethods.ERROR_ACCESS_DENIED ||
+                 win32.NativeErrorCode == NativeMethods.ERROR_NOT_ALL_ASSIGNED ||
+                 win32.NativeErrorCode == NativeMethods.ERROR_PRIVILEGE_NOT_HELD))
+            {
+                return true;
+            }
+
+            if (current.Message.Contains("access is denied", StringComparison.OrdinalIgnoreCase) ||
+                current.Message.Contains("privilege", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    internal readonly record struct EtwKernelLoggerAccess(
+        bool IsAdministrator,
+        bool HasSystemProfilePrivilege,
+        bool IsSystemProfilePrivilegeEnabled)
+    {
+        public bool IsAllowed => HasKernelLoggerAccess(IsAdministrator, HasSystemProfilePrivilege);
+    }
+
+    private readonly record struct TokenPrivilegeState(LUID Luid, bool IsPresent, bool IsEnabled);
+
+    private enum TOKEN_INFORMATION_CLASS
+    {
+        TokenUser = 1,
+        TokenGroups,
+        TokenPrivileges,
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID
+    {
+        public uint LowPart;
+        public int HighPart;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES
+    {
+        public LUID Luid;
+        public uint Attributes;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES_SINGLE
+    {
+        public uint PrivilegeCount;
+        public LUID_AND_ATTRIBUTES Privileges;
+    }
+
+    private static class NativeMethods
+    {
+        internal const int ERROR_SUCCESS = 0;
+        internal const int ERROR_ACCESS_DENIED = 5;
+        internal const int ERROR_INSUFFICIENT_BUFFER = 122;
+        internal const int ERROR_NOT_ALL_ASSIGNED = 1300;
+        internal const int ERROR_PRIVILEGE_NOT_HELD = 1314;
+        internal const uint SE_PRIVILEGE_ENABLED = 0x00000002;
+
+        [DllImport("advapi32.dll", EntryPoint = "GetTokenInformation", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetTokenInformation(
+            Microsoft.Win32.SafeHandles.SafeAccessTokenHandle tokenHandle,
+            TOKEN_INFORMATION_CLASS tokenInformationClass,
+            IntPtr tokenInformation,
+            uint tokenInformationLength,
+            out uint returnLength);
+
+        [DllImport("advapi32.dll", EntryPoint = "LookupPrivilegeValueW", SetLastError = true, CharSet = CharSet.Unicode)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool LookupPrivilegeValue(
+            string? lpSystemName,
+            string lpName,
+            out LUID luid);
+
+        [DllImport("advapi32.dll", EntryPoint = "AdjustTokenPrivileges", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool AdjustTokenPrivileges(
+            Microsoft.Win32.SafeHandles.SafeAccessTokenHandle tokenHandle,
+            [MarshalAs(UnmanagedType.Bool)] bool disableAllPrivileges,
+            IntPtr newState,
+            uint bufferLength,
+            IntPtr previousState,
+            IntPtr returnLength);
+    }
 
     private static void TryDelete(string path)
     {

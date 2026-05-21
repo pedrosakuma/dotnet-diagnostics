@@ -3,6 +3,30 @@ using FluentAssertions;
 
 namespace DotnetDiagnosticsMcp.Core.Tests;
 
+public sealed class EtwOffCpuSamplerPermissionGateTests
+{
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, true, true)]
+    public void HasKernelLoggerAccess_AllowsAdministratorOrSystemProfilePrivilege(
+        bool isAdministrator,
+        bool hasSystemProfilePrivilege,
+        bool expected)
+    {
+        EtwOffCpuSampler.HasKernelLoggerAccess(isAdministrator, hasSystemProfilePrivilege)
+            .Should().Be(expected);
+    }
+
+    [Fact]
+    public void PermissionDeniedMessage_MentionsBothSupportedPaths()
+    {
+        EtwOffCpuSampler.KernelLoggerPermissionDeniedMessage.Should().Contain("BUILTIN\\Administrators");
+        EtwOffCpuSampler.KernelLoggerPermissionDeniedMessage.Should().Contain(EtwOffCpuSampler.SystemProfilePrivilegeName);
+    }
+}
+
 public sealed class RoutingOffCpuSamplerTests
 {
     [Fact]
@@ -17,7 +41,7 @@ public sealed class RoutingOffCpuSamplerTests
     }
 
     [Fact]
-    public async Task OnWindows_WithoutElevation_Throws_InvalidOperation_WithAdminHint()
+    public async Task OnWindows_WithoutElevation_Throws_UnauthorizedAccess_WithBothHints()
     {
         if (!OperatingSystem.IsWindows()) return;
         // Tests run unelevated in CI, so we expect the router to bail with an actionable message.
@@ -31,9 +55,10 @@ public sealed class RoutingOffCpuSamplerTests
         router.IsAvailable().Should().BeFalse();
 
         var act = async () => await router.SampleAsync(processId: 1, TimeSpan.FromSeconds(1));
-        var ex = await act.Should().ThrowAsync<InvalidOperationException>();
-        ex.Which.Message.Should().Contain("ETW");
-        ex.Which.Message.Should().Contain("administrative", because: "the LLM needs the actionable elevation hint");
+        var ex = await act.Should().ThrowAsync<UnauthorizedAccessException>();
+        ex.Which.Message.Should().Contain("ContextSwitch");
+        ex.Which.Message.Should().Contain("BUILTIN\\Administrators", because: "the LLM needs the actionable elevation hint");
+        ex.Which.Message.Should().Contain(EtwOffCpuSampler.SystemProfilePrivilegeName);
     }
 }
 
