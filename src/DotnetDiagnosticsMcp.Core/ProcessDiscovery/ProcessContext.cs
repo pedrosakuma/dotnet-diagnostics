@@ -14,10 +14,18 @@ using DotnetDiagnosticsMcp.Core.Capabilities;
 /// <param name="CanSampleCpu">True when CPU sampling is reachable (CoreCLR SampleProfiler, or NativeAOT with perf/ETW).</param>
 /// <param name="CanCollectGcDump">True when ETW/EventPipe gcdump can be requested (CoreCLR only).</param>
 /// <param name="AutoResolved">True when the caller omitted <c>processId</c> and the server resolved it from a single-match list.</param>
+/// <param name="BindingSource">
+/// Origin label introduced in Phase 2 of the central-orchestrator design (issue #20). Set to
+/// <c>null</c> when the legacy resolver path was used (no session id known), or to one of
+/// <c>"explicit"</c> (caller passed pid), <c>"session-binding"</c> (e.g. orchestrator-installed),
+/// or <c>"local-auto"</c> (single-match local discovery). Purely informational — every existing
+/// LLM hint keeps using <see cref="AutoResolved"/>.
+/// </param>
 public sealed record ProcessContext(
     int ProcessId,
     RuntimeFlavor Runtime,
     bool CanSampleCpu,
     bool CanCollectGcDump,
     bool AutoResolved,
-    string? RuntimeVersion = null);
+    string? RuntimeVersion = null,
+    string? BindingSource = null);

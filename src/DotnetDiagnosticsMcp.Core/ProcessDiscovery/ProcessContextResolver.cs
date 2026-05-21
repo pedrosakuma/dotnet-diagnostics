@@ -23,24 +23,39 @@ public sealed class ProcessContextResolver : IProcessContextResolver
 
     private readonly IProcessDiscovery _discovery;
     private readonly ICapabilityDetector _detector;
+    private readonly ISessionTargetBindingStore? _bindings;
     private readonly TimeProvider _clock;
     private readonly TimeSpan _ttl;
     private readonly ConcurrentDictionary<int, CacheEntry> _cache = new();
 
     public ProcessContextResolver(IProcessDiscovery discovery, ICapabilityDetector detector)
-        : this(discovery, detector, TimeProvider.System, DefaultCacheTtl)
+        : this(discovery, detector, bindings: null, TimeProvider.System, DefaultCacheTtl)
+    {
+    }
+
+    public ProcessContextResolver(IProcessDiscovery discovery, ICapabilityDetector detector, ISessionTargetBindingStore? bindings)
+        : this(discovery, detector, bindings, TimeProvider.System, DefaultCacheTtl)
     {
     }
 
     public ProcessContextResolver(IProcessDiscovery discovery, ICapabilityDetector detector, TimeProvider clock, TimeSpan cacheTtl)
+        : this(discovery, detector, bindings: null, clock, cacheTtl)
+    {
+    }
+
+    public ProcessContextResolver(IProcessDiscovery discovery, ICapabilityDetector detector, ISessionTargetBindingStore? bindings, TimeProvider clock, TimeSpan cacheTtl)
     {
         _discovery = discovery ?? throw new ArgumentNullException(nameof(discovery));
         _detector = detector ?? throw new ArgumentNullException(nameof(detector));
+        _bindings = bindings;
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _ttl = cacheTtl;
     }
 
-    public async Task<ProcessContextResolution> ResolveAsync(int? requestedProcessId, CancellationToken cancellationToken)
+    public Task<ProcessContextResolution> ResolveAsync(int? requestedProcessId, CancellationToken cancellationToken)
+        => ResolveAsync(sessionId: null, requestedProcessId, cancellationToken);
+
+    public async Task<ProcessContextResolution> ResolveAsync(string? sessionId, int? requestedProcessId, CancellationToken cancellationToken)
     {
         if (requestedProcessId is { } requested)
         {
@@ -56,8 +71,19 @@ public sealed class ProcessContextResolver : IProcessContextResolver
 
             if (requested > 0)
             {
-                return await ResolveExplicitAsync(requested, autoResolved: false, cancellationToken).ConfigureAwait(false);
+                return await ResolveExplicitAsync(requested, autoResolved: false, source: "explicit", cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        // Session binding wins over local auto-resolution but only when the caller did not
+        // pass an explicit pid above. This is what lets the orchestrator (Phase 3, #20)
+        // route every subsequent tool call to the attached pod without touching any tool
+        // signature. When no session id is supplied OR no binding is registered, we fall
+        // through to the legacy local-discovery path — preserving every pre-Phase-2 flow
+        // exactly as before.
+        if (_bindings is not null && _bindings.TryGet(sessionId) is { } binding)
+        {
+            return await ResolveExplicitAsync(binding.ProcessId, autoResolved: false, source: $"session-binding:{binding.Source}", cancellationToken).ConfigureAwait(false);
         }
 
         var processes = _discovery.ListProcesses();
@@ -83,15 +109,15 @@ public sealed class ProcessContextResolver : IProcessContextResolver
                 Candidates: processes);
         }
 
-        return await ResolveExplicitAsync(processes[0].ProcessId, autoResolved: true, cancellationToken).ConfigureAwait(false);
+        return await ResolveExplicitAsync(processes[0].ProcessId, autoResolved: true, source: "local-auto", cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<ProcessContextResolution> ResolveExplicitAsync(int pid, bool autoResolved, CancellationToken cancellationToken)
+    private async Task<ProcessContextResolution> ResolveExplicitAsync(int pid, bool autoResolved, string source, CancellationToken cancellationToken)
     {
         if (_cache.TryGetValue(pid, out var entry) && _clock.GetUtcNow() < entry.ExpiresAt)
         {
             return new ProcessContextResolution(
-                entry.Context with { AutoResolved = autoResolved },
+                entry.Context with { AutoResolved = autoResolved, BindingSource = source },
                 Error: null);
         }
 
@@ -149,7 +175,8 @@ public sealed class ProcessContextResolver : IProcessContextResolver
             CanSampleCpu: caps.CanSampleCpu,
             CanCollectGcDump: caps.CanCollectGcDump,
             AutoResolved: autoResolved,
-            RuntimeVersion: string.IsNullOrEmpty(caps.RuntimeVersion) ? null : caps.RuntimeVersion);
+            RuntimeVersion: string.IsNullOrEmpty(caps.RuntimeVersion) ? null : caps.RuntimeVersion,
+            BindingSource: source);
 
         _cache[pid] = new CacheEntry(context, _clock.GetUtcNow() + _ttl);
         return new ProcessContextResolution(context, Error: null);

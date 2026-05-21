@@ -501,6 +501,8 @@ Do **not** rotate Pod-local bearer tokens mid-session in Phase 1. Each attach ge
 ## 8. Phased implementation plan
 This feature should land as a sequence of small, reviewable PRs.
 ### P2 — server-side multi-target abstraction
+**Status: shipped in PR #142.**
+
 #### Goal
 Introduce a target-selection and session-binding abstraction without yet adding Kubernetes attach behavior.
 The purpose of P2 is to make the server capable of resolving:
@@ -511,17 +513,18 @@ without rewriting every tool body.
 #### Dependencies
 - This design doc.
 - Alignment on whether target selection is session-bound by default.
-#### Expected file touch list
-- `src/DotnetDiagnosticsMcp.Server/Program.cs`
-- `src/DotnetDiagnosticsMcp.Server/Tools/DiagnosticTools.cs`
-- new session/target context services under `src/DotnetDiagnosticsMcp.Server/`
-- possibly small supporting abstractions in `src/DotnetDiagnosticsMcp.Core/`
-- `docs/tool-reference.md`
-- `README.md` if the tool surface summary needs updating
+#### What actually shipped
+- New `ISessionTargetBindingStore` + `MemorySessionTargetBindingStore` (TTL-aware, thread-safe, lazy eviction on read) in `src/DotnetDiagnosticsMcp.Core/ProcessDiscovery/`.
+- New `SessionTargetBinding` record with `(ProcessId, Source, ExpiresAt?)`.
+- New `IProcessContextResolver.ResolveAsync(string? sessionId, int? requestedProcessId, CancellationToken)` overload. Default interface method delegates to the legacy overload so every external resolver implementation stays compatible.
+- `ProcessContextResolver` accepts an optional `ISessionTargetBindingStore` via ctor. Resolution precedence: explicit pid > session binding > local auto-resolve > ambiguous/not-found error.
+- New `ProcessContext.BindingSource` field tags the resolved target as `"explicit"`, `"session-binding:<source>"` or `"local-auto"`. Purely informational; existing `AutoResolved` flag unchanged.
+- Binding store registered as singleton in `DiagnosticServiceRegistration.AddDiagnosticCoreServices`.
+- Tool method signatures unchanged — P3 will plumb `McpServer.SessionId` through `ResolveContextAsync` when `attach_to_pod` lands, at which point every existing tool transparently becomes session-aware.
 #### Test strategy
-- unit tests for target-context resolution,
-- integration tests proving existing local and sidecar flows remain backward compatible when no orchestrator handle exists,
-- no Kubernetes dependency yet.
+- 11 unit tests for the in-memory store (set/get/remove, TTL eviction, null/empty session id, per-session isolation, overwrite semantics) — `MemorySessionTargetBindingStoreTests`.
+- 6 unit tests for the session-aware resolver overload (no-store fall-through, binding overrides local auto-resolve including ambiguous case, explicit pid beats binding, null sessionId equals legacy overload, default interface method covers legacy-only implementors) — `SessionAwareProcessContextResolverTests`.
+- Full pre-existing suite (263 Core + 90 Integration) passes unmodified — zero behaviour regression.
 ### P3 — `list_pods` + `attach_to_pod` + proxy plumbing
 #### Goal
 Add the fleet-discovery and attach path:
