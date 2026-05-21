@@ -35,6 +35,7 @@ internal static class DiagnosticServiceRegistration
         services.AddSingleton<IProcessDiscovery, LocalProcessDiscovery>();
         services.AddSingleton<DotnetDiagnosticsMcp.Core.Container.IContainerSignalsCollector, DotnetDiagnosticsMcp.Core.Container.CgroupV2SignalsCollector>();
         services.AddSingleton<ICapabilityDetector, CapabilityDetector>();
+        services.AddSingleton<ISessionTargetBindingStore, MemorySessionTargetBindingStore>();
         services.AddSingleton<IProcessContextResolver, ProcessContextResolver>();
         services.AddSingleton<ICounterCollector, EventPipeCounterCollector>();
         services.AddSingleton<ClrMdMethodInstantiationEnricher>();
