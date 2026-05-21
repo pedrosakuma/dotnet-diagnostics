@@ -56,7 +56,7 @@ public sealed class CapabilityDetector : ICapabilityDetector
         var ptrace = PtraceProbe.Detect();
         var euStackAvailable = IsEuStackAvailable();
         var (canCollectThreadSnapshot, threadSnapshotSource, threadSnapshotPreconditions) =
-            EvaluateThreadSnapshotSupport(runtime, ptrace, euStackAvailable);
+            EvaluateThreadSnapshotSupport(runtime, ptrace, euStackAvailable, etwAvailable);
         // CoreCLR always supports SampleProfiler; whether the 2-second probe happened to
         // catch a Thread/Sample event is a function of workload, not capability. As long
         // as we classified the runtime as CoreCLR (preferably from module inspection,
@@ -351,7 +351,8 @@ public sealed class CapabilityDetector : ICapabilityDetector
     private static (bool CanCollect, string? Source, string? Preconditions) EvaluateThreadSnapshotSupport(
         RuntimeFlavor runtime,
         PtraceProbeResult ptrace,
-        bool euStackAvailable)
+        bool euStackAvailable,
+        bool etwAvailable)
     {
         if (runtime == RuntimeFlavor.CoreClr)
         {
@@ -387,10 +388,18 @@ public sealed class CapabilityDetector : ICapabilityDetector
 
         if (runtime == RuntimeFlavor.NativeAot && OperatingSystem.IsWindows())
         {
+            if (etwAvailable)
+            {
+                return (
+                    CanCollect: true,
+                    Source: "etw-native-stack",
+                    Preconditions: null);
+            }
+
             return (
                 CanCollect: false,
                 Source: null,
-                Preconditions: "NativeAOT thread snapshot backend on Windows is tracked in issue #93.");
+                Preconditions: "Requires Windows with administrative elevation (or SeSystemProfilePrivilege) for ETW kernel thread snapshots.");
         }
 
         return (
