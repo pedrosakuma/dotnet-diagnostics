@@ -117,8 +117,11 @@ public sealed class LiveNativeAotThreadSnapshotTests : IAsyncLifetime
 
         var inspector = new RoutingThreadSnapshotInspector(
             new CapabilityDetector(),
-            new ClrMdThreadSnapshotInspector(),
-            new LinuxNativeThreadSnapshotInspector());
+            new IThreadSnapshotBackend[]
+            {
+                new ClrMdThreadSnapshotBackend(new ClrMdThreadSnapshotInspector()),
+                new LinuxNativeThreadSnapshotBackend(new LinuxNativeThreadSnapshotInspector()),
+            });
 
         var snapshot = await inspector.InspectLiveAsync(
             _sampleProcess.Id,

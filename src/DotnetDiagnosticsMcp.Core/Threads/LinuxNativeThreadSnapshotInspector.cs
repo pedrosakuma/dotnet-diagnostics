@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using DotnetDiagnosticsMcp.Core;
 using DotnetDiagnosticsMcp.Core.Capabilities;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using Microsoft.Extensions.Logging;
@@ -186,7 +187,8 @@ public sealed class LinuxNativeThreadSnapshotInspector : IThreadSnapshotInspecto
         var path = ResolveEuStackPath();
         if (path is null)
         {
-            throw new InvalidOperationException(
+            throw new ExternalToolNotFoundException(
+                "eu-stack",
                 "eu-stack is not available on this host. Install elfutils in the diagnostics sidecar.");
         }
 
@@ -250,7 +252,7 @@ public sealed class LinuxNativeThreadSnapshotInspector : IThreadSnapshotInspecto
             return null;
         }
 
-        foreach (var segment in pathVar.Split(':', StringSplitOptions.RemoveEmptyEntries))
+        foreach (var segment in pathVar.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
         {
             var candidate = Path.Combine(segment, _euStackPath);
             if (File.Exists(candidate))

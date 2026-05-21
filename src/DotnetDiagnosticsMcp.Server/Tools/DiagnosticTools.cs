@@ -1788,7 +1788,7 @@ public sealed class DiagnosticTools
     [Description(
         "Returns a slice of a thread snapshot previously captured by collect_thread_snapshot, addressed by its handle. Views: " +
         "`threads-summary` (every managed thread with state + top frame), " +
-        "`stack` (full captured frames of one thread — requires `threadId`, the managed thread id), " +
+        "`stack` (full captured frames of one thread — requires `threadId`; for `linux-native-stack` snapshots this is the OS thread id / TID), " +
         "`lock-graph` (every SyncBlock that is held or contended, sorted by waiter count then recursion), " +
         "`top-blocked` (threads ranked by IsLikelyBlocked then LockCount — fastest path to spot contention). " +
         "Handles expire ~10 minutes after capture; live-origin handles are invalidated when the target PID exits.")]
@@ -1796,7 +1796,7 @@ public sealed class DiagnosticTools
         IDiagnosticHandleStore handles,
         [Description("Snapshot handle returned by collect_thread_snapshot.")] string handle,
         [Description("Which slice to return: 'threads-summary', 'stack', 'lock-graph' or 'top-blocked'.")] string view = "top-blocked",
-        [Description("For view='stack': managed thread id (ManagedThreadId) to return frames for. Ignored by other views.")] int? threadId = null,
+        [Description("For view='stack': thread id key to return frames for. CoreCLR snapshots use ManagedThreadId; linux-native-stack snapshots use OSThreadId (TID). Ignored by other views.")] int? threadId = null,
         [Description("Maximum entries returned by views that produce a ranked list ('threads-summary', 'top-blocked', 'lock-graph'). Defaults to 50.")] int topN = 50)
     {
         if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<ThreadSnapshotQueryResult>(nameof(handle), "is required");
@@ -1841,22 +1841,28 @@ public sealed class DiagnosticTools
         {
             return InvalidArg<ThreadSnapshotQueryResult>(nameof(threadId), "is required for view='stack'");
         }
-        var thread = snapshot.Threads.FirstOrDefault(t => t.ManagedThreadId == threadId.Value);
+        var isLinuxNativeStack = string.Equals(snapshot.Source, "linux-native-stack", StringComparison.Ordinal);
+        var thread = isLinuxNativeStack
+            ? snapshot.Threads.FirstOrDefault(t => unchecked((int)t.OSThreadId) == threadId.Value)
+            : snapshot.Threads.FirstOrDefault(t => t.ManagedThreadId == threadId.Value);
         if (thread is null)
         {
+            var threadKind = isLinuxNativeStack ? "OS thread" : "managed thread";
             return DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
-                $"Managed thread {threadId.Value} not present in snapshot '{handle}'.",
-                new DiagnosticError("ThreadNotFound", "The captured snapshot does not contain this managed thread id.", threadId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                $"{threadKind} {threadId.Value} not present in snapshot '{handle}'.",
+                new DiagnosticError("ThreadNotFound", "The captured snapshot does not contain this thread id.", threadId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)),
                 new NextActionHint("query_thread_snapshot",
                     "List the captured threads first.",
                     new Dictionary<string, object?> { ["handle"] = handle, ["view"] = "threads-summary" }));
         }
-        var summary = $"Stack of managed thread {thread.ManagedThreadId} (OS {thread.OSThreadId}, state {thread.State}) from snapshot '{handle}' — {thread.Frames.Count} frame(s).";
+        var selectedId = isLinuxNativeStack ? unchecked((int)thread.OSThreadId) : thread.ManagedThreadId;
+        var threadLabel = isLinuxNativeStack ? "OS thread" : "managed thread";
+        var summary = $"Stack of {threadLabel} {selectedId} (OS {thread.OSThreadId}, state {thread.State}) from snapshot '{handle}' — {thread.Frames.Count} frame(s).";
         return DiagnosticResult.Ok(
             new ThreadSnapshotQueryResult(handle, "stack", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
             {
                 Thread = thread,
-                ThreadId = thread.ManagedThreadId,
+                ThreadId = selectedId,
             },
             summary);
     }
@@ -2281,6 +2287,23 @@ public sealed class DiagnosticTools
                 $"{tool} was denied access{pidHint}.",
                 new DiagnosticError("PermissionDenied", message, typeName),
                 new NextActionHint("list_dotnet_processes", "Verify the MCP server runs as the same UID as the target process."));
+        }
+
+        if (ex is ExternalToolNotFoundException missingTool)
+        {
+            if (string.Equals(tool, "collect_thread_snapshot", StringComparison.Ordinal))
+            {
+                return DiagnosticResult.Fail<T>(
+                    $"{tool} cannot run{pidHint}: required external tool '{missingTool.ToolName}' is missing.",
+                    new DiagnosticError("ToolNotFound", message, typeName),
+                    new NextActionHint("get_diagnostic_capabilities",
+                        "Re-check sidecar capabilities after installing elfutils (eu-stack).",
+                        processId is int pidForCap && pidForCap > 0 ? new Dictionary<string, object?> { ["processId"] = pidForCap } : null));
+            }
+
+            return DiagnosticResult.Fail<T>(
+                $"{tool} cannot run{pidHint}: required external tool '{missingTool.ToolName}' is missing.",
+                new DiagnosticError("ToolNotFound", message, typeName));
         }
 
         if (ex is ArgumentException or InvalidOperationException)

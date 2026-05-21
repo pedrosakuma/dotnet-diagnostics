@@ -1,4 +1,5 @@
 using DotnetDiagnosticsMcp.Core.Capabilities;
+using DotnetDiagnosticsMcp.Core;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -11,19 +12,16 @@ namespace DotnetDiagnosticsMcp.Core.Threads;
 public sealed class RoutingThreadSnapshotInspector : IThreadSnapshotInspector
 {
     private readonly ICapabilityDetector _capabilities;
-    private readonly ClrMdThreadSnapshotInspector _clrMd;
-    private readonly LinuxNativeThreadSnapshotInspector _linuxNative;
+    private readonly IReadOnlyList<IThreadSnapshotBackend> _backends;
     private readonly ILogger<RoutingThreadSnapshotInspector> _logger;
 
     public RoutingThreadSnapshotInspector(
         ICapabilityDetector capabilities,
-        ClrMdThreadSnapshotInspector clrMd,
-        LinuxNativeThreadSnapshotInspector linuxNative,
+        IEnumerable<IThreadSnapshotBackend> backends,
         ILogger<RoutingThreadSnapshotInspector>? logger = null)
     {
         _capabilities = capabilities;
-        _clrMd = clrMd;
-        _linuxNative = linuxNative;
+        _backends = backends.OrderBy(b => b.Order).ToArray();
         _logger = logger ?? NullLogger<RoutingThreadSnapshotInspector>.Instance;
     }
 
@@ -33,38 +31,68 @@ public sealed class RoutingThreadSnapshotInspector : IThreadSnapshotInspector
         CancellationToken cancellationToken = default)
     {
         var caps = await _capabilities.DetectAsync(processId, cancellationToken).ConfigureAwait(false);
-        if (caps.Runtime == RuntimeFlavor.NativeAot)
+        var candidates = _backends
+            .Where(b => b.CanHandleLive(caps.Runtime))
+            .OrderBy(b => b.Order)
+            .ToArray();
+
+        if (candidates.Length == 0)
         {
-            if (OperatingSystem.IsLinux())
+            throw new InvalidOperationException(
+                $"No thread snapshot backend is registered for runtime '{caps.Runtime}' on this host.");
+        }
+
+        Exception? lastRetryableFailure = null;
+        foreach (var backend in candidates)
+        {
+            try
             {
-                _logger.LogInformation("Routing thread snapshot for pid {Pid} to Linux NativeAOT fallback.", processId);
-                var native = await _linuxNative.InspectLiveAsync(processId, options, cancellationToken).ConfigureAwait(false);
-                return native with
+                _logger.LogInformation(
+                    "Routing thread snapshot for pid {Pid} to backend '{BackendId}'.",
+                    processId,
+                    backend.BackendId);
+                var snapshot = await backend.InspectLiveAsync(processId, options, cancellationToken).ConfigureAwait(false);
+                return snapshot with
                 {
-                    RuntimeName = RuntimeFlavor.NativeAot.ToString(),
-                    RuntimeVersion = caps.RuntimeVersion,
-                    Source = "linux-native-stack",
+                    RuntimeName = caps.Runtime.ToString(),
+                    RuntimeVersion = string.IsNullOrWhiteSpace(caps.RuntimeVersion) ? snapshot.RuntimeVersion : caps.RuntimeVersion,
+                    Source = string.IsNullOrWhiteSpace(snapshot.Source) ? backend.BackendId : snapshot.Source,
                 };
             }
-
-            if (OperatingSystem.IsWindows())
+            catch (Exception ex) when (IsRetryableFailure(ex))
             {
-                throw new InvalidOperationException(
-                    $"Process {processId} is NativeAOT on Windows. Native thread snapshot routing is tracked in issue #93.");
+                lastRetryableFailure = ex;
+                _logger.LogWarning(
+                    ex,
+                    "Thread snapshot backend '{BackendId}' failed for pid {Pid}; trying next fallback backend (if any).",
+                    backend.BackendId,
+                    processId);
             }
         }
 
-        var snapshot = await _clrMd.InspectLiveAsync(processId, options, cancellationToken).ConfigureAwait(false);
-        return snapshot with
+        if (lastRetryableFailure is not null)
         {
-            RuntimeName = caps.Runtime.ToString(),
-            RuntimeVersion = string.IsNullOrWhiteSpace(caps.RuntimeVersion) ? snapshot.RuntimeVersion : caps.RuntimeVersion,
-        };
+            throw lastRetryableFailure;
+        }
+
+        throw new InvalidOperationException(
+            $"All thread snapshot backends failed for runtime '{caps.Runtime}' on this host.");
     }
 
     public Task<ThreadSnapshotArtifact> InspectDumpAsync(
         string dumpFilePath,
         ThreadSnapshotOptions? options = null,
         CancellationToken cancellationToken = default)
-        => _clrMd.InspectDumpAsync(dumpFilePath, options, cancellationToken);
+    {
+        var dumpBackend = _backends
+            .Where(b => b.CanHandleDump)
+            .OrderBy(b => b.Order)
+            .FirstOrDefault()
+            ?? throw new InvalidOperationException("No dump-capable thread snapshot backend is registered.");
+        return dumpBackend.InspectDumpAsync(dumpFilePath, options, cancellationToken);
+    }
+
+    private static bool IsRetryableFailure(Exception ex)
+        => ex is UnauthorizedAccessException
+           or ExternalToolNotFoundException;
 }
