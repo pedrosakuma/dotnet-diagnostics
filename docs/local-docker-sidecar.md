@@ -16,6 +16,18 @@ docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
 docker build -t coreclr-sample:dev   -f samples/CoreClrSample/Dockerfile .
 ```
 
+> 🔧 **Want `collect_off_cpu_sample` (Linux perf-replay fallback) too?** Add
+> `--build-arg INSTALL_PERF=true` to the sidecar build. The default image
+> stays lean (no `perf`) so that flag is opt-in. Without it the capability
+> detector reports `canSampleOffCpu: false` and `collect_off_cpu_sample`
+> returns an explanatory error envelope. See issue #104.
+>
+> ```bash
+> docker build --build-arg INSTALL_PERF=true \
+>   -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
+> ```
+>
+
 ## Run the topology
 
 ```bash
