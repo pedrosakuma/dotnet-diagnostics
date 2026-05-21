@@ -171,23 +171,20 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
             });
         }
 
-<<<<<<< HEAD
         var managedThreadsById = threads
             .Where(thread => thread.ManagedThreadId > 0)
             .ToDictionary(thread => thread.ManagedThreadId);
         var locks = WalkSyncBlocks(runtime, clrThreads, threadByAddress, managedThreadsById, warnings, ct);
-        return (threads, locks);
-=======
-        var locks = WalkSyncBlocks(runtime, threadByAddress, warnings, ct);
         var threadPool = CaptureThreadPool(
             runtime,
             threads,
-            threads.ToDictionary(t => t.ManagedThreadId, t => t.OSThreadId),
+            threads
+                .Where(thread => thread.ManagedThreadId > 0)
+                .ToDictionary(t => t.ManagedThreadId, t => t.OSThreadId),
             warnings,
             isLiveCapture,
             ct);
         return (threads, locks, threadPool);
->>>>>>> 8637000 (feat: add threadpool thread snapshot view)
     }
 
     private List<ManagedStackFrame> WalkStack(ClrThread t, ThreadSnapshotOptions opts)
