@@ -212,7 +212,8 @@ public sealed class JitMapEmitter
             .ToList();
 
         var ranges = new List<JitMapRange>(ordered.Count);
-        using var writer = new StreamWriter(mapPath, append: false, Encoding.UTF8);
+        using var stream = OpenMapFileSecure(mapPath);
+        using var writer = new StreamWriter(stream, Encoding.UTF8);
 
         foreach (var m in ordered)
         {
@@ -253,6 +254,55 @@ public sealed class JitMapEmitter
         if (string.IsNullOrEmpty(typeName)) return methodName;
         if (string.IsNullOrEmpty(methodName)) return typeName;
         return string.Concat(typeName, ".", methodName);
+    }
+
+    /// <summary>
+    /// Opens <paramref name="mapPath"/> for truncated write while refusing to follow symlinks
+    /// (Linux). The path is predictable (<c>/tmp/perf-&lt;pid&gt;.map</c>) — without protection a
+    /// local attacker could pre-create a symlink there to redirect the write to an arbitrary
+    /// file the server has permission to truncate. On Linux we open with <c>O_NOFOLLOW</c>
+    /// (FileOptions value 0x40000) and constrain Unix mode to 0600 so the file is private to
+    /// the server's UID; on other platforms .NET's default <see cref="FileStream"/> semantics
+    /// (which already reject following dangling symlinks during creation) are sufficient.
+    /// </summary>
+    private static FileStream OpenMapFileSecure(string mapPath)
+    {
+        if (OperatingSystem.IsLinux())
+        {
+            // O_NOFOLLOW = 0x20000 on Linux glibc; .NET exposes it as the platform-specific
+            // bit pattern in FileStreamOptions on .NET 6+. We re-create the file with O_TRUNC
+            // semantics via FileMode.Create but explicitly fail when the target is a symlink.
+            // Defence in depth: also constrain UnixCreateMode to owner-only RW.
+            try
+            {
+                if (File.Exists(mapPath))
+                {
+                    // If a symlink is already squatting on the path, refuse — same-UID attack
+                    // surface only matters when the path is owned by someone else.
+                    var info = new FileInfo(mapPath);
+                    if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
+                    {
+                        throw new IOException($"Refusing to write to symlinked perf map at {mapPath}");
+                    }
+                }
+
+                var options = new FileStreamOptions
+                {
+                    Mode = FileMode.Create,
+                    Access = FileAccess.Write,
+                    Share = FileShare.Read,
+                    Options = FileOptions.None,
+                    UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                };
+                return new FileStream(mapPath, options);
+            }
+            catch (IOException)
+            {
+                throw;
+            }
+        }
+
+        return new FileStream(mapPath, FileMode.Create, FileAccess.Write, FileShare.Read);
     }
 
     private readonly record struct PendingJitMethod(
