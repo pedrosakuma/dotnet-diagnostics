@@ -80,6 +80,7 @@ public interface IDumpInspector
 /// <param name="IncludeDuplicateStrings">When true, hash every System.String during the heap walk and rank by aggregate retained bytes (count × char-bytes). Cheap (folded into the existing single heap pass) but allocates one hash per unique string.</param>
 /// <param name="SnapshotDuplicateStringTopN">Number of duplicate-string entries retained for the duplicate-strings drilldown view. Defaults to 100.</param>
 /// <param name="DuplicateStringPreviewLength">Maximum characters of each string preview returned by the duplicate-strings view. Defaults to 80.</param>
+/// <param name="SymbolPath">Optional NT_SYMBOL_PATH-style search path. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory.</param>
 public sealed record DumpInspectionOptions(
     int TopTypes = 20,
     int SnapshotTopTypes = 200,
@@ -93,7 +94,8 @@ public sealed record DumpInspectionOptions(
     int SnapshotDelegateTargetTopN = 100,
     bool IncludeDuplicateStrings = false,
     int SnapshotDuplicateStringTopN = 100,
-    int DuplicateStringPreviewLength = 80);
+    int DuplicateStringPreviewLength = 80,
+    string? SymbolPath = null);
 
 /// <summary>Where a <see cref="HeapSnapshotArtifact"/> came from.</summary>
 public enum HeapSnapshotOrigin

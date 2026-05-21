@@ -6,6 +6,7 @@ using DotnetDiagnosticsMcp.Core.EventSources;
 using DotnetDiagnosticsMcp.Core.Exceptions;
 using DotnetDiagnosticsMcp.Core.Gc;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
+using DotnetDiagnosticsMcp.Core.Symbols;
 using DotnetDiagnosticsMcp.Server.Tools;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -25,10 +26,11 @@ internal static class DiagnosticServiceRegistration
     /// Registers every Core collector / planner / store the tool layer depends on. Idempotent
     /// per IServiceCollection; safe to call from both WebApplicationBuilder and HostApplicationBuilder.
     /// </summary>
-    public static IServiceCollection AddDiagnosticCoreServices(this IServiceCollection services)
+    public static IServiceCollection AddDiagnosticCoreServices(this IServiceCollection services, string? configuredSymbolPath = null)
     {
         ArgumentNullException.ThrowIfNull(services);
 
+        services.AddSingleton(new SymbolPathBuilder(configuredSymbolPath));
         services.AddSingleton<IProcessDiscovery, LocalProcessDiscovery>();
         services.AddSingleton<DotnetDiagnosticsMcp.Core.Container.IContainerSignalsCollector, DotnetDiagnosticsMcp.Core.Container.CgroupV2SignalsCollector>();
         services.AddSingleton<ICapabilityDetector, CapabilityDetector>();

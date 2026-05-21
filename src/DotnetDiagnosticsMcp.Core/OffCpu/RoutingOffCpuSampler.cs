@@ -39,11 +39,12 @@ public sealed class RoutingOffCpuSampler : IOffCpuSampler
         int processId,
         TimeSpan duration,
         int topN = 25,
+        string? symbolPath = null,
         CancellationToken cancellationToken = default)
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
-            return _linux.SampleAsync(processId, duration, topN, cancellationToken);
+            return _linux.SampleAsync(processId, duration, topN, symbolPath, cancellationToken);
         }
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -55,7 +56,7 @@ public sealed class RoutingOffCpuSampler : IOffCpuSampler
                     "diagnostics sidecar must run with administrative elevation (or hold " +
                     "SeSystemProfilePrivilege) to enable kernel context-switch tracing.");
             }
-            return _windows.SampleAsync(processId, duration, topN, cancellationToken);
+            return _windows.SampleAsync(processId, duration, topN, symbolPath, cancellationToken);
         }
 
         throw new NotSupportedException(

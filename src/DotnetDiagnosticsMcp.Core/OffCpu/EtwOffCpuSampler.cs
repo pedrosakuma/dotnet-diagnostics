@@ -7,6 +7,7 @@ using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 using Microsoft.Diagnostics.Tracing.Session;
+using DotnetDiagnosticsMcp.Core.Symbols;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -38,8 +39,9 @@ namespace DotnetDiagnosticsMcp.Core.OffCpu;
 /// backend's flush behaviour so the LLM sees uniform "long blocker" attribution on both OSes.
 /// </para>
 /// <para>
-/// Symbol resolution uses <see cref="SymbolReader"/> with the target process's main module
-/// directory plus <c>_NT_SYMBOL_PATH</c>; managed↔kernel stack merging lands in slice 2c together
+/// Symbol resolution uses <see cref="SymbolReader"/> with precedence <c>symbolPath</c> →
+/// <c>MCP_SYMBOL_PATH</c> → <c>_NT_SYMBOL_PATH</c> → target main-module directory;
+/// managed↔kernel stack merging lands in slice 2c together
 /// with the <c>depth</c> parameter, so for now we report user-mode frames as <c>module!method</c>
 /// (or <c>module!0xADDR</c> when PDBs are missing) and kernel frames as <c>ntoskrnl!Function</c>
 /// when symbols are available.
@@ -52,13 +54,16 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
     private static readonly SemaphoreSlim s_etwGate = new(1, 1);
     private readonly ILogger<EtwOffCpuSampler> _logger;
     private readonly MvidReader _mvidReader;
+    private readonly SymbolPathBuilder _symbolPathBuilder;
 
     public EtwOffCpuSampler(
         ILogger<EtwOffCpuSampler>? logger = null,
-        MvidReader? mvidReader = null)
+        MvidReader? mvidReader = null,
+        SymbolPathBuilder? symbolPathBuilder = null)
     {
         _logger = logger ?? NullLogger<EtwOffCpuSampler>.Instance;
         _mvidReader = mvidReader ?? new MvidReader();
+        _symbolPathBuilder = symbolPathBuilder ?? new SymbolPathBuilder();
     }
 
     [System.Runtime.Versioning.SupportedOSPlatformGuard("windows")]
@@ -82,6 +87,7 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
         int processId,
         TimeSpan duration,
         int topN = 25,
+        string? symbolPath = null,
         CancellationToken cancellationToken = default)
     {
         if (duration <= TimeSpan.Zero || duration > TimeSpan.FromMinutes(5))
@@ -103,7 +109,7 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
         await s_etwGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await CaptureAndProcessAsync(processId, duration, topN, cancellationToken).ConfigureAwait(false);
+            return await CaptureAndProcessAsync(processId, duration, topN, symbolPath, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -115,6 +121,7 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
         int processId,
         TimeSpan duration,
         int topN,
+        string? explicitSymbolPath,
         CancellationToken cancellationToken)
     {
         var startedAt = DateTimeOffset.UtcNow;
@@ -128,7 +135,7 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
         try
         {
             await CaptureEtwAsync(sessionName, etlPath, duration, cancellationToken).ConfigureAwait(false);
-            return ProcessEtl(etlPath, processId, startedAt, duration, topN, notes, _mvidReader);
+            return ProcessEtl(etlPath, processId, startedAt, duration, topN, explicitSymbolPath, notes, _mvidReader);
         }
         finally
         {
@@ -190,12 +197,13 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
         }
     }
 
-    private static OffCpuSampleResult ProcessEtl(
+    private OffCpuSampleResult ProcessEtl(
         string etlPath,
         int processId,
         DateTimeOffset startedAt,
         TimeSpan duration,
         int topN,
+        string? explicitSymbolPath,
         List<string> notes,
         MvidReader mvidReader)
     {
@@ -204,7 +212,7 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
             throw new InvalidOperationException("ETW capture produced no output file.");
         }
 
-        var symbolPath = BuildSymbolPath(processId);
+        var symbolPath = _symbolPathBuilder.BuildForProcess(processId, explicitSymbolPath);
         var options = new TraceLogOptions
         {
             LocalSymbolsOnly = true,
@@ -398,26 +406,6 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
 
     private static string SafeProcessName(string? name)
         => string.IsNullOrEmpty(name) ? string.Empty : name!;
-
-    private static string? BuildSymbolPath(int processId)
-    {
-        var parts = new List<string>();
-        try
-        {
-            var proc = System.Diagnostics.Process.GetProcessById(processId);
-            var mainModule = proc.MainModule?.FileName;
-            if (mainModule is not null)
-            {
-                var dir = Path.GetDirectoryName(mainModule);
-                if (dir is not null) parts.Add(dir);
-            }
-        }
-        catch { /* best effort */ }
-
-        var ntSym = Environment.GetEnvironmentVariable("_NT_SYMBOL_PATH");
-        if (!string.IsNullOrEmpty(ntSym)) parts.Add(ntSym);
-        return parts.Count > 0 ? string.Join(";", parts) : null;
-    }
 
     private static void TryDelete(string path)
     {

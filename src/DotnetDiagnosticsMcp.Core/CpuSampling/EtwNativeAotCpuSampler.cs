@@ -6,6 +6,7 @@ using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 using Microsoft.Diagnostics.Tracing.Session;
+using DotnetDiagnosticsMcp.Core.Symbols;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -37,10 +38,12 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
 {
     private static readonly SemaphoreSlim s_etwGate = new(1, 1);
     private readonly ILogger<EtwNativeAotCpuSampler> _logger;
+    private readonly SymbolPathBuilder _symbolPathBuilder;
 
-    public EtwNativeAotCpuSampler(ILogger<EtwNativeAotCpuSampler>? logger = null)
+    public EtwNativeAotCpuSampler(ILogger<EtwNativeAotCpuSampler>? logger = null, SymbolPathBuilder? symbolPathBuilder = null)
     {
         _logger = logger ?? NullLogger<EtwNativeAotCpuSampler>.Instance;
+        _symbolPathBuilder = symbolPathBuilder ?? new SymbolPathBuilder();
     }
 
     /// <summary>
@@ -177,7 +180,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         }
     }
 
-    private static CpuSampleResult ProcessEtl(
+    private CpuSampleResult ProcessEtl(
         string etlPath,
         int processId,
         DateTimeOffset startedAt,
@@ -191,7 +194,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         }
 
         // Determine symbol path: include the target executable directory + standard paths.
-        var symbolPath = BuildSymbolPath(processId, sourceResolution);
+        var symbolPath = _symbolPathBuilder.BuildForProcess(processId, sourceResolution?.SymbolPath);
 
         // Convert ETL → ETLX. Disable remote symbol resolution during conversion
         // to avoid network hangs. We resolve symbols locally afterward via LookupSymbolsForModule.
@@ -343,45 +346,6 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         }
 
         return $"[0x{codeAddress.Address:X}]";
-    }
-
-    private static string? BuildSymbolPath(int processId, SourceResolutionOptions? sourceResolution)
-    {
-        var parts = new List<string>();
-
-        // Include the target process's module directory (where PDBs likely live).
-        try
-        {
-            var proc = Process.GetProcessById(processId);
-            var mainModule = proc.MainModule?.FileName;
-            if (mainModule is not null)
-            {
-                var dir = Path.GetDirectoryName(mainModule);
-                if (dir is not null)
-                {
-                    parts.Add(dir);
-                }
-            }
-        }
-        catch
-        {
-            // Process may have exited or access denied — best effort.
-        }
-
-        // Respect user-provided symbol path.
-        if (sourceResolution?.SymbolPath is not null)
-        {
-            parts.Add(sourceResolution.SymbolPath);
-        }
-
-        // Respect _NT_SYMBOL_PATH environment variable.
-        var ntSymPath = Environment.GetEnvironmentVariable("_NT_SYMBOL_PATH");
-        if (!string.IsNullOrEmpty(ntSymPath))
-        {
-            parts.Add(ntSymPath);
-        }
-
-        return parts.Count > 0 ? string.Join(";", parts) : null;
     }
 
     private static void TryDelete(string path)

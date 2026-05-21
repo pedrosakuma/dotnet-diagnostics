@@ -52,6 +52,10 @@ RUN groupadd --system --gid 10001 diagnosticsmcp \
 # on the host) for perf to actually collect — see deploy/k8s/ephemeral-attach.patch.json
 # for the K8s recipe.
 #
+# If you enable external symbol servers, prefer a writable shared cache such as
+# /var/cache/mcp/symbols and point MCP_SYMBOL_PATH at it, e.g.
+#   MCP_SYMBOL_PATH='srv*/var/cache/mcp/symbols*https://msdl.microsoft.com/download/symbols'
+#
 # Pass --build-arg INSTALL_PERF=false to opt OUT (keeps the image ~80MB smaller but
 # disables collect_off_cpu_sample and the perf-replay thread-snapshot fallback).
 ARG INSTALL_PERF=true

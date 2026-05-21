@@ -1,3 +1,4 @@
+using DotnetDiagnosticsMcp.Core.Symbols;
 using DotnetDiagnosticsMcp.Server.Auth;
 using DotnetDiagnosticsMcp.Server.Hosting;
 
@@ -32,7 +33,8 @@ builder.Logging.AddSimpleConsole(o =>
     o.TimestampFormat = "HH:mm:ss.fff ";
 });
 
-builder.Services.AddDiagnosticCoreServices();
+var configuredSymbolPath = Environment.GetEnvironmentVariable(SymbolPathBuilder.McpSymbolPathEnvironmentVariable);
+builder.Services.AddDiagnosticCoreServices(configuredSymbolPath);
 builder.Services.AddHostedService<DotnetDiagnosticsMcp.Server.Hosting.StaleBinaryWatcher>();
 
 // Hold the resolved ILoggerFactory once the app is built so the CallTool filter (configured
@@ -74,7 +76,8 @@ static async Task<int> RunStdioAsync(string[] args)
         o.LogToStandardErrorThreshold = LogLevel.Trace;
     });
 
-    hostBuilder.Services.AddDiagnosticCoreServices();
+    var configuredSymbolPath = Environment.GetEnvironmentVariable(SymbolPathBuilder.McpSymbolPathEnvironmentVariable);
+    hostBuilder.Services.AddDiagnosticCoreServices(configuredSymbolPath);
 
     ILoggerFactory? stdioLoggerFactoryHolder = null;
     hostBuilder.Services

@@ -453,7 +453,7 @@ public sealed class DiagnosticTools
         [Description("Duration of the sampling window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of hotspots to return. Must be >= 1. Defaults to 25.")] int topN = 25,
         [Description("If true, attempts to resolve top hotspots to file:line via PDB / SourceLink and stamps the resolved SourceLocation onto each MethodIdentity payload (issue #28 — makes dotnet-assembly-mcp.get_method_source optional when PDBs are reachable). Defaults to true; set to false to skip PDB I/O when symbols are known to be unreachable.")] bool resolveSourceLines = true,
-        [Description("Optional NT_SYMBOL_PATH-style search path forwarded to the symbol reader (e.g. '/symbols;srv*https://msdl.microsoft.com/download/symbols'). Ignored when resolveSourceLines=false.")] string? symbolPath = null,
+        [Description("Optional NT_SYMBOL_PATH-style search path forwarded to the symbol reader (e.g. '/symbols;srv*https://msdl.microsoft.com/download/symbols'). Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule/module directory. Ignored when resolveSourceLines=false.")] string? symbolPath = null,
         [Description("Cap on how many top hotspots get source-resolved. Must be >= 1. Defaults to the requested topN so every emitted MethodIdentity carries its resolved SourceLocation when available.")] int? maxResolvedSources = null,
         [Description("If true, runs the collection as a background job. Returns immediately with a job handle; poll get_collection_status(handle) until status='completed' to retrieve the CpuSample result. Defaults to false (synchronous).")] bool runAsJob = false,
         [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 hotspots inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full sample is always retained behind the issued handle — drill in with get_call_tree.")]
@@ -705,6 +705,7 @@ public sealed class DiagnosticTools
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
         [Description("Sampling window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of blocking stacks returned inline (the full set lives behind the handle). Defaults to 25.")] int topN = 25,
+        [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory.")] string? symbolPath = null,
         [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 blocking stacks inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full artifact is always retained behind the issued handle — drill in with query_off_cpu_snapshot.")]
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
@@ -719,7 +720,7 @@ public sealed class DiagnosticTools
         OffCpuSampleResult result;
         try
         {
-            result = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, cancellationToken)
+            result = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, symbolPath, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (NotSupportedException ex)
@@ -1295,6 +1296,7 @@ public sealed class DiagnosticTools
         [Description("When true, enumerate every loaded type's static reference fields ranked by directly-referenced object size — surfaces 'singleton that grew forever' leaks. Off by default; adds an extra pass over AppDomains × Modules × Types.")] bool includeStaticFields = false,
         [Description("When true, detect MulticastDelegate instances during the heap walk and group their invocation list by (target type, method) — surfaces 'event handler never unsubscribed' leaks. Cheap (folded into the existing heap pass).")] bool includeDelegateTargets = false,
         [Description("When true, hash every System.String during the heap walk and rank by aggregate retained bytes — surfaces missing string-interning. Cheap (folded into the existing heap pass) but allocates one hash per unique string.")] bool includeDuplicateStrings = false,
+        [Description("Optional NT_SYMBOL_PATH-style search path reserved for symbol-resolving heap drilldowns. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory.")] string? symbolPath = null,
         CancellationToken cancellationToken = default)
     {
         return await GuardAttachAsync("inspect_dump", processId: null, async () =>
@@ -1307,7 +1309,8 @@ public sealed class DiagnosticTools
                     RetentionPathLimit: retentionPathLimit,
                     IncludeStaticFields: includeStaticFields,
                     IncludeDelegateTargets: includeDelegateTargets,
-                    IncludeDuplicateStrings: includeDuplicateStrings),
+                    IncludeDuplicateStrings: includeDuplicateStrings,
+                    SymbolPath: symbolPath),
                 cancellationToken).ConfigureAwait(false);
 
             var handle = handles.Register(snapshot.ProcessId, HeapSnapshotKind, snapshot, HeapSnapshotHandleTtl, evictWhenProcessExits: false);
@@ -1385,6 +1388,7 @@ public sealed class DiagnosticTools
         [Description("When true, enumerate every loaded type's static reference fields ranked by directly-referenced object size — surfaces 'singleton that grew forever' leaks. Off by default; lengthens the suspend window.")] bool includeStaticFields = false,
         [Description("When true, detect MulticastDelegate instances during the heap walk and group their invocation list by (target type, method) — surfaces 'event handler never unsubscribed' leaks. Cheap (folded into the existing heap pass).")] bool includeDelegateTargets = false,
         [Description("When true, hash every System.String during the heap walk and rank by aggregate retained bytes — surfaces missing string-interning. Cheap (folded into the existing heap pass) but allocates one hash per unique string.")] bool includeDuplicateStrings = false,
+        [Description("Optional NT_SYMBOL_PATH-style search path reserved for symbol-resolving heap drilldowns. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory.")] string? symbolPath = null,
         CancellationToken cancellationToken = default)
     {
         var resolved = await ResolveContextAsync<LiveHeapInspection>(resolver, processId, cancellationToken).ConfigureAwait(false);
@@ -1402,7 +1406,8 @@ public sealed class DiagnosticTools
                     RetentionPathLimit: retentionPathLimit,
                     IncludeStaticFields: includeStaticFields,
                     IncludeDelegateTargets: includeDelegateTargets,
-                    IncludeDuplicateStrings: includeDuplicateStrings),
+                    IncludeDuplicateStrings: includeDuplicateStrings,
+                    SymbolPath: symbolPath),
                 cancellationToken).ConfigureAwait(false);
 
             var handle = handles.Register(pid, HeapSnapshotKind, snapshot, HeapSnapshotHandleTtl);
@@ -1773,6 +1778,7 @@ public sealed class DiagnosticTools
         [Description("Maximum stack frames captured per thread. Defaults to 64.")] int maxFramesPerThread = 64,
         [Description("Include runtime frames (PInvoke trampolines, etc.) without an associated managed method. Off by default.")] bool includeRuntimeFrames = false,
         [Description("Include pure native frames where ClrMD cannot resolve a method. Off by default.")] bool includeNativeFrames = false,
+        [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory.")] string? symbolPath = null,
         [Description("Verbosity (summary|detail|raw). Default 'summary' returns only the top-3 blocked threads inline and drops the SyncBlock lock-graph (use query_thread_snapshot(view=lock-graph) for the full graph). 'detail' returns the historical top-25 threads + top-25 locks. 'raw' is equivalent to detail. The full snapshot is always retained behind the issued handle.")]
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
@@ -1799,7 +1805,7 @@ public sealed class DiagnosticTools
 
         return await GuardAttachAsync("collect_thread_snapshot", hasDump ? (int?)null : livePid, async () =>
         {
-            var opts = new ThreadSnapshotOptions(maxFramesPerThread, includeRuntimeFrames, includeNativeFrames);
+            var opts = new ThreadSnapshotOptions(maxFramesPerThread, includeRuntimeFrames, includeNativeFrames, symbolPath);
             ThreadSnapshotArtifact snapshot;
             bool evictOnExit;
             if (hasDump)
