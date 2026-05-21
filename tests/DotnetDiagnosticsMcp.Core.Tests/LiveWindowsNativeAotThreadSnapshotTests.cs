@@ -68,6 +68,7 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
+    // NativeAOT publish on Windows CI can take significantly longer than non-AOT live tests.
     [Fact(Timeout = 180_000)]
     public async Task RoutingInspector_OnWindowsNativeAot_ReturnsEtwNativeThreadSnapshot()
     {

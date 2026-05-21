@@ -19,6 +19,7 @@ namespace DotnetDiagnosticsMcp.Core.Threads;
 public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
 {
     private static readonly SemaphoreSlim s_etwGate = new(1, 1);
+    private static readonly TimeSpan CaptureDuration = TimeSpan.FromMilliseconds(200);
     private readonly ILogger<EtwNativeThreadSnapshotInspector> _logger;
 
     public EtwNativeThreadSnapshotInspector(ILogger<EtwNativeThreadSnapshotInspector>? logger = null)
@@ -101,7 +102,7 @@ public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
         CancellationToken cancellationToken)
     {
         var capturedAt = DateTimeOffset.UtcNow;
-        var startedAt = Stopwatch.StartNew();
+        var stopwatch = Stopwatch.StartNew();
         var captureDir = Path.Combine(Path.GetTempPath(), $"diagmcp-etw-threads-{processId}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(captureDir);
 
@@ -111,16 +112,17 @@ public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
 
         try
         {
-            var captureDuration = TimeSpan.FromMilliseconds(200);
-            await CaptureEtwAsync(sessionName, etlPath, captureDuration, cancellationToken).ConfigureAwait(false);
+            // ETW kernel sessions start emitting thread/profile events immediately, unlike EventPipe
+            // sessions that usually need a longer warmup window.
+            await CaptureEtwAsync(sessionName, etlPath, CaptureDuration, cancellationToken).ConfigureAwait(false);
             var threads = ProcessEtl(etlPath, processId, options.MaxFramesPerThread, warnings);
-            startedAt.Stop();
+            stopwatch.Stop();
 
             return new ThreadSnapshotArtifact(
                 Origin: ThreadSnapshotOrigin.Live,
                 ProcessId: processId,
                 CapturedAt: capturedAt,
-                WalkDuration: startedAt.Elapsed,
+                WalkDuration: stopwatch.Elapsed,
                 RuntimeName: "NativeAot",
                 RuntimeVersion: string.Empty,
                 Threads: threads,
@@ -284,7 +286,12 @@ public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
                 warnings.Add($"No ETW stack captured for tid {tid} during the snapshot window.");
             }
 
-            var state = threadStateByTid.GetValueOrDefault(tid) ?? new ProcessThreadStateInfo("Unknown", true, null);
+            if (!threadStateByTid.ContainsKey(tid))
+            {
+                warnings.Add($"Could not read live thread state for tid {tid}; it may have exited.");
+            }
+
+            var state = threadStateByTid.GetValueOrDefault(tid) ?? new ProcessThreadStateInfo("Unknown", false, null);
             managedThreads.Add(new ManagedThread(
                 ManagedThreadId: tid,
                 OSThreadId: unchecked((uint)tid),
