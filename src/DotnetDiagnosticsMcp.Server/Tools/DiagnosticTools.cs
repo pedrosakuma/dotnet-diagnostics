@@ -1843,7 +1843,9 @@ public sealed class DiagnosticTools
         }
         var isLinuxNativeStack = string.Equals(snapshot.Source, "linux-native-stack", StringComparison.Ordinal);
         var thread = isLinuxNativeStack
-            ? snapshot.Threads.FirstOrDefault(t => unchecked((int)t.OSThreadId) == threadId.Value)
+            ? snapshot.Threads.FirstOrDefault(t =>
+                threadId.Value > 0 &&
+                (uint)threadId.Value == t.OSThreadId)
             : snapshot.Threads.FirstOrDefault(t => t.ManagedThreadId == threadId.Value);
         if (thread is null)
         {
@@ -1855,7 +1857,7 @@ public sealed class DiagnosticTools
                     "List the captured threads first.",
                     new Dictionary<string, object?> { ["handle"] = handle, ["view"] = "threads-summary" }));
         }
-        var selectedId = isLinuxNativeStack ? unchecked((int)thread.OSThreadId) : thread.ManagedThreadId;
+        var selectedId = isLinuxNativeStack ? threadId.Value : thread.ManagedThreadId;
         var threadLabel = isLinuxNativeStack ? "OS thread" : "managed thread";
         var summary = $"Stack of {threadLabel} {selectedId} (OS {thread.OSThreadId}, state {thread.State}) from snapshot '{handle}' — {thread.Frames.Count} frame(s).";
         return DiagnosticResult.Ok(

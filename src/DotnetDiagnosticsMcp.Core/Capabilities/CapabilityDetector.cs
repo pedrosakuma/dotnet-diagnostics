@@ -382,7 +382,7 @@ public sealed class CapabilityDetector : ICapabilityDetector
             return (
                 CanCollect: true,
                 Source: "linux-native-stack",
-                Preconditions: "Requires eu-stack (elfutils), same UID as target, and ptrace attach capability.");
+                Preconditions: null);
         }
 
         if (runtime == RuntimeFlavor.NativeAot && OperatingSystem.IsWindows())
