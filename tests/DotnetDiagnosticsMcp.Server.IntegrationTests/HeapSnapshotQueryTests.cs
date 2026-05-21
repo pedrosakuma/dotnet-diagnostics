@@ -1,3 +1,4 @@
+using System.Threading;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Server.Tools;
@@ -8,7 +9,7 @@ namespace DotnetDiagnosticsMcp.Server.IntegrationTests;
 public sealed class HeapSnapshotQueryTests
 {
     [Fact]
-    public void QueryHeapSnapshot_AsyncView_ReturnsPendingOperations()
+    public async Task QueryHeapSnapshot_AsyncView_ReturnsPendingOperations()
     {
         var store = new MemoryDiagnosticHandleStore();
         var snapshot = new HeapSnapshotArtifact(
@@ -51,7 +52,7 @@ public sealed class HeapSnapshotQueryTests
 
         var handle = store.Register(snapshot.ProcessId, "heap-snapshot", snapshot, TimeSpan.FromMinutes(10));
 
-        var result = DiagnosticTools.QueryHeapSnapshot(store, handle.Id, view: "async", topN: 10);
+        var result = await DiagnosticTools.QueryHeapSnapshot(store, new StubDumpInspector(), handle.Id, view: "async", topN: 10);
 
         result.IsError.Should().BeFalse();
         result.Data.Should().NotBeNull();
@@ -60,5 +61,23 @@ public sealed class HeapSnapshotQueryTests
         result.Data.SortedBy.Should().Be("heap-order");
         result.Summary.Should().Contain("First pending state machine in heap-walk order");
         result.Data.AsyncOperations![0].Stack.Should().HaveCount(2);
+    }
+
+    private sealed class StubDumpInspector : IDumpInspector
+    {
+        public Task<HeapSnapshotArtifact> InspectAsync(string dumpFilePath, DumpInspectionOptions? options = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<HeapSnapshotArtifact> InspectLiveAsync(int processId, DumpInspectionOptions? options = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<HeapObjectInspection> InspectObjectAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<HeapGcRootInspection> InspectGcRootAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<HeapObjectSizeInspection> InspectObjectSizeAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
     }
 }
