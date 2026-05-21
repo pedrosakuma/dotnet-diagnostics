@@ -94,7 +94,7 @@ public sealed class PerfReplayThreadSnapshotBackend : IThreadSnapshotBackend
 
     public PerfReplayThreadSnapshotBackend(PerfReplayThreadSnapshotInspector inspector) => _inspector = inspector;
 
-    public string BackendId => "perf-replay-approx";
+    public string BackendId => PerfReplayThreadSnapshotInspector.BackendId;
 
     public int Order => 200;
 

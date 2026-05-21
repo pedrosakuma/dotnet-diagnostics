@@ -73,4 +73,22 @@ public sealed class PerfReplayThreadSnapshotInspectorTests
         support.Source.Should().Be("perf-replay-approx");
         support.Preconditions.Should().Contain("Approximate");
     }
+
+    [Theory]
+    [InlineData("Permission denied")]
+    [InlineData("No permission to enable sched:sched_switch event.")]
+    [InlineData("perf_event_paranoid prevents access")]
+    [InlineData("missing CAP_PERFMON capability")]
+    [InlineData("Operation not permitted")]
+    public void LooksLikePerfPermissionFailure_MatchesCommonPermissionDiagnostics(string stderr)
+    {
+        PerfReplayThreadSnapshotInspector.LooksLikePerfPermissionFailure(stderr).Should().BeTrue();
+    }
+
+    [Fact]
+    public void BackendId_IsConsistentBetweenBackendAndInspector()
+    {
+        var backendId = new PerfReplayThreadSnapshotBackend(new PerfReplayThreadSnapshotInspector()).BackendId;
+        backendId.Should().Be(PerfReplayThreadSnapshotInspector.BackendId);
+    }
 }

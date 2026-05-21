@@ -15,7 +15,9 @@ namespace DotnetDiagnosticsMcp.Core.Threads;
 /// </summary>
 public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
 {
+    internal const string BackendId = "perf-replay-approx";
     internal const int DefaultWindowSeconds = 3;
+    private const long PerfDataMaxBytes = 64L * 1024 * 1024;
     private readonly ILogger<PerfReplayThreadSnapshotInspector> _logger;
     private readonly string _configuredPath;
     private string? _resolvedPath;
@@ -80,7 +82,7 @@ public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
                 $"Could not enumerate any TID under /proc/{processId}/task. The process may have exited.");
         }
 
-        var script = await CaptureScriptAsync(window, cancellationToken).ConfigureAwait(false);
+        var (script, hitSizeCap) = await CaptureScriptAsync(window, cancellationToken).ConfigureAwait(false);
         var lastByTid = PerfSchedScriptParser.ParseLastSeenSwitchOut(script, targetTids);
         var threads = BuildApproximateThreads(lastByTid, opts.MaxFramesPerThread);
 
@@ -89,6 +91,11 @@ public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
         warnings.Add("Each thread shows the last stack seen at sched_switch OUT within the window (not its current stack).");
         warnings.Add("Threads that never switched off-CPU during the window are omitted.");
         warnings.Add("Wait reason is inferred from sched_switch prev_state (S/D/X), not /proc/.../wchan.");
+        if (hitSizeCap)
+        {
+            warnings.Add(
+                $"perf.data hit the {PerfDataMaxBytes / (1024 * 1024)} MiB cap; capture stopped early and may not fully cover the requested replay window.");
+        }
         if (threads.Count == 0)
         {
             warnings.Add("No switch-out stacks were observed for target threads in this window; increase activity and retry.");
@@ -105,7 +112,7 @@ public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
             Threads: threads,
             Locks: Array.Empty<MonitorLockState>())
         {
-            Source = "perf-replay-thread-snapshot",
+            Source = BackendId,
             SnapshotKind = "perf-replay-approx",
             WindowSeconds = DefaultWindowSeconds,
             Warnings = warnings,
@@ -182,14 +189,26 @@ public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
         };
     }
 
-    private async Task<string> CaptureScriptAsync(TimeSpan duration, CancellationToken ct)
+    private async Task<(string Script, bool HitSizeCap)> CaptureScriptAsync(TimeSpan duration, CancellationToken ct)
     {
         var perfDataPath = Path.Combine(Path.GetTempPath(),
             $"diagnostics-mcp-threadsnap-perf-{Guid.NewGuid():N}.data");
         try
         {
             await RecordAsync(perfDataPath, duration, ct).ConfigureAwait(false);
-            return await RunScriptAsync(perfDataPath, ct).ConfigureAwait(false);
+            var hitSizeCap = false;
+            try
+            {
+                var sizeBytes = new FileInfo(perfDataPath).Length;
+                hitSizeCap = sizeBytes >= PerfDataMaxBytes;
+            }
+            catch
+            {
+                // best effort
+            }
+
+            var script = await RunScriptAsync(perfDataPath, ct).ConfigureAwait(false);
+            return (script, hitSizeCap);
         }
         finally
         {
@@ -223,6 +242,7 @@ public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
         process.StartInfo.ArgumentList.Add("sched:sched_switch");
         process.StartInfo.ArgumentList.Add("--call-graph");
         process.StartInfo.ArgumentList.Add("dwarf");
+        process.StartInfo.ArgumentList.Add($"--max-size={PerfDataMaxBytes}");
         process.StartInfo.ArgumentList.Add("-o");
         process.StartInfo.ArgumentList.Add(outputPath);
         process.StartInfo.ArgumentList.Add("--");
@@ -243,6 +263,12 @@ public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
         if (process.ExitCode != 0)
         {
             var stderr = await process.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
+            if (LooksLikePerfPermissionFailure(stderr))
+            {
+                throw new UnauthorizedAccessException(
+                    $"perf record (sched replay) could not run due to insufficient permissions: {stderr.Trim()} " +
+                    "Grant CAP_PERFMON (or CAP_SYS_ADMIN) to the diagnostics sidecar, or lower kernel.perf_event_paranoid (for example: sysctl -w kernel.perf_event_paranoid=-1).");
+            }
             throw new InvalidOperationException(
                 $"perf record (sched replay) exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
         }
@@ -281,6 +307,12 @@ public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
         if (process.ExitCode != 0)
         {
             var stderr = await process.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
+            if (LooksLikePerfPermissionFailure(stderr))
+            {
+                throw new UnauthorizedAccessException(
+                    $"perf script (sched replay) could not read the captured trace due to insufficient permissions: {stderr.Trim()} " +
+                    "Grant CAP_PERFMON (or CAP_SYS_ADMIN) to the diagnostics sidecar, or lower kernel.perf_event_paranoid (for example: sysctl -w kernel.perf_event_paranoid=-1).");
+            }
             throw new InvalidOperationException(
                 $"perf script (sched replay) exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
         }
@@ -333,5 +365,19 @@ public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
     private static void TryDelete(string path)
     {
         try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+
+    internal static bool LooksLikePerfPermissionFailure(string stderr)
+    {
+        if (string.IsNullOrWhiteSpace(stderr))
+        {
+            return false;
+        }
+
+        return stderr.Contains("permission denied", StringComparison.OrdinalIgnoreCase)
+               || stderr.Contains("no permission", StringComparison.OrdinalIgnoreCase)
+               || stderr.Contains("perf_event_paranoid", StringComparison.OrdinalIgnoreCase)
+               || stderr.Contains("CAP_PERFMON", StringComparison.OrdinalIgnoreCase)
+               || stderr.Contains("operation not permitted", StringComparison.OrdinalIgnoreCase);
     }
 }
