@@ -45,7 +45,17 @@ public sealed class LocalProcessDiscovery : IProcessDiscovery
             }
         }
 
-        return result;
+        // Second-chance race filter: DiagnosticsClient can publish a valid live PID at the start of
+        // the scan that exits before later PIDs finish probing. Give short-lived helper processes a
+        // brief chance to disappear, then re-check the final set immediately before returning so
+        // callers don't see transient build/test wrappers.
+        if (result.Count == 0)
+        {
+            return result;
+        }
+
+        Thread.Sleep(millisecondsTimeout: 50);
+        return result.Where(process => IsProcessAlive(process.ProcessId)).ToArray();
     }
 
     public DotnetProcess? TryGetProcess(int processId) => SafeGetProcess(processId);
@@ -143,11 +153,12 @@ public sealed class LocalProcessDiscovery : IProcessDiscovery
 
         try
         {
+            DotnetProcess? process;
             var client = new DiagnosticsClient(pid);
             var snapshot = ProcessInfoReflection.TryGet(client);
             if (snapshot is not null)
             {
-                return new DotnetProcess(
+                process = new DotnetProcess(
                     ProcessId: (int)snapshot.ProcessId,
                     CommandLine: snapshot.CommandLine,
                     OperatingSystem: snapshot.OperatingSystem,
@@ -155,8 +166,21 @@ public sealed class LocalProcessDiscovery : IProcessDiscovery
                     RuntimeVersion: snapshot.ClrProductVersionString,
                     ManagedEntrypointAssemblyName: snapshot.ManagedEntrypointAssemblyName);
             }
+            else
+            {
+                process = BuildFallback(pid);
+            }
 
-            return BuildFallback(pid);
+            if (process is not null && !IsProcessAlive(process.ProcessId))
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Skipping pid {Pid}: process exited during discovery.", pid);
+                }
+                return null;
+            }
+
+            return process;
         }
         catch (Exception ex) when (
             ex is ServerNotAvailableException ||
