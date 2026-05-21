@@ -51,10 +51,7 @@ public sealed class RoutingOffCpuSampler : IOffCpuSampler
         {
             if (!_windows.IsAvailable())
             {
-                throw new InvalidOperationException(
-                    "ETW kernel CSwitch profiling is not available on this Windows host. The " +
-                    "diagnostics sidecar must run with administrative elevation (or hold " +
-                    "SeSystemProfilePrivilege) to enable kernel context-switch tracing.");
+                throw new UnauthorizedAccessException(EtwOffCpuSampler.KernelLoggerPermissionDeniedMessage);
             }
             return _windows.SampleAsync(processId, duration, topN, symbolPath, cancellationToken);
         }

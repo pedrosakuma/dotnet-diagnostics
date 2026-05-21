@@ -4,6 +4,7 @@ using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.Memory;
+using DotnetDiagnosticsMcp.Core.OffCpu;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Threads;
 using DotnetDiagnosticsMcp.Server.Tools;
@@ -81,6 +82,26 @@ public sealed class ToolGuardTests
         result.IsError.Should().BeTrue();
         result.Error!.Kind.Should().Be("ToolNotFound");
         result.Error.Message.Should().Contain("eu-stack");
+    }
+
+    [Fact]
+    public async Task CollectOffCpuSample_WindowsPrivilegeDenied_TranslatesToPermissionDenied()
+    {
+        const string privilegeName = "SeSystemProfilePrivilege";
+        const string message = "NT Kernel Logger 'ContextSwitch' provider requires either BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance'). Grant one of those rights to the diagnostics sidecar account and restart the service.";
+        var handles = new MemoryDiagnosticHandleStore();
+        var sampler = new ThrowingOffCpuSampler(new UnauthorizedAccessException(message));
+
+        var result = await DiagnosticTools.CollectOffCpuSample(
+            sampler, handles, EchoResolver(), processId: 1234, cancellationToken: default);
+
+        result.IsError.Should().BeTrue();
+        result.Error!.Kind.Should().Be("PermissionDenied");
+        result.Error.Message.Should().Contain("BUILTIN\\Administrators");
+        result.Error.Message.Should().Contain(privilegeName);
+        result.Summary.Should().Contain("NT Kernel Logger");
+        result.Hints.Should().Contain(h => h.Reason.Contains("BUILTIN\\Administrators", StringComparison.Ordinal));
+        result.Hints.Should().Contain(h => h.Reason.Contains(privilegeName, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -258,5 +279,17 @@ public sealed class ToolGuardTests
             var ctx = new ProcessContext(pid, RuntimeFlavor.CoreClr, RuntimeVersion: null, CanSampleCpu: true, CanCollectGcDump: true, AutoResolved: false);
             return Task.FromResult(new ProcessContextResolution(Context: ctx, Error: null, Candidates: null));
         }
+    }
+
+    private sealed class ThrowingOffCpuSampler : IOffCpuSampler
+    {
+        private readonly Exception _ex;
+
+        public ThrowingOffCpuSampler(Exception ex) => _ex = ex;
+
+        public bool IsAvailable() => true;
+
+        public Task<OffCpuSampleResult> SampleAsync(int processId, TimeSpan duration, int topN = 25, string? symbolPath = null, CancellationToken cancellationToken = default)
+            => throw _ex;
     }
 }

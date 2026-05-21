@@ -21,28 +21,29 @@ The Kernel Logger itself needs **one** of:
 - Membership in the local **Administrators** group, **or**
 - The **`SeSystemProfilePrivilege`** ("Profile system performance") privilege.
 
-> ⚠️ **Today's runtime gate.** `EtwOffCpuSampler.IsAvailable()` currently checks
-> `TraceEventSession.IsElevated()`, which only returns `true` for an **elevated** token
-> (i.e. Administrators membership or `LocalSystem`). A dedicated service account that
-> holds only `SeSystemProfilePrivilege` will be rejected at the gate before any ETW
-> session is attempted. The working-today recommendations below therefore put the service
-> account in local **Administrators**. Tracked in [#89][i89] — once shipped, you will be
-> able to drop the Administrators membership and rely on `SeSystemProfilePrivilege` alone.
->
-> [i89]: https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/89
+> ✅ **Current runtime gate.** `EtwOffCpuSampler.IsAvailable()` now accepts either
+> local **Administrators** membership **or** a token that carries
+> `SeSystemProfilePrivilege` (`Profile system performance`). That means a dedicated
+> service account can now run `collect_off_cpu_sample` without joining
+> **Administrators**, as long as you grant the privilege and restart the service.
 
 The Scheduled-Task installer (`deploy/supervisors/windows/Install-Service.ps1`) runs the
 server as the interactive user. That user is typically a **standard** user — no
 Administrators, no `SeSystemProfilePrivilege` — so `collect_off_cpu_sample` returns a
 structured `PermissionDenied` envelope:
 
-```
+```json
 {
   "error": {
     "kind": "PermissionDenied",
-    "message": "NT Kernel Logger 'ContextSwitch' provider requires SeSystemProfilePrivilege or local Administrators membership.",
-    "actionableHint": "See docs/windows-sidecar-service.md to run the sidecar as a Windows Service."
-  }
+    "message": "NT Kernel Logger 'ContextSwitch' provider requires either BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance'). Grant one of those rights to the diagnostics sidecar account and restart the service."
+  },
+  "hints": [
+    {
+      "nextTool": "collect_off_cpu_sample",
+      "reason": "Retry after the sidecar account has one of the two supported Windows paths: BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance')."
+    }
+  ]
 }
 ```
 
@@ -61,17 +62,14 @@ kernel logger session. **Switch to the Service only when you need off-CPU.**
 
 ## 2. Two account options
 
-| Account                                       | Today's privilege grant                              | Tradeoff                                                                                                                          |
-|-----------------------------------------------|------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------|
-| Dedicated service account in **Administrators** | `Add-LocalGroupMember -Group Administrators`         | **Service-scoped** but still coarser than ideal — admin rights on the host. Easiest path that satisfies today's `IsElevated()` gate. |
-| `LocalSystem`                                 | implicit (it has every privilege)                    | Simplest. **Host-wide** privilege. Reasonable for isolated jump-boxes; not recommended for shared production hosts.               |
-| Dedicated service account with **`SeSystemProfilePrivilege` only** | grant via `secpol.msc` → "Profile system performance" | **Least privilege**. Blocked today by [#89][i89] — `IsAvailable()` rejects this account before ETW. Use after #89 ships.     |
+| Account                                       | Privilege grant                                                     | Tradeoff                                                                                                      |
+|-----------------------------------------------|---------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
+| Dedicated service account in **Administrators** | `Add-LocalGroupMember -Group Administrators`                        | Easiest path. Still broader than ideal — admin rights on the host.                                          |
+| `LocalSystem`                                 | implicit (it has every privilege)                                   | Simplest. **Host-wide** privilege. Reasonable for isolated jump-boxes; not recommended for shared hosts.    |
+| Dedicated service account with **`SeSystemProfilePrivilege` only** | grant `Profile system performance` via `secpol.msc` or `gpedit.msc` | **Least privilege** for off-CPU: enough for the NT Kernel Logger without putting the account in Administrators. |
 
-[i89]: https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/89
-
-Recommendation today: **dedicated account in Administrators** for shared/production hosts,
-**`LocalSystem`** for quick experimentation. The pure least-privilege account is documented
-for completeness but does not work yet.
+Recommendation: **dedicated account with `SeSystemProfilePrivilege` only** for shared/production hosts,
+**Administrators** when you need the quickest bootstrap, and **`LocalSystem`** only for isolated labs.
 
 ---
 
@@ -97,22 +95,21 @@ New-LocalUser -Name 'diagmcp$' -Password $pwd `
 ```powershell
 $account = "$env:COMPUTERNAME\diagmcp$"
 
-# (a) Add to local Administrators. This satisfies today's IsAvailable() gate
-#     (issue #89) AND implicitly grants SeServiceLogonRight + SeSystemProfilePrivilege.
-#     Idempotent — re-running is a no-op.
+# Fastest path: add to local Administrators. Idempotent — re-running is a no-op.
 Add-LocalGroupMember -Group 'Administrators' -Member 'diagmcp$' -ErrorAction SilentlyContinue
 ```
 
-> 🔒 **Future least-privilege path (after [#89][i89]).** When that issue ships you can
-> remove the account from Administrators and instead grant only `SeServiceLogonRight`
-> + `SeSystemProfilePrivilege` via `secpol.msc`:
+> 🔒 **Least-privilege path (preferred for production).** Instead of adding the account
+> to **Administrators**, grant only the two user rights the service needs:
 >
-> - `secpol.msc` → `Local Policies` → `User Rights Assignment` → `Log on as a service` →
->   Add `diagmcp$`.
-> - Same node → `Profile system performance` → Add `diagmcp$`.
+> - `secpol.msc` **or** `gpedit.msc` → `Computer Configuration` → `Windows Settings` →
+>   `Security Settings` → `Local Policies` → `User Rights Assignment` →
+>   `Log on as a service` → Add `diagmcp$`.
+> - Same node → `Profile system performance` (`SeSystemProfilePrivilege`) → Add `diagmcp$`.
 >
-> Both take effect on the next service start. Until #89 ships, the runtime gate will
-> reject this configuration even though the kernel would accept it.
+> Both grants take effect on the next service start. After you add them, restart the
+> service and `collect_off_cpu_sample` can use the NT Kernel Logger without local
+> **Administrators** membership.
 
 ### 3.3 Install the service
 
@@ -264,7 +261,7 @@ Remove-Item -Recurse -Force "$env:ProgramData\dotnet-diagnostics-mcp" -ErrorActi
 | Symptom                                                                                          | Likely cause                                                                  |
 |--------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------|
 | Service fails to start with **`Error 1069: logon failure`**                                       | The service account cannot log on as a service. If you followed § 3.2, Administrators membership grants `SeServiceLogonRight` implicitly — confirm `Add-LocalGroupMember` actually ran (check `Get-LocalGroupMember Administrators`). |
-| `collect_off_cpu_sample` returns `PermissionDenied` despite running as a service                  | Service started **before** the privilege grant. Restart the service after `Add-LocalGroupMember` (token privileges are evaluated at start). If you tried the least-privilege path (`SeSystemProfilePrivilege` only, no Administrators) — this is blocked today by [#89][i89]. |
+| `collect_off_cpu_sample` returns `PermissionDenied` despite running as a service                  | Service started **before** the privilege grant, or the account has neither local **Administrators** membership nor `SeSystemProfilePrivilege`. Restart the service after changing group membership / User Rights Assignment (token privileges are evaluated at start). |
 | `collect_off_cpu_sample` returns `Conflict: NT Kernel Logger session already exists`              | Another profiler (PerfView, WPR, `xperf`) is currently running. Stop it.       |
 | `Authorization` header rejected with 401                                                          | The MCP client is reading a stale `MCP_BEARER_TOKEN` from User scope instead of the service account / token file. Refresh the client. |
 | `whoami /priv` does **not** list `SeSystemProfilePrivilege` for the service process               | The privilege is on the **account**, but the service was started with a **filtered token** (rare; legacy 32-bit hosts). Verify the service is 64-bit; restart the host once. |

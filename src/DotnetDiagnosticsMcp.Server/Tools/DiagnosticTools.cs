@@ -744,6 +744,18 @@ public sealed class DiagnosticTools
                     "Confirm which signals are available on this host before retrying.",
                     new Dictionary<string, object?> { ["processId"] = pid }));
         }
+        catch (UnauthorizedAccessException ex)
+        {
+            return DiagnosticResult.Fail<OffCpuSnapshot>(
+                $"collect_off_cpu_sample could not start NT Kernel Logger capture for pid {pid}: Windows denied access to the ContextSwitch provider.",
+                new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
+                new NextActionHint("get_diagnostic_capabilities",
+                    "After granting either BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance') to the sidecar account and restarting the Windows service, re-check capabilities before retrying.",
+                    new Dictionary<string, object?> { ["processId"] = pid }),
+                new NextActionHint("collect_off_cpu_sample",
+                    "Retry after the sidecar account has one of the two supported Windows paths: BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance').",
+                    new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds, ["topN"] = topN }));
+        }
         catch (InvalidOperationException ex) when (ex.Message.Contains("perf", StringComparison.OrdinalIgnoreCase)
                                                    || ex.Message.Contains("CAP_", StringComparison.OrdinalIgnoreCase)
                                                    || ex.Message.Contains("paranoid", StringComparison.OrdinalIgnoreCase))
