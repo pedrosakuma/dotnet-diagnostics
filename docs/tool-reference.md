@@ -181,22 +181,28 @@ unified drilldown**: `view="topStacks"` (default), `view="byThread"`
 
 ## Quick index
 
-| Tool | Cost | Requires CoreCLR? | Side effects |
-|---|---|---|---|
-| [`list_dotnet_processes`](#list_dotnet_processes) | cheap | no | none |
-| [`get_process_info`](#get_process_info) | cheap | no | none |
-| [`get_diagnostic_capabilities`](#get_diagnostic_capabilities) | ~2 s | no | opens a short EventPipe probe |
-| [`get_container_signals`](#get_container_signals) | cheap | no | reads `/sys/fs/cgroup` + `/proc` files |
-| [`get_memory_trend`](#get_memory_trend) | window-bound | no | reads `/proc/<pid>/smaps_rollup` + `/proc/<pid>/stat` (Linux) or `GetProcessMemoryInfo` (Windows) |
-| `collect_off_cpu_sample` (Linux/Windows) | window-bound | no | system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
-| `query_off_cpu_snapshot` | cheap | no | drilldown on handle from `collect_off_cpu_sample` |
-| [`snapshot_counters`](#snapshot_counters) | window-bound | no | opens an EventPipe session |
-| [`collect_cpu_sample`](#collect_cpu_sample) | window-bound | **yes** | EventPipe + temp `.nettrace` on disk |
-| [`collect_allocation_sample`](#collect_allocation_sample) | window-bound | no | EventPipe session |
-| [`collect_exceptions`](#collect_exceptions) | window-bound | no | EventPipe session |
-| [`collect_gc_events`](#collect_gc_events) | window-bound | no | EventPipe session |
-| [`collect_event_source`](#collect_event_source) | window-bound | no | EventPipe session |
-| [`collect_process_dump`](#collect_process_dump) | seconds–minutes | no | **writes a dump file to disk** |
+> NativeAOT coverage detail (which symbol source per tool, per OS): see
+> [`aot-coverage.md`](./aot-coverage.md).
+
+| Tool | Cost | Requires CoreCLR? | NativeAOT? | Side effects |
+|---|---|---|---|---|
+| [`list_dotnet_processes`](#list_dotnet_processes) | cheap | no | ✅ | none |
+| [`get_process_info`](#get_process_info) | cheap | no | ✅ | none |
+| [`get_diagnostic_capabilities`](#get_diagnostic_capabilities) | ~2 s | no | ✅ | opens a short EventPipe probe |
+| [`get_container_signals`](#get_container_signals) | cheap | no | ✅ (Linux) | reads `/sys/fs/cgroup` + `/proc` files |
+| [`get_memory_trend`](#get_memory_trend) | window-bound | no | ✅ | reads `/proc/<pid>/smaps_rollup` + `/proc/<pid>/stat` (Linux) or `GetProcessMemoryInfo` (Windows) |
+| `collect_off_cpu_sample` (Linux/Windows) | window-bound | no | ✅ (Linux) | system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
+| `query_off_cpu_snapshot` | cheap | no | ✅ | drilldown on handle from `collect_off_cpu_sample` |
+| [`snapshot_counters`](#snapshot_counters) | window-bound | no | ✅ | opens an EventPipe session |
+| [`collect_cpu_sample`](#collect_cpu_sample) | window-bound | no | ✅ (perf/ETW, native frames) | EventPipe + temp `.nettrace` on disk |
+| [`collect_allocation_sample`](#collect_allocation_sample) | window-bound | no | ⚠️ TypeName empty | EventPipe session |
+| [`collect_exceptions`](#collect_exceptions) | window-bound | no | ✅ | EventPipe session |
+| [`collect_gc_events`](#collect_gc_events) | window-bound | no | ✅ | EventPipe session |
+| [`collect_event_source`](#collect_event_source) | window-bound | no | ⚠️ provider must be embedded at publish | EventPipe session |
+| `collect_thread_snapshot` / `query_thread_snapshot` | seconds | no | ✅ via `linux-native-stack` / `etw-native-stack` | ptrace attach (Linux) / kernel logger (Windows) |
+| `inspect_live_heap` / `inspect_dump` (heap) / `query_heap_snapshot` | seconds | **yes** | ❌ | ClrMD walks managed heap |
+| [`collect_process_dump`](#collect_process_dump) | seconds–minutes | no | ✅ (native dump) | **writes a dump file to disk** |
+| [`capture_method_bytes`](#capture_method_bytes) | cheap | **yes** | ❌ (use `dotnet-native-mcp.disassemble`) | reads JIT code-heap |
 
 "Window-bound" means the duration is the dominant cost; the tool will block for
 ~`durationSeconds`.
@@ -481,11 +487,23 @@ reports the aggregate symbol-resolution quality of `topHotspots`:
 - `Unknown` / omitted — CoreCLR sample (the EventPipe path resolves managed
   names directly; this field does not apply).
 
-**Requires CoreCLR.** Returns `not_supported` style behaviour (empty samples) on
-NativeAOT — confirm via `get_diagnostic_capabilities` first.
+**Routing.** `collect_cpu_sample` dispatches based on
+`get_diagnostic_capabilities`:
 
-**NativeAOT fallback** uses the Linux `perf` profiler. On Debian/Ubuntu/WSL the
-distro ships a wrapper at `/usr/bin/perf` that fails unless the matching
+- **CoreCLR (Linux + Windows)** — EventPipe `SampleProfiler` over the
+  diagnostic socket; managed frames carry the `(mvid, token)` handoff.
+- **NativeAOT / Linux** — system-wide `perf record` (frames are native;
+  managed names recovered from the AOT `.symbols.map` sidecar when present).
+- **NativeAOT / Windows** — NT Kernel Logger `PerfInfo/SampledProfile` via
+  ETW; admin elevation (or `SeSystemProfilePrivilege`) required. Frames are
+  native; managed names recovered from the PE export table + PDB.
+
+Confirm the dispatch path up front with `get_diagnostic_capabilities` →
+`data.canSampleCpu`. Coverage and AOT caveats are summarized in
+[`aot-coverage.md`](./aot-coverage.md).
+
+**NativeAOT/Linux perf install.** On Debian/Ubuntu/WSL the distro ships a
+wrapper at `/usr/bin/perf` that fails unless the matching
 `linux-tools-$(uname -r)` package is installed. The sampler auto-discovers a
 working binary by probing `/usr/lib/linux-tools-*/perf` (kernel-matched first,
 then newest-first); when nothing usable is found, `IsAvailable` returns false
