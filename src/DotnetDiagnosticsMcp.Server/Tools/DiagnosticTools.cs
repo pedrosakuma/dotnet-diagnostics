@@ -511,7 +511,8 @@ public sealed class DiagnosticTools
         Idempotent = true,
         UseStructuredContent = true)]
     [Description(
-        "Returns a pruned caller→callee tree from a prior collect_cpu_sample run, addressed by its handle. " +
+        "Returns a pruned caller→callee tree from a prior collect_cpu_sample or collect_allocation_sample run, " +
+        "addressed by its handle. " +
         "Use `rootMethodFilter` to anchor the walk at a method substring (case-insensitive). " +
         "`maxDepth` and `maxNodes` bound the response size so the LLM stays under its token budget. " +
         "Handles expire ~10 minutes after collection.")]
