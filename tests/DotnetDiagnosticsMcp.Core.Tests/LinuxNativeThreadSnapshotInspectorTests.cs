@@ -80,6 +80,7 @@ public sealed class LinuxNativeThreadSnapshotInspectorTests
         // AOT entrypoint of TID 1, exiting with code 1. We must keep the stdout frames and
         // surface the warning instead of throwing.
         if (!OperatingSystem.IsLinux()) return;
+        if (!DotnetDiagnosticsMcp.Core.Capabilities.PtraceProbe.Detect().CanAttach) return;
 
         var pid = Environment.ProcessId;
         var fakeEuStack = await CreateFakeEuStackAsync(
@@ -109,6 +110,7 @@ public sealed class LinuxNativeThreadSnapshotInspectorTests
     public async Task InspectLiveAsync_StillThrowsWhenStdoutIsEmpty()
     {
         if (!OperatingSystem.IsLinux()) return;
+        if (!DotnetDiagnosticsMcp.Core.Capabilities.PtraceProbe.Detect().CanAttach) return;
 
         var pid = Environment.ProcessId;
         var fakeEuStack = await CreateFakeEuStackAsync(
