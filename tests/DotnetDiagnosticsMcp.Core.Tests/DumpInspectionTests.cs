@@ -69,5 +69,6 @@ public class DumpInspectionTests
         opts.TopTypes.Should().Be(20);
         opts.IncludeRetentionPaths.Should().BeFalse();
         opts.RetentionPathLimit.Should().Be(8);
+        opts.SymbolPath.Should().BeNull();
     }
 }

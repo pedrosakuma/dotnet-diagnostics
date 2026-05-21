@@ -20,10 +20,12 @@ public interface IOffCpuSampler
     /// <param name="processId">Target pid; all child kernel TIDs are captured.</param>
     /// <param name="duration">Sampling window. Must be (0, 5 minutes].</param>
     /// <param name="topN">Max blocking stacks returned in the summary; the full set is retained in the artifact.</param>
+    /// <param name="symbolPath">Optional NT_SYMBOL_PATH-style search path. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     Task<OffCpuSampleResult> SampleAsync(
         int processId,
         TimeSpan duration,
         int topN = 25,
+        string? symbolPath = null,
         CancellationToken cancellationToken = default);
 }

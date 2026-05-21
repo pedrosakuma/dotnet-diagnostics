@@ -585,6 +585,26 @@ yields a few thousand samples; bump `durationSeconds` for sparse workloads.
 when your client supports the spec; otherwise use the legacy
 `runAsJob=true` + `get_collection_status(handle)` fallback.
 
+## Symbol resolution
+
+Tools that resolve external symbols now share the same precedence chain:
+
+1. explicit tool parameter `symbolPath`
+2. server startup env `MCP_SYMBOL_PATH`
+3. host env `_NT_SYMBOL_PATH`
+4. local fallback paths (typically the target `MainModule` directory; `collect_cpu_sample`
+   also appends module directories discovered in the trace)
+
+`symbolPath` values use TraceEvent / `SymbolReader`'s NT-style syntax on every OS.
+Common examples:
+
+- `srv*C:\\symbols*https://msdl.microsoft.com/download/symbols`
+- `cache*/tmp/sym;srv*https://nuget.smbsrc.net`
+- local PDB-only default: omit `symbolPath` and keep the PDB next to the target binary
+
+The same override shape is exposed by `collect_cpu_sample`, `collect_off_cpu_sample`,
+`collect_thread_snapshot`, `inspect_dump`, and `inspect_live_heap`.
+
 ---
 
 ## `collect_allocation_sample`

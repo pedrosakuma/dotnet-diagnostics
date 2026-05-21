@@ -6,6 +6,7 @@ using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 using Microsoft.Diagnostics.Tracing.Session;
+using DotnetDiagnosticsMcp.Core.Symbols;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -21,10 +22,12 @@ public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
     private static readonly SemaphoreSlim s_etwGate = new(1, 1);
     private static readonly TimeSpan CaptureDuration = TimeSpan.FromMilliseconds(200);
     private readonly ILogger<EtwNativeThreadSnapshotInspector> _logger;
+    private readonly SymbolPathBuilder _symbolPathBuilder;
 
-    public EtwNativeThreadSnapshotInspector(ILogger<EtwNativeThreadSnapshotInspector>? logger = null)
+    public EtwNativeThreadSnapshotInspector(ILogger<EtwNativeThreadSnapshotInspector>? logger = null, SymbolPathBuilder? symbolPathBuilder = null)
     {
         _logger = logger ?? NullLogger<EtwNativeThreadSnapshotInspector>.Instance;
+        _symbolPathBuilder = symbolPathBuilder ?? new SymbolPathBuilder();
     }
 
     [System.Runtime.Versioning.SupportedOSPlatformGuard("windows")]
@@ -115,7 +118,7 @@ public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
             // ETW kernel sessions start emitting thread/profile events immediately, unlike EventPipe
             // sessions that usually need a longer warmup window.
             await CaptureEtwAsync(sessionName, etlPath, CaptureDuration, cancellationToken).ConfigureAwait(false);
-            var threads = ProcessEtl(etlPath, processId, options.MaxFramesPerThread, warnings);
+            var threads = ProcessEtl(etlPath, processId, options.MaxFramesPerThread, options.SymbolPath, warnings);
             stopwatch.Stop();
 
             return new ThreadSnapshotArtifact(
@@ -185,10 +188,11 @@ public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
         }
     }
 
-    private static List<ManagedThread> ProcessEtl(
+    private List<ManagedThread> ProcessEtl(
         string etlPath,
         int processId,
         int maxFramesPerThread,
+        string? explicitSymbolPath,
         List<string> warnings)
     {
         if (!File.Exists(etlPath))
@@ -196,7 +200,7 @@ public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
             throw new InvalidOperationException("ETW capture produced no output file.");
         }
 
-        var symbolPath = BuildSymbolPath(processId);
+        var symbolPath = _symbolPathBuilder.BuildForProcess(processId, explicitSymbolPath);
         var options = new TraceLogOptions
         {
             LocalSymbolsOnly = true,
@@ -392,37 +396,6 @@ public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
         }
 
         return $"0x{codeAddress.Address:X}";
-    }
-
-    private static string? BuildSymbolPath(int processId)
-    {
-        var parts = new List<string>();
-
-        try
-        {
-            using var proc = Process.GetProcessById(processId);
-            var mainModule = proc.MainModule?.FileName;
-            if (mainModule is not null)
-            {
-                var dir = Path.GetDirectoryName(mainModule);
-                if (dir is not null)
-                {
-                    parts.Add(dir);
-                }
-            }
-        }
-        catch
-        {
-            // best effort
-        }
-
-        var ntSymPath = Environment.GetEnvironmentVariable("_NT_SYMBOL_PATH");
-        if (!string.IsNullOrEmpty(ntSymPath))
-        {
-            parts.Add(ntSymPath);
-        }
-
-        return parts.Count > 0 ? string.Join(";", parts) : null;
     }
 
     private static void TryDelete(string path)

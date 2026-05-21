@@ -67,6 +67,7 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         int processId,
         TimeSpan duration,
         int topN = 25,
+        string? symbolPath = null,
         CancellationToken cancellationToken = default)
     {
         if (duration <= TimeSpan.Zero || duration > TimeSpan.FromMinutes(5))

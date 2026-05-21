@@ -32,10 +32,12 @@ public interface IThreadSnapshotInspector
 /// <param name="IncludeRuntimeFrames">When false (default), runtime/internal frames (CLR helpers,
 /// transition stubs) are dropped so the LLM-facing stack stays focused on user code.</param>
 /// <param name="IncludeNativeFrames">When true, native frames are retained. Defaults to false.</param>
+/// <param name="SymbolPath">Optional NT_SYMBOL_PATH-style search path. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory.</param>
 public sealed record ThreadSnapshotOptions(
     int MaxFramesPerThread = 64,
     bool IncludeRuntimeFrames = false,
-    bool IncludeNativeFrames = false);
+    bool IncludeNativeFrames = false,
+    string? SymbolPath = null);
 
 /// <summary>Where a <see cref="ThreadSnapshotArtifact"/> came from.</summary>
 public enum ThreadSnapshotOrigin

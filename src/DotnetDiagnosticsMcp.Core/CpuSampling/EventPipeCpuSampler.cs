@@ -3,6 +3,7 @@ using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Parsers;
+using DotnetDiagnosticsMcp.Core.Symbols;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -17,11 +18,13 @@ public sealed class EventPipeCpuSampler : ICpuSampler
 {
     private readonly ILogger<EventPipeCpuSampler> _logger;
     private readonly MvidReader _mvidReader;
+    private readonly SymbolPathBuilder _symbolPathBuilder;
 
-    public EventPipeCpuSampler(ILogger<EventPipeCpuSampler>? logger = null, MvidReader? mvidReader = null)
+    public EventPipeCpuSampler(ILogger<EventPipeCpuSampler>? logger = null, MvidReader? mvidReader = null, SymbolPathBuilder? symbolPathBuilder = null)
     {
         _logger = logger ?? NullLogger<EventPipeCpuSampler>.Instance;
         _mvidReader = mvidReader ?? new MvidReader();
+        _symbolPathBuilder = symbolPathBuilder ?? new SymbolPathBuilder();
     }
 
     public async Task<CpuSampleResult> SampleAsync(
@@ -523,21 +526,18 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         {
             // Derive a default symbol path from module directories so PDBs side-by-side
             // (the common case for managed apps published with portable PDBs) are found
-            // even when NT_SYMBOL_PATH / _NT_SYMBOL_PATH is unset.
-            var path = options.SymbolPath;
-            if (string.IsNullOrEmpty(path))
+            // even when MCP_SYMBOL_PATH / _NT_SYMBOL_PATH is unset.
+            var dirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < Math.Min(options.MaxResolved, ranked.Length); i++)
             {
-                var dirs = new HashSet<string>(StringComparer.Ordinal);
-                for (var i = 0; i < Math.Min(options.MaxResolved, ranked.Length); i++)
-                {
-                    if (!codeAddressByKey.TryGetValue(ranked[i].Key, out var addr)) continue;
-                    var fp = addr.ModuleFile?.FilePath;
-                    if (string.IsNullOrEmpty(fp)) continue;
-                    var dir = Path.GetDirectoryName(fp);
-                    if (!string.IsNullOrEmpty(dir)) dirs.Add(dir);
-                }
-                if (dirs.Count > 0) path = string.Join(Path.PathSeparator, dirs);
+                if (!codeAddressByKey.TryGetValue(ranked[i].Key, out var addr)) continue;
+                var fp = addr.ModuleFile?.FilePath;
+                if (string.IsNullOrEmpty(fp)) continue;
+                var dir = Path.GetDirectoryName(fp);
+                if (!string.IsNullOrEmpty(dir)) dirs.Add(dir);
             }
+
+            var path = _symbolPathBuilder.Build(options.SymbolPath, dirs);
             reader = new Microsoft.Diagnostics.Symbols.SymbolReader(
                 Environment.GetEnvironmentVariable("DIAGMCP_SYMBOL_TRACE") == "1" ? Console.Out : TextWriter.Null,
                 path);

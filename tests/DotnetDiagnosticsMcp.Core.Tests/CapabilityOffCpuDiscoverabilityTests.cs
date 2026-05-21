@@ -120,7 +120,7 @@ public sealed class CapabilityOffCpuDiscoverabilityTests
         private readonly bool _available;
         public StubOffCpuSampler(bool available) => _available = available;
         public bool IsAvailable() => _available;
-        public Task<OffCpuSampleResult> SampleAsync(int processId, TimeSpan duration, int topN = 25, CancellationToken cancellationToken = default)
+        public Task<OffCpuSampleResult> SampleAsync(int processId, TimeSpan duration, int topN = 25, string? symbolPath = null, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
     }
 }
