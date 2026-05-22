@@ -209,11 +209,23 @@ public sealed class KindIntegrationTests
                     $"proxied list_dotnet_processes -> pid={p.ProcessId} entry={p.ManagedEntrypointAssemblyName} cmd={p.CommandLine}");
             }
 
-            procs.Should().HaveCount(1,
-                "the proxied list_dotnet_processes must surface only the chosen Pod's CoreClrSample process — " +
-                "the sibling replica lives in a separate PID namespace and must not appear");
-            procs[0].ManagedEntrypointAssemblyName.Should().Be("CoreClrSample",
-                "the chosen pod's process must be the CoreClrSample entrypoint");
+            // The ephemeral diagnostics container shares the target pod's PID namespace
+            // (pid: shareProcessNamespace is implicit for ephemeral containers attached
+            // to a running pod), so the MCP server can see itself. The acceptance
+            // criterion is therefore "the target CoreClrSample process is visible and
+            // no foreign CoreClrSample from the sibling replica leaks in", not "exactly
+            // one process is visible".
+            procs!.Should().Contain(p => p.ManagedEntrypointAssemblyName == "CoreClrSample",
+                "the chosen pod's CoreClrSample process must be visible through the proxy");
+            procs!.Where(p => p.ManagedEntrypointAssemblyName == "CoreClrSample")
+                  .Should().HaveCount(1,
+                "exactly one CoreClrSample must be visible — the sibling replica lives in " +
+                "a separate PID namespace and must not appear");
+            procs!.Should().OnlyContain(
+                p => p.ManagedEntrypointAssemblyName == "CoreClrSample"
+                  || p.ManagedEntrypointAssemblyName == "DotnetDiagnosticsMcp.Server",
+                "only the target sample and the ephemeral diagnostics MCP itself are " +
+                "expected in the pod's PID namespace");
 
             // ------------------------------------------------------------
             // Step 5: detach_from_pod and confirm the handle is Closed.
