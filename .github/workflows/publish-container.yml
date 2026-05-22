@@ -112,6 +112,13 @@ jobs:
     name: Merge manifest (${{ matrix.variant }})
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Required by actions/attest-build-provenance to mint a Sigstore certificate
+      # via GitHub's OIDC issuer and publish the attestation back to the repo + registry.
+      attestations: write
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -159,11 +166,27 @@ jobs:
             org.opencontainers.image.licenses=MIT
 
       - name: Create & push multi-arch manifest
+        id: manifest
         working-directory: /tmp/digests
+        # Captures the freshly-pushed OCI image index digest so the SLSA attestation
+        # below targets the multi-arch manifest itself (not each per-arch leaf), which
+        # is what consumers resolve when they `docker pull <tag>` or run
+        # `gh attestation verify oci://...:<tag>`.
         run: |
+          set -euo pipefail
           docker buildx imagetools create \
             $(jq -cr '.tags | map("--tag " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s " *)
+          first_tag="$(jq -cr '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+          digest="$(docker buildx imagetools inspect "$first_tag" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Attest container image provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
+          push-to-registry: true
 
       - name: Inspect pushed manifest
         run: |
