@@ -83,7 +83,10 @@ internal sealed class KubernetesPodInventory : IPodInventory
             if (container is null) continue;
 
             var (prepared, reason) = EvaluatePreparedness(pod, container);
-            if (request.PreparedOnly && !prepared) continue;
+            // Server-side policy: when RequirePreparedLabel is on, an unprepared pod is
+            // never returned regardless of the caller's preparedOnly flag. preparedOnly is
+            // an additional caller-side filter that may only narrow, never widen, the set.
+            if (!prepared && (_options.RequirePreparedLabel || request.PreparedOnly)) continue;
 
             var ready = IsReady(pod);
             if (!request.IncludeNotReady && !ready) continue;
@@ -129,8 +132,10 @@ internal sealed class KubernetesPodInventory : IPodInventory
         if (string.IsNullOrEmpty(labelSelector)) return;
         if (_options.LabelKeyAllowlist.Count == 0) return;
 
-        foreach (var clause in labelSelector.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var raw in SplitSelectorClauses(labelSelector))
         {
+            var clause = raw.Trim();
+            if (clause.Length == 0) continue;
             var key = ExtractSelectorKey(clause);
             if (string.IsNullOrEmpty(key))
             {
@@ -148,6 +153,40 @@ internal sealed class KubernetesPodInventory : IPodInventory
         }
     }
 
+    private static IEnumerable<string> SplitSelectorClauses(string labelSelector)
+    {
+        // Paren-aware comma split: 'app in (api,worker),env=prod' -> ['app in (api,worker)', 'env=prod'].
+        var depth = 0;
+        var start = 0;
+        for (var i = 0; i < labelSelector.Length; i++)
+        {
+            var c = labelSelector[i];
+            if (c == '(') depth++;
+            else if (c == ')')
+            {
+                if (depth == 0)
+                {
+                    throw new OrchestratorException(
+                        OrchestratorErrorKinds.SelectorRejected,
+                        "Label selector has unbalanced ')'.");
+                }
+                depth--;
+            }
+            else if (c == ',' && depth == 0)
+            {
+                yield return labelSelector.Substring(start, i - start);
+                start = i + 1;
+            }
+        }
+        if (depth != 0)
+        {
+            throw new OrchestratorException(
+                OrchestratorErrorKinds.SelectorRejected,
+                "Label selector has unbalanced '('.");
+        }
+        yield return labelSelector.Substring(start);
+    }
+
     private static string ExtractSelectorKey(string clause)
     {
         // Supported shapes (subset of Kubernetes label selector grammar):
@@ -158,17 +197,48 @@ internal sealed class KubernetesPodInventory : IPodInventory
         //   key!=value
         //   key in (v1,v2)
         //   key notin (v1,v2)
-        var working = clause.TrimStart('!');
-        var inIdx = working.IndexOf(" in ", StringComparison.Ordinal);
-        var notInIdx = working.IndexOf(" notin ", StringComparison.Ordinal);
-        if (notInIdx > 0) return working.Substring(0, notInIdx).Trim();
-        if (inIdx > 0) return working.Substring(0, inIdx).Trim();
+        // Rejects malformed shapes like '!key=value' where the '!' prefix and an '=' op
+        // both appear (Kubernetes treats '!' as the existence-negation operator and it
+        // is mutually exclusive with equality/set operators).
+        var negated = clause.StartsWith('!');
+        var working = negated ? clause.Substring(1).TrimStart() : clause;
 
-        var eqIdx = working.IndexOf('=');
+        var notInIdx = IndexOfKeyword(working, "notin");
+        if (notInIdx > 0)
+        {
+            if (negated) return string.Empty;
+            return working.Substring(0, notInIdx).TrimEnd();
+        }
+        var inIdx = IndexOfKeyword(working, "in");
+        if (inIdx > 0)
+        {
+            if (negated) return string.Empty;
+            return working.Substring(0, inIdx).TrimEnd();
+        }
+
         var bangIdx = working.IndexOf("!=", StringComparison.Ordinal);
-        if (bangIdx >= 0) return working.Substring(0, bangIdx).Trim();
-        if (eqIdx >= 0) return working.Substring(0, eqIdx).TrimEnd('=').Trim();
+        if (bangIdx >= 0)
+        {
+            if (negated) return string.Empty;
+            return working.Substring(0, bangIdx).TrimEnd();
+        }
+        var eqIdx = working.IndexOf('=');
+        if (eqIdx >= 0)
+        {
+            if (negated) return string.Empty;
+            return working.Substring(0, eqIdx).TrimEnd('=').TrimEnd();
+        }
+
         return working.Trim();
+    }
+
+    private static int IndexOfKeyword(string clause, string keyword)
+    {
+        // Match ' keyword ' (whitespace-bounded) so we don't false-match a label key
+        // like 'application' as containing 'in'.
+        var needle = ' ' + keyword + ' ';
+        var idx = clause.IndexOf(needle, StringComparison.Ordinal);
+        return idx < 0 ? -1 : idx + 1; // return index of the keyword itself, not the leading space
     }
 
     private int ClampLimit(int requested)

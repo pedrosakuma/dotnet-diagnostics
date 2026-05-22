@@ -96,18 +96,20 @@ public sealed class OrchestratorTools
         var summary = $"Found {page.Items.Count} candidate Pod(s){(page.NextCursor is not null ? " (more available — use nextCursor)" : "")}. " +
                       $"First: {first.Namespace}/{first.Name} container={first.ContainerName} prepared={first.DiagnosticsPrepared} ({first.PreparationReason}).";
 
+        // Note: no NextActionHint pointing at attach_to_pod yet — that tool lands in P3b
+        // (issue #20). Until then, list_pods is read-only and the LLM should fall back to
+        // the sidecar transport for the actual diagnostic work.
         return DiagnosticResult.Ok(
             page,
             summary,
-            new NextActionHint(
-                "attach_to_pod",
-                "Attach an ephemeral diagnostics container to a chosen Pod. Pass the namespace and pod name from this list.",
-                new Dictionary<string, object?>
-                {
-                    ["namespace"] = first.Namespace,
-                    ["pod"] = first.Name,
-                    ["container"] = first.ContainerName,
-                }));
+            page.NextCursor is not null
+                ? new NextActionHint(
+                    "list_pods",
+                    "More candidates available — pass nextCursor to fetch the next page.",
+                    new Dictionary<string, object?> { ["cursor"] = page.NextCursor })
+                : new NextActionHint(
+                    "list_pods",
+                    "Narrow the result further with labelSelector / containerName, or set preparedOnly=false to also see heuristic candidates."));
     }
 
     private static NextActionHint BuildRecoveryHint(string errorKind) => errorKind switch

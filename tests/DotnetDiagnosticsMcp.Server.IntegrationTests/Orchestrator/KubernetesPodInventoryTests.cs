@@ -414,4 +414,95 @@ public class KubernetesPodInventoryTests
         c.NodeName.Should().Be("node-1");
         c.ActiveInvestigationCount.Should().Be(0);
     }
+
+    [Fact]
+    public async Task RequirePreparedLabel_ExcludesUnpreparedEvenWhenPreparedOnlyFalse()
+    {
+        // Server-side policy: RequirePreparedLabel=true is non-negotiable; a caller
+        // cannot widen the result set by passing preparedOnly=false.
+        var options = new OrchestratorOptions { Enabled = true, RequirePreparedLabel = true };
+        options.NamespaceAllowlist.Add("diagnosticsmcp");
+        var preparedPod = BuildPod(name: "prepared", labels: new Dictionary<string, string>
+        {
+            [options.PreparedLabelKey] = "true",
+        });
+        var unpreparedPod = BuildPod(name: "unprepared");
+        var sut = NewInventory(new[] { preparedPod, unpreparedPod }, options, out _);
+
+        var page = await sut.ListPodsAsync(
+            new ListPodsRequest(Namespace: "diagnosticsmcp", LabelSelector: null, FieldSelector: null, ContainerName: null, PreparedOnly: false),
+            CancellationToken.None);
+
+        page.Items.Should().HaveCount(1);
+        page.Items[0].Name.Should().Be("prepared");
+    }
+
+    [Fact]
+    public async Task LabelSelector_AcceptsSetExpressionWithCommasInsideParens()
+    {
+        // Regression: comma split must be paren-aware so 'app in (api,worker)' stays one clause.
+        var options = new OrchestratorOptions { Enabled = true };
+        options.NamespaceAllowlist.Add("diagnosticsmcp");
+        options.LabelKeyAllowlist.Add("app");
+        var sut = NewInventory(new[] { BuildPod() }, options, out var api);
+
+        await sut.ListPodsAsync(
+            new ListPodsRequest(
+                Namespace: "diagnosticsmcp",
+                LabelSelector: "app in (api,worker)",
+                FieldSelector: null,
+                ContainerName: null,
+                PreparedOnly: false),
+            CancellationToken.None);
+
+        api.CapturedLabelSelector.Should().Be("app in (api,worker)");
+    }
+
+    [Fact]
+    public async Task LabelSelector_RejectsUnbalancedParens()
+    {
+        var options = new OrchestratorOptions { Enabled = true };
+        options.NamespaceAllowlist.Add("diagnosticsmcp");
+        options.LabelKeyAllowlist.Add("app");
+        var sut = NewInventory(new[] { BuildPod() }, options, out _);
+
+        var act = () => sut.ListPodsAsync(
+            new ListPodsRequest(Namespace: "diagnosticsmcp", LabelSelector: "app in (api,worker", FieldSelector: null, ContainerName: null),
+            CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<OrchestratorException>();
+        ex.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.SelectorRejected);
+    }
+
+    [Fact]
+    public async Task LabelSelector_RejectsMalformedBangEqualsMix()
+    {
+        // '!key=value' is invalid: '!' is mutually exclusive with the equality operator.
+        var options = new OrchestratorOptions { Enabled = true };
+        options.NamespaceAllowlist.Add("diagnosticsmcp");
+        options.LabelKeyAllowlist.Add("app");
+        var sut = NewInventory(new[] { BuildPod() }, options, out _);
+
+        var act = () => sut.ListPodsAsync(
+            new ListPodsRequest(Namespace: "diagnosticsmcp", LabelSelector: "!app=value", FieldSelector: null, ContainerName: null),
+            CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<OrchestratorException>();
+        ex.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.SelectorRejected);
+    }
+
+    [Fact]
+    public async Task LabelSelector_DoesNotFalseMatchKeyContainingInSubstring()
+    {
+        // 'application' contains the substring 'in' but is a plain key, not a set expression.
+        var options = new OrchestratorOptions { Enabled = true };
+        options.NamespaceAllowlist.Add("diagnosticsmcp");
+        options.LabelKeyAllowlist.Add("application");
+        var sut = NewInventory(new[] { BuildPod() }, options, out _);
+
+        // Should NOT throw — 'application=api' parses key 'application'.
+        await sut.ListPodsAsync(
+            new ListPodsRequest(Namespace: "diagnosticsmcp", LabelSelector: "application=api", FieldSelector: null, ContainerName: null, PreparedOnly: false),
+            CancellationToken.None);
+    }
 }
