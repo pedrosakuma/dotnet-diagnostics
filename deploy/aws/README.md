@@ -12,7 +12,8 @@ runtime's diagnostic IPC socket (created in `/tmp`), so the target app needs
 
 For Kubernetes on EKS (or any other cluster), use the generic recipes under
 [`../k8s/`](../k8s/) instead. For Azure-managed container hosts, see
-[`../azure/`](../azure/).
+[`../azure/`](../azure/). For GCP-managed container hosts, see
+[`../gcp/`](../gcp/).
 
 > **AWS Lambda** is intentionally not covered. Lambda's freeze-between-
 > invocations execution model breaks long-running EventPipe sessions and

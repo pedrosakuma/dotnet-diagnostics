@@ -87,6 +87,9 @@ The orchestrator intentionally inherits the same constraints as the current on-d
 - no cross-cluster routing,
 - no persistent server-side state,
 - and no silent mutation of every Pod in the namespace.
+### 2.4 Kubernetes-only scope; serverless container hosts use sidecar recipes
+The orchestrator is intentionally **Kubernetes-only**. Its data plane depends on the Kubernetes API surface — pod listing, ephemeral container injection, `pods/portforward` — and on Linux primitives (UID match, shared PID namespace, `CAP_SYS_PTRACE`) that serverless container hosts either do not expose or expose differently per provider. There is no plan to grow a parallel orchestrator for AWS ECS / Fargate, GCP Cloud Run, Azure Container Apps, or Azure App Service.
+For those serverless container hosts the answer is the **per-service sidecar recipes** under `deploy/azure/`, `deploy/aws/`, and `deploy/gcp/`. Each recipe wires one diagnostics MCP sidecar next to one target container in the same task / revision, sharing `/tmp` for the diagnostic IPC socket, and the MCP client talks to that endpoint directly. That is a smaller surface than the orchestrator (no fleet enumeration, no attach lifecycle, no portforward proxy) but it is the right shape for hosts where "attach a debug container to an existing workload" is not a first-class primitive. The cross-host capability matrix is documented in [`docs/cloud-recipes-design.md`](./cloud-recipes-design.md).
 ---
 ## 3. Tool surface
 ### 3.1 Principle

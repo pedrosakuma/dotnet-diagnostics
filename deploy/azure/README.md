@@ -12,7 +12,9 @@ runtime's diagnostic IPC socket (created in `/tmp`), so the target app needs
 | [`app-service/`](app-service/)       | Azure App Service (Linux) | `siteContainers` sidecar (GA, 2024) | No — reach via `az webapp ssh` only |
 
 For Kubernetes (AKS or any cluster), use the generic recipes under
-[`../k8s/`](../k8s/) instead.
+[`../k8s/`](../k8s/) instead. For AWS-managed container hosts, see
+[`../aws/`](../aws/). For GCP-managed container hosts, see
+[`../gcp/`](../gcp/).
 
 > **Windows containers on App Service** do not yet support the sidecar
 > (`siteContainers`) feature. For Windows workloads either move to Container

@@ -67,6 +67,7 @@ Client setup (C# SDK, GUI clients, curl): [`docs/client-setup.md`](./docs/client
 Kubernetes sidecar: [`deploy/k8s/README.md`](./deploy/k8s/README.md).
 Azure (App Service + Container Apps) recipes: [`deploy/azure/README.md`](./deploy/azure/README.md).
 AWS (ECS / Fargate) recipe: [`deploy/aws/README.md`](./deploy/aws/README.md).
+GCP (Cloud Run) recipe: [`deploy/gcp/README.md`](./deploy/gcp/README.md).
 
 > **`processId` is optional everywhere.** When the sidecar only sees one .NET
 > process the server auto-resolves it and stamps a capability digest on every
@@ -238,8 +239,8 @@ Phases:
 4. ✅ Advanced tools (GC, exceptions, custom EventSources, dumps)
 5. ✅ Kubernetes sidecar topology + manifests (see [`deploy/k8s/`](./deploy/k8s))
 6. ✅ Documentation polish (tool reference, investigation playbooks, client setup)
-7. ✅ Cloud-native integrations: Azure App Service + Container Apps (see [`deploy/azure/`](./deploy/azure)) and AWS ECS / Fargate (see [`deploy/aws/`](./deploy/aws)). GCP Cloud Run tracked as follow-up.
-8. ⏳ Future: NativeAOT publish, GCP Cloud Run.
+7. ✅ Cloud-native integrations: Azure App Service + Container Apps (see [`deploy/azure/`](./deploy/azure)), AWS ECS / Fargate (see [`deploy/aws/`](./deploy/aws)), and GCP Cloud Run (see [`deploy/gcp/`](./deploy/gcp)).
+8. ⏳ Future: NativeAOT publish.
 
 ## License
 
