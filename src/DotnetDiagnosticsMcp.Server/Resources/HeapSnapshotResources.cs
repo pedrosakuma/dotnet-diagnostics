@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
+using DotnetDiagnosticsMcp.Core.Security;
 using ModelContextProtocol.Server;
 
 namespace DotnetDiagnosticsMcp.Server.Resources;
@@ -24,8 +25,14 @@ public sealed class HeapSnapshotResources
         "JSON snapshot of the HeapSnapshotArtifact registered under a drilldown handle by inspect_dump " +
         "or inspect_live_heap. Includes runtime info, heap totals, top-N types (snapshot retains up to ~200), " +
         "any walked retention paths, and provenance fields (origin, captured-at, walk duration). " +
+        "Duplicate-string previews are sanitised per issue #165 / H4 (metadata-only by default; " +
+        "the SensitiveDataRedactor pattern set is applied when `Diagnostics:AllowSensitiveHeapValues=true`). " +
         "Returns an error contents block when the handle is unknown or expired.")]
-    public static string ReadSnapshot(IDiagnosticHandleStore handles, string handle)
+    public static string ReadSnapshot(
+        IDiagnosticHandleStore handles,
+        SensitiveDataRedactor redactor,
+        SensitiveValueGate sensitiveGate,
+        string handle)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(handle);
 
@@ -39,6 +46,24 @@ public sealed class HeapSnapshotResources
                 HeapSnapshotJsonContext.Default.HeapSnapshotErrorPayload);
         }
 
-        return JsonSerializer.Serialize(snapshot, HeapSnapshotJsonContext.Default.HeapSnapshotArtifact);
+        var emitSensitive = sensitiveGate.IsAllowedByServer;
+        var sanitized = SanitizeSnapshot(snapshot, redactor, emitSensitive);
+        return JsonSerializer.Serialize(sanitized, HeapSnapshotJsonContext.Default.HeapSnapshotArtifact);
+    }
+
+    private static HeapSnapshotArtifact SanitizeSnapshot(HeapSnapshotArtifact snapshot, SensitiveDataRedactor redactor, bool emitSensitive)
+    {
+        if (snapshot.DuplicateStrings is null || snapshot.DuplicateStrings.Count == 0) return snapshot;
+
+        var sanitizedDuplicates = snapshot.DuplicateStrings.Select(s =>
+        {
+            var preview = emitSensitive
+                ? (redactor.Redact(s.Preview) ?? s.Preview)
+                : SensitiveDataRedactor.MetadataOnlyPlaceholder;
+            return new DuplicateStringStat(preview, s.StringLength, s.InstanceCount, s.TotalBytes, s.PreviewTruncated);
+        }).ToArray();
+
+        return snapshot with { DuplicateStrings = sanitizedDuplicates };
     }
 }
+
