@@ -62,10 +62,13 @@ sibling that grows a `load_*` / `import_*_manifest` / `inspect_*` tool that
 takes a filesystem path) **MUST** treat handoff path hints as *display-only*
 until they have:
 
-1. **Canonicalised** the path with `Path.GetFullPath` (and, on POSIX, resolved
-   symlinks via `realpath` / `Path.GetFullPath` + a `File.ResolveLinkTarget`
-   walk) so that `..`-traversal and link tricks are flattened before any
-   policy check.
+1. **Canonicalised** the path with `Path.GetFullPath` **and** resolved every
+   reparse point along the way — on POSIX via `realpath` / a
+   `File.ResolveLinkTarget` walk, on Windows by resolving NTFS symlinks,
+   junctions, and reparse points the same way (`Path.GetFullPath` alone does
+   *not* follow Windows reparse points, so a junction inside an allowed root
+   can otherwise still escape). The result is the path's true on-disk target,
+   with `..`-traversal and link tricks flattened, before any policy check.
 2. **Allowlisted** the canonicalised result against a fixed, configured set of
    trusted roots — for example:
    - the running process's own loaded-module list (when the consumer is
@@ -127,24 +130,46 @@ public LoadResult LoadAssembly(string path, Guid? expectedMvid = null)
     if (expectedMvid is { } known && _index.TryGet(known, out var loaded))
         return new LoadResult(known, loaded.Path);
 
-    // 2. Canonicalise + symlink-resolve.
-    var canonical = Path.GetFullPath(path);
-    if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
-        canonical = ResolveSymlinksOrThrow(canonical);
+    // 2. Canonicalise AND resolve reparse points (symlinks, NTFS junctions, …)
+    //    on every platform — Path.GetFullPath alone does not follow them.
+    var canonical = ResolveRealPathOrThrow(Path.GetFullPath(path));
 
-    // 3. Allowlist roots (configured at startup; never LLM-supplied).
-    if (!_allowlist.Contains(canonical))
+    // 3. Allowlist roots — boundary-aware "is canonical under an allowed root"
+    //    check (NOT a flat Set.Contains, which would only match the root dir
+    //    itself, and NOT a substring match, which would be unsafe).
+    if (!IsUnderAllowedRoot(canonical, _allowedRoots))
         throw new McpError("path_not_allowed", canonical);
 
     // 4. Read metadata-only, verify MVID matches the producer-supplied identity.
     using var pe = new PEReader(File.OpenRead(canonical));
-    var actualMvid = pe.GetMetadataReader().GetModuleDefinition().Mvid;
+    var reader = pe.GetMetadataReader();
+    var actualMvid = reader.GetGuid(reader.GetModuleDefinition().Mvid);
     if (expectedMvid is { } want && want != actualMvid)
         throw new McpError("mvid_mismatch_with_path",
             $"hint={canonical} expected={want} actual={actualMvid}");
 
     _index[actualMvid] = canonical;
     return new LoadResult(actualMvid, canonical);
+}
+
+// Boundary-aware containment: each allowed root is canonicalised once at
+// startup; the candidate must match a root exactly OR sit beneath it with a
+// directory separator at the boundary (so /assemblies-secret is NOT under
+// /assemblies). Case-insensitive on Windows / macOS, case-sensitive on Linux.
+static bool IsUnderAllowedRoot(string canonical, IReadOnlyList<string> roots)
+{
+    var cmp = OperatingSystem.IsLinux()
+        ? StringComparison.Ordinal
+        : StringComparison.OrdinalIgnoreCase;
+    foreach (var root in roots)
+    {
+        if (canonical.Equals(root, cmp)) return true;
+        if (canonical.Length > root.Length
+            && canonical.StartsWith(root, cmp)
+            && canonical[root.Length] == Path.DirectorySeparatorChar)
+            return true;
+    }
+    return false;
 }
 ```
 
