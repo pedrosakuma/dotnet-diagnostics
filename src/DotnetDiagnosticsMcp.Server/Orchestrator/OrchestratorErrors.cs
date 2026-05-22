@@ -21,6 +21,19 @@ public static class OrchestratorErrorKinds
     public const string PermissionDenied = "PermissionDenied";
     public const string KubeApiUnavailable = "KubeApiUnavailable";
     public const string OrchestratorDisabled = "OrchestratorDisabled";
+
+    // attach_to_pod (P3b-1) error kinds — per docs/central-orchestrator-design.md §3.5.
+    public const string PodNotFound = "PodNotFound";
+    public const string ContainerNotFound = "ContainerNotFound";
+    public const string PodNotRunning = "PodNotRunning";
+    public const string PodNotPrepared = "PodNotPrepared";
+    public const string AttachAlreadyInProgress = "AttachAlreadyInProgress";
+    public const string AttachFailed = "AttachFailed";
+    public const string AttachTimeout = "AttachTimeout";
+
+    // P3b-2 (port-forward / proxy) reserves its own kind so callers can branch on it
+    // without conflating with AttachFailed.
+    public const string PortForwardFailed = "PortForwardFailed";
 }
 
 /// <summary>

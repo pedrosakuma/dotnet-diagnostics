@@ -35,4 +35,29 @@ public interface IKubernetesPodsApi
         int? limit,
         string? continueToken,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reads a single Pod by namespace + name. Used to validate the target before
+    /// patching an ephemeral container and to poll readiness after the patch.
+    /// </summary>
+    Task<V1Pod> ReadPodAsync(
+        string namespaceName,
+        string name,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Patches a Pod's <c>pods/ephemeralcontainers</c> subresource to add a single
+    /// ephemeral diagnostics container. The patch is JSON-strategic-merge over the
+    /// canonical <see cref="V1EphemeralContainer"/> list.
+    /// </summary>
+    /// <param name="namespaceName">Pod namespace.</param>
+    /// <param name="name">Pod name.</param>
+    /// <param name="ephemeralContainer">The container spec to append.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The updated <see cref="V1Pod"/> reported by the API server.</returns>
+    Task<V1Pod> AddEphemeralContainerAsync(
+        string namespaceName,
+        string name,
+        V1EphemeralContainer ephemeralContainer,
+        CancellationToken cancellationToken);
 }
