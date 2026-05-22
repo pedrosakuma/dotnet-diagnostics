@@ -1,0 +1,41 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+L (issue #162): optional NetworkPolicy. Default off — many clusters don't run a
+NetworkPolicy controller, so shipping it enabled would break installs. When on,
+ingress is restricted to the Service port; empty `fromNamespaces` allows traffic
+from any namespace inside the cluster (still excludes external traffic that
+bypasses the cluster network).
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "dotnet-diagnostics-orchestrator.fullname" . }}
+  namespace: {{ include "dotnet-diagnostics-orchestrator.namespace" . }}
+  labels:
+    {{- include "dotnet-diagnostics-orchestrator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "dotnet-diagnostics-orchestrator.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- if or (gt (len .Values.networkPolicy.fromNamespaces) 0) (gt (len .Values.networkPolicy.fromPodLabels) 0) }}
+        {{- range .Values.networkPolicy.fromNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.networkPolicy.fromPodLabels }}
+        - podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+        {{- end }}
+        {{- else }}
+        - namespaceSelector: {}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.port }}
+{{- end }}
