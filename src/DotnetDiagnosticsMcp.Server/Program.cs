@@ -147,6 +147,18 @@ static bool HasNonLoopbackBinding(WebApplication app, IConfiguration configurati
         }
     }
 
+    // Kestrel:Endpoints:<name>:Url takes precedence over `urls` / ASPNETCORE_URLS,
+    // so a configuration that binds to 0.0.0.0 there would otherwise sneak past the
+    // loopback check. Enumerate every endpoint and add its Url to the candidate set.
+    foreach (var endpoint in configuration.GetSection("Kestrel:Endpoints").GetChildren())
+    {
+        var url = endpoint["Url"];
+        if (!string.IsNullOrWhiteSpace(url))
+        {
+            candidates.Add(url);
+        }
+    }
+
     foreach (var raw in candidates)
     {
         if (IsNonLoopbackUrl(raw))

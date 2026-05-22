@@ -21,17 +21,30 @@ spec:
     - Ingress
   ingress:
     - from:
-        {{- if or (gt (len .Values.networkPolicy.fromNamespaces) 0) (gt (len .Values.networkPolicy.fromPodLabels) 0) }}
-        {{- range .Values.networkPolicy.fromNamespaces }}
+        {{- $namespaces := .Values.networkPolicy.fromNamespaces }}
+        {{- $labels := .Values.networkPolicy.fromPodLabels }}
+        {{- if and (gt (len $namespaces) 0) (gt (len $labels) 0) }}
+        {{- /* Both filters set — emit one peer per namespace that combines
+              namespaceSelector AND podSelector, otherwise Kubernetes ORs the
+              peers and the label filter is effectively bypassed. */}}
+        {{- range $namespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $labels | nindent 14 }}
+        {{- end }}
+        {{- else if gt (len $namespaces) 0 }}
+        {{- range $namespaces }}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ . | quote }}
         {{- end }}
-        {{- with .Values.networkPolicy.fromPodLabels }}
+        {{- else if gt (len $labels) 0 }}
         - podSelector:
             matchLabels:
-              {{- toYaml . | nindent 14 }}
-        {{- end }}
+              {{- toYaml $labels | nindent 14 }}
         {{- else }}
         - namespaceSelector: {}
         {{- end }}
