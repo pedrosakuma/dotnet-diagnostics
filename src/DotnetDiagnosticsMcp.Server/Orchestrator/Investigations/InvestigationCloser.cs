@@ -77,8 +77,13 @@ public sealed class InvestigationCloser
                 UnboundSessionIds: Array.Empty<string>());
         }
 
-        var handle = _store.GetById(handleId);
-        if (handle is null)
+        var transition = _store.TryTransitionToTerminal(
+            handleId,
+            targetState,
+            failureReason,
+            out var previousState);
+
+        if (transition == InvestigationTerminalTransition.NotFound)
         {
             return new InvestigationCloseOutcome(
                 HandleId: handleId,
@@ -89,54 +94,20 @@ public sealed class InvestigationCloser
                 UnboundSessionIds: Array.Empty<string>());
         }
 
-        var previousState = handle.State;
-        if (IsTerminal(previousState))
-        {
-            // Idempotent: still drain any sessions or transport that might have
-            // survived a partial prior close (e.g. process restart races). The store
-            // entry is left intact so list_active_investigations(includeTerminal=true)
-            // continues to surface it.
-            await SafeDisposeProxyAsync(handleId).ConfigureAwait(false);
-            await SafeClosePortForwardAsync(handleId).ConfigureAwait(false);
-            var sessions = _sessionBinder.UnbindAllForHandle(handleId);
-            return new InvestigationCloseOutcome(
-                HandleId: handleId,
-                Found: true,
-                AlreadyTerminal: true,
-                PreviousState: previousState,
-                NewState: previousState,
-                UnboundSessionIds: sessions);
-        }
-
-        try
-        {
-            var updated = handle with
-            {
-                State = targetState,
-                FailureReason = targetState == InvestigationState.Closed
-                    ? handle.FailureReason
-                    : failureReason ?? handle.FailureReason,
-            };
-            _store.Update(updated);
-        }
-        catch (InvalidOperationException ex)
-        {
-            // Lost-update race: a concurrent close beat us to it. Treat as "already
-            // terminal" — still attempt the cleanup steps in case the racing caller
-            // didn't get that far.
-            _logger.LogDebug(ex, "Investigation handle {HandleId} no longer registered during close; treating as already terminal.", handleId);
-        }
-
+        // For AlreadyTerminal we still drain the cleanup pipeline idempotently — a
+        // partial prior close (process restart, exception mid-pipeline, racing closer
+        // that lost) may have left a port-forward or session binding behind.
         await SafeDisposeProxyAsync(handleId).ConfigureAwait(false);
         await SafeClosePortForwardAsync(handleId).ConfigureAwait(false);
         var unbound = _sessionBinder.UnbindAllForHandle(handleId);
 
+        var alreadyTerminal = transition == InvestigationTerminalTransition.AlreadyTerminal;
         return new InvestigationCloseOutcome(
             HandleId: handleId,
             Found: true,
-            AlreadyTerminal: false,
+            AlreadyTerminal: alreadyTerminal,
             PreviousState: previousState,
-            NewState: targetState,
+            NewState: alreadyTerminal ? previousState : targetState,
             UnboundSessionIds: unbound);
     }
 
@@ -163,9 +134,6 @@ public sealed class InvestigationCloser
             _logger.LogWarning(ex, "Closing port-forward for handle {HandleId} threw; continuing close pipeline.", handleId);
         }
     }
-
-    private static bool IsTerminal(InvestigationState state)
-        => state is InvestigationState.Closed or InvestigationState.Expired or InvestigationState.Failed;
 }
 
 /// <summary>

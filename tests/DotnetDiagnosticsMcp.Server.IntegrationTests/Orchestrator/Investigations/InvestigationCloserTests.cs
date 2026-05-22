@@ -151,6 +151,41 @@ public sealed class InvestigationCloserTests
         outcome.UnboundSessionIds.Should().Equal("session-y");
     }
 
+    [Fact]
+    public async Task CloseAsync_ConcurrentDetachAndReaper_TerminalStateIsAtomic()
+    {
+        // Regression for the medium-severity finding in PR #155 review:
+        // two concurrent closers (e.g. detach + TTL reaper) must NOT both
+        // observe Active and both write a terminal state. Only the first one
+        // wins; the second sees AlreadyTerminal and must not overwrite.
+        var fx = new Fixture();
+        var h = Active("h-race");
+        fx.Store.Add(h);
+
+        // Slow both proxy steps so the two close pipelines overlap and both
+        // racers reach the atomic transition near-simultaneously.
+        var gate = new ManualResetEventSlim(false);
+        fx.Proxy.BeforeDispose = () => gate.Wait();
+        var detach = Task.Run(() => fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed));
+        var reap = Task.Run(() => fx.Closer.CloseAsync(h.HandleId, InvestigationState.Expired, "ttl"));
+
+        await Task.Delay(50);
+        gate.Set();
+        var results = await Task.WhenAll(detach, reap);
+
+        // Exactly one transitioned (Found=true, AlreadyTerminal=false); the other
+        // observed AlreadyTerminal=true.
+        results.Count(r => !r.AlreadyTerminal).Should().Be(1);
+        results.Count(r => r.AlreadyTerminal).Should().Be(1);
+
+        // The store state is whatever the winner wrote, but it must be terminal and
+        // must not flip back. The loser's targetState was NOT written.
+        var final = fx.Store.GetById(h.HandleId)!;
+        (final.State is InvestigationState.Closed or InvestigationState.Expired).Should().BeTrue();
+        var winnerState = results.Single(r => !r.AlreadyTerminal).NewState;
+        final.State.Should().Be(winnerState!.Value);
+    }
+
     private sealed class Fixture
     {
         public MemoryInvestigationStore Store { get; } = new();
@@ -180,11 +215,14 @@ public sealed class InvestigationCloserTests
 
         public Task DisposeForHandleAsync(string handleId)
         {
+            BeforeDispose?.Invoke();
             _order.Add("proxy-dispose");
             DisposeCalls.Add(handleId);
             if (ThrowOnDispose is not null) throw ThrowOnDispose;
             return Task.CompletedTask;
         }
+
+        public Action? BeforeDispose;
     }
 
     private sealed class RecordingPortForwardManager : IPortForwardManager

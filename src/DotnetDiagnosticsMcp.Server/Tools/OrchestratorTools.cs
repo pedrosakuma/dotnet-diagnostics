@@ -154,6 +154,7 @@ public sealed class OrchestratorTools
         IPodAttachOrchestrator orchestrator,
         OrchestratorOptions options,
         IInvestigationSessionBinder sessionBinder,
+        IInvestigationStore store,
         McpServer server,
         ILoggerFactory? loggerFactory = null,
         [Description("Pod namespace. Falls back to the orchestrator's DefaultNamespace when omitted.")]
@@ -207,14 +208,29 @@ public sealed class OrchestratorTools
         var proxyUrl = handle.State == InvestigationState.Active
             ? options.ProxyBasePath.TrimEnd('/') + "/" + handle.HandleId
             : null;
-        var session = AttachSession.FromHandle(handle, proxyUrl);
 
         // Bind the MCP session to the handle so future server-side machinery (P3b-4 /
         // intercept slice) can route subsequent tool calls through the proxy without the
         // client having to rewrite URLs. We only bind on Active handles — Attaching /
         // Failed states are not yet usable and would mislead any session-aware resolver.
+        //
+        // We re-read the store right before binding to close the
+        // attach-vs-concurrent-detach/reaper window: AttachAsync may have returned an
+        // Active handle that a concurrent detach_from_pod / TTL reaper has since flipped
+        // terminal. In that case we MUST NOT bind (the proxy/port-forward is already
+        // torn down) and we MUST NOT report Active to the caller.
+        InvestigationHandle observedHandle = handle;
         if (handle.State == InvestigationState.Active)
         {
+            observedHandle = store.GetById(handle.HandleId) ?? handle;
+            if (observedHandle.State != InvestigationState.Active)
+            {
+                var msg = $"Investigation {handle.HandleId} was closed during attach (observed {observedHandle.State}).";
+                return DiagnosticResult.Fail<AttachSession>(
+                    $"attach_to_pod failed: {msg}",
+                    new DiagnosticError(OrchestratorErrorKinds.AttachFailed, msg),
+                    BuildAttachRecoveryHint(OrchestratorErrorKinds.AttachFailed));
+            }
             var sessionId = TryGetServerSessionId(server);
             if (!string.IsNullOrEmpty(sessionId))
             {
@@ -229,6 +245,8 @@ public sealed class OrchestratorTools
                         handle.HandleId);
             }
         }
+
+        var session = AttachSession.FromHandle(observedHandle, proxyUrl);
 
         var summary = $"Investigation {session.HandleId} {(session.State == InvestigationState.Active ? "attached" : session.State.ToString().ToLowerInvariant())} " +
                       $"to {session.Namespace}/{session.PodName} container={session.TargetContainerName} " +
