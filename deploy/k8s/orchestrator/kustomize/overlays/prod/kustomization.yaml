@@ -43,3 +43,4 @@ replacements:
           name: dotnet-diagnostics-orchestrator
         fieldPaths:
           - spec.template.spec.containers.[name=orchestrator].image
+          - spec.template.spec.containers.[name=orchestrator].env.[name=Orchestrator__EphemeralContainerImage].value

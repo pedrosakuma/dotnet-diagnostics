@@ -539,7 +539,7 @@ P5 ships the first production deployment surface under:
 - [`deploy/helm/dotnet-diagnostics-orchestrator/`](../deploy/helm/dotnet-diagnostics-orchestrator) for Helm,
 - [`deploy/k8s/README.md`](../deploy/k8s/README.md) for operator quick starts and the runbook.
 
-Those assets intentionally keep the orchestrator itself non-root and ptrace-free while the per-investigation ephemeral diagnostics container retains the pod-local UID / `/tmp` / capability contract described in §4 and [`deploy/k8s/CENTRAL-TOPOLOGY.md`](../deploy/k8s/CENTRAL-TOPOLOGY.md).
+Those assets intentionally keep the orchestrator itself non-root and ptrace-free while the per-investigation ephemeral diagnostics container is expected to retain the pod-local UID / `/tmp` / capability contract described in §4 and [`deploy/k8s/CENTRAL-TOPOLOGY.md`](../deploy/k8s/CENTRAL-TOPOLOGY.md). The current P5 deployment docs call out that the attach implementation still needs a code follow-up to inject the shared `/tmp` volume mount automatically on Linux targets.
 ---
 ## 8. Phased implementation plan
 This feature should land as a sequence of small, reviewable PRs.
