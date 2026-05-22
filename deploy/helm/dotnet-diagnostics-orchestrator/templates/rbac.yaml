@@ -1,0 +1,79 @@
+{{- if .Values.rbac.create }}
+{{- $scope := default "namespace" .Values.rbac.scope }}
+{{- if not (or (eq $scope "namespace") (eq $scope "cluster")) }}
+{{- fail (printf "rbac.scope must be either 'namespace' (default, recommended) or 'cluster' (opt-in). Got: %q" $scope) }}
+{{- end }}
+{{- /*
+H2 (issue #162): default to namespace-scoped Role/RoleBinding. Cluster-wide
+RBAC is opt-in via `--set rbac.scope=cluster`. The `pods/portforward` `get`
+verb has been dropped — only `create` is exercised by the in-process
+WebSocket port-forward path in KubernetesPortForwardManager.
+*/ -}}
+{{- if eq $scope "cluster" }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "dotnet-diagnostics-orchestrator.fullname" . }}
+  labels:
+    {{- include "dotnet-diagnostics-orchestrator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/ephemeralcontainers"]
+    verbs: ["update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "dotnet-diagnostics-orchestrator.fullname" . }}
+  labels:
+    {{- include "dotnet-diagnostics-orchestrator.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "dotnet-diagnostics-orchestrator.serviceAccountName" . }}
+    namespace: {{ include "dotnet-diagnostics-orchestrator.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "dotnet-diagnostics-orchestrator.fullname" . }}
+{{- else }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "dotnet-diagnostics-orchestrator.fullname" . }}
+  namespace: {{ include "dotnet-diagnostics-orchestrator.namespace" . }}
+  labels:
+    {{- include "dotnet-diagnostics-orchestrator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/ephemeralcontainers"]
+    verbs: ["update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "dotnet-diagnostics-orchestrator.fullname" . }}
+  namespace: {{ include "dotnet-diagnostics-orchestrator.namespace" . }}
+  labels:
+    {{- include "dotnet-diagnostics-orchestrator.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "dotnet-diagnostics-orchestrator.serviceAccountName" . }}
+    namespace: {{ include "dotnet-diagnostics-orchestrator.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "dotnet-diagnostics-orchestrator.fullname" . }}
+{{- end }}
+{{- end }}
