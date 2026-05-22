@@ -28,6 +28,157 @@ generics, name mangling, or compiler-synthesized closure names.
 
 Together they uniquely resolve a method without name parsing.
 
+## Path hints are untrusted
+
+Every path-shaped field in this contract — `ModulePath` on `MethodIdentity` /
+`TypeIdentity`, `imagePath` on `NativeFrame`, the `dumpFilePath` argument on
+`inspect_dump`, and any future `mstatPath` / `dgmlPath` / `ilMapPath` hint — is
+**a best-effort hint based on what the producer observed at runtime**. It is
+**not** an authenticated assertion that the file at that path is the artifact
+the consumer should load.
+
+The LLM sits in the middle of every handoff. A compromised, jailbroken, or
+simply mistaken model can swap the path for anything reachable on the consumer
+host (`/etc/shadow`, an attacker-staged `evil.dll` under `/tmp`, a UNC path,
+`..`-traversal, a symlink to a sensitive directory) and the consumer would
+otherwise happily open it. The MVID / build-id half of the handoff defends
+against this — but only if the consumer actually checks it.
+
+### Producer behaviour
+
+- Producers MAY emit `ModulePath` / `imagePath` etc. as a convenience for human
+  readers and as a *hint* the consumer can use to locate the artifact.
+- Producers **SHOULD NOT** imply the path is safe to open. The
+  `(moduleVersionId, metadataToken)` / `(buildId, …)` half of the payload is the
+  authoritative identity; the path is supplementary.
+- Producers SHOULD prefer emitting the artifact's content-addressable identity
+  (MVID for managed PEs, GNU build-id / PE CodeView GUID+Age / Mach-O LC_UUID
+  for native images) on every record where one is recoverable.
+
+### Consumer behaviour (MUST)
+
+Consumer MCPs (`dotnet-assembly-mcp`, `dotnet-native-mcp`, and any future
+sibling that grows a `load_*` / `import_*_manifest` / `inspect_*` tool that
+takes a filesystem path) **MUST** treat handoff path hints as *display-only*
+until they have:
+
+1. **Canonicalised** the path with `Path.GetFullPath` **and** resolved every
+   reparse point along the way — on POSIX via `realpath` / a
+   `File.ResolveLinkTarget` walk, on Windows by resolving NTFS symlinks,
+   junctions, and reparse points the same way (`Path.GetFullPath` alone does
+   *not* follow Windows reparse points, so a junction inside an allowed root
+   can otherwise still escape). The result is the path's true on-disk target,
+   with `..`-traversal and link tricks flattened, before any policy check.
+2. **Allowlisted** the canonicalised result against a fixed, configured set of
+   trusted roots — for example:
+   - the running process's own loaded-module list (when the consumer is
+     co-located with the target),
+   - the platform R2R / NativeAOT cache (`%ProgramFiles%\dotnet\shared\…`,
+     `/usr/share/dotnet/…`),
+   - the NuGet global packages cache (`~/.nuget/packages`,
+     `%USERPROFILE%\.nuget\packages`),
+   - operator-configured deployment roots (e.g. `/app`, `/assemblies`,
+     `/binaries` — the volumes already mounted into the sidecar).
+3. **Rejected symlink escapes**: if any path component after canonicalisation
+   resolves outside the allowlisted roots, refuse with a structured error
+   (`path_not_allowed` / `path_outside_allowlist`) and surface the rejected
+   canonical path in the error envelope. Do not fall back to opening the file
+   anyway.
+4. **Verified content identity before any load**: open the file with metadata-
+   only readers (`PEReader` / `ELFReader` / `MachOReader`), extract the MVID or
+   build-id, and compare it byte-for-byte against the identity the producer
+   sent. On mismatch, refuse with `mvid_mismatch_with_path` /
+   `build_id_mismatch_with_path` — never silently re-map the identity to
+   whatever was on disk.
+
+### Recommended consumer pattern
+
+> **Prefer identity-first lookup; treat the path as a fallback.**
+
+Consumers SHOULD first try to satisfy the request from their own already-loaded
+module / image index keyed by MVID / build-id. The path is consulted only when
+the identity is not yet known to the consumer **and** the path survives the
+four checks above. This pattern naturally protects every handoff endpoint —
+including the parked cross-MCP byte-fetch idea
+([#144](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/144)) — without
+spreading validation logic across every tool entry-point.
+
+### Worked example
+
+**Anti-pattern (do not do this).** The consumer trusts the path as-is:
+
+```csharp
+// ❌ Vulnerable: an LLM-supplied modulePath can point anywhere.
+[McpTool("load_assembly")]
+public LoadResult LoadAssembly(string path)
+{
+    using var pe = new PEReader(File.OpenRead(path));   // opens arbitrary file
+    var mvid = pe.GetMetadataReader().GetModuleDefinition().Mvid;
+    _index[mvid] = path;                                 // trusts whatever was there
+    return new LoadResult(mvid, path);
+}
+```
+
+**Correct pattern.** Identity-first; path is a hint, validated then verified:
+
+```csharp
+// ✅ Identity-first, path-validated, MVID-verified.
+[McpTool("load_assembly")]
+public LoadResult LoadAssembly(string path, Guid? expectedMvid = null)
+{
+    // 1. If we already have this identity, ignore the path entirely.
+    if (expectedMvid is { } known && _index.TryGet(known, out var loaded))
+        return new LoadResult(known, loaded.Path);
+
+    // 2. Canonicalise AND resolve reparse points (symlinks, NTFS junctions, …)
+    //    on every platform — Path.GetFullPath alone does not follow them.
+    var canonical = ResolveRealPathOrThrow(Path.GetFullPath(path));
+
+    // 3. Allowlist roots — boundary-aware "is canonical under an allowed root"
+    //    check (NOT a flat Set.Contains, which would only match the root dir
+    //    itself, and NOT a substring match, which would be unsafe).
+    if (!IsUnderAllowedRoot(canonical, _allowedRoots))
+        throw new McpError("path_not_allowed", canonical);
+
+    // 4. Read metadata-only, verify MVID matches the producer-supplied identity.
+    using var pe = new PEReader(File.OpenRead(canonical));
+    var reader = pe.GetMetadataReader();
+    var actualMvid = reader.GetGuid(reader.GetModuleDefinition().Mvid);
+    if (expectedMvid is { } want && want != actualMvid)
+        throw new McpError("mvid_mismatch_with_path",
+            $"hint={canonical} expected={want} actual={actualMvid}");
+
+    _index[actualMvid] = canonical;
+    return new LoadResult(actualMvid, canonical);
+}
+
+// Boundary-aware containment: each allowed root is canonicalised once at
+// startup; the candidate must match a root exactly OR sit beneath it with a
+// directory separator at the boundary (so /assemblies-secret is NOT under
+// /assemblies). Case-insensitive on Windows / macOS, case-sensitive on Linux.
+static bool IsUnderAllowedRoot(string canonical, IReadOnlyList<string> roots)
+{
+    var cmp = OperatingSystem.IsLinux()
+        ? StringComparison.Ordinal
+        : StringComparison.OrdinalIgnoreCase;
+    foreach (var root in roots)
+    {
+        if (canonical.Equals(root, cmp)) return true;
+        if (canonical.Length > root.Length
+            && canonical.StartsWith(root, cmp)
+            && canonical[root.Length] == Path.DirectorySeparatorChar)
+            return true;
+    }
+    return false;
+}
+```
+
+The same shape applies to native consumers (`load_native_binary`,
+`disassemble(imagePath=…)`, `import_native_manifest`, `explain_retention(dgmlPath=…)`,
+`get_size_breakdown(mstatPath=…)`, `disassemble(ilMapPath=…)`) and to any future
+tool that accepts a filesystem path off the wire — substitute `buildId` for
+`MVID` and `ELFReader` / `MachOReader` / `PEReader` for the metadata reader.
+
 ## `MethodIdentity` (full payload)
 
 `dotnet-diagnostics-mcp` emits this record on every ranked hotspot of `collect_cpu_sample`
@@ -121,10 +272,12 @@ loading the assembly first.
 2. Resolve the assembly path independently (e.g. from a configured assembly probe path,
    or by accepting `modulePath` as a hint). The handoff does **not** transmit bytes —
    both servers must have access to the same binary on disk (or the same content
-   addressable cache).
+   addressable cache). **`modulePath` is an untrusted display-only hint** — see
+   [Path hints are untrusted](#path-hints-are-untrusted) above; consumers MUST
+   canonicalise, allowlist, and verify MVID before opening it.
 3. Surface a clear error if no loaded module matches the MVID — the LLM can then load the
    assembly explicitly via `load_assembly(path)` using the producer-supplied `modulePath`
-   as a hint.
+   as a hint, subject to the same canonicalise / allowlist / MVID-verify rules.
 
 ## Worked example
 
