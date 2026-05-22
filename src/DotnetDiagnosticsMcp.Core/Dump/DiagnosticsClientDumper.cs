@@ -1,4 +1,5 @@
 using System.Globalization;
+using DotnetDiagnosticsMcp.Core.Artifacts;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -10,10 +11,14 @@ namespace DotnetDiagnosticsMcp.Core.Dump;
 /// </summary>
 public sealed class DiagnosticsClientDumper : IProcessDumper
 {
+    private readonly IArtifactRootProvider _artifactRoot;
     private readonly ILogger<DiagnosticsClientDumper> _logger;
 
-    public DiagnosticsClientDumper(ILogger<DiagnosticsClientDumper>? logger = null)
+    public DiagnosticsClientDumper(
+        IArtifactRootProvider artifactRoot,
+        ILogger<DiagnosticsClientDumper>? logger = null)
     {
+        _artifactRoot = artifactRoot ?? throw new ArgumentNullException(nameof(artifactRoot));
         _logger = logger ?? NullLogger<DiagnosticsClientDumper>.Instance;
     }
 
@@ -23,11 +28,13 @@ public sealed class DiagnosticsClientDumper : IProcessDumper
         string? outputDirectory = null,
         CancellationToken cancellationToken = default)
     {
-        var directory = string.IsNullOrWhiteSpace(outputDirectory)
-            ? Path.Combine(Path.GetTempPath(), "dotnet-diagnostics-mcp")
-            : outputDirectory;
-
-        Directory.CreateDirectory(directory);
+        // SafeArtifactPath rejects absolute paths and traversal/symlink escapes. The
+        // default sub-path keeps the legacy on-disk layout when the caller passes null.
+        var directory = SafeArtifactPath.ResolveDirectory(
+            _artifactRoot.Root,
+            outputDirectory,
+            defaultRelative: ".",
+            parameterName: nameof(outputDirectory));
 
         var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssZ", CultureInfo.InvariantCulture);
         var fileName = $"dump_pid{processId.ToString(CultureInfo.InvariantCulture)}_{dumpType}_{stamp}.dmp";
@@ -40,6 +47,7 @@ public sealed class DiagnosticsClientDumper : IProcessDumper
             var nativeType = (DumpType)(int)dumpType;
             _logger.LogInformation("Writing {DumpType} dump for pid {Pid} to {Path}", dumpType, processId, fullPath);
             client.WriteDump(nativeType, fullPath, logDumpGeneration: false);
+            SafeArtifactPath.SetRestrictiveFilePermissions(fullPath);
 
             var info = new FileInfo(fullPath);
             return new DumpResult(
