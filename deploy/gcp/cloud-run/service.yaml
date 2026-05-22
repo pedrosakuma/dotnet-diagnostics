@@ -1,0 +1,153 @@
+# dotnet-diagnostics-mcp — GCP Cloud Run recipe.
+#
+# Multi-container Cloud Run service (GA since 2024) with two containers
+# sharing /tmp via an in-memory emptyDir volume so the diag container can
+# attach to the .NET diagnostic IPC socket created by the app.
+#
+# IMPORTANT: Cloud Run runs inside gVisor and does NOT expose a knob for
+# Linux capabilities. The ClrMD / ptrace-backed MCP tools therefore fail with
+# PermissionDenied on this platform:
+#
+#   - collect_thread_snapshot
+#   - inspect_live_heap
+#   - inspect_dump   (against a live PID)
+#   - collect_process_dump
+#   - collect_off_cpu_sample   (perf-based, also unavailable)
+#
+# EventPipe-based tools (snapshot_counters, collect_cpu_sample,
+# collect_exceptions, collect_gc_events, collect_event_source,
+# collect_activities, collect_allocation_sample) still work because they only
+# require socket access and a matching UID.
+#
+# Validate without deploying:
+#   gcloud run services replace deploy/gcp/cloud-run/service.yaml \
+#     --region us-central1 --dry-run
+#
+# Apply for real (after substituting placeholders below):
+#   gcloud run services replace deploy/gcp/cloud-run/service.yaml \
+#     --region us-central1
+#
+# Smoke after a real deploy (from a host on the VPC, since ingress=internal):
+#   TOKEN=$(gcloud secrets versions access latest --secret=diag-mcp-bearer-token)
+#   URL=$(gcloud run services describe dotnet-diagnostics-mcp \
+#     --region us-central1 --format='value(status.url)')
+#   curl -fsS -H "Authorization: Bearer $TOKEN" "$URL/healthz"
+#
+# Substitute these placeholders before applying:
+#   PROJECT_ID           — your GCP project id
+#   REGION               — Cloud Run region (e.g. us-central1)
+#   APP_IMAGE            — image URI of the target .NET application
+#   DIAG_IMAGE           — diagnostics MCP sidecar image (default below)
+#   APP_SERVICE_ACCOUNT  — service-account email the revision runs as
+#   BEARER_SECRET_NAME   — Secret Manager secret with the MCP bearer token
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: dotnet-diagnostics-mcp
+  labels:
+    cloud.googleapis.com/location: REGION
+  annotations:
+    # Default to internal ingress. Operators on the VPC reach the MCP
+    # endpoint directly; flip to "all" only if you must front it with an
+    # external load balancer + IAM-based auth in addition to the bearer
+    # token.
+    run.googleapis.com/ingress: internal
+    run.googleapis.com/launch-stage: GA
+spec:
+  template:
+    metadata:
+      annotations:
+        # gen2 execution environment is required for multi-container
+        # services and for in-memory emptyDir volumes.
+        run.googleapis.com/execution-environment: gen2
+
+        # Start the app container only after diag is ready, so the .NET
+        # runtime has the socket directory in place when it boots.
+        # See: https://cloud.google.com/run/docs/configuring/services/containers#startup-order
+        run.googleapis.com/container-dependencies: '{"app":["diag"]}'
+
+        # Diagnostics endpoints should not scale to zero; the operator needs
+        # a warm instance to attach to. Keep maxScale low — there is no
+        # value in fan-out for an attach-style server, and the
+        # container-dependencies annotation only models start order within a
+        # single instance.
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "1"
+    spec:
+      serviceAccountName: APP_SERVICE_ACCOUNT
+      # 300s is the Cloud Run default and is fine for the diagnostics
+      # handshake (the heaviest tools are still bounded by their own
+      # durationSeconds parameter).
+      timeoutSeconds: 300
+      containers:
+        # --- diag (ingress container) -----------------------------------
+        # Listens on the service port and serves the MCP HTTP transport.
+        # Mounts the shared /tmp so it sees the .NET diagnostic IPC socket
+        # created by the app container.
+        - name: diag
+          image: DIAG_IMAGE
+          ports:
+            - name: http1
+              containerPort: 18887
+          env:
+            - name: ASPNETCORE_URLS
+              value: http://0.0.0.0:18887
+            - name: MCP_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: BEARER_SECRET_NAME
+                  key: latest
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          startupProbe:
+            tcpSocket:
+              port: 18887
+            failureThreshold: 30
+            periodSeconds: 1
+            timeoutSeconds: 1
+
+        # --- app (target application) -----------------------------------
+        # The container under investigation. Mounts the same shared /tmp
+        # volume so its .NET diagnostic IPC socket is visible to diag.
+        # DOTNET_EnableDiagnostics is set explicitly for clarity; it
+        # defaults to 1 in the runtime but flipping it off is the most
+        # common way users accidentally break the attach path.
+        - name: app
+          image: APP_IMAGE
+          env:
+            - name: DOTNET_EnableDiagnostics
+              value: "1"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # A startupProbe on the app container is what actually proves the
+          # target runtime is alive — a healthy diag listener is not enough.
+          # Replace the port below with whatever your app listens on.
+          startupProbe:
+            tcpSocket:
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 1
+            timeoutSeconds: 1
+      volumes:
+        # Shared in-memory volume mounted at /tmp in both containers. This
+        # is where the .NET runtime creates /tmp/dotnet-diagnostic-<pid>.
+        # sizeLimit is small on purpose: the diagnostic socket is a few KiB
+        # and this volume is not a general-purpose scratch space.
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+  traffic:
+    - percent: 100
+      latestRevision: true
