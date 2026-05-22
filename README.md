@@ -65,6 +65,17 @@ Common investigation recipes: [`docs/investigation-playbooks.md`](./docs/investi
 NativeAOT coverage matrix (tool × runtime × OS): [`docs/aot-coverage.md`](./docs/aot-coverage.md).
 Client setup (C# SDK, GUI clients, curl): [`docs/client-setup.md`](./docs/client-setup.md).
 Kubernetes sidecar: [`deploy/k8s/README.md`](./deploy/k8s/README.md).
+Central Kubernetes orchestrator (Helm chart): [`deploy/helm/README.md`](./deploy/helm/README.md).
+
+> **TLS is required for any non-loopback bind.** The MCP server authenticates
+> with a static bearer token in the `Authorization` header. The HTTP server
+> refuses to start when bound to a non-loopback address (anything other than
+> `127.0.0.1` / `::1` / `localhost`) without an operator-supplied
+> `MCP_BEARER_TOKEN`. Terminate TLS at an Ingress / Gateway / mesh sidecar in
+> front of the Service — never expose the orchestrator on plain HTTP outside
+> loopback. The Helm chart ships an optional `ingress.yaml` (gated by
+> `ingress.enabled`) and an optional `networkpolicy.yaml` for L3/L4
+> fail-closed ingress (gated by `networkPolicy.enabled`).
 Azure (App Service + Container Apps) recipes: [`deploy/azure/README.md`](./deploy/azure/README.md).
 AWS (ECS / Fargate) recipe: [`deploy/aws/README.md`](./deploy/aws/README.md).
 GCP (Cloud Run) recipe: [`deploy/gcp/README.md`](./deploy/gcp/README.md).
