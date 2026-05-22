@@ -64,7 +64,7 @@ services:
       retries: 3
 
   assembly:
-    image: ghcr.io/pedrosakuma/dotnet-assembly-mcp:latest
+    image: ghcr.io/pedrosakuma/dotnet-assembly-mcp:0.19.1
     container_name: dotnet-assembly-mcp
     restart: unless-stopped
     ports:
