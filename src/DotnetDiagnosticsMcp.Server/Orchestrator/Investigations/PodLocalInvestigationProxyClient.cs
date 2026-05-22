@@ -127,12 +127,39 @@ internal sealed class PodLocalInvestigationProxyClient : IInvestigationProxyClie
             // doesn't pin the filter thread past the orchestrator-side request lifetime.
             return await slot.Value.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && !slot.Value.IsCompleted)
+        {
+            // Caller cancelled their wait but the underlying initialization is still
+            // running (we issue it with CancellationToken.None so concurrent callers can
+            // share the McpClient). Leave the slot in place so the next caller can latch
+            // onto the in-flight Task instead of starting a duplicate handshake — and so
+            // the materialized McpClient still ends up in _clients for DisposeAsync /
+            // DisposeForHandleAsync to clean up.
+            throw;
+        }
         catch
         {
-            // Failed initialization (port-forward error, MCP handshake error) — drop the
-            // slot so the next call retries instead of replaying the same failed Task.
-            _clients.TryRemove(new System.Collections.Generic.KeyValuePair<string, Lazy<Task<McpClient>>>(handleId, slot));
+            // Initialization itself faulted (port-forward error, MCP handshake error)
+            // or the wait surfaced a non-cancellation exception — drop the slot so the
+            // next call retries instead of replaying the same failed Task. Schedule a
+            // best-effort dispose of the failed client if it ever materializes.
+            _clients.TryRemove(new KeyValuePair<string, Lazy<Task<McpClient>>>(handleId, slot));
+            _ = DisposeIfMaterializedAsync(handleId, slot);
             throw;
+        }
+    }
+
+    private async Task DisposeIfMaterializedAsync(string handleId, Lazy<Task<McpClient>> slot)
+    {
+        try
+        {
+            var client = await slot.Value.ConfigureAwait(false);
+            await client.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _loggerFactory.CreateLogger<PodLocalInvestigationProxyClient>()
+                .LogDebug(ex, "Best-effort dispose of evicted proxy MCP client for handle {HandleId} failed; ignoring.", handleId);
         }
     }
 
