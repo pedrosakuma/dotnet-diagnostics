@@ -42,7 +42,20 @@ public class KubernetesPodAttachOrchestratorTests
         api.PatchedSpec!.Image.Should().Be(options.EphemeralContainerImage);
         api.PatchedSpec.TargetContainerName.Should().Be(Container);
         api.PatchedSpec.Env.Should().Contain(e => e.Name == "MCP_BEARER_TOKEN" && e.Value == handle.PodLocalBearerToken);
+        api.PatchedSpec.Env.Should().Contain(e => e.Name == "ASPNETCORE_URLS" && e.Value == $"http://0.0.0.0:{options.ProxyPodPort}");
         store.GetById(handle.HandleId).Should().BeSameAs(handle);
+    }
+
+    [Fact]
+    public async Task AttachAsync_HonoursConfiguredProxyPodPort_InEphemeralContainerEnv()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, _, options) = NewOrchestrator(api);
+        options.ProxyPodPort = 18888;
+
+        await orch.AttachAsync(NewRequest(), CancellationToken.None);
+
+        api.PatchedSpec!.Env.Should().Contain(e => e.Name == "ASPNETCORE_URLS" && e.Value == "http://0.0.0.0:18888");
     }
 
     [Fact]
@@ -379,6 +392,9 @@ public class KubernetesPodAttachOrchestratorTests
             _readCount = 0; // restart readiness clock so ephemeralRunningAfter applies post-patch
             return Task.FromResult(_pod!);
         }
+
+        public Task<k8s.IStreamDemuxer> OpenPortForwardAsync(string namespaceName, string name, int podPort, CancellationToken cancellationToken)
+            => throw new NotSupportedException("StubAttachApi does not exercise port-forward; use the dedicated KubernetesPortForwardManager tests.");
     }
 
     /// <summary>
