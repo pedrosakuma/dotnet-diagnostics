@@ -91,6 +91,12 @@ public class KubernetesPodInventoryTests
                 Metadata = new V1ListMeta { ContinueProperty = NextContinueToken },
             });
         }
+
+        public Task<V1Pod> ReadPodAsync(string namespaceName, string name, CancellationToken cancellationToken)
+            => throw new NotSupportedException("KubernetesPodInventoryTests do not exercise ReadPodAsync.");
+
+        public Task<V1Pod> AddEphemeralContainerAsync(string namespaceName, string name, V1EphemeralContainer ephemeralContainer, CancellationToken cancellationToken)
+            => throw new NotSupportedException("KubernetesPodInventoryTests do not exercise AddEphemeralContainerAsync.");
     }
 
     private static KubernetesPodInventory NewInventory(

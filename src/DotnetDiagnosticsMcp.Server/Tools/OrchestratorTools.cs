@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnosticsMcp.Core;
 using DotnetDiagnosticsMcp.Server.Orchestrator;
+using DotnetDiagnosticsMcp.Server.Orchestrator.Investigations;
 using ModelContextProtocol.Server;
 
 namespace DotnetDiagnosticsMcp.Server.Tools;
@@ -128,6 +129,125 @@ public sealed class OrchestratorTools
             "Verify the orchestrator has an in-cluster ServiceAccount projection or a reachable kubeconfig, then retry."),
         _ => new NextActionHint(
             "list_pods",
+            "Re-run with corrected arguments."),
+    };
+
+    [McpServerTool(
+        Name = "attach_to_pod",
+        Title = "Attach a diagnostic ephemeral container to a Pod",
+        Destructive = true,
+        ReadOnly = false,
+        Idempotent = false,
+        UseStructuredContent = true)]
+    [Description(
+        "Injects a diagnostics ephemeral container into the named Pod, joins the target container's PID namespace, " +
+        "and returns an opaque investigation handle that future tool calls will be able to route through (the " +
+        "transport proxy lands in the next orchestrator slice). The Pod must already be in phase=Running and — " +
+        "by default — must opt in via the prepared label (diagnostics.dotnet.io/prepared=true). " +
+        "Reuses an existing investigation for the same (namespace, pod, container) when one is already attached. " +
+        "Side-effect: ephemeral containers cannot be removed once added; the diagnostics container will remain " +
+        "on the Pod's spec until the Pod is recreated.")]
+    public static async Task<DiagnosticResult<AttachSession>> AttachToPod(
+        IPodAttachOrchestrator orchestrator,
+        [Description("Pod namespace. Falls back to the orchestrator's DefaultNamespace when omitted.")]
+        string? @namespace = null,
+        [Description("Pod name. Required.")]
+        string? podName = null,
+        [Description("Container name inside the Pod. Defaults to the first container in the Pod's spec.")]
+        string? containerName = null,
+        [Description("Per-investigation TTL in seconds. Defaults to Orchestrator:DefaultInvestigationTtlSeconds (1800).")]
+        int? ttlSeconds = null,
+        [Description("When true (default), refuses to attach to Pods that don't carry the prepared opt-in label.")]
+        bool requirePreparedTarget = true,
+        [Description("When true (default), returns an existing investigation for the same target instead of patching a second ephemeral container.")]
+        bool allowReuseExistingSession = true,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(podName))
+        {
+            var ex = new OrchestratorException(OrchestratorErrorKinds.InvalidArgument, "podName is required.");
+            return DiagnosticResult.Fail<AttachSession>(
+                $"attach_to_pod failed: {ex.Message}",
+                new DiagnosticError(ex.ErrorKind, ex.Message),
+                BuildAttachRecoveryHint(ex.ErrorKind));
+        }
+
+        var request = new AttachRequest(
+            Namespace: @namespace ?? string.Empty,
+            PodName: podName!,
+            ContainerName: containerName,
+            TtlSeconds: ttlSeconds,
+            RequirePreparedTarget: requirePreparedTarget,
+            AllowReuseExistingSession: allowReuseExistingSession);
+
+        InvestigationHandle handle;
+        try
+        {
+            handle = await orchestrator.AttachAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OrchestratorException ex)
+        {
+            return DiagnosticResult.Fail<AttachSession>(
+                $"attach_to_pod failed: {ex.Message}",
+                new DiagnosticError(ex.ErrorKind, ex.Message),
+                BuildAttachRecoveryHint(ex.ErrorKind));
+        }
+
+        // Project to the client-safe shape so PodLocalBearerToken never leaves the server.
+        var session = AttachSession.FromHandle(handle);
+
+        var summary = $"Investigation {session.HandleId} {(session.State == InvestigationState.Active ? "attached" : session.State.ToString().ToLowerInvariant())} " +
+                      $"to {session.Namespace}/{session.PodName} container={session.TargetContainerName} " +
+                      $"(ephemeral={session.EphemeralContainerName}; expires at {session.ExpiresAt:O}).";
+
+        return DiagnosticResult.Ok(
+            session,
+            summary,
+            new NextActionHint(
+                "attach_to_pod",
+                "Proxied diagnostic tool calls land in the next orchestrator slice. " +
+                "Until then, the handle confirms the ephemeral container is Running and the bearer token is held server-side."));
+    }
+
+    private static NextActionHint BuildAttachRecoveryHint(string errorKind) => errorKind switch
+    {
+        OrchestratorErrorKinds.InvalidArgument => new NextActionHint(
+            "attach_to_pod",
+            "Pass podName (and namespace if no DefaultNamespace is configured)."),
+        OrchestratorErrorKinds.NamespaceNotAllowed => new NextActionHint(
+            "attach_to_pod",
+            "Pass a namespace that is configured in Orchestrator:NamespaceAllowlist."),
+        OrchestratorErrorKinds.PodNotFound => new NextActionHint(
+            "list_pods",
+            "Run list_pods in the same namespace to discover the correct pod name."),
+        OrchestratorErrorKinds.ContainerNotFound => new NextActionHint(
+            "list_pods",
+            "Run list_pods to inspect the target Pod's containers and re-run with the right containerName."),
+        OrchestratorErrorKinds.PodNotRunning => new NextActionHint(
+            "list_pods",
+            "Wait for the Pod to reach phase=Running, or pick a different Pod from list_pods."),
+        OrchestratorErrorKinds.PodNotPrepared => new NextActionHint(
+            "attach_to_pod",
+            "Add the prepared opt-in label (and a shared /tmp emptyDir + matching UID) to the Pod template, " +
+            "or set requirePreparedTarget=false (and Orchestrator:RequirePreparedLabel=false) to override."),
+        OrchestratorErrorKinds.AttachAlreadyInProgress => new NextActionHint(
+            "attach_to_pod",
+            "Another attach is in flight for this Pod. Retry with allowReuseExistingSession=true."),
+        OrchestratorErrorKinds.AttachTimeout => new NextActionHint(
+            "attach_to_pod",
+            "The ephemeral container did not become Running in time. Check image-pull errors on the Pod, " +
+            "increase Orchestrator:AttachReadinessTimeoutSeconds, then retry."),
+        OrchestratorErrorKinds.AttachFailed => new NextActionHint(
+            "attach_to_pod",
+            "Check the orchestrator logs and the Pod's ephemeralContainerStatuses, then retry."),
+        OrchestratorErrorKinds.PermissionDenied => new NextActionHint(
+            "attach_to_pod",
+            "Grant the orchestrator ServiceAccount 'pods/ephemeralcontainers' patch in the namespace."),
+        OrchestratorErrorKinds.KubeApiUnavailable => new NextActionHint(
+            "attach_to_pod",
+            "Verify the orchestrator has an in-cluster ServiceAccount projection or a reachable kubeconfig, then retry."),
+        _ => new NextActionHint(
+            "attach_to_pod",
             "Re-run with corrected arguments."),
     };
 }

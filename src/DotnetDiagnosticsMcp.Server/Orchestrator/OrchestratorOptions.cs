@@ -80,4 +80,34 @@ public sealed class OrchestratorOptions
     /// Default 500.
     /// </summary>
     public int MaxListLimit { get; set; } = 500;
+
+    /// <summary>
+    /// Container image the orchestrator injects as the ephemeral diagnostics container
+    /// on <c>attach_to_pod</c>. Must already be reachable by the target node's pull
+    /// configuration. Default: <c>ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:latest</c>;
+    /// override in production to pin a digest.
+    /// </summary>
+    public string EphemeralContainerImage { get; set; } = "ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:latest";
+
+    /// <summary>
+    /// Prefix applied to every injected ephemeral container's name. Lets operators
+    /// distinguish orchestrator-installed diagnostics containers from other ephemeral
+    /// containers (e.g. <c>kubectl debug</c>) when auditing a Pod's <c>ephemeralContainerStatuses</c>.
+    /// Default: <c>dotnet-dbg-mcp-</c>.
+    /// </summary>
+    public string EphemeralContainerNamePrefix { get; set; } = "dotnet-dbg-mcp-";
+
+    /// <summary>
+    /// Maximum time to wait for the injected ephemeral container to reach a running
+    /// state after the patch is accepted. On expiry, <c>attach_to_pod</c> returns
+    /// <see cref="OrchestratorErrorKinds.AttachTimeout"/>. Default: 60 seconds.
+    /// </summary>
+    public int AttachReadinessTimeoutSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Default investigation TTL (seconds) when the caller omits <c>ttlSeconds</c>.
+    /// Tracked on the <see cref="Investigations.InvestigationHandle"/> so the reaper
+    /// (P4) can close idle sessions. Default: 1800 (30 minutes).
+    /// </summary>
+    public int DefaultInvestigationTtlSeconds { get; set; } = 1800;
 }

@@ -106,6 +106,8 @@ internal static class DiagnosticServiceRegistration
         services.AddSingleton<IKubernetesClientFactory, DefaultKubernetesClientFactory>();
         services.AddSingleton<IKubernetesPodsApi, KubernetesPodsApi>();
         services.AddSingleton<IPodInventory, KubernetesPodInventory>();
+        services.AddSingleton<Orchestrator.Investigations.IInvestigationStore, Orchestrator.Investigations.MemoryInvestigationStore>();
+        services.AddSingleton<Orchestrator.Investigations.IPodAttachOrchestrator, Orchestrator.Investigations.KubernetesPodAttachOrchestrator>();
         return true;
     }
 
