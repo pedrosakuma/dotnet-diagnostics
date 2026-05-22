@@ -345,6 +345,22 @@ When the LLM passes a `MethodIdentity` from a pod-remote CPU sample to a client-
 
 This limitation is documented up-front so users picking the orchestrator topology can plan for option (1) — the only mitigation that requires no further work in this repository.
 
+> **Security note — path hints are untrusted.** Every filesystem-bound payload
+> in the table above (`ModulePath`, `imagePath`, `dumpFilePath`, the
+> mitigation-2 `get_module_bytes` / `get_dump_bytes` sink path, the
+> mitigation-3 `mcp+pod://` dereference target) is an *untrusted hint* that
+> flows through the LLM. Consumer MCPs MUST canonicalise, allowlist a fixed
+> set of roots, reject symlink escapes, and verify MVID / build-id before
+> opening anything — see the new
+> [Path hints are untrusted](./handoff-contract.md#path-hints-are-untrusted)
+> section of the handoff contract for the producer/consumer rules and a
+> worked example. This applies especially to the parked **cross-MCP byte
+> fetch** mitigation (option 2 above, tracked as
+> [#144](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/144)):
+> if/when it ships, the materialised scratch path the LLM hands to the
+> client-side sibling MCP inherits the same untrusted-hint contract and must
+> be validated identically.
+
 ---
 ## 5. Session lifecycle
 ### 5.1 Handle issuance
