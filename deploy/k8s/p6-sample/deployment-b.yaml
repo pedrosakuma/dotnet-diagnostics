@@ -47,7 +47,7 @@ spec:
               mountPath: /tmp
           readinessProbe:
             httpGet:
-              path: /
+              path: /weatherforecast
               port: http
             initialDelaySeconds: 2
             periodSeconds: 2
