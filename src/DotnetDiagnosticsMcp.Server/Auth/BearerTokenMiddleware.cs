@@ -9,11 +9,21 @@ internal sealed class BearerTokenOptions
 {
     public required string Token { get; init; }
 
-    public static BearerTokenOptions LoadOrGenerate(ILogger logger)
+    public static BearerTokenOptions LoadOrGenerate(ILogger logger, bool allowEphemeralFallback = true)
     {
         var token = Environment.GetEnvironmentVariable("MCP_BEARER_TOKEN");
         if (string.IsNullOrWhiteSpace(token))
         {
+            if (!allowEphemeralFallback)
+            {
+                // H9 (issue #162): refuse to keep running when bound to a
+                // non-loopback address with no operator-supplied bearer. The
+                // caller has already logged a fatal error; throw so app.Run()
+                // never gets a chance to bind.
+                throw new InvalidOperationException(
+                    "MCP_BEARER_TOKEN must be set when the server is bound to a non-loopback address. Refusing to generate an ephemeral token for a network-exposed listener.");
+            }
+
             var bytes = RandomNumberGenerator.GetBytes(32);
             token = Convert.ToHexString(bytes).ToLowerInvariant();
             logger.LogWarning(

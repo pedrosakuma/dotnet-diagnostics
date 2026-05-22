@@ -1,0 +1,42 @@
+{{- if .Values.ingress.enabled }}
+{{- /*
+H8 (issue #162): TLS termination is REQUIRED for any non-loopback bind. This
+optional Ingress is the recommended way to add a TLS-terminating gateway in
+front of the orchestrator. Pair with cert-manager or an upstream-managed
+certificate for `ingress.tls`.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "dotnet-diagnostics-orchestrator.fullname" . }}
+  namespace: {{ include "dotnet-diagnostics-orchestrator.namespace" . }}
+  labels:
+    {{- include "dotnet-diagnostics-orchestrator.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "dotnet-diagnostics-orchestrator.fullname" $ }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

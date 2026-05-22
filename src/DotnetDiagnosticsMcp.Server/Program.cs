@@ -54,7 +54,23 @@ var app = builder.Build();
 loggerFactoryHolder = app.Services.GetRequiredService<ILoggerFactory>();
 servicesHolder = app.Services;
 
-var token = BearerTokenOptions.LoadOrGenerate(app.Logger);
+// H9 (issue #162): when bound to a non-loopback address, fail startup unless an
+// operator-supplied bearer token is present. Generating an ephemeral token for a
+// network-exposed listener leaks credentials into logs and accepts those tokens
+// for the lifetime of the process. Loopback (127.0.0.1/::1/localhost) and stdio
+// keep the existing ephemeral fallback for developer ergonomics.
+var hasOperatorToken = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MCP_BEARER_TOKEN"));
+var boundToNonLoopback = HasNonLoopbackBinding(app, builder.Configuration);
+if (boundToNonLoopback && !hasOperatorToken)
+{
+    app.Logger.LogCritical(
+        "Refusing to start: server is configured to bind to a non-loopback address but MCP_BEARER_TOKEN is not set. " +
+        "Set MCP_BEARER_TOKEN to an operator-managed secret before exposing the MCP endpoint, " +
+        "or restrict --urls / ASPNETCORE_URLS to loopback (http://127.0.0.1:<port>) for local development.");
+    return 1;
+}
+
+var token = BearerTokenOptions.LoadOrGenerate(app.Logger, allowEphemeralFallback: !boundToNonLoopback);
 app.UseMiddleware<BearerTokenMiddleware>(token);
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
@@ -105,6 +121,85 @@ static async Task<int> RunStdioAsync(string[] args)
 
     await host.RunAsync().ConfigureAwait(false);
     return 0;
+}
+
+// H9 (issue #162): inspect every place ASP.NET Core picks up a Kestrel binding —
+// CLI args (--urls), env vars (ASPNETCORE_URLS / DOTNET_URLS), IConfiguration
+// ("urls" key, including appsettings.json), and app.Urls (populated by launch
+// profiles / explicit code) — and return true if any of them resolves to a
+// non-loopback host. Returning false means the listener is either empty (test
+// host / TestServer) or strictly loopback.
+static bool HasNonLoopbackBinding(WebApplication app, IConfiguration configuration)
+{
+    var candidates = new List<string>(capacity: 8);
+
+    if (app.Urls.Count > 0)
+    {
+        candidates.AddRange(app.Urls);
+    }
+
+    foreach (var key in new[] { "urls", "ASPNETCORE_URLS", "DOTNET_URLS" })
+    {
+        var value = configuration[key];
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            candidates.AddRange(value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        }
+    }
+
+    // Kestrel:Endpoints:<name>:Url takes precedence over `urls` / ASPNETCORE_URLS,
+    // so a configuration that binds to 0.0.0.0 there would otherwise sneak past the
+    // loopback check. Enumerate every endpoint and add its Url to the candidate set.
+    foreach (var endpoint in configuration.GetSection("Kestrel:Endpoints").GetChildren())
+    {
+        var url = endpoint["Url"];
+        if (!string.IsNullOrWhiteSpace(url))
+        {
+            candidates.Add(url);
+        }
+    }
+
+    foreach (var raw in candidates)
+    {
+        if (IsNonLoopbackUrl(raw))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool IsNonLoopbackUrl(string raw)
+{
+    if (string.IsNullOrWhiteSpace(raw))
+    {
+        return false;
+    }
+
+    if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri))
+    {
+        return false;
+    }
+
+    var host = uri.Host;
+    if (string.IsNullOrEmpty(host))
+    {
+        return false;
+    }
+
+    if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+    {
+        return false;
+    }
+
+    if (System.Net.IPAddress.TryParse(host, out var ip))
+    {
+        return !System.Net.IPAddress.IsLoopback(ip);
+    }
+
+    // Hostname that doesn't resolve at parse time (e.g. DNS name) — treat as non-loopback.
+    return true;
 }
 
 namespace DotnetDiagnosticsMcp.Server

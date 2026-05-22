@@ -1,8 +1,12 @@
-# Central orchestrator RBAC — namespace-scoped (default, recommended).
-# Single-namespace tenants get a Role+RoleBinding. For multi-namespace
-# observation, swap this file for a ClusterRole+ClusterRoleBinding overlay.
-# The `pods/portforward` verb is `create` only — `get` is not exercised
-# by KubernetesPortForwardManager and is dropped per issue #162.
+# Central orchestrator RBAC — CLUSTER-SCOPED (opt-in).
+#
+# Apply this INSTEAD of rbac.yaml when the orchestrator must observe and attach
+# to Pods across multiple namespaces. Cluster-scoped permissions widen the
+# blast radius if the bearer token is compromised — only use it when the
+# multi-namespace requirement is real.
+#
+# This file still depends on the ServiceAccount declared in rbac.yaml. Apply
+# rbac.yaml first (for the ServiceAccount) OR copy the ServiceAccount block in.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -10,10 +14,9 @@ metadata:
   namespace: diagnosticsmcp-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: dotnet-diagnostics-orchestrator
-  namespace: diagnosticsmcp-system
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -26,15 +29,14 @@ rules:
     verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: dotnet-diagnostics-orchestrator
-  namespace: diagnosticsmcp-system
 subjects:
   - kind: ServiceAccount
     name: dotnet-diagnostics-orchestrator
     namespace: diagnosticsmcp-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
+  kind: ClusterRole
   name: dotnet-diagnostics-orchestrator

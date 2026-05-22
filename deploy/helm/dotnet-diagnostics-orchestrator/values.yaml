@@ -8,6 +8,10 @@ namespace: ""
 
 rbac:
   create: true
+  # H2 (issue #162): default to namespace-scoped Role + RoleBinding. Set to
+  # `cluster` only if the orchestrator must observe / attach to Pods across
+  # multiple namespaces — it widens blast radius if the bearer is compromised.
+  scope: namespace
 
 serviceAccount:
   create: true
@@ -27,9 +31,22 @@ podSecurityContext:
 
 securityContext:
   allowPrivilegeEscalation: false
+  # L (issue #162): the orchestrator writes nothing under the root filesystem at
+  # runtime. Dumps and trace files land under MCP_ARTIFACT_ROOT (defaults to the
+  # OS temp dir), so we mount an emptyDir at /tmp below.
+  readOnlyRootFilesystem: true
   capabilities:
     drop:
       - ALL
+
+# emptyDir volumes mounted into the orchestrator container. /tmp is the default
+# target for diagnostic artifacts when readOnlyRootFilesystem is on.
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
 
 service:
   type: ClusterIP
@@ -70,3 +87,34 @@ orchestrator:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# H8 (issue #162): TLS is REQUIRED for any non-loopback bind. The chart binds
+# the container to plain HTTP on the Service port because TLS is expected to be
+# terminated by the Ingress / service mesh in front of it. Enable the optional
+# Ingress block below to wire a TLS-terminating gateway, or place an external
+# auth proxy / mesh in the path.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: diagnostics.example.internal
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  # - secretName: diagnostics-orchestrator-tls
+  #   hosts:
+  #     - diagnostics.example.internal
+
+# Optional NetworkPolicy gating ingress to the orchestrator. Default off so the
+# chart doesn't break clusters without a NetworkPolicy controller; enable in
+# any environment with one (Calico, Cilium, etc.) for defense in depth.
+networkPolicy:
+  enabled: false
+  # When non-empty, only Pods in these namespaces (matched by
+  # `kubernetes.io/metadata.name`) may reach the orchestrator on its Service
+  # port. Empty == allow from any namespace within the cluster.
+  fromNamespaces: []
+  # When non-empty, additionally narrows ingress to Pods bearing these labels.
+  fromPodLabels: {}

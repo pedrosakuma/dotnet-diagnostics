@@ -29,7 +29,7 @@ replacements:
           - spec.template.spec.containers.[name=orchestrator].env.[name=Orchestrator__DefaultNamespace].value
           - spec.template.spec.containers.[name=orchestrator].env.[name=Orchestrator__NamespaceAllowlist__0].value
       - select:
-          kind: ClusterRoleBinding
+          kind: RoleBinding
           name: dotnet-diagnostics-orchestrator
         fieldPaths:
           - subjects.0.namespace

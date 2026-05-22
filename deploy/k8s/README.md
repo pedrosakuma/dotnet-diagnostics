@@ -38,11 +38,17 @@ kubectl create namespace diagnosticsmcp-workloads
 # Edit deploy/k8s/orchestrator/rbac.yaml if you install outside diagnosticsmcp-system.
 # Replace the placeholder Secret token with `openssl rand -hex 32` output.
 
-kubectl apply -f deploy/k8s/orchestrator/rbac.yaml
+kubectl apply -f deploy/k8s/orchestrator/rbac.yaml          # namespace-scoped (default, recommended)
+# kubectl apply -f deploy/k8s/orchestrator/rbac-cluster.yaml # cluster-wide opt-in, multi-namespace only
 kubectl apply -f deploy/k8s/orchestrator/secret.yaml
 kubectl apply -f deploy/k8s/orchestrator/deployment.yaml
 kubectl apply -f deploy/k8s/orchestrator/service.yaml
 ```
+
+> **Pick one RBAC shape.** `rbac.yaml` ships a `Role`+`RoleBinding` scoped to
+> `diagnosticsmcp-system` (recommended — narrower blast radius). Apply
+> `rbac-cluster.yaml` **instead** when the orchestrator must observe / attach
+> to Pods across multiple namespaces.
 
 Then port-forward the Service and point the MCP client at `http://127.0.0.1:5130/mcp`.
 
@@ -81,9 +87,18 @@ Restart is expected: the orchestrator is intentionally stateless across restarts
 
 ### Scope RBAC to a single namespace
 
-Issue #20 requires `pods`, `pods/ephemeralcontainers`, and `pods/portforward`. The shipped raw/Helm surfaces use a ClusterRole because that is the exact fleet-wide permission set the orchestrator needs when it spans namespaces.
+The shipped raw / Kustomize / Helm surfaces now **default to namespace-scoped
+`Role`+`RoleBinding`** (issue #162). The previous cluster-wide shape is opt-in:
 
-For a single tenant namespace, replace the ClusterRole / ClusterRoleBinding with a Role / RoleBinding carrying the same rules in that namespace:
+- **Raw manifests:** apply `deploy/k8s/orchestrator/rbac.yaml` (default, namespace-scoped) **or** `deploy/k8s/orchestrator/rbac-cluster.yaml` (cluster-wide opt-in).
+- **Helm:** the chart defaults to `rbac.scope=namespace`; set `--set rbac.scope=cluster` to opt into cluster-wide.
+- **Kustomize base:** ships namespace-scoped; override the base with your own ClusterRole / ClusterRoleBinding overlay if you need cluster-wide.
+
+The `pods/portforward` verb is `create` only — `get` was dropped because
+`KubernetesPortForwardManager` only exercises `create` over the WebSocket
+port-forward path.
+
+The required rule set when crafting a manual overlay:
 
 ```yaml
 apiGroups: [""]
@@ -100,6 +115,25 @@ verbs: ["create"]
 ```
 
 Keep `Orchestrator__NamespaceAllowlist__*` aligned with the namespace you grant.
+
+### TLS for non-loopback binds
+
+The orchestrator authenticates clients with a static bearer token. Any non-loopback
+bind without TLS exposes that token to passive network observers (kube-proxy hop,
+mesh sidecar, IDS, …). **TLS termination is required** for any bind other than
+strict loopback:
+
+- Terminate at an Ingress / Gateway in front of the `ClusterIP` Service (see the
+  bundled `templates/ingress.yaml` in the Helm chart, gated by
+  `--set ingress.enabled=true`), **or**
+- Run inside a service mesh enforcing **STRICT** mTLS (Istio / Linkerd / Cilium
+  ClusterMesh — permissive mode is not enough), **or**
+- For local development only, bind to `http://127.0.0.1:<port>` and rely on a
+  per-user loopback boundary.
+
+The server enforces this at startup: when bound to a non-loopback address with
+no `MCP_BEARER_TOKEN` set, the process logs a critical error and exits 1
+(no ephemeral token is generated in that path).
 
 ### How the orchestrator reaches the pod-local MCP server
 
