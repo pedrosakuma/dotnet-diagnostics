@@ -307,6 +307,41 @@ Reasoning:
 In short:
 > use Kubernetes-native orchestration and transport, not shell-driven proxying,
 > and keep the orchestrator protocol-visible only at the outer client boundary.
+
+### 4.5 Cross-MCP handoff in orchestrator mode (known limitation)
+The diagnostics MCP routinely emits **filesystem-bound handoff payloads** consumed by sibling MCPs:
+- `MethodIdentity { mvid, metadataToken }` → `dotnet-assembly-mcp.get_method` needs the matching `.dll`/`.pdb` reachable on the **assembly-mcp host's filesystem**.
+- `NativeFrame { buildId, imagePath }` → `dotnet-native-mcp.load_native_binary` needs the binary at that path.
+- `inspect_dump(dumpFilePath)` is a raw local path.
+
+In single-target sidecar mode (the topology shipped today) all three MCPs run side-by-side on the same host and the handoff "just works". In orchestrator mode the picture changes:
+
+```
+LLM client host                 │ Kubernetes cluster
+  dotnet-assembly-mcp  ◄────────│ ... NO direct path to pod filesystem
+  dotnet-native-mcp    ◄────────│
+  dotnet-diagnostics-mcp ──HTTP──► orchestrator ──port-forward──► pod-local diagnostics MCP
+                                                                    │
+                                                                    └─ /app/MyApp.dll lives only here
+```
+
+When the LLM passes a `MethodIdentity` from a pod-remote CPU sample to a client-side `dotnet-assembly-mcp`, the MVID is correct but the on-disk bytes are absent → `path_not_found`.
+
+**What still works** in orchestrator mode (these stay inside one server boundary):
+- All `*_handle`-based drilldowns (`get_call_tree`, `query_heap_snapshot`, `query_thread_snapshot`, `query_collection`, `query_off_cpu_snapshot`) — the handle store lives in the pod-local server, so subsequent calls forwarded over the proxy hit the same store.
+- Tools that don't export filesystem-bound identities (`snapshot_counters`, `get_container_signals`, `get_memory_trend`, `get_process_info`, `start_investigation`, `export_investigation_summary`, `compare_to_baseline`).
+
+**What breaks** without further work:
+- Any `dotnet-assembly-mcp` / `dotnet-native-mcp` call whose argument originated as a handoff from the remote pod.
+- `inspect_dump(dumpFilePath)` against a pod-local dump path.
+
+**Mitigation options (deferred — not in scope for P3a/P3b/P4):**
+1. **Co-located twin sidecars (operator-side workaround)** — deploy `dotnet-assembly-mcp` and `dotnet-native-mcp` as additional ephemeral containers alongside the diagnostics container. The orchestrator's `attach_to_pod` can mint per-attach bearer tokens for each, and the LLM client connects to the cluster trio via the orchestrator proxy. Pure configuration; no protocol change. Recommended default.
+2. **Module-byte fetch endpoint** — extend the diagnostics MCP with `get_module_bytes(mvid)` / `get_dump_bytes(handle)` streamed through the orchestrator; the LLM client materializes to a scratch dir then passes that path to the client-side sibling MCPs. Adds surface and bandwidth; useful when twin sidecars are not feasible.
+3. **MCP asset-URI convention** — promote handoffs from filesystem paths to a `mcp+pod://ns/pod/path` URI that participating MCPs know how to dereference via a callback into the diagnostics server. Cleanest end-state; requires alignment with the sibling MCPs and is **not a P7 item** — tracked as a Phase 9+ idea.
+
+This limitation is documented up-front so users picking the orchestrator topology can plan for option (1) — the only mitigation that requires no further work in this repository.
+
 ---
 ## 5. Session lifecycle
 ### 5.1 Handle issuance
@@ -533,6 +568,10 @@ Add the fleet-discovery and attach path:
 - kube API patching
 - ephemeral-container readiness wait
 - in-process port-forward proxying
+
+#### Status
+- **P3a — `list_pods` + Kubernetes client scaffolding: shipped.** New `OrchestratorOptions` config section (enabled flag, namespace allowlist, label-key allowlist, prepared-label key, RequirePreparedLabel toggle, MaxListLimit), `IKubernetesClientFactory` (in-cluster ServiceAccount projection with kubeconfig fallback), narrow `IKubernetesPodsApi` abstraction (so tests can stub without mocking the full k8s surface), `IPodInventory` + `KubernetesPodInventory` (namespace allowlist enforcement, label-selector key validation, preparedness verdict — label opt-in by default, heuristic when `RequirePreparedLabel=false`), and the `list_pods` MCP tool. Registered only when `Orchestrator:Enabled=true`; off by default so existing single-target deployments are unaffected. 17 unit tests cover policy + transport adaptation.
+- **P3b — `attach_to_pod` + ephemeral-container injection + in-process port-forward proxy + session-binding plumbing: pending.**
 #### Dependencies
 - P2 target-context abstraction.
 - Decision to use in-process kube client plus direct port-forward streams.
