@@ -2957,9 +2957,10 @@ public sealed class DiagnosticTools
         if (validation.IsAllowed)
         {
             // RFC 0001 §7.3: only emit when a remote host was actually accepted (not for
-            // null / empty / pure local paths). PathContainsRemoteUrl is a cheap heuristic;
-            // exact correctness is unnecessary because the warning is once-per-process.
-            if (deprecation is not null && PathContainsRemoteUrl(symbolPath))
+            // null / empty / pure local paths). Defers to SymbolServerAllowlist's own
+            // tokenizer so a local cache directory whose name contains "http://" is not
+            // a false positive.
+            if (deprecation is not null && SymbolServerAllowlist.ContainsRemoteUrl(symbolPath))
             {
                 deprecation.NotifySymbolServerAllowlistBypass();
             }
@@ -2971,13 +2972,6 @@ public sealed class DiagnosticTools
                 "SymbolServerNotAllowed",
                 "Remote symbol servers are denied by default. Add the host to `Diagnostics:SymbolServerAllowlist` (env: `Diagnostics__SymbolServerAllowlist__0=<host>`), grant the caller the `symbols-remote` scope, or drop the `srv*http(s)://…` segment and rely on the local symbol cache. Tracked by issue #165.",
                 validation.DeniedSegment));
-    }
-
-    private static bool PathContainsRemoteUrl(string? symbolPath)
-    {
-        if (string.IsNullOrWhiteSpace(symbolPath)) return false;
-        return symbolPath.Contains("http://", StringComparison.OrdinalIgnoreCase)
-            || symbolPath.Contains("https://", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

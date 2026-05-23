@@ -125,7 +125,7 @@ public sealed class LegacyDiagnosticsFlagDeprecationTests
         var result = await DiagnosticTools.CollectEventSource(
             collector, ToolGuardTests.EchoResolver(), new MemoryDiagnosticHandleStore(),
             new EventSourceAllowlist(null), new SensitiveValueGate(null),
-            TestPrincipalAccessors.WithScopes("event-source-collect", "eventsource-any"),
+            TestPrincipalAccessors.WithScopes("eventpipe", "eventsource-any"),
             providerName: "System.Net.Http", processId: 4242, durationSeconds: 1,
             deprecation: deprecation);
 
@@ -144,7 +144,7 @@ public sealed class LegacyDiagnosticsFlagDeprecationTests
             var result = await DiagnosticTools.CollectEventSource(
                 collector, ToolGuardTests.EchoResolver(), new MemoryDiagnosticHandleStore(),
                 new EventSourceAllowlist(null), new SensitiveValueGate(null),
-                TestPrincipalAccessors.WithScopes("event-source-collect"),
+                TestPrincipalAccessors.WithScopes("eventpipe"),
                 providerName: "System.Net.Http", processId: 4242, durationSeconds: 1,
                 deprecation: deprecation);
             result.Error.Should().BeNull();
@@ -167,7 +167,7 @@ public sealed class LegacyDiagnosticsFlagDeprecationTests
         var result = await DiagnosticTools.CollectEventSource(
             collector, ToolGuardTests.EchoResolver(), new MemoryDiagnosticHandleStore(),
             new EventSourceAllowlist(null), new SensitiveValueGate(options),
-            TestPrincipalAccessors.WithScopes("event-source-collect"),
+            TestPrincipalAccessors.WithScopes("eventpipe"),
             providerName: "My.Custom.Source", processId: 4242, durationSeconds: 1,
             unsafeProvider: true,
             deprecation: deprecation);

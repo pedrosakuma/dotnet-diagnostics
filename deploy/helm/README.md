@@ -96,42 +96,60 @@ for the port-forward stream that `KubernetesPortForwardManager` opens.
 
 The single-bearer model above maps the configured token to a synthetic root scope
 (`root` / `*`) that satisfies every `[RequireScope]` gate. RFC 0001 (per-tool
-authorization scopes) adds an `Auth:BearerTokens` map so operators can mint
+authorization scopes) adds an `Auth:BearerTokens` array so operators can mint
 several bearers, each with a precise scope set — useful when a junior operator
 should be able to read counters and CPU samples but not unlock
 `query_heap_snapshot view=duplicate-strings includeSensitiveValues=true`.
 
+Each entry in `Auth:BearerTokens` requires a non-empty `Name` (used in audit
+logs — never the token value), a `Token` (the bearer presented over the wire),
+and at least one `Scopes[]` entry. Names and tokens must be unique across the
+list. The runtime `[RequireScope]` attributes use these primary scope names:
+`read-counters`, `eventpipe`, `heap-read`, `ptrace`, `dump-write`,
+`investigation-export`. Layered on top are the three RFC 0001 modifier scopes
+that B5.4 subsumes from the legacy `Diagnostics__Allow*` flags:
+`sensitive-heap-read`, `eventsource-any`, `symbols-remote` (plus
+`orchestrator-admin` for the cross-session admin paths).
+
 In `values.yaml`-style configuration (a future chart slice — B5.5 — will surface
-this as first-class chart values; for now layer it in as raw `extraEnv`):
+this as first-class chart values; for now layer it in as raw `extraEnv` —
+indexed `__0__`, `__1__` entries map to the `IConfiguration` array shape the
+parser expects):
 
 ```yaml
 extraEnv:
   # Junior operator — read-only diagnostics, metadata-only heap previews.
-  - name: Auth__BearerTokens__junior__Token
+  - name: Auth__BearerTokens__0__Name
+    value: junior
+  - name: Auth__BearerTokens__0__Token
     valueFrom: { secretKeyRef: { name: dotnet-diag-tokens, key: junior } }
-  - name: Auth__BearerTokens__junior__Scopes__0
-    value: counters-read
-  - name: Auth__BearerTokens__junior__Scopes__1
-    value: cpu-sample
-  - name: Auth__BearerTokens__junior__Scopes__2
+  - name: Auth__BearerTokens__0__Scopes__0
+    value: read-counters
+  - name: Auth__BearerTokens__0__Scopes__1
+    value: eventpipe
+  - name: Auth__BearerTokens__0__Scopes__2
     value: heap-read
 
   # Incident-response operator — same baseline plus the three modifier scopes
   # subsumed from the legacy Diagnostics__Allow* flags (B5.4).
-  - name: Auth__BearerTokens__incident__Token
+  - name: Auth__BearerTokens__1__Name
+    value: incident
+  - name: Auth__BearerTokens__1__Token
     valueFrom: { secretKeyRef: { name: dotnet-diag-tokens, key: incident } }
-  - name: Auth__BearerTokens__incident__Scopes__0
+  - name: Auth__BearerTokens__1__Scopes__0
+    value: read-counters
+  - name: Auth__BearerTokens__1__Scopes__1
+    value: eventpipe
+  - name: Auth__BearerTokens__1__Scopes__2
     value: heap-read
-  - name: Auth__BearerTokens__incident__Scopes__1
-    value: sensitive-heap-read   # raw string previews on heap drilldowns
-  - name: Auth__BearerTokens__incident__Scopes__2
-    value: event-source-collect
-  - name: Auth__BearerTokens__incident__Scopes__3
-    value: eventsource-any       # any provider, not just the curated allowlist
-  - name: Auth__BearerTokens__incident__Scopes__4
-    value: cpu-sample
-  - name: Auth__BearerTokens__incident__Scopes__5
-    value: symbols-remote        # remote symbol servers (`srv*https://…`)
+  - name: Auth__BearerTokens__1__Scopes__3
+    value: ptrace
+  - name: Auth__BearerTokens__1__Scopes__4
+    value: sensitive-heap-read  # raw string previews on heap drilldowns
+  - name: Auth__BearerTokens__1__Scopes__5
+    value: eventsource-any      # any provider, not just the curated allowlist
+  - name: Auth__BearerTokens__1__Scopes__6
+    value: symbols-remote       # remote symbol servers (`srv*https://…`)
 ```
 
 Modifier scopes (`sensitive-heap-read`, `eventsource-any`, `symbols-remote`)

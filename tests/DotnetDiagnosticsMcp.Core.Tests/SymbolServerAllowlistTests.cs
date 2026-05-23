@@ -49,4 +49,18 @@ public sealed class SymbolServerAllowlistTests
         result.IsAllowed.Should().BeFalse();
         result.DeniedHost.Should().Be("attacker.example");
     }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("/symbols", false)]
+    [InlineData("/symbols/http://cache", false)]
+    [InlineData("c:\\sym\\https\\foo", false)]
+    [InlineData("srv*c:\\sym*https://msdl.microsoft.com/download/symbols", true)]
+    [InlineData("cache*/tmp/sym;srv*https://msdl.microsoft.com/syms", true)]
+    [InlineData("symsrv*symsrv.dll*https://example.com/syms", true)]
+    public void ContainsRemoteUrl_OnlyMatchesSegmentTokenizedRemoteUrls(string? path, bool expected)
+    {
+        SymbolServerAllowlist.ContainsRemoteUrl(path).Should().Be(expected);
+    }
 }
