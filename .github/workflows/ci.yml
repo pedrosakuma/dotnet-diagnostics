@@ -66,11 +66,19 @@ jobs:
       # `--blame-crash --blame-crash-dump-type full` keeps a dump around the
       # next time a test host actually dies, so future investigations don't
       # have to push a CI-only repro PR just to capture state.
+      #
+      # `scripts/ci-test-with-retry.sh` tolerates the documented Ubuntu host-
+      # crash flake (issue #147): when the TRX shows every executed test
+      # passed but the host exited non-zero, the script retries once and, if
+      # the phantom crash reproduces, treats the run as successful. Real test
+      # failures are surfaced immediately with no retry. The first attempt's
+      # TestResults directory is preserved as TestResults.attempt1/ so the
+      # crash dump survives upload.
       - name: Test (Core)
-        run: dotnet test tests/DotnetDiagnosticsMcp.Core.Tests/DotnetDiagnosticsMcp.Core.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=core-test-results.trx" --results-directory TestResults
+        run: scripts/ci-test-with-retry.sh core-test-results.trx -- dotnet test tests/DotnetDiagnosticsMcp.Core.Tests/DotnetDiagnosticsMcp.Core.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=core-test-results.trx" --results-directory TestResults
 
       - name: Test (Server integration)
-        run: dotnet test tests/DotnetDiagnosticsMcp.Server.IntegrationTests/DotnetDiagnosticsMcp.Server.IntegrationTests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --filter "Category!=KindIntegration" --logger "trx;LogFileName=server-test-results.trx" --results-directory TestResults
+        run: scripts/ci-test-with-retry.sh server-test-results.trx -- dotnet test tests/DotnetDiagnosticsMcp.Server.IntegrationTests/DotnetDiagnosticsMcp.Server.IntegrationTests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --filter "Category!=KindIntegration" --logger "trx;LogFileName=server-test-results.trx" --results-directory TestResults
 
       - name: Upload test results
         if: always()
@@ -80,4 +88,6 @@ jobs:
           path: |
             **/TestResults/*.trx
             **/TestResults/**/*.dmp
+            **/TestResults.attempt1/*.trx
+            **/TestResults.attempt1/**/*.dmp
           if-no-files-found: ignore
