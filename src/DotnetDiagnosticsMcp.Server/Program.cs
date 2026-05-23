@@ -104,7 +104,7 @@ servicesHolder = app.Services;
 // authoritative for both shapes (scoped + legacy).
 var hasScopedTokens = builder.Configuration.GetSection("Auth:BearerTokens").Exists();
 var hasLegacyToken = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MCP_BEARER_TOKEN"));
-var boundToNonLoopback = HasNonLoopbackBinding(app, builder.Configuration);
+var boundToNonLoopback = BindingInspector.HasNonLoopbackBinding(app, builder.Configuration);
 
 if (boundToNonLoopback && !hasScopedTokens && !hasLegacyToken)
 {
@@ -211,84 +211,8 @@ static async Task<int> RunStdioAsync(string[] args)
     return 0;
 }
 
-// H9 (issue #162): inspect every place ASP.NET Core picks up a Kestrel binding —
-// CLI args (--urls), env vars (ASPNETCORE_URLS / DOTNET_URLS), IConfiguration
-// ("urls" key, including appsettings.json), and app.Urls (populated by launch
-// profiles / explicit code) — and return true if any of them resolves to a
-// non-loopback host. Returning false means the listener is either empty (test
-// host / TestServer) or strictly loopback.
-static bool HasNonLoopbackBinding(WebApplication app, IConfiguration configuration)
-{
-    var candidates = new List<string>(capacity: 8);
-
-    if (app.Urls.Count > 0)
-    {
-        candidates.AddRange(app.Urls);
-    }
-
-    foreach (var key in new[] { "urls", "ASPNETCORE_URLS", "DOTNET_URLS" })
-    {
-        var value = configuration[key];
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            candidates.AddRange(value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-        }
-    }
-
-    // Kestrel:Endpoints:<name>:Url takes precedence over `urls` / ASPNETCORE_URLS,
-    // so a configuration that binds to 0.0.0.0 there would otherwise sneak past the
-    // loopback check. Enumerate every endpoint and add its Url to the candidate set.
-    foreach (var endpoint in configuration.GetSection("Kestrel:Endpoints").GetChildren())
-    {
-        var url = endpoint["Url"];
-        if (!string.IsNullOrWhiteSpace(url))
-        {
-            candidates.Add(url);
-        }
-    }
-
-    foreach (var raw in candidates)
-    {
-        if (IsNonLoopbackUrl(raw))
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool IsNonLoopbackUrl(string raw)
-{
-    if (string.IsNullOrWhiteSpace(raw))
-    {
-        return false;
-    }
-
-    if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri))
-    {
-        return false;
-    }
-
-    var host = uri.Host;
-    if (string.IsNullOrEmpty(host))
-    {
-        return false;
-    }
-
-    if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
-    {
-        return false;
-    }
-
-    if (System.Net.IPAddress.TryParse(host, out var ip))
-    {
-        return !System.Net.IPAddress.IsLoopback(ip);
-    }
-
-    // Hostname that doesn't resolve at parse time (e.g. DNS name) — treat as non-loopback.
-    return true;
-}
+// H9 (issue #162) bind detection lives in DotnetDiagnosticsMcp.Server.Hosting.BindingInspector
+// (factored out for unit-test coverage of the port-only env keys).
 
 namespace DotnetDiagnosticsMcp.Server
 {
