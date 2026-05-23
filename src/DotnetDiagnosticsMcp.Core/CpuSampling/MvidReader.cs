@@ -13,12 +13,25 @@ namespace DotnetDiagnosticsMcp.Core.CpuSampling;
 /// </summary>
 public sealed class MvidReader
 {
-    private readonly ConcurrentDictionary<string, Guid?> _cache = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<CacheKey, Guid?> _cache = new();
 
     public Guid? TryRead(string? assemblyPath)
     {
         if (string.IsNullOrEmpty(assemblyPath)) return null;
-        return _cache.GetOrAdd(assemblyPath, ReadFromDisk);
+
+        try
+        {
+            var fullPath = Path.GetFullPath(assemblyPath);
+            var info = new FileInfo(fullPath);
+            if (!info.Exists) return null;
+            var normalizedPath = OperatingSystem.IsWindows() ? fullPath.ToUpperInvariant() : fullPath;
+            var key = new CacheKey(normalizedPath, info.LastWriteTimeUtc.Ticks, info.Length);
+            return _cache.GetOrAdd(key, static k => ReadFromDisk(k.Path));
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     private static Guid? ReadFromDisk(string path)
@@ -38,4 +51,6 @@ public sealed class MvidReader
             return null;
         }
     }
+
+    private readonly record struct CacheKey(string Path, long LastWriteTimeUtcTicks, long Length);
 }

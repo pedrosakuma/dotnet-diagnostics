@@ -274,6 +274,8 @@ unified drilldown**: `view="topStacks"` (default), `view="byThread"`
 | `inspect_live_heap` / `inspect_dump` (heap) / `query_heap_snapshot` | seconds | **yes** | ❌ | ClrMD walks managed heap (heap drilldown values metadata-only by default — see [Security gates](#security-gates-b4)) |
 | [`collect_process_dump`](#collect_process_dump) | seconds–minutes | no | ✅ (native dump) | **writes a dump file to disk** |
 | [`capture_method_bytes`](#capture_method_bytes) | cheap | **yes** | ❌ (use `dotnet-native-mcp.disassemble`) | reads JIT code-heap |
+| `get_module_bytes` | cheap | **yes** (live module attach) | ❌ (materialize locally, then hand off) | streams PE / PDB bytes over MCP chunks |
+| `get_dump_bytes` | cheap | no | ❌ (materialize locally, then hand off) | streams dump bytes from `MCP_ARTIFACT_ROOT` |
 | `list_pods` (orchestrator) | cheap | n/a | n/a | Kubernetes `pods.list` only — **opt-in**, registered only when `Orchestrator:Enabled=true` |
 
 "Window-bound" means the duration is the dominant cost; the tool will block for
@@ -285,8 +287,9 @@ EventPipe-based tools (including `collect_activities`, alongside the ones listed
 diagnostic IPC socket, which works as long as the MCP server runs as the
 **same UID** as the target process. ClrMD-backed tools added since the MVP —
 `collect_thread_snapshot`, `inspect_live_heap`, `inspect_dump` against a live
-PID, and `collect_process_dump` — additionally call `ptrace(PTRACE_ATTACH, …)`
-under the hood. On Linux, matching UIDs is **not** sufficient when the host's
+PID, `collect_process_dump`, and `get_module_bytes` — additionally call
+`ptrace(PTRACE_ATTACH, …)` under the hood. On Linux, matching UIDs is **not**
+sufficient when the host's
 `kernel.yama.ptrace_scope` is `1` (the Debian/Ubuntu/WSL default): the kernel
 blocks same-UID peer attach.
 
@@ -1051,6 +1054,86 @@ attach.
 **Side effects:** writes one `.bin` file per region (Hot, plus Cold when the
 JIT split the method). Suspend window on live attach is typically < 100 ms.
 **NativeAOT/R2R targets are rejected** with an explanatory error envelope.
+
+## `get_module_bytes`
+
+Streams a loaded managed module's PE or PDB in repeated `CallTool` chunks so a
+client-side sibling MCP can materialize the bytes locally in orchestrator mode.
+The tool resolves the module by **MVID** inside a live process, then returns a
+`ByteFetchEnvelope` carrying the full-artifact SHA-256, the current chunk, and a
+`NextActionHint` for the follow-up `offset` call when more bytes remain.
+
+> **Scope:** `module-bytes-read` is a **literal modifier scope**. A root/`*`
+> bearer passes the outer `[RequireScope]` gate but is still rejected in-method
+> unless the token literally carries `module-bytes-read`.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `moduleVersionId` | `string` (GUID `D`) | — | MVID of the loaded module to stream |
+| `asset` | `string` | `"pe"` | `"pe"` or `"pdb"` |
+| `offset` | `long` | `0` | Chunk start offset |
+| `maxBytes` | `int` | `4_194_304` | Requested chunk size; capped at `16 MiB` |
+| `processId` | `int?` | auto-select | Live PID. Omit to use the normal resolver |
+
+**Returns:** `ByteFetchEnvelope`:
+
+```json
+{
+  "kind": "module",
+  "asset": "pe",
+  "identifier": "6f5c9bf0-1e0b-4f3b-9a8e-...",
+  "sourcePath": "/app/MyService.dll",
+  "totalSize": 1835008,
+  "sha256": "4d9d...",
+  "offset": 0,
+  "chunkSize": 4194304,
+  "base64Chunk": "TVqQ...",
+  "nextOffset": 4194304,
+  "companionPdbPath": "/app/MyService.pdb",
+  "pdbIsEmbedded": null,
+  "processId": 12345
+}
+```
+
+**When to use:** cross-MCP handoff in orchestrator mode when `dotnet-assembly-mcp`
+or `dotnet-native-mcp` cannot be co-located with the diagnostics sidecar.
+
+**When NOT to use:** local / twin-sidecar topologies where the sibling MCP can
+already see the pod-local filesystem directly.
+
+## `get_dump_bytes`
+
+Streams a dump file already living under `MCP_ARTIFACT_ROOT` (or an absolute
+path that still resolves under that root after symlink resolution). The shape is
+identical to `get_module_bytes`, but the `asset` is always `"dump"` and the
+`identifier` is the canonical dump path under the sandbox.
+
+> **Scope:** same literal `module-bytes-read` requirement as `get_module_bytes`.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `dumpFilePath` | `string` | — | Relative path under `MCP_ARTIFACT_ROOT`, or an absolute path that still resolves under that root |
+| `offset` | `long` | `0` | Chunk start offset |
+| `maxBytes` | `int` | `4_194_304` | Requested chunk size; capped at `16 MiB` |
+
+**Notes:**
+
+- `dumpFilePath` is re-validated on **every** call via the artifact-root sandbox.
+  `..`, symlink escape, and absolute paths outside the root return
+  `InvalidArtifactPath`.
+- Artifacts larger than `256 MiB` are rejected with `InvalidArgument` rather
+  than partially streamed.
+- The returned `sha256` is for the **entire** dump, not just the current chunk.
+
+**When to use:** after `collect_process_dump(confirm=true)` when a client-side
+sibling MCP needs the dump bytes locally.
+
+**When NOT to use:** as a generic file reader — the sandbox intentionally only
+covers dump artifacts under `MCP_ARTIFACT_ROOT`.
 
 ---
 

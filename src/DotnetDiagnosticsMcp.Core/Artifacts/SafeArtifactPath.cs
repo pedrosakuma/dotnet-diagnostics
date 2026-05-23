@@ -74,6 +74,32 @@ public static class SafeArtifactPath
     }
 
     /// <summary>
+    /// Resolves an existing file path under <paramref name="root"/>. Relative paths are
+    /// interpreted under the artifact root; absolute paths are allowed only when they
+    /// still resolve under the canonical root after symlink resolution.
+    /// </summary>
+    public static string ResolvePath(
+        string root,
+        string requestedPath,
+        string parameterName = "path")
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestedPath);
+
+        var canonicalRoot = CanonicaliseRoot(root);
+        ValidatePathShape(requestedPath, parameterName);
+
+        var combined = Path.IsPathRooted(requestedPath)
+            ? Path.GetFullPath(requestedPath)
+            : Path.GetFullPath(Path.Combine(canonicalRoot, requestedPath));
+        EnsureUnderRoot(combined, canonicalRoot, parameterName);
+
+        var resolved = ResolveSymlinks(combined);
+        EnsureUnderRoot(resolved, canonicalRoot, parameterName);
+        return resolved;
+    }
+
+    /// <summary>
     /// Applies <c>0600</c> POSIX permissions to a newly-written artifact file. No-op on
     /// Windows (see class summary). On POSIX a chmod failure is fatal: it propagates as
     /// <see cref="ArtifactPathException"/> so the tool surfaces a structured error
@@ -133,10 +159,15 @@ public static class SafeArtifactPath
                 "absolute paths are not permitted; supply a path relative to the artifact root.");
         }
 
+        ValidatePathShape(relative, parameterName);
+    }
+
+    private static void ValidatePathShape(string path, string parameterName)
+    {
         // Inspect raw segments before normalisation so '..' is rejected even if
         // Path.GetFullPath would have collapsed it harmlessly within the root.
         var separators = new[] { '/', '\\' };
-        foreach (var segment in relative.Split(separators, StringSplitOptions.RemoveEmptyEntries))
+        foreach (var segment in path.Split(separators, StringSplitOptions.RemoveEmptyEntries))
         {
             if (segment == "..")
             {

@@ -311,7 +311,7 @@ In short:
 > use Kubernetes-native orchestration and transport, not shell-driven proxying,
 > and keep the orchestrator protocol-visible only at the outer client boundary.
 
-### 4.5 Cross-MCP handoff in orchestrator mode (known limitation)
+### 4.5 Cross-MCP handoff in orchestrator mode
 The diagnostics MCP routinely emits **filesystem-bound handoff payloads** consumed by sibling MCPs:
 - `MethodIdentity { mvid, metadataToken }` → `dotnet-assembly-mcp.get_method` needs the matching `.dll`/`.pdb` reachable on the **assembly-mcp host's filesystem**.
 - `NativeFrame { buildId, imagePath }` → `dotnet-native-mcp.load_native_binary` needs the binary at that path.
@@ -338,12 +338,12 @@ When the LLM passes a `MethodIdentity` from a pod-remote CPU sample to a client-
 - Any `dotnet-assembly-mcp` / `dotnet-native-mcp` call whose argument originated as a handoff from the remote pod.
 - `inspect_dump(dumpFilePath)` against a pod-local dump path.
 
-**Mitigation options (deferred — not in scope for P3a/P3b/P4):**
+**Mitigation options:**
 1. **Co-located twin sidecars (operator-side workaround)** — deploy `dotnet-assembly-mcp` and `dotnet-native-mcp` as additional ephemeral containers alongside the diagnostics container. The orchestrator's `attach_to_pod` can mint per-attach bearer tokens for each, and the LLM client connects to the cluster trio via the orchestrator proxy. Pure configuration; no protocol change. Recommended default.
-2. **Module-byte fetch endpoint** — extend the diagnostics MCP with `get_module_bytes(mvid)` / `get_dump_bytes(handle)` streamed through the orchestrator; the LLM client materializes to a scratch dir then passes that path to the client-side sibling MCPs. Adds surface and bandwidth; useful when twin sidecars are not feasible.
+2. **Module-byte fetch endpoint (available)** — `get_module_bytes(moduleVersionId, asset, offset, maxBytes, processId?)` and `get_dump_bytes(dumpFilePath, offset, maxBytes)` now stream PE/PDB/dump bytes through normal MCP CallTool round-trips. The client materializes the chunks to a scratch dir, verifies the full-artifact SHA-256, then passes that local path to the client-side sibling MCPs. This adds surface and bandwidth, but it unblocks cross-MCP handoffs when twin sidecars are not feasible.
 3. **MCP asset-URI convention** — promote handoffs from filesystem paths to a `mcp+pod://ns/pod/path` URI that participating MCPs know how to dereference via a callback into the diagnostics server. Cleanest end-state; requires alignment with the sibling MCPs and is **not a P7 item** — tracked as a Phase 9+ idea.
 
-This limitation is documented up-front so users picking the orchestrator topology can plan for option (1) — the only mitigation that requires no further work in this repository.
+In practice the deployment guidance is now: prefer option (1) when you can co-locate the sibling MCPs; fall back to option (2) when the client-side sibling MCPs must stay off-cluster.
 
 > **Security note — path hints are untrusted.** Every filesystem-bound payload
 > in the table above (`ModulePath`, `imagePath`, `dumpFilePath`, the
@@ -354,12 +354,10 @@ This limitation is documented up-front so users picking the orchestrator topolog
 > opening anything — see the new
 > [Path hints are untrusted](./handoff-contract.md#path-hints-are-untrusted)
 > section of the handoff contract for the producer/consumer rules and a
-> worked example. This applies especially to the parked **cross-MCP byte
-> fetch** mitigation (option 2 above, tracked as
-> [#144](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/144)):
-> if/when it ships, the materialised scratch path the LLM hands to the
-> client-side sibling MCP inherits the same untrusted-hint contract and must
-> be validated identically.
+> worked example. This applies especially to the shipped **cross-MCP byte
+> fetch** mitigation (option 2 above, [#144](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/144)):
+> the materialised scratch path the LLM hands to the client-side sibling MCP
+> inherits the same untrusted-hint contract and must be validated identically.
 
 ---
 ## 5. Session lifecycle

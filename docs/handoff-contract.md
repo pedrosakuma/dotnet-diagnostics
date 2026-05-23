@@ -99,8 +99,8 @@ Consumers SHOULD first try to satisfy the request from their own already-loaded
 module / image index keyed by MVID / build-id. The path is consulted only when
 the identity is not yet known to the consumer **and** the path survives the
 four checks above. This pattern naturally protects every handoff endpoint —
-including the parked cross-MCP byte-fetch idea
-([#144](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/144)) — without
+including the shipped cross-MCP byte-fetch tools (`get_module_bytes` /
+`get_dump_bytes`, [#144](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/144)) — without
 spreading validation logic across every tool entry-point.
 
 ### Worked example
