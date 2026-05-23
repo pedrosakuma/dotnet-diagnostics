@@ -281,7 +281,7 @@ public sealed class OrchestratorObservabilityTests
 
             var app = builder.Build();
             var registry = BearerTokenRegistry.Build(builder.Configuration, NullLogger.Instance, allowEphemeralFallback: true);
-            app.UseMiddleware<BearerTokenMiddleware>((IPrincipalResolver)registry);
+            app.UseMiddleware<BearerTokenMiddleware>((IPrincipalResolver)registry, OidcJwtAuthOptions.Disabled);
             app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
             app.MapOrchestratorObservability();
             await app.StartAsync();
