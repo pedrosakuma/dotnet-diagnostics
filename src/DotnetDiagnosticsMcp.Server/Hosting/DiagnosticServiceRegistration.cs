@@ -1,5 +1,6 @@
 using DotnetDiagnosticsMcp.Core.Activities;
 using DotnetDiagnosticsMcp.Core.Capabilities;
+using DotnetDiagnosticsMcp.Core.Bytes;
 using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Dump;
@@ -57,6 +58,8 @@ internal static class DiagnosticServiceRegistration
         services.AddSingleton<ISessionTargetBindingStore, MemorySessionTargetBindingStore>();
         services.AddSingleton<IProcessContextResolver, ProcessContextResolver>();
         services.AddSingleton<ICounterCollector, EventPipeCounterCollector>();
+        services.AddSingleton<MvidReader>();
+        services.AddSingleton<FileChunkReader>();
         services.AddSingleton<ClrMdMethodInstantiationEnricher>();
         services.AddSingleton<EventPipeCpuSampler>();
         services.AddSingleton<EventPipeAllocationSampler>();
@@ -71,6 +74,8 @@ internal static class DiagnosticServiceRegistration
         services.AddSingleton<IEventSourceCollector, EventPipeEventSourceCollector>();
         services.AddSingleton<IActivityCollector, EventPipeActivityCollector>();
         services.AddSingleton<IProcessDumper, DiagnosticsClientDumper>();
+        services.AddSingleton<IModuleByteSource, ClrMdModuleByteSource>();
+        services.AddSingleton<IDumpByteSource, FileSystemDumpByteSource>();
         services.AddSingleton<IDumpInspector, ClrMdDumpInspector>();
         services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.ClrMdThreadSnapshotInspector>();
         services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.LinuxNativeThreadSnapshotInspector>();

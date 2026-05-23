@@ -10,10 +10,10 @@
 
 ### 1.1 Current state
 
-The MCP server exposes **32 tools** today, every one of them gated by a *single*
+The MCP server exposes **34 tools** today, every one of them gated by a *single*
 `MCP_BEARER_TOKEN`. Enumeration from `src/DotnetDiagnosticsMcp.Server/Tools/`:
 
-`DiagnosticTools.cs` (28 tools). Line numbers are anchored to commit `292264e`; treat
+`DiagnosticTools.cs` (30 tools). Line numbers are anchored to commit `292264e`; treat
 the table here as the authoritative inventory and the per-scope tables in §2 as views
 over it. If `[McpServerTool]` decorations move, only this section must be re-pinned.
 
@@ -41,6 +41,8 @@ over it. If `[McpServerTool]` decorations move, only this section must be re-pin
 | `query_heap_snapshot` | DiagnosticTools.cs:1569 |
 | `collect_thread_snapshot` | DiagnosticTools.cs:2006 |
 | `capture_method_bytes` | DiagnosticTools.cs:2139 |
+| `get_module_bytes` | DiagnosticTools.cs:2412 |
+| `get_dump_bytes` | DiagnosticTools.cs:2476 |
 | `query_thread_snapshot` | DiagnosticTools.cs:2285 |
 | `start_investigation` | DiagnosticTools.cs:2465 |
 | `export_investigation_summary` | DiagnosticTools.cs:2519 |
@@ -296,6 +298,24 @@ distinct from an "investigator" token in the same deployment.
 **Risk if leaked.** Adversary sees and can detach every other tenant's active
 investigation.
 
+### 2.9.1 `module-bytes-read`
+
+Literal modifier scope for the cross-MCP byte-fetch tools.
+
+| Tool | file:line | Notes |
+|---|---|---|
+| `get_module_bytes` | DiagnosticTools.cs:2412 | Streams PE / PDB bytes for a loaded managed module. |
+| `get_dump_bytes` | DiagnosticTools.cs:2476 | Streams dump bytes under the artifact-root sandbox. |
+
+**Privilege rationale.** These tools bridge pod-local binaries / dumps out of the
+orchestrator boundary so sibling MCPs can materialize them client-side. The
+payloads are raw executable / debug / dump bytes, not redacted summaries, so the
+scope is deliberately **literal** (`HasExplicitScope`) and is never auto-granted
+by `root` / `*`.
+
+**Risk if leaked.** Adversary can export managed binaries, symbol files, and
+suitably small dump files (`<= 256 MiB`) from the target environment.
+
 ### 2.10 `investigation-export`
 
 | Tool | file:line |
@@ -392,16 +412,18 @@ approximation pending §2.12 — see also §2.15). Coverage as implemented by B5
 6  investigation-export
 1  orchestrator-list
 3  orchestrator-attach
+2  module-bytes-read
 0  job-control (reserved, see §2.11)
 ---
-32 tools total (28 in DiagnosticTools.cs + 4 in OrchestratorTools.cs)
+34 tools total (30 in DiagnosticTools.cs + 4 in OrchestratorTools.cs)
 ```
 
-`sensitive-heap-read`, `eventsource-any`, `symbols-remote`, and `orchestrator-admin`
-are *modifier* scopes that unlock additional output but do not appear in the coverage
-count — they do not gate any tool on their own. They are checked via
+`sensitive-heap-read`, `eventsource-any`, `symbols-remote`, `orchestrator-admin`,
+and `module-bytes-read` are *modifier* scopes checked via
 `BearerPrincipal.HasExplicitScope` (no wildcard honour) so a root token does not
 auto-acquire them; the operator must layer the modifier on top deliberately.
+Unlike the first four, `module-bytes-read` also gates two concrete tools on its
+own because byte-export is the entire privileged action.
 
 The taxonomy is enforced at startup by `ToolScopeRegistry.Build` (fails fast if any
 `[McpServerTool]` is missing both `[RequireScope]` and `[RequireAnyScope]`) and at call
@@ -410,7 +432,7 @@ time by `ToolScopeAuthorizationFilter`.
 ### 2.15 Strawman reconciliation
 
 The strawman in issue #166 listed nine scope buckets; this RFC lands ten primary scopes
-plus four modifier scopes. Differences:
+plus five modifier scopes. Differences:
 
 - **Added `sensitive-heap-read`** (modifier) — needed to subsume B4's
   `AllowSensitiveHeapValues` without conflating "topology" and "contents".
@@ -420,6 +442,9 @@ plus four modifier scopes. Differences:
   allowlist for the dotnet-symbols redirection branch.
 - **Added `orchestrator-admin`** (modifier) — needed to subsume B3's
   `AllowCrossSessionAdmin`.
+- **Added `module-bytes-read`** (literal modifier) — needed to gate the cross-MCP
+  byte-export tools added for orchestrator mode without letting `root` / `*`
+  silently export pod-local binaries and dumps.
 - **`job-control` reserved but unused** — strawman split `get_collection_status` /
   `cancel_collection` into a dedicated bucket. B5.2 folded them into
   `investigation-export` (along with `get_call_tree`) on the rationale that the only
