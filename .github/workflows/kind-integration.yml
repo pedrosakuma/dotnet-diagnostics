@@ -75,6 +75,10 @@ jobs:
           kind load docker-image "${SAMPLE_IMAGE}" --name p6-kind
 
       - name: Install orchestrator (Helm)
+        # TODO(#186 / B5.5): migrate orchestrator.allowCrossSessionAdmin=true below
+        # to a bearer token carrying the 'orchestrator-admin' scope (Auth:BearerTokens).
+        # The flag is deprecated as of B5.3 (#184) — it still works but the
+        # orchestrator logs a one-shot deprecation warning at the first bypass.
         run: |
           kubectl create namespace "${ORCH_NAMESPACE}"
           helm install dotnet-dbg-mcp deploy/helm/dotnet-diagnostics-orchestrator \

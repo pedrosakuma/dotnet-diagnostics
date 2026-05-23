@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnosticsMcp.Server.Orchestrator;
 using DotnetDiagnosticsMcp.Server.Orchestrator.Investigations;
+using DotnetDiagnosticsMcp.Server.Security;
 using DotnetDiagnosticsMcp.Server.Tools;
 using FluentAssertions;
 using ModelContextProtocol.Protocol;
@@ -133,6 +134,25 @@ public sealed class OrchestratorToolsP4Tests
         fx.Store.GetById(h.HandleId)!.State.Should().Be(InvestigationState.Closed);
     }
 
+    [Fact]
+    public async Task DetachFromPod_OwnerMismatch_OrchestratorAdminScopeOverride_Allows()
+    {
+        // B5.3 (issue #184): the per-bearer 'orchestrator-admin' scope is the
+        // scope-first replacement for AllowCrossSessionAdmin. With the flag OFF
+        // and only the scope granted, the owner-mismatch close must still succeed.
+        var fx = new Fixture();
+        var h = Active() with { OwnerSessionId = "sess-other" };
+        fx.Store.Add(h);
+
+        var result = await OrchestratorTools.DetachFromPod(
+            fx.Closer, fx.Binder, fx.Store, fx.Options,
+            TestPrincipalAccessors.WithScopes("orchestrator-attach", "orchestrator-admin"),
+            server: null!, handleId: h.HandleId);
+
+        result.IsError.Should().BeFalse();
+        fx.Store.GetById(h.HandleId)!.State.Should().Be(InvestigationState.Closed);
+    }
+
     // ---- list_active_investigations ------------------------------------------------------
 
     [Fact]
@@ -251,6 +271,72 @@ public sealed class OrchestratorToolsP4Tests
         result.Data.Items.Should().HaveCount(2);
     }
 
+    [Fact]
+    public async Task ListActiveInvestigations_OrchestratorAdminScopeOverride_SeesEveryHandle()
+    {
+        // B5.3 (issue #184): when the principal carries the 'orchestrator-admin'
+        // modifier scope, includeAllSessions=true returns cross-session handles
+        // even with AllowCrossSessionAdmin=false.
+        var fx = new Fixture();
+        fx.Store.Add(Active("a1") with { OwnerSessionId = "sess-other" });
+        fx.Store.Add(Active("a2") with { OwnerSessionId = "sess-other", State = InvestigationState.Closed });
+
+        var result = await OrchestratorTools.ListActiveInvestigations(
+            fx.Store, fx.Options,
+            TestPrincipalAccessors.WithScopes("orchestrator-attach", "orchestrator-admin"),
+            server: null!, includeTerminal: true, includeAllSessions: true);
+
+        result.IsError.Should().BeFalse();
+        result.Data!.TotalKnown.Should().Be(2);
+        result.Data.Items.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task ListActiveInvestigations_LegacyFlag_LogsDeprecationWarningOnce()
+    {
+        // B5.3 (issue #184): when the legacy AllowCrossSessionAdmin flag is what
+        // enables the bypass, the orchestrator logs a one-shot deprecation
+        // warning. Multiple calls in the same process must still produce exactly
+        // one warning so operator log streams stay clean.
+        OrchestratorAdminBypassPolicy.ResetWarningLatchForTests();
+        var fx = new Fixture { Options = { AllowCrossSessionAdmin = true } };
+        fx.Store.Add(Active("a1") with { OwnerSessionId = "sess-other" });
+
+        var capture = new CapturingLoggerFactory();
+        for (var i = 0; i < 4; i++)
+        {
+            var result = await OrchestratorTools.ListActiveInvestigations(
+                fx.Store, fx.Options, TestPrincipalAccessors.Root,
+                server: null!, loggerFactory: capture,
+                includeTerminal: true, includeAllSessions: true);
+            result.IsError.Should().BeFalse();
+        }
+
+        capture.WarningMessages
+            .Count(m => m.Contains("AllowCrossSessionAdmin is deprecated", StringComparison.Ordinal))
+            .Should().Be(1, "deprecation warning is one-shot per process");
+    }
+
+    [Fact]
+    public async Task ListActiveInvestigations_OrchestratorAdminScope_DoesNotLogDeprecation()
+    {
+        // The deprecation warning fires only on the legacy-flag path. A scope-only
+        // bypass must leave the log stream clean.
+        OrchestratorAdminBypassPolicy.ResetWarningLatchForTests();
+        var fx = new Fixture();
+        fx.Store.Add(Active("a1") with { OwnerSessionId = "sess-other" });
+        var capture = new CapturingLoggerFactory();
+
+        await OrchestratorTools.ListActiveInvestigations(
+            fx.Store, fx.Options,
+            TestPrincipalAccessors.WithScopes("orchestrator-attach", "orchestrator-admin"),
+            server: null!, loggerFactory: capture,
+            includeTerminal: true, includeAllSessions: true);
+
+        capture.WarningMessages
+            .Should().NotContain(m => m.Contains("AllowCrossSessionAdmin is deprecated", StringComparison.Ordinal));
+    }
+
     private sealed class Fixture
     {
         public MemoryInvestigationStore Store { get; } = new();
@@ -278,5 +364,26 @@ public sealed class OrchestratorToolsP4Tests
         public Task<System.Net.Http.HttpClient> GetOrCreateClientAsync(InvestigationHandle handle, CancellationToken cancellationToken)
             => Task.FromResult(new System.Net.Http.HttpClient());
         public Task CloseAsync(string handleId) => Task.CompletedTask;
+    }
+
+    private sealed class CapturingLoggerFactory : Microsoft.Extensions.Logging.ILoggerFactory
+    {
+        public System.Collections.Concurrent.ConcurrentBag<string> WarningMessages { get; } = new();
+        public void AddProvider(Microsoft.Extensions.Logging.ILoggerProvider provider) { }
+        public Microsoft.Extensions.Logging.ILogger CreateLogger(string categoryName) => new CapturingLogger(this);
+        public void Dispose() { }
+
+        private sealed class CapturingLogger : Microsoft.Extensions.Logging.ILogger
+        {
+            private readonly CapturingLoggerFactory _owner;
+            public CapturingLogger(CapturingLoggerFactory owner) { _owner = owner; }
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+            public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                if (logLevel >= Microsoft.Extensions.Logging.LogLevel.Warning)
+                    _owner.WarningMessages.Add(formatter(state, exception));
+            }
+        }
     }
 }

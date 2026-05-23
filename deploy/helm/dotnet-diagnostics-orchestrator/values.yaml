@@ -87,6 +87,10 @@ orchestrator:
   # harnesses) may list and proxy handles minted by other MCP sessions.
   # Default false — every caller sees only its own handles and the proxy
   # rejects cross-session access with a structured 403 ProxyOwnerMismatch.
+  # DEPRECATED (B5.3 / #184) — prefer granting the 'orchestrator-admin' scope
+  # via Auth:BearerTokens (see B5.5 / #186). The flag remains a backward-compat
+  # alias so existing values keep working unchanged; the orchestrator logs a
+  # one-shot deprecation warning the first time it is the bypass path.
   allowCrossSessionAdmin: false
 
 nodeSelector: {}

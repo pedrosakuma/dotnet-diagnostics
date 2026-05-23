@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using DotnetDiagnosticsMcp.Server.Hosting;
 using DotnetDiagnosticsMcp.Server.Orchestrator;
 using DotnetDiagnosticsMcp.Server.Orchestrator.Investigations;
+using DotnetDiagnosticsMcp.Server.Security;
 using FluentAssertions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -222,6 +223,142 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         _upstream.LastRequest.Should().NotBeNull("admin mode must forward cross-session traffic");
+    }
+
+    [Fact]
+    public async Task Proxy_AdminBypass_AllowsCrossSessionCaller_WhenOrchestratorAdminScopeGranted()
+    {
+        // B5.3 (issue #184): the per-bearer 'orchestrator-admin' modifier scope is
+        // the scope-first replacement for the AllowCrossSessionAdmin deployment
+        // flag. With the flag OFF and the scope granted on the request principal,
+        // the cross-session owner check must be bypassed exactly as before.
+        await DisposeAsync();
+        var adminPrincipal = new BearerPrincipal(
+            name: "test-admin",
+            scopes: System.Collections.Immutable.ImmutableHashSet.Create(
+                "orchestrator-attach", "orchestrator-admin"));
+        var capture = new CapturingLoggerProvider();
+        await InitializeWithPrincipalAsync(adminPrincipal, allowCrossSessionAdmin: false, capture);
+
+        _store.Add(NewHandleOwned("inv_scope_admin", "owner-A", "pod-token"));
+        _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK);
+
+        var req = new HttpRequestMessage(HttpMethod.Post, "/proxy/inv_scope_admin/mcp")
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        };
+        req.Headers.Add("Mcp-Session-Id", "owner-B");
+
+        var response = await _client.SendAsync(req);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        _upstream.LastRequest.Should().NotBeNull("orchestrator-admin scope must allow cross-session forwarding");
+        capture.Messages.Should().NotContain(m => m.Contains("AllowCrossSessionAdmin is deprecated", StringComparison.Ordinal),
+            "the scope path must not log the deprecation warning");
+    }
+
+    [Fact]
+    public async Task Proxy_AdminBypass_LegacyFlag_LogsDeprecationWarningOnce()
+    {
+        // B5.3 (issue #184): when the legacy AllowCrossSessionAdmin flag is the
+        // bypass path, the orchestrator logs a one-shot deprecation warning. The
+        // warning must fire exactly once per process even across multiple bypass
+        // requests, so the operator's log stream stays clean.
+        OrchestratorAdminBypassPolicy.ResetWarningLatchForTests();
+        await DisposeAsync();
+        var capture = new CapturingLoggerProvider();
+        await InitializeWithPrincipalAsync(principal: null, allowCrossSessionAdmin: true, capture);
+
+        _store.Add(NewHandleOwned("inv_flag_dep", "owner-A", "pod-token"));
+        _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK);
+
+        for (var i = 0; i < 3; i++)
+        {
+            var req = new HttpRequestMessage(HttpMethod.Post, "/proxy/inv_flag_dep/mcp")
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            };
+            req.Headers.Add("Mcp-Session-Id", "owner-B");
+            (await _client.SendAsync(req)).StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+
+        capture.Messages
+            .Count(m => m.Contains("AllowCrossSessionAdmin is deprecated", StringComparison.Ordinal))
+            .Should().Be(1, "deprecation warning is one-shot per process");
+    }
+
+    private async Task InitializeWithPrincipalAsync(
+        BearerPrincipal? principal,
+        bool allowCrossSessionAdmin,
+        CapturingLoggerProvider? capture = null)
+    {
+        var builder = Host.CreateDefaultBuilder();
+        builder.ConfigureWebHost(web =>
+        {
+            web.UseTestServer();
+            web.ConfigureServices(services =>
+            {
+                _store = new StubInvestigationStore();
+                _upstream = new CapturingUpstream();
+                _manager = new StubPortForwardManager(_upstream);
+                var opts = new OrchestratorOptions
+                {
+                    Enabled = true,
+                    ProxyBasePath = "/proxy",
+                    ProxyPodPort = 5130,
+                    AllowCrossSessionAdmin = allowCrossSessionAdmin,
+                };
+                services.AddSingleton(opts);
+                services.AddSingleton<IInvestigationStore>(_store);
+                services.AddSingleton<IPortForwardManager>(_manager);
+                services.AddLogging(b =>
+                {
+                    if (capture is not null) b.AddProvider(capture);
+                });
+                services.AddRouting();
+                services.AddRateLimiter(o =>
+                {
+                    o.AddPolicy(InvestigationProxyEndpoints.RateLimiterPolicyName, _ =>
+                        System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter("test"));
+                });
+            });
+            web.Configure(app =>
+            {
+                if (principal is not null)
+                {
+                    app.Use(async (ctx, next) =>
+                    {
+                        ctx.SetBearerPrincipal(principal);
+                        await next();
+                    });
+                }
+                app.UseRouting();
+                app.UseRateLimiter();
+                app.UseEndpoints(e => e.MapInvestigationProxy());
+            });
+        });
+        _host = await builder.StartAsync();
+        _server = _host.GetTestServer();
+        _client = _server.CreateClient();
+    }
+
+    private sealed class CapturingLoggerProvider : ILoggerProvider
+    {
+        public System.Collections.Concurrent.ConcurrentBag<string> Messages { get; } = new();
+        public ILogger CreateLogger(string categoryName) => new CapturingLogger(this);
+        public void Dispose() { }
+
+        private sealed class CapturingLogger : ILogger
+        {
+            private readonly CapturingLoggerProvider _owner;
+            public CapturingLogger(CapturingLoggerProvider owner) { _owner = owner; }
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                if (logLevel >= LogLevel.Warning) _owner.Messages.Add(formatter(state, exception));
+            }
+        }
     }
 
     private async Task InitializeAdminAsync()
