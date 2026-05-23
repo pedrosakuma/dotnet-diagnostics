@@ -137,6 +137,17 @@ public sealed class OrchestratorOptions
     /// in single-tenant operator deployments where one human auditor drives the
     /// orchestrator on behalf of every active investigation.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// B5.3 (issue #184) — DEPRECATED. The preferred way to grant cross-session
+    /// admin authority is to mint a bearer token carrying the
+    /// <c>orchestrator-admin</c> modifier scope via <c>Auth:BearerTokens</c>
+    /// (RFC 0001 §2.7). The flag remains accepted as a deployment-wide alias so
+    /// existing operator deployments keep working unchanged; it will be removed
+    /// in a future release. When the flag is the bypass path the orchestrator
+    /// logs a one-shot deprecation warning at startup-of-effect.
+    /// </para>
+    /// </remarks>
     public bool AllowCrossSessionAdmin { get; set; }
 
     /// <summary>
