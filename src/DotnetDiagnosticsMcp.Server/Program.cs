@@ -2,6 +2,7 @@ using DotnetDiagnosticsMcp.Core.Symbols;
 using DotnetDiagnosticsMcp.Server.Auth;
 using DotnetDiagnosticsMcp.Server.Hosting;
 using DotnetDiagnosticsMcp.Server.Orchestrator;
+using DotnetDiagnosticsMcp.Server.Security;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Threading.RateLimiting;
 
@@ -94,24 +95,56 @@ var app = builder.Build();
 loggerFactoryHolder = app.Services.GetRequiredService<ILoggerFactory>();
 servicesHolder = app.Services;
 
-// H9 (issue #162): when bound to a non-loopback address, fail startup unless an
-// operator-supplied bearer token is present. Generating an ephemeral token for a
-// network-exposed listener leaks credentials into logs and accepts those tokens
-// for the lifetime of the process. Loopback (127.0.0.1/::1/localhost) and stdio
-// keep the existing ephemeral fallback for developer ergonomics.
-var hasOperatorToken = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MCP_BEARER_TOKEN"));
+// B5.1 / RFC 0001 §5 + §7: scoped bearer auth replaces the previous single-bearer
+// path. The registry is constructed before the app starts handling requests so any
+// validation error (duplicate token, empty scope set, missing legacy token on a
+// non-loopback bind) surfaces as a startup failure with a clear log line — never a
+// per-request 500. Loopback / stdio keep their ephemeral-fallback ergonomics; the
+// H9/B1 non-loopback bind guard moves inside BearerTokenRegistry.Build so it stays
+// authoritative for both shapes (scoped + legacy).
+var hasScopedTokens = builder.Configuration.GetSection("Auth:BearerTokens").Exists();
+var hasLegacyToken = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MCP_BEARER_TOKEN"));
 var boundToNonLoopback = HasNonLoopbackBinding(app, builder.Configuration);
-if (boundToNonLoopback && !hasOperatorToken)
+
+if (boundToNonLoopback && !hasScopedTokens && !hasLegacyToken)
 {
     app.Logger.LogCritical(
-        "Refusing to start: server is configured to bind to a non-loopback address but MCP_BEARER_TOKEN is not set. " +
-        "Set MCP_BEARER_TOKEN to an operator-managed secret before exposing the MCP endpoint, " +
+        "Refusing to start: server is configured to bind to a non-loopback address but " +
+        "neither Auth:BearerTokens nor MCP_BEARER_TOKEN is set. " +
+        "Configure Auth:BearerTokens (preferred — see RFC 0001) or set MCP_BEARER_TOKEN " +
+        "to an operator-managed secret before exposing the MCP endpoint, " +
         "or restrict --urls / ASPNETCORE_URLS to loopback (http://127.0.0.1:<port>) for local development.");
     return 1;
 }
 
-var token = BearerTokenOptions.LoadOrGenerate(app.Logger, allowEphemeralFallback: !boundToNonLoopback);
-app.UseMiddleware<BearerTokenMiddleware>(token);
+if (boundToNonLoopback && !hasScopedTokens && hasLegacyToken)
+{
+    // RFC 0001 §7.1 v1 transition: legacy var is still accepted on non-loopback binds
+    // but operators are nudged toward Auth:BearerTokens before v2 removes the fallback.
+    app.Logger.LogWarning(
+        "MCP_BEARER_TOKEN is set without Auth:BearerTokens; the legacy variable resolves to root scope " +
+        "and is deprecated for non-loopback deployments. See RFC 0001 (docs/rfcs/0001-per-tool-authorization-scopes.md).");
+}
+
+BearerTokenRegistry registry;
+try
+{
+    registry = BearerTokenRegistry.Build(
+        builder.Configuration,
+        app.Logger,
+        allowEphemeralFallback: !boundToNonLoopback);
+}
+catch (InvalidOperationException ex)
+{
+    app.Logger.LogCritical(ex, "Bearer auth registry failed to initialise.");
+    return 1;
+}
+
+// Singleton resolver — keeps the JWT/OIDC swap path (RFC 0001 §3.3) a one-line DI
+// change. We pass it positionally to UseMiddleware because the registry is built
+// post-app.Build (it needs the resolved logger + final config) and DI is locked by
+// then; UseMiddleware<T>(args) matches the registry by constructor parameter type.
+app.UseMiddleware<BearerTokenMiddleware>((IPrincipalResolver)registry);
 
 // M5: rate limiter middleware runs after bearer-auth so 401-bound traffic still
 // short-circuits cheaply and only authenticated traffic counts against the policy.
