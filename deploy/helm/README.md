@@ -191,6 +191,35 @@ for the Cloud Run + Secret Manager mapping (`--set-secrets` for token values,
 task definitions, Azure Container Apps secrets, and any other env-var-driven
 container platform.
 
+### Modifier scopes vs legacy `Diagnostics__Allow*` flags (B5.4 / #185)
+
+Three RFC 0001 scopes — `sensitive-heap-read`, `eventsource-any`, and
+`symbols-remote` — subsume the legacy deployment-wide flags
+`Diagnostics:AllowSensitiveHeapValues`, `Diagnostics:EventSourceAllowlist`, and
+`Diagnostics:SymbolServerAllowlist`. Layer them onto specific bearer tokens
+instead of unlocking them globally:
+
+```yaml
+bearerTokens:
+  - name: ops-incident
+    valueFrom:
+      secretKeyRef: { name: dotnet-diag-tokens, key: incident }
+    scopes:
+      - heap-read
+      - ptrace
+      - sensitive-heap-read   # raw string previews on heap drilldowns
+      - eventsource-any       # any EventSource provider, not just the curated allowlist
+      - symbols-remote        # remote symbol servers (`srv*https://…`)
+```
+
+Modifier scopes are deliberately **literal** — a `*` (root) bearer does NOT
+auto-grant them, so the deployment-wide gate still applies unless the operator
+explicitly layers the scope on top of a privileged token. The legacy flags
+remain available as fallback; they log a once-per-process deprecation warning
+when they are what unlocked a call. See `docs/tool-reference.md` § "Security
+gates (B4)" and `docs/rfcs/0001-per-tool-authorization-scopes.md` § 7 for the
+deprecation timeline.
+
 ## Operations and security
 
 - **Token rotation:** update the Secret, then restart the Deployment (`kubectl rollout restart deploy/<release>-dotnet-diagnostics-orchestrator`). Existing in-memory investigation handles are intentionally lost on restart; clients re-run `attach_to_pod` per the stateless design.

@@ -80,6 +80,26 @@ public sealed class SymbolServerAllowlist
         return ValidationResult.Allow();
     }
 
+    /// <summary>
+    /// Mirrors the same tokenization <see cref="Validate"/> uses: returns
+    /// <c>true</c> only when at least one segment is a well-formed
+    /// <c>srv*</c> / <c>symsrv*</c> / <c>cache*</c> entry that resolves to a
+    /// remote <c>http(s)</c> URL. Substring-matching <c>"http://"</c> against
+    /// the raw path is intentionally avoided so a local cache directory whose
+    /// name happens to contain that token does not produce a false positive
+    /// (B5.4 / RFC 0001 §7.3 deprecation telemetry).
+    /// </summary>
+    public static bool ContainsRemoteUrl(string? symbolPath)
+    {
+        if (string.IsNullOrWhiteSpace(symbolPath)) return false;
+        var segments = symbolPath.Split(SegmentSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var segment in segments)
+        {
+            if (TryExtractRemoteUrl(segment, out _)) return true;
+        }
+        return false;
+    }
+
     private static bool TryExtractRemoteUrl(string segment, out string url)
     {
         url = string.Empty;
