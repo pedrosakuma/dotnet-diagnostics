@@ -159,10 +159,13 @@ internal static class InvestigationProxyEndpoints
         // — this is the operator/central-orchestrator topology where a single
         // bearer is authoritative across MCP sessions.
         var orchOptions = context.RequestServices.GetRequiredService<OrchestratorOptions>();
-        // B5.2 (RFC 0001 §2.7): also accept the per-bearer 'orchestrator-admin' modifier
-        // scope. The deployment-wide AllowCrossSessionAdmin flag keeps working byte-for-byte.
-        var principalIsAdmin = context.GetBearerPrincipal()?.HasExplicitScope("orchestrator-admin") == true;
-        if (handle.OwnerSessionId is not null && !orchOptions.AllowCrossSessionAdmin && !principalIsAdmin)
+        // B5.2 (RFC 0001 §2.7) + B5.3 (issue #184): also accept the per-bearer
+        // 'orchestrator-admin' modifier scope. The deployment-wide
+        // AllowCrossSessionAdmin flag keeps working byte-for-byte; routing
+        // through OrchestratorAdminBypassPolicy emits a one-shot deprecation
+        // warning the first time the flag is what enables the bypass.
+        var adminBypass = OrchestratorAdminBypassPolicy.IsBypassAllowed(context.GetBearerPrincipal(), orchOptions, logger);
+        if (handle.OwnerSessionId is not null && !adminBypass)
         {
             var caller = ExtractCallerSessionId(context.Request);
             if (!string.Equals(caller, handle.OwnerSessionId, StringComparison.Ordinal))

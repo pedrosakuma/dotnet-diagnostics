@@ -347,6 +347,7 @@ public sealed class OrchestratorTools
         OrchestratorOptions options,
         IPrincipalAccessor principalAccessor,
         McpServer server,
+        ILoggerFactory? loggerFactory = null,
         [Description("Investigation handle id returned by attach_to_pod. When omitted, defaults to the handle currently bound to this MCP session.")]
         string? handleId = null,
         CancellationToken cancellationToken = default)
@@ -381,14 +382,16 @@ public sealed class OrchestratorTools
         // authenticated caller who learns a handle id could DoS another session's
         // investigation. B5.2 (RFC 0001 §2.7) adds an additive escape hatch: bearer
         // principals holding 'orchestrator-admin' bypass the owner check, mirroring the
-        // deployment-wide AllowCrossSessionAdmin flag but scoped per-bearer.
-        var hasAdminScope = principalAccessor.Current?.HasExplicitScope("orchestrator-admin") == true;
+        // deployment-wide AllowCrossSessionAdmin flag but scoped per-bearer. B5.3
+        // (issue #184) routes both checks through the shared policy helper so the
+        // legacy flag also emits a one-shot deprecation warning.
+        var bypassLogger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger("DotnetDiagnosticsMcp.Server.Security.OrchestratorAdminBypassPolicy");
+        var adminBypass = OrchestratorAdminBypassPolicy.IsBypassAllowed(principalAccessor.Current, options, bypassLogger);
         var existing = store.GetById(resolvedHandleId);
         if (existing is not null &&
             existing.OwnerSessionId is not null &&
             !string.Equals(existing.OwnerSessionId, sessionId, StringComparison.Ordinal) &&
-            !options.AllowCrossSessionAdmin &&
-            !hasAdminScope)
+            !adminBypass)
         {
             return DiagnosticResult.Fail<DetachResult>(
                 summary: $"detach_from_pod: handle '{resolvedHandleId}' is owned by a different MCP session.",
@@ -454,6 +457,7 @@ public sealed class OrchestratorTools
         OrchestratorOptions options,
         IPrincipalAccessor principalAccessor,
         McpServer? server = null,
+        ILoggerFactory? loggerFactory = null,
         [Description("When true, includes handles in terminal states (Closed/Expired/Failed). Default false — only Active/Attaching.")]
         bool includeTerminal = false,
         [Description("Operator-only opt-in (requires Orchestrator:AllowCrossSessionAdmin=true). When true, returns handles minted by other MCP sessions. Default false — every caller sees only its own handles.")]
@@ -472,11 +476,13 @@ public sealed class OrchestratorTools
         // handles created on the same un-scoped transport, so the secure
         // behavior degrades sensibly.
         var callerSessionId = TryGetServerSessionId(server!);
-        // B5.2 (RFC 0001 §2.7): admin listing requires EITHER the legacy
-        // AllowCrossSessionAdmin deployment flag OR the per-bearer
-        // 'orchestrator-admin' modifier scope. Both are operator-grade.
-        var hasAdminScope = principalAccessor.Current?.HasExplicitScope("orchestrator-admin") == true;
-        var adminListing = includeAllSessions && (options.AllowCrossSessionAdmin || hasAdminScope);
+        // B5.2 (RFC 0001 §2.7) + B5.3 (issue #184): admin listing requires EITHER the legacy
+        // AllowCrossSessionAdmin deployment flag OR the per-bearer 'orchestrator-admin'
+        // modifier scope. Both are operator-grade. The shared policy helper logs a one-shot
+        // deprecation warning the first time the legacy flag is the bypass path.
+        var bypassLogger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger("DotnetDiagnosticsMcp.Server.Security.OrchestratorAdminBypassPolicy");
+        var adminBypass = OrchestratorAdminBypassPolicy.IsBypassAllowed(principalAccessor.Current, options, bypassLogger);
+        var adminListing = includeAllSessions && adminBypass;
 
         // B3 review (issue #164): when not in admin mode, counts and TotalKnown
         // must be computed over the *visible* set only. Returning a global

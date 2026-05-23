@@ -92,75 +92,133 @@ for the port-forward stream that `KubernetesPortForwardManager` opens.
 - `orchestrator.allowedNamespaces` maps to `Orchestrator__NamespaceAllowlist__*`. When omitted, the chart defaults to the Helm release namespace so the deployment stays fail-closed.
 - `orchestrator.ephemeralContainerImage` defaults to the chart image. Pin a digest or release tag in production so the orchestrator and injected ephemeral container stay aligned.
 
-### Scoped bearer tokens (RFC 0001)
+## Scoped bearer tokens (recommended)
 
-The single-bearer model above maps the configured token to a synthetic root scope
-(`root` / `*`) that satisfies every `[RequireScope]` gate. RFC 0001 (per-tool
-authorization scopes) adds an `Auth:BearerTokens` array so operators can mint
-several bearers, each with a precise scope set — useful when a junior operator
-should be able to read counters and CPU samples but not unlock
-`query_heap_snapshot view=duplicate-strings includeSensitiveValues=true`.
+> **B5.5 (#186) — implements [RFC 0001 §6](../../docs/rfcs/0001-per-tool-authorization-scopes.md#6-wire-format-and-config-examples).**
+> The legacy `bearerToken.value` / `bearerToken.existingSecret` path keeps working
+> unchanged for backward compatibility, but new deployments should bind one or
+> more scoped tokens via `bearerTokens`. Each token is restricted to a subset of
+> tools by its `scopes` list (see RFC §2 for the taxonomy: `read-counters`,
+> `eventpipe`, `heap-read`, `sensitive-heap-read`, `ptrace`, `dump-write`,
+> `orchestrator-list`, `orchestrator-attach`, `orchestrator-admin`,
+> `investigation-export`, `job-control`, or `*` for root).
 
-Each entry in `Auth:BearerTokens` requires a non-empty `Name` (used in audit
-logs — never the token value), a `Token` (the bearer presented over the wire),
-and at least one `Scopes[]` entry. Names and tokens must be unique across the
-list. The runtime `[RequireScope]` attributes use these primary scope names:
-`read-counters`, `eventpipe`, `heap-read`, `ptrace`, `dump-write`,
-`investigation-export`. Layered on top are the three RFC 0001 modifier scopes
-that B5.4 subsumes from the legacy `Diagnostics__Allow*` flags:
-`sensitive-heap-read`, `eventsource-any`, `symbols-remote` (plus
-`orchestrator-admin` for the cross-session admin paths).
-
-In `values.yaml`-style configuration (a future chart slice — B5.5 — will surface
-this as first-class chart values; for now layer it in as raw `extraEnv` —
-indexed `__0__`, `__1__` entries map to the `IConfiguration` array shape the
-parser expects):
+### `values.yaml` example — viewer + admin pair
 
 ```yaml
-extraEnv:
-  # Junior operator — read-only diagnostics, metadata-only heap previews.
-  - name: Auth__BearerTokens__0__Name
-    value: junior
-  - name: Auth__BearerTokens__0__Token
-    valueFrom: { secretKeyRef: { name: dotnet-diag-tokens, key: junior } }
-  - name: Auth__BearerTokens__0__Scopes__0
-    value: read-counters
-  - name: Auth__BearerTokens__0__Scopes__1
-    value: eventpipe
-  - name: Auth__BearerTokens__0__Scopes__2
-    value: heap-read
-
-  # Incident-response operator — same baseline plus the three modifier scopes
-  # subsumed from the legacy Diagnostics__Allow* flags (B5.4).
-  - name: Auth__BearerTokens__1__Name
-    value: incident
-  - name: Auth__BearerTokens__1__Token
-    valueFrom: { secretKeyRef: { name: dotnet-diag-tokens, key: incident } }
-  - name: Auth__BearerTokens__1__Scopes__0
-    value: read-counters
-  - name: Auth__BearerTokens__1__Scopes__1
-    value: eventpipe
-  - name: Auth__BearerTokens__1__Scopes__2
-    value: heap-read
-  - name: Auth__BearerTokens__1__Scopes__3
-    value: ptrace
-  - name: Auth__BearerTokens__1__Scopes__4
-    value: sensitive-heap-read  # raw string previews on heap drilldowns
-  - name: Auth__BearerTokens__1__Scopes__5
-    value: eventsource-any      # any provider, not just the curated allowlist
-  - name: Auth__BearerTokens__1__Scopes__6
-    value: symbols-remote       # remote symbol servers (`srv*https://…`)
+bearerTokens:
+  - name: ops-viewer
+    valueFrom:
+      secretKeyRef:
+        name: dotnet-diag-tokens
+        key: viewer
+    scopes:
+      - read-counters
+      - eventpipe
+      - investigation-export
+  - name: ops-admin
+    valueFrom:
+      secretKeyRef:
+        name: dotnet-diag-tokens
+        key: admin
+    scopes:
+      - "*"
 ```
 
-Modifier scopes (`sensitive-heap-read`, `eventsource-any`, `symbols-remote`)
-are deliberately **literal** — a `root`/`*` bearer does NOT auto-grant them, so
-the deployment-wide gates still apply unless the operator explicitly layers the
-scope on top of a privileged token. The matching legacy paths
-(`Diagnostics:AllowSensitiveHeapValues`, `Diagnostics:EventSourceAllowlist`,
-`Diagnostics:SymbolServerAllowlist`) remain available as fallback; they now log
-a once-per-process deprecation warning when they are what unlocked a call. See
-`docs/tool-reference.md` § "Security gates (B4)" and
-`docs/rfcs/0001-per-tool-authorization-scopes.md` for the full scope table.
+The chart renders each entry as:
+
+```yaml
+env:
+  - name: Auth__BearerTokens__0__Name
+    value: ops-viewer
+  - name: Auth__BearerTokens__0__Token
+    valueFrom:
+      secretKeyRef: { name: dotnet-diag-tokens, key: viewer }
+  - name: Auth__BearerTokens__0__Scopes__0
+    value: read-counters
+  # …one __Scopes__{j} env var per scope, repeated for each token
+```
+
+These are the exact keys consumed by `BearerTokenRegistry` (server-side, B5.1
+#188 — parses `Auth:BearerTokens`).
+
+### Matching multi-key Secret (RFC §6.3)
+
+Create the Secret out-of-band so the chart never sees the raw token values.
+A single multi-key Secret is the recommended layout:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dotnet-diag-tokens
+  namespace: diagnosticsmcp-system
+type: Opaque
+stringData:
+  viewer: "<output of: openssl rand -hex 32>"
+  admin:  "<output of: openssl rand -hex 32>"
+```
+
+Apply it before `helm install`:
+
+```bash
+kubectl -n diagnosticsmcp-system create secret generic dotnet-diag-tokens \
+  --from-literal=viewer="$(openssl rand -hex 32)" \
+  --from-literal=admin="$(openssl rand -hex 32)"
+```
+
+> Per RFC §6.3, the token **names** (`ops-viewer`, `ops-admin`) appear in audit
+> logs and are non-sensitive; only the values are. Use the N-single-key-Secrets
+> alternative only when different RBAC subjects must be able to rotate
+> different tokens independently.
+
+### Precedence and back-compat
+
+| Configuration | Behaviour |
+|---|---|
+| `bearerToken` only (legacy single-bearer) | Unchanged — chart renders the legacy Secret and the `MCP_BEARER_TOKEN` env var. The token resolves to a synthetic root principal. |
+| `bearerTokens` only (recommended) | Chart skips the legacy Secret + env var entirely. Server loads scoped tokens from `Auth:BearerTokens`. |
+| Both set | Chart renders both. **The scoped registry wins at runtime; the legacy `MCP_BEARER_TOKEN` is ignored and the server logs a `Warning` at startup naming the ignored variable** (RFC §7.1, B5.1 #188). Useful only as a migration overlap window. |
+| Neither set (defaults) | `helm template` / `helm install` aborts with the H1 placeholder guard. Migrate to `bearerTokens` or override `bearerToken.value`. |
+
+### Cloud Run / non-Kubernetes wiring
+
+The same env shape (`Auth__BearerTokens__N__Name` / `__Token` / `__Scopes__M`)
+is what `BearerTokenRegistry` reads regardless of platform. See
+[RFC 0001 §6.4](../../docs/rfcs/0001-per-tool-authorization-scopes.md#64-cloud-run--secret-manager-sketch)
+for the Cloud Run + Secret Manager mapping (`--set-secrets` for token values,
+`--set-env-vars` for names and scope lists). The same approach applies to ECS
+task definitions, Azure Container Apps secrets, and any other env-var-driven
+container platform.
+
+### Modifier scopes vs legacy `Diagnostics__Allow*` flags (B5.4 / #185)
+
+Three RFC 0001 scopes — `sensitive-heap-read`, `eventsource-any`, and
+`symbols-remote` — subsume the legacy deployment-wide flags
+`Diagnostics:AllowSensitiveHeapValues`, `Diagnostics:EventSourceAllowlist`, and
+`Diagnostics:SymbolServerAllowlist`. Layer them onto specific bearer tokens
+instead of unlocking them globally:
+
+```yaml
+bearerTokens:
+  - name: ops-incident
+    valueFrom:
+      secretKeyRef: { name: dotnet-diag-tokens, key: incident }
+    scopes:
+      - heap-read
+      - ptrace
+      - sensitive-heap-read   # raw string previews on heap drilldowns
+      - eventsource-any       # any EventSource provider, not just the curated allowlist
+      - symbols-remote        # remote symbol servers (`srv*https://…`)
+```
+
+Modifier scopes are deliberately **literal** — a `*` (root) bearer does NOT
+auto-grant them, so the deployment-wide gate still applies unless the operator
+explicitly layers the scope on top of a privileged token. The legacy flags
+remain available as fallback; they log a once-per-process deprecation warning
+when they are what unlocked a call. See `docs/tool-reference.md` § "Security
+gates (B4)" and `docs/rfcs/0001-per-tool-authorization-scopes.md` § 7 for the
+deprecation timeline.
 
 ## Operations and security
 
