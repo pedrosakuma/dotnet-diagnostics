@@ -34,23 +34,38 @@ trx_path="TestResults/${trx_name}"
 is_phantom_crash() {
   [[ -f "$trx_path" ]] || return 1
 
-  local outcome failed error aborted timeout
+  local outcome failed error aborted timeout total executed passed
   outcome=$(grep -oE '<ResultSummary[^>]*outcome="[^"]*"' "$trx_path" \
             | head -1 | sed -E 's/.*outcome="([^"]*)".*/\1/')
   local counters
   counters=$(grep -oE '<Counters[^/]*/>' "$trx_path" | head -1)
   [[ -z "$counters" ]] && return 1
 
-  failed=$(echo "$counters"  | sed -nE 's/.*failed="([0-9]+)".*/\1/p')
-  error=$(echo "$counters"   | sed -nE 's/.* error="([0-9]+)".*/\1/p')
-  aborted=$(echo "$counters" | sed -nE 's/.*aborted="([0-9]+)".*/\1/p')
-  timeout=$(echo "$counters" | sed -nE 's/.*timeout="([0-9]+)".*/\1/p')
+  failed=$(echo "$counters"   | sed -nE 's/.*failed="([0-9]+)".*/\1/p')
+  error=$(echo "$counters"    | sed -nE 's/.* error="([0-9]+)".*/\1/p')
+  aborted=$(echo "$counters"  | sed -nE 's/.*aborted="([0-9]+)".*/\1/p')
+  timeout=$(echo "$counters"  | sed -nE 's/.*timeout="([0-9]+)".*/\1/p')
+  total=$(echo "$counters"    | sed -nE 's/.*total="([0-9]+)".*/\1/p')
+  executed=$(echo "$counters" | sed -nE 's/.*executed="([0-9]+)".*/\1/p')
+  passed=$(echo "$counters"   | sed -nE 's/.*passed="([0-9]+)".*/\1/p')
 
   [[ "$outcome" == "Failed" ]] || return 1
-  [[ "${failed:-0}"  -eq 0 ]] || return 1
-  [[ "${error:-0}"   -eq 0 ]] || return 1
-  [[ "${aborted:-0}" -eq 0 ]] || return 1
-  [[ "${timeout:-0}" -eq 0 ]] || return 1
+  [[ "${failed:-0}"   -eq 0 ]] || return 1
+  [[ "${error:-0}"    -eq 0 ]] || return 1
+  [[ "${aborted:-0}"  -eq 0 ]] || return 1
+  [[ "${timeout:-0}"  -eq 0 ]] || return 1
+  # Every test that started reporting must have passed: catches the case where
+  # the host crashed mid-test (no `failed` counter increment, but `executed`
+  # would otherwise outpace `passed`).
+  [[ "${executed:-0}" -gt 0 ]] || return 1
+  [[ "${passed:-0}"   -eq "${executed:-0}" ]] || return 1
+  # And the host must have got through ≥90% of the discovered inventory. This
+  # tolerates the documented case (284/287 ≈ 99%, 3 skips) but refuses to
+  # silently accept a host crash that killed the suite after only a fraction
+  # of tests ran.
+  [[ "${total:-0}"    -gt 0 ]] || return 1
+  local threshold=$(( total * 9 / 10 ))
+  [[ "${passed:-0}"  -ge "$threshold" ]] || return 1
   return 0
 }
 
