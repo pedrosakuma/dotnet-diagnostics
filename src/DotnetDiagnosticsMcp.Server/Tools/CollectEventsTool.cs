@@ -100,9 +100,9 @@ public sealed class CollectEventsTool
         // kind=exceptions
         [Description("kind=exceptions only. Maximum number of individual exception details to return. Must be >= 1. Defaults to 100.")]
         int maxRecent = 100,
-        // kind=gc
-        [Description("kind=gc only. Maximum number of GC events to return. Must be >= 1. Defaults to 200.")]
-        int maxGcEvents = 200,
+        // kind=gc / kind=event_source
+        [Description("kind=gc or kind=event_source. Maximum number of events to return. Must be >= 1. Defaults to 200.")]
+        int maxEvents = 200,
         // kind=event_source
         [Description("kind=event_source only. EventSource provider name (e.g. 'System.Net.Http' or 'Microsoft.AspNetCore.Hosting'). Required when kind='event_source'.")]
         string? providerName = null,
@@ -110,8 +110,6 @@ public sealed class CollectEventsTool
         long keywords = -1,
         [Description("kind=event_source only. Event verbosity level (0=LogAlways..5=Verbose). Defaults to 5.")]
         int eventLevel = 5,
-        [Description("kind=event_source only. Maximum number of captured events to return. Must be >= 1. Defaults to 200.")]
-        int maxEvents = 200,
         [Description("kind=event_source only. Opt-in switch for non-allowlisted EventSource providers (issue #165 / M2). Only honoured when the server has 'Diagnostics:AllowSensitiveHeapValues=true' or the principal holds the 'eventsource-any' scope.")]
         bool unsafeProvider = false,
         // kind=activities
@@ -172,7 +170,7 @@ public sealed class CollectEventsTool
             "gc" => Project(
                 await DiagnosticTools.CollectGcEvents(
                     gcCollector, resolver, handles,
-                    processId, effectiveDuration, maxGcEvents, depth,
+                    processId, effectiveDuration, maxEvents, depth,
                     cancellationToken).ConfigureAwait(false),
                 "gc",
                 (env, data) => env with { Gc = data }),

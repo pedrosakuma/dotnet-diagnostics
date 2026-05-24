@@ -108,7 +108,7 @@ public sealed class CollectEventsCompatibilityTests : IClassFixture<CollectEvent
         {
             ["processId"] = Environment.ProcessId,
             ["durationSeconds"] = 2,
-            ["maxGcEvents"] = 50,
+            ["maxEvents"] = 50,
         };
 
         var unified = DeserializeStructured<CollectEventsEnvelope>(
@@ -118,8 +118,7 @@ public sealed class CollectEventsCompatibilityTests : IClassFixture<CollectEvent
         unified.Gc.Should().NotBeNull();
         unified.Gc!.ProcessId.Should().Be(Environment.ProcessId);
 
-        // Cross-check the legacy tool with its own parameter name (maxEvents) — the field
-        // arrives at the same Core collector, so the shape is guaranteed equivalent.
+        // Cross-check the legacy tool — both now share the same parameter name.
         var legacy = DeserializeStructured<GcSummary>(
             await client.CallToolAsync(
                 "collect_gc_events",
