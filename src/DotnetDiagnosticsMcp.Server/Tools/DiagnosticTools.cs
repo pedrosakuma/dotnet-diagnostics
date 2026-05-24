@@ -22,6 +22,7 @@ using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Security;
 using DotnetDiagnosticsMcp.Core.Threads;
 using DotnetDiagnosticsMcp.Server.Security;
+using DotnetDiagnosticsMcp.Server.Tools.Deprecation;
 using Microsoft.Diagnostics.NETCore.Client;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
@@ -352,6 +353,7 @@ public sealed class DiagnosticTools
     }
 
     [RequireScope("read-counters")]
+    [DeprecatedTool("collect_events", "0.7.0", Note = "Call collect_events(kind=\"counters\", ...) instead.")]
     [McpServerTool(
         Name = "snapshot_counters",
         Title = "Snapshot EventCounters",
@@ -1086,6 +1088,7 @@ public sealed class DiagnosticTools
     }
 
     [RequireScope("eventpipe")]
+    [DeprecatedTool("collect_events", "0.7.0", Note = "Call collect_events(kind=\"exceptions\", ...) instead.")]
     [McpServerTool(
         Name = "collect_exceptions",
         Title = "Collect managed exceptions",
@@ -1158,6 +1161,7 @@ public sealed class DiagnosticTools
     }
 
     [RequireScope("eventpipe")]
+    [DeprecatedTool("collect_events", "0.7.0", Note = "Call collect_events(kind=\"gc\", ...) instead.")]
     [McpServerTool(
         Name = "collect_gc_events",
         Title = "Collect GC events",
@@ -1226,6 +1230,7 @@ public sealed class DiagnosticTools
     }
 
     [RequireScope("eventpipe")]
+    [DeprecatedTool("collect_events", "0.7.0", Note = "Call collect_events(kind=\"activities\", ...) instead.")]
     [McpServerTool(
         Name = "collect_activities",
         Title = "Capture ActivitySource traces",
@@ -1290,6 +1295,7 @@ public sealed class DiagnosticTools
     }
 
     [RequireScope("eventpipe")]
+    [DeprecatedTool("collect_events", "0.7.0", Note = "Call collect_events(kind=\"event_source\", providerName=...) instead.")]
     [McpServerTool(
         Name = "collect_event_source",
         Title = "Capture custom EventSource",
