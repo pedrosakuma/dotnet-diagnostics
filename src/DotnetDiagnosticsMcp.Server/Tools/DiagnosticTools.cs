@@ -447,6 +447,7 @@ public sealed class DiagnosticTools
     }
 
     [RequireScope("eventpipe")]
+    [DeprecatedTool("collect_sample", "0.9.0", Note = "Call collect_sample(kind=\"cpu\", ...) instead.")]
     [McpServerTool(
         Name = "collect_cpu_sample",
         Title = "Collect CPU sample",
@@ -584,6 +585,7 @@ public sealed class DiagnosticTools
     }
 
     [RequireScope("eventpipe")]
+    [DeprecatedTool("collect_sample", "0.9.0", Note = "Call collect_sample(kind=\"allocation\", ...) instead.")]
     [McpServerTool(
         Name = "collect_allocation_sample",
         Title = "Collect allocation sample",
@@ -726,6 +728,7 @@ public sealed class DiagnosticTools
     }
 
     [RequireScope("eventpipe")]
+    [DeprecatedTool("collect_sample", "0.9.0", Note = "Call collect_sample(kind=\"off_cpu\", ...) instead.")]
     [McpServerTool(
         Name = "collect_off_cpu_sample",
         Title = "Collect off-CPU blocking stacks",

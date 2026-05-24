@@ -40,6 +40,7 @@ internal static class PodLocalToolSurfaces
     {
         typeof(DiagnosticTools),
         typeof(CollectEventsTool),
+        typeof(CollectSampleTool),
         typeof(GetBytesTool),
         typeof(InspectProcessTool),
         typeof(InspectHeapTool),
