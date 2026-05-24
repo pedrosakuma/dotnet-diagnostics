@@ -30,7 +30,7 @@ Call `snapshot_counters` with default providers for 5 s. Look at:
 
 ### Step 2 — Branch on what's elevated
 
-- **CPU near 100% in one or two cores** → `collect_cpu_sample` for 10–30 s,
+- **CPU near 100% in one or two cores** → `collect_sample(kind="cpu")` for 10–30 s,
   inspect `topHotspots` by `exclusiveSamples`. Look for unexpected user code
   near the top; hot framework methods often point to allocation pressure
   rather than algorithmic cost.
@@ -122,7 +122,7 @@ client-induced.
 `get_diagnostic_capabilities` returns `runtime: "NativeAot"`. On NativeAOT:
 
 - ✅ counters, exceptions, GC events, custom EventSources, dumps all work
-- ❌ `collect_cpu_sample` returns no hotspots (SampleProfiler is CoreCLR-only)
+- ❌ `collect_sample(kind="cpu")` returns no hotspots on EventPipe (SampleProfiler is CoreCLR-only); the NativeAOT Linux fallback routes through `perf record`
 - ⚠️ EventSource support is opt-in via `<EventSourceSupport>true</EventSourceSupport>`
   on the target; if disabled at publish time even counters won't flow
 
@@ -138,7 +138,7 @@ Order of escalation from cheapest to most disruptive:
 1. `get_process_info`, `get_diagnostic_capabilities` — passive metadata
 2. `snapshot_counters` — small EventPipe session, low overhead
 3. `collect_event_source` / `collect_exceptions` / `collect_gc_events` — EventPipe sessions sized by `durationSeconds`
-4. `collect_cpu_sample` — same family as 3 but specifically uses the SampleProfiler at ~1 kHz
+4. `collect_sample(kind="cpu")` — same family as 3 but specifically uses the SampleProfiler at ~1 kHz
 5. `collect_process_dump dumpType=Mini` — pauses the process briefly while the kernel reads memory
 6. `collect_process_dump dumpType=WithHeap` or `Full` — can pause the process for seconds and writes hundreds of MB to disk
 

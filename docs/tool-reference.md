@@ -212,6 +212,8 @@ NextActionHints: throttle > 5% sugere `collect_cpu_sample` direto; memória >
 
 ### Off-CPU sampling (`collect_off_cpu_sample` + `query_off_cpu_snapshot`)
 
+> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="off_cpu", …)`](#collect_sample) instead; the legacy `collect_off_cpu_sample` remains registered behind a deprecation banner during the window (RFC 0002 §4.2 / issue #210).
+
 Complementa o `collect_cpu_sample` (que mostra **on-CPU** — onde o app gasta
 tempo executando) com **off-CPU** — onde threads ficaram **bloqueadas**
 (I/O, locks, condvars, monitor wait). Resolve o blind-spot clássico "CPU baixa
@@ -262,12 +264,13 @@ unified drilldown**: `view="topStacks"` (default), `view="byThread"`
 | [`get_diagnostic_capabilities`](#get_diagnostic_capabilities) *(deprecated — use `inspect_process(view="capabilities")`)* | ~2 s | no | ✅ | opens a short EventPipe probe |
 | [`get_container_signals`](#get_container_signals) *(deprecated — use `inspect_process(view="container")`)* | cheap | no | ✅ (Linux) | reads `/sys/fs/cgroup` + `/proc` files |
 | [`get_memory_trend`](#get_memory_trend) *(deprecated — use `inspect_process(view="memory_trend")`)* | window-bound | no | ✅ | reads `/proc/<pid>/smaps_rollup` + `/proc/<pid>/stat` (Linux) or `GetProcessMemoryInfo` (Windows) |
-| `collect_off_cpu_sample` (Linux/Windows) | window-bound | no | ✅ (Linux) | system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
+| `collect_off_cpu_sample` (Linux/Windows) | window-bound | no | ✅ (Linux) | **Deprecated — use `collect_sample(kind="off_cpu")`.** system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
 | `query_off_cpu_snapshot` | cheap | no | ✅ | drilldown on handle from `collect_off_cpu_sample` |
 | [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/gc/event_source/activities. |
+| [`collect_sample`](#collect_sample) | window-bound | depends on kind | ✅ (mostly — see kind) | **Canonical bounded-time sampler.** Dispatches by `kind` to cpu/off_cpu/allocation. |
 | [`snapshot_counters`](#snapshot_counters) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="counters")`.** opens an EventPipe session |
-| [`collect_cpu_sample`](#collect_cpu_sample) | window-bound | no | ✅ (perf/ETW, native frames) | EventPipe + temp `.nettrace` on disk |
-| [`collect_allocation_sample`](#collect_allocation_sample) | window-bound | no | ⚠️ TypeName empty | EventPipe session |
+| [`collect_cpu_sample`](#collect_cpu_sample) | window-bound | no | ✅ (perf/ETW, native frames) | **Deprecated — use `collect_sample(kind="cpu")`.** EventPipe + temp `.nettrace` on disk |
+| [`collect_allocation_sample`](#collect_allocation_sample) | window-bound | no | ⚠️ TypeName empty | **Deprecated — use `collect_sample(kind="allocation")`.** EventPipe session |
 | [`collect_exceptions`](#collect_exceptions) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="exceptions")`.** EventPipe session |
 | [`collect_gc_events`](#collect_gc_events) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="gc")`.** EventPipe session |
 | [`collect_activities`](#collect_activities) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="activities")`.** EventPipe session |
@@ -578,6 +581,49 @@ kind requires `eventpipe` (event_source additionally honors the existing
 
 ---
 
+## `collect_sample`
+
+**Canonical bounded-time sampler** (RFC 0002 §4.2). A single tool that
+dispatches by `kind` to the underlying CPU / off-CPU / allocation sampler.
+New clients should call `collect_sample` instead of the three legacy entry
+points; the legacy tools remain registered and behaviorally identical, but
+each carries a `DEPRECATED` notice and will be removed in `0.9.0`.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `kind` | `string` | `cpu` | One of `cpu`, `off_cpu`, `allocation`. Case-sensitive. |
+| `processId` | `int?` | auto | Target process id. |
+| `durationSeconds` | `int` | `10` | Sampling window. ≥ 1. |
+| `topN` | `int` | `25` | Top hotspots / blocking stacks / types. |
+| `depth` | `SamplingDepth` | `Summary` | Verbosity; applies to `cpu` / `off_cpu`. Ignored by `allocation`. |
+| `symbolPath` | `string?` | `null` | `cpu` / `off_cpu` only. Symbol search path; remote `srv*http(s)://…` segments are denied unless allowlisted (issue #165 / M3). |
+| `resolveSourceLines` | `bool` | `true` | `cpu` only. Same as [`collect_cpu_sample`](#collect_cpu_sample). |
+| `maxResolvedSources` | `int?` | `topN` | `cpu` only. |
+| `resolveMethodInstantiations` / `maxResolvedMethodInstantiations` | — | — | `cpu` only. Same as `collect_cpu_sample`. |
+| `runAsJob` | `bool` | `false` | `cpu` only. Run in the background and poll with `get_collection_status(handle)`. The async/MCP-task cutover that retires this flag is tracked by issue #211. |
+
+**Returns:** `CollectSampleEnvelope` — a polymorphic record carrying the
+`kind` discriminator plus exactly one populated payload field
+(`cpu` / `offCpu` / `allocation`). The envelope's `summary`, `hints`,
+`handle`, `handleExpiresAt`, and `resolvedProcess` are passed through from
+the underlying sampler verbatim, so `get_call_tree` and
+`query_off_cpu_snapshot` drilldowns continue to work unchanged.
+
+**Platform notes.** `kind="off_cpu"` requires Linux (`perf record -e sched_switch`)
+or Windows admin (NT Kernel Logger ContextSwitch); on unsupported hosts the
+unified tool returns the same `NotSupported` / `PermissionDenied` envelope the
+legacy `collect_off_cpu_sample` returns. `kind="allocation"` works on CoreCLR
+and NativeAOT, but on NativeAOT GCAllocationTick events carry an empty
+TypeName — surfaced via the envelope summary so the LLM knows to fall back
+to `kind="cpu"` for per-site attribution.
+
+**Authorization.** Gated by `RequireScope("eventpipe")`, matching the three
+legacy samplers verbatim.
+
+---
+
 ## `snapshot_counters`
 
 > **Deprecated — call [`collect_events`](#collect_events) with `kind="counters"`.**
@@ -622,6 +668,8 @@ When `providers` is null/empty the defaults are:
 ---
 
 ## `collect_cpu_sample`
+
+> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="cpu", …)`](#collect_sample) instead. The legacy tool remains registered and behaviorally identical during the deprecation window (RFC 0002 §4.2 / issue #210).
 
 Captures a CPU sample via the `Microsoft-DotNETCore-SampleProfiler` provider,
 writes a temporary `.nettrace`, parses it with `TraceLog` and aggregates the
@@ -741,6 +789,8 @@ closed form.
 ---
 
 ## `collect_allocation_sample`
+
+> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="allocation", …)`](#collect_sample) instead. The legacy tool remains registered and behaviorally identical during the deprecation window (RFC 0002 §4.2 / issue #210).
 
 Captures allocation samples from the target process via `GCAllocationTick`
 events from `Microsoft-Windows-DotNETRuntime` (keyword `GCKeyword=0x1`, level
