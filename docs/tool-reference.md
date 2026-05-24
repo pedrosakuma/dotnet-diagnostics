@@ -273,7 +273,7 @@ unified drilldown**: `view="topStacks"` (default), `view="byThread"`
 | [`collect_activities`](#collect_activities) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="activities")`.** EventPipe session |
 | [`collect_event_source`](#collect_event_source) | window-bound | no | ⚠️ provider must be embedded at publish | **Deprecated — use `collect_events(kind="event_source")`.** EventPipe session |
 | `collect_thread_snapshot` / `query_thread_snapshot` | seconds | no | ✅ via `linux-native-stack` / `etw-native-stack` | ptrace attach (Linux) / kernel logger (Windows) |
-| `inspect_live_heap` / `inspect_dump` (heap) / `query_heap_snapshot` | seconds | **yes** | ❌ | ClrMD walks managed heap (heap drilldown values metadata-only by default — see [Security gates](#security-gates-b4)) |
+| `inspect_heap` (canonical) / `inspect_live_heap` / `inspect_dump` (deprecated aliases, 0.7.0) / `query_heap_snapshot` | seconds | **yes** | ❌ | ClrMD walks managed heap (heap drilldown values metadata-only by default — see [Security gates](#security-gates-b4)) |
 | [`collect_process_dump`](#collect_process_dump) | seconds–minutes | no | ✅ (native dump) | **writes a dump file to disk** |
 | [`capture_method_bytes`](#capture_method_bytes) | cheap | **yes** | ❌ (use `dotnet-native-mcp.disassemble`) | reads JIT code-heap |
 <<<<<<< HEAD
@@ -1442,8 +1442,7 @@ deprecation warning. Tools covered:
 - `collect_cpu_sample`
 - `collect_off_cpu_sample`
 - `collect_thread_snapshot`
-- `inspect_dump`
-- `inspect_live_heap`
+- `inspect_heap` (and its deprecated aliases `inspect_dump` / `inspect_live_heap`)
 
 `MCP_SYMBOL_PATH` and `_NT_SYMBOL_PATH` from the **operator-set environment** are *not*
 validated — they are treated as trusted by the deployment.
