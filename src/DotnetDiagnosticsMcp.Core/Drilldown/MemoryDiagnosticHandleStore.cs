@@ -25,7 +25,7 @@ public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
         _clock = clock ?? TimeProvider.System;
     }
 
-    public DiagnosticHandle Register(int processId, string kind, object artifact, TimeSpan ttl, bool evictWhenProcessExits = true)
+    public DiagnosticHandle Register(int processId, string kind, object artifact, TimeSpan ttl, bool evictWhenProcessExits = true, HandleOrigin? origin = null)
     {
         ArgumentNullException.ThrowIfNull(artifact);
         ArgumentException.ThrowIfNullOrWhiteSpace(kind);
@@ -39,7 +39,11 @@ public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
 
         var id = NewHandleId();
         var expiresAt = _clock.GetUtcNow().Add(ttl);
-        var handle = new DiagnosticHandle(id, expiresAt, processId, kind);
+        // Infer origin from evictWhenProcessExits when the caller did not specify one,
+        // so the legacy boolean parameter keeps controlling both eviction semantics and
+        // the audit-friendly origin label.
+        var effectiveOrigin = origin ?? (evictWhenProcessExits ? HandleOrigin.Live : HandleOrigin.Dump);
+        var handle = new DiagnosticHandle(id, expiresAt, processId, kind) { Origin = effectiveOrigin };
         _entries[id] = new Entry(handle, artifact, evictWhenProcessExits);
         return handle;
     }
