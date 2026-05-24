@@ -133,6 +133,8 @@ public sealed class CollectSampleTool
                     runAsJob,
                     depth,
                     deprecation,
+                    runAsJobDeprecation: null,
+                    requestContext: null,
                     cancellationToken).ConfigureAwait(false),
                 KindCpu,
                 (env, data) => env with { Cpu = data }),
