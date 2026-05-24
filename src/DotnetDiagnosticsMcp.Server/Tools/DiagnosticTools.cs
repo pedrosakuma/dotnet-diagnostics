@@ -1534,6 +1534,7 @@ public sealed class DiagnosticTools
     }
 
     [RequireScope("heap-read")]
+    [DeprecatedTool("inspect_heap", "0.7.0", Note = "Call inspect_heap(source=\"dump\", dumpFilePath=...) instead. Same backend, identical envelope (RFC 0002 / #206).")]
     [McpServerTool(
         Name = "inspect_dump",
         Title = "Inspect a process dump's managed heap",
@@ -1633,6 +1634,7 @@ public sealed class DiagnosticTools
     }
 
     [RequireScope("heap-read", "ptrace")]
+    [DeprecatedTool("inspect_heap", "0.7.0", Note = "Call inspect_heap(source=\"live\", processId=...) instead. Same backend, identical envelope (RFC 0002 / #206).")]
     [McpServerTool(
         Name = "inspect_live_heap",
         Title = "Inspect a live .NET process's managed heap",

@@ -52,8 +52,11 @@ public interface IDiagnosticHandleStore
     bool Invalidate(string handle);
 
     /// <summary>
-    /// Removes every artifact previously registered for <paramref name="processId"/>. Use when
-    /// the target process exits so consumers don't drill into a dead trace.
+    /// Removes every artifact previously registered for <paramref name="processId"/> that
+    /// opted in to process-exit eviction (the default). Use when the target process exits
+    /// so consumers don't drill into a dead trace. Artifacts registered with
+    /// <c>evictWhenProcessExits: false</c> (e.g. offline dump-file snapshots) are intentionally
+    /// preserved so they survive the originating PID's exit.
     /// </summary>
     int InvalidateForProcess(int processId);
 }
