@@ -188,6 +188,7 @@ public sealed class CollectSampleTool
             Handle = inner.Handle,
             HandleExpiresAt = inner.HandleExpiresAt,
             ResolvedProcess = inner.ResolvedProcess,
+            Cancelled = inner.Cancelled,
         };
     }
 }
