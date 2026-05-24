@@ -263,13 +263,14 @@ unified drilldown**: `view="topStacks"` (default), `view="byThread"`
 | [`get_memory_trend`](#get_memory_trend) | window-bound | no | ✅ | reads `/proc/<pid>/smaps_rollup` + `/proc/<pid>/stat` (Linux) or `GetProcessMemoryInfo` (Windows) |
 | `collect_off_cpu_sample` (Linux/Windows) | window-bound | no | ✅ (Linux) | system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
 | `query_off_cpu_snapshot` | cheap | no | ✅ | drilldown on handle from `collect_off_cpu_sample` |
-| [`snapshot_counters`](#snapshot_counters) | window-bound | no | ✅ | opens an EventPipe session |
+| [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/gc/event_source/activities. |
+| [`snapshot_counters`](#snapshot_counters) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="counters")`.** opens an EventPipe session |
 | [`collect_cpu_sample`](#collect_cpu_sample) | window-bound | no | ✅ (perf/ETW, native frames) | EventPipe + temp `.nettrace` on disk |
 | [`collect_allocation_sample`](#collect_allocation_sample) | window-bound | no | ⚠️ TypeName empty | EventPipe session |
-| [`collect_exceptions`](#collect_exceptions) | window-bound | no | ✅ | EventPipe session |
-| [`collect_gc_events`](#collect_gc_events) | window-bound | no | ✅ | EventPipe session |
-| [`collect_activities`](#collect_activities) | window-bound | no | ✅ | EventPipe session |
-| [`collect_event_source`](#collect_event_source) | window-bound | no | ⚠️ provider must be embedded at publish | EventPipe session |
+| [`collect_exceptions`](#collect_exceptions) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="exceptions")`.** EventPipe session |
+| [`collect_gc_events`](#collect_gc_events) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="gc")`.** EventPipe session |
+| [`collect_activities`](#collect_activities) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="activities")`.** EventPipe session |
+| [`collect_event_source`](#collect_event_source) | window-bound | no | ⚠️ provider must be embedded at publish | **Deprecated — use `collect_events(kind="event_source")`.** EventPipe session |
 | `collect_thread_snapshot` / `query_thread_snapshot` | seconds | no | ✅ via `linux-native-stack` / `etw-native-stack` | ptrace attach (Linux) / kernel logger (Windows) |
 | `inspect_live_heap` / `inspect_dump` (heap) / `query_heap_snapshot` | seconds | **yes** | ❌ | ClrMD walks managed heap (heap drilldown values metadata-only by default — see [Security gates](#security-gates-b4)) |
 | [`collect_process_dump`](#collect_process_dump) | seconds–minutes | no | ✅ (native dump) | **writes a dump file to disk** |
@@ -475,7 +476,48 @@ stack allocations.
 
 ---
 
+## `collect_events`
+
+**Canonical EventPipe collector** (RFC 0002 §4.5). A single tool that dispatches
+by `kind` to the underlying counters / exceptions / gc / event_source /
+activities collector. New clients should call `collect_events` instead of the
+five legacy entrypoints; the legacy tools remain registered and behaviorally
+identical, but each carries a `DEPRECATED` notice and will be removed in
+`0.7.0`.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `event_source`, `activities`. Case-sensitive. |
+| `processId` | `int?` | auto | Target process id. |
+| `durationSeconds` | `int` | 5 (counters) / 10 (others) | Collection window. |
+| `providers` / `intervalSeconds` | counters only | — | Same as [`snapshot_counters`](#snapshot_counters). |
+| `maxRecent` | exceptions only | 100 | Same as [`collect_exceptions`](#collect_exceptions). |
+| `maxEvents` | gc / event_source only | 200 | Same as the underlying tool. |
+| `providerName` / `keywords` / `eventLevel` / `depth` / `unsafeProvider` | event_source only | — | Same as [`collect_event_source`](#collect_event_source). |
+| `samplingRatio` / `maxActivities` / `includeBaggage` / `includeTags` | activities only | — | Same as [`collect_activities`](#collect_activities). |
+
+**Returns:** `CollectEventsEnvelope` — a polymorphic record that carries the
+`kind` discriminator plus exactly one populated payload field
+(`counters` / `exceptions` / `gc` / `eventSource` / `activities`). The
+envelope's `summary`, `hints`, `handle`, `handleExpiresAt`, and
+`resolvedProcess` are passed through from the underlying collector verbatim,
+so `query_collection` drilldowns continue to work unchanged.
+
+**Authorization.** The dispatcher is gated by `RequireAnyScope("read-counters","eventpipe")`
+and re-checks the per-kind scope inside the call so the boundaries of RFC 0001
+§2 are preserved: `kind="counters"` requires `read-counters`, every other
+kind requires `eventpipe` (event_source additionally honors the existing
+`eventsource-any` modifier).
+
+---
+
 ## `snapshot_counters`
+
+> **Deprecated — call [`collect_events`](#collect_events) with `kind="counters"`.**
+> Behaviorally identical; will be removed in `0.7.0`.
+
 
 Subscribes to one or more EventCounter providers and returns the latest value
 seen per counter over a fixed window.
@@ -697,6 +739,10 @@ returned handle to find which allocation sites are responsible.
 
 ## `collect_exceptions`
 
+> **Deprecated — call [`collect_events`](#collect_events) with `kind="exceptions"`.**
+> Behaviorally identical; will be removed in `0.7.0`.
+
+
 exception thrown by the process during the window.
 
 **Parameters:**
@@ -750,6 +796,10 @@ if they need a tool-shaped status check.
 
 ## `collect_gc_events`
 
+> **Deprecated — call [`collect_events`](#collect_events) with `kind="gc"`.**
+> Behaviorally identical; will be removed in `0.7.0`.
+
+
 Subscribes to the runtime `GC` keyword, pairs `GCStart`/`GCStop` events and
 returns aggregate + per-collection details.
 
@@ -798,6 +848,10 @@ with `dumpType = "WithHeap"` and analyze offline with `dotnet-dump`.
 ---
 
 ## `collect_activities`
+
+> **Deprecated — call [`collect_events`](#collect_events) with `kind="activities"`.**
+> Behaviorally identical; will be removed in `0.7.0`.
+
 
 Captures `ActivitySource` spans through the `Microsoft-Diagnostics-DiagnosticSource`
 EventPipe bridge, keeping completed span records inline and grouped rollups behind
@@ -873,6 +927,10 @@ re-projects the same capture window without reopening EventPipe.
 ---
 
 ## `collect_event_source`
+
+> **Deprecated — call [`collect_events`](#collect_events) with `kind="event_source"`.**
+> Behaviorally identical; will be removed in `0.7.0`.
+
 
 Generic passthrough that opens an EventPipe session for any EventSource by
 name and captures the events it emits in the window. Use for HTTP activity

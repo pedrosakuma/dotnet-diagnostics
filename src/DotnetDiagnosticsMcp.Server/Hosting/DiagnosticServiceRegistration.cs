@@ -212,6 +212,7 @@ internal static class DiagnosticServiceRegistration
                 options.ServerInstructions = ServerInstructionsText;
             })
             .WithTools<DiagnosticTools>()
+            .WithTools<CollectEventsTool>()
             .WithPrompts<Prompts.DiagnosticPrompts>()
             .WithResources<Resources.InvestigationGuideResources>()
             .WithResources<Resources.TraceSessionResources>()
@@ -247,8 +248,8 @@ internal static class DiagnosticServiceRegistration
                     if (cachedFilter is null)
                     {
                         var surfaceTypes = enableOrchestratorTools
-                            ? new[] { typeof(DiagnosticTools), typeof(OrchestratorTools) }
-                            : new[] { typeof(DiagnosticTools) };
+                            ? new[] { typeof(DiagnosticTools), typeof(CollectEventsTool), typeof(OrchestratorTools) }
+                            : new[] { typeof(DiagnosticTools), typeof(CollectEventsTool) };
                         cachedRegistry = Security.ToolScopeRegistry.Build(surfaceTypes);
 
                         cachedFilter = Security.ToolScopeAuthorizationFilter.Create(
@@ -295,8 +296,8 @@ internal static class DiagnosticServiceRegistration
                     else
                     {
                         var surfaceTypes = enableOrchestratorTools
-                            ? new[] { typeof(DiagnosticTools), typeof(OrchestratorTools) }
-                            : new[] { typeof(DiagnosticTools) };
+                            ? new[] { typeof(DiagnosticTools), typeof(CollectEventsTool), typeof(OrchestratorTools) }
+                            : new[] { typeof(DiagnosticTools), typeof(CollectEventsTool) };
                         cached = ToolDeprecationRegistry.Build(
                             surfaceTypes,
                             loggerFactoryAccessor()?.CreateLogger<ToolDeprecationRegistry>());
