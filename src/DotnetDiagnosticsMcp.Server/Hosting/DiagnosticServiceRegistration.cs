@@ -12,6 +12,7 @@ using DotnetDiagnosticsMcp.Core.Security;
 using DotnetDiagnosticsMcp.Core.Symbols;
 using DotnetDiagnosticsMcp.Server.Orchestrator;
 using DotnetDiagnosticsMcp.Server.Tools;
+using DotnetDiagnosticsMcp.Server.Tools.Deprecation;
 using Microsoft.Extensions.Configuration;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -185,6 +186,15 @@ internal static class DiagnosticServiceRegistration
                         BuildInvestigationProxyFilter(servicesAccessor, loggerFactoryAccessor));
                 }
 
+                // RFC 0002 / #204 scaffolding — deprecation surface. Pair of filters that
+                // (a) append the deprecation notice to tools/list descriptions, and (b) emit
+                // a once-per-process audit-log warning when a deprecated tool is invoked.
+                // No-op until sub-issues #205+ stamp [DeprecatedTool] onto a real method.
+                var deprecationFilters = BuildDeprecationFilters(
+                    servicesAccessor, loggerFactoryAccessor, enableOrchestratorTools);
+                options.Filters.Request.ListToolsFilters.Add(deprecationFilters.ListFilter);
+                options.Filters.Request.CallToolFilters.Add(deprecationFilters.CallFilter);
+
                 options.ProtocolVersion = "2025-11-25";
 
                 options.ServerInfo = new Implementation
@@ -250,6 +260,67 @@ internal static class DiagnosticServiceRegistration
             }
             return cachedFilter(next);
         };
+    }
+
+    private readonly record struct DeprecationFilterPair(
+        ModelContextProtocol.Server.McpRequestFilter<ListToolsRequestParams, ListToolsResult> ListFilter,
+        ModelContextProtocol.Server.McpRequestFilter<CallToolRequestParams, CallToolResult> CallFilter);
+
+    private static DeprecationFilterPair BuildDeprecationFilters(
+        Func<IServiceProvider?>? servicesAccessor,
+        Func<ILoggerFactory?> loggerFactoryAccessor,
+        bool enableOrchestratorTools)
+    {
+        // Build the registry lazily on first dispatch so unit tests that call Build()
+        // without the full tool surface still work. Cached so the once-per-process flags
+        // live across calls and concurrent dispatch goes through the same instance.
+        ToolDeprecationRegistry? cached = null;
+        var gate = new object();
+
+        ToolDeprecationRegistry Resolve()
+        {
+            if (cached is not null) return cached;
+            lock (gate)
+            {
+                if (cached is null)
+                {
+                    // Prefer a registry resolved from DI when the host exposes one (test fixtures
+                    // can register a custom registry to assert against). Otherwise scan the same
+                    // tool surfaces the SDK is about to dispatch to.
+                    var registryFromDi = servicesAccessor?.Invoke()?.GetService<ToolDeprecationRegistry>();
+                    if (registryFromDi is not null)
+                    {
+                        cached = registryFromDi;
+                    }
+                    else
+                    {
+                        var surfaceTypes = enableOrchestratorTools
+                            ? new[] { typeof(DiagnosticTools), typeof(OrchestratorTools) }
+                            : new[] { typeof(DiagnosticTools) };
+                        cached = ToolDeprecationRegistry.Build(
+                            surfaceTypes,
+                            loggerFactoryAccessor()?.CreateLogger<ToolDeprecationRegistry>());
+                    }
+                }
+            }
+            return cached;
+        }
+
+        ModelContextProtocol.Server.McpRequestFilter<ListToolsRequestParams, ListToolsResult> listFilter =
+            next => async (request, ct) =>
+            {
+                var inner = ToolDeprecationFilters.CreateListToolsFilter(Resolve());
+                return await inner(next)(request, ct).ConfigureAwait(false);
+            };
+
+        ModelContextProtocol.Server.McpRequestFilter<CallToolRequestParams, CallToolResult> callFilter =
+            next => async (request, ct) =>
+            {
+                var inner = ToolDeprecationFilters.CreateCallToolFilter(Resolve());
+                return await inner(next)(request, ct).ConfigureAwait(false);
+            };
+
+        return new DeprecationFilterPair(listFilter, callFilter);
     }
 
     private static ModelContextProtocol.Server.McpRequestFilter<CallToolRequestParams, CallToolResult> BuildInvestigationProxyFilter(
