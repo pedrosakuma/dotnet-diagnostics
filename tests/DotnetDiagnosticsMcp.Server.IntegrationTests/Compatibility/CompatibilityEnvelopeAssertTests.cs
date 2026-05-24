@@ -46,4 +46,27 @@ public sealed class CompatibilityEnvelopeAssertTests
             successor: () => Task.FromResult(new Envelope("ok", 42, Handle: "xyz")),
             ignore: CompatibilityEnvelopeAssert.CompatibilityIgnore.Paths("handle"));
     }
+
+    private sealed record Item(string Name, string Handle);
+    private sealed record ListEnvelope(string Summary, IReadOnlyList<Item> Items);
+
+    [Fact]
+    public async Task IgnorePaths_MaskFieldsInsideArrayElements()
+    {
+        // RFC 0002 envelopes routinely carry a list of items (hotspots, threads, members)
+        // each with its own volatile handle/timestamp. The path "items/handle" must mask
+        // every element's handle so the contract test passes on stable fields only.
+        await CompatibilityEnvelopeAssert.AssertEnvelopesEqualAsync<ListEnvelope, ListEnvelope>(
+            legacy: () => Task.FromResult(new ListEnvelope("ok", new[]
+            {
+                new Item("a", "h-1"),
+                new Item("b", "h-2"),
+            })),
+            successor: () => Task.FromResult(new ListEnvelope("ok", new[]
+            {
+                new Item("a", "h-9"),
+                new Item("b", "h-8"),
+            })),
+            ignore: CompatibilityEnvelopeAssert.CompatibilityIgnore.Paths("items/handle"));
+    }
 }

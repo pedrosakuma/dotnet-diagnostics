@@ -83,23 +83,44 @@ public static class CompatibilityEnvelopeAssert
     {
         var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 0) return;
+        RemovePathRecursive(root, parts, index: 0);
+    }
 
-        JsonNode? cursor = root;
-        for (int i = 0; i < parts.Length - 1; i++)
+    private static void RemovePathRecursive(JsonNode? cursor, string[] parts, int index)
+    {
+        while (cursor is not null && index < parts.Length - 1)
         {
-            if (cursor is JsonObject obj && obj.TryGetPropertyValue(parts[i], out var next))
+            switch (cursor)
             {
-                cursor = next;
-            }
-            else
-            {
-                return;
+                case JsonObject obj when obj.TryGetPropertyValue(parts[index], out var next):
+                    cursor = next;
+                    index++;
+                    break;
+                case JsonArray arr:
+                    foreach (var element in arr)
+                    {
+                        RemovePathRecursive(element, parts, index);
+                    }
+                    return;
+                default:
+                    return;
             }
         }
 
-        if (cursor is JsonObject leaf)
+        switch (cursor)
         {
-            leaf.Remove(parts[^1]);
+            case JsonObject leaf:
+                leaf.Remove(parts[^1]);
+                break;
+            case JsonArray arr:
+                foreach (var element in arr)
+                {
+                    if (element is JsonObject elementObj)
+                    {
+                        elementObj.Remove(parts[^1]);
+                    }
+                }
+                break;
         }
     }
 }
