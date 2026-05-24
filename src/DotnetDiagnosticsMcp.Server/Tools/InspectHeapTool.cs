@@ -39,11 +39,13 @@ public sealed class InspectHeapTool
 
     private static readonly IReadOnlyList<string> AllowedSources = new[] { SourceLive, SourceDump };
 
-    // [RequireScope("heap-read", "ptrace")] mirrors `inspect_live_heap` — the strictest of
-    // the two legacy tools. Conservative overscoping matches the precedent set by
-    // `collect_thread_snapshot`, which always demands `ptrace` even when reading a dump.
-    // Re-evaluate when issue #207 finishes wiring per-view scope tables for handles.
-    [RequireScope("heap-read", "ptrace")]
+    // Static gate is `heap-read` only — the minimum scope shared by both backends.
+    // `source="live"` additionally requires `ptrace` at runtime (see below) so that
+    // least-privilege tokens scoped to dump inspection alone are not denied by the
+    // shared canonical entry point. `inspect_live_heap` still carries the static
+    // `[RequireScope("heap-read", "ptrace")]` gate; the runtime check here mirrors
+    // that semantic for the live branch of `inspect_heap`.
+    [RequireScope("heap-read")]
     [McpServerTool(
         Name = ToolName,
         Title = "Inspect a managed heap (live process or dump file)",
@@ -100,6 +102,27 @@ public sealed class InspectHeapTool
             {
                 return InvalidArgument(nameof(dumpFilePath),
                     "source='live' forbids dumpFilePath. Drop dumpFilePath or set source='dump'.");
+            }
+
+            // The live backend attaches via ptrace and must keep that requirement even though
+            // the canonical entry point's static gate is `heap-read` only (see class comment).
+            // We use HasScope (which honours the wildcard / root principal) so root tokens still
+            // work locally; dedicated bearers must hold the literal `ptrace` scope.
+            var principal = principalAccessor.Current;
+            if (principal is not null && !principal.HasScope("ptrace"))
+            {
+                return DiagnosticResult.Fail<object>(
+                    $"forbidden: tool '{ToolName}' with source='live' requires scope 'ptrace'.",
+                    new DiagnosticError(
+                        "Forbidden",
+                        $"tool '{ToolName}' with source='live' requires scope 'ptrace'.",
+                        "ptrace"),
+                    new NextActionHint(ToolName,
+                        "Either retry with source='dump' (offline; needs only 'heap-read'), or have the operator issue a bearer that also grants 'ptrace'.",
+                        new Dictionary<string, object?>
+                        {
+                            ["source"] = SourceDump,
+                        }));
             }
 
             var live = await DiagnosticTools.InspectLiveHeap(

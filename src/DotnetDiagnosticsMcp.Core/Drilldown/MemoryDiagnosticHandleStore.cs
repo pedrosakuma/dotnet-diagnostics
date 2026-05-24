@@ -98,8 +98,14 @@ public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
 
     public int InvalidateForProcess(int processId)
     {
+        // Only handles that opted in to PID-exit eviction (the default for live-origin
+        // artifacts) are removed by this sweep. Dump-origin handles register with
+        // `evictWhenProcessExits: false` so they survive the originating PID's exit —
+        // the dump file lives on disk independently of the process that captured it.
+        // Without this filter, a single live-origin handle sharing a PID with a
+        // dump-origin one would cause the dump handle to be evicted before TTL.
         var victims = _entries
-            .Where(kv => kv.Value.Handle.ProcessId == processId)
+            .Where(kv => kv.Value.EvictWhenProcessExits && kv.Value.Handle.ProcessId == processId)
             .Select(kv => kv.Key)
             .ToArray();
 
