@@ -226,7 +226,9 @@ public sealed class InvestigationProxyCallToolFilterTests
         // tool surface. If this drops to zero, the [McpServerTool] discovery broke.
         InvestigationProxyToolAllowlist.AllowedToolNames.Should().Contain("snapshot_counters");
         InvestigationProxyToolAllowlist.AllowedToolNames.Should().Contain("collect_cpu_sample");
+        InvestigationProxyToolAllowlist.AllowedToolNames.Should().Contain("get_bytes");
         InvestigationProxyToolAllowlist.IsAllowed("snapshot_counters").Should().BeTrue();
+        InvestigationProxyToolAllowlist.IsAllowed("get_bytes").Should().BeTrue();
         InvestigationProxyToolAllowlist.IsAllowed("totally_not_a_real_tool").Should().BeFalse();
         InvestigationProxyToolAllowlist.IsAllowed(null).Should().BeFalse();
     }

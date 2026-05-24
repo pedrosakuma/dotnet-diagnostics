@@ -14,13 +14,14 @@ namespace DotnetDiagnosticsMcp.Server.Orchestrator.Investigations;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Discovered once via reflection over <see cref="DiagnosticTools"/>: every method
-/// decorated with <see cref="McpServerToolAttribute"/> contributes its tool name.
+/// Discovered once via reflection over <see cref="DiagnosticTools"/> and
+/// <see cref="GetBytesTool"/>: every method decorated with
+/// <see cref="McpServerToolAttribute"/> contributes its tool name.
 /// Orchestrator-management tools live on a separate type (<c>OrchestratorTools</c>)
 /// and never appear in this allowlist; the pod-local sidecar would not understand
 /// them anyway. New endpoints / tools added to the pod-local surface therefore do
 /// NOT become automatically reachable through the proxy — they must be added
-/// deliberately to <see cref="DiagnosticTools"/>.
+/// deliberately to one of the scanned surface types here.
 /// </para>
 /// <para>
 /// Enforced at TWO layers (filter + pod-local client) so that a bug in one layer —
@@ -42,14 +43,17 @@ internal static class InvestigationProxyToolAllowlist
     private static HashSet<string> BuildSet()
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var method in typeof(DiagnosticTools).GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.Instance))
+        foreach (var surface in new[] { typeof(DiagnosticTools), typeof(GetBytesTool) })
         {
-            var attr = method.GetCustomAttribute<McpServerToolAttribute>(inherit: false);
-            if (attr is null) continue;
-            var name = attr.Name;
-            if (!string.IsNullOrEmpty(name))
+            foreach (var method in surface.GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.Instance))
             {
-                set.Add(name);
+                var attr = method.GetCustomAttribute<McpServerToolAttribute>(inherit: false);
+                if (attr is null) continue;
+                var name = attr.Name;
+                if (!string.IsNullOrEmpty(name))
+                {
+                    set.Add(name);
+                }
             }
         }
         return set;
