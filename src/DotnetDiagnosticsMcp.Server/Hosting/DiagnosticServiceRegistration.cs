@@ -10,6 +10,7 @@ using DotnetDiagnosticsMcp.Core.Gc;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Security;
 using DotnetDiagnosticsMcp.Core.Symbols;
+using DotnetDiagnosticsMcp.Server.Azure;
 using DotnetDiagnosticsMcp.Server.Orchestrator;
 using DotnetDiagnosticsMcp.Server.Tools;
 using Microsoft.Extensions.Configuration;
@@ -134,6 +135,29 @@ internal static class DiagnosticServiceRegistration
         services.AddSingleton<Orchestrator.Investigations.IPodAttachOrchestrator, Orchestrator.Investigations.KubernetesPodAttachOrchestrator>();
         services.AddSingleton<Orchestrator.Investigations.InvestigationCloser>();
         services.AddHostedService<InvestigationHandleReaperBackgroundService>();
+        return true;
+    }
+
+    /// <summary>
+    /// Registers the Azure ARM client factory (issue #231, parent #230). Idempotent
+    /// foundation seam: when <c>AzureDiscovery:Enabled</c> is true the factory is
+    /// added as a singleton so future Azure discovery tooling (#232) can resolve it.
+    /// When disabled (default) nothing is added and the Azure SDK is never reached.
+    /// </summary>
+    /// <param name="services">The DI container.</param>
+    /// <param name="configuration">Configuration root; binds the <c>AzureDiscovery</c> section onto <see cref="AzureDiscoveryOptions"/>.</param>
+    /// <returns>True when <c>AzureDiscovery:Enabled</c> is true and services were registered; false otherwise.</returns>
+    public static bool AddAzureDiscoveryServices(this IServiceCollection services, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        var options = new AzureDiscoveryOptions();
+        configuration.GetSection(AzureDiscoveryOptions.SectionName).Bind(options);
+        if (!options.Enabled) return false;
+
+        services.AddSingleton(options);
+        services.AddSingleton<IAzureArmClientFactory, DefaultAzureArmClientFactory>();
         return true;
     }
 
