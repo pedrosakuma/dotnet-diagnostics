@@ -15,6 +15,7 @@ using DotnetDiagnosticsMcp.Server.Azure.Discovery;
 using DotnetDiagnosticsMcp.Server.Orchestrator;
 using DotnetDiagnosticsMcp.Server.Tools;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -127,6 +128,21 @@ internal static class DiagnosticServiceRegistration
 
         services.AddSingleton(options);
         services.AddSingleton<IKubernetesClientFactory, DefaultKubernetesClientFactory>();
+        // #234 — kubeconfig handle plumbing. Registered here (orchestrator scope) so the
+        // Kubernetes client factory always has the context + store seam wired, regardless
+        // of whether Azure discovery is also enabled. TryAdd lets AddAzureDiscoveryServices
+        // share the same singletons without duplicate registration.
+        //
+        // FIX 4 (#234 review): the store ctor takes AzureDiscoveryOptions?, but MS.DI does
+        // NOT honor the nullable annotation — it would throw resolving the missing options
+        // type. Register through a factory so orchestrator-only deployments (no
+        // AddAzureDiscoveryServices call) still resolve the store cleanly. When Azure
+        // discovery IS enabled, GetService returns the bound options and we honor them.
+        services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+        services.TryAddSingleton<IKubeconfigContext, AsyncLocalKubeconfigContext>();
+        services.TryAddSingleton<IKubeconfigHandleStore>(sp => new InMemoryKubeconfigHandleStore(
+            sp.GetService<AzureDiscoveryOptions>(),
+            sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<IKubernetesPodsApi, KubernetesPodsApi>();
         services.AddSingleton<IPodInventory, KubernetesPodInventory>();
         services.AddSingleton<Orchestrator.Investigations.IInvestigationStore, Orchestrator.Investigations.MemoryInvestigationStore>();
@@ -162,13 +178,24 @@ internal static class DiagnosticServiceRegistration
 
         // #233 — App Service + Container Apps backends are real implementations
         // mediated by adapter seams so unit tests can substitute fakes without
-        // touching the Azure SDK. AKS still uses the NotImplemented stub until
-        // #234 lands.
+        // touching the Azure SDK.
         services.AddSingleton<IAzureWebSiteCollectionAdapter, DefaultAzureWebSiteCollectionAdapter>();
         services.AddSingleton<IAzureContainerAppCollectionAdapter, DefaultAzureContainerAppCollectionAdapter>();
         services.AddSingleton<IAzureWebAppsDiscovery, DefaultAzureWebAppsDiscovery>();
         services.AddSingleton<IAzureContainerAppsDiscovery, DefaultAzureContainerAppsDiscovery>();
-        services.AddSingleton<IAzureAksDiscovery, NotImplementedAzureAksDiscovery>();
+
+        // #234 — AKS cluster discovery + kubeconfig handle subsystem. The handle store
+        // and ambient context are TryAdded so AddOrchestratorServices may have already
+        // registered them; either way they end up as singletons shared across both
+        // surfaces. TimeProvider.System is the production clock; tests substitute a
+        // synthetic one.
+        services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+        services.TryAddSingleton<IKubeconfigContext, AsyncLocalKubeconfigContext>();
+        services.TryAddSingleton<IKubeconfigHandleStore>(sp => new InMemoryKubeconfigHandleStore(
+            sp.GetService<AzureDiscoveryOptions>(),
+            sp.GetRequiredService<TimeProvider>()));
+        services.AddSingleton<IAzureManagedClusterCollectionAdapter, AzureManagedClusterCollectionAdapter>();
+        services.AddSingleton<IAzureAksDiscovery, AzureAksDiscovery>();
         return true;
     }
 
