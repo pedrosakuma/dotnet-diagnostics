@@ -9,6 +9,6 @@ namespace DotnetDiagnosticsMcp.Server.Azure.Discovery;
 /// </summary>
 public sealed record DiscoverAzureResult(
     string Kind,
-    AzurePagedResult<AzureWebAppCandidate>? WebApps,
-    AzurePagedResult<AzureContainerAppCandidate>? ContainerApps,
-    AzurePagedResult<AzureAksClusterCandidate>? AksClusters);
+    AzurePagedResult<AzureWebAppCandidate>? WebApps = null,
+    AzurePagedResult<AzureContainerAppCandidate>? ContainerApps = null,
+    AzurePagedResult<AzureAksClusterCandidate>? AksClusters = null);

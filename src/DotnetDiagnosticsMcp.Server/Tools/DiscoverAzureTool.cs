@@ -42,7 +42,7 @@ public sealed class DiscoverAzureTool
 
     /// <summary>Hard ceiling on the <c>limit</c> parameter, mirroring the orchestrator
     /// <c>list_orchestrator</c> tool's default upper bound. Backends MAY clamp further.</summary>
-    public const int MaxLimit = 200;
+    public const int MaxLimit = 500;
 
     private const int DefaultLimit = 100;
 

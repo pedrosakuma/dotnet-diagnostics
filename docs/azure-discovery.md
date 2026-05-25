@@ -32,13 +32,13 @@ public async Task<DiagnosticResult<DiscoverAzureResult>> DiscoverAzureAsync(
     string kind = "webapps",                        // webapps | containerapps | aksclusters
     string? resourceGroup = null,                   // optional filter
     bool   includeStopped = false,
-    int    limit = 100,                             // clamped to 200
+    int    limit = 100,                             // clamped to 500
     string? cursor = null,
     bool   includeKubeconfig = false,               // aksclusters only
     CancellationToken cancellationToken = default);
 ```
 
-`limit` is clamped server-side to a maximum of `200` (mirrors the orchestrator
+`limit` is clamped server-side to a maximum of `500` (mirrors the orchestrator
 `list_orchestrator` ceiling). Backends MAY clamp further.
 
 ## Response envelope
