@@ -381,12 +381,12 @@ public sealed class InvestigationPlanner : IInvestigationPlanner
         var steps = new InvestigationStep[]
         {
             new(1, "cpu-vitals", "collect_events",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 5 },
+                new Dictionary<string, object?> { ["kind"] = "counters", ["processId"] = pid, ["durationSeconds"] = 5 },
                 "Confirm CPU is actually pressured before sampling.",
                 new[] { new DecisionBranch("cpu_pct > 50", "cpu-sample", "Move to sampling.") }),
             new(2, "cpu-sample", "collect_sample",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 20, ["topN"] = 25 },
-                "Direct evidence for a CPU hypothesis. Drill the handle with get_call_tree.",
+                new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = 20, ["topN"] = 25 },
+                "Direct evidence for a CPU hypothesis. Drill the handle with query_snapshot(view=\"call-tree\").",
                 new[] { new DecisionBranch("hypothesized frame in top-10", "report-cpu", "Confirmed.") }),
         };
         var terminals = new[]
@@ -401,7 +401,7 @@ public sealed class InvestigationPlanner : IInvestigationPlanner
         var steps = new InvestigationStep[]
         {
             new(1, "memory-vitals", "collect_events",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 15 },
+                new Dictionary<string, object?> { ["kind"] = "counters", ["processId"] = pid, ["durationSeconds"] = 15 },
                 "15s captures multiple GC ticks so we can see whether heap is growing or steady.",
                 new[] { new DecisionBranch("gen2-size growing AND working-set growing", "gc-events", "Likely leak.") }),
             new(2, "gc-events", "collect_events",
@@ -463,7 +463,7 @@ public sealed class InvestigationPlanner : IInvestigationPlanner
         var steps = new InvestigationStep[]
         {
             new(1, "startup-vitals", "collect_events",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 },
+                new Dictionary<string, object?> { ["kind"] = "counters", ["processId"] = pid, ["durationSeconds"] = 10 },
                 "jit.compilation.time and loader counters tell whether JIT churn or assembly loads dominate startup.",
                 new[] { new DecisionBranch("jit.compilation.time > 1s after warm-up", "report-jit-churn", "JIT churn → recommend R2R/AOT.") }),
         };
@@ -479,7 +479,7 @@ public sealed class InvestigationPlanner : IInvestigationPlanner
         var steps = new InvestigationStep[]
         {
             new(1, "vitals", "collect_events",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 5 },
+                new Dictionary<string, object?> { ["kind"] = "counters", ["processId"] = pid, ["durationSeconds"] = 5 },
                 "Hypothesis didn't match any known route — fall back to cold-mode vitals.",
                 new[] { new DecisionBranch("default", "report-revert-to-cold", "Re-run start_investigation without the hypothesis field.") }),
         };

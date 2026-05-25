@@ -558,11 +558,11 @@ public sealed class DiagnosticTools
         var summaryText = unknownOnly
             ? $"Captured {sample.TotalEvents} allocation events ({sample.TotalBytes:N0} bytes total) over {durationSeconds}s, " +
               $"but TypeName was empty for all events (expected on NativeAOT). " +
-              $"Drill into allocation call sites with get_call_tree(handle=\"{handle.Id}\") to see native allocation frames."
+              $"Drill into allocation call sites with query_snapshot(handle=\"{handle.Id}\", view=\"call-tree\") to see native allocation frames."
             : topType is not null
                 ? $"Captured {sample.TotalEvents} allocation events ({sample.TotalBytes:N0} bytes total) over {durationSeconds}s. " +
                   $"Top type by bytes: {topType.TypeName} ({topType.TotalBytes:N0} bytes, {topType.EventCount} events). " +
-                  $"Drill into allocation call sites with get_call_tree(handle=\"{handle.Id}\")."
+                  $"Drill into allocation call sites with query_snapshot(handle=\"{handle.Id}\", view=\"call-tree\")."
                 : $"Captured {sample.TotalEvents} allocation events but no type aggregation surfaced — " +
                   $"increase durationSeconds or drive a workload that allocates during the window.";
 
@@ -728,11 +728,11 @@ public sealed class DiagnosticTools
                 ? $"Captured {summary.SchedSwitches} switches across {summary.DistinctThreads} threads over {durationSeconds}s — showing top {inlineSummary.TopBlockingStacks.Count} of {summary.TopBlockingStacks.Count} blocking stack(s) (dropped {droppedStacks}; handle has all). " +
                   $"Total off-CPU: {summary.TotalOffCpuMicros / 1000.0:F1} ms. " +
                   $"Top blocker: {topStack.LeafFrame} ({topStack.OffCpuMicros / 1000.0:F1} ms, state={topStack.DominantState}). " +
-                  $"Drill with query_off_cpu_snapshot(handle=\"{handle.Id}\")."
+                  $"Drill with query_snapshot(handle=\"{handle.Id}\")."
                 : $"Captured {summary.SchedSwitches} switches across {summary.DistinctThreads} threads over {durationSeconds}s. " +
                   $"Total off-CPU: {summary.TotalOffCpuMicros / 1000.0:F1} ms. " +
                   $"Top blocker: {topStack.LeafFrame} ({topStack.OffCpuMicros / 1000.0:F1} ms, state={topStack.DominantState}). " +
-                  $"Drill with query_off_cpu_snapshot(handle=\"{handle.Id}\").")
+                  $"Drill with query_snapshot(handle=\"{handle.Id}\").")
             : $"Captured {summary.SchedSwitches} switches but no off-CPU spans closed within the window. " +
               "Either no thread blocked, or wakeups landed outside the capture — try a longer durationSeconds.";
 
@@ -838,8 +838,8 @@ public sealed class DiagnosticTools
 
         var summary = top is not null
             ? (depth == SamplingDepth.Summary && droppedHotspots > 0
-                ? $"Captured {sample.TotalSamples} samples over {durationSeconds}s — showing top {inlineSample.TopHotspots.Count} of {sample.TopHotspots.Count} hotspot(s) (dropped {droppedHotspots}; handle has all). Top method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive). Drill into the full call tree with get_call_tree(handle=\"{handleId}\")."
-                : $"Captured {sample.TotalSamples} samples over {durationSeconds}s. Top method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive). Drill into the full call tree with get_call_tree(handle=\"{handleId}\").")
+                ? $"Captured {sample.TotalSamples} samples over {durationSeconds}s — showing top {inlineSample.TopHotspots.Count} of {sample.TopHotspots.Count} hotspot(s) (dropped {droppedHotspots}; handle has all). Top method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive). Drill into the full call tree with query_snapshot(handle=\"{handleId}\", view=\"call-tree\")."
+                : $"Captured {sample.TotalSamples} samples over {durationSeconds}s. Top method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive). Drill into the full call tree with query_snapshot(handle=\"{handleId}\", view=\"call-tree\").")
             : $"Captured {sample.TotalSamples} samples but no method aggregation surfaced — increase durationSeconds or verify the target is under load.";
 
         return DiagnosticResult.OkWithHandle(inlineSample, summary, handleId, handleExpiresAt, hints);
@@ -1472,7 +1472,7 @@ public sealed class DiagnosticTools
 
         // Fallback: at least point at the local drilldown tool.
         return new NextActionHint(
-            "query_heap_snapshot",
+            "query_snapshot",
             "Drill into the snapshot (e.g. richer top-N, retention paths filtered by type) without re-walking the heap.",
             new Dictionary<string, object?>
             {
@@ -2853,10 +2853,11 @@ public sealed class DiagnosticTools
     private static NextActionHint? BuildModuleByteFetchHint(ByteFetchEnvelope envelope, int processId, string asset, int maxBytes)
         => envelope.NextOffset is long next
             ? new NextActionHint(
-                "get_module_bytes",
+                "get_bytes",
                 "Continue streaming the next chunk from the same module asset.",
                 new Dictionary<string, object?>
                 {
+                    ["kind"] = "module",
                     ["moduleVersionId"] = envelope.Identifier,
                     ["asset"] = string.IsNullOrWhiteSpace(asset) ? envelope.Asset : asset,
                     ["offset"] = next,
@@ -2868,10 +2869,11 @@ public sealed class DiagnosticTools
     private static NextActionHint? BuildDumpByteFetchHint(ByteFetchEnvelope envelope, int maxBytes)
         => envelope.NextOffset is long next
             ? new NextActionHint(
-                "get_dump_bytes",
+                "get_bytes",
                 "Continue streaming the next chunk from the same dump artifact.",
                 new Dictionary<string, object?>
                 {
+                    ["kind"] = "dump",
                     ["dumpFilePath"] = envelope.Identifier,
                     ["offset"] = next,
                     ["maxBytes"] = maxBytes,
