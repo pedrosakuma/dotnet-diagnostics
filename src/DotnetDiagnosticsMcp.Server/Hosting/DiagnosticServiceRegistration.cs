@@ -132,9 +132,17 @@ internal static class DiagnosticServiceRegistration
         // Kubernetes client factory always has the context + store seam wired, regardless
         // of whether Azure discovery is also enabled. TryAdd lets AddAzureDiscoveryServices
         // share the same singletons without duplicate registration.
+        //
+        // FIX 4 (#234 review): the store ctor takes AzureDiscoveryOptions?, but MS.DI does
+        // NOT honor the nullable annotation — it would throw resolving the missing options
+        // type. Register through a factory so orchestrator-only deployments (no
+        // AddAzureDiscoveryServices call) still resolve the store cleanly. When Azure
+        // discovery IS enabled, GetService returns the bound options and we honor them.
         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
         services.TryAddSingleton<IKubeconfigContext, AsyncLocalKubeconfigContext>();
-        services.TryAddSingleton<IKubeconfigHandleStore, InMemoryKubeconfigHandleStore>();
+        services.TryAddSingleton<IKubeconfigHandleStore>(sp => new InMemoryKubeconfigHandleStore(
+            sp.GetService<AzureDiscoveryOptions>(),
+            sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<IKubernetesPodsApi, KubernetesPodsApi>();
         services.AddSingleton<IPodInventory, KubernetesPodInventory>();
         services.AddSingleton<Orchestrator.Investigations.IInvestigationStore, Orchestrator.Investigations.MemoryInvestigationStore>();
@@ -183,7 +191,9 @@ internal static class DiagnosticServiceRegistration
         // synthetic one.
         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
         services.TryAddSingleton<IKubeconfigContext, AsyncLocalKubeconfigContext>();
-        services.TryAddSingleton<IKubeconfigHandleStore, InMemoryKubeconfigHandleStore>();
+        services.TryAddSingleton<IKubeconfigHandleStore>(sp => new InMemoryKubeconfigHandleStore(
+            sp.GetService<AzureDiscoveryOptions>(),
+            sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<IAzureManagedClusterCollectionAdapter, AzureManagedClusterCollectionAdapter>();
         services.AddSingleton<IAzureAksDiscovery, AzureAksDiscovery>();
         return true;
