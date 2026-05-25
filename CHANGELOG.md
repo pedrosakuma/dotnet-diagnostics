@@ -10,6 +10,8 @@
 - `inspect_process(view="resources")` now reports FD / handle / socket state: Linux snapshots classify `/proc/<pid>/fd`, aggregate TCP states from `/proc/<pid>/net/tcp{,6}`, parse `Max open files` from `/proc/<pid>/limits`, and can sample a short trend window; Windows returns `GetProcessHandleCount` with a clear partial-support note. `inspect_process(view="capabilities")` now surfaces `CanReadProcFs` / `CanReadHandleCount` so agents can see whether the sidecar can collect those signals before asking.
 - `samples/BadCodeSample` gained `/fd-leak` and `/socket-leak` fixtures, plus live/integration coverage and docs for the new unmanaged-resource investigation path.
 - `query_snapshot(view="diff")` can now diff `cpu-sample`, `heap-snapshot`, and `allocation-sample` handles against a `baselineHandle`, including per-second normalization for allocation windows.
+- `collect_events(kind="logs")` adds a curated `ILogger` view over the `Microsoft-Extensions-Logging` EventSource with per-level counts, per-category rollups, redacted scopes, bounded recent entries, and `query_snapshot(handle, view="summary|byCategory|byLevel|recent|errors")` drilldown.
+- `samples/BadCodeSample` now exposes `/log-spam?count=N&level=warning|error|...` so live tests and playbooks can reproduce warning/error storms.
 
 ### Fixed
 - `deploy/Dockerfile`: removed dev-only `"Urls": "http://127.0.0.1:8787"` from

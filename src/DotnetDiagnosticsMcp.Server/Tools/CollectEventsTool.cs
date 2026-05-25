@@ -7,6 +7,7 @@ using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.EventSources;
 using DotnetDiagnosticsMcp.Core.Exceptions;
 using DotnetDiagnosticsMcp.Core.Gc;
+using DotnetDiagnosticsMcp.Core.Logs;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Security;
 using DotnetDiagnosticsMcp.Core.Tools.Dispatch;
@@ -45,12 +46,13 @@ public sealed class CollectEventsTool
         "gc",
         "event_source",
         "activities",
+        "logs",
     };
 
     [RequireAnyScope("read-counters", "eventpipe")]
     [McpServerTool(
         Name = "collect_events",
-        Title = "Collect EventPipe events (counters | exceptions | gc | event_source | activities)",
+        Title = "Collect EventPipe events (counters | exceptions | gc | event_source | activities | logs)",
         Destructive = false,
         ReadOnly = true,
         Idempotent = false,
@@ -59,11 +61,11 @@ public sealed class CollectEventsTool
         "Unified EventPipe collector entry-point (RFC 0002 §4.5). Set 'kind' to choose what to " +
         "capture: 'counters' (EventCounter snapshot — cheap first signal), 'exceptions' (managed " +
         "exception stream), 'gc' (GC start/stop pairs and pause durations), 'event_source' " +
-        "(generic provider passthrough — requires providerName), or 'activities' (ActivitySource " +
-        "spans). Each kind preserves the full behavior of its legacy collector tool, including " +
+        "(generic provider passthrough — requires providerName), 'activities' (ActivitySource " +
+        "spans), or 'logs' (curated ILogger view from Microsoft-Extensions-Logging). Each kind preserves the full behavior of its legacy collector tool, including " +
         "the original authorization scope: 'counters' uses 'read-counters'; all other kinds use " +
         "'eventpipe'. Returns a polymorphic envelope with exactly one of " +
-        "{counters, exceptions, gc, eventSource, activities} populated alongside the chosen " +
+        "{counters, exceptions, gc, eventSource, activities, logs} populated alongside the chosen " +
         "kind, the issued handle, and standard NextActionHints. " +
         "IMPORTANT: for 'exceptions' and 'gc', start collection BEFORE the workload you want to " +
         "observe — EventPipe sessions take ~500 ms–1 s to fully start and events before then are " +
@@ -76,6 +78,7 @@ public sealed class CollectEventsTool
         IGcCollector gcCollector,
         IActivityCollector activityCollector,
         IEventSourceCollector eventSourceCollector,
+        ILogCollector logCollector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
         EventSourceAllowlist allowlist,
@@ -83,7 +86,7 @@ public sealed class CollectEventsTool
         IPrincipalAccessor principalAccessor,
         [Description(
             "Which EventPipe family to collect. One of: 'counters', 'exceptions', 'gc', " +
-            "'event_source', 'activities'. Each kind preserves the options of its legacy " +
+            "'event_source', 'activities', 'logs'. Each kind preserves the options of its legacy " +
             "collector tool; irrelevant options are ignored.")]
         string kind = "counters",
         // Shared options.
@@ -105,9 +108,9 @@ public sealed class CollectEventsTool
         // kind=exceptions
         [Description("kind=exceptions only. Maximum number of individual exception details to return. Must be >= 1. Defaults to 100.")]
         int maxRecent = 100,
-        // kind=gc / kind=event_source
-        [Description("kind=gc or kind=event_source. Maximum number of events to return. Must be >= 1. Defaults to 200.")]
-        int maxEvents = 200,
+        // kind=gc / kind=event_source / kind=logs
+        [Description("kind=gc, kind=event_source, or kind=logs. Maximum number of events to return. Must be >= 1. Defaults to 200 for gc/event_source and 500 for logs when omitted through the kind-specific path.")]
+        int? maxEvents = null,
         // kind=event_source
         [Description("kind=event_source only. EventSource provider name (e.g. 'System.Net.Http' or 'Microsoft.AspNetCore.Hosting'). Required when kind='event_source'.")]
         string? providerName = null,
@@ -122,6 +125,13 @@ public sealed class CollectEventsTool
         IReadOnlyList<string>? sources = null,
         [Description("kind=activities only. Maximum number of captured activities to retain. Must be >= 1. Defaults to 200.")]
         int maxActivities = 200,
+        // kind=logs
+        [Description("kind=logs only. Optional case-insensitive glob filters for ILogger categories. Null/empty captures all categories.")]
+        IReadOnlyList<string>? categories = null,
+        [Description("kind=logs only. Minimum log level to retain (Trace|Debug|Information|Warning|Error|Critical). Defaults to Information.")]
+        string minLevel = "Information",
+        [Description("kind=logs only. Maximum UTF-8 bytes retained per message/scope/exception string before truncation. Defaults to 4096.")]
+        int maxMessageBytes = 4096,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
@@ -186,7 +196,7 @@ public sealed class CollectEventsTool
                     "gc" => Project(
                         await DiagnosticTools.CollectGcEvents(
                             gcCollector, resolver, handles,
-                            processId, effectiveDuration, maxEvents, depth,
+                            processId, effectiveDuration, maxEvents ?? 200, depth,
                             ct).ConfigureAwait(false),
                         "gc",
                         (env, data) => env with { Gc = data }),
@@ -196,7 +206,7 @@ public sealed class CollectEventsTool
                             eventSourceCollector, resolver, handles,
                             allowlist, sensitiveGate, principalAccessor,
                             providerName ?? string.Empty,
-                            processId, effectiveDuration, keywords, eventLevel, maxEvents, depth,
+                            processId, effectiveDuration, keywords, eventLevel, maxEvents ?? 200, depth,
                             unsafeProvider, deprecation,
                             ct).ConfigureAwait(false),
                         "event_source",
@@ -209,6 +219,15 @@ public sealed class CollectEventsTool
                             ct).ConfigureAwait(false),
                         "activities",
                         (env, data) => env with { Activities = data }),
+
+                    "logs" => Project(
+                        await DiagnosticTools.CollectLogs(
+                            logCollector, resolver, handles,
+                            processId, effectiveDuration, categories, minLevel,
+                            maxEvents ?? 500, maxMessageBytes, depth,
+                            ct).ConfigureAwait(false),
+                        "logs",
+                        (env, data) => env with { Logs = data }),
 
                     // Unreachable — TryValidate narrowed canonicalKind to the AllowedKinds set above.
                     _ => DiagnosticResult.Fail<CollectEventsEnvelope>(
@@ -260,7 +279,7 @@ public sealed class CollectEventsTool
 /// <summary>
 /// Polymorphic payload returned by <see cref="CollectEventsTool.CollectEvents"/>. Exactly one
 /// of the kind-specific fields (<see cref="Counters"/>, <see cref="Exceptions"/>,
-/// <see cref="Gc"/>, <see cref="EventSource"/>, <see cref="Activities"/>) is populated, matched
+/// <see cref="Gc"/>, <see cref="EventSource"/>, <see cref="Activities"/>, <see cref="Logs"/>) is populated, matched
 /// by <see cref="Kind"/>. Mirrors the discriminator-envelope convention used by other
 /// consolidated tools (e.g. <c>get_method_il</c>).
 /// </summary>
@@ -270,4 +289,5 @@ public sealed record CollectEventsEnvelope(
     ExceptionSnapshot? Exceptions = null,
     GcSummary? Gc = null,
     EventSourceCapture? EventSource = null,
-    ActivityCapture? Activities = null);
+    ActivityCapture? Activities = null,
+    LogSnapshot? Logs = null);

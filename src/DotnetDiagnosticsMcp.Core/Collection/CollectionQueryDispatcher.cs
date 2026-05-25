@@ -3,6 +3,7 @@ using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.EventSources;
 using DotnetDiagnosticsMcp.Core.Exceptions;
 using DotnetDiagnosticsMcp.Core.Gc;
+using DotnetDiagnosticsMcp.Core.Logs;
 
 namespace DotnetDiagnosticsMcp.Core.Collection;
 
@@ -28,6 +29,7 @@ public static class CollectionQueryDispatcher
         CollectionHandleKinds.GcEvents => new[] { "summary", "events", "pauseHistogram" },
         CollectionHandleKinds.EventSource => new[] { "summary", "byEventName", "events" },
         CollectionHandleKinds.Activities => new[] { "summary", "bySource", "byOperation", "activities" },
+        CollectionHandleKinds.LogSnapshot => new[] { "summary", "byCategory", "byLevel", "recent", "errors" },
         _ => Array.Empty<string>(),
     };
 
@@ -77,6 +79,8 @@ public static class CollectionQueryDispatcher
                 => Ok(Render(es, effectiveView, topN)),
             CollectionHandleKinds.Activities when artifact is ActivityCapture a
                 => Ok(Render(a, effectiveView, topN)),
+            CollectionHandleKinds.LogSnapshot when artifact is LogSnapshot logs
+                => Ok(Render(logs, effectiveView, topN)),
             _ => new DispatchOutcome(null, kind, null, null, null),
         };
     }
@@ -238,4 +242,72 @@ public static class CollectionQueryDispatcher
         return new CollectionQueryResult(
             CollectionHandleKinds.Activities, view, capture.ProcessId, capture.StartedAt, capture.Duration, payload);
     }
+
+    private static CollectionQueryResult Render(LogSnapshot snapshot, string view, int topN)
+    {
+        var capturedCount = snapshot.Recent.Count;
+        var counts = new LogLevelCounts(
+            snapshot.EventsByLevelTrace,
+            snapshot.EventsByLevelDebug,
+            snapshot.EventsByLevelInformation,
+            snapshot.EventsByLevelWarning,
+            snapshot.EventsByLevelError,
+            snapshot.EventsByLevelCritical);
+
+        object payload = view.ToLowerInvariant() switch
+        {
+            "bycategory" => new LogByCategoryView(
+                snapshot.CategoryFilters,
+                snapshot.MinimumLevel,
+                snapshot.TotalEvents,
+                Math.Min(topN, snapshot.ByCategory.Count),
+                snapshot.ByCategory.Take(topN).ToList()),
+            "bylevel" => new LogByLevelView(
+                snapshot.TotalEvents,
+                new[]
+                {
+                    CreateLogLevelGroup("Trace", snapshot.EventsByLevelTrace, snapshot.Recent, topN),
+                    CreateLogLevelGroup("Debug", snapshot.EventsByLevelDebug, snapshot.Recent, topN),
+                    CreateLogLevelGroup("Information", snapshot.EventsByLevelInformation, snapshot.Recent, topN),
+                    CreateLogLevelGroup("Warning", snapshot.EventsByLevelWarning, snapshot.Recent, topN),
+                    CreateLogLevelGroup("Error", snapshot.EventsByLevelError, snapshot.Recent, topN),
+                    CreateLogLevelGroup("Critical", snapshot.EventsByLevelCritical, snapshot.Recent, topN),
+                }),
+            "recent" => new LogRecentView(
+                snapshot.TotalEvents,
+                capturedCount,
+                snapshot.Truncated,
+                Math.Min(topN, snapshot.Recent.Count),
+                snapshot.Recent.TakeLast(topN).ToList()),
+            "errors" => new LogErrorsView(
+                snapshot.TotalEvents,
+                Math.Min(topN, snapshot.Recent.Count(static entry => IsWarningOrHigher(entry.Level))),
+                snapshot.Recent.Where(static entry => IsWarningOrHigher(entry.Level)).TakeLast(topN).ToList()),
+            _ /* summary */ => new LogSummaryView(
+                snapshot.CategoryFilters,
+                snapshot.MinimumLevel,
+                snapshot.TotalEvents,
+                counts,
+                capturedCount,
+                snapshot.Truncated,
+                snapshot.ByCategory.Take(topN).ToList(),
+                snapshot.Notes),
+        };
+
+        return new CollectionQueryResult(
+            CollectionHandleKinds.LogSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
+    }
+
+    private static LogLevelGroup CreateLogLevelGroup(string level, long count, IReadOnlyList<LogEntry> recent, int topN) =>
+        new(
+            level,
+            count,
+            recent.Where(entry => string.Equals(entry.Level, level, StringComparison.OrdinalIgnoreCase))
+                .TakeLast(topN)
+                .ToList());
+
+    private static bool IsWarningOrHigher(string level) =>
+        string.Equals(level, "Warning", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(level, "Error", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(level, "Critical", StringComparison.OrdinalIgnoreCase);
 }

@@ -5,6 +5,7 @@ using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.EventSources;
+using DotnetDiagnosticsMcp.Core.Logs;
 using DotnetDiagnosticsMcp.Core.Exceptions;
 using DotnetDiagnosticsMcp.Core.Gc;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
@@ -76,6 +77,7 @@ internal static class DiagnosticServiceRegistration
         services.AddSingleton<IGcCollector, EventPipeGcCollector>();
         services.AddSingleton<IEventSourceCollector, EventPipeEventSourceCollector>();
         services.AddSingleton<IActivityCollector, EventPipeActivityCollector>();
+        services.AddSingleton<ILogCollector, EventPipeLogCollector>();
         services.AddSingleton<IProcessDumper, DiagnosticsClientDumper>();
         services.AddSingleton<IModuleByteSource, ClrMdModuleByteSource>();
         services.AddSingleton<IDumpByteSource, FileSystemDumpByteSource>();

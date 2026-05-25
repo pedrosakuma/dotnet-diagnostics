@@ -13,6 +13,7 @@ using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.EventSources;
 using DotnetDiagnosticsMcp.Core.Exceptions;
 using DotnetDiagnosticsMcp.Core.Gc;
+using DotnetDiagnosticsMcp.Core.Logs;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Investigation;
 using DotnetDiagnosticsMcp.Core.JitCapture;
@@ -1035,18 +1036,20 @@ public sealed class DiagnosticTools
 
     [RequireAnyScope("read-counters", "eventpipe")]
     [Description(
-        "Re-projects a previously-collected counter/exception/GC/EventSource/Activity artifact under a " +
+        "Re-projects a previously-collected counter/exception/GC/EventSource/Activity/log artifact under a " +
         "named view, without re-running the underlying EventPipe session. Use the `handle` " +
-        "returned by snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities. " +
+        "returned by snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\"). " +
         "Supported views per kind: counters → summary|byProvider; exception-snapshot → " +
         "summary|byType|recent; gc-events → summary|events|pauseHistogram; event-source → " +
-        "summary|byEventName|events; activities → summary|bySource|byOperation|activities. " +
+        "summary|byEventName|events; activities → summary|bySource|byOperation|activities; " +
+        "log-snapshot → summary|byCategory|byLevel|recent|errors. " +
         "Handles expire ~10 minutes after collection.")]
     public static DiagnosticResult<CollectionQueryResult> QueryCollection(
         IDiagnosticHandleStore handles,
-        [Description("Handle returned by a prior collection tool (snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities). ")] string handle,
+        IPrincipalAccessor principalAccessor,
+        [Description("Handle returned by a prior collection tool (snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\")). ")] string handle,
         [Description("View name (kind-dependent). Defaults to 'summary'.")] string? view = null,
-        [Description("Cap on inline items for paginated views (recent / events / byType / byEventName / bySource / byOperation / activities). Must be >= 1. Defaults to 50.")] int topN = 50)
+        [Description("Cap on inline items for paginated views (recent / events / byType / byEventName / bySource / byOperation / activities / byCategory / byLevel / errors). Must be >= 1. Defaults to 50.")] int topN = 50)
     {
         if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<CollectionQueryResult>(nameof(handle), "is required");
         if (topN < 1) return InvalidArg<CollectionQueryResult>(nameof(topN), "must be >= 1");
@@ -1063,6 +1066,19 @@ public sealed class DiagnosticTools
                 new NextActionHint("collect_events", "Re-run the original collector on the same pid to issue a fresh handle.", null));
         }
 
+        var principal = principalAccessor.Current;
+        if (principal is not null)
+        {
+            var requiredScope = entry.Value.Kind == CollectionHandleKinds.Counters ? "read-counters" : "eventpipe";
+            if (!principal.HasScope(requiredScope))
+            {
+                var message = $"forbidden: tool 'query_collection' requires scope '{requiredScope}' for kind '{entry.Value.Kind}'.";
+                return DiagnosticResult.Fail<CollectionQueryResult>(
+                    message,
+                    new DiagnosticError("Forbidden", message, requiredScope));
+            }
+        }
+
         var outcome = CollectionQueryDispatcher.Dispatch(entry.Value.Kind, view, entry.Value.Artifact, topN);
 
         if (outcome.UnknownKind is not null)
@@ -1071,7 +1087,7 @@ public sealed class DiagnosticTools
                 $"Handle '{handle}' is of kind '{outcome.UnknownKind}' which query_collection does not support.",
                 new DiagnosticError(
                     "UnsupportedHandleKind",
-                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities })}.",
+                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot })}.",
                     outcome.UnknownKind),
                 new NextActionHint("query_snapshot", "Use the kind-specific drill-down tool for heap/thread/cpu handles.", null));
         }
@@ -1284,6 +1300,82 @@ public sealed class DiagnosticTools
             new NextActionHint("query_snapshot",
                 "Drill into these GC events without re-collecting (views: summary, events, pauseHistogram).",
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "pauseHistogram" })),
+            resolved.Context);
+    }
+
+    [RequireScope("eventpipe")]
+    [Description(
+        "Subscribes the Microsoft-Extensions-Logging EventSource and returns a curated ILogger view: " +
+        "level counts, top categories, a bounded recent ring buffer, and optional exception/scope JSON when depth != summary.")]
+    public static async Task<DiagnosticResult<LogSnapshot>> CollectLogs(
+        ILogCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
+        [Description("Optional case-insensitive glob filters for ILogger categories. Null/empty captures all categories.")] IReadOnlyList<string>? categories = null,
+        [Description("Minimum log level to retain (Trace|Debug|Information|Warning|Error|Critical). Defaults to Information.")] string minLevel = "Information",
+        [Description("Maximum number of recent log entries to retain in the in-memory ring buffer. Must be >= 1. Defaults to 500.")] int maxEvents = 500,
+        [Description("Maximum UTF-8 bytes retained per message/scope/exception string before truncation. Must be >= 16. Defaults to 4096.")] int maxMessageBytes = 4096,
+        [Description("Verbosity (summary|detail|raw). Default 'summary' drops the Recent[] list inline and subscribes only FormattedMessage; 'detail' and 'raw' also enable MessageJson so exception detail and scopes are retained.")]
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<LogSnapshot>(nameof(durationSeconds), "must be >= 1");
+        if (maxEvents < 1) return InvalidArg<LogSnapshot>(nameof(maxEvents), "must be >= 1");
+        if (maxMessageBytes < 16) return InvalidArg<LogSnapshot>(nameof(maxMessageBytes), "must be >= 16");
+        if (!Enum.TryParse<LogLevel>(minLevel, ignoreCase: true, out var parsedMinLevel)
+            || parsedMinLevel is LogLevel.None or < LogLevel.Trace or > LogLevel.Critical)
+        {
+            return InvalidArg<LogSnapshot>(nameof(minLevel), "must be one of Trace|Debug|Information|Warning|Error|Critical");
+        }
+
+        var resolved = await ResolveContextAsync<LogSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+
+        var snapshot = await collector
+            .CollectAsync(
+                pid,
+                TimeSpan.FromSeconds(durationSeconds),
+                categories,
+                parsedMinLevel,
+                maxEvents,
+                maxMessageBytes,
+                includeJsonPayload: depth != SamplingDepth.Summary,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var inlineSnapshot = snapshot;
+        var droppedRecent = 0;
+        if (depth == SamplingDepth.Summary && snapshot.Recent.Count > 0)
+        {
+            droppedRecent = snapshot.Recent.Count;
+            inlineSnapshot = snapshot with { Recent = Array.Empty<LogEntry>() };
+        }
+
+        var topCategory = snapshot.ByCategory.Count > 0 ? snapshot.ByCategory[0] : null;
+        var warningPlus = snapshot.EventsByLevelWarning + snapshot.EventsByLevelError + snapshot.EventsByLevelCritical;
+        var summary = snapshot.TotalEvents == 0
+            ? $"No ILogger events captured in {durationSeconds}s. Widen categories or lower minLevel if you expected logs."
+            : (depth == SamplingDepth.Summary && droppedRecent > 0
+                ? $"Captured {snapshot.TotalEvents} ILogger event(s) over {durationSeconds}s at minLevel={snapshot.MinimumLevel}; warning+={warningPlus}. Top category: {topCategory?.Category} ({topCategory?.Count}). Dropped {droppedRecent} Recent entry(ies) from inline (handle has all)."
+                : $"Captured {snapshot.TotalEvents} ILogger event(s) over {durationSeconds}s at minLevel={snapshot.MinimumLevel}; warning+={warningPlus}. Top category: {topCategory?.Category} ({topCategory?.Count}).");
+
+        var handle = handles.Register(pid, CollectionHandleKinds.LogSnapshot, snapshot, CollectionHandleTtl);
+        return WithContext(DiagnosticResult.OkWithHandle(
+            inlineSnapshot,
+            summary,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint("query_snapshot",
+                "Drill into this log snapshot without re-collecting (views: summary, byCategory, byLevel, recent, errors).",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "errors", ["topN"] = 25 }),
+            new NextActionHint("collect_sample",
+                warningPlus > 0
+                    ? "Correlate warning/error spikes with CPU hotspots from the same window."
+                    : "If the app was slow without warning/error logs, pivot to CPU sampling for the same process.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 })),
             resolved.Context);
     }
 

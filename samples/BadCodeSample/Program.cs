@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.Logging;
 
 // BadCodeSample — a deliberately-broken minimal API used to exercise the
 // dotnet-diagnostics-mcp tools. Every endpoint triggers a different anti-pattern that
@@ -36,6 +37,7 @@ var badCodeEndpoints = new[]
     "/fd-leak?count=64",
     "/socket-leak?count=32&host=loopback",
     "/meter-spam?count=5&kind=counter",
+    "/log-spam?count=200&level=warning",
 };
 var lockObject = new object();
 var meterFactory = app.Services.GetRequiredService<IMeterFactory>();
@@ -252,6 +254,39 @@ app.MapGet("/socket-leak", async (int? count, string? host) =>
     }
 
     return Results.Ok(new { leaked, totalLeaked = leakedSockets.Count, host = target, loopbackPort = loopbackCloser.Port });
+});
+
+// 11. ILogger warning/error storm — detect with collect_events(kind="logs")
+app.MapGet("/log-spam", (ILoggerFactory loggerFactory, int? count, string? level) =>
+{
+    var n = Math.Clamp(count ?? 200, 1, 5_000);
+    var parsedLevel = Enum.TryParse<LogLevel>(level, ignoreCase: true, out var explicitLevel)
+        && explicitLevel is >= LogLevel.Trace and <= LogLevel.Critical
+        ? explicitLevel
+        : LogLevel.Warning;
+    var logger = loggerFactory.CreateLogger("BadCodeSample.LogSpam");
+
+    using (logger.BeginScope(
+        "UserEmail {UserEmail} Password {Password} ScopeName {ScopeName}",
+        "person@example.com",
+        "Password=super-secret",
+        "BadCode.LogSpam"))
+    {
+        for (var i = 0; i < n; i++)
+        {
+            var eventId = new EventId(10_000 + i, $"LogSpam{parsedLevel}");
+            if (parsedLevel >= LogLevel.Error)
+            {
+                logger.Log(parsedLevel, eventId, new InvalidOperationException($"boom-{i}"), "Log spam {Level} #{Index}", parsedLevel, i);
+            }
+            else
+            {
+                logger.Log(parsedLevel, eventId, "Log spam {Level} #{Index}", parsedLevel, i);
+            }
+        }
+    }
+
+    return Results.Ok(new { count = n, level = parsedLevel.ToString() });
 });
 
 app.Run();

@@ -76,6 +76,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="exceptions")` | The `Recent[]` list. `Total` and `ByType` remain exact (counts at every depth). |
 | `collect_events(kind="gc")` | The `Events[]` list. Totals, max pause, per-gen counts remain exact. |
 | `collect_events(kind="event_source")` | The `Events[]` list. Provider + total count remain. Drill in with `query_snapshot(handle, view=byEventName)`. |
+| `collect_events(kind="logs")` | The `Recent[]` list. Level counts + per-category rollups remain exact for the window. |
 | `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph|deadlocks|unique-stacks)`. |
 
 Explicit `topN` always wins over the depth default — if you pass
@@ -162,8 +163,8 @@ The LLM may always ignore a prompt and drive ad-hoc.
 
 ### Handle chaining nos coletores (`query_snapshot`)
 
-Os 5 coletores windowed — `collect_events(kind="counters")`, `collect_events(kind="exceptions")`,
-`collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")` — devolvem, junto do summary +
+Os 6 coletores windowed — `collect_events(kind="counters")`, `collect_events(kind="exceptions")`,
+`collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`, `collect_events(kind="logs")` — devolvem, junto do summary +
 top-N inline, um `handle` opaco (Crockford-base32, TTL ~10 min) registrado num
 store em memória. A LLM pode então re-projetar o mesmo artefato sob outra
 visão **sem rodar o EventPipe de novo** chamando `query_snapshot`:
@@ -196,6 +197,7 @@ Visões disponíveis por `kind`:
 | `gc-events` | `collect_events(kind="gc")` | `summary` (default), `events`, `pauseHistogram` |
 | `activities` | `collect_events(kind="activities")` | `summary` (default), `bySource`, `byOperation`, `activities` |
 | `event-source` | `collect_events(kind="event_source")` | `summary` (default), `byEventName`, `events` |
+| `log-snapshot` | `collect_events(kind="logs")` | `summary` (default), `byCategory`, `byLevel`, `recent`, `errors` |
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `object`, `gcroot`, `objsize`, `async`, `diff` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `threadpool` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
@@ -319,7 +321,7 @@ unified drilldown**: `view="topStacks"` (default), `view="byThread"`
 | [`inspect_process(view="resources")`](#inspect_process(view="resources")) | cheap / window-bound | no | ✅ (Linux/Windows partial) | reads `/proc/<pid>/fd`, `/proc/<pid>/net/tcp{,6}`, `/proc/<pid>/limits` (Linux) or `GetProcessHandleCount` (Windows) |
 | `collect_sample(kind="off_cpu")` (Linux/Windows) | window-bound | no | ✅ (Linux) | **Deprecated — use `collect_sample(kind="off_cpu")`.** system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
 | `query_snapshot` | cheap | no | ✅ | drilldown on handle from `collect_sample(kind="off_cpu")` |
-| [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/gc/event_source/activities. |
+| [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/gc/event_source/activities/logs. |
 | [`collect_sample`](#collect_sample) | window-bound | depends on kind | ✅ (mostly — see kind) | **Canonical bounded-time sampler.** Dispatches by `kind` to cpu/off_cpu/allocation. |
 | [`collect_events(kind="counters")`](#collect_events(kind="counters")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="counters")`.** opens an EventPipe session |
 | [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")) | window-bound | no | ✅ (perf/ETW, native frames) | **Deprecated — use `collect_sample(kind="cpu")`.** EventPipe + temp `.nettrace` on disk |
@@ -635,8 +637,8 @@ Cheap OS-level resource inspector for the classic "RSS grows but `gc-heap-size` 
 
 **Canonical EventPipe collector** (RFC 0002 §4.5). A single tool that dispatches
 by `kind` to the underlying counters / exceptions / gc / event_source /
-activities collector. New clients should call `collect_events` instead of the
-five legacy entrypoints; the legacy tools remain registered and behaviorally
+activities / logs collector. New clients should call `collect_events` instead of the
+legacy entrypoints; the legacy tools remain registered and behaviorally
 identical, but each carries a `DEPRECATED` notice and will be removed in
 `0.7.0`.
 
@@ -644,18 +646,19 @@ identical, but each carries a `DEPRECATED` notice and will be removed in
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `event_source`, `activities`. Case-sensitive. |
+| `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `event_source`, `activities`, `logs`. Case-sensitive. |
 | `processId` | `int?` | auto | Target process id. |
 | `durationSeconds` | `int` | 5 (counters) / 10 (others) | Collection window. |
 | `providers` / `meters` / `intervalSeconds` / `maxInstrumentTimeSeries` | counters only | — | Same as [`collect_events(kind="counters")`](#collect_events(kind="counters")). |
 | `maxRecent` | exceptions only | 100 | Same as [`collect_events(kind="exceptions")`](#collect_events(kind="exceptions")). |
-| `maxEvents` | gc / event_source only | 200 | Same as the underlying tool. |
+| `maxEvents` | gc / event_source / logs only | 200 (`gc`, `event_source`) / 500 (`logs`) | Same as the underlying tool. |
 | `providerName` / `keywords` / `eventLevel` / `depth` / `unsafeProvider` | event_source only | — | Same as [`collect_events(kind="event_source")`](#collect_events(kind="event_source")). |
-| `samplingRatio` / `maxActivities` / `includeBaggage` / `includeTags` | activities only | — | Same as [`collect_events(kind="activities")`](#collect_events(kind="activities")). |
+| `sources` / `maxActivities` | activities only | — | Same as [`collect_events(kind="activities")`](#collect_events(kind="activities")). |
+| `categories` / `minLevel` / `maxMessageBytes` / `depth` | logs only | — | Same as [`collect_events(kind="logs")`](#collect_events(kind="logs")). |
 
 **Returns:** `CollectEventsEnvelope` — a polymorphic record that carries the
 `kind` discriminator plus exactly one populated payload field
-(`counters` / `exceptions` / `gc` / `eventSource` / `activities`). The
+(`counters` / `exceptions` / `gc` / `eventSource` / `activities` / `logs`). The
 envelope's `summary`, `hints`, `handle`, `handleExpiresAt`, and
 `resolvedProcess` are passed through from the underlying collector verbatim,
 so `query_snapshot` drilldowns continue to work unchanged.
@@ -1155,6 +1158,46 @@ re-projects the same capture window without reopening EventPipe.
 - `sources` matches `ActivitySource.Name`, not operation names.
 - The provider supports a single Activity listener per session; this tool claims it for
   the duration of the capture window.
+
+---
+
+## `collect_events(kind="logs")`
+
+Collects a curated `ILogger` view from the `Microsoft-Extensions-Logging`
+EventSource, keeping per-level counts, per-category rollups, a bounded recent
+ring buffer, and redacted scope / exception detail when `depth != "Summary"`.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int?` | — | Target process id |
+| `durationSeconds` | `int` | `10` | Window length |
+| `categories` | `string[]?` | `null` | Optional case-insensitive glob filters for logger categories |
+| `minLevel` | `string` | `Information` | Minimum retained level: `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical` |
+| `maxEvents` | `int` | `500` | Cap on retained recent log entries |
+| `maxMessageBytes` | `int` | `4096` | Per-message / scope / exception UTF-8 truncation cap |
+| `depth` | `SamplingDepth` | `Summary` | `Summary` drops `recent`; `Detail` / `Raw` also enable `MessageJson` for exception + scope detail |
+
+**Returns:** `LogSnapshot` with:
+
+- `totalEvents`
+- `eventsByLevelTrace|Debug|Information|Warning|Error|Critical`
+- `byCategory` (`LogCategoryGroup[]` sorted by count)
+- `recent` (`LogEntry[]`, bounded by `maxEvents`)
+- `truncated` + `notes`
+
+`LogEntry` carries `timestamp`, `level`, `category`, `eventId`, `eventName`,
+`message`, optional `exceptionType` / `exceptionMessage`, and optional redacted
+`scopes`.
+
+**Drilldown:** `query_snapshot(handle, view="summary" | "byCategory" | "byLevel" | "recent" | "errors")`.
+
+**Notes:**
+
+- `MessageJson` is enabled only when `depth != "Summary"` to reduce collector overhead.
+- Messages and scope values always pass through `SensitiveDataRedactor` before they are retained.
+- When `truncated=true`, the collector dropped oldest retained entries after `maxEvents`.
 
 ---
 

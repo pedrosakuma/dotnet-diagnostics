@@ -21,4 +21,7 @@ public static class CollectionHandleKinds
 
     /// <summary>Handle backing an <see cref="Activities.ActivityCapture"/> emitted by <c>collect_activities</c>.</summary>
     public const string Activities = "activities";
+
+    /// <summary>Handle backing a <see cref="Logs.LogSnapshot"/> emitted by <c>collect_events(kind="logs")</c>.</summary>
+    public const string LogSnapshot = "log-snapshot";
 }
