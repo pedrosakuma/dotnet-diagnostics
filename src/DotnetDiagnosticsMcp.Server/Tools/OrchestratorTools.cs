@@ -9,7 +9,6 @@ using DotnetDiagnosticsMcp.Server.Observability;
 using DotnetDiagnosticsMcp.Server.Orchestrator;
 using DotnetDiagnosticsMcp.Server.Orchestrator.Investigations;
 using DotnetDiagnosticsMcp.Server.Security;
-using DotnetDiagnosticsMcp.Server.Tools.Deprecation;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Server;
@@ -31,14 +30,6 @@ namespace DotnetDiagnosticsMcp.Server.Tools;
 public sealed class OrchestratorTools
 {
     [RequireScope("orchestrator-list")]
-    [DeprecatedTool("list_orchestrator", "0.7.0", Note = "Call list_orchestrator(kind=\"pods\", ...) — same parameter shape.")]
-    [McpServerTool(
-        Name = "list_pods",
-        Title = "List candidate Pods for diagnostic attach",
-        Destructive = false,
-        ReadOnly = true,
-        Idempotent = true,
-        UseStructuredContent = true)]
     [Description(
         "Enumerates Pods in the orchestrator's allowed namespaces that are candidates for diagnostic attach. " +
         "By default returns only Pods that opt in via the prepared label (diagnostics.dotnet.io/prepared=true) " +
@@ -97,9 +88,9 @@ public sealed class OrchestratorTools
                     ? "No prepared Pods found in scope. Try preparedOnly=false to see heuristic candidates."
                     : "No Pods matched the supplied filters.",
                 new NextActionHint(
-                    "list_pods",
+            "list_orchestrator",
                     "Loosen the filters (preparedOnly=false, includeNotReady=true) or widen the labelSelector.",
-                    new Dictionary<string, object?> { ["preparedOnly"] = false, ["includeNotReady"] = true }));
+                    new Dictionary<string, object?> { ["kind"] = "pods", ["preparedOnly"] = false, ["includeNotReady"] = true }));
         }
 
         var first = page.Items[0];
@@ -114,30 +105,30 @@ public sealed class OrchestratorTools
             summary,
             page.NextCursor is not null
                 ? new NextActionHint(
-                    "list_pods",
+            "list_orchestrator",
                     "More candidates available — pass nextCursor to fetch the next page.",
-                    new Dictionary<string, object?> { ["cursor"] = page.NextCursor })
+                    new Dictionary<string, object?> { ["kind"] = "pods", ["cursor"] = page.NextCursor })
                 : new NextActionHint(
-                    "list_pods",
+            "list_orchestrator",
                     "Narrow the result further with labelSelector / containerName, or set preparedOnly=false to also see heuristic candidates."));
     }
 
     private static NextActionHint BuildRecoveryHint(string errorKind) => errorKind switch
     {
         OrchestratorErrorKinds.NamespaceNotAllowed => new NextActionHint(
-            "list_pods",
+            "list_orchestrator",
             "Pass a namespace that is configured in Orchestrator:NamespaceAllowlist."),
         OrchestratorErrorKinds.SelectorRejected => new NextActionHint(
-            "list_pods",
+            "list_orchestrator",
             "Drop the rejected label key, or extend Orchestrator:LabelKeyAllowlist on the server."),
         OrchestratorErrorKinds.PermissionDenied => new NextActionHint(
-            "list_pods",
+            "list_orchestrator",
             "Grant the orchestrator ServiceAccount 'pods' get/list/watch in the requested namespace."),
         OrchestratorErrorKinds.KubeApiUnavailable => new NextActionHint(
-            "list_pods",
+            "list_orchestrator",
             "Verify the orchestrator has an in-cluster ServiceAccount projection or a reachable kubeconfig, then retry."),
         _ => new NextActionHint(
-            "list_pods",
+            "list_orchestrator",
             "Re-run with corrected arguments."),
     };
 
@@ -285,14 +276,14 @@ public sealed class OrchestratorTools
             "attach_to_pod",
             "Pass a namespace that is configured in Orchestrator:NamespaceAllowlist."),
         OrchestratorErrorKinds.PodNotFound => new NextActionHint(
-            "list_pods",
-            "Run list_pods in the same namespace to discover the correct pod name."),
+            "list_orchestrator",
+            "Run list_orchestrator(kind=\"pods\") in the same namespace to discover the correct pod name."),
         OrchestratorErrorKinds.ContainerNotFound => new NextActionHint(
-            "list_pods",
-            "Run list_pods to inspect the target Pod's containers and re-run with the right containerName."),
+            "list_orchestrator",
+            "Run list_orchestrator(kind=\"pods\") to inspect the target Pod's containers and re-run with the right containerName."),
         OrchestratorErrorKinds.PodNotRunning => new NextActionHint(
-            "list_pods",
-            "Wait for the Pod to reach phase=Running, or pick a different Pod from list_pods."),
+            "list_orchestrator",
+            "Wait for the Pod to reach phase=Running, or pick a different Pod from list_orchestrator(kind=\"pods\")."),
         OrchestratorErrorKinds.PodNotPrepared => new NextActionHint(
             "attach_to_pod",
             "Add the prepared opt-in label (and a shared /tmp emptyDir + matching UID) to the Pod template, " +
@@ -380,8 +371,8 @@ public sealed class OrchestratorTools
                 result,
                 "detach_from_pod: no handleId was supplied and this MCP session has no investigation binding. Nothing to detach.",
                 new NextActionHint(
-                    "list_active_investigations",
-                    "Call list_active_investigations to enumerate known handles, then re-run detach_from_pod with an explicit handleId."));
+                    "list_orchestrator",
+                    "Call list_orchestrator(kind=\"investigations\") to enumerate known handles, then re-run detach_from_pod with an explicit handleId."));
         }
 
         // B3 (issue #164): require owner-session match before closing — without this any
@@ -446,14 +437,6 @@ public sealed class OrchestratorTools
     }
 
     [RequireScope("orchestrator-attach")]
-    [DeprecatedTool("list_orchestrator", "0.7.0", Note = "Call list_orchestrator(kind=\"investigations\", ...) — same parameter shape.")]
-    [McpServerTool(
-        Name = "list_active_investigations",
-        Title = "List investigation handles known to the orchestrator",
-        Destructive = false,
-        ReadOnly = true,
-        Idempotent = true,
-        UseStructuredContent = true)]
     [Description(
         "Returns every investigation handle the orchestrator has minted on behalf of this MCP session. " +
         "By default only Active/Attaching handles are returned — pass includeTerminal=true to also see " +
