@@ -43,6 +43,7 @@ builder.Services.AddDiagnosticCoreServices(configuredSymbolPath, builder.Configu
 builder.Services.AddHostedService<DotnetDiagnosticsMcp.Server.Hosting.StaleBinaryWatcher>();
 var orchestratorEnabled = builder.Services.AddOrchestratorServices(builder.Configuration);
 builder.AddOrchestratorObservability(orchestratorEnabled);
+builder.Services.AddAzureDiscoveryServices(builder.Configuration);
 
 // B5.2 (RFC 0001 §5): the [RequireScope] filter reads the bearer principal off
 // HttpContext.Items. Register the typed accessor so the filter is decoupled from
@@ -213,6 +214,7 @@ static async Task<int> RunStdioAsync(string[] args)
     hostBuilder.Services.AddDiagnosticCoreServices(configuredSymbolPath, hostBuilder.Configuration);
     var orchestratorEnabled = hostBuilder.Services.AddOrchestratorServices(hostBuilder.Configuration);
     hostBuilder.AddOrchestratorObservability(orchestratorEnabled);
+    hostBuilder.Services.AddAzureDiscoveryServices(hostBuilder.Configuration);
 
     // B5.2 / RFC 0001 §5: stdio has no HTTP context — the local MCP client owns the
     // process so authorization degrades to root scope. Registering the stdio accessor
