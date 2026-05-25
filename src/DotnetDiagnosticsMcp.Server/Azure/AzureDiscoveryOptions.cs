@@ -44,5 +44,15 @@ public sealed class AzureDiscoveryOptions
     /// raise it cautiously, since the bytes are held in memory for the entire window.
     /// </remarks>
     public TimeSpan KubeconfigHandleTtl { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Hard upper bound on the number of live kubeconfig handle entries the
+    /// in-memory store will hold (#234, FIX 2). Once reached, registering a new
+    /// handle evicts the entry closest to expiry (zeroing its bytes first) to
+    /// make room. Default 256 — comfortably above any realistic interactive
+    /// investigation footprint while still capping pathological growth (rogue
+    /// caller, test loop, etc.) at a few MiB of resident credential material.
+    /// </summary>
+    public int KubeconfigHandleMaxEntries { get; set; } = 256;
 }
 

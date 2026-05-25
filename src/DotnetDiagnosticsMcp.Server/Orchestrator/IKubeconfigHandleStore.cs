@@ -65,6 +65,43 @@ public interface IKubeconfigHandleStore
     /// handle ids themselves through this surface.
     /// </summary>
     int Count { get; }
+
+    /// <summary>
+    /// Returns the UTC expiry of an entry without exposing its bytes. Used by the
+    /// per-handle Kubernetes client cache (#234, FIX 3) to validate a cached client
+    /// on every hit without forcing a defensive copy of the kubeconfig buffer.
+    /// </summary>
+    /// <param name="handle">Opaque handle id (case-sensitive).</param>
+    /// <returns>The UTC expiry moment if the handle is live; null when unknown or expired.</returns>
+    DateTimeOffset? TryPeekExpiry(string handle);
+
+    /// <summary>
+    /// Raised after an entry is removed from the store — whether by TTL expiry, the
+    /// capacity-bound eviction policy, or store disposal. The byte buffer has
+    /// already been zeroed by the store before the event fires; subscribers should
+    /// use this signal to drop any DERIVED state keyed by the handle (e.g. a cached
+    /// <c>IKubernetes</c> client that still embeds the kubeconfig credential
+    /// material in memory).
+    /// </summary>
+    /// <remarks>
+    /// Handlers run synchronously on the eviction thread (the sweep timer or the
+    /// thread calling <see cref="Register(byte[])"/> / disposal). Keep handlers
+    /// cheap and non-throwing — the store catches and swallows handler exceptions
+    /// to keep the sweep timer alive, but it does NOT log them.
+    /// </remarks>
+    event EventHandler<KubeconfigHandleEvictedEventArgs> HandleEvicted;
+}
+
+/// <summary>
+/// Payload for <see cref="IKubeconfigHandleStore.HandleEvicted"/>: which handle
+/// was just removed. The handle value is included so subscribers can index into
+/// their own caches; treat it with the same care as the original handle (do NOT
+/// log it).
+/// </summary>
+public sealed class KubeconfigHandleEvictedEventArgs : EventArgs
+{
+    public KubeconfigHandleEvictedEventArgs(string handle) { Handle = handle; }
+    public string Handle { get; }
 }
 
 /// <summary>
