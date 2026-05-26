@@ -689,11 +689,53 @@ public sealed class DiagnosticTools
 
         var cpu = snapshot.Counters.FirstOrDefault(c => c.Provider == "System.Runtime" && c.Name == "cpu-usage");
         var heap = snapshot.Counters.FirstOrDefault(c => c.Provider == "System.Runtime" && c.Name == "gc-heap-size");
-        var hint = (cpu?.Value ?? 0) >= 70
-            ? new NextActionHint("collect_sample", $"cpu-usage={cpu!.Value:F1}% over {durationSeconds}s — investigate the hot path.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10, ["topN"] = 25 })
-            : new NextActionHint("collect_events", "Counters look quiet — confirm there are no GC pauses before widening scope.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 });
+        var timeInGc = snapshot.Counters.FirstOrDefault(c => c.Provider == "System.Runtime" && c.Name == "time-in-gc");
+        var queueLength = snapshot.Counters.FirstOrDefault(c => c.Provider == "System.Runtime" && c.Name == "threadpool-queue-length");
+        var allocRate = snapshot.Counters.FirstOrDefault(c => c.Provider == "System.Runtime" && c.Name == "alloc-rate");
+        var gen2Count = snapshot.Counters.FirstOrDefault(c => c.Provider == "System.Runtime" && c.Name == "gen-2-gc-count");
+
+        // Build hints based on counter thresholds (highest priority first).
+        var hints = new List<NextActionHint>();
+
+        // CPU > 70% → recommend CPU sampling (existing behavior, highest priority).
+        if ((cpu?.Value ?? 0) >= 70)
+        {
+            hints.Add(new NextActionHint("collect_sample", $"cpu-usage={cpu!.Value:F1}% — investigate the hot path.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10, ["topN"] = 25 }));
+        }
+
+        // ThreadPool queue > 50 → potential starvation (Phase 12 Wave 1.1).
+        if ((queueLength?.Value ?? 0) > 50)
+        {
+            hints.Add(new NextActionHint("collect_events", $"threadpool-queue-length={queueLength!.Value:F0} — possible ThreadPool starvation.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "threadpool", ["durationSeconds"] = 10 }));
+        }
+
+        // GC time > 15% → GC pressure (Phase 12 Wave 1.2).
+        if ((timeInGc?.Value ?? 0) > 15)
+        {
+            hints.Add(new NextActionHint("collect_events", $"time-in-gc={timeInGc!.Value:F1}% — GC pressure detected.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "gc", ["durationSeconds"] = 10 }));
+            hints.Add(new NextActionHint("inspect_heap", "GC pressure — inspect heap for allocation patterns.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["source"] = "live" }));
+        }
+
+        // High allocation rate with active Gen2 GCs → allocation pressure (Phase 12 Wave 1.3).
+        // gen-2-gc-count is an EventCounter increment that shows the count in the last interval only,
+        // not the cumulative total. Any Gen2 GC activity (> 0 in last interval) combined with high
+        // alloc-rate (> 50 MB/s) signals an allocation hotspot worth investigating.
+        if ((allocRate?.Value ?? 0) > 50_000_000 && (gen2Count?.Value ?? 0) > 0)
+        {
+            hints.Add(new NextActionHint("collect_sample", $"alloc-rate={allocRate!.Value / 1_000_000:F1} MB/s + gen-2 GCs active — allocation hotspot likely.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "allocation", ["durationSeconds"] = 10 }));
+        }
+
+        // Fallback: counters look quiet, suggest GC events to confirm.
+        if (hints.Count == 0)
+        {
+            hints.Add(new NextActionHint("collect_events", "Counters look quiet — confirm there are no GC pauses before widening scope.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "gc", ["durationSeconds"] = 10 }));
+        }
 
         // The handle always carries the FULL snapshot (query_collection drilldown stays cheap),
         // but the inline payload is depth-gated to keep first-look responses small.
@@ -723,15 +765,17 @@ public sealed class DiagnosticTools
             ? $"Captured {snapshot.Counters.Count} counter(s) and {snapshot.Meters.Count} meter series over {durationSeconds}s — showing {inlinePayload.Counters.Count} headline counter(s) and {inlinePayload.Meters.Count} headline meter(s) (dropped {droppedCounters} counter(s), {droppedMeters} meter(s); handle has all). cpu-usage={cpu?.Value:F1}%, gc-heap-size={heap?.Value:F1}{requestDurationText}.{noteText}"
             : $"Captured {snapshot.Counters.Count} counter(s) and {snapshot.Meters.Count} meter series over {durationSeconds}s — cpu-usage={cpu?.Value:F1}%, gc-heap-size={heap?.Value:F1}{requestDurationText}.{noteText}";
 
+        // Always add the drill-down hint at the end.
+        hints.Add(new NextActionHint("query_snapshot",
+            "Drill into this counter snapshot without re-collecting (views: summary, byProvider).",
+            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byProvider" }));
+
         var ok = DiagnosticResult.OkWithHandle(
             inlinePayload,
             summaryText,
             handle.Id,
             handle.ExpiresAt,
-            hint,
-            new NextActionHint("query_snapshot",
-                "Drill into this counter snapshot without re-collecting (views: summary, byProvider).",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byProvider" }));
+            [.. hints]);
         return WithContext(ok, resolved.Context);
     }
 

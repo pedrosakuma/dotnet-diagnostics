@@ -69,7 +69,7 @@ Per-tool `Summary` semantics:
 
 | Tool | What `Summary` drops inline |
 | --- | --- |
-| `collect_events(kind="counters")` | All non-headline counters (keeps ~12: cpu-usage, working-set, gc-heap-size, gen-2-gc-count, threadpool-thread-count, threadpool-queue-length, exception-count, monitor-lock-contention-count + ASP.NET Core requests/failed/current + Kestrel connections-per-sec). |
+| `collect_events(kind="counters")` | All non-headline counters (keeps ~14: cpu-usage, working-set, gc-heap-size, gen-2-gc-count, time-in-gc, alloc-rate, threadpool-thread-count, threadpool-queue-length, exception-count, monitor-lock-contention-count + ASP.NET Core requests/failed/current + Kestrel connections-per-sec). **Auto-hints** trigger on: `threadpool-queue-length > 50` (starvation), `time-in-gc > 15%` (GC pressure), `alloc-rate > 50 MB/s` + Gen2 activity (allocation hotspot). |
 | `inspect_process(view="container")` | The `Notes[]` (caveats about cgroup v1 / missing PSI). Cgroup values themselves remain. |
 | `collect_sample(kind="cpu")` | `TopHotspots` truncated to the top 3 (handle keeps `topN`, default 25). |
 | `collect_sample(kind="off_cpu")` | `TopBlockingStacks` truncated to the top 3 (handle keeps `topN`). |

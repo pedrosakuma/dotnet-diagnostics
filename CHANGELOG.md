@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **Phase 12 Wave 1: Smart Auto-Hints** — `collect_events(kind="counters")` now surfaces
+  automatic `NextActionHints` based on counter thresholds, reducing triage steps from 6+ to 2-3:
+  - `threadpool-queue-length > 50` → hints for `kind="threadpool"` (starvation likely)
+  - `time-in-gc > 15%` → hints for `kind="gc"` + `inspect_heap` (GC pressure)
+  - `alloc-rate > 50 MB/s` + any Gen2 GC activity → hints for `kind="allocation"` (allocation hotspot)
+  - Headlines now include `time-in-gc` and `alloc-rate` counters (was 12, now 14).
 - `inspect_process(view="runtime-config")` now reports best-effort GC / ThreadPool startup settings, tiered-compilation env overrides, filtered runtime environment variables, and a forward-compatible `appContextSwitches` field. **Security boundary:** `envVars[]` is strictly filtered to `DOTNET_`, `COMPlus_`, `ASPNETCORE_`, and `DOTNET_SYSTEM_` prefixes so secrets like `*_TOKEN` / `*_KEY` outside those prefixes are never exposed.
 - `collect_events(kind="contention")` adds a curated CLR lock-contention view over `Microsoft-Windows-DotNETRuntime` with wait-duration percentiles, `query_snapshot(handle, view="summary|byCallSite|byOwner")` drilldown, and a new `/lock-storm?seconds=N&blockers=M` `BadCodeSample` fixture for reproducing monitor storms.
 - `query_snapshot(handle, view="async-stalls")` now classifies async-looking thread stacks into `SyncOverAsync`, `ChannelAwait`, `TcsPending`, `SemaphoreAwait`, `Delay`, and `Unknown`, and `samples/BadCodeSample` exposes `/async-stall?bucket=tcs|channel|sync-over-async|semaphore&seconds=N` for live repros.
