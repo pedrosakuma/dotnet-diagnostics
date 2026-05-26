@@ -216,6 +216,34 @@ public static class TriageClassifier
             indicators.Add(("gen-2-gc-count", gen2, "collections", score, level));
         }
 
+        // Exception count: 0 normal, 1-10 elevated, 10-50 high, 50+ critical.
+        if (evidence.ExceptionCount.HasValue && evidence.ExceptionCount.Value > 0)
+        {
+            var exceptions = evidence.ExceptionCount.Value;
+            var (score, level) = exceptions switch
+            {
+                >= 50 => ((int)Math.Min(100, 80 + (exceptions - 50) / 50 * 20), "critical"),
+                >= 10 => ((int)(50 + (exceptions - 10) / 40 * 30), "high"),
+                >= 1 => ((int)(20 + (exceptions - 1) / 9 * 30), "elevated"),
+                _ => (0, "normal")
+            };
+            indicators.Add(("exception-count", exceptions, "exceptions", score, level));
+        }
+
+        // Request duration P95: <100ms normal, 100-500ms elevated, 500ms-2s high, >2s critical.
+        if (evidence.RequestDurationP95.HasValue && evidence.RequestDurationP95.Value > 0)
+        {
+            var p95Ms = evidence.RequestDurationP95.Value * 1000; // Convert seconds to ms
+            var (score, level) = p95Ms switch
+            {
+                >= 2000 => ((int)Math.Min(100, 80 + (p95Ms - 2000) / 3000 * 20), "critical"),
+                >= 500 => ((int)(50 + (p95Ms - 500) / 1500 * 30), "high"),
+                >= 100 => ((int)(20 + (p95Ms - 100) / 400 * 30), "elevated"),
+                _ => ((int)(p95Ms / 100 * 20), "normal")
+            };
+            indicators.Add(("request-duration-p95", Math.Round(p95Ms, 0), "ms", score, level));
+        }
+
         // Sort by score descending and take top N.
         return indicators
             .OrderByDescending(i => i.Score)
