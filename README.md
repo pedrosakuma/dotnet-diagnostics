@@ -111,7 +111,7 @@ docker compose -f deploy/docker-compose.yml up -d
 | `collect_sample(kind="off_cpu")` / `query_snapshot` | Where threads block (futex / IO / sleep) — Linux `perf` backend |
 | `collect_events(kind="exceptions")` | Managed exceptions thrown in a window, aggregated by type |
 | `collect_events(kind="gc")` | GC pauses + per-generation counts |
-| `collect_events(kind="activities")` / `query_snapshot` | ActivitySource span capture (trace/span ids, parent linkage, tags, duration) + re-project artifacts |
+| `collect_events(kind="activities")` / `query_snapshot` | ActivitySource span capture (trace/span ids, parent linkage, tags, duration) + **GC overlay** correlation |
 | `collect_events(kind="event_source")` / `query_snapshot` | Generic EventSource passthrough (HTTP, Kestrel, custom) + re-project artifacts |
 | `collect_thread_snapshot` / `query_snapshot` | Managed thread states + SyncBlock lock graph + deadlock / unique-stack drilldown |
 | `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `query_snapshot` | Top retained types + retention paths + roots + async state machines, live or from a dump |
@@ -215,7 +215,8 @@ Add to `~/.copilot/mcp-config.json`:
 | 7 | ✅ | Cloud integrations (Azure, AWS, GCP) |
 | 8 | ✅ | Tool consolidation (24 → 15 tools) |
 | **12** | ✅ | **Diagnostic Journey UX** — auto-hints + IoT triage |
-| Next | ⏳ | Heap diff, GC overlay, NativeAOT publish |
+| **13** | ✅ | **GC overlay** — correlate GC pauses with activity spans |
+| Next | ⏳ | Flame graph export, NativeAOT publish |
 
 ---
 
