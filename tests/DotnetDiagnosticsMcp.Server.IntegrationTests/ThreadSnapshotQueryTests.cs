@@ -22,7 +22,8 @@ public sealed class ThreadSnapshotQueryTests
         groups.Should().NotBeNull();
         var uniqueStacks = groups!;
         uniqueStacks.Select(group => group.ThreadCount).Should().Equal(6, 4, 2);
-        uniqueStacks[0].ThreadPercentage.Should().BeApproximately(0.5, 0.0001);
+        // 6 threads out of 13 total ≈ 46.15%
+        uniqueStacks[0].ThreadPercentage.Should().BeApproximately(6.0 / 13.0, 0.0001);
         uniqueStacks[0].SampleThreads.Should().HaveCount(5, "sample thread ids are capped for large groups");
         uniqueStacks[0].SampleThreads.Select(sample => sample.ManagedThreadId).Should().Equal(1, 2, 3, 4, 5);
         uniqueStacks[0].CanonicalFrames.Select(frame => frame.DisplayName).Should().Equal("GroupA.Mid", "GroupA.Leaf");
