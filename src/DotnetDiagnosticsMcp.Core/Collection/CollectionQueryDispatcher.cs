@@ -32,7 +32,7 @@ public static class CollectionQueryDispatcher
         CollectionHandleKinds.ExceptionSnapshot => new[] { "summary", "byType", "recent" },
         CollectionHandleKinds.GcEvents => new[] { "summary", "events", "pauseHistogram" },
         CollectionHandleKinds.EventSource => new[] { "summary", "byEventName", "events" },
-        CollectionHandleKinds.Activities => new[] { "summary", "bySource", "byOperation", "activities" },
+        CollectionHandleKinds.Activities => new[] { "summary", "bySource", "byOperation", "activities", "gc-overlay" },
         CollectionHandleKinds.LogSnapshot => new[] { "summary", "byCategory", "byLevel", "recent", "errors" },
         CollectionHandleKinds.JitSnapshot => new[] { "summary", "topMethods", "tierDistribution", "reJIT" },
         CollectionHandleKinds.ThreadPoolSnapshot => new[] { "summary", "timeline", "hillClimbing", "workItemOrigins" },
@@ -58,6 +58,14 @@ public static class CollectionQueryDispatcher
     /// type matches what the dispatcher expects.
     /// </summary>
     public static DispatchOutcome Dispatch(string kind, string? view, object artifact, int topN)
+        => Dispatch(kind, view, artifact, topN, correlateArtifact: null);
+
+    /// <summary>
+    /// Renders <paramref name="artifact"/> under <paramref name="view"/> with optional correlation artifact.
+    /// The <paramref name="correlateArtifact"/> is used for views that require a second data source
+    /// (e.g., "gc-overlay" requires a <see cref="GcSummary"/> to correlate with activities).
+    /// </summary>
+    public static DispatchOutcome Dispatch(string kind, string? view, object artifact, int topN, object? correlateArtifact)
     {
         if (topN < 1)
         {
@@ -86,7 +94,7 @@ public static class CollectionQueryDispatcher
             CollectionHandleKinds.EventSource when artifact is EventSourceCapture es
                 => Ok(Render(es, effectiveView, topN)),
             CollectionHandleKinds.Activities when artifact is ActivityCapture a
-                => Ok(Render(a, effectiveView, topN)),
+                => RenderActivities(a, effectiveView, topN, correlateArtifact),
             CollectionHandleKinds.LogSnapshot when artifact is LogSnapshot logs
                 => Ok(Render(logs, effectiveView, topN)),
             CollectionHandleKinds.JitSnapshot when artifact is JitSnapshot jit
@@ -257,6 +265,35 @@ public static class CollectionQueryDispatcher
 
         return new CollectionQueryResult(
             CollectionHandleKinds.Activities, view, capture.ProcessId, capture.StartedAt, capture.Duration, payload);
+    }
+
+    /// <summary>
+    /// Handles Activities rendering with optional GC correlation for the "gc-overlay" view.
+    /// </summary>
+    private static DispatchOutcome RenderActivities(ActivityCapture capture, string view, int topN, object? correlateArtifact)
+    {
+        if (view.Equals("gc-overlay", StringComparison.OrdinalIgnoreCase))
+        {
+            if (correlateArtifact is not GcSummary gcSummary)
+            {
+                return new DispatchOutcome(
+                    null, null, null,
+                    "gc-overlay view requires gcHandle parameter pointing to a gc-events artifact",
+                    null);
+            }
+
+            var overlay = GcActivityCorrelator.Correlate(capture, gcSummary, topN);
+            return Ok(new CollectionQueryResult(
+                CollectionHandleKinds.Activities,
+                view,
+                capture.ProcessId,
+                capture.StartedAt,
+                capture.Duration,
+                overlay));
+        }
+
+        // Delegate to the standard Activities renderer for all other views
+        return Ok(Render(capture, view, topN));
     }
 
     private static CollectionQueryResult Render(LogSnapshot snapshot, string view, int topN)

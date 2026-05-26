@@ -492,4 +492,156 @@ public class CollectionQueryDispatcherTests
         outcome.Result.Should().NotBeNull();
         outcome.Result!.Payload.Should().BeOfType<CountersByProviderView>();
     }
+
+    [Fact]
+    public void Activities_GcOverlay_CorrelatesOverlappingEvents()
+    {
+        var baseTime = DateTimeOffset.UtcNow;
+
+        // Activity: 100ms-600ms (500ms duration)
+        var activities = new ActivityCapture(
+            ProcessId: 42,
+            SourceFilters: null,
+            StartedAt: baseTime,
+            Duration: TimeSpan.FromSeconds(1),
+            TotalActivities: 1,
+            CompletedActivities: 1,
+            Activities: new[]
+            {
+                new CapturedActivity(
+                    SourceName: "TestSource",
+                    OperationName: "TestOp",
+                    Id: "a1",
+                    ParentId: null,
+                    TraceId: "trace1",
+                    SpanId: "span1",
+                    ParentSpanId: null,
+                    StartedAt: baseTime.AddMilliseconds(100),
+                    StoppedAt: baseTime.AddMilliseconds(600),
+                    Duration: TimeSpan.FromMilliseconds(500),
+                    Tags: new Dictionary<string, string>())
+            },
+            BySource: Array.Empty<ActivitySourceSummary>(),
+            ByOperation: Array.Empty<ActivityOperationSummary>());
+
+        // GC: 200ms-350ms (150ms pause, fully inside activity window)
+        var gcSummary = new GcSummary(
+            ProcessId: 42,
+            StartedAt: baseTime,
+            Duration: TimeSpan.FromSeconds(1),
+            TotalCollections: 1,
+            TotalPauseTime: TimeSpan.FromMilliseconds(150),
+            MaxPauseTime: TimeSpan.FromMilliseconds(150),
+            Generations: new[] { new GenerationStats(2, 1) },
+            Events: new[]
+            {
+                new GcEvent(
+                    Timestamp: baseTime.AddMilliseconds(200),
+                    Generation: 2,
+                    Reason: "AllocSmall",
+                    Type: "NonConcurrentGC",
+                    PauseDuration: TimeSpan.FromMilliseconds(150))
+            });
+
+        var outcome = CollectionQueryDispatcher.Dispatch(
+            CollectionHandleKinds.Activities, "gc-overlay", activities, 50, gcSummary);
+
+        outcome.Result.Should().NotBeNull();
+        outcome.Result!.View.Should().Be("gc-overlay");
+        var payload = outcome.Result.Payload.Should().BeOfType<GcOverlayResult>().Subject;
+
+        payload.ImpactedCount.Should().Be(1);
+        payload.ImpactedActivities.Should().HaveCount(1);
+
+        var impacted = payload.ImpactedActivities[0];
+        impacted.OperationName.Should().Be("TestOp");
+        impacted.DurationMs.Should().Be(500);
+        impacted.GcPauseMs.Should().Be(150);
+        impacted.GcPausePercent.Should().Be(30); // 150ms of 500ms = 30%
+        impacted.GcEvents.Should().HaveCount(1);
+        impacted.GcEvents[0].Generation.Should().Be(2);
+    }
+
+    [Fact]
+    public void Activities_GcOverlay_RequiresGcHandle()
+    {
+        var activities = new ActivityCapture(
+            ProcessId: 42,
+            SourceFilters: null,
+            StartedAt: At,
+            Duration: TimeSpan.FromSeconds(1),
+            TotalActivities: 0,
+            CompletedActivities: 0,
+            Activities: Array.Empty<CapturedActivity>(),
+            BySource: Array.Empty<ActivitySourceSummary>(),
+            ByOperation: Array.Empty<ActivityOperationSummary>());
+
+        // No correlateArtifact provided
+        var outcome = CollectionQueryDispatcher.Dispatch(
+            CollectionHandleKinds.Activities, "gc-overlay", activities, 50, correlateArtifact: null);
+
+        outcome.Result.Should().BeNull();
+        outcome.InvalidArgument.Should().Contain("gcHandle");
+    }
+
+    [Fact]
+    public void Activities_GcOverlay_PartialOverlap_CalculatesCorrectly()
+    {
+        var baseTime = DateTimeOffset.UtcNow;
+
+        // Activity: 100ms-400ms (300ms duration)
+        var activities = new ActivityCapture(
+            ProcessId: 42,
+            SourceFilters: null,
+            StartedAt: baseTime,
+            Duration: TimeSpan.FromSeconds(1),
+            TotalActivities: 1,
+            CompletedActivities: 1,
+            Activities: new[]
+            {
+                new CapturedActivity(
+                    SourceName: "TestSource",
+                    OperationName: "TestOp",
+                    Id: "a1",
+                    ParentId: null,
+                    TraceId: null,
+                    SpanId: null,
+                    ParentSpanId: null,
+                    StartedAt: baseTime.AddMilliseconds(100),
+                    StoppedAt: baseTime.AddMilliseconds(400),
+                    Duration: TimeSpan.FromMilliseconds(300),
+                    Tags: new Dictionary<string, string>())
+            },
+            BySource: Array.Empty<ActivitySourceSummary>(),
+            ByOperation: Array.Empty<ActivityOperationSummary>());
+
+        // GC: 300ms-500ms (200ms pause, but only 100ms overlaps with activity)
+        var gcSummary = new GcSummary(
+            ProcessId: 42,
+            StartedAt: baseTime,
+            Duration: TimeSpan.FromSeconds(1),
+            TotalCollections: 1,
+            TotalPauseTime: TimeSpan.FromMilliseconds(200),
+            MaxPauseTime: TimeSpan.FromMilliseconds(200),
+            Generations: new[] { new GenerationStats(1, 1) },
+            Events: new[]
+            {
+                new GcEvent(
+                    Timestamp: baseTime.AddMilliseconds(300),
+                    Generation: 1,
+                    Reason: "AllocSmall",
+                    Type: "NonConcurrentGC",
+                    PauseDuration: TimeSpan.FromMilliseconds(200))
+            });
+
+        var outcome = CollectionQueryDispatcher.Dispatch(
+            CollectionHandleKinds.Activities, "gc-overlay", activities, 50, gcSummary);
+
+        var payload = outcome.Result!.Payload.Should().BeOfType<GcOverlayResult>().Subject;
+        var impacted = payload.ImpactedActivities[0];
+
+        // Only 100ms of the GC pause overlapped with the activity (300-400ms)
+        impacted.GcPauseMs.Should().Be(100);
+        impacted.GcPausePercent.Should().BeApproximately(33.33, 0.1); // 100ms of 300ms ≈ 33.33%
+    }
 }

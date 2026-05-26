@@ -1395,7 +1395,7 @@ public sealed class DiagnosticTools
         "returned by snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\") / collect_events(kind=\"db\"). " +
         "Supported views per kind: counters → summary|byProvider; exception-snapshot → " +
         "summary|byType|recent; gc-events → summary|events|pauseHistogram; event-source → " +
-        "summary|byEventName|events; activities → summary|bySource|byOperation|activities; " +
+        "summary|byEventName|events; activities → summary|bySource|byOperation|activities|gc-overlay; " +
         "log-snapshot → summary|byCategory|byLevel|recent|errors; jit-snapshot → summary|topMethods|tierDistribution|reJIT; threadpool-snapshot → summary|timeline|hillClimbing|workItemOrigins; db-snapshot → summary|byCommand|n+1|connectionPool. " +
         "Handles expire ~10 minutes after collection.")]
     public static DiagnosticResult<CollectionQueryResult> QueryCollection(
@@ -1403,7 +1403,8 @@ public sealed class DiagnosticTools
         IPrincipalAccessor principalAccessor,
         [Description("Handle returned by a prior collection tool (snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\") / collect_events(kind=\"db\")). ")] string handle,
         [Description("View name (kind-dependent). Defaults to 'summary'.")] string? view = null,
-        [Description("Cap on inline items for paginated views (recent / events / byType / byEventName / bySource / byOperation / activities / byCategory / byLevel / errors / topMethods / reJIT / hillClimbing / workItemOrigins / byCommand / n+1 / connectionPool). Must be >= 1. Defaults to 50.")] int topN = 50)
+        [Description("Cap on inline items for paginated views (recent / events / byType / byEventName / bySource / byOperation / activities / byCategory / byLevel / errors / topMethods / reJIT / hillClimbing / workItemOrigins / byCommand / n+1 / connectionPool). Must be >= 1. Defaults to 50.")] int topN = 50,
+        [Description("Handle to a gc-events artifact for correlation views (required for activities view='gc-overlay').")] string? gcHandle = null)
     {
         if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<CollectionQueryResult>(nameof(handle), "is required");
         if (topN < 1) return InvalidArg<CollectionQueryResult>(nameof(topN), "must be >= 1");
@@ -1420,6 +1421,33 @@ public sealed class DiagnosticTools
                 new NextActionHint("collect_events", "Re-run the original collector on the same pid to issue a fresh handle.", null));
         }
 
+        // Look up correlation artifact if gcHandle is provided
+        object? correlateArtifact = null;
+        if (!string.IsNullOrWhiteSpace(gcHandle))
+        {
+            var gcEntry = handles.TryGetWithKind(gcHandle);
+            if (gcEntry is null)
+            {
+                return DiagnosticResult.Fail<CollectionQueryResult>(
+                    $"gcHandle '{gcHandle}' is unknown or expired.",
+                    new DiagnosticError(
+                        "HandleExpired",
+                        "GC handle has expired. Re-run collect_events(kind='gc') to get a fresh handle.",
+                        gcHandle),
+                    new NextActionHint("collect_events", "Capture new GC events with kind='gc'.", new Dictionary<string, object?> { ["kind"] = "gc" }));
+            }
+            if (gcEntry.Value.Kind != CollectionHandleKinds.GcEvents)
+            {
+                return DiagnosticResult.Fail<CollectionQueryResult>(
+                    $"gcHandle '{gcHandle}' is not a gc-events artifact (kind='{gcEntry.Value.Kind}').",
+                    new DiagnosticError(
+                        "InvalidHandle",
+                        "gcHandle must point to a gc-events artifact from collect_events(kind='gc').",
+                        gcHandle));
+            }
+            correlateArtifact = gcEntry.Value.Artifact;
+        }
+
         var principal = principalAccessor.Current;
         if (principal is not null)
         {
@@ -1433,7 +1461,7 @@ public sealed class DiagnosticTools
             }
         }
 
-        var outcome = CollectionQueryDispatcher.Dispatch(entry.Value.Kind, view, entry.Value.Artifact, topN);
+        var outcome = CollectionQueryDispatcher.Dispatch(entry.Value.Kind, view, entry.Value.Artifact, topN, correlateArtifact);
 
         if (outcome.UnknownKind is not null)
         {
