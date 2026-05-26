@@ -2,10 +2,11 @@
 
 [![CI](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/actions/workflows/ci.yml)
 
-> **Status:** MCP server functional with 21 diagnostic tools, two transports
-> (HTTP + stdio), and 6 curated investigation prompts. End-to-end tests pass
-> on Linux + Windows. See [`docs/`](./docs) for the tool reference and
-> investigation playbooks.
+> **Status:** MCP server functional with 15 unified diagnostic tools (consolidated
+> from 24 aliases via RFC 0002), two transports (HTTP + stdio), 6 curated
+> investigation prompts, and **IoT-style triage** that reduces diagnostic journeys
+> from 6+ steps to 1-2 steps. End-to-end tests pass on Linux + Windows.
+> See [`docs/`](./docs) for the tool reference and investigation playbooks.
 
 An **MCP server** that lets an LLM perform on-demand performance diagnostics on running
 **.NET 10** applications — locally or in Kubernetes — **without any modification to the
@@ -25,6 +26,33 @@ MCP-aware client (Claude Desktop, Copilot CLI, custom agents, ...) can drive an 
 - **LLM-friendly outputs** — every tool returns summarized JSON (top-N hotspots, aggregates),
   not raw `.nettrace` blobs
 
+## Quick Start: IoT-style Triage
+
+**One call to understand your app's health:**
+
+```bash
+# MCP call
+inspect_process(view="triage")
+```
+
+**Response:**
+```json
+{
+  "verdict": "threadpool-starvation",
+  "severity": "Critical",
+  "topIndicators": [
+    {"name": "threadpool-queue-length", "value": 1191, "score": 100, "level": "critical"},
+    {"name": "cpu-usage", "value": 0.13, "score": 0, "level": "normal"},
+    {"name": "time-in-gc", "value": 0, "score": 0, "level": "normal"}
+  ],
+  "hints": [{"nextTool": "collect_events", "suggestedArguments": {"kind": "threadpool"}}]
+}
+```
+
+**Verdicts:** `cpu-bound`, `gc-pressure`, `threadpool-starvation`, `lock-contention`, `io-bound`, `healthy`
+
+**TopIndicators** are always returned (even when healthy) — enabling **proactive optimization**, not just reactive firefighting. The LLM simply follows the first hint. This reduces diagnostic journeys from 6+ manual steps to 1-2 calls.
+
 ## Repository layout
 
 ```
@@ -43,10 +71,11 @@ tests/
 
 | Tool | Purpose |
 |---|---|
+| `inspect_process(view="triage")` | **IoT-style diagnosis** — 1 call returns verdict + severity + ranked TopIndicators + hints |
 | `inspect_process(view="list")` / `inspect_process(view="info")` | Discover .NET processes via diagnostic IPC |
 | `inspect_process(view="capabilities")` | Detect CoreCLR vs NativeAOT and what's usable |
 | `inspect_process(view="container")` | Linux cgroup v2: CPU throttling, memory pressure, OOM kills, PSI |
-| `collect_events(kind="counters")` | EventCounters over a window (cpu, memory, requests, ...) |
+| `collect_events(kind="counters")` | EventCounters with **auto-hints** (CPU, GC, starvation, contention, allocation, I/O) |
 | `collect_sample(kind="cpu")` / `query_snapshot(view="call-tree")` | Top-N CPU hotspots (inclusive/exclusive) + on-demand caller→callee tree |
 | `collect_sample(kind="off_cpu")` / `query_snapshot` | Where threads block (futex / IO / sleep) — Linux `perf` backend |
 | `collect_events(kind="exceptions")` | Managed exceptions thrown in a window, aggregated by type |
@@ -250,7 +279,9 @@ Phases:
 5. ✅ Kubernetes sidecar topology + manifests (see [`deploy/k8s/`](./deploy/k8s))
 6. ✅ Documentation polish (tool reference, investigation playbooks, client setup)
 7. ✅ Cloud-native integrations: Azure App Service + Container Apps (see [`deploy/azure/`](./deploy/azure)), AWS ECS / Fargate (see [`deploy/aws/`](./deploy/aws)), and GCP Cloud Run (see [`deploy/gcp/`](./deploy/gcp)).
-8. ⏳ Future: NativeAOT publish.
+8. ✅ Tool consolidation (RFC 0002 §7.3): 24 legacy tools → 15 unified discriminator tools
+9. ✅ **Diagnostic Journey UX (Phase 12)**: auto-hints in counters + IoT-style triage with ranked TopIndicators — reduces 6+ step journeys to 1-2 steps
+10. ⏳ Future: NativeAOT publish, heap diff between snapshots, GC overlay in activities
 
 ## License
 
