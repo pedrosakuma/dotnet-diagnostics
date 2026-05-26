@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-26
+
+Highlights: Phase 10 application-semantics gaps. Eight new curated views
+let an LLM diagnose log storms, JIT cold-start, in-flight HTTP hangs,
+ThreadPool starvation, and EF Core / SqlClient N+1 bursts; plus Meter
+API support in counters, FD/socket inspection, and a sample diff view.
+No breaking changes.
+
 ### Added
 - `collect_events(kind="counters")` now subscribes to `System.Diagnostics.Metrics`
   meters via the new `meters` / `maxInstrumentTimeSeries` parameters, surfaces
