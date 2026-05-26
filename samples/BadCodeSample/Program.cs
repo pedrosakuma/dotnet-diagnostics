@@ -41,6 +41,7 @@ var badCodeEndpoints = new[]
     "/log-spam?count=200&level=warning",
     "/jit-pressure?count=200",
     "/slow-hang?seconds=5",
+    "/threadpool-starve?blockers=50",
 };
 var lockObject = new object();
 var meterFactory = app.Services.GetRequiredService<IMeterFactory>();
@@ -311,6 +312,18 @@ app.MapGet("/slow-hang", async (int? seconds) =>
     var delay = TimeSpan.FromSeconds(Math.Clamp(seconds ?? 5, 1, 30));
     await Task.Delay(delay);
     return Results.Ok(new { delayedSeconds = delay.TotalSeconds });
+});
+
+// 14. ThreadPool starvation — detect with collect_events(kind="threadpool")
+app.MapGet("/threadpool-starve", (int? blockers) =>
+{
+    var blockedWorkers = Math.Clamp(blockers ?? 50, 1, 256);
+    for (var i = 0; i < blockedWorkers; i++)
+    {
+        Task.Run(static () => Thread.Sleep(TimeSpan.FromSeconds(15)));
+    }
+
+    return Results.Accepted($"/threadpool-starve?blockers={blockedWorkers}", new { blockers = blockedWorkers });
 });
 
 app.Run();

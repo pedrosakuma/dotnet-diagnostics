@@ -1,5 +1,6 @@
 using DotnetDiagnosticsMcp.Core.Jit;
 using DotnetDiagnosticsMcp.Core.Logs;
+using DotnetDiagnosticsMcp.Core.ThreadPool;
 
 namespace DotnetDiagnosticsMcp.Core.Collection;
 
@@ -227,3 +228,30 @@ public sealed record JitReJitView(
     int OsrCount,
     int Returned,
     IReadOnlyList<JitMethodSummary> Methods);
+// --- ThreadPool snapshot views -----------------------------------------------------------------
+
+public sealed record ThreadPoolSummaryView(
+    int LatestWorkerThreadCount,
+    int PeakWorkerThreadCount,
+    int LatestIocpThreadCount,
+    int PeakIocpThreadCount,
+    int HillClimbingEvents,
+    int StarvationAdjustments,
+    int TotalEnqueueEvents,
+    int TotalDequeueEvents,
+    ThreadPoolEffectiveSettings? EffectiveSettings,
+    IReadOnlyList<ThreadPoolWorkItemOrigin> TopWorkItemOrigins,
+    IReadOnlyList<string> Notes);
+
+public sealed record ThreadPoolTimelineView(
+    IReadOnlyList<ThreadPoolCountBucket> WorkerThreads,
+    IReadOnlyList<ThreadPoolCountBucket> IocpThreads);
+
+public sealed record ThreadPoolHillClimbingView(
+    int Returned,
+    IReadOnlyList<ThreadPoolHillClimbingSample> Samples);
+
+public sealed record ThreadPoolWorkItemOriginsView(
+    int TotalEnqueueEvents,
+    int Returned,
+    IReadOnlyList<ThreadPoolWorkItemOrigin> Origins);

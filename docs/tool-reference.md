@@ -78,6 +78,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="event_source")` | The `Events[]` list. Provider + total count remain. Drill in with `query_snapshot(handle, view=byEventName)`. |
 | `collect_events(kind="logs")` | The `Recent[]` list. Level counts + per-category rollups remain exact for the window. |
 | `collect_events(kind="jit")` | Method rows beyond the hottest 10. Healthcheck + tier counts remain exact for the window. |
+| `collect_events(kind="threadpool")` | The full worker/IOCP timelines and hill-climbing sequence. Summary keeps headline counts + top origins; drill in with `query_snapshot(handle, view=timeline|hillClimbing|workItemOrigins)`. |
 | `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph|deadlocks|unique-stacks)`. |
 
 Explicit `topN` always wins over the depth default — if you pass
@@ -166,6 +167,8 @@ The LLM may always ignore a prompt and drive ad-hoc.
 
 Os 7 coletores windowed — `collect_events(kind="counters")`, `collect_events(kind="exceptions")`,
 `collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`, `collect_events(kind="logs")`, `collect_events(kind="jit")` — devolvem, junto do summary +
+Os 6 coletores windowed — `collect_events(kind="counters")`, `collect_events(kind="exceptions")`,
+`collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`, `collect_events(kind="logs")`, `collect_events(kind="threadpool")` — devolvem, junto do summary +
 top-N inline, um `handle` opaco (Crockford-base32, TTL ~10 min) registrado num
 store em memória. A LLM pode então re-projetar o mesmo artefato sob outra
 visão **sem rodar o EventPipe de novo** chamando `query_snapshot`:
@@ -200,6 +203,7 @@ Visões disponíveis por `kind`:
 | `event-source` | `collect_events(kind="event_source")` | `summary` (default), `byEventName`, `events` |
 | `log-snapshot` | `collect_events(kind="logs")` | `summary` (default), `byCategory`, `byLevel`, `recent`, `errors` |
 | `jit-snapshot` | `collect_events(kind="jit")` | `summary` (default), `topMethods`, `tierDistribution`, `reJIT` |
+| `threadpool-snapshot` | `collect_events(kind="threadpool")` | `summary` (default), `timeline`, `hillClimbing`, `workItemOrigins` |
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `object`, `gcroot`, `objsize`, `async`, `diff` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `threadpool` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
@@ -680,7 +684,7 @@ Short ASP.NET Core request snapshot for the "which requests are hanging right no
 
 **Canonical EventPipe collector** (RFC 0002 §4.5). A single tool that dispatches
 by `kind` to the underlying counters / exceptions / gc / event_source /
-activities / logs collector. New clients should call `collect_events` instead of the
+activities / logs / threadpool collector. New clients should call `collect_events` instead of the
 legacy entrypoints; the legacy tools remain registered and behaviorally
 identical, but each carries a `DEPRECATED` notice and will be removed in
 `0.7.0`.
@@ -690,6 +694,7 @@ identical, but each carries a `DEPRECATED` notice and will be removed in
 | Name | Type | Default | Description |
 |---|---|---|---|
 | `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `event_source`, `activities`, `logs`, `jit`. Case-sensitive. |
+| `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `event_source`, `activities`, `logs`, `threadpool`. Case-sensitive. |
 | `processId` | `int?` | auto | Target process id. |
 | `durationSeconds` | `int` | 5 (counters) / 10 (others) | Collection window. |
 | `providers` / `meters` / `intervalSeconds` / `maxInstrumentTimeSeries` | counters only | — | Same as [`collect_events(kind="counters")`](#collect_events(kind="counters")). |
@@ -703,6 +708,11 @@ identical, but each carries a `DEPRECATED` notice and will be removed in
 **Returns:** `CollectEventsEnvelope` — a polymorphic record that carries the
 `kind` discriminator plus exactly one populated payload field
 (`counters` / `exceptions` / `gc` / `eventSource` / `activities` / `logs` / `jit`). The
+| `depth` | threadpool only | `Summary` | `Summary` keeps the headline counts + top origins inline; `Detail` / `Raw` keep full timelines + hill-climbing samples inline. |
+
+**Returns:** `CollectEventsEnvelope` — a polymorphic record that carries the
+`kind` discriminator plus exactly one populated payload field
+(`counters` / `exceptions` / `gc` / `eventSource` / `activities` / `logs` / `threadPool`). The
 envelope's `summary`, `hints`, `handle`, `handleExpiresAt`, and
 `resolvedProcess` are passed through from the underlying collector verbatim,
 so `query_snapshot` drilldowns continue to work unchanged.
@@ -710,7 +720,7 @@ so `query_snapshot` drilldowns continue to work unchanged.
 **Authorization.** The dispatcher is gated by `RequireAnyScope("read-counters","eventpipe")`
 and re-checks the per-kind scope inside the call so the boundaries of RFC 0001
 §2 are preserved: `kind="counters"` requires `read-counters`, every other
-kind requires `eventpipe` (event_source additionally honors the existing
+kind requires `eventpipe` (`event_source` additionally honors the existing
 `eventsource-any` modifier).
 
 ---
@@ -1251,6 +1261,13 @@ Collects CLR JIT / tiered-compilation activity from `Microsoft-Windows-DotNETRun
 reconstructing inclusive JIT time from `MethodJittingStarted` → `MethodLoadVerbose`
 pairs and tracking Tier0 vs Tier1, ReadyToRun hits/miss-then-jit, ReJIT, OSR,
 and IL-map counts.
+## `collect_events(kind="threadpool")`
+
+Collects a curated ThreadPool starvation view from the runtime `ThreadingKeyword`
+(`Microsoft-Windows-DotNETRuntime`, `0x10000`): per-second worker + IOCP timelines,
+hill-climbing transitions/reasons, best-effort effective min/max settings when the
+runtime emits `ThreadPoolMinMaxThreadsChanged`, and top work-item origins when EventPipe
+exposes enqueue call stacks.
 
 **Parameters:**
 
@@ -1280,6 +1297,24 @@ per-tier counts, `reJitCount`, `osrCount`, and `hasIlMap`.
 - The collector enables the runtime's JIT + JIT tracing keywords **plus** IL-map / compilation-diagnostic keywords so ReadyToRun lookup and IL-map events are visible in the same window.
 - `R2R hit rate` is computed over all observed `r2rLookupCount` lookups; `R2RMissThenJit` remains a separate correlation metric for misses that fell back to JIT within the same window.
 - `OSR` is surfaced from `OptimizationTier=OptimizedTier1OSR` on `MethodLoadVerbose`.
+| `depth` | `SamplingDepth` | `Summary` | `Summary` keeps headline counts + top origins inline; `Detail` / `Raw` keep full timelines + hill-climbing samples inline |
+
+**Returns:** `ThreadPoolEventSnapshot` with:
+
+- `workerThreadTimeline` / `iocpThreadTimeline`
+- `hillClimbing` (`ThreadPoolHillClimbingSample[]`)
+- `workItemOrigins` (`ThreadPoolWorkItemOrigin[]`)
+- `effectiveSettings` (`workerMinThreads`, `workerMaxThreads`, `iocpMinThreads`, `iocpMaxThreads`) when the runtime emits `ThreadPoolMinMaxThreadsChanged`
+- `totalEnqueueEvents` / `totalDequeueEvents`
+- `notes`
+
+**Drilldown:** `query_snapshot(handle, view="summary" | "timeline" | "hillClimbing" | "workItemOrigins")`.
+
+**Notes:**
+
+- The runtime does not always publish named ThreadPool adjustment payloads on every platform; when that happens the collector annotates `notes` and infers the transition reason from the timing / direction of worker growth.
+- Work-item origins require EventPipe call stacks on `ThreadPoolEnqueueWork`; when stacks are unavailable the collector returns a note and leaves `workItemOrigins` empty.
+- Effective min/max counts are best-effort: the collector stays EventPipe-only and fills `effectiveSettings` only when the runtime emits `ThreadPoolMinMaxThreadsChanged`; otherwise it falls back to a note and points callers at `collect_thread_snapshot(view="threadpool")` for a ptrace-backed snapshot.
 
 ---
 

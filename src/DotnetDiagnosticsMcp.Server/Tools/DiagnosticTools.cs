@@ -22,6 +22,7 @@ using DotnetDiagnosticsMcp.Core.Memory;
 using DotnetDiagnosticsMcp.Core.OffCpu;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Security;
+using DotnetDiagnosticsMcp.Core.ThreadPool;
 using DotnetDiagnosticsMcp.Core.Threads;
 using DotnetDiagnosticsMcp.Server.Security;
 using DotnetDiagnosticsMcp.Server.Diagnostics;
@@ -1124,18 +1125,18 @@ public sealed class DiagnosticTools
     [Description(
         "Re-projects a previously-collected counter/exception/GC/EventSource/Activity/log/JIT artifact under a " +
         "named view, without re-running the underlying EventPipe session. Use the `handle` " +
-        "returned by snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\"). " +
+        "returned by snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\"). " +
         "Supported views per kind: counters → summary|byProvider; exception-snapshot → " +
         "summary|byType|recent; gc-events → summary|events|pauseHistogram; event-source → " +
         "summary|byEventName|events; activities → summary|bySource|byOperation|activities; " +
-        "log-snapshot → summary|byCategory|byLevel|recent|errors; jit-snapshot → summary|topMethods|tierDistribution|reJIT. " +
+        "log-snapshot → summary|byCategory|byLevel|recent|errors; jit-snapshot → summary|topMethods|tierDistribution|reJIT; threadpool-snapshot → summary|timeline|hillClimbing|workItemOrigins. " +
         "Handles expire ~10 minutes after collection.")]
     public static DiagnosticResult<CollectionQueryResult> QueryCollection(
         IDiagnosticHandleStore handles,
         IPrincipalAccessor principalAccessor,
-        [Description("Handle returned by a prior collection tool (snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\")). ")] string handle,
+        [Description("Handle returned by a prior collection tool (snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\")). ")] string handle,
         [Description("View name (kind-dependent). Defaults to 'summary'.")] string? view = null,
-        [Description("Cap on inline items for paginated views (recent / events / byType / byEventName / bySource / byOperation / activities / byCategory / byLevel / errors / topMethods / reJIT). Must be >= 1. Defaults to 50.")] int topN = 50)
+        [Description("Cap on inline items for paginated views (recent / events / byType / byEventName / bySource / byOperation / activities / byCategory / byLevel / errors / topMethods / reJIT / hillClimbing / workItemOrigins). Must be >= 1. Defaults to 50.")] int topN = 50)
     {
         if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<CollectionQueryResult>(nameof(handle), "is required");
         if (topN < 1) return InvalidArg<CollectionQueryResult>(nameof(topN), "must be >= 1");
@@ -1173,7 +1174,7 @@ public sealed class DiagnosticTools
                 $"Handle '{handle}' is of kind '{outcome.UnknownKind}' which query_collection does not support.",
                 new DiagnosticError(
                     "UnsupportedHandleKind",
-                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot })}.",
+                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot })}.",
                     outcome.UnknownKind),
                 new NextActionHint("query_snapshot", "Use the kind-specific drill-down tool for heap/thread/cpu handles.", null));
         }
@@ -1522,6 +1523,64 @@ public sealed class DiagnosticTools
             new NextActionHint("collect_sample",
                 "If cold-start JIT pressure lines up with latency, correlate it with CPU hotspots from the same process.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "cpu", ["durationSeconds"] = 10 })),
+            resolved.Context);
+    }
+
+    [RequireScope("eventpipe")]
+    [Description(
+        "Subscribes to the runtime ThreadingKeyword and returns a curated ThreadPool starvation view: worker + IOCP timelines, hill-climbing transitions, work-item origins, and best-effort effective min/max settings.")]
+    public static async Task<DiagnosticResult<ThreadPoolEventSnapshot>> CollectThreadPool(
+        IThreadPoolCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
+        [Description("Verbosity (summary|detail|raw). Default 'summary' keeps the headline counts + top origins inline and relies on query_snapshot(handle, view=timeline|hillClimbing|workItemOrigins) for the full drilldown.")]
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<ThreadPoolEventSnapshot>(nameof(durationSeconds), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<ThreadPoolEventSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+
+        var snapshot = await collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), cancellationToken).ConfigureAwait(false);
+
+        var inlineSnapshot = snapshot;
+        if (depth == SamplingDepth.Summary)
+        {
+            inlineSnapshot = snapshot with
+            {
+                WorkerThreadTimeline = Array.Empty<ThreadPoolCountBucket>(),
+                IocpThreadTimeline = Array.Empty<ThreadPoolCountBucket>(),
+                HillClimbing = Array.Empty<ThreadPoolHillClimbingSample>(),
+                WorkItemOrigins = snapshot.WorkItemOrigins.Take(5).ToList(),
+            };
+        }
+
+        var peakWorkers = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline.Max(static bucket => bucket.Count) : 0;
+        var latestWorkers = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline[^1].Count : 0;
+        var starvationEvents = snapshot.HillClimbing.Count(static sample => string.Equals(sample.Reason, "Starvation", StringComparison.OrdinalIgnoreCase));
+        var summary = snapshot.HillClimbing.Count == 0 && snapshot.TotalEnqueueEvents == 0
+            ? $"No ThreadPool starvation signals were captured in {durationSeconds}s. Start the workload after collection begins if you expected queue growth."
+            : $"Captured ThreadPool activity over {durationSeconds}s: workers latest/peak={latestWorkers}/{peakWorkers}, hill-climbing events={snapshot.HillClimbing.Count}, starvation reasons={starvationEvents}, enqueue/dequeue={snapshot.TotalEnqueueEvents}/{snapshot.TotalDequeueEvents}.";
+
+        var handle = handles.Register(pid, CollectionHandleKinds.ThreadPoolSnapshot, snapshot, CollectionHandleTtl);
+        return WithContext(DiagnosticResult.OkWithHandle(
+            inlineSnapshot,
+            summary,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint("query_snapshot",
+                "Drill into the worker + IOCP timelines for this ThreadPool snapshot.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "timeline" }),
+            new NextActionHint("query_snapshot",
+                "Inspect hill-climbing transitions and starvation reasons without re-collecting.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "hillClimbing" }),
+            new NextActionHint("query_snapshot",
+                "Inspect top work-item origins without re-collecting.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "workItemOrigins", ["topN"] = 20 })),
             resolved.Context);
     }
 

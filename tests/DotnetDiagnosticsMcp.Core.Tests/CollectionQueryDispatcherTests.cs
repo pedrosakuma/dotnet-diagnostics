@@ -6,6 +6,7 @@ using DotnetDiagnosticsMcp.Core.Exceptions;
 using DotnetDiagnosticsMcp.Core.Gc;
 using DotnetDiagnosticsMcp.Core.Jit;
 using DotnetDiagnosticsMcp.Core.Logs;
+using DotnetDiagnosticsMcp.Core.ThreadPool;
 using FluentAssertions;
 
 namespace DotnetDiagnosticsMcp.Core.Tests;
@@ -302,6 +303,49 @@ public class CollectionQueryDispatcherTests
         rejit.ReJitCount.Should().Be(1);
         rejit.OsrCount.Should().Be(1);
         rejit.Methods.Should().ContainSingle(method => method.OsrCount == 1);
+    }
+
+    [Fact]
+    public void ThreadPool_SummaryAndHillClimbingViews_RenderExpectedSlices()
+    {
+        var snapshot = new ThreadPoolEventSnapshot(
+            ProcessId: 42,
+            StartedAt: At,
+            Duration: TimeSpan.FromSeconds(6),
+            WorkerThreadTimeline:
+            [
+                new ThreadPoolCountBucket(At, 4),
+                new ThreadPoolCountBucket(At.AddSeconds(1), 9),
+            ],
+            IocpThreadTimeline:
+            [
+                new ThreadPoolCountBucket(At, 1),
+            ],
+            HillClimbing:
+            [
+                new ThreadPoolHillClimbingSample(At, "Warmup", 4, 6, 10),
+                new ThreadPoolHillClimbingSample(At.AddSeconds(1), "Starvation", 6, 9, 25),
+            ],
+            WorkItemOrigins:
+            [
+                new ThreadPoolWorkItemOrigin("BadCodeSample.ThreadPoolStarve", 7),
+                new ThreadPoolWorkItemOrigin("System.Threading.Tasks.Task", 2),
+            ],
+            EffectiveSettings: new ThreadPoolEffectiveSettings(1, 32767, 1, 1000),
+            TotalEnqueueEvents: 9,
+            TotalDequeueEvents: 4,
+            Notes: ["note"]);
+
+        var summaryOutcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.ThreadPoolSnapshot, "summary", snapshot, 1);
+        var summary = summaryOutcome.Result!.Payload.Should().BeOfType<ThreadPoolSummaryView>().Subject;
+        summary.PeakWorkerThreadCount.Should().Be(9);
+        summary.StarvationAdjustments.Should().Be(1);
+        summary.TopWorkItemOrigins.Should().ContainSingle();
+
+        var hillOutcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.ThreadPoolSnapshot, "hillClimbing", snapshot, 1);
+        var hill = hillOutcome.Result!.Payload.Should().BeOfType<ThreadPoolHillClimbingView>().Subject;
+        hill.Returned.Should().Be(1);
+        hill.Samples[0].Reason.Should().Be("Warmup");
     }
 
     [Fact]

@@ -83,8 +83,8 @@ public sealed class QuerySnapshotTool
         "`thread-snapshot` → thread views (threads-summary | stack | lock-graph | deadlocks | top-blocked | " +
         "unique-stacks | threadpool); " +
         "`off-cpu-snapshot` → off-CPU views (topStacks | byThread | stack); " +
-        "`counters` / `exception-snapshot` / `gc-events` / `event-source` / `activities` / `log-snapshot` → collection views " +
-        "(summary | byProvider | byType | recent | events | pauseHistogram | byEventName | bySource | byOperation | activities | byCategory | byLevel | errors); " +
+        "`counters` / `exception-snapshot` / `gc-events` / `event-source` / `activities` / `log-snapshot` / `threadpool-snapshot` → collection views " +
+        "(summary | byProvider | byType | recent | events | pauseHistogram | byEventName | bySource | byOperation | activities | byCategory | byLevel | errors | timeline | hillClimbing | workItemOrigins); " +
         "`cpu-sample` / `allocation-sample` → `call-tree` | `diff`; `heap-snapshot` → `diff` in addition to heap views. `diff` compares the current handle against `baselineHandle`; `call-tree` preserves get_call_tree behaviour with " +
         "rootMethodFilter, maxDepth, maxNodes. " +
         "Unknown handle kinds, unknown views and parameter-shape violations return structured InvalidArgument " +
@@ -98,8 +98,8 @@ public sealed class QuerySnapshotTool
         SensitiveDataRedactor redactor,
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
-        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, snapshot_counters, collect_exceptions, collect_gc_events, collect_event_source, collect_activities, collect_events(kind=\"logs\")).")] string handle,
-        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|threadpool. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|pauseHistogram|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors. cpu-sample/allocation-sample: call-tree|diff. Omit to use the kind's default view.")] string? view = null,
+        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, snapshot_counters, collect_exceptions, collect_gc_events, collect_event_source, collect_activities, collect_events(kind=\"logs\"), collect_events(kind=\"threadpool\")).")] string handle,
+        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|threadpool. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|pauseHistogram|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins. cpu-sample/allocation-sample: call-tree|diff. Omit to use the kind's default view.")] string? view = null,
         [Description("Maximum entries returned by any ranked-list view. Omit to use the per-kind legacy default: 50 for heap / thread / collection, 25 for off-CPU. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
         [Description("Heap view='top-types' only: ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
@@ -249,6 +249,7 @@ public sealed class QuerySnapshotTool
                 case CollectionHandleKinds.Activities:
                 case CollectionHandleKinds.LogSnapshot:
                 case CollectionHandleKinds.JitSnapshot:
+                case CollectionHandleKinds.ThreadPoolSnapshot:
                 {
                     if (!RequireScope(principal, ScopeEventPipe, out var forbidden))
                     {
@@ -379,6 +380,7 @@ public sealed class QuerySnapshotTool
         CollectionHandleKinds.Activities,
         CollectionHandleKinds.LogSnapshot,
         CollectionHandleKinds.JitSnapshot,
+        CollectionHandleKinds.ThreadPoolSnapshot,
     };
 
     /// <summary>

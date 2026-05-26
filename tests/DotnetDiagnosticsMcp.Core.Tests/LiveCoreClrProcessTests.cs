@@ -13,6 +13,7 @@ using DotnetDiagnosticsMcp.Core.JitCapture;
 using DotnetDiagnosticsMcp.Core.Logs;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Security;
+using DotnetDiagnosticsMcp.Core.ThreadPool;
 using DotnetDiagnosticsMcp.Core.Threads;
 using DotnetDiagnosticsMcp.Server.Security;
 using DotnetDiagnosticsMcp.Server.Tools;
@@ -1243,6 +1244,66 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         cts.Cancel();
         try { await driver; } catch { /* expected on cancel */ }
         return result;
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ThreadPool_CapturesStarvationTrajectory_FromBadCodeSample()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeThreadPoolCollector();
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/threadpool-starve?blockers=50");
+            response.EnsureSuccessStatusCode();
+
+            using var requestCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            var probes = Enumerable.Range(0, 24)
+                .Select(_ => Task.Run(async () =>
+                {
+                    while (!requestCts.IsCancellationRequested)
+                    {
+                        try
+                        {
+                            using var probe = await http.GetAsync("/", requestCts.Token);
+                            var _ = probe.StatusCode;
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }, requestCts.Token))
+                .ToArray();
+
+            try
+            {
+                await Task.WhenAll(probes);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        });
+
+        var snapshot = await collector.CollectAsync(
+            badSample.ProcessId,
+            TimeSpan.FromSeconds(6),
+            CancellationToken.None);
+
+        await driver;
+
+        snapshot.HillClimbing.Should().NotBeEmpty($"notes: {string.Join(" | ", snapshot.Notes)}");
+        snapshot.HillClimbing.Should().Contain(
+            sample => string.Equals(sample.Reason, "Starvation", StringComparison.OrdinalIgnoreCase),
+            $"reasons: {string.Join(", ", snapshot.HillClimbing.Select(static sample => sample.Reason))}");
+        snapshot.WorkerThreadTimeline.Should().NotBeEmpty();
+        snapshot.WorkerThreadTimeline.Max(static bucket => bucket.Count)
+            .Should().BeGreaterThan(snapshot.WorkerThreadTimeline.Min(static bucket => bucket.Count));
     }
 
     [Fact(Timeout = 60_000)]
