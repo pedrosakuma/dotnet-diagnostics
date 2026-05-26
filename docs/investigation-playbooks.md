@@ -46,9 +46,25 @@ legacy EventCounters. Look at:
   `providerName = "System.Net.Http"` to see outbound call timing, or
   `Microsoft.AspNetCore.Hosting` for in-pipeline latency. Often the answer is
   a downstream dependency, not the app itself.
-- **Connection queue growing** → thread-pool starvation. `collect_events(kind="event_source")`
-  with `Microsoft-System-Threading` (or `Microsoft-System-Threading-Tasks-TplEventSource`)
-  shows queued/completed tasks per second.
+- **Connection queue growing** → thread-pool starvation. `collect_events(kind="threadpool")`
+  for 6–10 s, then inspect `query_snapshot(handle, view="timeline")` for worker/IOCP growth,
+  `view="hillClimbing"` for `Starvation` / `ThreadTimedOut` transitions, and
+  `view="workItemOrigins"` for the hottest enqueue origins when call stacks are available.
+
+---
+
+## 1a. "ThreadPool starvation / sync-over-async"
+
+1. Run `collect_events(kind="threadpool", durationSeconds=6)` **before** the suspected blocking workload starts.
+2. Drive the workload (for example `GET /threadpool-starve?blockers=50` in `BadCodeSample`) while the window is open.
+3. Read the inline summary first:
+   - `starvationAdjustments > 0` or `hillClimbingEvents > 0` + rising worker timeline → starvation confirmed.
+   - `effectiveSettings` near `workerMinThreads` with a flat worker timeline → the pool may not be injecting quickly enough.
+4. Drill down with `query_snapshot`:
+   - `view="timeline"` → worker vs IOCP bucketed counts.
+   - `view="hillClimbing"` → exact transition sequence (`Warmup`, `Starvation`, `ThreadTimedOut`, …).
+   - `view="workItemOrigins"` → hottest enqueue origins when EventPipe call stacks are available.
+5. If the pool keeps growing but the app stays slow, pair the result with `collect_sample(kind="cpu")` or `collect_thread_snapshot(view="threadpool")` to identify the blocking code.
 
 ---
 

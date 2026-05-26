@@ -5,6 +5,7 @@ using DotnetDiagnosticsMcp.Core.Exceptions;
 using DotnetDiagnosticsMcp.Core.Gc;
 using DotnetDiagnosticsMcp.Core.Jit;
 using DotnetDiagnosticsMcp.Core.Logs;
+using DotnetDiagnosticsMcp.Core.ThreadPool;
 
 namespace DotnetDiagnosticsMcp.Core.Collection;
 
@@ -32,6 +33,7 @@ public static class CollectionQueryDispatcher
         CollectionHandleKinds.Activities => new[] { "summary", "bySource", "byOperation", "activities" },
         CollectionHandleKinds.LogSnapshot => new[] { "summary", "byCategory", "byLevel", "recent", "errors" },
         CollectionHandleKinds.JitSnapshot => new[] { "summary", "topMethods", "tierDistribution", "reJIT" },
+        CollectionHandleKinds.ThreadPoolSnapshot => new[] { "summary", "timeline", "hillClimbing", "workItemOrigins" },
         _ => Array.Empty<string>(),
     };
 
@@ -85,6 +87,8 @@ public static class CollectionQueryDispatcher
                 => Ok(Render(logs, effectiveView, topN)),
             CollectionHandleKinds.JitSnapshot when artifact is JitSnapshot jit
                 => Ok(Render(jit, effectiveView, topN)),
+            CollectionHandleKinds.ThreadPoolSnapshot when artifact is ThreadPoolEventSnapshot threadPool
+                => Ok(Render(threadPool, effectiveView, topN)),
             _ => new DispatchOutcome(null, kind, null, null, null),
         };
     }
@@ -346,5 +350,41 @@ public static class CollectionQueryDispatcher
 
         return new CollectionQueryResult(
             CollectionHandleKinds.JitSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
+    }
+
+    private static CollectionQueryResult Render(ThreadPoolEventSnapshot snapshot, string view, int topN)
+    {
+        var latestWorker = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline[^1].Count : 0;
+        var peakWorker = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline.Max(static bucket => bucket.Count) : 0;
+        var latestIocp = snapshot.IocpThreadTimeline.Count > 0 ? snapshot.IocpThreadTimeline[^1].Count : 0;
+        var peakIocp = snapshot.IocpThreadTimeline.Count > 0 ? snapshot.IocpThreadTimeline.Max(static bucket => bucket.Count) : 0;
+        var starvationAdjustments = snapshot.HillClimbing.Count(static sample => string.Equals(sample.Reason, "Starvation", StringComparison.OrdinalIgnoreCase));
+
+        object payload = view.ToLowerInvariant() switch
+        {
+            "timeline" => new ThreadPoolTimelineView(snapshot.WorkerThreadTimeline, snapshot.IocpThreadTimeline),
+            "hillclimbing" => new ThreadPoolHillClimbingView(
+                Math.Min(topN, snapshot.HillClimbing.Count),
+                snapshot.HillClimbing.Take(topN).ToList()),
+            "workitemorigins" => new ThreadPoolWorkItemOriginsView(
+                snapshot.TotalEnqueueEvents,
+                Math.Min(topN, snapshot.WorkItemOrigins.Count),
+                snapshot.WorkItemOrigins.Take(topN).ToList()),
+            _ => new ThreadPoolSummaryView(
+                latestWorker,
+                peakWorker,
+                latestIocp,
+                peakIocp,
+                snapshot.HillClimbing.Count,
+                starvationAdjustments,
+                snapshot.TotalEnqueueEvents,
+                snapshot.TotalDequeueEvents,
+                snapshot.EffectiveSettings,
+                snapshot.WorkItemOrigins.Take(topN).ToList(),
+                snapshot.Notes),
+        };
+
+        return new CollectionQueryResult(
+            CollectionHandleKinds.ThreadPoolSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
     }
 }

@@ -11,6 +11,7 @@ using DotnetDiagnosticsMcp.Core.Jit;
 using DotnetDiagnosticsMcp.Core.Logs;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Security;
+using DotnetDiagnosticsMcp.Core.ThreadPool;
 using DotnetDiagnosticsMcp.Core.Tools.Dispatch;
 using DotnetDiagnosticsMcp.Server.Diagnostics;
 using DotnetDiagnosticsMcp.Server.Security;
@@ -49,12 +50,13 @@ public sealed class CollectEventsTool
         "activities",
         "logs",
         "jit",
+        "threadpool",
     };
 
     [RequireAnyScope("read-counters", "eventpipe")]
     [McpServerTool(
         Name = "collect_events",
-        Title = "Collect EventPipe events (counters | exceptions | gc | event_source | activities | logs | jit)",
+        Title = "Collect EventPipe events (counters | exceptions | gc | event_source | activities | logs | jit | threadpool)",
         Destructive = false,
         ReadOnly = true,
         Idempotent = false,
@@ -64,11 +66,11 @@ public sealed class CollectEventsTool
         "capture: 'counters' (EventCounter snapshot — cheap first signal), 'exceptions' (managed " +
         "exception stream), 'gc' (GC start/stop pairs and pause durations), 'event_source' " +
         "(generic provider passthrough — requires providerName), 'activities' (ActivitySource " +
-        "spans), 'logs' (curated ILogger view from Microsoft-Extensions-Logging), or 'jit' " +
-        "(tiered compilation / ReadyToRun activity). Each kind preserves the full behavior of its legacy collector tool, including " +
+        "spans), 'logs' (curated ILogger view from Microsoft-Extensions-Logging), 'jit' " +
+        "(tiered compilation / ReadyToRun activity), or 'threadpool' (runtime ThreadPool starvation view: worker/IOCP timelines, hill-climbing transitions, and work-item origins). Each kind preserves the full behavior of its legacy collector tool, including " +
         "the original authorization scope: 'counters' uses 'read-counters'; all other kinds use " +
         "'eventpipe'. Returns a polymorphic envelope with exactly one of " +
-        "{counters, exceptions, gc, eventSource, activities, logs, jit} populated alongside the chosen " +
+        "{counters, exceptions, gc, eventSource, activities, logs, jit, threadPool} populated alongside the chosen " +
         "kind, the issued handle, and standard NextActionHints. " +
         "IMPORTANT: for 'exceptions' and 'gc', start collection BEFORE the workload you want to " +
         "observe — EventPipe sessions take ~500 ms–1 s to fully start and events before then are " +
@@ -83,6 +85,7 @@ public sealed class CollectEventsTool
         IEventSourceCollector eventSourceCollector,
         ILogCollector logCollector,
         IJitCollector jitCollector,
+        IThreadPoolCollector threadPoolCollector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
         EventSourceAllowlist allowlist,
@@ -91,6 +94,7 @@ public sealed class CollectEventsTool
         [Description(
             "Which EventPipe family to collect. One of: 'counters', 'exceptions', 'gc', " +
             "'event_source', 'activities', 'logs', 'jit'. Each kind preserves the options of its legacy " +
+            "'event_source', 'activities', 'logs', 'threadpool'. Each kind preserves the options of its legacy " +
             "collector tool; irrelevant options are ignored.")]
         string kind = "counters",
         // Shared options.
@@ -241,6 +245,14 @@ public sealed class CollectEventsTool
                         "jit",
                         (env, data) => env with { Jit = data }),
 
+                    "threadpool" => Project(
+                        await DiagnosticTools.CollectThreadPool(
+                            threadPoolCollector, resolver, handles,
+                            processId, effectiveDuration, depth,
+                            ct).ConfigureAwait(false),
+                        "threadpool",
+                        (env, data) => env with { ThreadPool = data }),
+ 
                     // Unreachable — TryValidate narrowed canonicalKind to the AllowedKinds set above.
                     _ => DiagnosticResult.Fail<CollectEventsEnvelope>(
                         $"Unhandled kind '{canonicalKind}'.",
@@ -303,4 +315,5 @@ public sealed record CollectEventsEnvelope(
     EventSourceCapture? EventSource = null,
     ActivityCapture? Activities = null,
     LogSnapshot? Logs = null,
-    JitSnapshot? Jit = null);
+    JitSnapshot? Jit = null,
+    ThreadPoolEventSnapshot? ThreadPool = null);

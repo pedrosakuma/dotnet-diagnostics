@@ -12,6 +12,7 @@ using DotnetDiagnosticsMcp.Core.Gc;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Security;
 using DotnetDiagnosticsMcp.Core.Symbols;
+using DotnetDiagnosticsMcp.Core.ThreadPool;
 using DotnetDiagnosticsMcp.Server.Azure;
 using DotnetDiagnosticsMcp.Server.Azure.Discovery;
 using DotnetDiagnosticsMcp.Server.Orchestrator;
@@ -80,6 +81,7 @@ internal static class DiagnosticServiceRegistration
         services.AddSingleton<IActivityCollector, EventPipeActivityCollector>();
         services.AddSingleton<ILogCollector, EventPipeLogCollector>();
         services.AddSingleton<IJitCollector, EventPipeJitCollector>();
+        services.AddSingleton<IThreadPoolCollector, EventPipeThreadPoolCollector>();
         services.AddSingleton<IProcessDumper, DiagnosticsClientDumper>();
         services.AddSingleton<IModuleByteSource, ClrMdModuleByteSource>();
         services.AddSingleton<IDumpByteSource, FileSystemDumpByteSource>();

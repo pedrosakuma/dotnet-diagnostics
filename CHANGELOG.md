@@ -15,6 +15,8 @@
 - `inspect_process(view="requests-now")` now opens a short ASP.NET Core request window, keeps `HttpRequestIn` spans that started without stopping, and enriches each in-flight request with the current thread id plus top stack frames.
 - `samples/BadCodeSample` now exposes `/log-spam?count=N&level=warning|error|...` and `/jit-pressure?count=N` so live tests and playbooks can reproduce logging storms and post-deploy cold-start JIT pressure.
 - `samples/BadCodeSample` now exposes `/slow-hang?seconds=N` so live tests and playbooks can reproduce a hanging endpoint for `inspect_process(view="requests-now")`.
+- `collect_events(kind="threadpool")` adds a deep ThreadPool starvation view over the runtime `ThreadingKeyword`: worker + IOCP timelines, hill-climbing transitions/reasons, best-effort effective min/max settings, and `query_snapshot(handle, view="summary|timeline|hillClimbing|workItemOrigins")` drilldown.
+- `samples/BadCodeSample` now exposes `/log-spam?count=N&level=warning|error|...` and `/threadpool-starve?blockers=N` so live tests and playbooks can reproduce warning/error storms and ThreadPool starvation.
 
 ### Fixed
 - `deploy/Dockerfile`: removed dev-only `"Urls": "http://127.0.0.1:8787"` from
