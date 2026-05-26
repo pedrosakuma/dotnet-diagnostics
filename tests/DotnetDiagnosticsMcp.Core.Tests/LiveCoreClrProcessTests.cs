@@ -6,6 +6,7 @@ using DotnetDiagnosticsMcp.Core.Capabilities;
 using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
+using DotnetDiagnosticsMcp.Core.Db;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.Jit;
@@ -1551,6 +1552,88 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         tierQuery.View.Should().Be("tierDistribution");
         var tierDistribution = tierQuery.Payload.Should().BeOfType<JitTierDistributionView>().Subject;
         tierDistribution.Distribution.Tier0.Should().BeGreaterThan(0);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Db_CollectorDetectsNPlusOne_AndRedactsConnectionPassword()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeDbCollector(new SensitiveDataRedactor());
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/db-n+1?count=15");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            badSample.ProcessId,
+            TimeSpan.FromSeconds(4),
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        snapshot.TotalCommands.Should().BeGreaterThanOrEqualTo(15);
+        snapshot.NPlusOne.Should().Contain(incident => incident.Count >= 15);
+        snapshot.ByCommand.Should().Contain(command =>
+            command.ConnectionStringSanitized.Contains(SensitiveDataRedactor.RedactedPlaceholder, StringComparison.Ordinal));
+        snapshot.ByCommand.Should().NotContain(command =>
+            command.ConnectionStringSanitized.Contains("super-secret", StringComparison.Ordinal));
+        snapshot.ByCommand.Should().Contain(command =>
+            command.CommandTextSanitized.Contains("<redacted:literal>", StringComparison.Ordinal));
+        snapshot.ByCommand.Should().NotContain(command =>
+            command.CommandTextSanitized.Contains("LIMIT 1", StringComparison.Ordinal));
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Db_HandleEnablesDrilldownViews()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeDbCollector(new SensitiveDataRedactor());
+        var handles = new MemoryDiagnosticHandleStore();
+        var resolver = new FixedProcessContextResolver(badSample.ProcessId);
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/db-n+1?count=15");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var collected = await DiagnosticTools.CollectDb(
+            collector,
+            resolver,
+            handles,
+            processId: badSample.ProcessId,
+            durationSeconds: 4,
+            intervalSeconds: 1,
+            depth: SamplingDepth.Detail,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        collected.Handle.Should().NotBeNullOrWhiteSpace();
+        var drilled = await QuerySnapshotTool.QuerySnapshot(
+            handles,
+            new ClrMdDumpInspector(),
+            new SensitiveDataRedactor(),
+            new SensitiveValueGate(null),
+            new RootPrincipalAccessor(),
+            collected.Handle!,
+            view: "n+1",
+            topN: 20,
+            cancellationToken: CancellationToken.None);
+
+        drilled.Error.Should().BeNull();
+        var query = drilled.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        query.Kind.Should().Be(CollectionHandleKinds.DbSnapshot);
+        query.View.Should().Be("n+1");
+        var incidents = query.Payload.Should().BeOfType<DbNPlusOneView>().Subject;
+        incidents.TotalIncidents.Should().BeGreaterThan(0);
+        incidents.Incidents.Should().Contain(incident => incident.Count >= 15);
     }
 
     private static IEnumerable<CallTreeNode> Flatten(CallTreeNode root)

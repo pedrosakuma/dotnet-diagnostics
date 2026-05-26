@@ -30,4 +30,7 @@ public static class CollectionHandleKinds
 
     /// <summary>Handle backing a <see cref="ThreadPool.ThreadPoolEventSnapshot"/> emitted by <c>collect_events(kind="threadpool")</c>.</summary>
     public const string ThreadPoolSnapshot = "threadpool-snapshot";
+
+    /// <summary>Handle backing a <see cref="Db.DbSnapshot"/> emitted by <c>collect_events(kind="db")</c>.</summary>
+    public const string DbSnapshot = "db-snapshot";
 }

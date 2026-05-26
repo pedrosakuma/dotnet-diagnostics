@@ -20,6 +20,9 @@ namespace DotnetDiagnosticsMcp.Core.Security;
 /// </remarks>
 public sealed class SensitiveDataRedactor
 {
+    private static readonly Regex SqlStringLiteralRegex = new(@"'(?:(?:'')|[^'])*'", RegexOptions.CultureInvariant | RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
+    private static readonly Regex SqlNumericLiteralRegex = new(@"(?<![@\w])(?:0x[0-9A-Fa-f]+|[-+]?(?:(?:\d+\.\d+|\d+|\.\d+)(?:[eE][-+]?\d+)?))(?![\w])", RegexOptions.CultureInvariant | RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
+
     /// <summary>Placeholder substituted in place of any match.</summary>
     public const string RedactedPlaceholder = "<redacted:sensitive>";
 
@@ -41,7 +44,7 @@ public sealed class SensitiveDataRedactor
         // JWT-shaped tokens (three base64url segments separated by dots)
         @"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+",
         // SQL Server / ADO.NET connection string fragments carrying a password
-        @"(?i)(?:Password|Pwd)\s*=\s*[^;\s]+",
+        @"(?i)(?:Password|Pwd)\s*=\s*(?:""[^""]*""|'[^']*'|[^;\s]+)",
         // Generic api/secret/access key assignments in conn-string-style payloads
         @"(?i)(?:api[_\-]?key|secret(?:[_\-]?key)?|access[_\-]?key|client[_\-]?secret|auth[_\-]?token)\s*[:=]\s*[^;\s""'<>]+",
         // AWS access-key-id prefixes (incl. STS / temporary creds)
@@ -110,5 +113,26 @@ public sealed class SensitiveDataRedactor
             }
         }
         return current;
+    }
+
+    /// <summary>
+    /// Redacts SQL literal values before applying the general sensitive-data patterns so curated
+    /// database views can surface a shape-stable statement without leaking inline parameters.
+    /// </summary>
+    public string? RedactSqlText(string? value)
+    {
+        if (value is null) return null;
+        if (value.Length == 0) return value;
+
+        try
+        {
+            var current = SqlStringLiteralRegex.Replace(value, "'<redacted:literal>'");
+            current = SqlNumericLiteralRegex.Replace(current, "<redacted:literal>");
+            return Redact(current);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return RedactedPlaceholder;
+        }
     }
 }

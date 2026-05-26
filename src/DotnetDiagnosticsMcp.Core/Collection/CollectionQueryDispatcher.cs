@@ -1,5 +1,6 @@
 using DotnetDiagnosticsMcp.Core.Activities;
 using DotnetDiagnosticsMcp.Core.Counters;
+using DotnetDiagnosticsMcp.Core.Db;
 using DotnetDiagnosticsMcp.Core.EventSources;
 using DotnetDiagnosticsMcp.Core.Exceptions;
 using DotnetDiagnosticsMcp.Core.Gc;
@@ -34,6 +35,7 @@ public static class CollectionQueryDispatcher
         CollectionHandleKinds.LogSnapshot => new[] { "summary", "byCategory", "byLevel", "recent", "errors" },
         CollectionHandleKinds.JitSnapshot => new[] { "summary", "topMethods", "tierDistribution", "reJIT" },
         CollectionHandleKinds.ThreadPoolSnapshot => new[] { "summary", "timeline", "hillClimbing", "workItemOrigins" },
+        CollectionHandleKinds.DbSnapshot => new[] { "summary", "byCommand", "n+1", "connectionPool" },
         _ => Array.Empty<string>(),
     };
 
@@ -89,6 +91,8 @@ public static class CollectionQueryDispatcher
                 => Ok(Render(jit, effectiveView, topN)),
             CollectionHandleKinds.ThreadPoolSnapshot when artifact is ThreadPoolEventSnapshot threadPool
                 => Ok(Render(threadPool, effectiveView, topN)),
+            CollectionHandleKinds.DbSnapshot when artifact is DbSnapshot db
+                => Ok(Render(db, effectiveView, topN)),
             _ => new DispatchOutcome(null, kind, null, null, null),
         };
     }
@@ -386,5 +390,36 @@ public static class CollectionQueryDispatcher
 
         return new CollectionQueryResult(
             CollectionHandleKinds.ThreadPoolSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
+    }
+
+    private static CollectionQueryResult Render(DbSnapshot snapshot, string view, int topN)
+    {
+        var poolExhaustedCount = snapshot.ConnectionPool.Sum(static stats => stats.PoolExhaustedCount);
+        object payload = view.ToLowerInvariant() switch
+        {
+            "bycommand" => new DbByCommandView(
+                snapshot.TotalCommands,
+                Math.Min(topN, snapshot.ByCommand.Count),
+                snapshot.ByCommand.Take(topN).ToList()),
+            "n+1" => new DbNPlusOneView(
+                snapshot.NPlusOne.Count,
+                Math.Min(topN, snapshot.NPlusOne.Count),
+                snapshot.NPlusOne.Take(topN).ToList()),
+            "connectionpool" => new DbConnectionPoolView(
+                snapshot.ConnectionPool.Count,
+                poolExhaustedCount,
+                snapshot.ConnectionPool.Take(topN).ToList(),
+                snapshot.Notes),
+            _ => new DbSummaryView(
+                snapshot.TotalCommands,
+                snapshot.ByCommand.Count,
+                snapshot.NPlusOne.Count,
+                snapshot.ByCommand.Take(topN).ToList(),
+                snapshot.ConnectionPool.Take(topN).ToList(),
+                snapshot.Notes),
+        };
+
+        return new CollectionQueryResult(
+            CollectionHandleKinds.DbSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
     }
 }

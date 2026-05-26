@@ -6,6 +6,8 @@ using System.Net.Sockets;
 using System.Reflection.Emit;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 // BadCodeSample — a deliberately-broken minimal API used to exercise the
@@ -20,6 +22,28 @@ builder.Services.AddHttpClient("slow", c =>
 {
     c.Timeout = TimeSpan.FromSeconds(30);
 });
+
+const string dbConnectionString = "Data Source=file:badcode-db?mode=memory&cache=shared&Pwd=super-secret";
+builder.Services.AddSingleton(_ =>
+{
+    var connection = new SqliteConnection(dbConnectionString);
+    connection.Open();
+
+    using var command = connection.CreateCommand();
+    command.CommandText = """
+        CREATE TABLE IF NOT EXISTS widgets (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL
+        );
+        INSERT INTO widgets (id, name)
+        VALUES (1, 'alpha')
+        ON CONFLICT(id) DO UPDATE SET name = excluded.name;
+        """;
+    command.ExecuteNonQuery();
+    return connection;
+});
+builder.Services.AddDbContextFactory<BadCodeDbContext>((serviceProvider, options) =>
+    options.UseSqlite(serviceProvider.GetRequiredService<SqliteConnection>()));
 
 var app = builder.Build();
 
@@ -42,8 +66,10 @@ var badCodeEndpoints = new[]
     "/jit-pressure?count=200",
     "/slow-hang?seconds=5",
     "/threadpool-starve?blockers=50",
+    "/db-n+1?count=15",
 };
 var lockObject = new object();
+using var dbActivitySource = new ActivitySource("Microsoft.EntityFrameworkCore");
 var meterFactory = app.Services.GetRequiredService<IMeterFactory>();
 var meter = meterFactory.Create("BadCodeSample");
 var ordersTotal = meter.CreateCounter<long>("orders.total", unit: "{orders}", description: "Synthetic business counter for tests.");
@@ -324,6 +350,28 @@ app.MapGet("/threadpool-starve", (int? blockers) =>
     }
 
     return Results.Accepted($"/threadpool-starve?blockers={blockedWorkers}", new { blockers = blockedWorkers });
+});
+
+// 15. DB N+1 query storm — detect with collect_events(kind="db")
+app.MapGet("/db-n+1", async (IDbContextFactory<BadCodeDbContext> dbContextFactory, int? count) =>
+{
+    var n = Math.Clamp(count ?? 15, 1, 250);
+    await using var db = await dbContextFactory.CreateDbContextAsync();
+
+    var rows = new List<string>(n);
+    for (var i = 0; i < n; i++)
+    {
+        using var activity = dbActivitySource.StartActivity("database.command", ActivityKind.Client);
+        activity?.SetTag("db.statement", "SELECT \"w\".\"Id\", \"w\".\"name\" FROM \"widgets\" AS \"w\" WHERE \"w\".\"Id\" = 1 LIMIT 1");
+        activity?.SetTag("db.connection_string", dbConnectionString);
+        activity?.SetTag("server.address", "badcode-db");
+        activity?.SetTag("db.namespace", "main");
+
+        var widget = await db.Widgets.AsNoTracking().SingleAsync(static widget => widget.Id == 1);
+        rows.Add(widget.Name);
+    }
+
+    return Results.Ok(new { count = n, rows = rows.Count, sample = rows[0] });
 });
 
 app.Run();

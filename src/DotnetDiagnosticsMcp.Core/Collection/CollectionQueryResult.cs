@@ -1,3 +1,4 @@
+using DotnetDiagnosticsMcp.Core.Db;
 using DotnetDiagnosticsMcp.Core.Jit;
 using DotnetDiagnosticsMcp.Core.Logs;
 using DotnetDiagnosticsMcp.Core.ThreadPool;
@@ -255,3 +256,29 @@ public sealed record ThreadPoolWorkItemOriginsView(
     int TotalEnqueueEvents,
     int Returned,
     IReadOnlyList<ThreadPoolWorkItemOrigin> Origins);
+
+// --- DB snapshot views -------------------------------------------------------------------------
+
+public sealed record DbSummaryView(
+    long TotalCommands,
+    int DistinctCommands,
+    int NPlusOneCount,
+    IReadOnlyList<Db.DbCommandAggregate> TopCommands,
+    IReadOnlyList<Db.DbConnectionPoolStats> ConnectionPool,
+    IReadOnlyList<string> Notes);
+
+public sealed record DbByCommandView(
+    long TotalCommands,
+    int Returned,
+    IReadOnlyList<Db.DbCommandAggregate> Commands);
+
+public sealed record DbNPlusOneView(
+    int TotalIncidents,
+    int Returned,
+    IReadOnlyList<Db.DbNPlusOneIncident> Incidents);
+
+public sealed record DbConnectionPoolView(
+    int Providers,
+    int PoolExhaustedCount,
+    IReadOnlyList<Db.DbConnectionPoolStats> ConnectionPool,
+    IReadOnlyList<string> Notes);

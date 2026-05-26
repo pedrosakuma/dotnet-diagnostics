@@ -65,6 +65,13 @@ legacy EventCounters. Look at:
    - `view="hillClimbing"` → exact transition sequence (`Warmup`, `Starvation`, `ThreadTimedOut`, …).
    - `view="workItemOrigins"` → hottest enqueue origins when EventPipe call stacks are available.
 5. If the pool keeps growing but the app stays slow, pair the result with `collect_sample(kind="cpu")` or `collect_thread_snapshot(view="threadpool")` to identify the blocking code.
+- **Endpoint-specific latency with DB suspicion** → `collect_events(kind="db")`
+  for 10–15 s while driving the slow request. Check `summary` / `byCommand` for
+  hot SQL shapes, `n+1` for repeated command bursts under one parent activity,
+  and `connectionPool` for open-connection pressure or exhaustion signals.
+- **Connection queue growing** → thread-pool starvation. `collect_events(kind="event_source")`
+  with `Microsoft-System-Threading` (or `Microsoft-System-Threading-Tasks-TplEventSource`)
+  shows queued/completed tasks per second.
 
 ---
 
@@ -188,6 +195,22 @@ client-induced.
    - framework I/O (`Socket`, `SslStream`, `HttpClient`) → pivot to `collect_events(kind="event_source", providerName="System.Net.Http")`
 4. If the single-thread view is not enough, escalate to `collect_thread_snapshot` for the full thread + lock graph while the same request is still hanging.
 5. Reproduce locally with `samples/BadCodeSample`'s `/slow-hang?seconds=N` fixture.
+## 4b. "Slow query / N+1 suspected"
+
+1. Start `collect_events(kind="db", durationSeconds=10-15)` **before** driving the
+   slow endpoint.
+2. Hit the endpoint while the collection window is open.
+3. Read `summary` first:
+   - `topCommands[0].p95Ms` high → slow query shape
+   - `nPlusOneCount > 0` → repeated SQL under one parent activity / trace
+   - `connectionPool.poolExhaustedCount > 0` → pool starvation or leaked
+     connections
+4. Drill with `query_snapshot(handle, view="byCommand")` to inspect the worst SQL
+   shapes, then `query_snapshot(handle, view="n+1")` to confirm the repeated
+   pattern and how many times it fired.
+5. If the DB snapshot is quiet, fall back to `collect_events(kind="event_source",
+   providerName="System.Net.Http")` or `collect_sample(kind="cpu")` — the latency
+   may be downstream or CPU-bound rather than database-bound.
 
 ---
 
