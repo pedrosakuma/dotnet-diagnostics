@@ -8,11 +8,29 @@ namespace DotnetDiagnosticsMcp.Core.Triage;
 /// <param name="Severity">Overall severity: critical, degraded, or healthy.</param>
 /// <param name="Evidence">Key counter values that drove the classification.</param>
 /// <param name="SecondaryVerdicts">Additional classifications if multiple issues detected (e.g., gc-pressure + allocation-heavy).</param>
+/// <param name="TopIndicators">Ranked list of most notable indicators (always populated, even when healthy). Enables proactive optimization.</param>
 public sealed record TriageResult(
     string Verdict,
     TriageSeverity Severity,
     TriageEvidence Evidence,
-    IReadOnlyList<string>? SecondaryVerdicts = null);
+    IReadOnlyList<string>? SecondaryVerdicts = null,
+    IReadOnlyList<TriageIndicator>? TopIndicators = null);
+
+/// <summary>
+/// A ranked indicator showing how notable a metric is relative to healthy baselines.
+/// Always populated in triage results to enable proactive optimization, not just reactive firefighting.
+/// </summary>
+/// <param name="Name">Metric name (e.g., "time-in-gc", "cpu-usage", "threadpool-queue-length").</param>
+/// <param name="Value">Current value of the metric.</param>
+/// <param name="Unit">Unit of measurement (e.g., "%", "MB/s", "items").</param>
+/// <param name="Score">Relative score (0-100) indicating how far from baseline. Higher = more notable.</param>
+/// <param name="Level">Qualitative level: normal, elevated, high, critical.</param>
+public sealed record TriageIndicator(
+    string Name,
+    double Value,
+    string? Unit,
+    int Score,
+    string Level);
 
 /// <summary>Severity levels for triage classification.</summary>
 public enum TriageSeverity

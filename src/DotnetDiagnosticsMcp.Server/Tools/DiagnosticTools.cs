@@ -398,11 +398,16 @@ public sealed class DiagnosticTools
         // Build hints based on verdict.
         var hints = BuildTriageHints(triage, pid);
 
-        // Build summary.
+        // Build summary with top indicators.
         var secondaryText = triage.SecondaryVerdicts?.Count > 0
             ? $" (also: {string.Join(", ", triage.SecondaryVerdicts)})"
             : string.Empty;
-        var summary = $"Triage: {triage.Verdict} ({triage.Severity}){secondaryText} — cpu={triage.Evidence.CpuUsage:F1}%, time-in-gc={triage.Evidence.TimeInGc:F1}%, queue={triage.Evidence.ThreadPoolQueueLength:F0}";
+
+        var indicatorsText = triage.TopIndicators?.Count > 0
+            ? $" | top: {string.Join(", ", triage.TopIndicators.Take(3).Select(i => $"{i.Name}={i.Value}{i.Unit ?? ""}({i.Level})"))}"
+            : string.Empty;
+
+        var summary = $"Triage: {triage.Verdict} ({triage.Severity}){secondaryText}{indicatorsText}";
 
         var ok = DiagnosticResult.Ok(triage, summary, [.. hints]);
         return WithContext(ok, resolved.Context);
