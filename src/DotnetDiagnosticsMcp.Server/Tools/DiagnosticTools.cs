@@ -2103,6 +2103,7 @@ public sealed class DiagnosticTools
         "`static-fields` (top static reference fields by directly-referenced object size — requires the original inspect call to have set includeStaticFields=true), " +
         "`delegate-targets` (delegate / event-handler subscribers grouped by (target type, method) — requires includeDelegateTargets=true), " +
         "`duplicate-strings` (duplicate System.String contents ranked by aggregate retained bytes — requires includeDuplicateStrings=true), " +
+        "`gchandles` (GCHandle table aggregated by public GCHandleType-compatible buckets with top target types), " +
         "`object` (dump one managed object by address — SOS !do equivalent), " +
         "`gcroot` (find a shortest GC-root chain for one object address — SOS !gcroot equivalent), " +
         "`objsize` (compute the transitive retained size rooted at one object address — SOS !objsize equivalent), " +
@@ -2116,8 +2117,8 @@ public sealed class DiagnosticTools
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
         [Description("Snapshot handle returned by inspect_dump or inspect_live_heap.")] string handle,
-        [Description("Which slice of the snapshot to return: 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'object', 'gcroot', 'objsize' or 'async'.")] string view = "top-types",
-        [Description("Maximum entries to return for any ranked view ('top-types', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'async'). Ignored by 'roots-by-kind', 'retention-paths', 'object', 'gcroot' and 'objsize'.")] int topN = 50,
+        [Description("Which slice of the snapshot to return: 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'object', 'gcroot', 'objsize' or 'async'.")] string view = "top-types",
+        [Description("Maximum entries to return for any ranked view ('top-types', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'async'). Ignored by 'roots-by-kind', 'gchandles', 'retention-paths', 'object', 'gcroot' and 'objsize'.")] int topN = 50,
         [Description("For view='top-types': ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
         [Description("For view='retention-paths': case-insensitive substring matched against TypeFullName to narrow the returned chains.")] string? typeFullName = null,
         [Description("For view='object', 'gcroot' and 'objsize': managed object address (decimal or 0x-prefixed hex).")] string? address = null,
@@ -2170,6 +2171,8 @@ public sealed class DiagnosticTools
                 return QueryDelegateTargets(snapshot, handle, topN);
             case "duplicate-strings":
                 return QueryDuplicateStrings(snapshot, handle, topN, redactor, emitSensitive);
+            case "gchandles":
+                return QueryGcHandles(snapshot, handle);
             case "async":
                 return QueryAsync(snapshot, handle, topN);
             case "object":
@@ -2192,7 +2195,7 @@ public sealed class DiagnosticTools
                     },
                     cancellationToken).ConfigureAwait(false);
             default:
-                return InvalidArg<HeapSnapshotQueryResult>(nameof(view), $"must be 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'object', 'gcroot', 'objsize' or 'async' (got '{view}')");
+                return InvalidArg<HeapSnapshotQueryResult>(nameof(view), $"must be 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'object', 'gcroot', 'objsize' or 'async' (got '{view}')");
         }
     }
 
@@ -2507,6 +2510,36 @@ public sealed class DiagnosticTools
         {
             DuplicateStrings = slice,
         };
+        return DiagnosticResult.Ok(result, summary);
+    }
+
+    private static DiagnosticResult<HeapSnapshotQueryResult> QueryGcHandles(
+        HeapSnapshotArtifact snapshot, string handle)
+    {
+        var origin = snapshot.Origin.ToString();
+        if (snapshot.GcHandles is null)
+        {
+            return DiagnosticResult.Fail<HeapSnapshotQueryResult>(
+                $"Snapshot '{handle}' was captured without GCHandle aggregation.",
+                new DiagnosticError("ViewNotCaptured", "Re-run inspect_heap to capture the GCHandle table for this snapshot.", handle));
+        }
+
+        var view = snapshot.GcHandles;
+        var busiest = view.ByKind.OrderByDescending(bucket => bucket.Count).ThenBy(bucket => bucket.Kind, StringComparer.Ordinal).FirstOrDefault();
+        var summary = view.TotalHandles == 0
+            ? $"Snapshot '{handle}' has no GCHandle entries."
+            : $"Returning GCHandle aggregation from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) — {view.TotalHandles:N0} total handles. Busiest bucket: `{busiest?.Kind ?? "<none>"}` with {busiest?.Count ?? 0:N0} handle(s) retaining {busiest?.RetainedBytes ?? 0:N0} bytes across the immediate target objects.";
+
+        if (view.Notes.Length > 0)
+        {
+            summary += $" Notes: {view.Notes[0]}";
+        }
+
+        var result = new HeapSnapshotQueryResult(handle, "gchandles", origin, snapshot.ProcessId, snapshot.CapturedAt)
+        {
+            GcHandles = view,
+        };
+
         return DiagnosticResult.Ok(result, summary);
     }
 

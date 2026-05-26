@@ -10,6 +10,52 @@ namespace DotnetDiagnosticsMcp.Server.IntegrationTests;
 public sealed class HeapSnapshotQueryTests
 {
     [Fact]
+    public async Task QueryHeapSnapshot_GcHandlesView_ReturnsAggregatedHandleTable()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = new HeapSnapshotArtifact(
+            Origin: HeapSnapshotOrigin.Live,
+            ProcessId: 1234,
+            CapturedAt: DateTimeOffset.UtcNow,
+            WalkDuration: TimeSpan.FromMilliseconds(150),
+            Runtime: new DumpRuntimeInfo("CoreCLR", "10.0.0", "x64", IsServerGC: false, HeapCount: 1),
+            Heap: new DumpHeapSummary(1024, 128, 128, 512, 0, 0, 1024),
+            TopTypesByBytes: Array.Empty<TypeStat>(),
+            TopTypesByInstances: Array.Empty<TypeStat>())
+        {
+            GcHandles = new GcHandlesView(
+                TotalHandles: 7,
+                ByKind:
+                [
+                    new GcHandleBucket("Pinned", 3, 3072, [new GcHandleTypeStat("System.Byte[]", 3, 3072, null)]),
+                    new GcHandleBucket("Normal", 2, 256, [new GcHandleTypeStat("MyApp.Root", 2, 256, null)]),
+                    new GcHandleBucket("Weak", 1, 64, [new GcHandleTypeStat("MyApp.CacheEntry", 1, 64, null)]),
+                    new GcHandleBucket("WeakTrackResurrection", 0, 0, []),
+                    new GcHandleBucket("Dependent", 1, 128, [new GcHandleTypeStat("MyApp.Node", 1, 128, null)]),
+                    new GcHandleBucket("AsyncPinned", 0, 0, []),
+                ],
+                Notes:
+                [
+                    "Encountered 1 RefCounted (48 bytes) handle(s). These ClrMD-internal kinds are counted in TotalHandles but are omitted from byKind because they do not map to public GCHandleType values.",
+                ]),
+        };
+
+        var handle = store.Register(snapshot.ProcessId, "heap-snapshot", snapshot, TimeSpan.FromMinutes(10));
+
+        var result = await DiagnosticTools.QueryHeapSnapshot(store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null), TestPrincipalAccessors.Root, handle.Id, view: "gchandles");
+
+        result.IsError.Should().BeFalse();
+        result.Data.Should().NotBeNull();
+        result.Data!.View.Should().Be("gchandles");
+        result.Data.GcHandles.Should().NotBeNull();
+        result.Data.GcHandles!.TotalHandles.Should().Be(7);
+        result.Data.GcHandles.ByKind.Should().ContainSingle(bucket => bucket.Kind == "Pinned" && bucket.Count == 3);
+        result.Data.GcHandles.Notes.Should().ContainSingle();
+        result.Summary.Should().Contain("GCHandle aggregation");
+        result.Summary.Should().Contain("RefCounted");
+    }
+
+    [Fact]
     public async Task QueryHeapSnapshot_AsyncView_ReturnsPendingOperations()
     {
         var store = new MemoryDiagnosticHandleStore();

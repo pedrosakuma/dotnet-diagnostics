@@ -11,6 +11,7 @@ API support in counters, FD/socket inspection, and a sample diff view.
 No breaking changes.
 
 ### Added
+- `query_snapshot(handle, view="gchandles")` now aggregates the GCHandle table from `inspect_heap` snapshots, grouping public `GCHandleType`-compatible buckets (`Pinned`, `Normal`, `Weak`, `WeakTrackResurrection`, `Dependent`, `AsyncPinned`) with top target types and notes for ClrMD-internal handle kinds.
 - `collect_events(kind="counters")` now subscribes to `System.Diagnostics.Metrics`
   meters via the new `meters` / `maxInstrumentTimeSeries` parameters, surfaces
   Meter time series and histogram percentiles in `CounterSnapshot`, and carries

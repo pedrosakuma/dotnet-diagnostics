@@ -134,6 +134,12 @@ If `resources` looks clean, continue with GC-focused investigation.
 doesn't drop, you have surviving objects (leak or long-lived cache).
 
 ### Step 4
+If `working-set` keeps climbing but the managed heap still looks deceptively small,
+run `query_snapshot(handle, view="gchandles")` on a recent `inspect_heap` handle.
+A growing `Pinned` / `Normal` bucket is the classic forgotten-`GCHandle.Alloc(...)`
+shape; `Dependent` often points at `ConditionalWeakTable`-style leaks.
+
+### Step 5
 `collect_process_dump` with `dumpType = "WithHeap"`. **Defense in depth (B5.6 / RFC
 0001 §4):** call it once first *without* `confirm` to preview the dump that would be
 written (returns a `{ kind: "confirmation_required", targetPid, dumpType,
