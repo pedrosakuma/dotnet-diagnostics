@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection.Emit;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Data.Sqlite;
@@ -50,6 +51,7 @@ var app = builder.Build();
 var leakedBuffers = new List<byte[]>();
 var leakedFiles = new List<FileStream>();
 var leakedSockets = new List<LeakedSocketConnection>();
+var leakedHandleWindows = new List<(nint[] HandlePointers, byte[][] Payloads)>();
 var badCodeEndpoints = new[]
 {
     "/cpu-burn?ms=2000",
@@ -61,6 +63,7 @@ var badCodeEndpoints = new[]
     "/slow-http?url=https://httpbin.org/delay/3",
     "/fd-leak?count=64",
     "/socket-leak?count=32&host=loopback",
+    "/handle-leak?type=pinned|normal|weak&count=200&seconds=10",
     "/meter-spam?count=5&kind=counter",
     "/log-spam?count=200&level=warning",
     "/jit-pressure?count=200",
@@ -286,7 +289,55 @@ app.MapGet("/socket-leak", async (int? count, string? host) =>
     return Results.Ok(new { leaked, totalLeaked = leakedSockets.Count, host = target, loopbackPort = loopbackCloser.Port });
 });
 
-// 11. ILogger warning/error storm — detect with collect_events(kind="logs")
+// 11. GCHandle leak window — detect with inspect_heap + query_snapshot(view="gchandles")
+app.MapGet("/handle-leak", async (string? type, int? count, int? seconds) =>
+{
+    var kind = ParseHandleKind(type);
+    var n = Math.Clamp(count ?? 200, 1, 5_000);
+    var holdSeconds = Math.Clamp(seconds ?? 10, 1, 60);
+    var handlePointers = new nint[n];
+    var payloads = new byte[n][];
+
+    for (var i = 0; i < n; i++)
+    {
+        payloads[i] = new byte[1024];
+        handlePointers[i] = GCHandle.ToIntPtr(GCHandle.Alloc(payloads[i], kind));
+    }
+
+    var window = (HandlePointers: handlePointers, Payloads: payloads);
+
+    try
+    {
+        lock (leakedHandleWindows)
+        {
+            leakedHandleWindows.Add(window);
+        }
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        await Task.Delay(TimeSpan.FromSeconds(holdSeconds));
+        return Results.Ok(new { type = kind.ToString(), count = n, seconds = holdSeconds });
+    }
+    finally
+    {
+        lock (leakedHandleWindows)
+        {
+            leakedHandleWindows.Remove(window);
+        }
+
+        foreach (var pointer in handlePointers)
+        {
+            if (pointer != nint.Zero)
+            {
+                GCHandle.FromIntPtr(pointer).Free();
+            }
+        }
+    }
+});
+
+// 12. ILogger warning/error storm — detect with collect_events(kind="logs")
 app.MapGet("/log-spam", (ILoggerFactory loggerFactory, int? count, string? level) =>
 {
     var n = Math.Clamp(count ?? 200, 1, 5_000);
@@ -319,7 +370,7 @@ app.MapGet("/log-spam", (ILoggerFactory loggerFactory, int? count, string? level
     return Results.Ok(new { count = n, level = parsedLevel.ToString() });
 });
 
-// 12. JIT pressure / cold-start compilation — detect with collect_events(kind="jit")
+// 13. JIT pressure / cold-start compilation — detect with collect_events(kind="jit")
 app.MapGet("/jit-pressure", (int? count) =>
 {
     var n = Math.Clamp(count ?? 200, 1, 2_000);
@@ -332,7 +383,7 @@ app.MapGet("/jit-pressure", (int? count) =>
     return Results.Ok(new { count = n, checksum });
 });
 
-// 13. Slow in-flight request — detect with inspect_process(view="requests-now")
+// 14. Slow in-flight request — detect with inspect_process(view="requests-now")
 app.MapGet("/slow-hang", async (int? seconds) =>
 {
     var delay = TimeSpan.FromSeconds(Math.Clamp(seconds ?? 5, 1, 30));
@@ -340,7 +391,7 @@ app.MapGet("/slow-hang", async (int? seconds) =>
     return Results.Ok(new { delayedSeconds = delay.TotalSeconds });
 });
 
-// 14. ThreadPool starvation — detect with collect_events(kind="threadpool")
+// 15. ThreadPool starvation — detect with collect_events(kind="threadpool")
 app.MapGet("/threadpool-starve", (int? blockers) =>
 {
     var blockedWorkers = Math.Clamp(blockers ?? 50, 1, 256);
@@ -352,7 +403,7 @@ app.MapGet("/threadpool-starve", (int? blockers) =>
     return Results.Accepted($"/threadpool-starve?blockers={blockedWorkers}", new { blockers = blockedWorkers });
 });
 
-// 15. DB N+1 query storm — detect with collect_events(kind="db")
+// 16. DB N+1 query storm — detect with collect_events(kind="db")
 app.MapGet("/db-n+1", async (IDbContextFactory<BadCodeDbContext> dbContextFactory, int? count) =>
 {
     var n = Math.Clamp(count ?? 15, 1, 250);
@@ -375,6 +426,14 @@ app.MapGet("/db-n+1", async (IDbContextFactory<BadCodeDbContext> dbContextFactor
 });
 
 app.Run();
+
+static GCHandleType ParseHandleKind(string? type) => type?.Trim().ToLowerInvariant() switch
+{
+    "normal" => GCHandleType.Normal,
+    "weak" => GCHandleType.Weak,
+    "pinned" or null or "" => GCHandleType.Pinned,
+    _ => throw new BadHttpRequestException("type must be one of: pinned, normal, weak"),
+};
 
 static int CreateAndInvokeJitPressureMethod(int seed)
 {

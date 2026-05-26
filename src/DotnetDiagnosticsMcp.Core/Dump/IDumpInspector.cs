@@ -141,6 +141,8 @@ public sealed record HeapSnapshotArtifact(
     public IReadOnlyList<DelegateTargetStat>? DelegateTargets { get; init; }
     /// <summary>Top duplicate strings by aggregate retained bytes. Gated by <see cref="DumpInspectionOptions.IncludeDuplicateStrings"/>.</summary>
     public IReadOnlyList<DuplicateStringStat>? DuplicateStrings { get; init; }
+    /// <summary>Aggregated GCHandle table grouped by public GCHandleType-compatible buckets.</summary>
+    public GcHandlesView? GcHandles { get; init; }
     /// <summary>Pending async state machines reconstructed from the heap (SOS DumpAsync-style view).</summary>
     public IReadOnlyList<AsyncOperationStat>? AsyncOperations { get; init; }
     /// <summary>Diagnostic warnings emitted during the walk (degraded data, ClrMD limitations, …).</summary>

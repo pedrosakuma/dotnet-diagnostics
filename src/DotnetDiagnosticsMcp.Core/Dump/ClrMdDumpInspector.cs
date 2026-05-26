@@ -184,6 +184,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             StaticFields = summary.StaticFields,
             DelegateTargets = summary.DelegateTargets,
             DuplicateStrings = summary.DuplicateStrings,
+            GcHandles = summary.GcHandles,
             AsyncOperations = summary.AsyncOperations,
             Warnings = warnings.Count > 0 ? warnings : null,
         };
@@ -255,6 +256,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             StaticFields = summary.StaticFields,
             DelegateTargets = summary.DelegateTargets,
             DuplicateStrings = summary.DuplicateStrings,
+            GcHandles = summary.GcHandles,
             AsyncOperations = summary.AsyncOperations,
             Warnings = warnings.Count > 0 ? warnings : null,
         };
@@ -309,9 +311,10 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             duplicates = BuildDuplicateStringStats(stringAgg, opts.SnapshotDuplicateStringTopN, opts.DuplicateStringPreviewLength);
         }
 
+        var gcHandles = WalkGcHandles(runtime, ct);
         var asyncOperations = ClrMdAsyncStateMachineWalker.WalkPendingAsyncOperations(runtime, warnings, ct);
 
-        return new RuntimeSummary(byBytes, byInstances, heapSummary, retention, roots, finalizable, segments, statics, delegates, duplicates, asyncOperations);
+        return new RuntimeSummary(byBytes, byInstances, heapSummary, retention, roots, finalizable, segments, statics, delegates, duplicates, gcHandles, asyncOperations);
     }
 
     private readonly record struct RuntimeSummary(
@@ -325,6 +328,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         IReadOnlyList<StaticFieldStat>? StaticFields,
         IReadOnlyList<DelegateTargetStat>? DelegateTargets,
         IReadOnlyList<DuplicateStringStat>? DuplicateStrings,
+        GcHandlesView GcHandles,
         IReadOnlyList<AsyncOperationStat> AsyncOperations);
 
     private static (Dictionary<TypeKey, RawTypeStat> Stats, long TotalBytes, IReadOnlyList<SegmentStat> Segments, Dictionary<DelegateKey, RawDelegateStat>? Delegates, Dictionary<string, RawStringStat>? Strings) WalkHeap(
@@ -514,7 +518,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
                             if (size <= 0) continue;
 
                             var raw = new RawTypeStat(type.Name ?? "<unknown>", type.Module?.Name, type);
-                            var identity = BuildTypeIdentity(raw);
+                            var identity = BuildTypeIdentity(raw.ClrType);
                             results.Add(new StaticFieldStat(
                                 ContainingTypeFullName: type.Name ?? "<unknown>",
                                 ModuleName: type.Module?.Name is { } mn ? Path.GetFileName(mn) : null,
@@ -701,6 +705,49 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             .ToArray();
     }
 
+    private GcHandlesView WalkGcHandles(ClrRuntime runtime, CancellationToken ct)
+    {
+        var samples = new List<GcHandleAggregation.GcHandleSample>();
+        var notes = new List<string>();
+
+        try
+        {
+            foreach (var handle in runtime.EnumerateHandles())
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var target = handle.Object;
+                var targetType = target.Type;
+                var typeName = targetType?.Name ?? (target.IsNull ? null : "<unknown>");
+                var retainedBytes = !target.IsNull && targetType is not null ? (long)target.Size : 0L;
+                var kind = handle.IsPinned && handle.HandleKind == ClrHandleKind.Strong
+                    ? ClrHandleKind.Pinned
+                    : handle.HandleKind;
+
+                samples.Add(new GcHandleAggregation.GcHandleSample(
+                    kind,
+                    typeName,
+                    retainedBytes,
+                    BuildTypeIdentity(targetType)));
+            }
+        }
+        catch (Exception ex)
+        {
+            notes.Add($"GCHandle enumeration aborted partway through: {ex.GetType().Name} ({ex.Message}).");
+        }
+
+        var aggregated = GcHandleAggregation.Aggregate(samples);
+        if (notes.Count == 0)
+        {
+            return aggregated;
+        }
+
+        return aggregated with
+        {
+            Notes = aggregated.Notes.AddRange(notes),
+        };
+    }
+
     private TypeStat ToTypeStat(RawTypeStat raw, long totalBytes)
     {
         var pct = totalBytes > 0 ? Math.Round(100.0 * raw.Bytes / totalBytes, 2) : 0.0;
@@ -710,12 +757,11 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             InstanceCount: raw.Count,
             TotalBytes: raw.Bytes,
             TotalBytesPercent: pct,
-            Identity: BuildTypeIdentity(raw));
+            Identity: BuildTypeIdentity(raw.ClrType));
     }
 
-    private TypeIdentity? BuildTypeIdentity(RawTypeStat raw)
+    private TypeIdentity? BuildTypeIdentity(ClrType? clrType)
     {
-        var clrType = raw.ClrType;
         if (clrType is null) return null;
 
         var modulePath = clrType.Module?.Name;
@@ -728,7 +774,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             return null;
         }
 
-        return new TypeIdentity(raw.TypeName)
+        return new TypeIdentity(clrType.Name ?? "<unknown>")
         {
             ModuleName = moduleFileName,
             ModulePath = modulePath,

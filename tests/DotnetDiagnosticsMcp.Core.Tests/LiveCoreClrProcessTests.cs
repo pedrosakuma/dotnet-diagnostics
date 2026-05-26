@@ -630,6 +630,42 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task DumpInspector_InspectLiveAsync_AggregatesPinnedGcHandles_FromBadCodeSample()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+
+        using var requestCts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var leakTask = http.GetAsync("/handle-leak?type=pinned&count=5000&seconds=25", requestCts.Token);
+        await Task.Delay(TimeSpan.FromSeconds(10), CancellationToken.None);
+        leakTask.IsCompleted.Should().BeFalse("/handle-leak should still be sleeping while the snapshot runs");
+
+        HeapSnapshotArtifact snapshot;
+        try
+        {
+            snapshot = await new ClrMdDumpInspector().InspectLiveAsync(
+                badSample.ProcessId,
+                new DumpInspectionOptions(TopTypes: 25),
+                CancellationToken.None);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            throw SkipException.ForReason($"ptrace/ClrMD attach unavailable in this environment: {ex.Message}");
+        }
+
+        var pinned = snapshot.GcHandles?
+            .ByKind
+            .Single(bucket => bucket.Kind == "Pinned");
+
+        pinned.Should().NotBeNull();
+        pinned!.Count.Should().BeGreaterThanOrEqualTo(200,
+            "the /handle-leak fixture holds 5,000 pinned GCHandles alive while the heap snapshot runs, so the live view should surface at least a few hundred of them");
+
+        using var response = await leakTask;
+        response.EnsureSuccessStatusCode();
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task ThreadSnapshot_InspectLive_EnumeratesManagedThreads()
     {
         EnsureSampleRunning();
