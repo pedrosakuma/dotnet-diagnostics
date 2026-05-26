@@ -89,7 +89,7 @@ public sealed class ClrMdModuleByteSourceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task FetchAsync_PdbAvailabilityIsSurfacedAndReadable()
+    public async Task FetchAsync_SymbolAvailabilityIsSurfacedAndReadable()
     {
         var source = new ClrMdModuleByteSource();
         var mvid = new MvidReader().TryRead(SampleDll);

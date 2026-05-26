@@ -26,6 +26,10 @@
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.5" />
     <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.5" />
   </ItemGroup>
+  <ItemGroup Label="Data">
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.5" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.5" />
+  </ItemGroup>
   <ItemGroup Label="Kubernetes">
     <PackageVersion Include="KubernetesClient" Version="19.0.2" />
   </ItemGroup>

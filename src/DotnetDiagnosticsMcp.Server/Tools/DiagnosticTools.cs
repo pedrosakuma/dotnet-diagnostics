@@ -9,6 +9,7 @@ using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.Container;
 using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
+using DotnetDiagnosticsMcp.Core.Db;
 using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.EventSources;
 using DotnetDiagnosticsMcp.Core.Exceptions;
@@ -1123,20 +1124,20 @@ public sealed class DiagnosticTools
 
     [RequireAnyScope("read-counters", "eventpipe")]
     [Description(
-        "Re-projects a previously-collected counter/exception/GC/EventSource/Activity/log/JIT artifact under a " +
+        "Re-projects a previously-collected counter/exception/GC/EventSource/Activity/log/JIT/ThreadPool/db artifact under a " +
         "named view, without re-running the underlying EventPipe session. Use the `handle` " +
-        "returned by snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\"). " +
+        "returned by snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\") / collect_events(kind=\"db\"). " +
         "Supported views per kind: counters → summary|byProvider; exception-snapshot → " +
         "summary|byType|recent; gc-events → summary|events|pauseHistogram; event-source → " +
         "summary|byEventName|events; activities → summary|bySource|byOperation|activities; " +
-        "log-snapshot → summary|byCategory|byLevel|recent|errors; jit-snapshot → summary|topMethods|tierDistribution|reJIT; threadpool-snapshot → summary|timeline|hillClimbing|workItemOrigins. " +
+        "log-snapshot → summary|byCategory|byLevel|recent|errors; jit-snapshot → summary|topMethods|tierDistribution|reJIT; threadpool-snapshot → summary|timeline|hillClimbing|workItemOrigins; db-snapshot → summary|byCommand|n+1|connectionPool. " +
         "Handles expire ~10 minutes after collection.")]
     public static DiagnosticResult<CollectionQueryResult> QueryCollection(
         IDiagnosticHandleStore handles,
         IPrincipalAccessor principalAccessor,
-        [Description("Handle returned by a prior collection tool (snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\")). ")] string handle,
+        [Description("Handle returned by a prior collection tool (snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\") / collect_events(kind=\"db\")). ")] string handle,
         [Description("View name (kind-dependent). Defaults to 'summary'.")] string? view = null,
-        [Description("Cap on inline items for paginated views (recent / events / byType / byEventName / bySource / byOperation / activities / byCategory / byLevel / errors / topMethods / reJIT / hillClimbing / workItemOrigins). Must be >= 1. Defaults to 50.")] int topN = 50)
+        [Description("Cap on inline items for paginated views (recent / events / byType / byEventName / bySource / byOperation / activities / byCategory / byLevel / errors / topMethods / reJIT / hillClimbing / workItemOrigins / byCommand / n+1 / connectionPool). Must be >= 1. Defaults to 50.")] int topN = 50)
     {
         if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<CollectionQueryResult>(nameof(handle), "is required");
         if (topN < 1) return InvalidArg<CollectionQueryResult>(nameof(topN), "must be >= 1");
@@ -1174,7 +1175,7 @@ public sealed class DiagnosticTools
                 $"Handle '{handle}' is of kind '{outcome.UnknownKind}' which query_collection does not support.",
                 new DiagnosticError(
                     "UnsupportedHandleKind",
-                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot })}.",
+                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot, CollectionHandleKinds.DbSnapshot })}.",
                     outcome.UnknownKind),
                 new NextActionHint("query_snapshot", "Use the kind-specific drill-down tool for heap/thread/cpu handles.", null));
         }
@@ -1581,6 +1582,71 @@ public sealed class DiagnosticTools
             new NextActionHint("query_snapshot",
                 "Inspect top work-item origins without re-collecting.",
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "workItemOrigins", ["topN"] = 20 })),
+            resolved.Context);
+    }
+
+    [RequireScope("eventpipe")]
+    [Description(
+        "Collects a curated DB view by subscribing to EF Core command diagnostics plus SqlClient command/pool signals. " +
+        "Aggregates by sanitized command hash + sanitized connection string, computes count/total/max/p95 latency, " +
+        "detects N+1 patterns when the same command repeats >10 times in one parent activity, and snapshots SqlClient pool counters. " +
+        "The full artifact is always retained behind the issued handle — drill in with query_snapshot(handle, view=summary|byCommand|n+1|connectionPool).")]
+    public static async Task<DiagnosticResult<DbSnapshot>> CollectDb(
+        IDbCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
+        [Description("Refresh interval (in seconds) requested from SqlClient EventCounters. Defaults to 1.")] int intervalSeconds = 1,
+        [Description("Verbosity (summary|detail|raw). Default 'summary' keeps only the top command slice inline; 'detail' and 'raw' return the full by-command and N+1 lists captured in the window.")]
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<DbSnapshot>(nameof(durationSeconds), "must be >= 1");
+        if (intervalSeconds < 1) return InvalidArg<DbSnapshot>(nameof(intervalSeconds), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<DbSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+
+        var snapshot = await collector.CollectAsync(
+            pid,
+            TimeSpan.FromSeconds(durationSeconds),
+            intervalSeconds,
+            cancellationToken).ConfigureAwait(false);
+
+        var inlineSnapshot = snapshot;
+        if (depth == SamplingDepth.Summary)
+        {
+            inlineSnapshot = snapshot with
+            {
+                ByCommand = snapshot.ByCommand.Take(5).ToList(),
+                NPlusOne = snapshot.NPlusOne.Take(5).ToList(),
+            };
+        }
+
+        var topCommand = snapshot.ByCommand.Count > 0 ? snapshot.ByCommand[0] : null;
+        var poolExhaustedCount = snapshot.ConnectionPool.Sum(static stats => stats.PoolExhaustedCount);
+        var summary = snapshot.TotalCommands == 0
+            ? $"No DB commands captured in {durationSeconds}s. Start the collection before the workload and ensure the target emits EF Core or SqlClient diagnostics."
+            : $"Captured {snapshot.TotalCommands} DB command(s) over {durationSeconds}s across {snapshot.ByCommand.Count} distinct command shape(s). " +
+              $"Top command: {topCommand?.CommandTextHash} ({topCommand?.Count} call(s), p95={topCommand?.P95Ms:F1}ms). " +
+              $"N+1 incidents: {snapshot.NPlusOne.Count}. Pool exhaustion signals: {poolExhaustedCount}.";
+
+        var handle = handles.Register(pid, CollectionHandleKinds.DbSnapshot, snapshot, CollectionHandleTtl);
+        return WithContext(DiagnosticResult.OkWithHandle(
+            inlineSnapshot,
+            summary,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint("query_snapshot",
+                "Drill into this DB snapshot without re-collecting (views: summary, byCommand, n+1, connectionPool).",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "n+1", ["topN"] = 25 }),
+            new NextActionHint("collect_sample",
+                snapshot.NPlusOne.Count > 0 || snapshot.ByCommand.Any(static command => command.P95Ms > 50)
+                    ? "Correlate slow-query hotspots with CPU stacks from the same process."
+                    : "If DB latency looks healthy, pivot to CPU sampling or logs for the same process.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 })),
             resolved.Context);
     }
 

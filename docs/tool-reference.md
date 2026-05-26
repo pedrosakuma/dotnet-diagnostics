@@ -79,6 +79,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="logs")` | The `Recent[]` list. Level counts + per-category rollups remain exact for the window. |
 | `collect_events(kind="jit")` | Method rows beyond the hottest 10. Healthcheck + tier counts remain exact for the window. |
 | `collect_events(kind="threadpool")` | The full worker/IOCP timelines and hill-climbing sequence. Summary keeps headline counts + top origins; drill in with `query_snapshot(handle, view=timeline|hillClimbing|workItemOrigins)`. |
+| `collect_events(kind="db")` | The long `ByCommand[]` / `NPlusOne[]` lists. Summary keeps the headline aggregates + pool slice. |
 | `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph|deadlocks|unique-stacks)`. |
 
 Explicit `topN` always wins over the depth default — if you pass
@@ -169,6 +170,7 @@ Os 7 coletores windowed — `collect_events(kind="counters")`, `collect_events(k
 `collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`, `collect_events(kind="logs")`, `collect_events(kind="jit")` — devolvem, junto do summary +
 Os 6 coletores windowed — `collect_events(kind="counters")`, `collect_events(kind="exceptions")`,
 `collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`, `collect_events(kind="logs")`, `collect_events(kind="threadpool")` — devolvem, junto do summary +
+`collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`, `collect_events(kind="logs")`, `collect_events(kind="db")` — devolvem, junto do summary +
 top-N inline, um `handle` opaco (Crockford-base32, TTL ~10 min) registrado num
 store em memória. A LLM pode então re-projetar o mesmo artefato sob outra
 visão **sem rodar o EventPipe de novo** chamando `query_snapshot`:
@@ -204,6 +206,7 @@ Visões disponíveis por `kind`:
 | `log-snapshot` | `collect_events(kind="logs")` | `summary` (default), `byCategory`, `byLevel`, `recent`, `errors` |
 | `jit-snapshot` | `collect_events(kind="jit")` | `summary` (default), `topMethods`, `tierDistribution`, `reJIT` |
 | `threadpool-snapshot` | `collect_events(kind="threadpool")` | `summary` (default), `timeline`, `hillClimbing`, `workItemOrigins` |
+| `db-snapshot` | `collect_events(kind="db")` | `summary` (default), `byCommand`, `n+1`, `connectionPool` |
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `object`, `gcroot`, `objsize`, `async`, `diff` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `threadpool` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
@@ -695,6 +698,7 @@ identical, but each carries a `DEPRECATED` notice and will be removed in
 |---|---|---|---|
 | `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `event_source`, `activities`, `logs`, `jit`. Case-sensitive. |
 | `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `event_source`, `activities`, `logs`, `threadpool`. Case-sensitive. |
+| `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `event_source`, `activities`, `logs`, `db`. Case-sensitive. |
 | `processId` | `int?` | auto | Target process id. |
 | `durationSeconds` | `int` | 5 (counters) / 10 (others) | Collection window. |
 | `providers` / `meters` / `intervalSeconds` / `maxInstrumentTimeSeries` | counters only | — | Same as [`collect_events(kind="counters")`](#collect_events(kind="counters")). |
@@ -713,6 +717,11 @@ identical, but each carries a `DEPRECATED` notice and will be removed in
 **Returns:** `CollectEventsEnvelope` — a polymorphic record that carries the
 `kind` discriminator plus exactly one populated payload field
 (`counters` / `exceptions` / `gc` / `eventSource` / `activities` / `logs` / `threadPool`). The
+| `intervalSeconds` / `depth` | db only | `1` / `Summary` | SqlClient EventCounter refresh interval + inline verbosity for the curated DB view. |
+
+**Returns:** `CollectEventsEnvelope` — a polymorphic record that carries the
+`kind` discriminator plus exactly one populated payload field
+(`counters` / `exceptions` / `gc` / `eventSource` / `activities` / `logs` / `db`). The
 envelope's `summary`, `hints`, `handle`, `handleExpiresAt`, and
 `resolvedProcess` are passed through from the underlying collector verbatim,
 so `query_snapshot` drilldowns continue to work unchanged.
@@ -1268,6 +1277,14 @@ Collects a curated ThreadPool starvation view from the runtime `ThreadingKeyword
 hill-climbing transitions/reasons, best-effort effective min/max settings when the
 runtime emits `ThreadPoolMinMaxThreadsChanged`, and top work-item origins when EventPipe
 exposes enqueue call stacks.
+## `collect_events(kind="db")`
+
+Collects a curated database view by combining EF Core command activities with
+SqlClient command/pool telemetry. The collector groups commands by
+`(CommandTextHash, ConnectionStringSanitized)`, computes `count`, `totalMs`,
+`maxMs`, `p95Ms`, flags N+1 patterns when the same command repeats more than 10
+ times under the same parent activity / trace, and snapshots SqlClient pool
+ counters when available.
 
 **Parameters:**
 
@@ -1315,6 +1332,26 @@ per-tier counts, `reJitCount`, `osrCount`, and `hasIlMap`.
 - The runtime does not always publish named ThreadPool adjustment payloads on every platform; when that happens the collector annotates `notes` and infers the transition reason from the timing / direction of worker growth.
 - Work-item origins require EventPipe call stacks on `ThreadPoolEnqueueWork`; when stacks are unavailable the collector returns a note and leaves `workItemOrigins` empty.
 - Effective min/max counts are best-effort: the collector stays EventPipe-only and fills `effectiveSettings` only when the runtime emits `ThreadPoolMinMaxThreadsChanged`; otherwise it falls back to a note and points callers at `collect_thread_snapshot(view="threadpool")` for a ptrace-backed snapshot.
+| `intervalSeconds` | `int` | `1` | Refresh interval requested from SqlClient EventCounters |
+| `depth` | `SamplingDepth` | `Summary` | `Summary` keeps only the top command/N+1 slices inline; `Detail` / `Raw` keep the full capture |
+
+**Returns:** `DbSnapshot` with:
+
+- `totalCommands`
+- `byCommand` (`DbCommandAggregate[]` with `commandTextHash`, sanitized SQL,
+  sanitized connection string, `count`, `totalMs`, `maxMs`, `p95Ms`)
+- `nPlusOne` (`DbNPlusOneIncident[]`)
+- `connectionPool` (`DbConnectionPoolStats[]`)
+- `notes`
+
+**Drilldown:** `query_snapshot(handle, view="summary" | "byCommand" | "n+1" | "connectionPool")`.
+
+**Notes:**
+
+- `SensitiveDataRedactor` redacts connection-string secrets and inline SQL
+  literal values before the snapshot is retained.
+- SqlClient pool stats depend on provider support; when the target only emits EF
+  activities the `connectionPool` slice may be empty.
 
 ---
 

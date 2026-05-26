@@ -17,6 +17,8 @@
 - `samples/BadCodeSample` now exposes `/slow-hang?seconds=N` so live tests and playbooks can reproduce a hanging endpoint for `inspect_process(view="requests-now")`.
 - `collect_events(kind="threadpool")` adds a deep ThreadPool starvation view over the runtime `ThreadingKeyword`: worker + IOCP timelines, hill-climbing transitions/reasons, best-effort effective min/max settings, and `query_snapshot(handle, view="summary|timeline|hillClimbing|workItemOrigins")` drilldown.
 - `samples/BadCodeSample` now exposes `/log-spam?count=N&level=warning|error|...` and `/threadpool-starve?blockers=N` so live tests and playbooks can reproduce warning/error storms and ThreadPool starvation.
+- `collect_events(kind="db")` adds a curated EF Core / SqlClient DB view with sanitized command aggregation (`count`, `totalMs`, `maxMs`, `p95Ms`), N+1 detection, SqlClient pool counters, and `query_snapshot(handle, view="summary|byCommand|n+1|connectionPool")` drilldown.
+- `samples/BadCodeSample` now exposes `/log-spam?count=N&level=warning|error|...` and `/db-n+1?count=N` so live tests and playbooks can reproduce warning/error storms and N+1 query bursts.
 
 ### Fixed
 - `deploy/Dockerfile`: removed dev-only `"Urls": "http://127.0.0.1:8787"` from

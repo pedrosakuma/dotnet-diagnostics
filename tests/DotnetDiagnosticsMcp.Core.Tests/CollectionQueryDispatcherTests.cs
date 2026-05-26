@@ -1,6 +1,7 @@
 using DotnetDiagnosticsMcp.Core.Activities;
 using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.Counters;
+using DotnetDiagnosticsMcp.Core.Db;
 using DotnetDiagnosticsMcp.Core.EventSources;
 using DotnetDiagnosticsMcp.Core.Exceptions;
 using DotnetDiagnosticsMcp.Core.Gc;
@@ -346,6 +347,70 @@ public class CollectionQueryDispatcherTests
         var hill = hillOutcome.Result!.Payload.Should().BeOfType<ThreadPoolHillClimbingView>().Subject;
         hill.Returned.Should().Be(1);
         hill.Samples[0].Reason.Should().Be("Warmup");
+    }
+
+    [Fact]
+    public void Db_SummaryAndNPlusOneViews_RenderExpectedSlices()
+    {
+        var snapshot = new DbSnapshot(
+            ProcessId: 42,
+            StartedAt: At,
+            Duration: TimeSpan.FromSeconds(5),
+            TotalCommands: 15,
+            ByCommand:
+            [
+                new DbCommandAggregate(
+                    "HASH1",
+                    "SELECT * FROM widgets WHERE id = <redacted:literal>",
+                    "Data Source=badcode-db;Password=<redacted:sensitive>",
+                    ["Microsoft.EntityFrameworkCore"],
+                    15,
+                    150,
+                    20,
+                    18,
+                    At,
+                    At.AddSeconds(2)),
+            ],
+            NPlusOne:
+            [
+                new DbNPlusOneIncident(
+                    "scope-1",
+                    "HASH1",
+                    "SELECT * FROM widgets WHERE id = <redacted:literal>",
+                    "Data Source=badcode-db;Password=<redacted:sensitive>",
+                    ["Microsoft.EntityFrameworkCore"],
+                    15,
+                    At,
+                    At.AddSeconds(2)),
+            ],
+            ConnectionPool:
+            [
+                new DbConnectionPoolStats(
+                    "Microsoft.Data.SqlClient.EventSource",
+                    4,
+                    6,
+                    8,
+                    10,
+                    1,
+                    ["Observed active-hard-connections=4"]),
+            ],
+            Notes: ["note"]);
+
+        var summaryOutcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.DbSnapshot, "summary", snapshot, 10);
+        var summary = summaryOutcome.Result!.Payload.Should().BeOfType<DbSummaryView>().Subject;
+        summary.TotalCommands.Should().Be(15);
+        summary.NPlusOneCount.Should().Be(1);
+        summary.TopCommands.Should().ContainSingle();
+
+        var nPlusOneOutcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.DbSnapshot, "n+1", snapshot, 10);
+        var nPlusOne = nPlusOneOutcome.Result!.Payload.Should().BeOfType<DbNPlusOneView>().Subject;
+        nPlusOne.TotalIncidents.Should().Be(1);
+        nPlusOne.Incidents.Should().ContainSingle(incident => incident.Count == 15);
+
+        var poolOutcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.DbSnapshot, "connectionPool", snapshot, 10);
+        var pool = poolOutcome.Result!.Payload.Should().BeOfType<DbConnectionPoolView>().Subject;
+        pool.PoolExhaustedCount.Should().Be(1);
+        pool.ConnectionPool.Should().ContainSingle(stats => stats.Provider == "Microsoft.Data.SqlClient.EventSource");
     }
 
     [Fact]

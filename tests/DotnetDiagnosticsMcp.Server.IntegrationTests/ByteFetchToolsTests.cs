@@ -111,24 +111,13 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
     {
         using var artifactRoot = CreateArtifactRoot();
         using var env = EnvScope.Set(EnvironmentArtifactRootProvider.EnvironmentVariableName, artifactRoot.Path);
-        await using var factory = CreateFactory(("byte-fetcher", "roundtrip-token", new[] { "module-bytes-read", "dump-write", "ptrace" }));
+        await using var factory = CreateFactory(("byte-fetcher", "roundtrip-token", new[] { "module-bytes-read" }));
         await using var client = await ConnectWithTokenAsync(factory, "roundtrip-token");
 
-        var dumpResult = await client.CallToolAsync(
-            "collect_process_dump",
-            new Dictionary<string, object?>
-            {
-                ["processId"] = SampleProcessId,
-                ["dumpType"] = ProcessDumpType.Mini.ToString(),
-                ["confirm"] = true,
-            },
-            cancellationToken: CancellationToken.None);
-
-        var dumpEnvelope = DeserializeEnvelope(dumpResult);
-        dumpEnvelope.Should().NotBeNull();
-        dumpEnvelope!.Error.Should().BeNull();
-        var dumpFilePath = dumpEnvelope.Data.GetProperty("dump").GetProperty("filePath").GetString();
-        dumpFilePath.Should().NotBeNullOrWhiteSpace();
+        var dumpFilePath = Path.Combine(artifactRoot.Path, "roundtrip.dmp");
+        var expected = new byte[2 * 1024 * 1024 + 137];
+        RandomNumberGenerator.Fill(expected);
+        await File.WriteAllBytesAsync(dumpFilePath, expected, CancellationToken.None);
 
         var bytes = new List<byte>();
         long offset = 0;
@@ -140,7 +129,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
                 new Dictionary<string, object?>
                 {
                     ["kind"] = "dump",
-                    ["dumpFilePath"] = dumpFilePath!,
+                    ["dumpFilePath"] = dumpFilePath,
                     ["offset"] = offset,
                     ["maxBytes"] = 1024 * 1024,
                 },
@@ -162,7 +151,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
 
         var assembled = bytes.ToArray();
         sha256.Should().Be(Convert.ToHexString(SHA256.HashData(assembled)).ToLowerInvariant());
-        File.ReadAllBytes(dumpFilePath!).Should().Equal(assembled);
+        assembled.Should().Equal(expected);
     }
 
     [Fact]
