@@ -1,18 +1,22 @@
+using System.Collections.Immutable;
 using System.Diagnostics;
 using DotnetDiagnosticsMcp.Core.Activities;
 using DotnetDiagnosticsMcp.Core.Artifacts;
 using DotnetDiagnosticsMcp.Core.Capabilities;
+using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.JitCapture;
+using DotnetDiagnosticsMcp.Core.Logs;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
-using DotnetDiagnosticsMcp.Core.Threads;
 using DotnetDiagnosticsMcp.Core.Security;
+using DotnetDiagnosticsMcp.Core.Threads;
 using DotnetDiagnosticsMcp.Server.Security;
 using DotnetDiagnosticsMcp.Server.Tools;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 
 namespace DotnetDiagnosticsMcp.Core.Tests;
 
@@ -1205,6 +1209,183 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         return result;
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task Logs_CapturesWarningStorm_FromBadCodeSample()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeLogCollector(new SensitiveDataRedactor());
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/log-spam?count=40&level=warning");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            badSample.ProcessId,
+            TimeSpan.FromSeconds(4),
+            categories: new[] { "BadCodeSample.LogSpam" },
+            minLevel: LogLevel.Warning,
+            maxEvents: 100,
+            includeJsonPayload: false,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        snapshot.TotalEvents.Should().Be(40);
+        snapshot.EventsByLevelWarning.Should().Be(40);
+        snapshot.ByCategory.Should().ContainSingle(group => group.Category == "BadCodeSample.LogSpam" && group.Count == 40);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Logs_HonoursMinLevel()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeLogCollector(new SensitiveDataRedactor());
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/log-spam?count=10&level=debug");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            badSample.ProcessId,
+            TimeSpan.FromSeconds(4),
+            categories: new[] { "BadCodeSample.LogSpam" },
+            minLevel: LogLevel.Information,
+            maxEvents: 50,
+            includeJsonPayload: false,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        snapshot.TotalEvents.Should().Be(0);
+        snapshot.Recent.Should().BeEmpty();
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Logs_RedactsScopes()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeLogCollector(new SensitiveDataRedactor());
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/log-spam?count=5&level=warning");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            badSample.ProcessId,
+            TimeSpan.FromSeconds(4),
+            categories: new[] { "BadCodeSample.LogSpam" },
+            minLevel: LogLevel.Warning,
+            maxEvents: 20,
+            includeJsonPayload: true,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        snapshot.Recent.Should().NotBeEmpty();
+        snapshot.Recent.Should().Contain(entry => entry.Scopes != null && entry.Scopes.Count > 0);
+        snapshot.Recent
+            .SelectMany(entry => entry.Scopes ?? new Dictionary<string, string>())
+            .Should().Contain(pair => pair.Key == "Password" && pair.Value == SensitiveDataRedactor.RedactedPlaceholder);
+        snapshot.Recent
+            .SelectMany(entry => entry.Scopes ?? new Dictionary<string, string>())
+            .Should().NotContain(pair => pair.Value.Contains("super-secret", StringComparison.Ordinal));
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Logs_CapturesExceptionDetails_WhenErrorJsonEnabled()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeLogCollector(new SensitiveDataRedactor());
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/log-spam?count=4&level=error");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            badSample.ProcessId,
+            TimeSpan.FromSeconds(4),
+            categories: new[] { "BadCodeSample.LogSpam" },
+            minLevel: LogLevel.Error,
+            maxEvents: 20,
+            includeJsonPayload: true,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        snapshot.EventsByLevelError.Should().Be(4);
+        snapshot.Recent.Should().Contain(entry => entry.ExceptionType != null);
+        snapshot.Recent.Should().Contain(entry => entry.ExceptionMessage != null && entry.ExceptionMessage.Contains("boom-", StringComparison.Ordinal));
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Logs_HandleEnablesDrilldown()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeLogCollector(new SensitiveDataRedactor());
+        var handles = new MemoryDiagnosticHandleStore();
+        var resolver = new FixedProcessContextResolver(badSample.ProcessId);
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/log-spam?count=6&level=warning");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var collected = await DiagnosticTools.CollectLogs(
+            collector,
+            resolver,
+            handles,
+            processId: badSample.ProcessId,
+            durationSeconds: 4,
+            categories: new[] { "BadCodeSample.LogSpam" },
+            minLevel: "Warning",
+            maxEvents: 20,
+            maxMessageBytes: 4096,
+            depth: SamplingDepth.Detail,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        collected.Handle.Should().NotBeNullOrWhiteSpace();
+        var drilled = await QuerySnapshotTool.QuerySnapshot(
+            handles,
+            new ClrMdDumpInspector(),
+            new SensitiveDataRedactor(),
+            new SensitiveValueGate(null),
+            new RootPrincipalAccessor(),
+            collected.Handle!,
+            view: "errors",
+            topN: 20,
+            cancellationToken: CancellationToken.None);
+
+        drilled.Error.Should().BeNull();
+        var query = drilled.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        query.Kind.Should().Be(CollectionHandleKinds.LogSnapshot);
+        query.View.Should().Be("errors");
+        var errors = query.Payload.Should().BeOfType<LogErrorsView>().Subject;
+        errors.Returned.Should().Be(6);
+        errors.Errors.Should().OnlyContain(entry =>
+            entry.Level == "Warning" || entry.Level == "Error" || entry.Level == "Critical");
+    }
+
     private static IEnumerable<CallTreeNode> Flatten(CallTreeNode root)
     {
         var stack = new Stack<CallTreeNode>();
@@ -1257,7 +1438,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             await Task.Delay(250);
         }
 
-        throw SkipException.ForReason($"CoreClrSample did not accept HTTP requests on {baseUrl} within the timeout.");
+        throw SkipException.ForReason($"Sample did not accept HTTP requests on {baseUrl}{readinessPath} within the timeout.");
     }
 
     private void EnsureSampleRunning()
@@ -1266,6 +1447,61 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         {
             throw SkipException.ForReason("CoreClrSample is not running (could not start the sample process).");
         }
+    }
+
+    private static async Task<RunningSample> StartPublishedSampleAsync(string sampleName)
+    {
+        var sampleDll = LocateSampleDll(sampleName)
+            ?? throw SkipException.ForReason($"{sampleName}.dll not found.");
+
+        var listeningUrlTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var psi = new ProcessStartInfo("dotnet")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(sampleDll)!,
+        };
+        psi.ArgumentList.Add(sampleDll);
+        psi.ArgumentList.Add("--urls");
+        psi.ArgumentList.Add("http://127.0.0.1:0");
+        psi.Environment["DOTNET_NOLOGO"] = "1";
+        psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
+
+        var process = Process.Start(psi)
+            ?? throw SkipException.ForReason($"Failed to start {sampleName}.");
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var reader = process.StandardOutput;
+                string? line;
+                while ((line = await reader.ReadLineAsync()) is not null)
+                {
+                    var idx = line.IndexOf("Now listening on:", StringComparison.Ordinal);
+                    if (idx >= 0 && !listeningUrlTcs.Task.IsCompleted)
+                    {
+                        listeningUrlTcs.TrySetResult(line[(idx + "Now listening on:".Length)..].Trim());
+                    }
+                }
+            }
+            catch
+            {
+            }
+        });
+
+        _ = Task.Run(async () =>
+        {
+            try { using var reader = process.StandardError; while (await reader.ReadLineAsync() is not null) { } }
+            catch { }
+        });
+
+        await WaitForDiagnosticEndpointAsync(process.Id, TimeSpan.FromSeconds(30));
+        var baseUrl = await listeningUrlTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await WaitForHttpReadyAsync(baseUrl, TimeSpan.FromSeconds(30), "/");
+        return new RunningSample(process, baseUrl);
     }
 
     internal static async Task WaitForDiagnosticEndpointAsync(int pid, TimeSpan timeout)
@@ -1315,6 +1551,54 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         }
 
         return null;
+    }
+
+    private sealed class RunningSample : IAsyncDisposable
+    {
+        private readonly Process _process;
+
+        public RunningSample(Process process, string baseUrl)
+        {
+            _process = process;
+            BaseUrl = baseUrl;
+        }
+
+        public int ProcessId => _process.Id;
+
+        public string BaseUrl { get; }
+
+        public ValueTask DisposeAsync()
+        {
+            if (!_process.HasExited)
+            {
+                try
+                {
+                    _process.Kill(entireProcessTree: true);
+                    _process.WaitForExit(5_000);
+                }
+                catch
+                {
+                }
+            }
+
+            _process.Dispose();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class FixedProcessContextResolver(int processId) : IProcessContextResolver
+    {
+        public Task<ProcessContextResolution> ResolveAsync(int? requestedProcessId, CancellationToken cancellationToken)
+            => Task.FromResult(new ProcessContextResolution(
+                new ProcessContext(requestedProcessId ?? processId, RuntimeFlavor.CoreClr, true, true, false, "10.0-test", "explicit"),
+                null));
+    }
+
+    private sealed class RootPrincipalAccessor : IPrincipalAccessor
+    {
+        private static readonly BearerPrincipal Principal = new("test-root", ImmutableHashSet.Create(BearerPrincipal.RootScope));
+
+        public BearerPrincipal? Current => Principal;
     }
 }
 

@@ -30,7 +30,10 @@ legacy EventCounters. Look at:
 - `Meters[].Instrument == "http.server.request.duration"` (`Histogram.P95`), or `Microsoft.AspNetCore.Hosting/request-duration` if the Meter is absent
 - `Microsoft-AspNetCore-Server-Kestrel/connection-queue-length`
 
-### Step 2 — Branch on what's elevated
+### Step 2 — Quick app-level signal
+`collect_events(kind="logs", minLevel="Warning")` for 10–15 s. If the warning/error stream already names the slow dependency, timeout, or retry loop, follow that lead before escalating.
+
+### Step 3 — Branch on what's elevated
 
 - **CPU near 100% in one or two cores** → `collect_sample(kind="cpu")` for 10–30 s,
   inspect `topHotspots` by `exclusiveSamples`. Look for unexpected user code

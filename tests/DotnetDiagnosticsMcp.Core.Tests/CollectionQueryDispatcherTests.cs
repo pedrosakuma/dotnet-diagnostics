@@ -4,6 +4,7 @@ using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.EventSources;
 using DotnetDiagnosticsMcp.Core.Exceptions;
 using DotnetDiagnosticsMcp.Core.Gc;
+using DotnetDiagnosticsMcp.Core.Logs;
 using FluentAssertions;
 
 namespace DotnetDiagnosticsMcp.Core.Tests;
@@ -217,6 +218,50 @@ public class CollectionQueryDispatcherTests
         var payload = outcome.Result!.Payload.Should().BeOfType<ActivitiesListView>().Subject;
         payload.Returned.Should().Be(1);
         payload.Activities[0].OperationName.Should().Be("outer");
+    }
+
+    [Fact]
+    public void Logs_SummaryAndErrorsViews_RenderExpectedSlices()
+    {
+        var snapshot = new LogSnapshot(
+            ProcessId: 42,
+            CategoryFilters: new[] { "BadCodeSample.LogSpam" },
+            MinimumLevel: "Information",
+            StartedAt: At,
+            Duration: TimeSpan.FromSeconds(5),
+            TotalEvents: 4,
+            EventsByLevelTrace: 0,
+            EventsByLevelDebug: 0,
+            EventsByLevelInformation: 1,
+            EventsByLevelWarning: 2,
+            EventsByLevelError: 1,
+            EventsByLevelCritical: 0,
+            ByCategory:
+            [
+                new LogCategoryGroup("BadCodeSample.LogSpam", 4, 1, 3),
+            ],
+            Recent:
+            [
+                new LogEntry(At, "Information", "BadCodeSample.LogSpam", 1, null, "info", null, null, null),
+                new LogEntry(At.AddSeconds(1), "Warning", "BadCodeSample.LogSpam", 2, null, "warn-1", null, null, new Dictionary<string, string> { ["Password"] = "<redacted:sensitive>" }),
+                new LogEntry(At.AddSeconds(2), "Warning", "BadCodeSample.LogSpam", 3, null, "warn-2", null, null, null),
+                new LogEntry(At.AddSeconds(3), "Error", "BadCodeSample.LogSpam", 4, "Boom", "error", "System.InvalidOperationException", "boom", null),
+            ],
+            Truncated: false,
+            Notes: new[] { "note" });
+
+        var summaryOutcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.LogSnapshot, "summary", snapshot, 10);
+        var summary = summaryOutcome.Result!.Payload.Should().BeOfType<LogSummaryView>().Subject;
+        summary.TotalEvents.Should().Be(4);
+        summary.Counts.Warning.Should().Be(2);
+        summary.ByCategory.Should().ContainSingle();
+
+        var errorsOutcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.LogSnapshot, "errors", snapshot, 10);
+        var errors = errorsOutcome.Result!.Payload.Should().BeOfType<LogErrorsView>().Subject;
+        errors.Returned.Should().Be(3);
+        errors.Errors.Should().OnlyContain(entry =>
+            entry.Level == "Warning" || entry.Level == "Error" || entry.Level == "Critical");
+        errors.Errors.Should().Contain(entry => entry.ExceptionType == "System.InvalidOperationException");
     }
 
     [Fact]

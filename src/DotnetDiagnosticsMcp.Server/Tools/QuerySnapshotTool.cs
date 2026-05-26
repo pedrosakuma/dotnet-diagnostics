@@ -83,8 +83,8 @@ public sealed class QuerySnapshotTool
         "`thread-snapshot` → thread views (threads-summary | stack | lock-graph | deadlocks | top-blocked | " +
         "unique-stacks | threadpool); " +
         "`off-cpu-snapshot` → off-CPU views (topStacks | byThread | stack); " +
-        "`counters` / `exception-snapshot` / `gc-events` / `event-source` / `activities` → collection views " +
-        "(summary | byProvider | byType | recent | events | pauseHistogram | byEventName | bySource | byOperation | activities); " +
+        "`counters` / `exception-snapshot` / `gc-events` / `event-source` / `activities` / `log-snapshot` → collection views " +
+        "(summary | byProvider | byType | recent | events | pauseHistogram | byEventName | bySource | byOperation | activities | byCategory | byLevel | errors); " +
         "`cpu-sample` / `allocation-sample` → `call-tree` | `diff`; `heap-snapshot` → `diff` in addition to heap views. `diff` compares the current handle against `baselineHandle`; `call-tree` preserves get_call_tree behaviour with " +
         "rootMethodFilter, maxDepth, maxNodes. " +
         "Unknown handle kinds, unknown views and parameter-shape violations return structured InvalidArgument " +
@@ -98,8 +98,8 @@ public sealed class QuerySnapshotTool
         SensitiveDataRedactor redactor,
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
-        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, snapshot_counters, collect_exceptions, collect_gc_events, collect_event_source, collect_activities).")] string handle,
-        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|threadpool. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|pauseHistogram|byEventName|bySource|byOperation|activities. cpu-sample/allocation-sample: call-tree|diff. Omit to use the kind's default view.")] string? view = null,
+        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, snapshot_counters, collect_exceptions, collect_gc_events, collect_event_source, collect_activities, collect_events(kind=\"logs\")).")] string handle,
+        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|threadpool. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|pauseHistogram|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors. cpu-sample/allocation-sample: call-tree|diff. Omit to use the kind's default view.")] string? view = null,
         [Description("Maximum entries returned by any ranked-list view. Omit to use the per-kind legacy default: 50 for heap / thread / collection, 25 for off-CPU. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
         [Description("Heap view='top-types' only: ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
@@ -134,118 +134,137 @@ public sealed class QuerySnapshotTool
         switch (kind)
         {
             case DiagnosticTools.HeapSnapshotKind:
-            {
-                if (!RequireScope(principal, ScopeHeapRead, out var forbidden))
                 {
-                    return forbidden!;
+                    if (!RequireScope(principal, ScopeHeapRead, out var forbidden))
+                    {
+                        return forbidden!;
+                    }
+                    if (IsDiffView(view))
+                    {
+                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, minDeltaPct, topN);
+                    }
+                    var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultHeapView : view!;
+                    var heap = await DiagnosticTools.QueryHeapSnapshot(
+                        handles,
+                        inspector,
+                        redactor,
+                        sensitiveGate,
+                        principalAccessor,
+                        handle,
+                        resolvedView,
+                        topN ?? 50,
+                        rankBy,
+                        typeFullName,
+                        address,
+                        includeSensitiveValues,
+                        deprecation,
+                        cancellationToken).ConfigureAwait(false);
+                    return AsObjectEnvelope(heap);
                 }
-                if (IsDiffView(view))
-                {
-                    return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, minDeltaPct, topN);
-                }
-                var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultHeapView : view!;
-                var heap = await DiagnosticTools.QueryHeapSnapshot(
-                    handles,
-                    inspector,
-                    redactor,
-                    sensitiveGate,
-                    principalAccessor,
-                    handle,
-                    resolvedView,
-                    topN ?? 50,
-                    rankBy,
-                    typeFullName,
-                    address,
-                    includeSensitiveValues,
-                    deprecation,
-                    cancellationToken).ConfigureAwait(false);
-                return AsObjectEnvelope(heap);
-            }
+
 
             case DiagnosticTools.ThreadSnapshotKind:
-            {
-                if (!RequireScope(principal, ScopePtrace, out var forbidden))
                 {
-                    return forbidden!;
+                    if (!RequireScope(principal, ScopePtrace, out var forbidden))
+                    {
+                        return forbidden!;
+                    }
+                    var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultThreadView : view!;
+                    var thread = DiagnosticTools.QueryThreadSnapshot(
+                        handles,
+                        handle,
+                        resolvedView,
+                        threadId,
+                        topN ?? 50,
+                        framesToHash,
+                        minCount);
+                    return AsObjectEnvelope(thread);
                 }
-                var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultThreadView : view!;
-                var thread = DiagnosticTools.QueryThreadSnapshot(
-                    handles,
-                    handle,
-                    resolvedView,
-                    threadId,
-                    topN ?? 50,
-                    framesToHash,
-                    minCount);
-                return AsObjectEnvelope(thread);
-            }
 
             case DiagnosticTools.OffCpuHandleKind:
-            {
-                if (!RequireScope(principal, ScopeEventPipe, out var forbidden))
                 {
-                    return forbidden!;
+                    if (!RequireScope(principal, ScopeEventPipe, out var forbidden))
+                    {
+                        return forbidden!;
+                    }
+                    var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultOffCpuView : view!;
+                    var offCpu = DiagnosticTools.QueryOffCpuSnapshot(
+                        handles,
+                        handle,
+                        resolvedView,
+                        topN ?? 25,
+                        stackRank);
+                    return AsObjectEnvelope(offCpu);
                 }
-                var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultOffCpuView : view!;
-                var offCpu = DiagnosticTools.QueryOffCpuSnapshot(
-                    handles,
-                    handle,
-                    resolvedView,
-                    topN ?? 25,
-                    stackRank);
-                return AsObjectEnvelope(offCpu);
-            }
 
             case "cpu-sample":
             case "allocation-sample":
-            {
-                if (!RequireScope(principal, ScopeInvestigationExport, out var forbidden))
                 {
-                    return forbidden!;
+                    if (!RequireScope(principal, ScopeInvestigationExport, out var forbidden))
+                    {
+                        return forbidden!;
+                    }
+                    if (IsDiffView(view))
+                    {
+                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, minDeltaPct, topN);
+                    }
+                    // get_call_tree exposes a single projection; require either the canonical
+                    // `call-tree` view or an omitted value, and reject anything else with a
+                    // structured InvalidArgument envelope so a confused caller sees the same
+                    // shape it would see from any other kind/view mismatch.
+                    if (!string.IsNullOrWhiteSpace(view)
+                        && !string.Equals(view, CallTreeView, StringComparison.Ordinal))
+                    {
+                        return UnknownView(view!, kind, new[] { CallTreeView, DiffView });
+                    }
+                    var callTree = DiagnosticTools.GetCallTree(
+                        handles,
+                        handle,
+                        rootMethodFilter,
+                        maxDepth,
+                        maxNodes);
+                    return AsObjectEnvelope(callTree);
                 }
-                // get_call_tree exposes a single projection; require either the canonical
-                // `call-tree` view or an omitted value, and reject anything else with a
-                // structured InvalidArgument envelope so a confused caller sees the same
-                // shape it would see from any other kind/view mismatch.
-                if (IsDiffView(view))
-                {
-                    return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, minDeltaPct, topN);
-                }
-                if (!string.IsNullOrWhiteSpace(view)
-                    && !string.Equals(view, CallTreeView, StringComparison.Ordinal))
-                {
-                    return UnknownView(view!, kind, new[] { CallTreeView, DiffView });
-                }
-                var callTree = DiagnosticTools.GetCallTree(
-                    handles,
-                    handle,
-                    rootMethodFilter,
-                    maxDepth,
-                    maxNodes);
-                return AsObjectEnvelope(callTree);
-            }
+
 
             case CollectionHandleKinds.Counters:
-            case CollectionHandleKinds.ExceptionSnapshot:
-            case CollectionHandleKinds.GcEvents:
-            case CollectionHandleKinds.EventSource:
-            case CollectionHandleKinds.Activities:
-            {
-                if (!RequireAnyOfScope(principal, ScopeReadCounters, ScopeEventPipe, out var forbidden))
                 {
-                    return forbidden!;
+                    if (!RequireAnyOfScope(principal, ScopeReadCounters, ScopeEventPipe, out var forbidden))
+                    {
+                        return forbidden!;
+                    }
+                    var resolvedView = string.IsNullOrWhiteSpace(view) ? null : view;
+                    var collection = DiagnosticTools.QueryCollection(
+                        handles,
+                        principalAccessor,
+                        handle,
+                        resolvedView,
+                        topN ?? 50);
+                    return AsObjectEnvelope(collection);
                 }
-                // Forward null/empty unchanged so query_collection's own default
-                // (`summary`) kicks in — guarantees byte-equal envelopes with the legacy
-                // call when the caller omits view.
-                var resolvedView = string.IsNullOrWhiteSpace(view) ? null : view;
-                var collection = DiagnosticTools.QueryCollection(
-                    handles,
-                    handle,
-                    resolvedView,
-                    topN ?? 50);
-                return AsObjectEnvelope(collection);
-            }
+
+                case CollectionHandleKinds.ExceptionSnapshot:
+                case CollectionHandleKinds.GcEvents:
+                case CollectionHandleKinds.EventSource:
+                case CollectionHandleKinds.Activities:
+                case CollectionHandleKinds.LogSnapshot:
+                {
+                    if (!RequireScope(principal, ScopeEventPipe, out var forbidden))
+                    {
+                        return forbidden!;
+                    }
+                    // Forward null/empty unchanged so query_collection's own default
+                    // (`summary`) kicks in — guarantees byte-equal envelopes with the legacy
+                    // call when the caller omits view.
+                    var resolvedView = string.IsNullOrWhiteSpace(view) ? null : view;
+                    var collection = DiagnosticTools.QueryCollection(
+                        handles,
+                        principalAccessor,
+                        handle,
+                        resolvedView,
+                        topN ?? 50);
+                    return AsObjectEnvelope(collection);
+                }
 
             default:
                 return DiagnosticResult.Fail<object>(
@@ -357,6 +376,7 @@ public sealed class QuerySnapshotTool
         CollectionHandleKinds.GcEvents,
         CollectionHandleKinds.EventSource,
         CollectionHandleKinds.Activities,
+        CollectionHandleKinds.LogSnapshot,
     };
 
     /// <summary>

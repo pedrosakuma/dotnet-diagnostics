@@ -1,3 +1,5 @@
+using DotnetDiagnosticsMcp.Core.Logs;
+
 namespace DotnetDiagnosticsMcp.Core.Collection;
 
 /// <summary>
@@ -140,3 +142,52 @@ public sealed record ActivitiesListView(
     int TotalActivities,
     int Returned,
     IReadOnlyList<Activities.CapturedActivity> Activities);
+
+
+// --- Log snapshot views ------------------------------------------------------------------------
+
+public sealed record LogSummaryView(
+    IReadOnlyList<string>? CategoryFilters,
+    string MinimumLevel,
+    long TotalEvents,
+    LogLevelCounts Counts,
+    int CapturedCount,
+    bool Truncated,
+    IReadOnlyList<Logs.LogCategoryGroup> ByCategory,
+    IReadOnlyList<string> Notes);
+
+public sealed record LogLevelCounts(
+    long Trace,
+    long Debug,
+    long Information,
+    long Warning,
+    long Error,
+    long Critical);
+
+public sealed record LogByCategoryView(
+    IReadOnlyList<string>? CategoryFilters,
+    string MinimumLevel,
+    long TotalEvents,
+    int Returned,
+    IReadOnlyList<Logs.LogCategoryGroup> Categories);
+
+public sealed record LogByLevelView(
+    long TotalEvents,
+    IReadOnlyList<LogLevelGroup> Levels);
+
+public sealed record LogLevelGroup(
+    string Level,
+    long Count,
+    IReadOnlyList<Logs.LogEntry> Samples);
+
+public sealed record LogRecentView(
+    long TotalEvents,
+    int CapturedCount,
+    bool Truncated,
+    int Returned,
+    IReadOnlyList<Logs.LogEntry> Recent);
+
+public sealed record LogErrorsView(
+    long TotalEvents,
+    int Returned,
+    IReadOnlyList<Logs.LogEntry> Errors);
