@@ -81,6 +81,7 @@ public sealed class QuerySnapshotDiffToolTests
             new SensitiveDataRedactor(null),
             new SensitiveValueGate(null),
             TestPrincipalAccessors.Root,
+            new DotnetDiagnosticsMcp.Core.Symbols.ClrMdNativeAddressResolver(),
             handle: currentHandle,
             view: "diff",
             baselineHandle: baselineHandle,

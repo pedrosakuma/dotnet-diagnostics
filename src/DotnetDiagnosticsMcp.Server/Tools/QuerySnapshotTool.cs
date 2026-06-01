@@ -5,6 +5,7 @@ using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.Security;
+using DotnetDiagnosticsMcp.Core.Symbols;
 using DotnetDiagnosticsMcp.Core.Threads;
 using DotnetDiagnosticsMcp.Server.Security;
 using ModelContextProtocol.Server;
@@ -48,6 +49,10 @@ public sealed class QuerySnapshotTool
     // `call-tree` view so the (handle, view) contract is uniform across kinds.
     internal const string CallTreeView = "call-tree";
     internal const string DiffView = "diff";
+
+    // Thread-snapshot view that re-opens the origin and classifies arbitrary addresses into
+    // (module, rva, build-id) or an unmapped verdict (issue #275).
+    internal const string ResolveAddressView = "resolve-address";
 
     // Legacy default views, mirrored so unified callers can omit `view` and still get
     // the same projection the kind's legacy tool returned by default.
@@ -98,12 +103,13 @@ public sealed class QuerySnapshotTool
         SensitiveDataRedactor redactor,
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
+        INativeAddressResolver addressResolver,
         [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, snapshot_counters, collect_exceptions, collect_gc_events, collect_event_source, collect_activities, collect_events(kind=\"logs\"), collect_events(kind=\"threadpool\"), collect_events(kind=\"contention\"), collect_events(kind=\"db\")).")] string handle,
-        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|pauseHistogram|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool. cpu-sample/allocation-sample: call-tree|diff. Omit to use the kind's default view.")] string? view = null,
+        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|pauseHistogram|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool. cpu-sample/allocation-sample: call-tree|diff. Omit to use the kind's default view.")] string? view = null,
         [Description("Maximum entries returned by any ranked-list view. Omit to use the per-kind legacy default: 50 for heap / thread / collection, 25 for off-CPU. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
         [Description("Heap view='top-types' only: ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
-        [Description("Heap view='object'/'gcroot'/'objsize' only: managed object address (decimal or 0x-prefixed hex).")] string? address = null,
+        [Description("Heap view='object'/'gcroot'/'objsize': managed object address. Thread view='resolve-address': one or more native/instruction addresses (comma-separated) to classify into (module, rva, build-id) or an unmapped verdict. Decimal or 0x-prefixed hex.")] string? address = null,
         [Description("Heap views 'duplicate-strings' / 'object' only: opt-in to raw string content / field-value previews (gated by `Diagnostics:AllowSensitiveHeapValues` AND `sensitive-heap-read` scope per RFC 0001 §2.4).")] bool includeSensitiveValues = false,
         [Description("Thread view='stack' only: thread id (ManagedThreadId for CoreCLR snapshots, OS TID for linux-native-stack snapshots).")] int? threadId = null,
         [Description("Thread view='unique-stacks' only: number of top frames folded into the signature hash. Defaults to 20.")] int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
@@ -169,6 +175,13 @@ public sealed class QuerySnapshotTool
                     {
                         return forbidden!;
                     }
+
+                    if (!string.IsNullOrWhiteSpace(view) && view!.Trim().Equals(ResolveAddressView, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return await ResolveThreadAddressesAsync(
+                            handles, addressResolver, handle, address, cancellationToken).ConfigureAwait(false);
+                    }
+
                     var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultThreadView : view!;
                     var thread = DiagnosticTools.QueryThreadSnapshot(
                         handles,
@@ -286,6 +299,85 @@ public sealed class QuerySnapshotTool
 
     private static bool IsDiffView(string? view)
         => string.Equals(view, DiffView, StringComparison.Ordinal);
+
+    private static async Task<DiagnosticResult<object>> ResolveThreadAddressesAsync(
+        IDiagnosticHandleStore handles,
+        INativeAddressResolver addressResolver,
+        string handle,
+        string? address,
+        CancellationToken cancellationToken)
+    {
+        var snapshot = handles.TryGet<ThreadSnapshotArtifact>(handle);
+        if (snapshot is null)
+        {
+            return HandleExpiredError(null, handle);
+        }
+
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            return InvalidArgument(nameof(address), "is required for view='resolve-address' (decimal or 0x-prefixed hex; comma-separated for several)");
+        }
+
+        var parsed = new List<ulong>();
+        foreach (var token in address.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!NativeAddressClassifier.TryParseAddress(token, out var value))
+            {
+                return InvalidArgument(nameof(address), $"'{token}' is not a valid decimal or 0x-prefixed hex address");
+            }
+
+            parsed.Add(value);
+        }
+
+        if (parsed.Count == 0)
+        {
+            return InvalidArgument(nameof(address), "contained no parseable addresses");
+        }
+
+        IReadOnlyList<NativeAddressLocation> locations;
+        try
+        {
+            locations = await addressResolver.ResolveAsync(snapshot, parsed, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException)
+        {
+            return AsObjectEnvelope(DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
+                $"Could not resolve addresses against snapshot '{handle}': {ex.Message}",
+                new DiagnosticError("AddressResolutionUnavailable", ex.Message, handle),
+                new NextActionHint("collect_thread_snapshot", "Re-capture the snapshot if the origin process or dump is no longer reachable.", null)));
+        }
+
+        var entries = locations.Select(static l => new ResolvedAddressEntry(
+            Address: $"0x{l.Address:x}",
+            Kind: l.Kind switch
+            {
+                NativeAddressKind.Module => "module",
+                NativeAddressKind.Managed => "managed",
+                NativeAddressKind.MappedNonModule => "mapped-non-module",
+                _ => "unmapped-or-not-captured",
+            },
+            Module: l.Module,
+            ModulePath: l.ModulePath,
+            Rva: l.Rva is { } r ? $"0x{r:x}" : null,
+            BuildId: l.BuildId,
+            Readable: l.Readable,
+            Display: l.Display)
+        {
+            ManagedMethod = l.ManagedMethod,
+        }).ToArray();
+
+        var origin = snapshot.Origin.ToString().ToLowerInvariant();
+        var result = new ThreadSnapshotQueryResult(
+            handle, ResolveAddressView, origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
+        {
+            ResolvedAddresses = entries,
+        };
+
+        var unresolved = entries.Count(e => e.Kind == "unmapped-or-not-captured");
+        var summary = $"Resolved {entries.Length} address(es) against snapshot '{handle}' ({origin}, pid {snapshot.ProcessId})" +
+            (unresolved > 0 ? $"; {unresolved} unmapped-or-not-captured." : ".");
+        return AsObjectEnvelope(DiagnosticResult.Ok(result, summary));
+    }
 
     private static DiagnosticResult<object> TryBuildDiff(
         IDiagnosticHandleStore handles,

@@ -99,6 +99,7 @@ internal static class DiagnosticServiceRegistration
         services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.IThreadSnapshotBackend, DotnetDiagnosticsMcp.Core.Threads.EtwNativeThreadSnapshotBackend>();
         services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.IThreadSnapshotBackend, DotnetDiagnosticsMcp.Core.Threads.PerfReplayThreadSnapshotBackend>();
         services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.IThreadSnapshotInspector, DotnetDiagnosticsMcp.Core.Threads.RoutingThreadSnapshotInspector>();
+        services.AddSingleton<DotnetDiagnosticsMcp.Core.Symbols.INativeAddressResolver, DotnetDiagnosticsMcp.Core.Symbols.ClrMdNativeAddressResolver>();
         services.AddSingleton<DotnetDiagnosticsMcp.Core.JitCapture.IJitMethodCapturer, DotnetDiagnosticsMcp.Core.JitCapture.ClrMdJitMethodCapturer>();
         services.AddSingleton<DotnetDiagnosticsMcp.Core.Investigation.IInvestigationPlanner>(_ =>
             new DotnetDiagnosticsMcp.Core.Investigation.InvestigationPlanner());

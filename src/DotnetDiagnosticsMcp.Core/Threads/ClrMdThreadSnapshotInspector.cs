@@ -3,6 +3,7 @@ using System.IO;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using DotnetDiagnosticsMcp.Core.Memory;
+using DotnetDiagnosticsMcp.Core.Symbols;
 using Microsoft.Diagnostics.Runtime;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -131,6 +132,21 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
         var clrThreads = new List<ClrThread>(runtime.Threads.Length);
         var threadByAddress = new Dictionary<ulong, ClrThread>();
 
+        // Build the loaded-module map once per capture so native/unresolved frames resolve to
+        // (module, rva, build-id) instead of a bare instruction pointer (issue #275).
+        NativeModuleMap moduleMap;
+        try
+        {
+            moduleMap = BuildModuleMap(runtime);
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"Native module map unavailable; frames keep raw addresses: {ex.GetType().Name}.");
+            moduleMap = NativeModuleMap.Build(Array.Empty<NativeModuleRange>());
+        }
+
+        var reader = runtime.DataTarget?.DataReader;
+
         foreach (var t in runtime.Threads)
         {
             ct.ThrowIfCancellationRequested();
@@ -140,7 +156,7 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
             List<ManagedStackFrame> frames;
             try
             {
-                frames = WalkStack(t, opts);
+                frames = WalkStack(t, opts, moduleMap, reader);
             }
             catch (Exception ex)
             {
@@ -187,7 +203,7 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
         return (threads, locks, threadPool);
     }
 
-    private List<ManagedStackFrame> WalkStack(ClrThread t, ThreadSnapshotOptions opts)
+    private List<ManagedStackFrame> WalkStack(ClrThread t, ThreadSnapshotOptions opts, NativeModuleMap moduleMap, IDataReader? reader)
     {
         // Capacity bounded independently of the (already-validated) request to keep the live-attach
         // allocation footprint small even when callers ask for the hard cap and most threads have
@@ -223,6 +239,35 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
                     GenericArity: 0);
             }
 
+            string? addressKind = null;
+            ulong? rva = null;
+            string? buildId = null;
+
+            // For native/unresolved frames, classify the raw IP into (module, rva, build-id) or an
+            // unmapped-hole verdict so the LLM never sees a bare pointer (issue #275).
+            if (method is null && f.InstructionPointer != 0)
+            {
+                var location = NativeAddressClassifier.Resolve(
+                    f.InstructionPointer,
+                    moduleMap,
+                    resolveManaged: null,
+                    probeReadable: addr => ProbeReadable(reader, addr));
+                addressKind = ToAddressKind(location.Kind);
+                rva = location.Rva;
+                buildId = location.BuildId;
+                if (location.Module is not null)
+                {
+                    moduleName ??= location.Module;
+                    modulePath ??= location.ModulePath;
+                }
+
+                // Only override the display when ClrMD gave us nothing better than a raw frame name.
+                if (string.IsNullOrEmpty(f.FrameName))
+                {
+                    display = location.Display;
+                }
+            }
+
             frames.Add(new ManagedStackFrame(
                 Kind: kind,
                 DisplayName: display,
@@ -230,12 +275,57 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
                 ModuleName: moduleName,
                 InstructionPointer: f.InstructionPointer,
                 StackPointer: f.StackPointer,
-                Identity: identity));
+                Identity: identity)
+            {
+                AddressKind = addressKind,
+                Rva = rva,
+                BuildId = buildId,
+            });
 
             if (frames.Count >= opts.MaxFramesPerThread) break;
         }
         return frames;
     }
+
+    /// <summary>Builds the loaded-module map for the target from the data reader's native module list.</summary>
+    private static NativeModuleMap BuildModuleMap(ClrRuntime runtime)
+    {
+        var reader = runtime.DataTarget?.DataReader;
+        if (reader is null)
+        {
+            return NativeModuleMap.Build(Array.Empty<NativeModuleRange>());
+        }
+
+        return NativeModuleMap.Build(reader.EnumerateModules().Select(static m => new NativeModuleRange(
+            ImageBase: m.ImageBase,
+            Size: m.ImageSize > 0 ? (ulong)m.ImageSize : 0,
+            FileName: m.FileName ?? string.Empty,
+            BuildId: m.BuildId.IsDefaultOrEmpty ? null : Convert.ToHexString(m.BuildId.AsSpan()).ToLowerInvariant(),
+            IsManaged: m.IsManaged)));
+    }
+
+    /// <summary>Best-effort 1-byte read to decide whether an address is mapped. Null on reader absence.</summary>
+    private static bool? ProbeReadable(IDataReader? reader, ulong address)
+    {
+        if (reader is null) return null;
+        try
+        {
+            Span<byte> one = stackalloc byte[1];
+            return reader.Read(address, one) == 1;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static string ToAddressKind(NativeAddressKind kind) => kind switch
+    {
+        NativeAddressKind.Module => "module",
+        NativeAddressKind.Managed => "managed",
+        NativeAddressKind.MappedNonModule => "mapped-non-module",
+        _ => "unmapped-or-not-captured",
+    };
 
     private static (bool IsLikelyBlocked, string? Reason) ClassifyTopFrame(ManagedStackFrame? top)
     {
