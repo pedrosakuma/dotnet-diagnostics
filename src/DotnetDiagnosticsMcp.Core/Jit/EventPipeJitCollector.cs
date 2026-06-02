@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using DotnetDiagnosticsMcp.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Parsers.Clr;
@@ -47,7 +48,7 @@ public sealed class EventPipeJitCollector : IJitCollector
 
         var client = new DiagnosticsClient(processId);
         var session = await client
-            .StartEventPipeSessionAsync(providers, requestRundown: false, circularBufferMB: 128, cancellationToken)
+            .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: false, circularBufferMB: 128, TimeSpan.FromSeconds(30), cancellationToken)
             .ConfigureAwait(false);
 
         var startedAt = DateTimeOffset.UtcNow;

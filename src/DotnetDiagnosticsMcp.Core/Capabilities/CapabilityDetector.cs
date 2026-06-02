@@ -178,7 +178,7 @@ public sealed class CapabilityDetector : ICapabilityDetector
         EventPipeSession? session = null;
         try
         {
-            session = await client.StartEventPipeSessionAsync(providers, requestRundown: false, circularBufferMB: 64, ct)
+            session = await client.StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: false, circularBufferMB: 64, TimeSpan.FromSeconds(30), ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (

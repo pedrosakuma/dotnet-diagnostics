@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Tracing;
 using System.Text;
+using DotnetDiagnosticsMcp.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
@@ -67,7 +68,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
 
         var client = new DiagnosticsClient(processId);
         var session = await client
-            .StartEventPipeSessionAsync(providers, requestRundown: false, circularBufferMB: 64, cancellationToken)
+            .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: false, circularBufferMB: 64, TimeSpan.FromSeconds(30), cancellationToken)
             .ConfigureAwait(false);
 
         var startedAt = DateTimeOffset.UtcNow;
@@ -509,7 +510,20 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
 
     private static string? ExtractWorkItemOrigin(TraceEvent traceEvent, ConcurrentDictionary<string, byte> notes)
     {
-        var stack = traceEvent.CallStack();
+        TraceCallStack? stack;
+        try
+        {
+            stack = traceEvent.CallStack();
+        }
+        catch (InvalidOperationException)
+        {
+            // A live EventPipeEventSource is not TraceLog-backed, so CallStack() throws. Swallowing
+            // here keeps ThreadPool event processing alive — otherwise the exception propagates out
+            // of the Dynamic.All callback and tears down source.Process() on the first enqueue event.
+            notes.TryAdd("ThreadPool work-item origins require a TraceLog-backed session; origins are unavailable.", 0);
+            return null;
+        }
+
         if (stack is null)
         {
             notes.TryAdd("ThreadPoolEnqueueWork did not carry call stacks in this session; work-item origins are unavailable.", 0);

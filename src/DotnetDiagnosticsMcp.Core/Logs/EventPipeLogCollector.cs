@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using DotnetDiagnosticsMcp.Core.Security;
+using DotnetDiagnosticsMcp.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Extensions.Logging;
@@ -71,7 +72,7 @@ public sealed partial class EventPipeLogCollector : ILogCollector
 
         var client = new DiagnosticsClient(processId);
         var session = await client
-            .StartEventPipeSessionAsync(providers, requestRundown: false, circularBufferMB: 64, cancellationToken)
+            .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: false, circularBufferMB: 64, TimeSpan.FromSeconds(30), cancellationToken)
             .ConfigureAwait(false);
 
         var startedAt = DateTimeOffset.UtcNow;
