@@ -94,6 +94,13 @@ public sealed class LocalProcessDiscovery : IProcessDiscovery
         {
             return false;
         }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // Windows: opening a handle to an elevated/protected process that published a
+            // diagnostic pipe throws Win32Exception("Access is denied."). Treat as not-alive so a
+            // single inaccessible PID can't abort the whole enumeration (Windows smoke-test finding).
+            return false;
+        }
     }
 
     private static bool IsLinuxProcessLeaderAlive(int pid)
@@ -212,6 +219,12 @@ public sealed class LocalProcessDiscovery : IProcessDiscovery
         }
         catch (InvalidOperationException)
         {
+            return null;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // Windows: elevated/protected process we cannot open. Skip silently rather than
+            // crashing discovery (Windows smoke-test finding).
             return null;
         }
     }

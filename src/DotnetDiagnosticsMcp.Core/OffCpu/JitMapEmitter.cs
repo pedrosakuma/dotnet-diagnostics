@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Memory;
+using DotnetDiagnosticsMcp.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Parsers;
@@ -84,7 +85,7 @@ public sealed class JitMapEmitter
         {
             var client = new DiagnosticsClient(processId);
             session = await client
-                .StartEventPipeSessionAsync(providers, requestRundown: true, circularBufferMB: 64, cancellationToken)
+                .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: true, circularBufferMB: 64, TimeSpan.FromSeconds(30), cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)

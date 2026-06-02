@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using DotnetDiagnosticsMcp.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
@@ -87,7 +88,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
 
         var client = new DiagnosticsClient(pid);
         var session = await client
-            .StartEventPipeSessionAsync(providers, requestRundown: true, circularBufferMB: 256, ct)
+            .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: true, circularBufferMB: 256, TimeSpan.FromSeconds(30), ct)
             .ConfigureAwait(false);
 
         var copyTask = Task.Run(async () =>

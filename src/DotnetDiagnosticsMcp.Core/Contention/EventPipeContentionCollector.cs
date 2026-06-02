@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using DotnetDiagnosticsMcp.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Parsers.Clr;
@@ -38,7 +39,7 @@ public sealed class EventPipeContentionCollector : IContentionCollector
 
         var client = new DiagnosticsClient(processId);
         var session = await client
-            .StartEventPipeSessionAsync(providers, requestRundown: false, circularBufferMB: 64, cancellationToken)
+            .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: false, circularBufferMB: 64, TimeSpan.FromSeconds(30), cancellationToken)
             .ConfigureAwait(false);
 
         var startedAt = DateTimeOffset.UtcNow;
@@ -182,7 +183,21 @@ public sealed class EventPipeContentionCollector : IContentionCollector
 
     private static CallSite ExtractCallSite(ContentionStartTraceData data, HashSet<string> notes)
     {
-        var stack = data.CallStack();
+        TraceCallStack? stack;
+        try
+        {
+            stack = data.CallStack();
+        }
+        catch (InvalidOperationException)
+        {
+            // A live EventPipeEventSource is not TraceLog-backed, so CallStack() throws
+            // ("Attempted to use TraceLog support on a non-TraceLog TraceEventSource"). Swallowing
+            // here keeps event capture working — without this guard the exception propagates out of
+            // the ContentionStart callback and tears down source.Process(), yielding zero events.
+            notes.Add("ContentionStart call stacks require a TraceLog-backed session; byCallSite falls back to '(unknown)'.");
+            return new CallSite(UnknownCallSite, UnknownModule);
+        }
+
         if (stack is null)
         {
             notes.Add("ContentionStart did not carry call stacks in this session; byCallSite falls back to '(unknown)'.");

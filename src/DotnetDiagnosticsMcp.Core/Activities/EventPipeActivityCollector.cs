@@ -3,6 +3,7 @@ using System.Diagnostics.Tracing;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using DotnetDiagnosticsMcp.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Extensions.Logging;
@@ -59,10 +60,11 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
 
         var client = new DiagnosticsClient(processId);
         var session = await client
-            .StartEventPipeSessionAsync(
+            .StartEventPipeSessionWithTimeoutAsync(
                 [new EventPipeProvider(ProviderName, EventLevel.Verbose, ProviderKeywords, providerArguments)],
                 requestRundown: false,
                 circularBufferMB: 64,
+                TimeSpan.FromSeconds(30),
                 cancellationToken)
             .ConfigureAwait(false);
 
