@@ -465,7 +465,12 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             activity.ParentId == outer.Id);
     }
 
-    [Fact(Skip = "Quarantined: crashes ubuntu-latest test host (EventPipe SampleProfiler). Tracked in #147.")]
+    // Quarantined on Linux CI only (native libcoreclr EventPipe SampleProfiler crash under
+    // full-suite load — see #147; the CI crash dump shows an intact managed heap, all tests
+    // passing, and no managed sampler frame active at the phantom teardown crash). Stays
+    // runnable locally and on Windows CI so the hotspot contract keeps coverage.
+    [Trait("Category", "Flaky")]
+    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler under full-suite load (intact heap, phantom teardown crash). Tracked in #147. Runnable locally and on Windows CI.", Timeout = 60_000)]
     public async Task CpuSampler_ProducesHotspots()
     {
         EnsureSampleRunning();
@@ -482,7 +487,11 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         result.Artifact.Root.Children.Should().NotBeEmpty("the call-tree artifact must capture at least one stack");
     }
 
-    [Fact(Skip = "Quarantined: crashes ubuntu-latest test host (EventPipe SampleProfiler). Tracked in #147.")]
+    // Quarantined on Linux CI only (same native libcoreclr EventPipe SampleProfiler crash
+    // family as #147). Stays runnable locally and on Windows CI so the source-resolution
+    // wiring contract keeps coverage.
+    [Trait("Category", "Flaky")]
+    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler under full-suite load (intact heap, phantom teardown crash). Tracked in #147. Runnable locally and on Windows CI.", Timeout = 60_000)]
     public async Task CpuSampler_ResolvesSourceLines_WhenEnabled()
     {
         EnsureSampleRunning();
@@ -504,7 +513,11 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         result.Artifact.ResolvedSources.Should().NotBeNull();
     }
 
-    [Fact(Skip = "Quarantined: crashes ubuntu-latest test host (EventPipe SampleProfiler). Tracked in #147.")]
+    // Quarantined on Linux CI only (same native libcoreclr EventPipe SampleProfiler crash
+    // family as #147). Stays runnable locally and on Windows CI so the MethodIdentity handoff
+    // contract keeps coverage.
+    [Trait("Category", "Flaky")]
+    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler under full-suite load (intact heap, phantom teardown crash). Tracked in #147. Runnable locally and on Windows CI.", Timeout = 60_000)]
     public async Task CpuSampler_EmitsMethodIdentities_ForUserCode()
     {
         EnsureSampleRunning();
