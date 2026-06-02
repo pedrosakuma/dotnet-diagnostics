@@ -31,6 +31,27 @@ public sealed record ThreadSnapshotQueryResult(
     public AsyncStallsView? AsyncStalls { get; init; }
     /// <summary>Echoes the thread id used by the <c>stack</c> view.</summary>
     public int? ThreadId { get; init; }
+    /// <summary>Populated for <c>resolve-address</c> (issue #275).</summary>
+    public IReadOnlyList<ResolvedAddressEntry>? ResolvedAddresses { get; init; }
+}
+
+/// <summary>
+/// One classified address returned by <c>query_snapshot(view="resolve-address")</c>. All numeric
+/// fields are rendered as hex strings so the wire format never surfaces a bare integer the LLM has
+/// to re-interpret. <see cref="Display"/> is always safe to show verbatim (issue #275).
+/// </summary>
+public sealed record ResolvedAddressEntry(
+    string Address,
+    string Kind,
+    string? Module,
+    string? ModulePath,
+    string? Rva,
+    string? BuildId,
+    bool? Readable,
+    string Display)
+{
+    /// <summary>Managed method identity when the address resolves to JIT/R2R code; null otherwise.</summary>
+    public DotnetDiagnosticsMcp.Core.Memory.MethodIdentity? ManagedMethod { get; init; }
 }
 
 public sealed record ThreadDeadlockCycle(

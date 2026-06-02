@@ -211,7 +211,7 @@ Visões disponíveis por `kind`:
 | `contention-snapshot` | `collect_events(kind="contention")` | `summary` (default), `byCallSite`, `byOwner` |
 | `db-snapshot` | `collect_events(kind="db")` | `summary` (default), `byCommand`, `n+1`, `connectionPool` |
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `object`, `gcroot`, `objsize`, `async`, `diff` |
-| `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool` |
+| `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
 | `cpu-sample` / `allocation-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` | `call-tree`, `diff` |
 
@@ -226,6 +226,17 @@ contrato de cada legado verbatim (RFC 0002 §4.1).
 and `allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second
 rates when the two capture windows use different durations and surface both raw + normalized
 metrics in each row.
+
+`view="resolve-address"` (thread-snapshot, issue #275) re-opens the snapshot origin (dump file or
+live pid) and classifies one or more addresses passed via `address` (comma-separated, decimal or
+`0x`-hex) into `module` (with `module`, `rva`, `buildId`), `managed` (with a `MethodIdentity`
+handoff), `mapped-non-module` (readable but outside any loaded module — JIT stub / anonymous map),
+or `unmapped-or-not-captured` (a freed hole or a region the dump did not capture). Numeric fields
+are rendered as hex strings and `Display` is always safe to show verbatim — the diagnostics surface
+never returns a bare pointer. Native/unresolved frames on every thread snapshot are enriched the
+same way at capture time (`AddressKind` / `Rva` / `BuildId` on each frame, `DisplayName` becomes
+`module+0x<rva>` or `<unmapped-or-not-captured 0x…>`). Hand the `(buildId, rva)` to
+`dotnet-native-mcp` for symbolication.
 
 > **Nota — truncação em `event-source`:** o coletor para de armazenar eventos
 > ao atingir `maxEvents`, mas continua contando o total. As views

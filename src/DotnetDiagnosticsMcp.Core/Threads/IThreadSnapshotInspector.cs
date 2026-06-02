@@ -198,7 +198,21 @@ public sealed record ManagedStackFrame(
     string? ModuleName,
     ulong InstructionPointer,
     ulong StackPointer,
-    MethodIdentity? Identity = null);
+    MethodIdentity? Identity = null)
+{
+    /// <summary>
+    /// Address classification for native/unresolved frames (issue #275): <c>module</c>,
+    /// <c>managed</c>, <c>mapped-non-module</c>, or <c>unmapped-or-not-captured</c>. Null for
+    /// ordinary managed frames where <see cref="Identity"/> already carries the answer.
+    /// </summary>
+    public string? AddressKind { get; init; }
+
+    /// <summary>Offset of <see cref="InstructionPointer"/> from the containing module's image base, when mapped.</summary>
+    public ulong? Rva { get; init; }
+
+    /// <summary>Lower-case hex build-id of the containing module, when available — advisory handoff to <c>dotnet-native-mcp</c>.</summary>
+    public string? BuildId { get; init; }
+}
 
 /// <summary>
 /// One held monitor / sync block (the closest thing ClrMD 3.x exposes to "locks").
