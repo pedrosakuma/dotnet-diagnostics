@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>DotnetDiagnosticsMcp.Cli</RootNamespace>
+    <AssemblyName>dotnet-diagnostics</AssemblyName>
+    <Description>Standalone one-shot diagnostics CLI for dotnet-diagnostics-mcp. References Core only — no MCP server, HTTP transport, or bearer auth. Attaches to a live .NET process over the diagnostic IPC socket and prints a result table (or the shared DiagnosticResult envelope with --json).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="DotnetDiagnosticsMcp.Cli.Tests" />
+  </ItemGroup>
+
+  <!-- Core reference ONLY. The acceptance bar for the #283 layering seam is that this project
+       never references DotnetDiagnosticsMcp.Server (asserted by NoServerReferenceTests). -->
+  <ItemGroup>
+    <ProjectReference Include="..\DotnetDiagnosticsMcp.Core\DotnetDiagnosticsMcp.Core.csproj" />
+  </ItemGroup>
+
+</Project>
