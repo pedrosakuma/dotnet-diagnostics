@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using DotnetDiagnosticsMcp.Core.Artifacts;
 using DotnetDiagnosticsMcp.Core.Hosting;
@@ -83,6 +84,15 @@ internal static class CliHost
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(stderr);
+
+        // Human summaries/hints are built in Core with `{x:F1}`/`{x:N0}` interpolation, which honours
+        // the ambient culture (e.g. pt-BR renders `cpu-usage=0,0%`). Pin the invariant culture so the
+        // CLI's textual output is locale-independent and reproducible, matching the --json path which
+        // already forces invariant (#301 #2). Idempotent — assigning the same invariant every run.
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+        CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
+        CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+        CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
 
         var options = CliOptions.Parse(args, out var parseError);
         if (parseError is not null)
