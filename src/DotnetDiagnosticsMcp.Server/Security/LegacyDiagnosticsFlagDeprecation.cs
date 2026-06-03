@@ -28,7 +28,7 @@ namespace DotnetDiagnosticsMcp.Server.Security;
 /// do X" — that responsibility moves to scoped bearer tokens.
 /// </para>
 /// </remarks>
-public sealed class LegacyDiagnosticsFlagDeprecation : IEventSourceDeprecationSink
+public sealed class LegacyDiagnosticsFlagDeprecation : IEventSourceDeprecationSink, ISymbolServerDeprecationSink
 {
     /// <summary>Public for assertions; kept verbatim in tests so any wording drift is caught.</summary>
     public const string SensitiveHeapValuesWarning =

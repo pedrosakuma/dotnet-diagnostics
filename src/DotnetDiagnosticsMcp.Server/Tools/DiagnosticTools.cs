@@ -3358,215 +3358,31 @@ public sealed class DiagnosticTools
     /// pattern of relying on a single deployment-wide allowlist for caller-level
     /// distinction is deprecated.
     /// </summary>
+    // Symbol-path validation lives in Core (UseCases/SymbolPathValidation) since #288 so the CLI and
+    // the MCP tools share one source of truth. This thin forward hoists the transport-specific bypass
+    // decision (the RFC 0001 `symbols-remote` scope) into a precomputed bool and adapts the Server's
+    // LegacyDiagnosticsFlagDeprecation singleton onto the host-neutral ISymbolServerDeprecationSink.
     private static DiagnosticResult<T>? ValidateSymbolPath<T>(
         SymbolServerAllowlist allowlist,
         string? symbolPath,
         IPrincipalAccessor? principalAccessor = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null)
-    {
-        if (principalAccessor?.Current?.HasExplicitScope("symbols-remote") == true)
-        {
-            return null;
-        }
-        var validation = allowlist.Validate(symbolPath);
-        if (validation.IsAllowed)
-        {
-            // RFC 0001 §7.3: only emit when a remote host was actually accepted (not for
-            // null / empty / pure local paths). Defers to SymbolServerAllowlist's own
-            // tokenizer so a local cache directory whose name contains "http://" is not
-            // a false positive.
-            if (deprecation is not null && SymbolServerAllowlist.ContainsRemoteUrl(symbolPath))
-            {
-                deprecation.NotifySymbolServerAllowlistBypass();
-            }
-            return null;
-        }
-        return DiagnosticResult.Fail<T>(
-            $"symbolPath references remote symbol server host '{validation.DeniedHost}' which is not on the allowlist.",
-            new DiagnosticError(
-                "SymbolServerNotAllowed",
-                "Remote symbol servers are denied by default. Add the host to `Diagnostics:SymbolServerAllowlist` (env: `Diagnostics__SymbolServerAllowlist__0=<host>`), grant the caller the `symbols-remote` scope, or drop the `srv*http(s)://…` segment and rely on the local symbol cache. Tracked by issue #165.",
-                validation.DeniedSegment));
-    }
+        => SymbolPathValidation.Validate<T>(
+            allowlist,
+            symbolPath,
+            principalAccessor?.Current?.HasExplicitScope("symbols-remote") == true,
+            deprecation);
 
-    /// <summary>
-    /// Wraps a tool body that attaches to a live process via ClrMD / EventPipe / dotnet-diagnostics
-    /// and translates known failure shapes into a structured <see cref="DiagnosticResult{T}"/>.
-    /// Without this, uncaught exceptions hit the MCP SDK envelope and the client only sees
-    /// "An error occurred invoking 'X'." — leaving the LLM blind to PTRACE/permission/process-exit
-    /// distinctions. See #32.
-    /// </summary>
-    private static async Task<DiagnosticResult<T>> GuardAttachAsync<T>(
+    // Attach-failure classification lives in Core (UseCases/AttachGuard) since #288. These thin
+    // forwards keep every existing call site (heap/dump/threads/bytes/sampling) unchanged while the
+    // CLI shares the same structured envelopes.
+    private static Task<DiagnosticResult<T>> GuardAttachAsync<T>(
         string tool,
         int? processId,
         Func<Task<DiagnosticResult<T>>> body,
         CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await body().ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            return ClassifyAttachFailure<T>(tool, processId, ex);
-        }
-    }
+        => AttachGuard.GuardAttachAsync(tool, processId, body, cancellationToken);
 
     private static DiagnosticResult<T> ClassifyAttachFailure<T>(string tool, int? processId, Exception ex)
-    {
-        var typeName = ex.GetType().FullName ?? ex.GetType().Name;
-        var message = ex.Message ?? "(no message)";
-        var pidHint = processId is int p && p > 0 ? $" (pid {p})" : string.Empty;
-
-        if (ex is ServerNotAvailableException)
-        {
-            return DiagnosticResult.Fail<T>(
-                $"{tool} could not reach the diagnostic socket{pidHint}.",
-                new DiagnosticError("EndpointUnavailable", message, typeName),
-                new NextActionHint("inspect_process", "Re-list processes. Common cause: sidecar UID mismatch with target, or process has exited."));
-        }
-
-        // ClrMD wraps Linux ptrace failures (errno EPERM/ESRCH) in ClrDiagnosticsException.
-        // Match on type-name-suffix to avoid taking a hard reference here. "operation not
-        // permitted" is the canonical EPERM wording; also walk inner exceptions because
-        // ClrMD often nests a Win32Exception with NativeErrorCode==1.
-        var isPtraceFailure = (typeName.EndsWith("ClrDiagnosticsException", StringComparison.Ordinal)
-                               && (message.Contains("PTRACE", StringComparison.OrdinalIgnoreCase)
-                                   || message.Contains("permission", StringComparison.OrdinalIgnoreCase)
-                                   || message.Contains("operation not permitted", StringComparison.OrdinalIgnoreCase)))
-                              || HasEpermInChain(ex);
-        if (isPtraceFailure)
-        {
-            // Probe the live host now so the error envelope carries the exact mitigation
-            // (e.g. "ptrace_scope=1 and sidecar lacks CAP_SYS_PTRACE") rather than the
-            // generic "check ptrace_scope/CAP_SYS_PTRACE/UID" boilerplate. The probe is
-            // cheap (two /proc reads on Linux) and pure on hot failure paths.
-            var ptrace = DotnetDiagnosticsMcp.Core.Capabilities.PtraceProbe.Detect();
-            var headline = ptrace.CanAttach
-                ? $"{tool} could not attach{pidHint}: ptrace was denied even though the sidecar's static capability probe expected attach to succeed ({ptrace.Reason}). " +
-                  "Likely cause: target process exited, runs under a different UID, or containers are in separate PID namespaces (use Docker '--pid=container:target' or K8s 'shareProcessNamespace: true')."
-                : $"{tool} could not attach{pidHint}: ptrace was denied — {ptrace.Reason}";
-
-            var hints = new List<NextActionHint>
-            {
-                new("inspect_process",
-                    "Re-check sidecar capabilities (CanAttachClrMD, AttachClrMdReason). " +
-                    "If CAP_SYS_PTRACE is granted, containers may be in separate PID namespaces — " +
-                    "use Docker '--pid=container:target' or K8s 'shareProcessNamespace: true'.",
-                    processId is int pidForCap && pidForCap > 0
-                        ? new Dictionary<string, object?> { ["view"] = "capabilities", ["processId"] = pidForCap }
-                        : new Dictionary<string, object?> { ["view"] = "capabilities" }),
-                new("collect_process_dump",
-                    "Fall back to dump-based workflow (collect_process_dump then inspect_heap/inspect_dump). " +
-                    "Dumps use the diagnostic IPC socket (no ptrace) and work across PID namespaces.",
-                    processId is int pp && pp > 0 ? new Dictionary<string, object?> { ["processId"] = pp } : null),
-            };
-
-            if (string.Equals(tool, "collect_thread_snapshot", StringComparison.Ordinal))
-            {
-                hints.Add(new NextActionHint(
-                    "collect_off_cpu_sample",
-                    "If ptrace cannot be granted, use the perf-replay fallback path tracked in issue #92 (short capture + thread-state inference).",
-                    processId is int pidForReplay && pidForReplay > 0 ? new Dictionary<string, object?> { ["processId"] = pidForReplay, ["durationSeconds"] = 5 } : null));
-            }
-
-            return DiagnosticResult.Fail<T>(
-                headline,
-                new DiagnosticError("PermissionDenied", message, typeName),
-                hints.ToArray());
-        }
-
-        if (ex is UnauthorizedAccessException)
-        {
-            // Enhanced hints covering both capability and PID namespace issues.
-            var accessHints = new List<NextActionHint>
-            {
-                new("inspect_process",
-                    "Verify UID alignment and capabilities. If CAP_SYS_PTRACE is granted but attach still fails, " +
-                    "containers may be in separate PID namespaces — use Docker '--pid=container:target' or K8s 'shareProcessNamespace: true'.",
-                    processId is int pid && pid > 0
-                        ? new Dictionary<string, object?> { ["view"] = "capabilities", ["processId"] = pid }
-                        : new Dictionary<string, object?> { ["view"] = "capabilities" }),
-                new("collect_process_dump",
-                    "Fall back to dump-based workflow: collect_process_dump then inspect_heap(source=\"dump\"). " +
-                    "Dumps use the diagnostic IPC socket (no ptrace) and work across PID namespaces.",
-                    processId is int pidForDump && pidForDump > 0
-                        ? new Dictionary<string, object?> { ["processId"] = pidForDump }
-                        : null),
-            };
-
-            if (string.Equals(tool, "collect_thread_snapshot", StringComparison.Ordinal))
-            {
-                accessHints.Add(new NextActionHint(
-                    "collect_sample",
-                    "When ptrace cannot be granted, use the perf-replay fallback tracked in issue #92.",
-                    processId is int pidForReplay && pidForReplay > 0
-                        ? new Dictionary<string, object?> { ["processId"] = pidForReplay, ["durationSeconds"] = 5 }
-                        : null));
-            }
-
-            return DiagnosticResult.Fail<T>(
-                $"{tool} was denied access{pidHint}.",
-                new DiagnosticError("PermissionDenied", message, typeName),
-                accessHints.ToArray());
-        }
-
-        if (ex is ExternalToolNotFoundException missingTool)
-        {
-            if (string.Equals(tool, "collect_thread_snapshot", StringComparison.Ordinal))
-            {
-                return DiagnosticResult.Fail<T>(
-                    $"{tool} cannot run{pidHint}: required external tool '{missingTool.ToolName}' is missing.",
-                    new DiagnosticError("ToolNotFound", message, typeName),
-                    new NextActionHint("inspect_process",
-                        "Re-check sidecar capabilities after installing elfutils (eu-stack).",
-                        processId is int pidForCap && pidForCap > 0 ? new Dictionary<string, object?> { ["processId"] = pidForCap } : null));
-            }
-
-            return DiagnosticResult.Fail<T>(
-                $"{tool} cannot run{pidHint}: required external tool '{missingTool.ToolName}' is missing.",
-                new DiagnosticError("ToolNotFound", message, typeName));
-        }
-
-        if (ex is DotnetDiagnosticsMcp.Core.Artifacts.ArtifactPathException artifactEx)
-        {
-            return DiagnosticResult.Fail<T>(
-                $"{tool} rejected the request: {artifactEx.Message}",
-                new DiagnosticError("InvalidArtifactPath", artifactEx.Message, artifactEx.ParameterName),
-                new NextActionHint(tool,
-                    "Re-issue with a relative sub-path under the artifact root, or omit outputDirectory to use the default."));
-        }
-
-        if (ex is ArgumentException or InvalidOperationException)
-        {
-            return DiagnosticResult.Fail<T>(
-                $"{tool} rejected the request{pidHint}: {message}",
-                new DiagnosticError("InvalidArgument", message, typeName));
-        }
-
-        return DiagnosticResult.Fail<T>(
-            $"{tool} failed{pidHint}: {message}",
-            new DiagnosticError("Internal", message, typeName));
-    }
-
-    private static bool HasEpermInChain(Exception ex)
-    {
-        for (Exception? cur = ex; cur is not null; cur = cur.InnerException)
-        {
-            if (cur is System.ComponentModel.Win32Exception w32 && w32.NativeErrorCode == 1 /* EPERM */)
-            {
-                return true;
-            }
-            if (cur.Message is string m
-                && m.Contains("operation not permitted", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
+        => AttachGuard.ClassifyAttachFailure<T>(tool, processId, ex);
 }
