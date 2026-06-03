@@ -1,8 +1,21 @@
 using System.Globalization;
 using System.Text;
 using DotnetDiagnosticsMcp.Core;
+using DotnetDiagnosticsMcp.Core.Activities;
 using DotnetDiagnosticsMcp.Core.Capabilities;
+using DotnetDiagnosticsMcp.Core.Collection;
+using DotnetDiagnosticsMcp.Core.Contention;
+using DotnetDiagnosticsMcp.Core.Counters;
+using DotnetDiagnosticsMcp.Core.Db;
+using DotnetDiagnosticsMcp.Core.Drilldown;
+using DotnetDiagnosticsMcp.Core.EventSources;
+using DotnetDiagnosticsMcp.Core.Exceptions;
+using DotnetDiagnosticsMcp.Core.Gc;
+using DotnetDiagnosticsMcp.Core.Jit;
+using DotnetDiagnosticsMcp.Core.Logs;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
+using DotnetDiagnosticsMcp.Core.Security;
+using DotnetDiagnosticsMcp.Core.ThreadPool;
 using DotnetDiagnosticsMcp.Core.UseCases;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -28,6 +41,25 @@ internal static class CliCommands
     {
         "processes",
         "capabilities",
+        "collect",
+    };
+
+    /// <summary>
+    /// EventPipe collection kinds accepted by the <c>collect</c> command (issue #288 PR2). Mirrors
+    /// the MCP <c>collect_events</c> discriminator set so both front-ends accept the same kinds.
+    /// </summary>
+    public static readonly IReadOnlyList<string> CollectKinds = new[]
+    {
+        "counters",
+        "exceptions",
+        "gc",
+        "event_source",
+        "activities",
+        "logs",
+        "jit",
+        "threadpool",
+        "contention",
+        "db",
     };
 
     public static async Task<CliCommandResult> RunAsync(
@@ -42,8 +74,46 @@ internal static class CliCommands
         {
             "processes" => Processes(services),
             "capabilities" => await CapabilitiesAsync(services, options, cancellationToken).ConfigureAwait(false),
+            "collect" => await CollectAsync(services, options, cancellationToken).ConfigureAwait(false),
             _ => throw new ArgumentException($"Unknown command '{options.Command}'.", nameof(options)),
         };
+    }
+
+    /// <summary>
+    /// Validates the <c>collect</c>-specific options before the host is built so usage problems
+    /// surface as exit code 2 (not a thrown exception or a runtime error envelope). Returns
+    /// <c>true</c> when the options are well-formed; otherwise sets <paramref name="error"/>.
+    /// </summary>
+    public static bool TryValidateCollect(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(options.Kind))
+        {
+            error = "The 'collect' command requires --kind <kind>.";
+            return false;
+        }
+
+        if (!CollectKinds.Contains(options.Kind, StringComparer.Ordinal))
+        {
+            error = $"Unknown collect kind '{options.Kind}'. Valid kinds: {string.Join(", ", CollectKinds)}.";
+            return false;
+        }
+
+        if (options.Kind == "event_source" && options.Providers.Count == 0)
+        {
+            error = "kind=event_source requires --provider <EventSource name>.";
+            return false;
+        }
+
+        if (options.Depth is not null && !TryParseDepth(options.Depth, out _))
+        {
+            error = $"Unknown --depth '{options.Depth}'. Valid values: summary, detail, raw.";
+            return false;
+        }
+
+        return true;
     }
 
     private static CliCommandResult Processes(IServiceProvider services)
@@ -95,6 +165,103 @@ internal static class CliCommands
 
         return new CliCommandResult(result.IsError, result.Cancelled, result, human);
     }
+
+    private static async Task<CliCommandResult> CollectAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+    {
+        var resolver = services.GetRequiredService<IProcessContextResolver>();
+        var handles = services.GetRequiredService<IDiagnosticHandleStore>();
+        var pid = options.Pid;
+        // Mirror the MCP collect_events per-kind duration defaults (counters: 5; all others: 10).
+        var duration = options.DurationSeconds ?? (options.Kind == "counters" ? 5 : 10);
+        // The CLI is a stateless one-shot: the in-memory handle store is disposed when the command
+        // returns, so a drilldown handle can never be queried in a follow-up invocation. Default to
+        // Detail so the captured records stay inline (and land in --json) instead of being trimmed
+        // behind an unreachable handle. An explicit --depth still wins.
+        var depth = SamplingDepth.Detail;
+        if (options.Depth is not null && TryParseDepth(options.Depth, out var parsedDepth))
+        {
+            depth = parsedDepth;
+        }
+
+        return options.Kind switch
+        {
+            "counters" => Wrap(await EventCollectionUseCases.SnapshotCounters(
+                services.GetRequiredService<ICounterCollector>(), resolver, handles,
+                pid, duration, NullIfEmptyArray(options.Providers), NullIfEmptyArray(options.Meters),
+                options.IntervalSeconds ?? 1, 1000, depth, cancellationToken).ConfigureAwait(false)),
+
+            "exceptions" => Wrap(await EventCollectionUseCases.CollectExceptions(
+                services.GetRequiredService<IExceptionCollector>(), resolver, handles,
+                pid, duration, options.MaxEvents ?? 100, depth, cancellationToken).ConfigureAwait(false)),
+
+            "gc" => Wrap(await EventCollectionUseCases.CollectGcEvents(
+                services.GetRequiredService<IGcCollector>(), resolver, handles,
+                pid, duration, options.MaxEvents ?? 200, depth, cancellationToken).ConfigureAwait(false)),
+
+            "logs" => Wrap(await EventCollectionUseCases.CollectLogs(
+                services.GetRequiredService<ILogCollector>(), resolver, handles,
+                pid, duration, NullIfEmptyList(options.Categories), options.MinLevel ?? "Information",
+                options.MaxEvents ?? 500, 4096, depth, cancellationToken).ConfigureAwait(false)),
+
+            "jit" => Wrap(await EventCollectionUseCases.CollectJit(
+                services.GetRequiredService<IJitCollector>(), resolver, handles,
+                pid, duration, depth, cancellationToken).ConfigureAwait(false)),
+
+            "threadpool" => Wrap(await EventCollectionUseCases.CollectThreadPool(
+                services.GetRequiredService<IThreadPoolCollector>(), resolver, handles,
+                pid, duration, depth, cancellationToken).ConfigureAwait(false)),
+
+            "contention" => Wrap(await EventCollectionUseCases.CollectContention(
+                services.GetRequiredService<IContentionCollector>(), resolver, handles,
+                pid, duration, depth, cancellationToken).ConfigureAwait(false)),
+
+            "db" => Wrap(await EventCollectionUseCases.CollectDb(
+                services.GetRequiredService<IDbCollector>(), resolver, handles,
+                pid, duration, options.IntervalSeconds ?? 1, depth, cancellationToken).ConfigureAwait(false)),
+
+            "activities" => Wrap(await EventCollectionUseCases.CollectActivities(
+                services.GetRequiredService<IActivityCollector>(), resolver, handles,
+                pid, NullIfEmptyList(options.Sources), duration, options.MaxEvents ?? 200,
+                cancellationToken).ConfigureAwait(false)),
+
+            "event_source" => Wrap(await EventCollectionUseCases.CollectEventSource(
+                services.GetRequiredService<IEventSourceCollector>(), resolver, handles,
+                services.GetRequiredService<EventSourceAllowlist>(),
+                services.GetRequiredService<SensitiveValueGate>(),
+                // The CLI runs as the local operator with no bearer principal; grant the same
+                // posture the stdio root accessor gives the MCP server (eventsource-any). Reaching a
+                // non-allowlisted provider still requires the explicit --unsafe-provider opt-in.
+                principalAllowsEventSourceAny: true,
+                options.Providers[0], pid, duration, keywords: -1, eventLevel: 5,
+                options.MaxEvents ?? 200, depth, options.UnsafeProvider, deprecation: null,
+                cancellationToken).ConfigureAwait(false)),
+
+            _ => throw new ArgumentException($"Unknown collect kind '{options.Kind}'.", nameof(options)),
+        };
+    }
+
+    private static CliCommandResult Wrap<T>(DiagnosticResult<T> result) =>
+        new(result.IsError, result.Cancelled, result, RenderEnvelope<T>(result, static (_, _) => { }));
+
+    private static bool TryParseDepth(string? value, out SamplingDepth depth)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            depth = SamplingDepth.Summary;
+            return true;
+        }
+
+        return Enum.TryParse(value, ignoreCase: true, out depth) && Enum.IsDefined(depth);
+    }
+
+    private static string[]? NullIfEmptyArray(IReadOnlyList<string> values) =>
+        values.Count == 0 ? null : values.ToArray();
+
+    private static IReadOnlyList<string>? NullIfEmptyList(IReadOnlyList<string> values) =>
+        values.Count == 0 ? null : values;
 
     /// <summary>
     /// Renders the host-neutral parts of any <see cref="DiagnosticResult{T}"/> (summary, error,

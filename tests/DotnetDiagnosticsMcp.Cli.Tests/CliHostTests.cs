@@ -16,6 +16,7 @@ public sealed class CliHostTests
         stdout.Should().Contain("dotnet-diagnostics");
         stdout.Should().Contain("processes");
         stdout.Should().Contain("capabilities");
+        stdout.Should().Contain("collect");
         stderr.Should().BeEmpty();
     }
 
