@@ -238,4 +238,72 @@ public sealed class CliOptionsTests
         options.Should().BeNull();
         error.Should().Contain("requires a value");
     }
+
+    [Fact]
+    public void Parse_GetBytesModuleFlags_AreCaptured()
+    {
+        var options = CliOptions.Parse(
+            new[] { "get-bytes", "--kind", "module", "--pid", "1234", "--mvid", "11112222-3333-4444-5555-666677778888", "--asset", "pdb", "--out", "./app.dll" },
+            out var error);
+
+        error.Should().BeNull();
+        options!.Command.Should().Be("get-bytes");
+        options.Kind.Should().Be("module");
+        options.Pid.Should().Be(1234);
+        options.Mvid.Should().Be("11112222-3333-4444-5555-666677778888");
+        options.Asset.Should().Be("pdb");
+        options.OutDir.Should().Be("./app.dll");
+    }
+
+    [Fact]
+    public void Parse_GetBytesDumpFlags_AreCaptured()
+    {
+        var options = CliOptions.Parse(
+            new[] { "get-bytes", "--kind", "dump", "--dump-file", "./app.dmp", "--out", "./copy.dmp" },
+            out var error);
+
+        error.Should().BeNull();
+        options!.Command.Should().Be("get-bytes");
+        options.Kind.Should().Be("dump");
+        options.DumpFile.Should().Be("./app.dmp");
+        options.OutDir.Should().Be("./copy.dmp");
+    }
+
+    [Fact]
+    public void Parse_QueryFlags_AreCaptured()
+    {
+        var options = CliOptions.Parse(
+            new[] { "query", "--handle", "h-123", "--view", "top-types" },
+            out var error);
+
+        error.Should().BeNull();
+        options!.Command.Should().Be("query");
+        options.Handle.Should().Be("h-123");
+        options.View.Should().Be("top-types");
+    }
+
+    [Theory]
+    [InlineData("--mvid")]
+    [InlineData("--asset")]
+    [InlineData("--handle")]
+    [InlineData("--view")]
+    public void Parse_NewFlagsMissingValue_ReturnError(string flag)
+    {
+        var options = CliOptions.Parse(new[] { "get-bytes", flag }, out var error);
+
+        options.Should().BeNull();
+        error.Should().Contain("requires a value");
+    }
+
+    [Fact]
+    public void Parse_GetBytesDefaults_AreNull()
+    {
+        var options = CliOptions.Parse(new[] { "get-bytes" }, out var error);
+
+        error.Should().BeNull();
+        options!.Mvid.Should().BeNull();
+        options.Asset.Should().BeNull();
+        options.Handle.Should().BeNull();
+        options.View.Should().BeNull();
+    }
 }

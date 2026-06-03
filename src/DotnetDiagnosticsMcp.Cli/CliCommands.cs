@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using DotnetDiagnosticsMcp.Core;
 using DotnetDiagnosticsMcp.Core.Activities;
+using DotnetDiagnosticsMcp.Core.Bytes;
 using DotnetDiagnosticsMcp.Core.Capabilities;
 using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.Contention;
@@ -45,10 +46,18 @@ internal static class CliCommands
         "collect",
         "inspect-heap",
         "dump",
+        "query",
+        "get-bytes",
     };
 
     /// <summary>Heap-snapshot sources accepted by the <c>inspect-heap</c> command (issue #288 PR3b).</summary>
     public static readonly IReadOnlyList<string> HeapSources = new[] { "live", "dump" };
+
+    /// <summary>Artifact kinds accepted by the <c>get-bytes</c> command (issue #288 PR4).</summary>
+    public static readonly IReadOnlyList<string> ByteKinds = new[] { "module", "dump" };
+
+    /// <summary>Module assets accepted by <c>get-bytes --kind module</c> (issue #288 PR4).</summary>
+    public static readonly IReadOnlyList<string> ByteAssets = new[] { "pe", "pdb" };
 
     /// <summary>Dump types accepted by the <c>dump</c> command (mirrors <see cref="ProcessDumpType"/>).</summary>
     public static readonly IReadOnlyList<string> DumpTypes = new[] { "Mini", "Triage", "WithHeap", "Full" };
@@ -86,6 +95,8 @@ internal static class CliCommands
             "collect" => await CollectAsync(services, options, cancellationToken).ConfigureAwait(false),
             "inspect-heap" => await InspectHeapAsync(services, options, cancellationToken).ConfigureAwait(false),
             "dump" => await DumpAsync(services, options, cancellationToken).ConfigureAwait(false),
+            "query" => Query(),
+            "get-bytes" => await GetBytesAsync(services, options, cancellationToken).ConfigureAwait(false),
             _ => throw new ArgumentException($"Unknown command '{options.Command}'.", nameof(options)),
         };
     }
@@ -206,6 +217,79 @@ internal static class CliCommands
         {
             error = $"Unknown --dump-type '{options.DumpType}'. Valid values: {string.Join(", ", DumpTypes)}.";
             return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Validates the <c>get-bytes</c>-specific options before the host is built. Returns <c>true</c>
+    /// when well-formed; otherwise sets <paramref name="error"/>. <c>get-bytes</c> always materialises
+    /// the artifact to a file, so <c>--out &lt;file&gt;</c> is mandatory.
+    /// </summary>
+    public static bool TryValidateGetBytes(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(options.Kind))
+        {
+            error = "The 'get-bytes' command requires --kind <module|dump>.";
+            return false;
+        }
+
+        if (!ByteKinds.Contains(options.Kind, StringComparer.Ordinal))
+        {
+            error = $"Unknown get-bytes kind '{options.Kind}'. Valid kinds: {string.Join(", ", ByteKinds)}.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(options.OutDir))
+        {
+            error = "The 'get-bytes' command requires --out <file> (the destination the artifact is written to).";
+            return false;
+        }
+
+        if (options.Kind == "module")
+        {
+            if (string.IsNullOrWhiteSpace(options.Mvid))
+            {
+                error = "get-bytes --kind module requires --mvid <module-version-id>.";
+                return false;
+            }
+
+            if (!Guid.TryParse(options.Mvid, out _))
+            {
+                error = $"--mvid '{options.Mvid}' is not a valid GUID.";
+                return false;
+            }
+
+            if (options.Asset is not null && !ByteAssets.Contains(options.Asset, StringComparer.Ordinal))
+            {
+                error = $"Unknown --asset '{options.Asset}'. Valid values: {string.Join(", ", ByteAssets)}.";
+                return false;
+            }
+
+            if (options.DumpFile is not null)
+            {
+                error = "get-bytes --kind module does not accept --dump-file (that is for --kind dump).";
+                return false;
+            }
+        }
+        else
+        {
+            // kind == dump
+            if (string.IsNullOrWhiteSpace(options.DumpFile))
+            {
+                error = "get-bytes --kind dump requires --dump-file <path>.";
+                return false;
+            }
+
+            if (options.Pid is not null)
+            {
+                error = "get-bytes --kind dump does not accept --pid (the dump is offline).";
+                return false;
+            }
         }
 
         return true;
@@ -409,6 +493,81 @@ internal static class CliCommands
                 sb.AppendLine();
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  file  : {dump.FilePath}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  size  : {dump.FileSizeBytes:N0} bytes");
+            }
+        });
+        return new CliCommandResult(result.IsError, result.Cancelled, result, human);
+    }
+
+    /// <summary>
+    /// The <c>query</c> drill-down command. Drill-down handles are MCP-session scoped and the
+    /// standalone CLI is a stateless one-shot (per the #286 persistence decision: cheap inline
+    /// summaries only, no server-side handle store survives the process), so there is nothing to
+    /// query in a follow-up invocation. Returns a structured <c>NotSupported</c> envelope (exit 1)
+    /// that explains the limitation rather than pretending to honour <c>--handle</c>/<c>--view</c>.
+    /// </summary>
+    private static CliCommandResult Query()
+    {
+        var result = DiagnosticResult.Fail<object>(
+            "The 'query' drill-down command is not supported by the one-shot CLI.",
+            new DiagnosticError(
+                "NotSupported",
+                "Drill-down handles are scoped to a live MCP session; the standalone CLI is a stateless one-shot "
+                + "and emits its full result inline on the originating command (use --json / --depth detail). "
+                + "Run the MCP server if you need handle-based drill-down.",
+                "one-shot-cli"),
+            new NextActionHint("collect", "Re-run the originating command with --depth detail (or --json) to get the full result inline."));
+
+        var human = RenderEnvelope<object>(result, static (_, _) => { });
+        return new CliCommandResult(result.IsError, result.Cancelled, result, human);
+    }
+
+    private static async Task<CliCommandResult> GetBytesAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+    {
+        // Validated before the host was built; --out is guaranteed present and is the destination file.
+        var outputPath = options.OutDir!;
+        // The CLI runs as the local operator and carries no bearer principal; grant the literal
+        // 'module-bytes-read' scope the same way the stdio root accessor does for the MCP server.
+        const bool principalAllowsLiteralScope = true;
+        // Use the largest chunk the readers permit so a big artifact takes as few re-attaches as possible.
+        var maxBytes = FileChunkReader.MaxChunkBytes;
+
+        if (options.Kind == "dump")
+        {
+            var dumpSource = services.GetRequiredService<IDumpByteSource>();
+            // CliHost pointed the artifact root at the dump file's directory, so a relative file name
+            // resolves under it (SafeArtifactPath rejects anything outside the root).
+            var dumpResult = await ByteMaterializationUseCases.MaterializeDumpBytes(
+                dumpSource, principalAllowsLiteralScope,
+                Path.GetFileName(options.DumpFile!), outputPath, maxBytes,
+                logger: null, principalName: null, cancellationToken).ConfigureAwait(false);
+            return WrapMaterialization(dumpResult);
+        }
+
+        var moduleSource = services.GetRequiredService<IModuleByteSource>();
+        var resolver = services.GetRequiredService<IProcessContextResolver>();
+        var moduleResult = await ByteMaterializationUseCases.MaterializeModuleBytes(
+            moduleSource, resolver, principalAllowsLiteralScope,
+            options.Mvid!, options.Asset ?? "pe", options.Pid, outputPath, maxBytes,
+            logger: null, principalName: null, cancellationToken).ConfigureAwait(false);
+        return WrapMaterialization(moduleResult);
+    }
+
+    private static CliCommandResult WrapMaterialization(DiagnosticResult<ByteMaterialization> result)
+    {
+        var human = RenderEnvelope<ByteMaterialization>(result, static (sb, data) =>
+        {
+            sb.AppendLine();
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  asset  : {data.Asset}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  source : {data.SourcePath}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  output : {data.OutputPath}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  size   : {data.TotalBytes:N0} bytes");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  sha256 : {data.Sha256}");
+            if (!string.IsNullOrWhiteSpace(data.CompanionPdbPath))
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  pdb    : {data.CompanionPdbPath}");
             }
         });
         return new CliCommandResult(result.IsError, result.Cancelled, result, human);

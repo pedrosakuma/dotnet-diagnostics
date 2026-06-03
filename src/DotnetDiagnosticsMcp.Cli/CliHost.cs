@@ -1,4 +1,5 @@
 using System.Text.Json;
+using DotnetDiagnosticsMcp.Core.Artifacts;
 using DotnetDiagnosticsMcp.Core.Hosting;
 using DotnetDiagnosticsMcp.Core.Security;
 using DotnetDiagnosticsMcp.Core.Symbols;
@@ -138,6 +139,14 @@ internal static class CliHost
             return 2;
         }
 
+        if (options.Command == "get-bytes" && !CliCommands.TryValidateGetBytes(options, out var getBytesError))
+        {
+            await stderr.WriteLineAsync(getBytesError).ConfigureAwait(false);
+            await stderr.WriteLineAsync().ConfigureAwait(false);
+            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+            return 2;
+        }
+
         using var host = BuildHost(options);
 
         try
@@ -175,19 +184,6 @@ internal static class CliHost
 
     private static IHost BuildHost(CliOptions options)
     {
-        // `dump --out <dir>` selects where the dump file lands. The Core dumper treats its
-        // outputDirectory argument as a *relative* sub-path under the artifact root and rejects
-        // absolute paths, so the CLI maps --out onto the artifact root itself (resolved absolute) and
-        // passes a null sub-path. EnvironmentArtifactRootProvider reads this env var once on
-        // construction; setting it here (before AddDiagnosticCoreServices resolves the singleton) is
-        // safe for a one-shot process.
-        if (!string.IsNullOrWhiteSpace(options.OutDir))
-        {
-            Environment.SetEnvironmentVariable(
-                DotnetDiagnosticsMcp.Core.Artifacts.EnvironmentArtifactRootProvider.EnvironmentVariableName,
-                Path.GetFullPath(options.OutDir));
-        }
-
         // Pass NO command-line args to the host builder: the CLI command/flags are not configuration
         // and the default command-line config provider rejects bare positionals like "processes".
         var builder = Host.CreateApplicationBuilder(Array.Empty<string>());
@@ -213,7 +209,47 @@ internal static class CliHost
         var configuredSymbolPath = Environment.GetEnvironmentVariable(SymbolPathBuilder.McpSymbolPathEnvironmentVariable);
         builder.Services.AddDiagnosticCoreServices(securityOptions, configuredSymbolPath);
 
+        // Point the artifact sandbox at a command-specific directory by overriding the default
+        // EnvironmentArtifactRootProvider with an explicit one (the LAST IArtifactRootProvider
+        // registration wins for GetRequiredService). This replaces mutating the process-global
+        // MCP_ARTIFACT_ROOT env var, which would leak across commands sharing the process (e.g. tests).
+        var artifactRoot = ResolveArtifactRoot(options);
+        if (artifactRoot is not null)
+        {
+            builder.Services.AddSingleton<IArtifactRootProvider>(new FixedArtifactRootProvider(artifactRoot));
+        }
+
         return builder.Build();
+    }
+
+    /// <summary>
+    /// Resolves the command-specific artifact-sandbox root, or <c>null</c> to keep the default
+    /// (temp-dir / <c>MCP_ARTIFACT_ROOT</c>) provider.
+    /// <list type="bullet">
+    ///   <item><c>dump --out &lt;dir&gt;</c>: the dump lands directly in the root, so the root IS
+    ///   <c>--out</c> (resolved absolute; the handler passes a null sub-path).</item>
+    ///   <item><c>get-bytes --kind dump --dump-file &lt;path&gt;</c>: the source dump must resolve
+    ///   under the root, so the root is the dump file's directory (the handler passes its file name).</item>
+    /// </list>
+    /// <c>get-bytes --kind module</c> writes its <c>--out</c> file directly (no sandbox), so it needs
+    /// no override.
+    /// </summary>
+    private static string? ResolveArtifactRoot(CliOptions options)
+    {
+        if (options.Command == "dump" && !string.IsNullOrWhiteSpace(options.OutDir))
+        {
+            return Path.GetFullPath(options.OutDir);
+        }
+
+        if (options.Command == "get-bytes"
+            && options.Kind == "dump"
+            && !string.IsNullOrWhiteSpace(options.DumpFile))
+        {
+            var fullDumpPath = Path.GetFullPath(options.DumpFile);
+            return Path.GetDirectoryName(fullDumpPath) ?? Directory.GetCurrentDirectory();
+        }
+
+        return null;
     }
 
     internal const string Usage =
@@ -229,6 +265,8 @@ internal static class CliHost
           collect                       Open an EventPipe session and collect events (--kind required).
           inspect-heap                  Walk the managed heap of a live process or a .dmp (--source live|dump).
           dump                          Write a process dump to disk (requires --confirm).
+          query                         Drill-down query (unsupported in the one-shot CLI — see notes).
+          get-bytes                     Materialise a module (PE/PDB) or dump file to disk (--out required).
 
         Options:
           -p, --pid <int>               Target OS process id (auto-resolved when only one is visible).
@@ -266,6 +304,20 @@ internal static class CliHost
               --out <dir>               Directory to write the dump into (default: temp artifact root).
               --confirm                 Required to actually write; without it a preview is returned.
 
+        get-bytes options:
+              --kind <module|dump>      Required. Artifact to materialise.
+              --out <file>              Required. Destination file the artifact is written to.
+              --mvid <guid>             --kind module: module version id (GUID) to fetch.
+              --asset <pe|pdb>          --kind module: artifact within the module (default pe).
+              --dump-file <path>        --kind dump: path to the source .dmp to copy out.
+
+        query options:
+              --handle <id>             Drill-down handle (accepted but not honoured — see note).
+              --view <name>             Drill-down view (accepted but not honoured — see note).
+          Note: drill-down handles are MCP-session scoped; the one-shot CLI emits its full result
+          inline on the originating command (use --depth detail / --json). 'query' always returns a
+          NotSupported envelope (exit 1).
+
         Examples:
           dotnet-diagnostics processes
           dotnet-diagnostics capabilities --pid 1234
@@ -276,5 +328,7 @@ internal static class CliHost
           dotnet-diagnostics inspect-heap --pid 1234 --top-types 30
           dotnet-diagnostics inspect-heap --source dump --dump-file ./app.dmp
           dotnet-diagnostics dump --pid 1234 --dump-type WithHeap --out ./dumps --confirm
+          dotnet-diagnostics get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll
+          dotnet-diagnostics get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
         """;
 }
