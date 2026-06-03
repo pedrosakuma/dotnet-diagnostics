@@ -11,6 +11,7 @@ using DotnetDiagnosticsMcp.Core.Jit;
 using DotnetDiagnosticsMcp.Core.Logs;
 using DotnetDiagnosticsMcp.Core.Exceptions;
 using DotnetDiagnosticsMcp.Core.Gc;
+using DotnetDiagnosticsMcp.Core.Hosting;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Security;
 using DotnetDiagnosticsMcp.Core.Symbols;
@@ -36,8 +37,12 @@ namespace DotnetDiagnosticsMcp.Server.Hosting;
 internal static class DiagnosticServiceRegistration
 {
     /// <summary>
-    /// Registers every Core collector / planner / store the tool layer depends on. Idempotent
-    /// per IServiceCollection; safe to call from both WebApplicationBuilder and HostApplicationBuilder.
+    /// Registers every Core collector / planner / store the tool layer depends on, by delegating
+    /// to the host-neutral <see cref="DiagnosticCoreServiceRegistration.AddDiagnosticCoreServices"/>
+    /// (#284) and then adding the few registrations that intentionally stay host-specific (the
+    /// legacy-flag deprecation singleton, the MCP task store, and the handle eviction hosted
+    /// service). Idempotent per IServiceCollection; safe to call from both WebApplicationBuilder
+    /// and HostApplicationBuilder.
     /// </summary>
     public static IServiceCollection AddDiagnosticCoreServices(this IServiceCollection services, string? configuredSymbolPath = null, IConfiguration? configuration = null)
     {
@@ -45,76 +50,22 @@ internal static class DiagnosticServiceRegistration
 
         // B4 security gates (issue #165). Bound from the `Diagnostics` configuration
         // section; B5 (issue #166) will retrofit these into the per-tool scope system.
+        // Binding lives here (Server) so Core stays free of a Configuration dependency;
+        // the bound options are handed to the Core registration below.
         var securityOptions = new SecurityOptions();
         configuration?.GetSection(SecurityOptions.SectionName).Bind(securityOptions);
-        services.AddSingleton(securityOptions);
-        services.AddSingleton<SensitiveDataRedactor>(_ => new SensitiveDataRedactor(securityOptions));
-        services.AddSingleton<SensitiveValueGate>(_ => new SensitiveValueGate(securityOptions));
-        services.AddSingleton<EventSourceAllowlist>(_ => new EventSourceAllowlist(securityOptions));
-        services.AddSingleton<SymbolServerAllowlist>(_ => new SymbolServerAllowlist(securityOptions));
+
+        // The entire Core diagnostic engine (samplers, collectors, security gates, stores)
+        // is registered by the host-neutral Core entry point (#284). Everything below is the
+        // small set of registrations that intentionally stay host-specific.
+        services.AddDiagnosticCoreServices(securityOptions, configuredSymbolPath);
+
         // B5.4 / RFC 0001 §7.3 — once-per-process deprecation warnings when a legacy
         // Diagnostics:Allow* flag is the path that unlocks a sensitive operation for a
         // principal lacking the matching modifier scope. Singleton so the once-flags
-        // survive across requests.
+        // survive across requests. Server-owned (not a Core type).
         services.AddSingleton<Security.LegacyDiagnosticsFlagDeprecation>();
 
-        services.AddSingleton(new SymbolPathBuilder(configuredSymbolPath));
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Artifacts.IArtifactRootProvider, DotnetDiagnosticsMcp.Core.Artifacts.EnvironmentArtifactRootProvider>();
-        services.AddSingleton<IProcessDiscovery, LocalProcessDiscovery>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Container.IContainerSignalsCollector, DotnetDiagnosticsMcp.Core.Container.CgroupV2SignalsCollector>();
-        services.AddSingleton<ICapabilityDetector, CapabilityDetector>();
-        services.AddSingleton<ISessionTargetBindingStore, MemorySessionTargetBindingStore>();
-        services.AddSingleton<IProcessContextResolver, ProcessContextResolver>();
-        services.AddSingleton<ICounterCollector, EventPipeCounterCollector>();
-        services.AddSingleton<MvidReader>();
-        services.AddSingleton<FileChunkReader>();
-        services.AddSingleton<ClrMdMethodInstantiationEnricher>();
-        services.AddSingleton<EventPipeCpuSampler>();
-        services.AddSingleton<EventPipeAllocationSampler>();
-        services.AddSingleton<PerfNativeAotCpuSampler>();
-        services.AddSingleton<EtwNativeAotCpuSampler>();
-        services.AddSingleton<ICpuSampler, RoutingCpuSampler>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.OffCpu.PerfSchedOffCpuSampler>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.OffCpu.EtwOffCpuSampler>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.OffCpu.IOffCpuSampler, DotnetDiagnosticsMcp.Core.OffCpu.RoutingOffCpuSampler>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.NativeAlloc.PerfNativeAllocSampler>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.NativeAlloc.INativeAllocSampler>(
-            sp => sp.GetRequiredService<DotnetDiagnosticsMcp.Core.NativeAlloc.PerfNativeAllocSampler>());
-        services.AddSingleton<IExceptionCollector, EventPipeExceptionCollector>();
-        services.AddSingleton<IGcCollector, EventPipeGcCollector>();
-        services.AddSingleton<IEventSourceCollector, EventPipeEventSourceCollector>();
-        services.AddSingleton<IActivityCollector, EventPipeActivityCollector>();
-        services.AddSingleton<ILogCollector, EventPipeLogCollector>();
-        services.AddSingleton<IJitCollector, EventPipeJitCollector>();
-        services.AddSingleton<IThreadPoolCollector, EventPipeThreadPoolCollector>();
-        services.AddSingleton<IContentionCollector, EventPipeContentionCollector>();
-        services.AddSingleton<IDbCollector, EventPipeDbCollector>();
-        services.AddSingleton<IProcessDumper, DiagnosticsClientDumper>();
-        services.AddSingleton<IModuleByteSource, ClrMdModuleByteSource>();
-        services.AddSingleton<IDumpByteSource, FileSystemDumpByteSource>();
-        services.AddSingleton<IDumpInspector, ClrMdDumpInspector>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.ClrMdThreadSnapshotInspector>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.LinuxNativeThreadSnapshotInspector>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.PerfReplayThreadSnapshotInspector>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.EtwNativeThreadSnapshotInspector>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.IThreadSnapshotBackend, DotnetDiagnosticsMcp.Core.Threads.ClrMdThreadSnapshotBackend>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.IThreadSnapshotBackend, DotnetDiagnosticsMcp.Core.Threads.LinuxNativeThreadSnapshotBackend>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.IThreadSnapshotBackend, DotnetDiagnosticsMcp.Core.Threads.EtwNativeThreadSnapshotBackend>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.IThreadSnapshotBackend, DotnetDiagnosticsMcp.Core.Threads.PerfReplayThreadSnapshotBackend>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Threads.IThreadSnapshotInspector, DotnetDiagnosticsMcp.Core.Threads.RoutingThreadSnapshotInspector>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Symbols.INativeAddressResolver, DotnetDiagnosticsMcp.Core.Symbols.ClrMdNativeAddressResolver>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.JitCapture.IJitMethodCapturer, DotnetDiagnosticsMcp.Core.JitCapture.ClrMdJitMethodCapturer>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Investigation.IInvestigationPlanner>(_ =>
-            new DotnetDiagnosticsMcp.Core.Investigation.InvestigationPlanner());
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Memory.IProvenanceCollector, DotnetDiagnosticsMcp.Core.Memory.EnvironmentProvenanceCollector>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Memory.IInvestigationSummaryExporter, DotnetDiagnosticsMcp.Core.Memory.InvestigationSummaryExporter>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Memory.ISummaryComparer, DotnetDiagnosticsMcp.Core.Memory.SummaryComparer>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Memory.IMemoryTrendCollector, DotnetDiagnosticsMcp.Core.Memory.MemoryTrendCollector>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.ProcessDiscovery.IRuntimeConfigInspector, DotnetDiagnosticsMcp.Core.ProcessDiscovery.RuntimeConfigInspector>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.ProcessDiscovery.IProcessResourcesCollector, DotnetDiagnosticsMcp.Core.ProcessDiscovery.ProcessResourcesCollector>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.ProcessDiscovery.IRequestsNowCollector, DotnetDiagnosticsMcp.Core.ProcessDiscovery.RequestsNowCollector>();
-        services.AddSingleton<DotnetDiagnosticsMcp.Core.Drilldown.IDiagnosticHandleStore>(_ =>
-            new DotnetDiagnosticsMcp.Core.Drilldown.MemoryDiagnosticHandleStore(maxEntries: 32));
         services.AddSingleton<ModelContextProtocol.IMcpTaskStore>(_ =>
             new ModelContextProtocol.InMemoryMcpTaskStore(
                 defaultTtl: System.TimeSpan.FromMinutes(10),
