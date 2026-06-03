@@ -28,11 +28,13 @@ using DotnetDiagnosticsMcp.Core.Security;
 using DotnetDiagnosticsMcp.Core.ThreadPool;
 using DotnetDiagnosticsMcp.Core.Threads;
 using DotnetDiagnosticsMcp.Core.Triage;
+using DotnetDiagnosticsMcp.Core.UseCases;
 using DotnetDiagnosticsMcp.Server.Security;
 using DotnetDiagnosticsMcp.Server.Diagnostics;
 using Microsoft.Diagnostics.NETCore.Client;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using static DotnetDiagnosticsMcp.Core.UseCases.ProcessResolutionHelpers;
 
 namespace DotnetDiagnosticsMcp.Server.Tools;
 
@@ -53,25 +55,7 @@ public sealed class DiagnosticTools
         "Returns process id, runtime version, OS, architecture and the managed entrypoint assembly. " +
         "Usually the first tool to call in any investigation.")]
     public static DiagnosticResult<IReadOnlyList<DotnetProcess>> ListDotnetProcesses(IProcessDiscovery discovery)
-    {
-        var processes = discovery.ListProcesses();
-        if (processes.Count == 0)
-        {
-            return DiagnosticResult.Ok(
-                processes,
-                "No attachable .NET processes found. If the target runs in a container, make sure the sidecar shares its PID namespace and runs as the same UID.",
-                new NextActionHint("inspect_process", "Re-run once the target is up to confirm the runtime exposes a diagnostic endpoint."));
-        }
-
-        var preview = string.Join(", ", processes.Take(3).Select(p => $"{p.ProcessId}={p.ManagedEntrypointAssemblyName ?? "?"}"));
-        return DiagnosticResult.Ok(
-            processes,
-            $"Found {processes.Count} .NET process(es): {preview}{(processes.Count > 3 ? ", …" : "")}.",
-            new NextActionHint(
-                "inspect_process",
-                "Probe the target process to confirm which collectors are supported (CoreCLR vs NativeAOT).",
-                new Dictionary<string, object?> { ["view"] = "capabilities", ["processId"] = processes[0].ProcessId }));
-    }
+        => ProcessInspectionUseCases.ListProcesses(discovery);
 
     [RequireScope("read-counters")]
     [Description(
@@ -79,31 +63,12 @@ public sealed class DiagnosticTools
         "or an error result if the process is not running or does not expose a diagnostic endpoint. " +
         "processId is optional: when exactly one .NET process is reachable on the host the server " +
         "auto-resolves it and stamps a compact capability digest on the response envelope.")]
-    public static async Task<DiagnosticResult<DotnetProcess>> GetProcessInfo(
+    public static Task<DiagnosticResult<DotnetProcess>> GetProcessInfo(
         IProcessDiscovery discovery,
         IProcessContextResolver resolver,
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
         CancellationToken cancellationToken = default)
-    {
-        var resolved = await ResolveContextAsync<DotnetProcess>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-
-        var process = discovery.TryGetProcess(resolved.ProcessId);
-        if (process is null)
-        {
-            return DiagnosticResult.Fail<DotnetProcess>(
-                $"No .NET process with id {resolved.ProcessId} exposes a diagnostic endpoint.",
-                new DiagnosticError("ProcessNotFound", $"Process id {resolved.ProcessId} is not visible to the diagnostic IPC."),
-                new NextActionHint("inspect_process", "List attachable .NET processes and pick a valid pid."));
-        }
-
-        var result = DiagnosticResult.Ok(
-            process,
-            $"Process {process.ProcessId} — {process.ManagedEntrypointAssemblyName ?? "<unknown>"} on .NET {process.RuntimeVersion} ({process.OperatingSystem}/{process.ProcessArchitecture}).",
-            new NextActionHint("collect_events", "Cheap first signal: CPU/memory/GC/thread-pool sweep before any sampling.",
-                new Dictionary<string, object?> { ["processId"] = process.ProcessId, ["durationSeconds"] = 5 }));
-        return WithContext(result, resolved.Context);
-    }
+        => ProcessInspectionUseCases.GetProcessInfoAsync(discovery, resolver, processId, cancellationToken);
 
     [RequireScope("read-counters")]
     [Description(
@@ -113,38 +78,12 @@ public sealed class DiagnosticTools
         "processId is optional: when exactly one .NET process is reachable the server auto-resolves it. " +
         "Most callers no longer need this tool first — every other tool already attaches a compact capability digest " +
         "on its response envelope, so call this explicitly only when you need the full matrix.")]
-    public static async Task<DiagnosticResult<DiagnosticCapabilities>> GetDiagnosticCapabilities(
+    public static Task<DiagnosticResult<DiagnosticCapabilities>> GetDiagnosticCapabilities(
         ICapabilityDetector detector,
         IProcessContextResolver resolver,
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
         CancellationToken cancellationToken = default)
-    {
-        var resolved = await ResolveContextAsync<DiagnosticCapabilities>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-
-        try
-        {
-            var caps = await detector.DetectAsync(resolved.ProcessId, cancellationToken).ConfigureAwait(false);
-            var hint = caps.CanSampleCpu
-                ? new NextActionHint("collect_events", "Cheap first signal: CPU/memory/GC/thread-pool. Run before reaching for sampling.",
-                    new Dictionary<string, object?> { ["processId"] = resolved.ProcessId, ["durationSeconds"] = 5 })
-                : new NextActionHint("collect_events", "NativeAOT: CPU sampling unavailable. Counters + EventSource + dumps still work.",
-                    new Dictionary<string, object?> { ["processId"] = resolved.ProcessId, ["durationSeconds"] = 5 });
-
-            var ok = DiagnosticResult.Ok(
-                caps,
-                $"Runtime: {caps.Runtime} {caps.RuntimeVersion}. CPU sampling: {caps.CanSampleCpu}, gcdump: {caps.CanCollectGcDump}. {caps.Notes}".TrimEnd(),
-                hint);
-            return WithContext(ok, resolved.Context);
-        }
-        catch (ServerNotAvailableException ex)
-        {
-            return DiagnosticResult.Fail<DiagnosticCapabilities>(
-                $"Diagnostic socket for process {resolved.ProcessId} is not reachable.",
-                new DiagnosticError("EndpointUnavailable", ex.Message, ex.GetType().FullName),
-                new NextActionHint("inspect_process", "Re-list processes. Common cause: sidecar UID mismatch with target."));
-        }
-    }
+        => ProcessInspectionUseCases.GetCapabilitiesAsync(detector, resolver, processId, cancellationToken);
 
     [RequireScope("read-counters")]
     [Description(
@@ -4195,72 +4134,4 @@ public sealed class DiagnosticTools
         }
         return false;
     }
-
-    // ---- bootstrap implícito helpers (issue #42) ------------------------------------
-    //
-    // Every tool that targets a live .NET process accepts processId as optional. When the
-    // caller omits it the resolver auto-selects the lone candidate; on ambiguity / nothing
-    // visible we translate the resolver outcome into a structured DiagnosticResult so the
-    // LLM never has to interpret a thrown exception. Successful responses carry the
-    // resolved capability digest on DiagnosticResult.ResolvedProcess so the obligatory
-    // list_dotnet_processes + get_diagnostic_capabilities opener can be skipped entirely.
-
-    private readonly record struct ResolvedContext<T>(
-        int ProcessId,
-        ProcessContext? Context,
-        DiagnosticResult<T>? Failure);
-
-    private static async Task<ResolvedContext<T>> ResolveContextAsync<T>(
-        IProcessContextResolver resolver,
-        int? processId,
-        CancellationToken cancellationToken)
-    {
-        var resolution = await resolver.ResolveAsync(processId, cancellationToken).ConfigureAwait(false);
-        if (resolution.Error is null)
-        {
-            var ctx = resolution.Context!;
-            return new ResolvedContext<T>(ctx.ProcessId, ctx, Failure: null);
-        }
-
-        var failure = BuildResolutionFailure<T>(resolution);
-        return new ResolvedContext<T>(ProcessId: 0, Context: null, Failure: failure);
-    }
-
-    private static DiagnosticResult<T> BuildResolutionFailure<T>(ProcessContextResolution resolution)
-    {
-        var error = resolution.Error!;
-        return error.Kind switch
-        {
-            "NoDotnetProcessFound" => DiagnosticResult.Fail<T>(
-                "No .NET process is visible to the diagnostic IPC on this host.",
-                error,
-                new NextActionHint(
-                    "list_dotnet_processes",
-                    "Confirm the target is running and shares your PID namespace + UID (containers/K8s).")),
-
-            "AmbiguousDotnetProcess" => DiagnosticResult.Fail<T>(
-                $"{resolution.Candidates?.Count ?? 0} .NET processes visible — pass processId explicitly.",
-                error,
-                new NextActionHint(
-                    "list_dotnet_processes",
-                    "Inspect the candidate list inline below and re-issue the call with the chosen processId.",
-                    resolution.Candidates is { Count: > 0 }
-                        ? new Dictionary<string, object?> { ["candidates"] = resolution.Candidates.Take(5).Select(c => new { c.ProcessId, c.ManagedEntrypointAssemblyName }).ToArray() }
-                        : null)),
-
-            "EndpointUnavailable" => DiagnosticResult.Fail<T>(
-                error.Message,
-                error,
-                new NextActionHint(
-                    "list_dotnet_processes",
-                    "Re-list processes — the target may have exited or the sidecar UID may not match.")),
-
-            _ => DiagnosticResult.Fail<T>(error.Message, error),
-        };
-    }
-
-    private static DiagnosticResult<T> WithContext<T>(
-        DiagnosticResult<T> result,
-        ProcessContext? context)
-        => context is null ? result : result with { ResolvedProcess = context };
 }
