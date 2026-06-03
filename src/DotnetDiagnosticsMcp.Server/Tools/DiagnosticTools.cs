@@ -1697,7 +1697,7 @@ public sealed class DiagnosticTools
         "writes nothing to disk; the operator-facing client should surface this preview to a human " +
         "and only retry with `confirm=true` after explicit approval. The `dump-write` + `ptrace` " +
         "scopes are still required on top of `confirm=true`.")]
-    public static async Task<DiagnosticResult<DumpToolResult>> CollectProcessDump(
+    public static Task<DiagnosticResult<DumpToolResult>> CollectProcessDump(
         IProcessDumper dumper,
         IProcessContextResolver resolver,
         IPrincipalAccessor principalAccessor,
@@ -1707,88 +1707,19 @@ public sealed class DiagnosticTools
         [Description("Optional sub-path under the artifact root (MCP_ARTIFACT_ROOT, default <temp>/dotnet-diagnostics-mcp). MUST be relative — absolute paths and '..' traversal are rejected (InvalidArtifactPath). Dump files are written with POSIX mode 0600.")] string? outputDirectory = null,
         [Description("Defense-in-depth confirmation flag. Must be true to actually write a dump file; without it the tool returns a `confirmation_required` envelope describing what would have been written. See RFC 0001 §4.")] bool confirm = false,
         CancellationToken cancellationToken = default)
-    {
-        if (!confirm)
-        {
-            // RFC 0001 §4 / §8: confirmation-required is a misuse signal, not an attack.
-            // Log at Information level with the token name (never the bearer value), the
-            // tool name and the reason as structured properties so audit consumers can
-            // filter on the RFC-mandated `tool` / `reason` fields.
-            //
-            // The confirmation gate runs BEFORE process-context resolution (#187 review):
-            // ResolveContextAsync would otherwise open an EventPipe session via
-            // CapabilityDetector to probe the target — that already counts as a process
-            // attach for the purpose of "writes NOTHING / no process attach". When the
-            // caller relied on auto-resolution we therefore echo a null TargetPid in the
-            // preview instead of touching the target.
-            var logger = loggerFactory?.CreateLogger("DotnetDiagnosticsMcp.Server.Tools.CollectProcessDump");
-            logger?.LogInformation(
-                "collect_process_dump rejected: confirmation_required. tokenName={TokenName} tool={Tool} reason={Reason} requestedPid={RequestedPid} dumpType={DumpType}",
-                principalAccessor.Current?.Name ?? "(none)",
-                "collect_process_dump",
-                "ConfirmationRequired",
-                processId,
-                dumpType);
-
-            var preview = new DumpToolResult
-            {
-                Kind = DumpToolResultKinds.ConfirmationRequired,
-                Message = processId is null
-                    ? "collect_process_dump writes a heap dump to disk. Pass confirm=true to proceed. processId was not supplied — the server will auto-select a .NET process when you re-issue with confirm=true."
-                    : "collect_process_dump writes a heap dump to disk. Pass confirm=true to proceed.",
-                TargetPid = processId,
-                DumpType = dumpType,
-                OutputDirectory = outputDirectory,
-            };
-
-            var retryArgs = new Dictionary<string, object?>
-            {
-                ["dumpType"] = dumpType.ToString(),
-                ["outputDirectory"] = outputDirectory,
-                ["confirm"] = true,
-            };
-            if (processId is not null) retryArgs["processId"] = processId;
-
-            var retryHint = new NextActionHint(
-                "collect_process_dump",
-                "Re-issue the call with confirm=true after explicit human approval. Required scopes: dump-write + ptrace.",
-                retryArgs);
-
-            var summary = processId is null
-                ? $"confirmation_required: collect_process_dump would write a {dumpType} dump for the auto-selected .NET process. Pass confirm=true to proceed."
-                : $"confirmation_required: collect_process_dump would write a {dumpType} dump for pid {processId}. Pass confirm=true to proceed.";
-            return DiagnosticResult.Ok(preview, summary, retryHint);
-        }
-
-        var resolved = await ResolveContextAsync<DumpToolResult>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
-        var ctx = resolved.Context;
-
-        return await GuardAttachAsync("collect_process_dump", pid, async () =>
-        {
-            var dump = await dumper.WriteDumpAsync(pid, dumpType, outputDirectory, cancellationToken).ConfigureAwait(false);
-            var hint = dumpType == ProcessDumpType.Mini
-                ? new NextActionHint("inspect_heap",
-                    "Mini dump captured — heap walk unavailable. Re-capture with dumpType='WithHeap' for full inspection.",
-                    new Dictionary<string, object?> { ["dumpFilePath"] = dump.FilePath })
-                : new NextActionHint("inspect_heap",
-                    "Inspect the dump's managed heap for top-retained types + handoff payload to dotnet-assembly-mcp.",
-                    new Dictionary<string, object?> { ["dumpFilePath"] = dump.FilePath, ["topTypes"] = 20 });
-            var payload = new DumpToolResult
-            {
-                Kind = DumpToolResultKinds.DumpWritten,
-                TargetPid = dump.ProcessId,
-                DumpType = dump.DumpType,
-                OutputDirectory = outputDirectory,
-                Dump = dump,
-            };
-            return WithContext(DiagnosticResult.Ok(
-                payload,
-                $"Wrote {dumpType} dump for pid {dump.ProcessId} to {dump.FilePath} ({dump.FileSizeBytes:N0} bytes).",
-                hint), ctx);
-        }, cancellationToken).ConfigureAwait(false);
-    }
+        // Orchestration lives in Core (UseCases/ProcessDumpUseCases) since #288 PR3b. This thin
+        // forward creates the logger with the existing audit category and hoists the audit principal
+        // name so the confirmation-required envelope + audit log stay byte-identical.
+        => ProcessDumpUseCases.CollectProcessDump(
+            dumper,
+            resolver,
+            loggerFactory?.CreateLogger("DotnetDiagnosticsMcp.Server.Tools.CollectProcessDump"),
+            principalAccessor.Current?.Name,
+            processId,
+            dumpType,
+            outputDirectory,
+            confirm,
+            cancellationToken);
 
     [RequireScope("heap-read")]
     [Description(
@@ -1799,7 +1730,7 @@ public sealed class DiagnosticTools
         "(or get_method on the type's members) without name parsing. Offline and read-only — does not " +
         "touch the live process. Mini and Triage dumps return runtime metadata only; for heap inspection " +
         "use WithHeap or Full.")]
-    public static async Task<DiagnosticResult<DumpInspection>> InspectDump(
+    public static Task<DiagnosticResult<DumpInspection>> InspectDump(
         IDumpInspector inspector,
         IDiagnosticHandleStore handles,
         SymbolServerAllowlist symbolServerAllowlist,
@@ -1814,73 +1745,28 @@ public sealed class DiagnosticTools
         [Description("Optional NT_SYMBOL_PATH-style search path reserved for symbol-resolving heap drilldowns. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         CancellationToken cancellationToken = default)
-    {
-        // B4 / issue #165 / M3: same SSRF guard as collect_cpu_sample.
-        var symbolDenial = ValidateSymbolPath<DumpInspection>(symbolServerAllowlist, symbolPath, principalAccessor, deprecation);
-        if (symbolDenial is not null) return symbolDenial;
+        // Orchestration lives in Core (UseCases/HeapInspectionUseCases) since #288 PR3b. This thin
+        // forward hoists the `symbols-remote` scope decision into a bool and adapts the deprecation
+        // singleton onto the host-neutral ISymbolServerDeprecationSink.
+        => HeapInspectionUseCases.InspectDump(
+            inspector,
+            handles,
+            symbolServerAllowlist,
+            principalAccessor?.Current?.HasExplicitScope("symbols-remote") == true,
+            dumpFilePath,
+            topTypes,
+            includeRetentionPaths,
+            retentionPathLimit,
+            includeStaticFields,
+            includeDelegateTargets,
+            includeDuplicateStrings,
+            symbolPath,
+            deprecation,
+            cancellationToken);
 
-        return await GuardAttachAsync("inspect_dump", processId: null, async () =>
-        {
-            var snapshot = await inspector.InspectAsync(
-                dumpFilePath,
-                new DumpInspectionOptions(
-                    TopTypes: topTypes,
-                    IncludeRetentionPaths: includeRetentionPaths,
-                    RetentionPathLimit: retentionPathLimit,
-                    IncludeStaticFields: includeStaticFields,
-                    IncludeDelegateTargets: includeDelegateTargets,
-                    IncludeDuplicateStrings: includeDuplicateStrings,
-                    SymbolPath: symbolPath),
-                cancellationToken).ConfigureAwait(false);
-
-            var handle = handles.Register(snapshot.ProcessId, HeapSnapshotKind, snapshot, HeapSnapshotHandleTtl, evictWhenProcessExits: false);
-            var inspection = snapshot.ToDumpInspection(topTypes, handle.Id);
-
-            var topByBytes = inspection.TopTypesByBytes;
-            var summary = topByBytes.Count == 0
-                ? $"Inspected {dumpFilePath} — runtime {inspection.Runtime.Name} {inspection.Runtime.Version}, heap walk produced no objects. Snapshot handle: `{handle.Id}`."
-                : $"Inspected {dumpFilePath} — heap {inspection.Heap.TotalBytes:N0} bytes; top retained type: `{topByBytes[0].TypeFullName}` ({topByBytes[0].TotalBytesPercent}% / {topByBytes[0].InstanceCount:N0} instances). Snapshot handle: `{handle.Id}`.";
-
-            var hint = BuildHeapDrilldownHint(handle.Id, topByBytes);
-            return hint is null
-                ? DiagnosticResult.Ok(inspection, summary)
-                : DiagnosticResult.Ok(inspection, summary, hint);
-        }, cancellationToken).ConfigureAwait(false);
-    }
-
-    private static readonly TimeSpan HeapSnapshotHandleTtl = TimeSpan.FromMinutes(10);
-    internal const string HeapSnapshotKind = "heap-snapshot";
-
-    private static NextActionHint? BuildHeapDrilldownHint(string handle, IReadOnlyList<TypeStat> topByBytes)
-    {
-        // Prefer the cross-MCP handoff to dotnet-assembly-mcp when a type identity is available —
-        // that pivots the LLM from "what is retained" to "what's the type definition / methods".
-        var topWithHandoff = topByBytes.FirstOrDefault(t => t.Identity is { ModuleVersionId: not null, MetadataToken: not null });
-        if (topWithHandoff is { Identity: { } id })
-        {
-            return new NextActionHint(
-                "dotnet-assembly-mcp.get_method",
-                $"Pivot to assembly inspection for the top retained type `{id.TypeFullName}` via the (mvid, token) handoff. " +
-                $"Use query_heap_snapshot(handle=\"{handle}\", view=\"retention-paths\") to expand retention without re-walking.",
-                new Dictionary<string, object?>
-                {
-                    ["moduleVersionId"] = id.ModuleVersionId,
-                    ["metadataToken"] = id.MetadataToken,
-                    ["typeFullName"] = id.TypeFullName,
-                    ["assemblyPathHint"] = id.ModulePath,
-                });
-        }
-
-        // Fallback: at least point at the local drilldown tool.
-        return new NextActionHint(
-            "query_snapshot",
-            "Drill into the snapshot (e.g. richer top-N, retention paths filtered by type) without re-walking the heap.",
-            new Dictionary<string, object?>
-            {
-                ["handle"] = handle,
-                ["view"] = "top-types",
-            });
-    }
+    // Re-exported from Core (UseCases/HeapInspectionUseCases) so QuerySnapshotTool keeps addressing
+    // heap snapshots by the same kind tag after the #288 PR3b extraction.
+    internal const string HeapSnapshotKind = HeapInspectionUseCases.HeapSnapshotKind;
 
     [RequireScope("heap-read", "ptrace")]
     [Description(
@@ -1891,7 +1777,7 @@ public sealed class DiagnosticTools
         "workloads. Same UID constraint as the diagnostic socket applies — sidecar must run as the target's UID. " +
         "Each TypeStat carries a TypeIdentity (ModuleVersionId + MetadataToken) ready to hand off verbatim to " +
         "dotnet-assembly-mcp's get_type. Use inspect_dump when you need an artifact to keep, share or re-inspect.")]
-    public static async Task<DiagnosticResult<LiveHeapInspection>> InspectLiveHeap(
+    public static Task<DiagnosticResult<LiveHeapInspection>> InspectLiveHeap(
         IDumpInspector inspector,
         IDiagnosticHandleStore handles,
         IProcessContextResolver resolver,
@@ -1907,45 +1793,23 @@ public sealed class DiagnosticTools
         [Description("Optional NT_SYMBOL_PATH-style search path reserved for symbol-resolving heap drilldowns. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         CancellationToken cancellationToken = default)
-    {
-        // B4 / issue #165 / M3: same SSRF guard as collect_cpu_sample.
-        var symbolDenial = ValidateSymbolPath<LiveHeapInspection>(symbolServerAllowlist, symbolPath, principalAccessor, deprecation);
-        if (symbolDenial is not null) return symbolDenial;
-
-        var resolved = await ResolveContextAsync<LiveHeapInspection>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
-        var ctx = resolved.Context;
-
-        return await GuardAttachAsync("inspect_live_heap", pid, async () =>
-        {
-            var snapshot = await inspector.InspectLiveAsync(
-                pid,
-                new DumpInspectionOptions(
-                    TopTypes: topTypes,
-                    IncludeRetentionPaths: includeRetentionPaths,
-                    RetentionPathLimit: retentionPathLimit,
-                    IncludeStaticFields: includeStaticFields,
-                    IncludeDelegateTargets: includeDelegateTargets,
-                    IncludeDuplicateStrings: includeDuplicateStrings,
-                    SymbolPath: symbolPath),
-                cancellationToken).ConfigureAwait(false);
-
-            var handle = handles.Register(pid, HeapSnapshotKind, snapshot, HeapSnapshotHandleTtl);
-            var inspection = snapshot.ToLiveHeapInspection(topTypes, handle.Id);
-
-            var topByBytes = inspection.TopTypesByBytes;
-            var summary = topByBytes.Count == 0
-                ? $"Attached to pid {pid} for {inspection.SuspendDuration.TotalMilliseconds:N0} ms — runtime {inspection.Runtime.Name} {inspection.Runtime.Version}, heap walk produced no objects. Snapshot handle: `{handle.Id}`."
-                : $"Attached to pid {pid} for {inspection.SuspendDuration.TotalMilliseconds:N0} ms — heap {inspection.Heap.TotalBytes:N0} bytes; top retained type: `{topByBytes[0].TypeFullName}` ({topByBytes[0].TotalBytesPercent}% / {topByBytes[0].InstanceCount:N0} instances). Snapshot handle: `{handle.Id}`.";
-
-            var hint = BuildHeapDrilldownHint(handle.Id, topByBytes);
-            var result = hint is null
-                ? DiagnosticResult.Ok(inspection, summary)
-                : DiagnosticResult.Ok(inspection, summary, hint);
-            return WithContext(result, ctx);
-        }, cancellationToken).ConfigureAwait(false);
-    }
+        // Orchestration lives in Core (UseCases/HeapInspectionUseCases) since #288 PR3b.
+        => HeapInspectionUseCases.InspectLiveHeap(
+            inspector,
+            handles,
+            resolver,
+            symbolServerAllowlist,
+            principalAccessor?.Current?.HasExplicitScope("symbols-remote") == true,
+            processId,
+            topTypes,
+            includeRetentionPaths,
+            retentionPathLimit,
+            includeStaticFields,
+            includeDelegateTargets,
+            includeDuplicateStrings,
+            symbolPath,
+            deprecation,
+            cancellationToken);
 
     [RequireScope("heap-read")]
     [Description(

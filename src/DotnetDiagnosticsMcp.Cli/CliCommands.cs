@@ -8,6 +8,7 @@ using DotnetDiagnosticsMcp.Core.Contention;
 using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.Db;
 using DotnetDiagnosticsMcp.Core.Drilldown;
+using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.EventSources;
 using DotnetDiagnosticsMcp.Core.Exceptions;
 using DotnetDiagnosticsMcp.Core.Gc;
@@ -42,7 +43,15 @@ internal static class CliCommands
         "processes",
         "capabilities",
         "collect",
+        "inspect-heap",
+        "dump",
     };
+
+    /// <summary>Heap-snapshot sources accepted by the <c>inspect-heap</c> command (issue #288 PR3b).</summary>
+    public static readonly IReadOnlyList<string> HeapSources = new[] { "live", "dump" };
+
+    /// <summary>Dump types accepted by the <c>dump</c> command (mirrors <see cref="ProcessDumpType"/>).</summary>
+    public static readonly IReadOnlyList<string> DumpTypes = new[] { "Mini", "Triage", "WithHeap", "Full" };
 
     /// <summary>
     /// EventPipe collection kinds accepted by the <c>collect</c> command (issue #288 PR2). Mirrors
@@ -75,6 +84,8 @@ internal static class CliCommands
             "processes" => Processes(services),
             "capabilities" => await CapabilitiesAsync(services, options, cancellationToken).ConfigureAwait(false),
             "collect" => await CollectAsync(services, options, cancellationToken).ConfigureAwait(false),
+            "inspect-heap" => await InspectHeapAsync(services, options, cancellationToken).ConfigureAwait(false),
+            "dump" => await DumpAsync(services, options, cancellationToken).ConfigureAwait(false),
             _ => throw new ArgumentException($"Unknown command '{options.Command}'.", nameof(options)),
         };
     }
@@ -110,6 +121,90 @@ internal static class CliCommands
         if (options.Depth is not null && !TryParseDepth(options.Depth, out _))
         {
             error = $"Unknown --depth '{options.Depth}'. Valid values: summary, detail, raw.";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Resolves the effective <c>inspect-heap</c> source: an explicit <c>--source live|dump</c> wins;
+    /// otherwise it is inferred (presence of <c>--dump-file</c> ⇒ dump, else live). Also enforces the
+    /// live/dump mutual-exclusion rules. Returns <c>true</c> with <paramref name="source"/> set, or
+    /// <c>false</c> with <paramref name="error"/>.
+    /// </summary>
+    public static bool TryResolveHeapSource(CliOptions options, out string source, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        source = string.Empty;
+        error = null;
+
+        if (options.Sources.Count > 1)
+        {
+            error = "inspect-heap accepts a single --source (live or dump).";
+            return false;
+        }
+
+        if (options.Sources.Count == 1)
+        {
+            source = options.Sources[0];
+            if (!HeapSources.Contains(source, StringComparer.Ordinal))
+            {
+                error = $"Unknown --source '{source}'. Valid values: live, dump.";
+                return false;
+            }
+        }
+        else
+        {
+            // Infer from the presence of a dump file so the common cases need no --source.
+            source = options.DumpFile is not null ? "dump" : "live";
+        }
+
+        if (source == "dump")
+        {
+            if (string.IsNullOrWhiteSpace(options.DumpFile))
+            {
+                error = "inspect-heap --source dump requires --dump-file <path>.";
+                return false;
+            }
+
+            if (options.Pid is not null)
+            {
+                error = "inspect-heap --source dump does not accept --pid (the dump is offline).";
+                return false;
+            }
+        }
+        else if (options.DumpFile is not null)
+        {
+            error = "inspect-heap --source live does not accept --dump-file (use --source dump).";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Validates the <c>inspect-heap</c>-specific options before the host is built. Returns
+    /// <c>true</c> when well-formed; otherwise sets <paramref name="error"/>.
+    /// </summary>
+    public static bool TryValidateInspectHeap(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return TryResolveHeapSource(options, out _, out error);
+    }
+
+    /// <summary>
+    /// Validates the <c>dump</c>-specific options before the host is built. Returns <c>true</c> when
+    /// well-formed; otherwise sets <paramref name="error"/>.
+    /// </summary>
+    public static bool TryValidateDump(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+
+        if (options.DumpType is not null && !TryParseDumpType(options.DumpType, out _))
+        {
+            error = $"Unknown --dump-type '{options.DumpType}'. Valid values: {string.Join(", ", DumpTypes)}.";
             return false;
         }
 
@@ -245,6 +340,101 @@ internal static class CliCommands
 
     private static CliCommandResult Wrap<T>(DiagnosticResult<T> result) =>
         new(result.IsError, result.Cancelled, result, RenderEnvelope<T>(result, static (_, _) => { }));
+
+    private static async Task<CliCommandResult> InspectHeapAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+    {
+        // Source was already validated before the host was built; re-resolve to dispatch.
+        TryResolveHeapSource(options, out var source, out _);
+
+        var inspector = services.GetRequiredService<IDumpInspector>();
+        var handles = services.GetRequiredService<IDiagnosticHandleStore>();
+        var allowlist = services.GetRequiredService<SymbolServerAllowlist>();
+        var topTypes = options.TopTypes ?? 20;
+        var retentionLimit = options.RetentionPathLimit ?? 8;
+
+        if (source == "dump")
+        {
+            var dumpResult = await HeapInspectionUseCases.InspectDump(
+                inspector, handles, allowlist,
+                // The CLI runs as the local operator: it owns any remote symbol fetch, so it gets the
+                // same posture the stdio root accessor gives the MCP server (symbols-remote granted).
+                principalAllowsSymbolsRemote: true,
+                options.DumpFile!, topTypes, options.IncludeRetentionPaths, retentionLimit,
+                options.IncludeStaticFields, options.IncludeDelegateTargets, options.IncludeDuplicateStrings,
+                NullIfEmpty(options.SymbolPath), deprecation: null, cancellationToken).ConfigureAwait(false);
+
+            var dumpHuman = RenderEnvelope<DumpInspection>(dumpResult, static (sb, data) => RenderTopTypes(sb, data.TopTypesByBytes));
+            return new CliCommandResult(dumpResult.IsError, dumpResult.Cancelled, dumpResult, dumpHuman);
+        }
+
+        var resolver = services.GetRequiredService<IProcessContextResolver>();
+        var liveResult = await HeapInspectionUseCases.InspectLiveHeap(
+            inspector, handles, resolver, allowlist,
+            principalAllowsSymbolsRemote: true,
+            options.Pid, topTypes, options.IncludeRetentionPaths, retentionLimit,
+            options.IncludeStaticFields, options.IncludeDelegateTargets, options.IncludeDuplicateStrings,
+            NullIfEmpty(options.SymbolPath), deprecation: null, cancellationToken).ConfigureAwait(false);
+
+        var liveHuman = RenderEnvelope<LiveHeapInspection>(liveResult, static (sb, data) => RenderTopTypes(sb, data.TopTypesByBytes));
+        return new CliCommandResult(liveResult.IsError, liveResult.Cancelled, liveResult, liveHuman);
+    }
+
+    private static async Task<CliCommandResult> DumpAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+    {
+        var dumper = services.GetRequiredService<IProcessDumper>();
+        var resolver = services.GetRequiredService<IProcessContextResolver>();
+        var dumpType = ProcessDumpType.Mini;
+        if (options.DumpType is not null && TryParseDumpType(options.DumpType, out var parsedDumpType))
+        {
+            dumpType = parsedDumpType;
+        }
+
+        // --out is wired in as the artifact root for this invocation (CliHost), so the dump lands
+        // directly there; pass a null sub-path. The CLI is a local operator and carries no bearer
+        // principal, so audit-log fields are empty.
+        var result = await ProcessDumpUseCases.CollectProcessDump(
+            dumper, resolver, logger: null, principalName: null,
+            options.Pid, dumpType, outputDirectory: null, options.Confirm, cancellationToken).ConfigureAwait(false);
+
+        var human = RenderEnvelope<DumpToolResult>(result, static (sb, data) =>
+        {
+            if (data.Dump is { } dump)
+            {
+                sb.AppendLine();
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  file  : {dump.FilePath}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  size  : {dump.FileSizeBytes:N0} bytes");
+            }
+        });
+        return new CliCommandResult(result.IsError, result.Cancelled, result, human);
+    }
+
+    private static void RenderTopTypes(StringBuilder sb, IReadOnlyList<TypeStat> topByBytes)
+    {
+        if (topByBytes.Count == 0)
+        {
+            return;
+        }
+
+        sb.AppendLine();
+        sb.AppendLine(CultureInfo.InvariantCulture, $"  {"BYTES%",-8} {"INSTANCES",-14} TYPE");
+        foreach (var t in topByBytes)
+        {
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"  {t.TotalBytesPercent,-8} {t.InstanceCount,-14:N0} {t.TypeFullName}");
+        }
+    }
+
+    private static bool TryParseDumpType(string value, out ProcessDumpType dumpType) =>
+        Enum.TryParse(value, ignoreCase: true, out dumpType) && Enum.IsDefined(dumpType);
+
+    private static string? NullIfEmpty(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static bool TryParseDepth(string? value, out SamplingDepth depth)
     {

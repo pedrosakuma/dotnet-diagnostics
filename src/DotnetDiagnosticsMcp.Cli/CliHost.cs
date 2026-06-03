@@ -122,7 +122,23 @@ internal static class CliHost
             return 2;
         }
 
-        using var host = BuildHost();
+        if (options.Command == "inspect-heap" && !CliCommands.TryValidateInspectHeap(options, out var heapError))
+        {
+            await stderr.WriteLineAsync(heapError).ConfigureAwait(false);
+            await stderr.WriteLineAsync().ConfigureAwait(false);
+            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+            return 2;
+        }
+
+        if (options.Command == "dump" && !CliCommands.TryValidateDump(options, out var dumpError))
+        {
+            await stderr.WriteLineAsync(dumpError).ConfigureAwait(false);
+            await stderr.WriteLineAsync().ConfigureAwait(false);
+            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+            return 2;
+        }
+
+        using var host = BuildHost(options);
 
         try
         {
@@ -157,8 +173,21 @@ internal static class CliHost
         }
     }
 
-    private static IHost BuildHost()
+    private static IHost BuildHost(CliOptions options)
     {
+        // `dump --out <dir>` selects where the dump file lands. The Core dumper treats its
+        // outputDirectory argument as a *relative* sub-path under the artifact root and rejects
+        // absolute paths, so the CLI maps --out onto the artifact root itself (resolved absolute) and
+        // passes a null sub-path. EnvironmentArtifactRootProvider reads this env var once on
+        // construction; setting it here (before AddDiagnosticCoreServices resolves the singleton) is
+        // safe for a one-shot process.
+        if (!string.IsNullOrWhiteSpace(options.OutDir))
+        {
+            Environment.SetEnvironmentVariable(
+                DotnetDiagnosticsMcp.Core.Artifacts.EnvironmentArtifactRootProvider.EnvironmentVariableName,
+                Path.GetFullPath(options.OutDir));
+        }
+
         // Pass NO command-line args to the host builder: the CLI command/flags are not configuration
         // and the default command-line config provider rejects bare positionals like "processes".
         var builder = Host.CreateApplicationBuilder(Array.Empty<string>());
@@ -198,6 +227,8 @@ internal static class CliHost
           processes                     List attachable .NET processes.
           capabilities                  Probe a target's diagnostic capability matrix.
           collect                       Open an EventPipe session and collect events (--kind required).
+          inspect-heap                  Walk the managed heap of a live process or a .dmp (--source live|dump).
+          dump                          Write a process dump to disk (requires --confirm).
 
         Options:
           -p, --pid <int>               Target OS process id (auto-resolved when only one is visible).
@@ -219,6 +250,22 @@ internal static class CliHost
               --min-level <level>       logs: minimum level (default Information).
               --unsafe-provider         event_source: opt in to a non-allowlisted provider.
 
+        inspect-heap options:
+              --source <live|dump>      Snapshot source (default: inferred — dump when --dump-file is set, else live).
+              --dump-file <path>        --source dump: path to a previously-captured .dmp.
+              --top-types <int>         Top-N type count (default 20).
+              --include-retention-paths Walk a short GC retention chain for the top types.
+              --retention-path-limit <int>  Cap retention-chain depth (default 8).
+              --include-static-fields   Rank static reference fields by referenced object size.
+              --include-delegate-targets  Group MulticastDelegate invocation lists by (target, method).
+              --include-duplicate-strings Rank duplicate strings by aggregate retained bytes.
+              --symbol-path <path>      NT_SYMBOL_PATH-style search path (remote servers off by default).
+
+        dump options:
+              --dump-type <type>        Mini (default), Triage, WithHeap or Full.
+              --out <dir>               Directory to write the dump into (default: temp artifact root).
+              --confirm                 Required to actually write; without it a preview is returned.
+
         Examples:
           dotnet-diagnostics processes
           dotnet-diagnostics capabilities --pid 1234
@@ -226,5 +273,8 @@ internal static class CliHost
           dotnet-diagnostics collect --kind counters --pid 1234 --duration 5
           dotnet-diagnostics collect --kind gc --pid 1234 --json
           dotnet-diagnostics collect --kind event_source --provider System.Net.Http --pid 1234
+          dotnet-diagnostics inspect-heap --pid 1234 --top-types 30
+          dotnet-diagnostics inspect-heap --source dump --dump-file ./app.dmp
+          dotnet-diagnostics dump --pid 1234 --dump-type WithHeap --out ./dumps --confirm
         """;
 }
