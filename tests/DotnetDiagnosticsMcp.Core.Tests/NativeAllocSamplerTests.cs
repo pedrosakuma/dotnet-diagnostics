@@ -132,12 +132,12 @@ public sealed class PerfNativeAllocSamplerUnitTests
     }
 
     [Fact]
-    public async Task SampleAsync_OnNonLinux_Throws_PerfUnavailable()
+    public async Task SampleAsync_OnNonLinux_Throws_PlatformNotSupported()
     {
         if (OperatingSystem.IsLinux()) return;
         var sampler = new PerfNativeAllocSampler();
         var act = async () => await sampler.SampleAsync(processId: 1, duration: TimeSpan.FromSeconds(1));
-        var ex = await act.Should().ThrowAsync<InvalidOperationException>();
-        ex.Which.Message.Should().Contain("perf");
+        var ex = await act.Should().ThrowAsync<PlatformNotSupportedException>();
+        ex.Which.Message.Should().Contain("Linux");
     }
 }

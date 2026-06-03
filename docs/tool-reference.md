@@ -847,7 +847,10 @@ bytes*, and it does NOT do alloc/free retention matching — it shows who alloca
 not what leaks. Drill into the merged call tree with `query_snapshot(view="call-tree")`;
 compare two windows with `query_snapshot(view="diff")`. Escalate to it from
 `inspect_process(view="memory_trend")` when RSS / anonymous pages climb while the managed
-heap stays flat.
+heap stays flat. On Windows/macOS (or a Linux host without `perf`) the unified tool
+returns a structured `NotSupported` envelope — same shape as `kind="off_cpu"` on
+unsupported hosts — never a crash; a missing `CAP_SYS_ADMIN` instead surfaces as
+`PermissionDenied`.
 
 **Authorization.** Gated by `RequireScope("eventpipe")`, matching the three
 legacy samplers verbatim.

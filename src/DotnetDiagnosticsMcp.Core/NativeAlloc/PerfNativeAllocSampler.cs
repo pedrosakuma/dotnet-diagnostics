@@ -91,11 +91,19 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
         {
             throw new ArgumentOutOfRangeException(nameof(samplePeriod), "samplePeriod must be positive.");
         }
-        if (!IsAvailable())
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
-            throw new InvalidOperationException(
-                "perf is not available on this host. Install linux-perf and ensure the diagnostics " +
-                "container has permission to create a uprobe (CAP_SYS_ADMIN / tracefs write access).");
+            throw new PlatformNotSupportedException(
+                "Native allocation sampling is only supported on Linux (perf uprobes on the libc " +
+                "malloc/calloc/realloc allocators) in this release. It is not available on Windows or " +
+                "macOS — there is no perf-uprobe equivalent wired up for those platforms.");
+        }
+        if (ResolvePerfPath() is null)
+        {
+            throw new NotSupportedException(
+                "The perf binary was not found on this Linux host. Install linux-perf (the " +
+                "'linux-tools'/'perf' package) so native allocation sampling can create a uprobe on " +
+                "the target libc allocator.");
         }
 
         var libc = ProcMapsLibcResolver.Resolve(processId)
