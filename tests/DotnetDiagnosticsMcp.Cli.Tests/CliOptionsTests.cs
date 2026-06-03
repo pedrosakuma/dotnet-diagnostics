@@ -170,4 +170,72 @@ public sealed class CliOptionsTests
         options.Should().BeNull();
         error.Should().Contain("requires a value");
     }
+
+    [Fact]
+    public void Parse_InspectHeapFlags_AreCaptured()
+    {
+        var options = CliOptions.Parse(
+            new[]
+            {
+                "inspect-heap", "--source", "dump", "--dump-file", "./app.dmp", "--top-types", "30",
+                "--include-retention-paths", "--retention-path-limit", "12", "--include-static-fields",
+                "--include-delegate-targets", "--include-duplicate-strings", "--symbol-path", @"C:\syms",
+            },
+            out var error);
+
+        error.Should().BeNull();
+        options!.Command.Should().Be("inspect-heap");
+        options.Sources.Should().Equal("dump");
+        options.DumpFile.Should().Be("./app.dmp");
+        options.TopTypes.Should().Be(30);
+        options.IncludeRetentionPaths.Should().BeTrue();
+        options.RetentionPathLimit.Should().Be(12);
+        options.IncludeStaticFields.Should().BeTrue();
+        options.IncludeDelegateTargets.Should().BeTrue();
+        options.IncludeDuplicateStrings.Should().BeTrue();
+        options.SymbolPath.Should().Be(@"C:\syms");
+    }
+
+    [Fact]
+    public void Parse_DumpFlags_AreCaptured()
+    {
+        var options = CliOptions.Parse(
+            new[] { "dump", "--pid", "1234", "--dump-type", "WithHeap", "--out", "./dumps", "--confirm" },
+            out var error);
+
+        error.Should().BeNull();
+        options!.Command.Should().Be("dump");
+        options.Pid.Should().Be(1234);
+        options.DumpType.Should().Be("WithHeap");
+        options.OutDir.Should().Be("./dumps");
+        options.Confirm.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Parse_HeapAndDumpDefaults_AreFalseOrNull()
+    {
+        var options = CliOptions.Parse(new[] { "inspect-heap" }, out var error);
+
+        error.Should().BeNull();
+        options!.DumpFile.Should().BeNull();
+        options.TopTypes.Should().BeNull();
+        options.RetentionPathLimit.Should().BeNull();
+        options.IncludeRetentionPaths.Should().BeFalse();
+        options.IncludeStaticFields.Should().BeFalse();
+        options.IncludeDelegateTargets.Should().BeFalse();
+        options.IncludeDuplicateStrings.Should().BeFalse();
+        options.SymbolPath.Should().BeNull();
+        options.DumpType.Should().BeNull();
+        options.OutDir.Should().BeNull();
+        options.Confirm.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Parse_DumpTypeMissingValue_ReturnsError()
+    {
+        var options = CliOptions.Parse(new[] { "dump", "--dump-type" }, out var error);
+
+        options.Should().BeNull();
+        error.Should().Contain("requires a value");
+    }
 }

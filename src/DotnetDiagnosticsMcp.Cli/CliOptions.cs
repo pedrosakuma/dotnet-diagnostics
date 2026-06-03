@@ -53,6 +53,39 @@ internal sealed class CliOptions
     /// <summary>Opt-in switch (<c>--unsafe-provider</c>) for non-allowlisted <c>kind=event_source</c> providers.</summary>
     public bool UnsafeProvider { get; init; }
 
+    /// <summary>Absolute path to a previously-captured .dmp file (<c>--dump-file</c>) for <c>inspect-heap --source dump</c>.</summary>
+    public string? DumpFile { get; init; }
+
+    /// <summary>Top-N type count (<c>--top-types</c>) for <c>inspect-heap</c>. Null applies the default (20).</summary>
+    public int? TopTypes { get; init; }
+
+    /// <summary>Walk a short GC retention chain for the top retained types (<c>--include-retention-paths</c>).</summary>
+    public bool IncludeRetentionPaths { get; init; }
+
+    /// <summary>Cap on retention-chain depth (<c>--retention-path-limit</c>). Null applies the default (8).</summary>
+    public int? RetentionPathLimit { get; init; }
+
+    /// <summary>Enumerate static reference fields ranked by referenced object size (<c>--include-static-fields</c>).</summary>
+    public bool IncludeStaticFields { get; init; }
+
+    /// <summary>Group MulticastDelegate invocation lists by (target type, method) (<c>--include-delegate-targets</c>).</summary>
+    public bool IncludeDelegateTargets { get; init; }
+
+    /// <summary>Rank duplicate System.String instances by aggregate retained bytes (<c>--include-duplicate-strings</c>).</summary>
+    public bool IncludeDuplicateStrings { get; init; }
+
+    /// <summary>NT_SYMBOL_PATH-style search path (<c>--symbol-path</c>) for symbol-resolving heap drilldowns.</summary>
+    public string? SymbolPath { get; init; }
+
+    /// <summary>Dump type for the <c>dump</c> command (<c>--dump-type</c>): Mini, Triage, WithHeap or Full. Null applies the default (Mini).</summary>
+    public string? DumpType { get; init; }
+
+    /// <summary>Output directory for the <c>dump</c> command (<c>--out</c>). Sets the artifact root for this invocation; absolute or relative.</summary>
+    public string? OutDir { get; init; }
+
+    /// <summary>Defense-in-depth confirmation flag (<c>--confirm</c>) required to actually write a dump file.</summary>
+    public bool Confirm { get; init; }
+
     /// <summary>
     /// Parses <paramref name="args"/>. Returns a populated <see cref="CliOptions"/> on success, or
     /// <c>null</c> with a non-null <paramref name="error"/> describing the first usage problem.
@@ -77,6 +110,17 @@ internal sealed class CliOptions
         string? minLevel = null;
         string? depth = null;
         var unsafeProvider = false;
+        string? dumpFile = null;
+        int? topTypes = null;
+        var includeRetentionPaths = false;
+        int? retentionPathLimit = null;
+        var includeStaticFields = false;
+        var includeDelegateTargets = false;
+        var includeDuplicateStrings = false;
+        string? symbolPath = null;
+        string? dumpType = null;
+        string? outDir = null;
+        var confirm = false;
 
         for (var i = 0; i < args.Count; i++)
         {
@@ -92,6 +136,21 @@ internal sealed class CliOptions
                     break;
                 case "--unsafe-provider":
                     unsafeProvider = true;
+                    break;
+                case "--include-retention-paths":
+                    includeRetentionPaths = true;
+                    break;
+                case "--include-static-fields":
+                    includeStaticFields = true;
+                    break;
+                case "--include-delegate-targets":
+                    includeDelegateTargets = true;
+                    break;
+                case "--include-duplicate-strings":
+                    includeDuplicateStrings = true;
+                    break;
+                case "--confirm":
+                    confirm = true;
                     break;
                 case "--pid":
                 case "-p":
@@ -134,6 +193,22 @@ internal sealed class CliOptions
                     }
 
                     maxEvents = maxEventsValue;
+                    break;
+                case "--top-types":
+                    if (!TryTakeInt(args, ref i, token, out var topTypesValue, out error))
+                    {
+                        return null;
+                    }
+
+                    topTypes = topTypesValue;
+                    break;
+                case "--retention-path-limit":
+                    if (!TryTakeInt(args, ref i, token, out var retentionLimitValue, out error))
+                    {
+                        return null;
+                    }
+
+                    retentionPathLimit = retentionLimitValue;
                     break;
                 case "--provider":
                     if (!TryTakeString(args, ref i, token, out var providerValue, out error))
@@ -183,6 +258,38 @@ internal sealed class CliOptions
 
                     depth = depthValue;
                     break;
+                case "--dump-file":
+                    if (!TryTakeString(args, ref i, token, out var dumpFileValue, out error))
+                    {
+                        return null;
+                    }
+
+                    dumpFile = dumpFileValue;
+                    break;
+                case "--symbol-path":
+                    if (!TryTakeString(args, ref i, token, out var symbolPathValue, out error))
+                    {
+                        return null;
+                    }
+
+                    symbolPath = symbolPathValue;
+                    break;
+                case "--dump-type":
+                    if (!TryTakeString(args, ref i, token, out var dumpTypeValue, out error))
+                    {
+                        return null;
+                    }
+
+                    dumpType = dumpTypeValue;
+                    break;
+                case "--out":
+                    if (!TryTakeString(args, ref i, token, out var outValue, out error))
+                    {
+                        return null;
+                    }
+
+                    outDir = outValue;
+                    break;
                 default:
                     if (token.StartsWith('-'))
                     {
@@ -218,6 +325,17 @@ internal sealed class CliOptions
             MinLevel = minLevel,
             Depth = depth,
             UnsafeProvider = unsafeProvider,
+            DumpFile = dumpFile,
+            TopTypes = topTypes,
+            IncludeRetentionPaths = includeRetentionPaths,
+            RetentionPathLimit = retentionPathLimit,
+            IncludeStaticFields = includeStaticFields,
+            IncludeDelegateTargets = includeDelegateTargets,
+            IncludeDuplicateStrings = includeDuplicateStrings,
+            SymbolPath = symbolPath,
+            DumpType = dumpType,
+            OutDir = outDir,
+            Confirm = confirm,
         };
     }
 
