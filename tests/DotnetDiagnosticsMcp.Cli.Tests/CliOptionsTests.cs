@@ -96,4 +96,78 @@ public sealed class CliOptionsTests
         options!.Command.Should().BeNull();
         options.Help.Should().BeFalse();
     }
+
+    [Fact]
+    public void Parse_CollectFlags_AreCaptured()
+    {
+        var options = CliOptions.Parse(
+            new[]
+            {
+                "collect", "--kind", "counters", "--duration", "7", "--interval", "2",
+                "--max-events", "50", "--depth", "detail", "--min-level", "Warning",
+                "--provider", "System.Runtime", "--provider", "Microsoft.AspNetCore.Hosting",
+                "--meter", "MyMeter", "--source", "Src.A", "--category", "Cat.*",
+                "--unsafe-provider",
+            },
+            out var error);
+
+        error.Should().BeNull();
+        options!.Command.Should().Be("collect");
+        options.Kind.Should().Be("counters");
+        options.DurationSeconds.Should().Be(7);
+        options.IntervalSeconds.Should().Be(2);
+        options.MaxEvents.Should().Be(50);
+        options.Depth.Should().Be("detail");
+        options.MinLevel.Should().Be("Warning");
+        options.Providers.Should().Equal("System.Runtime", "Microsoft.AspNetCore.Hosting");
+        options.Meters.Should().Equal("MyMeter");
+        options.Sources.Should().Equal("Src.A");
+        options.Categories.Should().Equal("Cat.*");
+        options.UnsafeProvider.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("-d")]
+    [InlineData("--duration")]
+    public void Parse_DurationShortAndLongForms_AreEquivalent(string flag)
+    {
+        var options = CliOptions.Parse(new[] { "collect", "--kind", "gc", flag, "12" }, out var error);
+
+        error.Should().BeNull();
+        options!.DurationSeconds.Should().Be(12);
+    }
+
+    [Fact]
+    public void Parse_CollectDefaults_AreEmptyNotNull()
+    {
+        var options = CliOptions.Parse(new[] { "collect", "--kind", "gc" }, out var error);
+
+        error.Should().BeNull();
+        options!.DurationSeconds.Should().BeNull();
+        options.IntervalSeconds.Should().BeNull();
+        options.MaxEvents.Should().BeNull();
+        options.UnsafeProvider.Should().BeFalse();
+        options.Providers.Should().BeEmpty();
+        options.Meters.Should().BeEmpty();
+        options.Sources.Should().BeEmpty();
+        options.Categories.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parse_KindMissingValue_ReturnsError()
+    {
+        var options = CliOptions.Parse(new[] { "collect", "--kind" }, out var error);
+
+        options.Should().BeNull();
+        error.Should().Contain("requires a value");
+    }
+
+    [Fact]
+    public void Parse_ProviderMissingValue_ReturnsError()
+    {
+        var options = CliOptions.Parse(new[] { "collect", "--kind", "counters", "--provider" }, out var error);
+
+        options.Should().BeNull();
+        error.Should().Contain("requires a value");
+    }
 }

@@ -1,6 +1,4 @@
-using DotnetDiagnosticsMcp.Core.Counters;
-
-namespace DotnetDiagnosticsMcp.Server.Tools;
+namespace DotnetDiagnosticsMcp.Core.Counters;
 
 /// <summary>
 /// Filters a <see cref="CounterSnapshot"/> down to the "headline" counters the LLM needs to
@@ -9,7 +7,12 @@ namespace DotnetDiagnosticsMcp.Server.Tools;
 /// monitor lock contention, plus ASP.NET Core request rate / failures and Meter p95 request
 /// duration. Everything else stays reachable via the handle store.
 /// </summary>
-internal static class HeadlineCounters
+/// <remarks>
+/// Lives in Core (moved out of the Server tool layer in #288) so the host-neutral
+/// <see cref="DotnetDiagnosticsMcp.Core.UseCases.EventCollectionUseCases"/> can summarise a counter
+/// snapshot without any MCP knowledge; the Server triage tool consumes it from here too.
+/// </remarks>
+public static class HeadlineCounters
 {
     private static readonly HashSet<(string Provider, string Name)> Headline = new()
     {

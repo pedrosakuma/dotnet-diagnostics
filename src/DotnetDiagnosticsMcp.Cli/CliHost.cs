@@ -114,6 +114,14 @@ internal static class CliHost
             return 2;
         }
 
+        if (options.Command == "collect" && !CliCommands.TryValidateCollect(options, out var collectError))
+        {
+            await stderr.WriteLineAsync(collectError).ConfigureAwait(false);
+            await stderr.WriteLineAsync().ConfigureAwait(false);
+            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+            return 2;
+        }
+
         using var host = BuildHost();
 
         try
@@ -189,15 +197,34 @@ internal static class CliHost
         Commands:
           processes                     List attachable .NET processes.
           capabilities                  Probe a target's diagnostic capability matrix.
+          collect                       Open an EventPipe session and collect events (--kind required).
 
         Options:
           -p, --pid <int>               Target OS process id (auto-resolved when only one is visible).
               --json                    Emit the raw DiagnosticResult envelope as JSON.
           -h, --help                    Show this help.
 
+        collect options:
+              --kind <kind>             Required. One of: counters, exceptions, gc, event_source,
+                                        activities, logs, jit, threadpool, contention, db.
+          -d, --duration <int>          Collection window in seconds (default: counters 5, others 10).
+              --depth <level>           Verbosity: summary, detail (default), raw.
+              --max-events <int>        Per-kind cap (events / exceptions / activities).
+              --interval <int>          Refresh interval in seconds (counters, db). Default 1.
+              --provider <name>         counters: EventCounter provider (repeatable);
+                                        event_source: required provider name.
+              --meter <name>            counters: Meter name (repeatable).
+              --source <name>           activities: ActivitySource filter (repeatable, * / ? globs).
+              --category <glob>         logs: ILogger category filter (repeatable).
+              --min-level <level>       logs: minimum level (default Information).
+              --unsafe-provider         event_source: opt in to a non-allowlisted provider.
+
         Examples:
           dotnet-diagnostics processes
           dotnet-diagnostics capabilities --pid 1234
           dotnet-diagnostics processes --json
+          dotnet-diagnostics collect --kind counters --pid 1234 --duration 5
+          dotnet-diagnostics collect --kind gc --pid 1234 --json
+          dotnet-diagnostics collect --kind event_source --provider System.Net.Http --pid 1234
         """;
 }
