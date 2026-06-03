@@ -36,6 +36,33 @@ public sealed class CliHostTests
     }
 
     [Fact]
+    public async Task RunAsync_CommandHelp_PrintsFocusedHelpForThatCommand()
+    {
+        var (exit, stdout, stderr) = await RunAsync("dump", "--help");
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        // Focused screen: this command's options + examples, not other commands' option blocks.
+        stdout.Should().Contain("dump options:");
+        stdout.Should().Contain("--confirm");
+        stdout.Should().NotContain("collect options:");
+        stdout.Should().NotContain("inspect-heap options:");
+        // Item 3 (#302): the dump-preview-exits-0 scripting signal is documented in dump help.
+        stdout.Should().Contain("confirmation_required").And.Contain("dump_written");
+    }
+
+    [Fact]
+    public async Task RunAsync_CommandHelp_CollectShowsOnlyCollectOptions()
+    {
+        var (exit, stdout, _) = await RunAsync("collect", "--help");
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("collect options:").And.Contain("--kind");
+        stdout.Should().NotContain("dump options:");
+        stdout.Should().NotContain("get-bytes options:");
+    }
+
+    [Fact]
     public async Task RunAsync_UnknownCommand_ReturnsTwo()
     {
         var (exit, _, stderr) = await RunAsync("frobnicate");

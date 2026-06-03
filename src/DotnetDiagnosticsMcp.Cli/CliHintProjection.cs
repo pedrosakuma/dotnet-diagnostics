@@ -1,5 +1,7 @@
 using System.Globalization;
 using DotnetDiagnosticsMcp.Core;
+using DotnetDiagnosticsMcp.Core.Capabilities;
+using DotnetDiagnosticsMcp.Core.ThreadPool;
 
 namespace DotnetDiagnosticsMcp.Cli;
 
@@ -68,6 +70,9 @@ internal static class CliHintProjection
         ("dumpType='WithHeap'", "--dump-type WithHeap"),
         ("confirm=true", "--confirm"),
         (" + handoff payload to dotnet-assembly-mcp", ""),
+        // Threadpool collector note: keep the MinThreads/MaxThreads fact, drop the MCP-only
+        // collect_thread_snapshot follow-up the one-shot CLI cannot act on (#302).
+        (" Use collect_thread_snapshot(view=\"threadpool\") when a ptrace-backed snapshot is acceptable.", ""),
         ("outputDirectory", "--out"),
         ("processId", "--pid"),
     };
@@ -92,6 +97,7 @@ internal static class CliHintProjection
         "inspect_heap",
         "list_dotnet_processes",
         "processId",
+        "collect_cpu_sample",
         "query_snapshot",
         "query_heap_snapshot",
         "dotnet-assembly-mcp",
@@ -207,5 +213,92 @@ internal static class CliHintProjection
             $"Re-run with --confirm to write the {preview.DumpType} dump to disk.");
 
         return result with { Summary = summary, Data = preview with { Message = message } };
+    }
+
+    /// <summary>
+    /// Replaces the MCP-audience capability narrative (Core's <see cref="DiagnosticCapabilities.Notes"/>,
+    /// which names MCP-only tools such as <c>collect_off_cpu_sample</c>, <c>collect_thread_snapshot</c>,
+    /// <c>inspect_process(view=resources)</c>) with a concise CLI-authored note built from the typed
+    /// capability fields (#302). The note covers only what the one-shot CLI actually exposes — the
+    /// live-attach host gate that decides whether <c>inspect-heap --source live</c> and <c>dump</c>
+    /// can attach — so it can never leak MCP vocabulary. The full structured capability matrix
+    /// (off-CPU / perf / ptrace booleans) is still emitted verbatim in the <c>--json</c> envelope.
+    /// </summary>
+    public static DiagnosticResult<DiagnosticCapabilities> ProjectCapabilities(DiagnosticResult<DiagnosticCapabilities> result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        if (result.Data is not { } caps)
+        {
+            return result;
+        }
+
+        var cliNotes = BuildCliCapabilityNotes(caps);
+
+        // Core's capability summary embeds the original MCP-vocabulary Notes verbatim
+        // (ProcessInspectionUseCases: "Runtime: … gcdump: …. {Notes}"). Swap that same substring for
+        // the CLI-authored note so the human summary line stops leaking MCP tool names too.
+        var summary = result.Summary;
+        if (!string.IsNullOrEmpty(caps.Notes) && summary.Contains(caps.Notes, StringComparison.Ordinal))
+        {
+            summary = summary.Replace(caps.Notes, cliNotes, StringComparison.Ordinal);
+        }
+
+        return result with { Summary = summary, Data = caps with { Notes = cliNotes } };
+    }
+
+    internal static string BuildCliCapabilityNotes(DiagnosticCapabilities caps)
+    {
+        ArgumentNullException.ThrowIfNull(caps);
+
+        var parts = new List<string>(2);
+        if (caps.Runtime == RuntimeFlavor.Unknown)
+        {
+            parts.Add("Runtime flavor could not be classified (the EventPipe probe may have failed); inspect the capability flags in --json.");
+        }
+
+        if (caps.CanAttachClrMD)
+        {
+            parts.Add("Live attach for `inspect-heap --source live` and `dump` is available.");
+        }
+        else
+        {
+            // AttachClrMdReason is Core prose that may name MCP tools (e.g. "use the dump-based
+            // workflow (collect_process_dump + inspect_dump)"); sanitize it and fail closed to a
+            // generic message if anything still leaks.
+            var reason = SanitizeReason(caps.AttachClrMdReason ?? string.Empty);
+            parts.Add(!string.IsNullOrWhiteSpace(reason) && !ContainsLeak(reason)
+                ? $"Live attach for `inspect-heap --source live` and `dump` is unavailable: {reason}"
+                : "Live attach for `inspect-heap --source live` and `dump` is unavailable.");
+        }
+
+        return string.Join(" ", parts);
+    }
+
+    /// <summary>
+    /// Sanitizes the free-text <see cref="ThreadPoolEventSnapshot.Notes"/> (surfaced in the
+    /// <c>collect --kind threadpool --json</c> envelope), where Core points the LLM at the MCP-only
+    /// <c>collect_thread_snapshot</c> tool. Each note is rewritten to CLI vocabulary; any note that
+    /// still names an MCP tool after rewriting is dropped (fail-closed), matching the hint projection
+    /// boundary (#302).
+    /// </summary>
+    public static DiagnosticResult<ThreadPoolEventSnapshot> ProjectThreadPoolNotes(DiagnosticResult<ThreadPoolEventSnapshot> result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        if (result.Data is not { } snapshot || snapshot.Notes.Count == 0)
+        {
+            return result;
+        }
+
+        var notes = new List<string>(snapshot.Notes.Count);
+        foreach (var note in snapshot.Notes)
+        {
+            var sanitized = SanitizeReason(note);
+            if (!ContainsLeak(sanitized))
+            {
+                notes.Add(sanitized);
+            }
+        }
+
+        return result with { Data = snapshot with { Notes = notes } };
     }
 }

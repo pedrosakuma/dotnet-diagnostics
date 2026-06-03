@@ -1,0 +1,206 @@
+using System.Collections.Generic;
+using System.Text;
+
+namespace DotnetDiagnosticsMcp.Cli;
+
+/// <summary>
+/// Composable help text for the CLI. <see cref="Global"/> reproduces the full usage screen
+/// (printed for a bare <c>--help</c>, no command, or a usage error); <see cref="ForCommand"/>
+/// renders a focused screen for a single subcommand (e.g. <c>collect --help</c>) so the user does
+/// not have to scroll the entire reference to find one command's flags (#302). Keeping each
+/// command's synopsis, options and examples in one structured table means the global screen and the
+/// per-command screens are built from the same source and cannot drift apart.
+/// </summary>
+internal static class CliHelp
+{
+    private const string Tagline =
+        "dotnet-diagnostics-cli — one-shot diagnostics against a live .NET process (no HTTP, no bearer, no daemon).";
+
+    private const string GlobalOptions =
+"""
+Options:
+  -p, --pid <int>               Target OS process id (auto-resolved when only one is visible).
+      --json                    Emit the raw DiagnosticResult envelope as JSON.
+  -h, --help                    Show this help.
+""";
+
+    private sealed record CommandHelp(string Name, string Synopsis, string? Options, string Examples);
+
+    private static readonly IReadOnlyList<CommandHelp> Commands = new[]
+    {
+        new CommandHelp(
+            "processes",
+            "List attachable .NET processes.",
+            null,
+"""
+  dotnet-diagnostics-cli processes
+  dotnet-diagnostics-cli processes --json
+"""),
+        new CommandHelp(
+            "capabilities",
+            "Probe a target's diagnostic capability matrix.",
+            null,
+            "  dotnet-diagnostics-cli capabilities --pid 1234"),
+        new CommandHelp(
+            "collect",
+            "Open an EventPipe session and collect events (--kind required).",
+"""
+collect options:
+      --kind <kind>             Required. One of: counters, exceptions, gc, event_source,
+                                activities, logs, jit, threadpool, contention, db.
+  -d, --duration <int>          Collection window in seconds (default: counters 5, others 10).
+      --depth <level>           Verbosity: summary, detail (default), raw.
+      --max-events <int>        Per-kind cap (events / exceptions / activities).
+      --interval <int>          Refresh interval in seconds (counters, db). Default 1.
+      --provider <name>         counters: EventCounter provider (repeatable);
+                                event_source: required provider name.
+      --meter <name>            counters: Meter name (repeatable).
+      --source <name>           activities: ActivitySource filter (repeatable, * / ? globs).
+      --category <glob>         logs: ILogger category filter (repeatable).
+      --min-level <level>       logs: minimum level (default Information).
+      --unsafe-provider         event_source: opt in to a non-allowlisted provider.
+""",
+"""
+  dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
+  dotnet-diagnostics-cli collect --kind gc --pid 1234 --json
+  dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
+"""),
+        new CommandHelp(
+            "inspect-heap",
+            "Walk the managed heap of a live process or a .dmp (--source live|dump).",
+"""
+inspect-heap options:
+      --source <live|dump>      Snapshot source (default: inferred — dump when --dump-file is set, else live).
+      --dump-file <path>        --source dump: path to a previously-captured .dmp.
+      --top-types <int>         Top-N type count (default 20).
+      --include-retention-paths Walk a short GC retention chain for the top types.
+      --retention-path-limit <int>  Cap retention-chain depth (default 8).
+      --include-static-fields   Rank static reference fields by referenced object size.
+      --include-delegate-targets  Group MulticastDelegate invocation lists by (target, method).
+      --include-duplicate-strings Rank duplicate strings by aggregate retained bytes.
+      --symbol-path <path>      NT_SYMBOL_PATH-style search path (remote servers off by default).
+""",
+"""
+  dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
+  dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
+"""),
+        new CommandHelp(
+            "dump",
+            "Write a process dump to disk (requires --confirm).",
+"""
+dump options:
+      --dump-type <type>        Mini (default), Triage, WithHeap or Full.
+      --out <dir>               Directory to write the dump into (default: temp artifact root).
+      --confirm                 Required to actually write; without it a preview is returned.
+  Scripting: a preview (run without --confirm) is a success and exits 0. To tell a preview apart
+  from a written dump, parse --json: data.kind == "confirmation_required" (preview) versus
+  data.kind == "dump_written" (a dump was written to disk).
+""",
+            "  dotnet-diagnostics-cli dump --pid 1234 --dump-type WithHeap --out ./dumps --confirm"),
+        new CommandHelp(
+            "query",
+            "Drill-down query (unsupported in the one-shot CLI — see notes).",
+"""
+query options:
+      --handle <id>             Drill-down handle (accepted but not honoured — see note).
+      --view <name>             Drill-down view (accepted but not honoured — see note).
+  Note: drill-down handles are MCP-session scoped; the one-shot CLI emits its full result
+  inline on the originating command (use --depth detail / --json). 'query' always returns a
+  NotSupported envelope (exit 1).
+""",
+            string.Empty),
+        new CommandHelp(
+            "get-bytes",
+            "Materialise a module (PE/PDB) or dump file to disk (--out required).",
+"""
+get-bytes options:
+      --kind <module|dump>      Required. Artifact to materialise.
+      --out <file>              Required. Destination file the artifact is written to.
+      --mvid <guid>             --kind module: module version id (GUID) to fetch.
+      --asset <pe|pdb>          --kind module: artifact within the module (default pe).
+      --dump-file <path>        --kind dump: path to the source .dmp to copy out.
+""",
+"""
+  dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll
+  dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
+"""),
+    };
+
+    /// <summary>The full usage screen (every command, options and examples).</summary>
+    public static string Global { get; } = BuildGlobal();
+
+    /// <summary>
+    /// Returns a focused help screen for <paramref name="command"/>, or <see cref="Global"/> when the
+    /// command is not a known CLI command.
+    /// </summary>
+    public static string ForCommand(string command)
+    {
+        CommandHelp? match = null;
+        foreach (var c in Commands)
+        {
+            if (string.Equals(c.Name, command, System.StringComparison.Ordinal))
+            {
+                match = c;
+                break;
+            }
+        }
+
+        if (match is null)
+        {
+            return Global;
+        }
+
+        var sb = new StringBuilder();
+        sb.Append(Tagline).Append('\n').Append('\n');
+        sb.Append("Usage:").Append('\n');
+        sb.Append("  dotnet-diagnostics-cli ").Append(match.Name).Append(" [options]").Append('\n').Append('\n');
+        sb.Append(match.Name).Append(": ").Append(match.Synopsis).Append('\n').Append('\n');
+        sb.Append(GlobalOptions);
+        if (!string.IsNullOrEmpty(match.Options))
+        {
+            sb.Append('\n').Append('\n').Append(match.Options);
+        }
+
+        if (!string.IsNullOrEmpty(match.Examples))
+        {
+            sb.Append('\n').Append('\n').Append("Examples:").Append('\n').Append(match.Examples);
+        }
+
+        return sb.ToString();
+    }
+
+    private static string BuildGlobal()
+    {
+        var sb = new StringBuilder();
+        sb.Append(Tagline).Append('\n').Append('\n');
+        sb.Append("Usage:").Append('\n');
+        sb.Append("  dotnet-diagnostics-cli <command> [options]").Append('\n').Append('\n');
+
+        sb.Append("Commands:").Append('\n');
+        foreach (var c in Commands)
+        {
+            sb.Append("  ").Append(c.Name.PadRight(28)).Append("  ").Append(c.Synopsis).Append('\n');
+        }
+
+        sb.Append('\n').Append(GlobalOptions).Append('\n');
+
+        foreach (var c in Commands)
+        {
+            if (!string.IsNullOrEmpty(c.Options))
+            {
+                sb.Append('\n').Append(c.Options).Append('\n');
+            }
+        }
+
+        sb.Append('\n').Append("Examples:").Append('\n');
+        foreach (var c in Commands)
+        {
+            if (!string.IsNullOrEmpty(c.Examples))
+            {
+                sb.Append(c.Examples).Append('\n');
+            }
+        }
+
+        return sb.ToString().TrimEnd('\n');
+    }
+}
