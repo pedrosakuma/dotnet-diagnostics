@@ -77,6 +77,13 @@ jobs:
       - name: Test (Core)
         run: scripts/ci-test-with-retry.sh core-test-results.trx -- dotnet test tests/DotnetDiagnosticsMcp.Core.Tests/DotnetDiagnosticsMcp.Core.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=core-test-results.trx" --results-directory TestResults
 
+      # CLI tests are lightweight (parser/exit-code units + a `processes --json` smoke and the
+      # Core-only seam guard); no live child processes or EventPipe sessions, so they run as a
+      # plain step. Kept separate from the live-process suites to preserve the no-cross-assembly-
+      # parallelism invariant documented above.
+      - name: Test (CLI)
+        run: dotnet test tests/DotnetDiagnosticsMcp.Cli.Tests/DotnetDiagnosticsMcp.Cli.Tests.csproj --no-build --configuration Release --logger "trx;LogFileName=cli-test-results.trx" --results-directory TestResults
+
       - name: Test (Server integration)
         run: scripts/ci-test-with-retry.sh server-test-results.trx -- dotnet test tests/DotnetDiagnosticsMcp.Server.IntegrationTests/DotnetDiagnosticsMcp.Server.IntegrationTests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --filter "Category!=KindIntegration" --logger "trx;LogFileName=server-test-results.trx" --results-directory TestResults
 
