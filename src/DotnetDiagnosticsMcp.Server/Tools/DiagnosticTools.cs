@@ -356,7 +356,7 @@ public sealed class DiagnosticTools
     [Description(
         "Phase 12 IoT-style triage: collects counters (5s), runs server-side classification, and returns a verdict with actionable hints. " +
         "The LLM just follows the first hint — no interpretation needed. " +
-        "Verdicts: cpu-bound, gc-pressure, threadpool-starvation, lock-contention, io-bound, healthy. " +
+        "Verdicts: cpu-bound, gc-pressure, memory-pressure, threadpool-starvation, lock-contention, io-bound, healthy. " +
         "Severity: critical (immediate action), degraded (investigate), healthy (all clear).")]
     public static async Task<DiagnosticResult<TriageResult>> PerformTriage(
         ICounterCollector collector,
@@ -432,6 +432,21 @@ public sealed class DiagnosticTools
                     new Dictionary<string, object?> { ["processId"] = pid, ["source"] = "live" }));
                 break;
 
+            case TriageClassifier.MemoryPressure:
+                // Lead with the allocation profiler when the driver is a high allocation rate (mirrors
+                // the snapshot-counter auto-hint), since kind="gc" captures pauses, not allocation sites.
+                if ((triage.Evidence.AllocRate ?? 0) >= 50_000_000)
+                {
+                    hints.Add(new NextActionHint("collect_sample", $"alloc-rate={triage.Evidence.AllocRate / 1_000_000:F0} MB/s — profile the allocation hotspot.",
+                        new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "allocation", ["durationSeconds"] = 10 }));
+                }
+
+                hints.Add(new NextActionHint("inspect_heap", $"Memory pressure (gen-2 GC={triage.Evidence.Gen2GcCount:F0}) — inspect the live heap for the dominant types and their retention paths.",
+                    new Dictionary<string, object?> { ["processId"] = pid, ["source"] = "live" }));
+                hints.Add(new NextActionHint("inspect_process", "Confirm whether the working set is trending up over time.",
+                    new Dictionary<string, object?> { ["processId"] = pid, ["view"] = "memory_trend" }));
+                break;
+
             case TriageClassifier.ThreadPoolStarvation:
                 hints.Add(new NextActionHint("collect_events", $"threadpool-queue-length={triage.Evidence.ThreadPoolQueueLength:F0} — possible ThreadPool starvation.",
                     new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "threadpool", ["durationSeconds"] = 10 }));
@@ -472,6 +487,7 @@ public sealed class DiagnosticTools
     {
         TriageClassifier.CpuBound => "counters",
         TriageClassifier.GcPressure => "gc",
+        TriageClassifier.MemoryPressure => "gc",
         TriageClassifier.ThreadPoolStarvation => "threadpool",
         TriageClassifier.LockContention => "contention",
         TriageClassifier.IoBound => "activities",
@@ -3531,15 +3547,20 @@ public sealed class DiagnosticTools
     [RequireScope("investigation-export")]
     [McpServerTool(
         Name = "start_investigation",
-        Title = "Plan a diagnostic investigation",
+        Title = "Plan a .NET performance investigation (decision tree)",
         Destructive = false,
         ReadOnly = true,
         Idempotent = true,
         UseStructuredContent = true)]
     [Description(
+        "Use this to PLAN a non-trivial .NET performance investigation — a slow app, high latency, high CPU, " +
+        "or growing/leaking memory — when you want a decision tree before collecting. " +
         "Returns a structured InvestigationPlan: a ready-to-execute decision tree of tool calls with " +
         "rationale, decision branches, early-stop conditions, and constraints (MaxToolCalls, " +
-        "dump-requires-approval). Modes are resolved from the arguments: hypothesis present → " +
+        "dump-requires-approval). After it returns, EXECUTE the first recommended tool call — do not just " +
+        "summarize the plan back to the user. For a quick one-shot first look instead, call " +
+        "inspect_process(view=\"triage\"). " +
+        "Modes are resolved from the arguments: hypothesis present → " +
         "'hypothesis' (routes directly to the relevant evidence collector); baseline present → " +
         "'warm' (skips covered steps, emits MetricComparisons against baseline); otherwise 'cold' " +
         "(USE-style: snapshot_counters first, branch on evidence). Call this BEFORE any other " +

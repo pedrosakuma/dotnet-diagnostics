@@ -14,6 +14,10 @@ public static class TriageClassifier
     /// <summary>Well-known verdict for GC pressure (time-in-gc &gt; 15%).</summary>
     public const string GcPressure = "gc-pressure";
 
+    /// <summary>Well-known verdict for memory / allocation pressure (high alloc-rate or frequent gen-2 GCs)
+    /// even when GC CPU time is still moderate — catches leaks / churn before they show up as gc-pressure.</summary>
+    public const string MemoryPressure = "memory-pressure";
+
     /// <summary>Well-known verdict for ThreadPool starvation (queue-length &gt; 50).</summary>
     public const string ThreadPoolStarvation = "threadpool-starvation";
 
@@ -35,6 +39,9 @@ public static class TriageClassifier
     private const double QueueLengthDegradedThreshold = 50;
     private const double ContentionDegradedThreshold = 10;
     private const double AllocRateDegradedThreshold = 50_000_000; // 50 MB/s
+    private const double AllocRateCriticalThreshold = 100_000_000; // 100 MB/s
+    private const double Gen2GcDegradedThreshold = 3; // gen-2 collections per interval
+    private const double Gen2GcCriticalThreshold = 10;
     private const double IoBoundCpuThreshold = 30;
     private const double IoBoundQueueThreshold = 10;
 
@@ -110,6 +117,20 @@ public static class TriageClassifier
         {
             verdicts.Add(IoBound);
             severity = (TriageSeverity)Math.Max((int)severity, (int)TriageSeverity.Degraded);
+        }
+
+        // Memory / allocation pressure check — intentionally LOWEST priority so it only becomes the
+        // primary verdict when no established verdict fired. Fires on sustained high allocation rate
+        // or frequent gen-2 collections even when time-in-gc is still moderate, catching leaks /
+        // allocation churn that would otherwise be mis-classified as "healthy" until GC CPU cost
+        // catches up. When another verdict already fired, this surfaces as a secondary verdict.
+        if (allocRate >= AllocRateDegradedThreshold || gen2Count >= Gen2GcDegradedThreshold)
+        {
+            verdicts.Add(MemoryPressure);
+            var memSeverity = (allocRate >= AllocRateCriticalThreshold || gen2Count >= Gen2GcCriticalThreshold)
+                ? TriageSeverity.Critical
+                : TriageSeverity.Degraded;
+            severity = (TriageSeverity)Math.Max((int)severity, (int)memSeverity);
         }
 
         // Determine primary verdict and secondaries.
