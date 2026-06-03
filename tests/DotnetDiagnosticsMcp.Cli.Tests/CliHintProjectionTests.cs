@@ -1,5 +1,7 @@
 using DotnetDiagnosticsMcp.Core;
+using DotnetDiagnosticsMcp.Core.Capabilities;
 using DotnetDiagnosticsMcp.Core.Dump;
+using DotnetDiagnosticsMcp.Core.ThreadPool;
 using FluentAssertions;
 
 namespace DotnetDiagnosticsMcp.Cli.Tests;
@@ -225,4 +227,124 @@ public sealed class CliHintProjectionTests
             rendered.Should().NotContain(token, $"projected CLI hint output must not leak the MCP token '{token}'");
         }
     }
+
+    // ----- Tier 2 (#302): capability + threadpool narrative de-MCP-ification -----
+
+    [Fact]
+    public void BuildCliCapabilityNotes_LiveAttachAvailable_DescribesCliCommands_NoLeak()
+    {
+        var notes = CliHintProjection.BuildCliCapabilityNotes(
+            Caps(RuntimeFlavor.CoreClr, canAttach: true, attachReason: null));
+
+        notes.Should().Contain("inspect-heap --source live").And.Contain("`dump`").And.Contain("available");
+        notes.Should().NotContain("could not be classified");
+        AssertNoLeak(notes);
+    }
+
+    [Fact]
+    public void BuildCliCapabilityNotes_LiveAttachBlocked_SanitizesReason_NoLeak()
+    {
+        // Core's attach reason on a ptrace-blocked host names MCP tools; the CLI must rewrite them.
+        var notes = CliHintProjection.BuildCliCapabilityNotes(
+            Caps(RuntimeFlavor.CoreClr, canAttach: false,
+                attachReason: "Use the dump-based workflow (collect_process_dump + inspect_dump)."));
+
+        notes.Should().Contain("unavailable:").And.Contain("dump-based workflow");
+        AssertNoLeak(notes);
+    }
+
+    [Fact]
+    public void BuildCliCapabilityNotes_LiveAttachBlocked_DropsUnrewritableReason_FallsBackToGeneric()
+    {
+        // A reason carrying an MCP fragment with no rewrite rule must be dropped, not rendered.
+        var notes = CliHintProjection.BuildCliCapabilityNotes(
+            Caps(RuntimeFlavor.CoreClr, canAttach: false,
+                attachReason: "Blocked — call query_snapshot(handle=\"h1\") instead."));
+
+        notes.Should().Contain("is unavailable.").And.NotContain("unavailable:");
+        AssertNoLeak(notes);
+    }
+
+    [Fact]
+    public void BuildCliCapabilityNotes_UnknownRuntime_AddsJsonCaveat()
+    {
+        var notes = CliHintProjection.BuildCliCapabilityNotes(
+            Caps(RuntimeFlavor.Unknown, canAttach: true, attachReason: null));
+
+        notes.Should().Contain("could not be classified").And.Contain("--json");
+        AssertNoLeak(notes);
+    }
+
+    [Fact]
+    public void ProjectCapabilities_ReplacesCoreNotes_WithCliAuthoredText()
+    {
+        const string coreProse = "Run collect_off_cpu_sample and inspect_process(view=resources) for more.";
+        var result = DiagnosticResult.Ok(
+            Caps(RuntimeFlavor.CoreClr, canAttach: true, attachReason: null) with
+            {
+                // Verbatim-style Core prose naming MCP tools — must not survive projection.
+                Notes = coreProse,
+            },
+            // Core embeds the same prose verbatim in the summary line (see ProcessInspectionUseCases).
+            $"Runtime: CoreClr 10.0.0. CPU sampling: True, gcdump: True. {coreProse}");
+
+        var projected = CliHintProjection.ProjectCapabilities(result);
+
+        projected.Data!.Notes.Should().NotContain("collect_off_cpu_sample").And.NotContain("inspect_process");
+        projected.Summary.Should().NotContain("collect_off_cpu_sample").And.NotContain("inspect_process");
+        AssertNoLeak(projected.Data.Notes);
+        AssertNoLeak(projected.Summary);
+    }
+
+    [Fact]
+    public void ProjectThreadPoolNotes_DropsMcpFollowUp_KeepsFact()
+    {
+        var result = DiagnosticResult.Ok(
+            ThreadPool("Effective MinThreads/MaxThreads unavailable from the EventPipe-only ThreadPool collector. Use collect_thread_snapshot(view=\"threadpool\") when a ptrace-backed snapshot is acceptable."),
+            "summary");
+
+        var projected = CliHintProjection.ProjectThreadPoolNotes(result);
+
+        projected.Data!.Notes.Should().ContainSingle()
+            .Which.Should().Contain("Effective MinThreads/MaxThreads unavailable")
+            .And.NotContain("collect_thread_snapshot");
+        AssertNoLeak(string.Join(" ", projected.Data.Notes));
+    }
+
+    [Fact]
+    public void ProjectThreadPoolNotes_DropsFullyLeakyNote()
+    {
+        var result = DiagnosticResult.Ok(
+            ThreadPool(
+                "Plain ThreadPool observation with no MCP vocabulary.",
+                "Pivot to collect_thread_snapshot(view=\"threadpool\") for stacks."),
+            "summary");
+
+        var projected = CliHintProjection.ProjectThreadPoolNotes(result);
+
+        projected.Data!.Notes.Should().ContainSingle()
+            .Which.Should().Be("Plain ThreadPool observation with no MCP vocabulary.");
+        AssertNoLeak(string.Join(" ", projected.Data.Notes));
+    }
+
+    private static DiagnosticCapabilities Caps(RuntimeFlavor runtime, bool canAttach, string? attachReason) =>
+        new(1234, runtime, "10.0.0", true, true, true, true, true, true, true, "core notes")
+        {
+            CanAttachClrMD = canAttach,
+            AttachClrMdReason = attachReason,
+        };
+
+    private static ThreadPoolEventSnapshot ThreadPool(params string[] notes) =>
+        new(
+            1234,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(5),
+            Array.Empty<ThreadPoolCountBucket>(),
+            Array.Empty<ThreadPoolCountBucket>(),
+            Array.Empty<ThreadPoolHillClimbingSample>(),
+            Array.Empty<ThreadPoolWorkItemOrigin>(),
+            null,
+            0,
+            0,
+            notes);
 }

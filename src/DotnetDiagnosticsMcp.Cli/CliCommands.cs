@@ -328,6 +328,10 @@ internal static class CliCommands
             .GetCapabilitiesAsync(detector, resolver, options.Pid, cancellationToken)
             .ConfigureAwait(false);
 
+        // Swap Core's MCP-audience capability narrative for a CLI-authored note before rendering, so
+        // neither the human table nor the --json envelope leaks MCP tool names (#302).
+        result = CliHintProjection.ProjectCapabilities(result);
+
         return BuildResult(result, static (sb, caps) =>
         {
             sb.AppendLine();
@@ -385,9 +389,9 @@ internal static class CliCommands
                 services.GetRequiredService<IJitCollector>(), resolver, handles,
                 pid, duration, depth, cancellationToken).ConfigureAwait(false)),
 
-            "threadpool" => Wrap(await EventCollectionUseCases.CollectThreadPool(
+            "threadpool" => Wrap(CliHintProjection.ProjectThreadPoolNotes(await EventCollectionUseCases.CollectThreadPool(
                 services.GetRequiredService<IThreadPoolCollector>(), resolver, handles,
-                pid, duration, depth, cancellationToken).ConfigureAwait(false)),
+                pid, duration, depth, cancellationToken).ConfigureAwait(false))),
 
             "contention" => Wrap(await EventCollectionUseCases.CollectContention(
                 services.GetRequiredService<IContentionCollector>(), resolver, handles,

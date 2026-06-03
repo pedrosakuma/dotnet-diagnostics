@@ -105,7 +105,11 @@ internal static class CliHost
 
         if (options!.Help)
         {
-            await stdout.WriteLineAsync(Usage).ConfigureAwait(false);
+            var helpText = options.Command is { } helpCommand
+                            && CliCommands.Commands.Contains(helpCommand, StringComparer.Ordinal)
+                ? CliHelp.ForCommand(helpCommand)
+                : CliHelp.Global;
+            await stdout.WriteLineAsync(helpText).ConfigureAwait(false);
             return 0;
         }
 
@@ -262,83 +266,5 @@ internal static class CliHost
         return null;
     }
 
-    internal const string Usage =
-        """
-        dotnet-diagnostics-cli — one-shot diagnostics against a live .NET process (no HTTP, no bearer, no daemon).
-
-        Usage:
-          dotnet-diagnostics-cli <command> [options]
-
-        Commands:
-          processes                     List attachable .NET processes.
-          capabilities                  Probe a target's diagnostic capability matrix.
-          collect                       Open an EventPipe session and collect events (--kind required).
-          inspect-heap                  Walk the managed heap of a live process or a .dmp (--source live|dump).
-          dump                          Write a process dump to disk (requires --confirm).
-          query                         Drill-down query (unsupported in the one-shot CLI — see notes).
-          get-bytes                     Materialise a module (PE/PDB) or dump file to disk (--out required).
-
-        Options:
-          -p, --pid <int>               Target OS process id (auto-resolved when only one is visible).
-              --json                    Emit the raw DiagnosticResult envelope as JSON.
-          -h, --help                    Show this help.
-
-        collect options:
-              --kind <kind>             Required. One of: counters, exceptions, gc, event_source,
-                                        activities, logs, jit, threadpool, contention, db.
-          -d, --duration <int>          Collection window in seconds (default: counters 5, others 10).
-              --depth <level>           Verbosity: summary, detail (default), raw.
-              --max-events <int>        Per-kind cap (events / exceptions / activities).
-              --interval <int>          Refresh interval in seconds (counters, db). Default 1.
-              --provider <name>         counters: EventCounter provider (repeatable);
-                                        event_source: required provider name.
-              --meter <name>            counters: Meter name (repeatable).
-              --source <name>           activities: ActivitySource filter (repeatable, * / ? globs).
-              --category <glob>         logs: ILogger category filter (repeatable).
-              --min-level <level>       logs: minimum level (default Information).
-              --unsafe-provider         event_source: opt in to a non-allowlisted provider.
-
-        inspect-heap options:
-              --source <live|dump>      Snapshot source (default: inferred — dump when --dump-file is set, else live).
-              --dump-file <path>        --source dump: path to a previously-captured .dmp.
-              --top-types <int>         Top-N type count (default 20).
-              --include-retention-paths Walk a short GC retention chain for the top types.
-              --retention-path-limit <int>  Cap retention-chain depth (default 8).
-              --include-static-fields   Rank static reference fields by referenced object size.
-              --include-delegate-targets  Group MulticastDelegate invocation lists by (target, method).
-              --include-duplicate-strings Rank duplicate strings by aggregate retained bytes.
-              --symbol-path <path>      NT_SYMBOL_PATH-style search path (remote servers off by default).
-
-        dump options:
-              --dump-type <type>        Mini (default), Triage, WithHeap or Full.
-              --out <dir>               Directory to write the dump into (default: temp artifact root).
-              --confirm                 Required to actually write; without it a preview is returned.
-
-        get-bytes options:
-              --kind <module|dump>      Required. Artifact to materialise.
-              --out <file>              Required. Destination file the artifact is written to.
-              --mvid <guid>             --kind module: module version id (GUID) to fetch.
-              --asset <pe|pdb>          --kind module: artifact within the module (default pe).
-              --dump-file <path>        --kind dump: path to the source .dmp to copy out.
-
-        query options:
-              --handle <id>             Drill-down handle (accepted but not honoured — see note).
-              --view <name>             Drill-down view (accepted but not honoured — see note).
-          Note: drill-down handles are MCP-session scoped; the one-shot CLI emits its full result
-          inline on the originating command (use --depth detail / --json). 'query' always returns a
-          NotSupported envelope (exit 1).
-
-        Examples:
-          dotnet-diagnostics-cli processes
-          dotnet-diagnostics-cli capabilities --pid 1234
-          dotnet-diagnostics-cli processes --json
-          dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
-          dotnet-diagnostics-cli collect --kind gc --pid 1234 --json
-          dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
-          dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
-          dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
-          dotnet-diagnostics-cli dump --pid 1234 --dump-type WithHeap --out ./dumps --confirm
-          dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll
-          dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
-        """;
+    internal static string Usage => CliHelp.Global;
 }
