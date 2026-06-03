@@ -300,7 +300,7 @@ internal static class CliCommands
         var discovery = services.GetRequiredService<IProcessDiscovery>();
         var result = ProcessInspectionUseCases.ListProcesses(discovery);
 
-        var human = RenderEnvelope(result, static (sb, processes) =>
+        return BuildResult(result, static (sb, processes) =>
         {
             if (processes.Count == 0)
             {
@@ -315,8 +315,6 @@ internal static class CliCommands
                     $"{p.ProcessId,-8} {Trunc(p.RuntimeVersion, 16),-16} {Trunc($"{p.OperatingSystem}/{p.ProcessArchitecture}", 16),-16} {p.ManagedEntrypointAssemblyName ?? "<unknown>"}");
             }
         });
-
-        return new CliCommandResult(result.IsError, result.Cancelled, result, human);
     }
 
     private static async Task<CliCommandResult> CapabilitiesAsync(
@@ -330,7 +328,7 @@ internal static class CliCommands
             .GetCapabilitiesAsync(detector, resolver, options.Pid, cancellationToken)
             .ConfigureAwait(false);
 
-        var human = RenderEnvelope(result, static (sb, caps) =>
+        return BuildResult(result, static (sb, caps) =>
         {
             sb.AppendLine();
             sb.AppendLine(CultureInfo.InvariantCulture, $"  Runtime           : {caps.Runtime} {caps.RuntimeVersion}");
@@ -341,8 +339,6 @@ internal static class CliCommands
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  Notes             : {caps.Notes}");
             }
         });
-
-        return new CliCommandResult(result.IsError, result.Cancelled, result, human);
     }
 
     private static async Task<CliCommandResult> CollectAsync(
@@ -423,7 +419,7 @@ internal static class CliCommands
     }
 
     private static CliCommandResult Wrap<T>(DiagnosticResult<T> result) =>
-        new(result.IsError, result.Cancelled, result, RenderEnvelope<T>(result, static (_, _) => { }));
+        BuildResult<T>(result, static (_, _) => { });
 
     private static async Task<CliCommandResult> InspectHeapAsync(
         IServiceProvider services,
@@ -450,8 +446,7 @@ internal static class CliCommands
                 options.IncludeStaticFields, options.IncludeDelegateTargets, options.IncludeDuplicateStrings,
                 NullIfEmpty(options.SymbolPath), deprecation: null, cancellationToken).ConfigureAwait(false);
 
-            var dumpHuman = RenderEnvelope<DumpInspection>(dumpResult, static (sb, data) => RenderTopTypes(sb, data.TopTypesByBytes));
-            return new CliCommandResult(dumpResult.IsError, dumpResult.Cancelled, dumpResult, dumpHuman);
+            return BuildResult<DumpInspection>(dumpResult, static (sb, data) => RenderTopTypes(sb, data.TopTypesByBytes));
         }
 
         var resolver = services.GetRequiredService<IProcessContextResolver>();
@@ -462,8 +457,7 @@ internal static class CliCommands
             options.IncludeStaticFields, options.IncludeDelegateTargets, options.IncludeDuplicateStrings,
             NullIfEmpty(options.SymbolPath), deprecation: null, cancellationToken).ConfigureAwait(false);
 
-        var liveHuman = RenderEnvelope<LiveHeapInspection>(liveResult, static (sb, data) => RenderTopTypes(sb, data.TopTypesByBytes));
-        return new CliCommandResult(liveResult.IsError, liveResult.Cancelled, liveResult, liveHuman);
+        return BuildResult<LiveHeapInspection>(liveResult, static (sb, data) => RenderTopTypes(sb, data.TopTypesByBytes));
     }
 
     private static async Task<CliCommandResult> DumpAsync(
@@ -486,7 +480,11 @@ internal static class CliCommands
             dumper, resolver, logger: null, principalName: null,
             options.Pid, dumpType, outputDirectory: null, options.Confirm, cancellationToken).ConfigureAwait(false);
 
-        var human = RenderEnvelope<DumpToolResult>(result, static (sb, data) =>
+        // The Core confirmation-required preview names the MCP tool (collect_process_dump) and
+        // confirm=true in its summary/message; rewrite it to CLI vocabulary before rendering (#301).
+        result = CliHintProjection.RewriteDumpPreview(result);
+
+        return BuildResult<DumpToolResult>(result, static (sb, data) =>
         {
             if (data.Dump is { } dump)
             {
@@ -495,7 +493,6 @@ internal static class CliCommands
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  size  : {dump.FileSizeBytes:N0} bytes");
             }
         });
-        return new CliCommandResult(result.IsError, result.Cancelled, result, human);
     }
 
     /// <summary>
@@ -517,8 +514,7 @@ internal static class CliCommands
                 "one-shot-cli"),
             new NextActionHint("collect", "Re-run the originating command with --depth detail (or --json) to get the full result inline."));
 
-        var human = RenderEnvelope<object>(result, static (_, _) => { });
-        return new CliCommandResult(result.IsError, result.Cancelled, result, human);
+        return BuildResult<object>(result, static (_, _) => { });
     }
 
     private static async Task<CliCommandResult> GetBytesAsync(
@@ -557,7 +553,7 @@ internal static class CliCommands
 
     private static CliCommandResult WrapMaterialization(DiagnosticResult<ByteMaterialization> result)
     {
-        var human = RenderEnvelope<ByteMaterialization>(result, static (sb, data) =>
+        return BuildResult<ByteMaterialization>(result, static (sb, data) =>
         {
             sb.AppendLine();
             sb.AppendLine(CultureInfo.InvariantCulture, $"  asset  : {data.Asset}");
@@ -570,22 +566,46 @@ internal static class CliCommands
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  pdb    : {data.CompanionPdbPath}");
             }
         });
-        return new CliCommandResult(result.IsError, result.Cancelled, result, human);
     }
 
-    private static void RenderTopTypes(StringBuilder sb, IReadOnlyList<TypeStat> topByBytes)
+    internal static void RenderTopTypes(StringBuilder sb, IReadOnlyList<TypeStat> topByBytes)
     {
         if (topByBytes.Count == 0)
         {
             return;
         }
 
+        // Types whose identity (mvid + metadata token) is known get a short numeric handle in the ID
+        // column and a line in the identities block, so a human can copy the GUID straight into
+        // `get-bytes --kind module --mvid <guid>` without dropping to --json (#301 #3).
+        var identities = new List<(int Id, Guid Mvid, int? Token)>();
+        var nextId = 1;
+
         sb.AppendLine();
-        sb.AppendLine(CultureInfo.InvariantCulture, $"  {"BYTES%",-8} {"INSTANCES",-14} TYPE");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"  {"BYTES%",-8} {"INSTANCES",-14} {"ID",-4} TYPE");
         foreach (var t in topByBytes)
         {
+            var idColumn = string.Empty;
+            if (t.Identity is { ModuleVersionId: { } mvid })
+            {
+                var id = nextId++;
+                idColumn = id.ToString(CultureInfo.InvariantCulture);
+                identities.Add((id, mvid, t.Identity.MetadataToken));
+            }
+
             sb.AppendLine(CultureInfo.InvariantCulture,
-                $"  {t.TotalBytesPercent,-8} {t.InstanceCount,-14:N0} {t.TypeFullName}");
+                $"  {t.TotalBytesPercent,-8} {t.InstanceCount,-14:N0} {idColumn,-4} {t.TypeFullName}");
+        }
+
+        if (identities.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("  identities (for get-bytes --kind module --mvid <guid>):");
+            foreach (var (id, mvid, token) in identities)
+            {
+                var tokenText = token is { } tk ? string.Create(CultureInfo.InvariantCulture, $"0x{tk:X8}") : "(none)";
+                sb.AppendLine(CultureInfo.InvariantCulture, $"    {id}: mvid={mvid} token={tokenText}");
+            }
         }
     }
 
@@ -617,6 +637,15 @@ internal static class CliCommands
     /// resolved-process digest, next-action hints) plus a command-specific data block supplied by
     /// <paramref name="renderData"/> (skipped on error / null payload).
     /// </summary>
+    private static CliCommandResult BuildResult<T>(DiagnosticResult<T> result, Action<StringBuilder, T> renderData)
+    {
+        // Project Core's MCP-audience hints into CLI vocabulary ONCE, before both the human table and
+        // the --json envelope are produced, so neither leaks MCP tool names / call syntax (#301).
+        var projected = CliHintProjection.Project(result);
+        var human = RenderEnvelope(projected, renderData);
+        return new CliCommandResult(projected.IsError, projected.Cancelled, projected, human);
+    }
+
     private static string RenderEnvelope<T>(DiagnosticResult<T> result, Action<StringBuilder, T> renderData)
     {
         var sb = new StringBuilder();
