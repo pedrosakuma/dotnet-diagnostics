@@ -68,6 +68,27 @@ docker run -d -p 127.0.0.1:8787:8080 \
 ```
 
 <details>
+<summary><strong>Standalone one-shot CLI (no MCP client)</strong></summary>
+
+`dotnet-diagnostics-cli` is a separate package that runs the same Core diagnostics engine
+as a one-shot command — no HTTP server, bearer token, or MCP client. Useful for scripts,
+CI, and `kubectl exec` into the sidecar (the container image ships it on `PATH`).
+
+```bash
+dotnet tool install -g dotnet-diagnostics-cli
+dotnet-diagnostics-cli processes
+dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
+
+# Inside the sidecar container (image bundles the CLI):
+kubectl exec -it <pod> -c diagnostics-mcp -- dotnet-diagnostics-cli inspect-heap --pid 1
+```
+
+Self-contained per-OS binaries are attached to each [Release](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/releases)
+as `dotnet-diagnostics-cli-<version>-<rid>`.
+
+</details>
+
+<details>
 <summary><strong>Transport options</strong></summary>
 
 | Transport | Use case | Auth |

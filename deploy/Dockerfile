@@ -23,8 +23,10 @@ WORKDIR /src
 COPY global.json Directory.Build.props Directory.Packages.props .editorconfig ./
 COPY src/DotnetDiagnosticsMcp.Core/DotnetDiagnosticsMcp.Core.csproj src/DotnetDiagnosticsMcp.Core/
 COPY src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj src/DotnetDiagnosticsMcp.Server/
+COPY src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj src/DotnetDiagnosticsMcp.Cli/
 
-RUN dotnet restore src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj
+RUN dotnet restore src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj \
+ && dotnet restore src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj
 
 # Copy the rest of the source needed by the server project.
 COPY src/ src/
@@ -34,6 +36,18 @@ RUN dotnet publish src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.c
     -o /app/publish \
     --no-restore \
     /p:UseAppHost=false
+
+# Standalone one-shot CLI (issue #288). Published framework-dependent (the aspnet
+# runtime base already carries the .NET runtime) so operators can `kubectl exec`
+# into the sidecar and run `dotnet-diagnostics-cli ...` against the shared target
+# process without standing up the HTTP server. UseAppHost=true so the symlink in
+# the runtime stage has a native launcher to point at.
+RUN dotnet publish src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj \
+    -c Release \
+    -o /app/cli \
+    --no-restore \
+    -p:PackAsTool=false \
+    /p:UseAppHost=true
 
 # mcr.microsoft.com/dotnet/aspnet:10.0
 FROM mcr.microsoft.com/dotnet/aspnet@sha256:8c0b6857eab7b2aa57884c839bf4678414606bd7d17370f18a842ac5cf414711 AS runtime
@@ -76,6 +90,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/publish ./
+COPY --from=build /app/cli /app/cli
+# Surface the standalone CLI on PATH under its packaged command name. The apphost
+# is named after the assembly (dotnet-diagnostics); users invoke dotnet-diagnostics-cli.
+RUN ln -s /app/cli/dotnet-diagnostics /usr/local/bin/dotnet-diagnostics-cli
 RUN chown -R diagnosticsmcp:diagnosticsmcp /app
 USER diagnosticsmcp
 

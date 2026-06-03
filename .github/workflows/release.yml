@@ -71,6 +71,11 @@ jobs:
             -o artifacts/nupkg \
             -p:Version=${{ steps.derive-version.outputs.version }} \
             --no-restore
+          dotnet pack src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj \
+            -c Release \
+            -o artifacts/nupkg \
+            -p:Version=${{ steps.derive-version.outputs.version }} \
+            --no-restore
 
       - name: Attest nupkg provenance
         # Attests the package bytes that are uploaded as an artifact below; the same
@@ -123,7 +128,7 @@ jobs:
           restore-keys: |
             nuget-${{ runner.os }}-
 
-      - name: Publish self-contained single-file binary
+      - name: Publish self-contained single-file binaries
         shell: bash
         run: |
           dotnet publish src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj \
@@ -133,30 +138,47 @@ jobs:
             -p:PublishSingleFile=true \
             -p:IncludeNativeLibrariesForSelfExtract=true \
             -p:Version=${{ needs.pack-tool.outputs.version }} \
-            -o artifacts/${{ matrix.rid }}
+            -o artifacts/server/${{ matrix.rid }}
+          dotnet publish src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj \
+            -c Release \
+            -r ${{ matrix.rid }} \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:PackAsTool=false \
+            -p:Version=${{ needs.pack-tool.outputs.version }} \
+            -o artifacts/cli/${{ matrix.rid }}
 
-      - name: Rename binary to dotnet-diagnostics-mcp
+      - name: Rename binaries to their command names
         shell: bash
         # We rename post-publish (instead of -p:AssemblyName=...) because passing
         # AssemblyName as a global MSBuild property propagates to the referenced
         # Core project, renaming its DLL to the same name and triggering NETSDK1152
-        # "multiple publish output files with the same relative path".
+        # "multiple publish output files with the same relative path". The server's
+        # apphost is DotnetDiagnosticsMcp.Server; the CLI's is dotnet-diagnostics
+        # (its csproj AssemblyName) which we surface to users as dotnet-diagnostics-cli.
         run: |
-          cd artifacts/${{ matrix.rid }}
+          srv=artifacts/server/${{ matrix.rid }}
+          cli=artifacts/cli/${{ matrix.rid }}
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            mv DotnetDiagnosticsMcp.Server.exe dotnet-diagnostics-mcp.exe
+            mv "$srv/DotnetDiagnosticsMcp.Server.exe" "$srv/dotnet-diagnostics-mcp.exe"
+            mv "$cli/dotnet-diagnostics.exe" "$cli/dotnet-diagnostics-cli.exe"
           else
-            mv DotnetDiagnosticsMcp.Server dotnet-diagnostics-mcp
+            mv "$srv/DotnetDiagnosticsMcp.Server" "$srv/dotnet-diagnostics-mcp"
+            mv "$cli/dotnet-diagnostics" "$cli/dotnet-diagnostics-cli"
           fi
 
-      - name: Zip artifact
+      - name: Archive artifacts
         shell: bash
         run: |
-          cd artifacts/${{ matrix.rid }}
+          ver=${{ needs.pack-tool.outputs.version }}
+          rid=${{ matrix.rid }}
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a ../dotnet-diagnostics-mcp-${{ needs.pack-tool.outputs.version }}-${{ matrix.rid }}.zip dotnet-diagnostics-mcp.exe appsettings*.json
+            (cd artifacts/server/$rid && 7z a ../../dotnet-diagnostics-mcp-$ver-$rid.zip dotnet-diagnostics-mcp.exe appsettings*.json)
+            (cd artifacts/cli/$rid && 7z a ../../dotnet-diagnostics-cli-$ver-$rid.zip dotnet-diagnostics-cli.exe)
           else
-            tar -czf ../dotnet-diagnostics-mcp-${{ needs.pack-tool.outputs.version }}-${{ matrix.rid }}.tar.gz dotnet-diagnostics-mcp appsettings*.json
+            (cd artifacts/server/$rid && tar -czf ../../dotnet-diagnostics-mcp-$ver-$rid.tar.gz dotnet-diagnostics-mcp appsettings*.json)
+            (cd artifacts/cli/$rid && tar -czf ../../dotnet-diagnostics-cli-$ver-$rid.tar.gz dotnet-diagnostics-cli)
           fi
 
       - name: Attest binary archive provenance
@@ -165,6 +187,8 @@ jobs:
           subject-path: |
             artifacts/dotnet-diagnostics-mcp-*.tar.gz
             artifacts/dotnet-diagnostics-mcp-*.zip
+            artifacts/dotnet-diagnostics-cli-*.tar.gz
+            artifacts/dotnet-diagnostics-cli-*.zip
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -173,6 +197,8 @@ jobs:
           path: |
             artifacts/dotnet-diagnostics-mcp-*.tar.gz
             artifacts/dotnet-diagnostics-mcp-*.zip
+            artifacts/dotnet-diagnostics-cli-*.tar.gz
+            artifacts/dotnet-diagnostics-cli-*.zip
           if-no-files-found: error
 
   # ----- 3) Attach everything to a GitHub Release (tag-driven only) -----
@@ -196,6 +222,7 @@ jobs:
           files: |
             artifacts/nupkg/*.nupkg
             artifacts/binary-*/dotnet-diagnostics-mcp-*
+            artifacts/binary-*/dotnet-diagnostics-cli-*
 
   # ----- 4) Publish NuGet package (gated on NUGET_API_KEY) -----
   publish-nuget:

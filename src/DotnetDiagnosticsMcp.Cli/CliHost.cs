@@ -167,7 +167,7 @@ internal static class CliHost
             // Cancelled (no Error) — surface it as the cancelled exit code, not success.
             if (result.Cancelled)
             {
-                await stderr.WriteLineAsync($"dotnet-diagnostics {options.Command}: cancelled mid-window — diagnostic session stopped and temp files cleaned up. Payload is partial.")
+                await stderr.WriteLineAsync($"dotnet-diagnostics-cli {options.Command}: cancelled mid-window — diagnostic session stopped and temp files cleaned up. Payload is partial.")
                     .ConfigureAwait(false);
                 return 130;
             }
@@ -176,7 +176,7 @@ internal static class CliHost
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await stderr.WriteLineAsync($"dotnet-diagnostics {options.Command}: cancelled — diagnostic session stopped and temp files cleaned up.")
+            await stderr.WriteLineAsync($"dotnet-diagnostics-cli {options.Command}: cancelled — diagnostic session stopped and temp files cleaned up.")
                 .ConfigureAwait(false);
             return 130;
         }
@@ -254,10 +254,10 @@ internal static class CliHost
 
     internal const string Usage =
         """
-        dotnet-diagnostics — one-shot diagnostics against a live .NET process (no HTTP, no bearer, no daemon).
+        dotnet-diagnostics-cli — one-shot diagnostics against a live .NET process (no HTTP, no bearer, no daemon).
 
         Usage:
-          dotnet-diagnostics <command> [options]
+          dotnet-diagnostics-cli <command> [options]
 
         Commands:
           processes                     List attachable .NET processes.
@@ -319,16 +319,16 @@ internal static class CliHost
           NotSupported envelope (exit 1).
 
         Examples:
-          dotnet-diagnostics processes
-          dotnet-diagnostics capabilities --pid 1234
-          dotnet-diagnostics processes --json
-          dotnet-diagnostics collect --kind counters --pid 1234 --duration 5
-          dotnet-diagnostics collect --kind gc --pid 1234 --json
-          dotnet-diagnostics collect --kind event_source --provider System.Net.Http --pid 1234
-          dotnet-diagnostics inspect-heap --pid 1234 --top-types 30
-          dotnet-diagnostics inspect-heap --source dump --dump-file ./app.dmp
-          dotnet-diagnostics dump --pid 1234 --dump-type WithHeap --out ./dumps --confirm
-          dotnet-diagnostics get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll
-          dotnet-diagnostics get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
+          dotnet-diagnostics-cli processes
+          dotnet-diagnostics-cli capabilities --pid 1234
+          dotnet-diagnostics-cli processes --json
+          dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
+          dotnet-diagnostics-cli collect --kind gc --pid 1234 --json
+          dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
+          dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
+          dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
+          dotnet-diagnostics-cli dump --pid 1234 --dump-type WithHeap --out ./dumps --confirm
+          dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll
+          dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
         """;
 }

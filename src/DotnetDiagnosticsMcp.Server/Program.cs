@@ -1,19 +1,10 @@
 using DotnetDiagnosticsMcp.Core.Symbols;
 using DotnetDiagnosticsMcp.Server.Auth;
-using DotnetDiagnosticsMcp.Server.Cli;
 using DotnetDiagnosticsMcp.Server.Hosting;
 using DotnetDiagnosticsMcp.Server.Orchestrator;
 using DotnetDiagnosticsMcp.Server.Security;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Threading.RateLimiting;
-
-// diag host-mode (issue #287 / #283 Phase 0): one-shot diagnostics against the shared Core
-// engine with no HTTP listener, no bearer token and no daemon. Routed first because it is a
-// fully self-contained launch mode that never touches the web host or the orchestrator.
-if (args.Length > 0 && string.Equals(args[0], "diag", StringComparison.Ordinal))
-{
-    return await DiagHostMode.RunAsync(args).ConfigureAwait(false);
-}
 
 // --health-check (issue #27): probe-only client mode. Used by supervisor units
 // (systemd ExecStartPre, Scheduled Task pre-check, container HEALTHCHECK,
