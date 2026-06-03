@@ -140,6 +140,19 @@ classic unmanaged-FD leak shape:
 
 If `resources` looks clean, continue with GC-focused investigation.
 
+> **Escalating to native-allocation attribution (Linux).** When RSS / anonymous
+> pages climb while the managed `gc-heap-size` stays flat, you have *native*
+> (unmanaged) growth — `inspect_process(view="resources")` and `view="memory_trend"`
+> *detect* it but don't say **where** it comes from. On a Linux host/sidecar whose
+> capability matrix reports `CanSampleNativeAlloc: true`, escalate to
+> `collect_sample(kind="native-alloc")`: it uprobes the libc allocator and attributes
+> native `malloc`/`calloc`/`realloc` calls to a code path, drilled into with
+> `query_snapshot(view="call-tree")`. It is **hotspot-only** (sampled allocator-call
+> hits, not bytes, and not alloc/free retention) so it shows who allocates most, not
+> what leaks — but the hottest native call site is usually where to look first. Needs
+> `CAP_SYS_ADMIN` (uprobe creation); a `PermissionDenied` envelope with the perf stderr
+> comes back when the sidecar lacks it.
+
 ### Step 3
 `collect_events(kind="gc")` for 15–30 s. If gen-2 collections happen but `gen-2-size`
 doesn't drop, you have surviving objects (leak or long-lived cache).

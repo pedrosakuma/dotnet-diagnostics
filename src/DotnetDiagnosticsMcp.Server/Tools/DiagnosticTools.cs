@@ -21,6 +21,7 @@ using DotnetDiagnosticsMcp.Core.Investigation;
 using DotnetDiagnosticsMcp.Core.Jit;
 using DotnetDiagnosticsMcp.Core.JitCapture;
 using DotnetDiagnosticsMcp.Core.Memory;
+using DotnetDiagnosticsMcp.Core.NativeAlloc;
 using DotnetDiagnosticsMcp.Core.OffCpu;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Security;
@@ -1302,6 +1303,96 @@ public sealed class DiagnosticTools
 
     /// <summary>Canonical kind tag for handles backing an <see cref="OffCpuSnapshotArtifact"/>.</summary>
     public const string OffCpuHandleKind = "off-cpu-snapshot";
+
+    /// <summary>Canonical kind tag for handles backing a native-allocation call tree
+    /// (a <see cref="CpuSampleTraceArtifact"/>); walked with <c>query_snapshot(view="call-tree")</c>.</summary>
+    public const string NativeAllocHandleKind = "native-alloc-sample";
+
+    [RequireScope("eventpipe")]
+    [Description(
+        "Attributes NATIVE (unmanaged) allocations to a call site by uprobing the target's libc " +
+        "allocator (malloc/calloc/realloc) with perf and DWARF unwinding. Companion to " +
+        "collect_sample(kind='allocation'): the managed sampler only sees the GC heap; this sees " +
+        "allocations the runtime makes outside it (P/Invoke, native libraries, the runtime). Use it " +
+        "to escalate from sample_memory_trend triangulation (RSS up, managed heap flat → native " +
+        "growth) to a concrete call site. " +
+        "Hotspot-only (issue #279): counts are sampled allocator-call hits, NOT bytes, and NOT " +
+        "alloc/free retention — it shows who allocates most, not what leaks. " +
+        "Backend: Linux only. Needs the perf binary plus permission to create a uprobe " +
+        "(CAP_SYS_ADMIN / tracefs write access — strictly more than off-CPU's CAP_PERFMON). " +
+        "Returns the top-N allocator stacks inline and a handle for the query_snapshot call-tree drilldown.")]
+    public static async Task<DiagnosticResult<NativeAllocSample>> CollectNativeAllocSample(
+        INativeAllocSampler sampler,
+        IDiagnosticHandleStore handles,
+        IProcessContextResolver resolver,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Sampling window in seconds. Must be >= 1. Defaults to 10. Keep short on allocator-hot workloads — uprobe overhead is per-call.")] int durationSeconds = 10,
+        [Description("Maximum number of allocator hotspots returned inline (the full call tree lives behind the handle). Defaults to 25.")] int topN = 25,
+        [Description("perf sample period — record one callchain per this many allocator hits. Must be >= 1. Defaults to 1000. Higher reduces overhead and resolution; it throttles recorded samples but not the per-call trap cost.")] long samplePeriod = 1000,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<NativeAllocSample>(nameof(durationSeconds), "must be >= 1");
+        if (topN < 1) return InvalidArg<NativeAllocSample>(nameof(topN), "must be >= 1");
+        if (samplePeriod < 1) return InvalidArg<NativeAllocSample>(nameof(samplePeriod), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<NativeAllocSample>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+
+        NativeAllocSampleResult result;
+        try
+        {
+            result = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, samplePeriod, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (NotSupportedException ex)
+        {
+            return DiagnosticResult.Fail<NativeAllocSample>(
+                ex.Message,
+                new DiagnosticError("NotSupported", ex.Message, ex.GetType().FullName),
+                new NextActionHint("inspect_process",
+                    "Confirm the target is a dynamically-linked glibc/musl process; statically-linked or custom-allocator (jemalloc/tcmalloc) targets aren't supported by the libc uprobe path.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("perf", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("uprobe", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("tracefs", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("CAP_", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("paranoid", StringComparison.OrdinalIgnoreCase))
+        {
+            return DiagnosticResult.Fail<NativeAllocSample>(
+                ex.Message,
+                new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
+                new NextActionHint("inspect_process",
+                    "Check the capability matrix; install linux-perf and add CAP_SYS_ADMIN to the sidecar securityContext.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
+        }
+
+        var sample = result.Summary;
+        var handle = handles.Register(pid, NativeAllocHandleKind, result.Artifact, CpuSampleHandleTtl);
+
+        var topAllocator = sample.TopAllocators.Count > 0 ? sample.TopAllocators[0] : null;
+        var summaryText = topAllocator is not null
+            ? $"Captured {sample.TotalSampledAllocations} sampled native allocator-call(s) over {durationSeconds}s " +
+              $"(probed {string.Join("/", sample.ProbedFunctions)} in {sample.LibcPath}, samplePeriod={sample.SamplePeriod}). " +
+              $"Top allocator stack: {topAllocator.Frame.Method} ({topAllocator.InclusiveSamples} inclusive hits). " +
+              $"Counts are calls, not bytes. Drill into call sites with query_snapshot(handle=\"{handle.Id}\", view=\"call-tree\")."
+            : $"Probed {string.Join("/", sample.ProbedFunctions)} in {sample.LibcPath} but captured no native " +
+              $"allocator-call samples in {durationSeconds}s — the workload may not allocate natively, or samplePeriod " +
+              "is too high. Drive the suspect load during the window or lower samplePeriod.";
+
+        var ok = DiagnosticResult.OkWithHandle(
+            sample,
+            summaryText,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint("query_snapshot", "Walk the native allocation call tree to find which code paths allocate the most.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = 8, ["maxNodes"] = 200 }),
+            new NextActionHint("inspect_process", "Correlate with the memory trend (RSS / anonymous pages) to confirm native growth.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["view"] = "memory_trend" }));
+        return WithContext(ok, resolved.Context);
+    }
+
 
     [RequireScope("eventpipe")]
     [Description(

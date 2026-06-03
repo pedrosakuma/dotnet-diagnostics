@@ -213,7 +213,7 @@ Visões disponíveis por `kind`:
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `object`, `gcroot`, `objsize`, `async`, `diff` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
-| `cpu-sample` / `allocation-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` | `call-tree`, `diff` |
+| `cpu-sample` / `allocation-sample` / `native-alloc-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` | `call-tree`, `diff` |
 
 Autorização é aplicada por kind no dispatcher (`heap-read` para heap,
 `ptrace` para thread, `eventpipe` para off-CPU, `investigation-export` para
@@ -348,7 +348,7 @@ unified drilldown**: `view="topStacks"` (default), `view="byThread"`
 | `collect_sample(kind="off_cpu")` (Linux/Windows) | window-bound | no | ✅ (Linux) | **Deprecated — use `collect_sample(kind="off_cpu")`.** system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
 | `query_snapshot` | cheap | no | ✅ | drilldown on handle from `collect_sample(kind="off_cpu")` |
 | [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/gc/event_source/activities/logs. |
-| [`collect_sample`](#collect_sample) | window-bound | depends on kind | ✅ (mostly — see kind) | **Canonical bounded-time sampler.** Dispatches by `kind` to cpu/off_cpu/allocation. |
+| [`collect_sample`](#collect_sample) | window-bound | depends on kind | ✅ (mostly — see kind) | **Canonical bounded-time sampler.** Dispatches by `kind` to cpu/off_cpu/allocation/native-alloc. |
 | [`collect_events(kind="counters")`](#collect_events(kind="counters")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="counters")`.** opens an EventPipe session |
 | [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")) | window-bound | no | ✅ (perf/ETW, native frames) | **Deprecated — use `collect_sample(kind="cpu")`.** EventPipe + temp `.nettrace` on disk |
 | [`collect_sample(kind="allocation")`](#collect_sample(kind="allocation")) | window-bound | no | ⚠️ TypeName empty | **Deprecated — use `collect_sample(kind="allocation")`.** EventPipe session |
@@ -800,7 +800,7 @@ kind requires `eventpipe` (`event_source` additionally honors the existing
 ## `collect_sample`
 
 **Canonical bounded-time sampler** (RFC 0002 §4.2). A single tool that
-dispatches by `kind` to the underlying CPU / off-CPU / allocation sampler.
+dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc sampler.
 New clients should call `collect_sample` instead of the three legacy entry
 points; the legacy tools remain registered and behaviorally identical, but
 each carries a `DEPRECATED` notice and will be removed in `0.9.0`.
@@ -809,7 +809,7 @@ each carries a `DEPRECATED` notice and will be removed in `0.9.0`.
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `kind` | `string` | `cpu` | One of `cpu`, `off_cpu`, `allocation`. Case-sensitive. |
+| `kind` | `string` | `cpu` | One of `cpu`, `off_cpu`, `allocation`, `native-alloc`. Case-sensitive. |
 | `processId` | `int?` | auto | Target process id. |
 | `durationSeconds` | `int` | `10` | Sampling window. ≥ 1. |
 | `topN` | `int` | `25` | Top hotspots / blocking stacks / types. |
@@ -818,10 +818,11 @@ each carries a `DEPRECATED` notice and will be removed in `0.9.0`.
 | `resolveSourceLines` | `bool` | `true` | `cpu` only. Same as [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")). |
 | `maxResolvedSources` | `int?` | `topN` | `cpu` only. |
 | `resolveMethodInstantiations` / `maxResolvedMethodInstantiations` | — | — | `cpu` only. Same as `collect_sample(kind="cpu")`. |
+| `nativeAllocSamplePeriod` | `long` | `1000` | `native-alloc` only. Record one callchain per N allocator hits (throttles recorded samples, not the per-call uprobe trap cost). |
 
 **Returns:** `CollectSampleEnvelope` — a polymorphic record carrying the
 `kind` discriminator plus exactly one populated payload field
-(`cpu` / `offCpu` / `allocation`). The envelope's `summary`, `hints`,
+(`cpu` / `offCpu` / `allocation` / `nativeAlloc`). The envelope's `summary`, `hints`,
 `handle`, `handleExpiresAt`, and `resolvedProcess` are passed through from
 the underlying sampler verbatim, so `query_snapshot(view="call-tree")` and
 `query_snapshot` drilldowns continue to work unchanged.
@@ -833,6 +834,20 @@ legacy `collect_sample(kind="off_cpu")` returns. `kind="allocation"` works on Co
 and NativeAOT, but on NativeAOT GCAllocationTick events carry an empty
 TypeName — surfaced via the envelope summary so the LLM knows to fall back
 to `kind="cpu"` for per-site attribution.
+
+**`kind="native-alloc"` (issue #279).** Attributes **native/unmanaged** allocations
+(off the GC heap — P/Invoke, native libraries, the runtime itself) to a call site
+by uprobing the target's libc allocator (`malloc`/`calloc`/`realloc`) with
+`perf probe` + `perf record --call-graph dwarf`. Companion to `kind="allocation"`,
+which only sees the managed GC heap. **Linux only**; needs the `perf` binary plus
+permission to create a uprobe (`CAP_SYS_ADMIN` / tracefs write access — strictly more
+than off-CPU's `CAP_PERFMON`), gated by `inspect_process(view="capabilities")`'s
+`CanSampleNativeAlloc`. **Hotspot-only:** counts are *sampled allocator-call hits, not
+bytes*, and it does NOT do alloc/free retention matching — it shows who allocates most,
+not what leaks. Drill into the merged call tree with `query_snapshot(view="call-tree")`;
+compare two windows with `query_snapshot(view="diff")`. Escalate to it from
+`inspect_process(view="memory_trend")` when RSS / anonymous pages climb while the managed
+heap stays flat.
 
 **Authorization.** Gated by `RequireScope("eventpipe")`, matching the three
 legacy samplers verbatim.

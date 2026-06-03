@@ -2,6 +2,7 @@ using System.IO;
 using DotnetDiagnosticsMcp.Core.Container;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Internal;
+using DotnetDiagnosticsMcp.Core.NativeAlloc;
 using DotnetDiagnosticsMcp.Core.OffCpu;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Extensions.Logging;
@@ -25,19 +26,22 @@ public sealed class CapabilityDetector : ICapabilityDetector
     private readonly EtwNativeAotCpuSampler? _etwSampler;
     private readonly IContainerSignalsCollector? _containerSignals;
     private readonly IOffCpuSampler? _offCpuSampler;
+    private readonly INativeAllocSampler? _nativeAllocSampler;
 
     public CapabilityDetector(
         ILogger<CapabilityDetector>? logger = null,
         PerfNativeAotCpuSampler? perfSampler = null,
         EtwNativeAotCpuSampler? etwSampler = null,
         IContainerSignalsCollector? containerSignals = null,
-        IOffCpuSampler? offCpuSampler = null)
+        IOffCpuSampler? offCpuSampler = null,
+        INativeAllocSampler? nativeAllocSampler = null)
     {
         _logger = logger ?? NullLogger<CapabilityDetector>.Instance;
         _perfSampler = perfSampler;
         _etwSampler = etwSampler;
         _containerSignals = containerSignals;
         _offCpuSampler = offCpuSampler;
+        _nativeAllocSampler = nativeAllocSampler;
     }
 
     public async Task<DiagnosticCapabilities> DetectAsync(int processId, CancellationToken cancellationToken = default)
@@ -56,6 +60,12 @@ public sealed class CapabilityDetector : ICapabilityDetector
         var canSampleOffCpu = OperatingSystem.IsLinux()
             ? _offCpuSampler is not null && _offCpuSampler.IsAvailable() && perfHost.CanTraceSchedSwitch
             : _offCpuSampler is not null && _offCpuSampler.IsAvailable();
+        // Native-alloc creates a dynamic uprobe (writes tracefs) — gate on CAP_SYS_ADMIN, which is
+        // strictly stronger than the CAP_PERFMON that off-CPU sched_switch tracing accepts.
+        var canSampleNativeAlloc = OperatingSystem.IsLinux()
+            && _nativeAllocSampler is not null
+            && _nativeAllocSampler.IsAvailable()
+            && perfHost.HasCapSysAdmin;
         var ptrace = PtraceProbe.Detect();
         var euStackAvailable = IsEuStackAvailable();
         var (canCollectThreadSnapshot, threadSnapshotSource, threadSnapshotPreconditions) =
@@ -111,6 +121,7 @@ public sealed class CapabilityDetector : ICapabilityDetector
             CanSeeThrottle = canSeeThrottle,
             PsiAvailable = psiAvailable,
             CanSampleOffCpu = canSampleOffCpu,
+            CanSampleNativeAlloc = canSampleNativeAlloc,
             HasCapSysPtrace = ptrace.HasCapSysPtrace,
             PtraceScope = ptrace.PtraceScope,
             CanAttachClrMD = ptrace.CanAttach,

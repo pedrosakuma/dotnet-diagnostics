@@ -73,6 +73,16 @@ public sealed record DiagnosticCapabilities(
     /// </summary>
     public bool CanSampleOffCpu { get; init; }
 
+    /// <summary>
+    /// True when <c>collect_sample(kind="native-alloc")</c> is expected to succeed against this
+    /// sidecar. Linux only — requires <c>perf</c> in <c>PATH</c> plus <c>CAP_SYS_ADMIN</c> (or
+    /// equivalent tracefs write access), which is <b>strictly more</b> than the
+    /// <c>CAP_PERFMON</c> that <see cref="CanSampleOffCpu"/> needs, because creating a dynamic
+    /// uprobe on the libc allocator writes to the kernel tracefs. False on non-Linux hosts and
+    /// whenever the sidecar lacks the prerequisite.
+    /// </summary>
+    public bool CanSampleNativeAlloc { get; init; }
+
     /// <summary>True when the Linux sidecar currently holds <c>CAP_SYS_PTRACE</c>. False on
     /// non-Linux hosts and when the capability is absent. Exposed separately from
     /// <see cref="CanAttachClrMD"/> because <c>ptrace_scope=0</c> also enables attach without

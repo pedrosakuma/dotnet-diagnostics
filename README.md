@@ -109,6 +109,7 @@ docker compose -f deploy/docker-compose.yml up -d
 | `collect_events(kind="counters")` | EventCounters with **auto-hints** (CPU, GC, starvation, contention, allocation, I/O) |
 | `collect_sample(kind="cpu")` / `query_snapshot(view="call-tree")` | Top-N CPU hotspots (inclusive/exclusive) + on-demand caller→callee tree |
 | `collect_sample(kind="off_cpu")` / `query_snapshot` | Where threads block (futex / IO / sleep) — Linux `perf` backend |
+| `collect_sample(kind="native-alloc")` / `query_snapshot(view="call-tree")` | Native/unmanaged allocation hotspots (off-GC-heap `malloc`) attributed to call sites — Linux `perf` uprobe backend |
 | `collect_events(kind="exceptions")` | Managed exceptions thrown in a window, aggregated by type |
 | `collect_events(kind="gc")` | GC pauses + per-generation counts |
 | `collect_events(kind="activities")` / `query_snapshot` | ActivitySource span capture (trace/span ids, parent linkage, tags, duration) + **GC overlay** correlation |
