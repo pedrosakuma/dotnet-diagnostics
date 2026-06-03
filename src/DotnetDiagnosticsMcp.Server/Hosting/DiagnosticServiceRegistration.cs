@@ -77,6 +77,9 @@ internal static class DiagnosticServiceRegistration
         services.AddSingleton<DotnetDiagnosticsMcp.Core.OffCpu.PerfSchedOffCpuSampler>();
         services.AddSingleton<DotnetDiagnosticsMcp.Core.OffCpu.EtwOffCpuSampler>();
         services.AddSingleton<DotnetDiagnosticsMcp.Core.OffCpu.IOffCpuSampler, DotnetDiagnosticsMcp.Core.OffCpu.RoutingOffCpuSampler>();
+        services.AddSingleton<DotnetDiagnosticsMcp.Core.NativeAlloc.PerfNativeAllocSampler>();
+        services.AddSingleton<DotnetDiagnosticsMcp.Core.NativeAlloc.INativeAllocSampler>(
+            sp => sp.GetRequiredService<DotnetDiagnosticsMcp.Core.NativeAlloc.PerfNativeAllocSampler>());
         services.AddSingleton<IExceptionCollector, EventPipeExceptionCollector>();
         services.AddSingleton<IGcCollector, EventPipeGcCollector>();
         services.AddSingleton<IEventSourceCollector, EventPipeEventSourceCollector>();

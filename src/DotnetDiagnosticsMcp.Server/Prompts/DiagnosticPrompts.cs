@@ -100,8 +100,13 @@ public sealed class DiagnosticPrompts
                  Decide:
                    - Gen2 grows monotonically → leak or large cache; continue.
                    - LOH grows → large-object allocations; continue.
-                   - Working set grows but managed heap stable → native/unmanaged growth
-                     (mention dotnet-monitor or a native profiler as out-of-scope).
+                   - Working set grows but managed heap stable → native/unmanaged growth.
+                     On a Linux host/sidecar whose capabilities report `canSampleNativeAlloc`,
+                     escalate to `collect_sample(kind="native-alloc", {{pid.Arg}}durationSeconds={{win}})`
+                     and drill in with `query_snapshot(view="call-tree")` to attribute the native
+                     `malloc`/`calloc`/`realloc` hotspots to a call site (hotspot-only: sampled
+                     allocator-call hits, not bytes, and not alloc/free retention). Otherwise
+                     mention dotnet-monitor or a native profiler as out-of-scope.
 
               2. `collect_events(kind="gc", {{pid.Arg}}durationSeconds={{win}}, maxEvents=200)` — inspect
                  `data.maxPauseTime` and `data.events`. Frequent gen-2 collections with no

@@ -31,7 +31,7 @@ namespace DotnetDiagnosticsMcp.Server.Tools;
 ///   <item><description>heap-snapshot → <c>heap-read</c></description></item>
 ///   <item><description>thread-snapshot → <c>ptrace</c></description></item>
 ///   <item><description>off-cpu-snapshot → <c>eventpipe</c></description></item>
-///   <item><description>cpu-sample / allocation-sample (call-tree view) → <c>investigation-export</c></description></item>
+///   <item><description>cpu-sample / allocation-sample / native-alloc-sample (call-tree view) → <c>investigation-export</c></description></item>
 ///   <item><description>counters / exception-snapshot / gc-events / event-source / activities / log-snapshot / jit-snapshot / threadpool-snapshot / contention-snapshot / db-snapshot → any of <c>read-counters</c> or <c>eventpipe</c> (matches <c>query_collection</c>)</description></item>
 /// </list>
 /// <para>Unknown handle kinds, unknown views and parameter shape violations all return
@@ -90,7 +90,7 @@ public sealed class QuerySnapshotTool
         "`off-cpu-snapshot` → off-CPU views (topStacks | byThread | stack); " +
         "`counters` / `exception-snapshot` / `gc-events` / `event-source` / `activities` / `log-snapshot` / `threadpool-snapshot` / `contention-snapshot` / `db-snapshot` → collection views " +
         "(summary | byProvider | byType | recent | events | pauseHistogram | byEventName | bySource | byOperation | activities | byCategory | byLevel | errors | timeline | hillClimbing | workItemOrigins | byCallSite | byOwner | byCommand | n+1 | connectionPool); " +
-        "`cpu-sample` / `allocation-sample` → `call-tree` | `diff`; `heap-snapshot` → `diff` in addition to heap views. `diff` compares the current handle against `baselineHandle`; `call-tree` preserves get_call_tree behaviour with " +
+        "`cpu-sample` / `allocation-sample` / `native-alloc-sample` → `call-tree` | `diff`; `heap-snapshot` → `diff` in addition to heap views. `diff` compares the current handle against `baselineHandle`; `call-tree` preserves get_call_tree behaviour with " +
         "rootMethodFilter, maxDepth, maxNodes. " +
         "Unknown handle kinds, unknown views and parameter-shape violations return structured InvalidArgument " +
         "envelopes — never a 500. Authorization is preserved per kind: heap-read for heap, ptrace for thread, " +
@@ -105,7 +105,7 @@ public sealed class QuerySnapshotTool
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
         [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, snapshot_counters, collect_exceptions, collect_gc_events, collect_event_source, collect_activities, collect_events(kind=\"logs\"), collect_events(kind=\"threadpool\"), collect_events(kind=\"contention\"), collect_events(kind=\"db\")).")] string handle,
-        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|pauseHistogram|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool. cpu-sample/allocation-sample: call-tree|diff. Omit to use the kind's default view.")] string? view = null,
+        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|pauseHistogram|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool. cpu-sample/allocation-sample/native-alloc-sample: call-tree|diff. Omit to use the kind's default view.")] string? view = null,
         [Description("Maximum entries returned by any ranked-list view. Omit to use the per-kind legacy default: 50 for heap / thread / collection, 25 for off-CPU. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
         [Description("Heap view='top-types' only: ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
@@ -212,6 +212,7 @@ public sealed class QuerySnapshotTool
 
             case "cpu-sample":
             case "allocation-sample":
+            case DiagnosticTools.NativeAllocHandleKind:
                 {
                     if (!RequireScope(principal, ScopeInvestigationExport, out var forbidden))
                     {
@@ -422,6 +423,9 @@ public sealed class QuerySnapshotTool
             "cpu-sample" when currentLookup.Artifact is CpuSampleTraceArtifact current && baselineLookup.Value.Artifact is CpuSampleTraceArtifact baseline
                 => WrapDiff(currentLookup.Kind, baselineHandle, handle, SampleDiffer.Compare(baseline, baselineHandle, current, handle, minDeltaPct, effectiveTopN)),
 
+            DiagnosticTools.NativeAllocHandleKind when currentLookup.Artifact is CpuSampleTraceArtifact current && baselineLookup.Value.Artifact is CpuSampleTraceArtifact baseline
+                => WrapDiff(currentLookup.Kind, baselineHandle, handle, SampleDiffer.Compare(baseline, baselineHandle, current, handle, minDeltaPct, effectiveTopN)),
+
             "allocation-sample" when currentLookup.Artifact is AllocationSampleArtifact current && baselineLookup.Value.Artifact is AllocationSampleArtifact baseline
                 => WrapDiff(currentLookup.Kind, baselineHandle, handle, SampleDiffer.Compare(baseline.Summary, baselineHandle, current.Summary, handle, minDeltaPct, effectiveTopN)),
 
@@ -453,7 +457,7 @@ public sealed class QuerySnapshotTool
 
     private static DiagnosticResult<object> InvalidKindPair(string currentKind, string baselineKind)
     {
-        var message = $"query_snapshot(view='diff') requires baseline/current handles of the same supported kind. Accepted pairs: heap-snapshot×heap-snapshot, cpu-sample×cpu-sample, allocation-sample×allocation-sample. Received baseline={baselineKind}, current={currentKind}.";
+        var message = $"query_snapshot(view='diff') requires baseline/current handles of the same supported kind. Accepted pairs: heap-snapshot×heap-snapshot, cpu-sample×cpu-sample, allocation-sample×allocation-sample, native-alloc-sample×native-alloc-sample. Received baseline={baselineKind}, current={currentKind}.";
         return DiagnosticResult.Fail<object>(
             message,
             new DiagnosticError("InvalidArgument", message, "baselineHandle"),
@@ -467,6 +471,7 @@ public sealed class QuerySnapshotTool
         DiagnosticTools.OffCpuHandleKind,
         "cpu-sample",
         "allocation-sample",
+        DiagnosticTools.NativeAllocHandleKind,
         CollectionHandleKinds.Counters,
         CollectionHandleKinds.ExceptionSnapshot,
         CollectionHandleKinds.GcEvents,

@@ -3,6 +3,7 @@ using DotnetDiagnosticsMcp.Core;
 using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Drilldown;
+using DotnetDiagnosticsMcp.Core.NativeAlloc;
 using DotnetDiagnosticsMcp.Core.OffCpu;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Security;
@@ -32,6 +33,7 @@ public sealed class CollectSampleTool
     internal const string KindCpu = "cpu";
     internal const string KindOffCpu = "off_cpu";
     internal const string KindAllocation = "allocation";
+    internal const string KindNativeAlloc = "native-alloc";
 
     /// <summary>Allowed values for the <c>kind</c> discriminator. Order is preserved when
     /// rendered by <see cref="DiscriminatorDispatch"/> in failure envelopes.</summary>
@@ -40,6 +42,7 @@ public sealed class CollectSampleTool
         KindCpu,
         KindOffCpu,
         KindAllocation,
+        KindNativeAlloc,
     };
 
     [RequireScope("eventpipe")]
@@ -55,24 +58,28 @@ public sealed class CollectSampleTool
         "Unified sampling collector entry-point (RFC 0002 §4.2). Set 'kind' to choose the sampler: " +
         "'cpu' (on-CPU SampleProfiler / perf — top managed hotspots with MethodIdentity handoff), " +
         "'off_cpu' (where threads are blocked and for how long — Linux sched_switch via perf, Windows " +
-        "ContextSwitch via NT Kernel Logger), or 'allocation' (GCAllocationTick rolled up by type — " +
-        "TypeName is empty on NativeAOT, surfaced as a caveat in the envelope summary). " +
+        "ContextSwitch via NT Kernel Logger), 'allocation' (managed GCAllocationTick rolled up by type — " +
+        "TypeName is empty on NativeAOT, surfaced as a caveat in the envelope summary), or " +
+        "'native-alloc' (NATIVE/unmanaged allocations — uprobes libc malloc/calloc/realloc via perf to " +
+        "attribute off-GC-heap allocations to a call site; Linux only, needs CAP_SYS_ADMIN; hotspot-only, " +
+        "counts are sampled calls not bytes). " +
         "Each kind preserves the parameters and behaviour of its legacy collector tool, including " +
         "the SSRF-guarded `symbolPath` precedence chain and ClrMD generic-instantiation enrichment " +
         "for CPU samples. Long-running collections expose MCP-native notifications/progress + " +
         "notifications/cancelled on the same tools/call request, or can be promoted to an MCP Task. " +
-        "Returns a polymorphic envelope with exactly one of {cpu, offCpu, allocation} populated " +
+        "Returns a polymorphic envelope with exactly one of {cpu, offCpu, allocation, nativeAlloc} populated " +
         "alongside the chosen kind, the issued handle, and standard NextActionHints.")]
     public static async Task<DiagnosticResult<CollectSampleEnvelope>> CollectSample(
         ICpuSampler cpuSampler,
         IOffCpuSampler offCpuSampler,
         EventPipeAllocationSampler allocationSampler,
+        INativeAllocSampler nativeAllocSampler,
         IDiagnosticHandleStore handles,
         IProcessContextResolver resolver,
         SymbolServerAllowlist symbolServerAllowlist,
         IPrincipalAccessor principalAccessor,
         [Description(
-            "Which sampler to run. One of: 'cpu', 'off_cpu', 'allocation'. Each kind preserves " +
+            "Which sampler to run. One of: 'cpu', 'off_cpu', 'allocation', 'native-alloc'. Each kind preserves " +
             "the options of its legacy collector tool; irrelevant options are ignored.")]
         string kind = KindCpu,
         // Shared options.
@@ -96,6 +103,8 @@ public sealed class CollectSampleTool
         bool resolveMethodInstantiations = false,
         [Description("kind='cpu' only. Cap on how many top hotspots get ClrMD generic-instantiation enrichment. Must be >= 1. Defaults to the requested topN.")]
         int? maxResolvedMethodInstantiations = null,
+        [Description("kind='native-alloc' only. perf sample period — record one callchain per this many allocator hits. Must be >= 1. Defaults to 1000. Higher reduces overhead and resolution; throttles recorded samples but not the per-call uprobe trap cost.")]
+        long nativeAllocSamplePeriod = 1000,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
@@ -159,6 +168,19 @@ public sealed class CollectSampleTool
                 KindAllocation,
                 (env, data) => env with { Allocation = data }),
 
+            KindNativeAlloc => Project(
+                await DiagnosticTools.CollectNativeAllocSample(
+                    nativeAllocSampler,
+                    handles,
+                    resolver,
+                    processId,
+                    durationSeconds,
+                    topN,
+                    nativeAllocSamplePeriod,
+                    cancellationToken).ConfigureAwait(false),
+                KindNativeAlloc,
+                (env, data) => env with { NativeAlloc = data }),
+
             // Unreachable — TryValidate narrowed canonicalKind to the AllowedKinds set above.
             _ => DiagnosticResult.Fail<CollectSampleEnvelope>(
                 $"Unhandled kind '{canonicalKind}'.",
@@ -203,4 +225,5 @@ public sealed record CollectSampleEnvelope(
     string Kind,
     CpuSample? Cpu = null,
     OffCpuSnapshot? OffCpu = null,
-    AllocationSample? Allocation = null);
+    AllocationSample? Allocation = null,
+    NativeAllocSample? NativeAlloc = null);
