@@ -86,6 +86,18 @@ internal sealed class CliOptions
     /// <summary>Defense-in-depth confirmation flag (<c>--confirm</c>) required to actually write a dump file.</summary>
     public bool Confirm { get; init; }
 
+    /// <summary>Module MVID (GUID 'D', <c>--mvid</c>) for <c>get-bytes --kind module</c>.</summary>
+    public string? Mvid { get; init; }
+
+    /// <summary>Module artifact (<c>--asset</c>): <c>pe</c> (default) or <c>pdb</c>, for <c>get-bytes --kind module</c>.</summary>
+    public string? Asset { get; init; }
+
+    /// <summary>Drill-down handle (<c>--handle</c>) for the <c>query</c> command (parsed for forward-compat; the one-shot CLI cannot honour it — see #286).</summary>
+    public string? Handle { get; init; }
+
+    /// <summary>Drill-down view name (<c>--view</c>) for the <c>query</c> command (parsed for forward-compat; the one-shot CLI cannot honour it — see #286).</summary>
+    public string? View { get; init; }
+
     /// <summary>
     /// Parses <paramref name="args"/>. Returns a populated <see cref="CliOptions"/> on success, or
     /// <c>null</c> with a non-null <paramref name="error"/> describing the first usage problem.
@@ -121,6 +133,10 @@ internal sealed class CliOptions
         string? dumpType = null;
         string? outDir = null;
         var confirm = false;
+        string? mvid = null;
+        string? asset = null;
+        string? handle = null;
+        string? view = null;
 
         for (var i = 0; i < args.Count; i++)
         {
@@ -290,6 +306,38 @@ internal sealed class CliOptions
 
                     outDir = outValue;
                     break;
+                case "--mvid":
+                    if (!TryTakeString(args, ref i, token, out var mvidValue, out error))
+                    {
+                        return null;
+                    }
+
+                    mvid = mvidValue;
+                    break;
+                case "--asset":
+                    if (!TryTakeString(args, ref i, token, out var assetValue, out error))
+                    {
+                        return null;
+                    }
+
+                    asset = assetValue;
+                    break;
+                case "--handle":
+                    if (!TryTakeString(args, ref i, token, out var handleValue, out error))
+                    {
+                        return null;
+                    }
+
+                    handle = handleValue;
+                    break;
+                case "--view":
+                    if (!TryTakeString(args, ref i, token, out var viewValue, out error))
+                    {
+                        return null;
+                    }
+
+                    view = viewValue;
+                    break;
                 default:
                     if (token.StartsWith('-'))
                     {
@@ -336,6 +384,10 @@ internal sealed class CliOptions
             DumpType = dumpType,
             OutDir = outDir,
             Confirm = confirm,
+            Mvid = mvid,
+            Asset = asset,
+            Handle = handle,
+            View = view,
         };
     }
 

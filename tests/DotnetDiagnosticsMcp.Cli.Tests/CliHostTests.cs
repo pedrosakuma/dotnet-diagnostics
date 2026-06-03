@@ -19,6 +19,8 @@ public sealed class CliHostTests
         stdout.Should().Contain("collect");
         stdout.Should().Contain("inspect-heap");
         stdout.Should().Contain("dump");
+        stdout.Should().Contain("query");
+        stdout.Should().Contain("get-bytes");
         stderr.Should().BeEmpty();
     }
 
