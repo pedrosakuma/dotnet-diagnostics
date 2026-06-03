@@ -189,6 +189,34 @@ curl -i http://localhost:5000/mcp -H "Authorization: Bearer wrong"
 curl -i http://localhost:5000/mcp -H "Authorization: Bearer $MCP_BEARER_TOKEN"
 ```
 
+## Discoverability: how clients surface the server's guidance (#280)
+
+The server talks to the LLM over four channels with very different reliability. Knowing which
+ones a client honors tells you where the "start here" guidance must live.
+
+| Channel | Push / Pull | Notes |
+| --- | --- | --- |
+| `ServerInfo.Description` | passive | Shown in server lists only. |
+| `ServerInstructions` | push (advisory) | Injected into the system prompt **only if the client chooses to**. |
+| Tool `[Description]` / `Title` | push (always) | The LLM always sees these in the tool list. The reliable surface. |
+| Prompts (`diagnose-*`) | pull | Never auto-invoked — the human picks them from a slash menu. |
+| Resources (`diag://guides/*`) | pull | Read only if the model decides to fetch them. |
+
+**Finding — GitHub Copilot CLI.** Copilot CLI does **not** reliably inject MCP
+`ServerInstructions` into the model context, and Prompts are pull-only (surfaced as slash
+commands, never auto-invoked). The only guidance the model reliably sees is each tool's
+`Title` + `[Description]`. Consequently the critical "where do I start for a slow app" path
+**must be encoded redundantly in the entry-point tools' own descriptions** — it cannot depend
+on `ServerInstructions` reaching the model.
+
+**What we do about it.** `inspect_process` is the evidence-first entry point: its `Title` and
+`[Description]` carry the intent-level trigger phrases humans actually use ("app is slow",
+"high latency", "high CPU", "memory growing", "where do I start") and point at
+`view="triage"` for a one-shot first look. `start_investigation` is the planner path (decision
+tree) for non-trivial, multi-step investigations. A regression test
+(`EntryPointTools_AdvertiseIntentLevelTriggerPhrases`) keeps those phrases from being edited
+out. `ServerInstructions` still describes the same hierarchy for clients that do honor it.
+
 ## Operational tips
 
 - **Rotate the token** by changing `MCP_BEARER_TOKEN` (or the Kubernetes

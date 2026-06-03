@@ -4,7 +4,7 @@ namespace DotnetDiagnosticsMcp.Core.Triage;
 /// Phase 12 triage result — IoT-style diagnostic classification that does the heavy lifting
 /// server-side and returns actionable leads. The LLM just follows the first hint.
 /// </summary>
-/// <param name="Verdict">Primary classification: cpu-bound, gc-pressure, threadpool-starvation, lock-contention, io-bound, healthy.</param>
+/// <param name="Verdict">Primary classification: cpu-bound, gc-pressure, memory-pressure, threadpool-starvation, lock-contention, io-bound, healthy.</param>
 /// <param name="Severity">Overall severity: critical, degraded, or healthy.</param>
 /// <param name="Evidence">Key counter values that drove the classification.</param>
 /// <param name="SecondaryVerdicts">Additional classifications if multiple issues detected (e.g., gc-pressure + allocation-heavy).</param>

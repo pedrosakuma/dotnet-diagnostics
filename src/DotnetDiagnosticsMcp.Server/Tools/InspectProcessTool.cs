@@ -93,12 +93,18 @@ public sealed class InspectProcessTool
     [RequireAnyScope("read-counters", "ptrace")]
     [McpServerTool(
         Name = "inspect_process",
-        Title = "Inspect a .NET process (list / info / capabilities / container / memory_trend / runtime-config / resources / requests-now / triage)",
+        Title = "Inspect a .NET process — slow app? high CPU/latency? memory growing? start with view=triage",
         Destructive = false,
         ReadOnly = true,
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(
+        "START HERE for a slow or struggling .NET app. When the user says things like 'my app is slow', " +
+        "'high latency', 'high CPU', 'memory is growing / leaking', 'performance problem', 'requests are timing out', " +
+        "or 'where do I start' — call this first with view=triage. It collects EventCounters for ~5s, classifies the " +
+        "workload (cpu-bound, gc-pressure, memory-pressure, threadpool-starvation, lock-contention, io-bound, healthy) and returns a " +
+        "verdict plus actionable hints; just follow the first hint to the right collector. No processId needed when one " +
+        ".NET process is visible. " +
         "RFC 0002 §4.6 — single bootstrap entrypoint that subsumes list_dotnet_processes, " +
         "get_process_info, get_diagnostic_capabilities, get_container_signals and get_memory_trend, " +
         "plus the Phase 11 runtime-config view, the Phase 10.3 resources view, the Phase 10.4 requests-now view, and the Phase 12 triage view. Pick the projection with view=list|info|capabilities|container|memory_trend|runtime-config|resources|requests-now|triage. " +
@@ -108,7 +114,7 @@ public sealed class InspectProcessTool
         "and use durationSeconds + sampleEverySeconds to shape their observation windows. " +
         "view=runtime-config reads filtered runtime env vars plus best-effort ClrMD GC / ThreadPool settings without adding a new auth scope. " +
         "view=requests-now opens a short EventPipe session on Microsoft.AspNetCore.Hosting and then captures a live thread snapshot, so it requires the ptrace scope. " +
-        "view=triage collects counters (5s), classifies the workload (cpu-bound, gc-pressure, threadpool-starvation, lock-contention, io-bound, healthy), and returns actionable hints — the LLM just follows the first hint.")]
+        "view=triage collects counters (5s), classifies the workload (cpu-bound, gc-pressure, memory-pressure, threadpool-starvation, lock-contention, io-bound, healthy), and returns actionable hints — the LLM just follows the first hint.")]
     public static async Task<DiagnosticResult<InspectProcessReport>> InspectProcess(
         IProcessDiscovery discovery,
         IProcessContextResolver resolver,

@@ -145,6 +145,34 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task EntryPointTools_AdvertiseIntentLevelTriggerPhrases()
+    {
+        // Regression for #280 (discoverability): the only reliable push surface is the per-tool
+        // [Description]/Title. Vague "my app is slow" prompts must lexically match the entry-point
+        // tools so the LLM reaches for them without the user naming a tool. Assert durable trigger
+        // phrases survive future edits — do NOT assert the full string.
+        await using var client = await ConnectAsync();
+
+        var tools = await client.ListToolsAsync(cancellationToken: CancellationToken.None);
+
+        var inspect = tools.Single(t => t.Name == "inspect_process");
+        var inspectText = ((inspect.Title ?? string.Empty) + " " + (inspect.Description ?? string.Empty)).ToLowerInvariant();
+        foreach (var phrase in new[] { "slow", "high cpu", "latency", "memory", "where do i start", "triage" })
+        {
+            inspectText.Should().Contain(phrase,
+                $"inspect_process must advertise the intent phrase '{phrase}' so the LLM reaches for it on a slow-app prompt (#280)");
+        }
+
+        var start = tools.Single(t => t.Name == "start_investigation");
+        var startText = (start.Description ?? string.Empty).ToLowerInvariant();
+        foreach (var phrase in new[] { "slow", "high cpu", "latency", "memory" })
+        {
+            startText.Should().Contain(phrase,
+                $"start_investigation must advertise the intent phrase '{phrase}' so the LLM reaches for it on a performance prompt (#280)");
+        }
+    }
+
+    [Fact]
     public async Task TasksCapability_AndToolMetadata_AreAdvertised()
     {
         await using var client = await ConnectAsync();

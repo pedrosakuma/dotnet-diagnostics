@@ -44,7 +44,7 @@ inspect_process(view="triage")
 }
 ```
 
-**Verdicts:** `cpu-bound`, `gc-pressure`, `threadpool-starvation`, `lock-contention`, `io-bound`, `healthy`
+**Verdicts:** `cpu-bound`, `gc-pressure`, `memory-pressure`, `threadpool-starvation`, `lock-contention`, `io-bound`, `healthy`
 
 **TopIndicators** are always returned (even when healthy) — enabling **proactive optimization**, not just reactive firefighting. The LLM simply follows the first hint.
 
