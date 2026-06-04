@@ -1,0 +1,490 @@
+using System.Diagnostics;
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using DotnetDiagnosticsMcp.Core.Collection;
+using DotnetDiagnosticsMcp.Core.Drilldown;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace DotnetDiagnosticsMcp.Cli;
+
+/// <summary>
+/// The stateful <c>dotnet-diagnostics session</c> REPL (issue #300). Unlike the one-shot CLI — which
+/// builds the Core host, runs one command and exits — the REPL keeps the host (and therefore the
+/// singleton <see cref="IDiagnosticHandleStore"/> and all collectors) alive across commands. A human
+/// can <c>collect --kind gc</c> once and then run <c>query --handle &lt;id&gt; --view pauseHistogram</c>
+/// drill-downs without re-collecting, exactly as an MCP client would over a live session.
+/// </summary>
+/// <remarks>
+/// <para><b>Cancellation.</b> The session runs under a <see cref="CancellationTokenSource"/> linked to
+/// the caller's token. In production (when writing to the real console) it installs a
+/// <see cref="Console.CancelKeyPress"/> handler with two behaviours, guarded by a lock so the handler
+/// and the loop never race on the per-command state: while a command runs, the first Ctrl-C cancels
+/// only that command (the session stays alive); a second Ctrl-C for the same command falls through to
+/// the default hard termination so a wedged operation can never trap the process. At an idle prompt,
+/// Ctrl-C cancels the session for a graceful exit.</para>
+/// <para><b>Artifact root.</b> The host is built once with a <see cref="MutableArtifactRootProvider"/>;
+/// the REPL re-points it to each command's resolved root (and back to the session default afterwards)
+/// so <c>dump --out</c> / <c>get-bytes --dump-file</c> behave exactly as in the one-shot path.</para>
+/// <para><b>Dead-PID sweep.</b> A 5s in-process timer mirrors the server's
+/// <c>HandleEvictionBackgroundService</c>: it drops handles whose target process has exited so the
+/// user never drills into a dead trace.</para>
+/// </remarks>
+internal sealed class SessionRepl
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    private static readonly TimeSpan SweepInterval = TimeSpan.FromSeconds(5);
+
+    private readonly object _gate = new();
+    private readonly CancellationTokenSource _sessionCts;
+    private CancellationTokenSource? _currentCommandCts;
+    private bool _commandRunning;
+    private int _commandCtrlCCount;
+
+    private SessionRepl(CancellationToken externalToken)
+        => _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
+
+    public static Task<int> RunAsync(
+        IServiceProvider services,
+        MutableArtifactRootProvider artifactProvider,
+        TextReader stdin,
+        TextWriter stdout,
+        TextWriter stderr,
+        CancellationToken externalToken)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(artifactProvider);
+        ArgumentNullException.ThrowIfNull(stdin);
+        ArgumentNullException.ThrowIfNull(stdout);
+        ArgumentNullException.ThrowIfNull(stderr);
+
+        var repl = new SessionRepl(externalToken);
+        return repl.LoopAsync(services, artifactProvider, stdin, stdout, stderr);
+    }
+
+    private async Task<int> LoopAsync(
+        IServiceProvider services,
+        MutableArtifactRootProvider artifactProvider,
+        TextReader stdin,
+        TextWriter stdout,
+        TextWriter stderr)
+    {
+        var store = services.GetRequiredService<IDiagnosticHandleStore>() as MemoryDiagnosticHandleStore;
+
+        // Only hook the real console's Ctrl-C in production; tests drive the loop with a StringReader
+        // and cancel the supplied token directly (idle-cancel path).
+        var ownsConsole = ReferenceEquals(stdout, Console.Out);
+        ConsoleCancelEventHandler? handler = null;
+        if (ownsConsole)
+        {
+            handler = OnConsoleCancel;
+            Console.CancelKeyPress += handler;
+        }
+
+        var sweep = store is not null ? Task.Run(() => SweepLoopAsync(store, _sessionCts.Token)) : Task.CompletedTask;
+
+        int exitCode;
+        try
+        {
+            await stdout.WriteLineAsync(Banner).ConfigureAwait(false);
+
+            while (!_sessionCts.IsCancellationRequested)
+            {
+                await stdout.WriteAsync("diag> ").ConfigureAwait(false);
+                await stdout.FlushAsync().ConfigureAwait(false);
+
+                var line = await ReadLineAsync(stdin, _sessionCts.Token).ConfigureAwait(false);
+                if (line is null)
+                {
+                    break; // EOF, or idle Ctrl-C (which also cancelled _sessionCts)
+                }
+
+                var trimmed = line.Trim();
+                if (trimmed.Length == 0)
+                {
+                    continue;
+                }
+
+                if (string.Equals(trimmed, "exit", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(trimmed, "quit", StringComparison.OrdinalIgnoreCase))
+                {
+                    break;
+                }
+
+                if (string.Equals(trimmed, "help", StringComparison.OrdinalIgnoreCase))
+                {
+                    await stdout.WriteLineAsync(SessionHelp).ConfigureAwait(false);
+                    continue;
+                }
+
+                await RunOneAsync(services, artifactProvider, store, trimmed, stdout, stderr).ConfigureAwait(false);
+            }
+
+            // Capture the outcome BEFORE the finally cancels the session CTS to stop the sweep:
+            // an idle Ctrl-C cancels _sessionCts (exit 130); a clean exit/quit/EOF does not (exit 0).
+            exitCode = _sessionCts.IsCancellationRequested ? 130 : 0;
+        }
+        finally
+        {
+            if (handler is not null)
+            {
+                Console.CancelKeyPress -= handler;
+            }
+
+            _sessionCts.Cancel();
+            try
+            {
+                await sweep.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+
+            _sessionCts.Dispose();
+        }
+
+        return exitCode;
+    }
+
+    private async Task RunOneAsync(
+        IServiceProvider services,
+        MutableArtifactRootProvider artifactProvider,
+        MemoryDiagnosticHandleStore? store,
+        string line,
+        TextWriter stdout,
+        TextWriter stderr)
+    {
+        var tokens = Tokenize(line);
+        var options = CliOptions.Parse(tokens, out var parseError);
+        if (parseError is not null)
+        {
+            await stderr.WriteLineAsync(parseError).ConfigureAwait(false);
+            return;
+        }
+
+        if (options!.Help)
+        {
+            var helpText = options.Command is { } helpCommand
+                            && CliCommands.Commands.Contains(helpCommand, StringComparer.Ordinal)
+                ? CliHelp.ForCommand(helpCommand)
+                : SessionHelp;
+            await stdout.WriteLineAsync(helpText).ConfigureAwait(false);
+            return;
+        }
+
+        if (options.Command is null)
+        {
+            await stderr.WriteLineAsync("No command specified. Type 'help' for the command list, or 'exit' to leave.").ConfigureAwait(false);
+            return;
+        }
+
+        if (string.Equals(options.Command, "session", StringComparison.Ordinal))
+        {
+            await stderr.WriteLineAsync("Already in a session. Type 'exit' to leave.").ConfigureAwait(false);
+            return;
+        }
+
+        if (!CliCommands.Commands.Contains(options.Command, StringComparer.Ordinal))
+        {
+            await stderr.WriteLineAsync($"Unknown command '{options.Command}'. Type 'help' for the command list.").ConfigureAwait(false);
+            return;
+        }
+
+        if (!CliCommands.TryValidateCommand(options, out var validationError))
+        {
+            await stderr.WriteLineAsync(validationError).ConfigureAwait(false);
+            return;
+        }
+
+        // Re-point the artifact sandbox at this command's resolved root (dump --out / get-bytes
+        // --dump-file), or the per-session default temp root when no override applies.
+        var commandRoot = CliHost.ResolveArtifactRoot(options);
+        if (commandRoot is not null)
+        {
+            artifactProvider.Set(commandRoot);
+        }
+        else
+        {
+            artifactProvider.Reset();
+        }
+
+        var commandCts = CancellationTokenSource.CreateLinkedTokenSource(_sessionCts.Token);
+        BeginCommand(commandCts);
+        try
+        {
+            // `query` is handled by the session-aware path (it can honour --handle against the live
+            // shared store); every other command runs the same use case the one-shot CLI does.
+            var result = string.Equals(options.Command, "query", StringComparison.Ordinal)
+                ? CliCommands.QuerySession(services, options)
+                : await CliCommands.RunAsync(services, options, commandCts.Token).ConfigureAwait(false);
+
+            await RenderAsync(result, options.Json, stdout, stderr).ConfigureAwait(false);
+
+            if (result.Handle is { } handleId)
+            {
+                await SurfaceHandleAsync(store, handleId, result.HandleExpiresAt, stdout).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (commandCts.IsCancellationRequested && !_sessionCts.IsCancellationRequested)
+        {
+            await stderr.WriteLineAsync($"{options.Command}: cancelled — session is still alive, temp files cleaned up.").ConfigureAwait(false);
+        }
+        finally
+        {
+            EndCommand();
+            commandCts.Dispose();
+            artifactProvider.Reset();
+        }
+    }
+
+    private static async Task RenderAsync(CliCommandResult result, bool json, TextWriter stdout, TextWriter stderr)
+    {
+        if (json)
+        {
+            await stdout.WriteLineAsync(JsonSerializer.Serialize(result.Envelope, result.Envelope.GetType(), JsonOptions))
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            await stdout.WriteLineAsync(result.Human).ConfigureAwait(false);
+        }
+
+        if (result.Cancelled)
+        {
+            await stderr.WriteLineAsync("(cancelled mid-window — diagnostic session stopped, temp files cleaned up; payload is partial)")
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Prints a follow-up line after a command that published a drill-down handle, listing the valid
+    /// views for that handle's kind so the user can <c>query</c> without re-collecting. For heap / CPU
+    /// handles (no session query path yet) it prints a truthful "not yet supported" note instead of an
+    /// inviting-but-broken command.
+    /// </summary>
+    private static async Task SurfaceHandleAsync(
+        MemoryDiagnosticHandleStore? store,
+        string handleId,
+        DateTimeOffset? expiresAt,
+        TextWriter stdout)
+    {
+        var lookup = store?.TryGetWithKind(handleId);
+        var expiry = expiresAt is { } e
+            ? string.Create(CultureInfo.InvariantCulture, $" (expires {e:HH:mm:ss}Z)")
+            : string.Empty;
+
+        if (lookup is { } found)
+        {
+            var views = CliCommands.SessionViewsFor(found.Kind);
+            if (views.Count > 0)
+            {
+                await stdout.WriteLineAsync(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"  → handle {handleId}{expiry} — query --handle {handleId} --view <{string.Join('|', views)}>"))
+                    .ConfigureAwait(false);
+                return;
+            }
+        }
+
+        // Either the handle was already evicted, or it is a heap/cpu/thread kind not yet queryable in
+        // the session.
+        await stdout.WriteLineAsync(string.Create(
+            CultureInfo.InvariantCulture,
+            $"  → handle {handleId}{expiry} — drill-down for this artifact is not available in the session yet."))
+            .ConfigureAwait(false);
+    }
+
+    // --- Cancellation state machine -----------------------------------------------------------
+
+    private void BeginCommand(CancellationTokenSource commandCts)
+    {
+        lock (_gate)
+        {
+            _currentCommandCts = commandCts;
+            _commandRunning = true;
+            _commandCtrlCCount = 0;
+        }
+    }
+
+    private void EndCommand()
+    {
+        lock (_gate)
+        {
+            _currentCommandCts = null;
+            _commandRunning = false;
+            _commandCtrlCCount = 0;
+        }
+    }
+
+    private void OnConsoleCancel(object? sender, ConsoleCancelEventArgs e)
+    {
+        lock (_gate)
+        {
+            if (_commandRunning && _currentCommandCts is { } cmd)
+            {
+                _commandCtrlCCount++;
+                if (_commandCtrlCCount == 1)
+                {
+                    // First Ctrl-C while a command runs: cancel only that command, keep the session.
+                    e.Cancel = true;
+                    cmd.Cancel();
+                }
+
+                // Second Ctrl-C for the same command: leave e.Cancel false so the default handler
+                // hard-terminates the process — a wedged operation can never trap the user.
+                return;
+            }
+
+            // Idle at the prompt: cancel the session for a graceful exit.
+            e.Cancel = true;
+            _sessionCts.Cancel();
+        }
+    }
+
+    // --- Input --------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Reads a line, abandoning the read when <paramref name="ct"/> is cancelled. <see cref="Console.In"/>
+    /// blocking reads do not reliably honour token cancellation across platforms, so we race the read
+    /// against the token and return <c>null</c> (treated as EOF / exit) when the session is cancelled.
+    /// </summary>
+    private static async Task<string?> ReadLineAsync(TextReader reader, CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested)
+        {
+            return null;
+        }
+
+        var readTask = reader.ReadLineAsync(ct).AsTask();
+        var cancelSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using (ct.Register(static s => ((TaskCompletionSource)s!).TrySetResult(), cancelSignal).ConfigureAwait(false))
+        {
+            var completed = await Task.WhenAny(readTask, cancelSignal.Task).ConfigureAwait(false);
+            if (completed != readTask)
+            {
+                return null; // cancelled at idle — the abandoned read ends with the process
+            }
+        }
+
+        try
+        {
+            return await readTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Splits a REPL line into argv-style tokens, honouring double quotes so paths with spaces work
+    /// (e.g. <c>dump --out "C:\my dumps"</c>). Deliberately simple — no escape sequences.
+    /// </summary>
+    internal static List<string> Tokenize(string line)
+    {
+        ArgumentNullException.ThrowIfNull(line);
+        var tokens = new List<string>();
+        var current = new StringBuilder();
+        var inQuotes = false;
+        var hasToken = false;
+
+        foreach (var c in line)
+        {
+            if (c == '"')
+            {
+                inQuotes = !inQuotes;
+                hasToken = true;
+                continue;
+            }
+
+            if (char.IsWhiteSpace(c) && !inQuotes)
+            {
+                if (hasToken)
+                {
+                    tokens.Add(current.ToString());
+                    current.Clear();
+                    hasToken = false;
+                }
+
+                continue;
+            }
+
+            current.Append(c);
+            hasToken = true;
+        }
+
+        if (hasToken)
+        {
+            tokens.Add(current.ToString());
+        }
+
+        return tokens;
+    }
+
+    // --- Dead-PID sweep -----------------------------------------------------------------------
+
+    private static async Task SweepLoopAsync(MemoryDiagnosticHandleStore store, CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(SweepInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            {
+                foreach (var pid in store.RegisteredProcessIds())
+                {
+                    bool exited;
+                    try
+                    {
+                        using var process = Process.GetProcessById(pid);
+                        exited = process.HasExited;
+                    }
+                    catch (ArgumentException)
+                    {
+                        // No process with that id is running — treat as exited.
+                        exited = true;
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        exited = true;
+                    }
+
+                    if (exited)
+                    {
+                        store.InvalidateForProcess(pid);
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    // --- Text ---------------------------------------------------------------------------------
+
+    private const string Banner =
+        "dotnet-diagnostics session — stateful diagnostics REPL. Collected handles stay queryable until\n"
+        + "they expire or the target exits. Type a command (e.g. 'collect --kind gc --pid 1234'),\n"
+        + "'help' for the command list, or 'exit' to leave.";
+
+    private const string SessionHelp =
+        """
+        Session commands:
+          processes                       List attachable .NET processes.
+          capabilities [--pid <id>]       Probe a target's diagnostic capability matrix.
+          collect --kind <kind> [...]     Collect events; prints a handle to drill into with 'query'.
+          inspect-heap [...]              Walk the managed heap of a live process or a .dmp.
+          dump [...] --confirm            Write a process dump to disk.
+          get-bytes --kind <k> [...]      Materialise a module or dump file to disk.
+          query --handle <id> --view <v>  Re-render a collected handle under a different view.
+          <command> --help                Show full options for a command.
+          help                            Show this list.
+          exit | quit                     Leave the session (Ctrl-D / EOF also exits).
+        Ctrl-C cancels the running command and keeps the session alive; press it again to force-quit.
+        """;
+}
