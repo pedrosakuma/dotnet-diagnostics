@@ -571,6 +571,11 @@ internal static class CliCommands
     /// </summary>
     public static IReadOnlyList<string> SessionViewsFor(string kind)
     {
+        if (kind == HeapInspectionUseCases.HeapSnapshotKind)
+        {
+            return HeapSnapshotQueryDispatcher.ProjectionViews;
+        }
+
         var all = CollectionQueryDispatcher.ViewsFor(kind);
         var result = new List<string>(all.Count);
         foreach (var view in all)
@@ -623,6 +628,16 @@ internal static class CliCommands
         }
 
         var kind = lookup.Value.Kind;
+
+        // Heap snapshot handles drill down through the host-neutral HeapSnapshotQueryDispatcher (#300):
+        // the projection views render from the walked snapshot alone (no live ClrMD attach, no
+        // sensitive-value redactor), which is exactly the subset a stateless session can serve. The
+        // four capability-bound views (object/gcroot/objsize, duplicate-strings) stay server-only.
+        if (kind == HeapInspectionUseCases.HeapSnapshotKind)
+        {
+            return QueryHeapSession(options, lookup.Value.Artifact);
+        }
+
         var allowedViews = CollectionQueryDispatcher.ViewsFor(kind);
         if (allowedViews.Count == 0)
         {
@@ -672,6 +687,48 @@ internal static class CliCommands
         // UnknownKind here means the stored artifact's runtime type did not match the handle kind.
         return Fail($"query: handle '{options.Handle}' could not be rendered as '{kind}'.", "InvalidArgument",
             "The stored artifact type did not match its handle kind; re-run the originating collect command.");
+    }
+
+    /// <summary>
+    /// Renders a heap-snapshot drill-down inside the <c>session</c> REPL via the host-neutral
+    /// <see cref="HeapSnapshotQueryDispatcher"/>. Projection views (<c>top-types</c>,
+    /// <c>retention-paths</c>, …) render from the walked snapshot; the four server-only views
+    /// (<c>object</c>/<c>gcroot</c>/<c>objsize</c> need a live attach, <c>duplicate-strings</c> needs
+    /// the server's sensitive-value gate) yield a clear <c>NotSupportedInSession</c> envelope.
+    /// </summary>
+    private static CliCommandResult QueryHeapSession(CliOptions options, object artifact)
+    {
+        if (artifact is not HeapSnapshotArtifact heap)
+        {
+            return Fail($"query: handle '{options.Handle}' could not be rendered as a heap snapshot.", "InvalidArgument",
+                "The stored artifact type did not match its handle kind; re-run inspect-heap to get a fresh handle.");
+        }
+
+        var view = string.IsNullOrWhiteSpace(options.View) ? "top-types" : options.View;
+        var topN = options.TopTypes ?? 50;
+        var outcome = HeapSnapshotQueryDispatcher.Dispatch(heap, options.Handle!, view, topN, options.RankBy, options.TypeFilter);
+
+        if (outcome.Result is { } heapResult)
+        {
+            return BuildResult<HeapSnapshotQueryResult>(heapResult, static (sb, qr) =>
+            {
+                sb.AppendLine();
+                sb.AppendLine(JsonSerializer.Serialize(qr, QueryJsonOptions));
+            });
+        }
+
+        if (outcome.ServerOnlyView)
+        {
+            var normalized = view.Trim().ToLowerInvariant();
+            var detail = normalized == "duplicate-strings"
+                ? "The 'duplicate-strings' view exposes raw string previews behind the server's sensitive-value policy, which the standalone CLI cannot enforce; run the MCP server if you need it."
+                : "The 'object', 'gcroot' and 'objsize' views require a live ClrMD attach the session does not hold; run the MCP server's query_heap_snapshot tool with an address if you need them.";
+            return Fail($"query: view '{view}' for a heap snapshot is not available in the session yet.", "NotSupportedInSession", detail);
+        }
+
+        // outcome.UnknownView
+        return Fail($"query: unknown view '{view}' for a heap snapshot.", "InvalidArgument",
+            $"Valid views: {string.Join(", ", HeapSnapshotQueryDispatcher.ProjectionViews)}.");
     }
 
     private static CliCommandResult Fail(string summary, string errorKind, string detail)

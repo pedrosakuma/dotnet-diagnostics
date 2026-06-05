@@ -98,6 +98,12 @@ internal sealed class CliOptions
     /// <summary>Drill-down view name (<c>--view</c>) for the <c>query</c> command (parsed for forward-compat; the one-shot CLI cannot honour it — see #286).</summary>
     public string? View { get; init; }
 
+    /// <summary>Ranking for the heap <c>top-types</c> view (<c>--rank-by</c>): <c>bytes</c> (default) or <c>instances</c>. Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public string? RankBy { get; init; }
+
+    /// <summary>Case-insensitive type substring for the heap <c>retention-paths</c> view (<c>--type-filter</c>). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public string? TypeFilter { get; init; }
+
     /// <summary>
     /// Parses <paramref name="args"/>. Returns a populated <see cref="CliOptions"/> on success, or
     /// <c>null</c> with a non-null <paramref name="error"/> describing the first usage problem.
@@ -137,6 +143,8 @@ internal sealed class CliOptions
         string? asset = null;
         string? handle = null;
         string? view = null;
+        string? rankBy = null;
+        string? typeFilter = null;
 
         for (var i = 0; i < args.Count; i++)
         {
@@ -338,6 +346,22 @@ internal sealed class CliOptions
 
                     view = viewValue;
                     break;
+                case "--rank-by":
+                    if (!TryTakeString(args, ref i, token, out var rankByValue, out error))
+                    {
+                        return null;
+                    }
+
+                    rankBy = rankByValue;
+                    break;
+                case "--type-filter":
+                    if (!TryTakeString(args, ref i, token, out var typeFilterValue, out error))
+                    {
+                        return null;
+                    }
+
+                    typeFilter = typeFilterValue;
+                    break;
                 default:
                     if (token.StartsWith('-'))
                     {
@@ -388,6 +412,8 @@ internal sealed class CliOptions
             Asset = asset,
             Handle = handle,
             View = view,
+            RankBy = rankBy,
+            TypeFilter = typeFilter,
         };
     }
 
