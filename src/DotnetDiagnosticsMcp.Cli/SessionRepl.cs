@@ -46,6 +46,10 @@ internal sealed class SessionRepl
     private bool _commandRunning;
     private int _commandCtrlCCount;
 
+    // Session-bound target pid (issue #300, strand C). When set, live-target commands that omit
+    // --pid inherit it so the user supplies the pid once per session instead of per command.
+    private int? _targetPid;
+
     private SessionRepl(CancellationToken externalToken)
         => _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
 
@@ -98,7 +102,10 @@ internal sealed class SessionRepl
 
             while (!_sessionCts.IsCancellationRequested)
             {
-                await stdout.WriteAsync("diag> ").ConfigureAwait(false);
+                var prompt = _targetPid is { } targetPid
+                    ? string.Create(CultureInfo.InvariantCulture, $"diag(pid {targetPid})> ")
+                    : "diag> ";
+                await stdout.WriteAsync(prompt).ConfigureAwait(false);
                 await stdout.FlushAsync().ConfigureAwait(false);
 
                 var line = await ReadLineAsync(stdin, _sessionCts.Token).ConfigureAwait(false);
@@ -122,6 +129,15 @@ internal sealed class SessionRepl
                 if (string.Equals(trimmed, "help", StringComparison.OrdinalIgnoreCase))
                 {
                     await stdout.WriteLineAsync(SessionHelp).ConfigureAwait(false);
+                    continue;
+                }
+
+                var lineTokens = Tokenize(trimmed);
+                if (lineTokens.Count > 0
+                    && (string.Equals(lineTokens[0], "target", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(lineTokens[0], "use", StringComparison.OrdinalIgnoreCase)))
+                {
+                    await HandleTargetAsync(lineTokens, stdout, stderr).ConfigureAwait(false);
                     continue;
                 }
 
@@ -198,10 +214,36 @@ internal sealed class SessionRepl
             return;
         }
 
+        // Apply the session-bound target pid to live-target commands that omitted --pid (strand C).
+        // We append the flag to the token list and re-parse rather than clone CliOptions (a class with
+        // ~30 init-only properties). Validation then runs against the effective options.
+        var inheritedTarget = false;
+        if (_targetPid is { } boundPid && options.Pid is null && ShouldInheritTarget(options))
+        {
+            tokens.Add("--pid");
+            tokens.Add(boundPid.ToString(CultureInfo.InvariantCulture));
+            var reparsed = CliOptions.Parse(tokens, out var reparseError);
+            if (reparseError is not null || reparsed is null)
+            {
+                await stderr.WriteLineAsync($"{options.Command}: internal error applying bound target pid {boundPid}.").ConfigureAwait(false);
+                return;
+            }
+
+            options = reparsed;
+            inheritedTarget = true;
+        }
+
         if (!CliCommands.TryValidateCommand(options, out var validationError))
         {
             await stderr.WriteLineAsync(validationError).ConfigureAwait(false);
             return;
+        }
+
+        if (inheritedTarget && !options.Json)
+        {
+            await stdout.WriteLineAsync(string.Create(
+                CultureInfo.InvariantCulture,
+                $"  · using bound target pid {options.Pid}")).ConfigureAwait(false);
         }
 
         // Re-point the artifact sandbox at this command's resolved root (dump --out / get-bytes
@@ -242,6 +284,92 @@ internal sealed class SessionRepl
             EndCommand();
             commandCts.Dispose();
             artifactProvider.Reset();
+        }
+    }
+
+    /// <summary>
+    /// Handles the <c>target</c> / <c>use</c> REPL built-in (issue #300, strand C). With no argument it
+    /// reports the current binding; <c>target &lt;pid&gt;</c> (or <c>target --pid &lt;pid&gt;</c>) binds a
+    /// default pid for live-target commands; <c>target clear|none|off|unset</c> unbinds it. Binding is
+    /// lazy — the pid is not validated here; the next command surfaces the authoritative attach failure.
+    /// </summary>
+    private async Task HandleTargetAsync(List<string> tokens, TextWriter stdout, TextWriter stderr)
+    {
+        var args = tokens.Skip(1).ToList();
+        var pidFlagForm = args.Count >= 1
+            && (string.Equals(args[0], "--pid", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(args[0], "-p", StringComparison.OrdinalIgnoreCase));
+        if (pidFlagForm)
+        {
+            args = args.Skip(1).ToList();
+        }
+
+        if (!pidFlagForm && args.Count == 0)
+        {
+            if (_targetPid is { } current)
+            {
+                await stdout.WriteLineAsync(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Target bound to pid {current}. Live-target commands use it unless you pass --pid; 'target clear' to unbind.")).ConfigureAwait(false);
+            }
+            else
+            {
+                await stdout.WriteLineAsync("No target bound. Commands auto-resolve the lone .NET process, or pass --pid <id>; 'target <pid>' to bind one.").ConfigureAwait(false);
+            }
+
+            return;
+        }
+
+        if (!pidFlagForm
+            && args.Count == 1
+            && (string.Equals(args[0], "clear", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(args[0], "none", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(args[0], "off", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(args[0], "unset", StringComparison.OrdinalIgnoreCase)))
+        {
+            _targetPid = null;
+            await stdout.WriteLineAsync("Target cleared.").ConfigureAwait(false);
+            return;
+        }
+
+        if (args.Count == 1
+            && int.TryParse(args[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var pid)
+            && pid > 0)
+        {
+            _targetPid = pid;
+            await stdout.WriteLineAsync(string.Create(
+                CultureInfo.InvariantCulture,
+                $"Target bound to pid {pid}. capabilities/collect/inspect-heap/dump/get-bytes now use it unless you pass --pid.")).ConfigureAwait(false);
+            return;
+        }
+
+        await stderr.WriteLineAsync("Usage: target <pid> | target clear. Example: 'target 1234'.").ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Decides whether a command should inherit the session-bound target pid when it omitted <c>--pid</c>.
+    /// True for the live-target commands (<c>capabilities</c>, <c>collect</c>, <c>dump</c>,
+    /// <c>inspect-heap</c> against a live process, and <c>get-bytes --kind module</c>); false for offline
+    /// commands (<c>inspect-heap --source dump</c> / a <c>--dump-file</c>, <c>get-bytes --kind dump</c>)
+    /// and pid-less commands (<c>processes</c>, <c>query</c>) — injecting <c>--pid</c> there would either
+    /// be ignored or fail validation.
+    /// </summary>
+    internal static bool ShouldInheritTarget(CliOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        switch (options.Command)
+        {
+            case "capabilities":
+            case "collect":
+            case "dump":
+                return true;
+            case "inspect-heap":
+                return options.DumpFile is null
+                    && !options.Sources.Contains("dump", StringComparer.Ordinal);
+            case "get-bytes":
+                return string.Equals(options.Kind, "module", StringComparison.Ordinal);
+            default:
+                return false;
         }
     }
 
@@ -433,13 +561,15 @@ internal sealed class SessionRepl
 
     private const string Banner =
         "dotnet-diagnostics session — stateful diagnostics REPL. Collected handles stay queryable until\n"
-        + "they expire or the target exits. Type a command (e.g. 'collect --kind gc --pid 1234'),\n"
-        + "'help' for the command list, or 'exit' to leave.";
+        + "they expire or the target exits. Bind a process once with 'target <pid>' so live-target commands\n"
+        + "don't each need --pid. Type a command (e.g. 'collect --kind gc --pid 1234'), 'help' for the\n"
+        + "command list, or 'exit' to leave.";
 
     private const string SessionHelp =
         """
         Session commands:
           processes                       List attachable .NET processes.
+          target [<pid>|clear]            Bind/show/clear a default --pid for live-target commands.
           capabilities [--pid <id>]       Probe a target's diagnostic capability matrix.
           collect --kind <kind> [...]     Collect events; prints a handle to drill into with 'query'.
           inspect-heap [...]              Walk the managed heap of a live process or a .dmp.
@@ -449,6 +579,7 @@ internal sealed class SessionRepl
           <command> --help                Show full options for a command.
           help                            Show this list.
           exit | quit                     Leave the session (Ctrl-D / EOF also exits).
+        A bound target (shown as 'diag(pid <id>)>') is overridden by an explicit --pid on any command.
         Ctrl-C cancels the running command and keeps the session alive; press it again to force-quit.
         """;
 }
