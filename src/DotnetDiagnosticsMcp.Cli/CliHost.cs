@@ -44,6 +44,16 @@ internal static class CliHost
     {
         ArgumentNullException.ThrowIfNull(args);
 
+        // The stateful `session` REPL owns its own Ctrl-C semantics (first Ctrl-C cancels only the
+        // running command and keeps the session alive; an idle Ctrl-C exits the session), so we must
+        // NOT install the one-shot global handler below for it. Peek the parsed command and route to
+        // the REPL path, which manages its own session CancellationTokenSource via SessionRepl.
+        var peek = CliOptions.Parse(args, out var peekError);
+        if (peekError is null && peek!.Command == "session" && !peek.Help)
+        {
+            return await RunAsync(args, Console.In, Console.Out, Console.Error, CancellationToken.None).ConfigureAwait(false);
+        }
+
         using var cts = new CancellationTokenSource();
         var cancelRequested = 0;
         ConsoleCancelEventHandler handler = (_, e) =>
@@ -71,17 +81,31 @@ internal static class CliHost
     }
 
     /// <summary>
+    /// Backwards-compatible overload used by the existing one-shot tests: no stdin (the one-shot
+    /// commands never read it). Delegates to the canonical overload with <see cref="TextReader.Null"/>.
+    /// </summary>
+    internal static Task<int> RunAsync(
+        string[] args,
+        TextWriter stdout,
+        TextWriter stderr,
+        CancellationToken cancellationToken)
+        => RunAsync(args, TextReader.Null, stdout, stderr, cancellationToken);
+
+    /// <summary>
     /// Testable core: parses <paramref name="args"/>, builds the Core host, dispatches the command and
-    /// renders to the supplied writers. Exit codes: <c>0</c> success · <c>1</c> error envelope ·
-    /// <c>2</c> usage error · <c>130</c> cancelled.
+    /// renders to the supplied writers. The <c>session</c> command branches into the stateful
+    /// <see cref="SessionRepl"/> (issue #300), which reads commands from <paramref name="stdin"/>.
+    /// Exit codes: <c>0</c> success · <c>1</c> error envelope · <c>2</c> usage error · <c>130</c> cancelled.
     /// </summary>
     internal static async Task<int> RunAsync(
         string[] args,
+        TextReader stdin,
         TextWriter stdout,
         TextWriter stderr,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(args);
+        ArgumentNullException.ThrowIfNull(stdin);
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(stderr);
 
@@ -127,6 +151,25 @@ internal static class CliHost
             await stderr.WriteLineAsync().ConfigureAwait(false);
             await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
             return 2;
+        }
+
+        // The stateful session REPL builds the host ONCE (shared singletons — the handle store that
+        // makes drill-down possible must outlive every command) and reads commands from stdin until
+        // exit/EOF. It owns a per-command artifact root via a MutableArtifactRootProvider.
+        if (options.Command == "session")
+        {
+            var sessionRoot = Path.Combine(Path.GetTempPath(), $"dotnet-diagnostics-session-{Guid.NewGuid():N}");
+            var artifactProvider = new MutableArtifactRootProvider(sessionRoot);
+            using var sessionHost = BuildHost(artifactProvider);
+            try
+            {
+                return await SessionRepl.RunAsync(
+                    sessionHost.Services, artifactProvider, stdin, stdout, stderr, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                TryDeleteDirectory(sessionRoot);
+            }
         }
 
         if (options.Command == "collect" && !CliCommands.TryValidateCollect(options, out var collectError))
@@ -198,6 +241,23 @@ internal static class CliHost
 
     private static IHost BuildHost(CliOptions options)
     {
+        // The one-shot path derives a command-specific artifact root from the options (dump --out,
+        // get-bytes --dump-file) and pins it via a FixedArtifactRootProvider, or keeps the default
+        // (temp / MCP_ARTIFACT_ROOT) provider when no override applies.
+        var artifactRoot = ResolveArtifactRoot(options);
+        IArtifactRootProvider? provider = artifactRoot is not null ? new FixedArtifactRootProvider(artifactRoot) : null;
+        return BuildHost(provider);
+    }
+
+    /// <summary>
+    /// Builds the Core service graph host. When <paramref name="artifactProvider"/> is non-null it is
+    /// registered as the <see cref="IArtifactRootProvider"/> (the LAST registration wins for
+    /// <c>GetRequiredService</c>), overriding the default <c>EnvironmentArtifactRootProvider</c>. The
+    /// <c>session</c> REPL passes a <see cref="MutableArtifactRootProvider"/> so it can re-point the
+    /// sandbox per command without rebuilding the host.
+    /// </summary>
+    private static IHost BuildHost(IArtifactRootProvider? artifactProvider)
+    {
         // Pass NO command-line args to the host builder: the CLI command/flags are not configuration
         // and the default command-line config provider rejects bare positionals like "processes".
         var builder = Host.CreateApplicationBuilder(Array.Empty<string>());
@@ -227,13 +287,30 @@ internal static class CliHost
         // EnvironmentArtifactRootProvider with an explicit one (the LAST IArtifactRootProvider
         // registration wins for GetRequiredService). This replaces mutating the process-global
         // MCP_ARTIFACT_ROOT env var, which would leak across commands sharing the process (e.g. tests).
-        var artifactRoot = ResolveArtifactRoot(options);
-        if (artifactRoot is not null)
+        if (artifactProvider is not null)
         {
-            builder.Services.AddSingleton<IArtifactRootProvider>(new FixedArtifactRootProvider(artifactRoot));
+            builder.Services.AddSingleton(artifactProvider);
         }
 
         return builder.Build();
+    }
+
+    /// <summary>Best-effort recursive delete of the per-session artifact root on REPL exit.</summary>
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     /// <summary>
@@ -248,7 +325,7 @@ internal static class CliHost
     /// <c>get-bytes --kind module</c> writes its <c>--out</c> file directly (no sandbox), so it needs
     /// no override.
     /// </summary>
-    private static string? ResolveArtifactRoot(CliOptions options)
+    internal static string? ResolveArtifactRoot(CliOptions options)
     {
         if (options.Command == "dump" && !string.IsNullOrWhiteSpace(options.OutDir))
         {

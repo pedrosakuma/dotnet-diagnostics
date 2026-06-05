@@ -105,6 +105,32 @@ public sealed class CliHostTests
         stdout.Should().NotBeNullOrWhiteSpace();
     }
 
+    [Fact]
+    public async Task RunAsync_Help_ListsSessionCommand()
+    {
+        var (exit, stdout, _) = await RunAsync("--help");
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("session");
+    }
+
+    [Fact]
+    public async Task RunAsync_Session_RunsReplFromStdin_AndExitsCleanly()
+    {
+        // Full-stack: routes through the `session` branch (builds the Core host once with a
+        // MutableArtifactRootProvider, runs the REPL, cleans up the temp root). EOF exits with 0.
+        var stdin = new StringReader("help\nexit\n");
+        var stdout = new StringWriter(new StringBuilder());
+        var stderr = new StringWriter(new StringBuilder());
+
+        var exit = await CliHost.RunAsync(
+            new[] { "session" }, stdin, stdout, stderr, CancellationToken.None);
+
+        exit.Should().Be(0);
+        stdout.ToString().Should().Contain("dotnet-diagnostics session");
+        stdout.ToString().Should().Contain("Session commands:");
+    }
+
     private static async Task<(int Exit, string Stdout, string Stderr)> RunAsync(params string[] args)
     {
         var stdout = new StringWriter(new StringBuilder());

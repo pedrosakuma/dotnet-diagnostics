@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using DotnetDiagnosticsMcp.Core;
 using DotnetDiagnosticsMcp.Core.Activities;
 using DotnetDiagnosticsMcp.Core.Bytes;
@@ -28,7 +29,16 @@ namespace DotnetDiagnosticsMcp.Cli;
 /// <see cref="DotnetDiagnosticsMcp.Core.DiagnosticResult{T}"/> envelope (boxed for JSON) plus a
 /// pre-rendered human table, and whether the envelope is an error.
 /// </summary>
-internal sealed record CliCommandResult(bool IsError, bool Cancelled, object Envelope, string Human);
+internal sealed record CliCommandResult(bool IsError, bool Cancelled, object Envelope, string Human)
+{
+    /// <summary>Drill-down handle published by the originating command (e.g. <c>collect</c>), or
+    /// <c>null</c>. Surfaced by the <c>session</c> REPL so the user can <c>query --handle &lt;id&gt;</c>
+    /// without re-collecting; meaningless (and unused) in the one-shot path where the process exits.</summary>
+    public string? Handle { get; init; }
+
+    /// <summary>UTC moment <see cref="Handle"/> expires, or <c>null</c>.</summary>
+    public DateTimeOffset? HandleExpiresAt { get; init; }
+}
 
 /// <summary>
 /// The standalone CLI sub-command handlers (issue #288). Each handler runs one host-neutral use
@@ -48,6 +58,7 @@ internal static class CliCommands
         "dump",
         "query",
         "get-bytes",
+        "session",
     };
 
     /// <summary>Heap-snapshot sources accepted by the <c>inspect-heap</c> command (issue #288 PR3b).</summary>
@@ -98,6 +109,27 @@ internal static class CliCommands
             "query" => Query(),
             "get-bytes" => await GetBytesAsync(services, options, cancellationToken).ConfigureAwait(false),
             _ => throw new ArgumentException($"Unknown command '{options.Command}'.", nameof(options)),
+        };
+    }
+
+    /// <summary>
+    /// Aggregates the per-command <c>TryValidate*</c> checks into one entry point for the stateful
+    /// <c>session</c> REPL (issue #300), which validates a parsed line before dispatching it against
+    /// the shared host. Commands without dedicated validation (<c>processes</c>, <c>capabilities</c>,
+    /// <c>query</c>) return <c>true</c>. The one-shot <see cref="CliHost"/> path keeps its own
+    /// per-command validation blocks (which additionally print the full usage screen on failure).
+    /// </summary>
+    public static bool TryValidateCommand(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+        return options.Command switch
+        {
+            "collect" => TryValidateCollect(options, out error),
+            "inspect-heap" => TryValidateInspectHeap(options, out error),
+            "dump" => TryValidateDump(options, out error),
+            "get-bytes" => TryValidateGetBytes(options, out error),
+            _ => true,
         };
     }
 
@@ -521,6 +553,135 @@ internal static class CliCommands
         return BuildResult<object>(result, static (_, _) => { });
     }
 
+    /// <summary>
+    /// Dispatcher views the <c>session</c> <c>query</c> path cannot render yet because they correlate a
+    /// second collected artifact the session has no way to supply (currently only the activities
+    /// <c>gc-overlay</c>, which needs a GC handle). They are hidden from the advertised view list and
+    /// rejected with a clear <c>NotSupportedInSession</c> rather than the dispatcher's confusing
+    /// "missing correlate" <c>InvalidArgument</c>.
+    /// </summary>
+    private static readonly HashSet<string> SessionExcludedViews =
+        new(StringComparer.OrdinalIgnoreCase) { "gc-overlay" };
+
+    /// <summary>
+    /// The subset of <see cref="CollectionQueryDispatcher.ViewsFor(string)"/> that the session
+    /// <c>query</c> path can actually render for <paramref name="kind"/> — i.e. minus
+    /// <see cref="SessionExcludedViews"/>. Used both to advertise valid views after a collect and to
+    /// list them in the unknown-view error, so the two never drift.
+    /// </summary>
+    public static IReadOnlyList<string> SessionViewsFor(string kind)
+    {
+        var all = CollectionQueryDispatcher.ViewsFor(kind);
+        var result = new List<string>(all.Count);
+        foreach (var view in all)
+        {
+            if (!SessionExcludedViews.Contains(view))
+            {
+                result.Add(view);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// JSON used to pretty-print a <see cref="CollectionQueryResult.Payload"/> in the <c>session</c>
+    /// REPL's human render so the user sees the drill-down data without re-typing <c>--json</c>.
+    /// </summary>
+    private static readonly JsonSerializerOptions QueryJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    /// <summary>
+    /// The <c>query</c> drill-down command <b>inside the stateful <c>session</c> REPL</b> (issue #300).
+    /// Unlike the one-shot <see cref="Query()"/> (which returns <c>NotSupported</c> because no handle
+    /// store survives the process), the REPL keeps the shared <see cref="IDiagnosticHandleStore"/>
+    /// alive, so a handle published by an earlier <c>collect</c> can be re-rendered under a different
+    /// view via <see cref="CollectionQueryDispatcher"/> — with no re-collection. Only the 10 collection
+    /// kinds are supported here; heap/cpu/thread drill-down routing still lives in the MCP server
+    /// (deferred to a follow-up PR) and yields a clear <c>NotSupportedInSession</c> envelope.
+    /// </summary>
+    public static CliCommandResult QuerySession(IServiceProvider services, CliOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+
+        if (string.IsNullOrWhiteSpace(options.Handle))
+        {
+            return Fail("query: --handle <id> is required.", "InvalidArgument",
+                "Pass the handle printed after a collect command, e.g. query --handle <id> --view <view>.");
+        }
+
+        var store = services.GetRequiredService<IDiagnosticHandleStore>();
+        var lookup = store.TryGetWithKind(options.Handle);
+        if (lookup is null)
+        {
+            return Fail($"query: handle '{options.Handle}' is unknown or expired.", "NotFound",
+                "Handles are evicted when they expire or when the target process exits. Re-run the originating collect command to get a fresh handle.");
+        }
+
+        var kind = lookup.Value.Kind;
+        var allowedViews = CollectionQueryDispatcher.ViewsFor(kind);
+        if (allowedViews.Count == 0)
+        {
+            return Fail($"query: drill-down for '{kind}' handles is not available in the session yet.", "NotSupportedInSession",
+                "Heap / CPU / thread drill-down routing still lives in the MCP server; re-run the originating command (e.g. inspect-heap) with the inline flags you need.");
+        }
+
+        // Some dispatcher views correlate a second collected artifact (e.g. activities gc-overlay needs
+        // a GC handle) that the session can't supply yet — reject them with a clear message instead of
+        // letting the dispatcher fail with a confusing "missing correlate" InvalidArgument.
+        if (!string.IsNullOrWhiteSpace(options.View) && SessionExcludedViews.Contains(options.View))
+        {
+            return Fail($"query: view '{options.View}' for a '{kind}' handle is not available in the session yet.", "NotSupportedInSession",
+                "This view correlates two collected artifacts, which the session cannot supply yet; re-run the originating command with the inline flags you need.");
+        }
+
+        var topN = options.TopTypes ?? 50;
+        var outcome = CollectionQueryDispatcher.Dispatch(kind, options.View, lookup.Value.Artifact, topN);
+
+        if (outcome.Result is { } queryResult)
+        {
+            var summary = string.Create(
+                CultureInfo.InvariantCulture,
+                $"query: {queryResult.Kind} view={queryResult.View} pid={queryResult.ProcessId}");
+            var ok = DiagnosticResult.Ok(queryResult, summary);
+            return BuildResult<CollectionQueryResult>(ok, static (sb, qr) =>
+            {
+                sb.AppendLine();
+                sb.AppendLine(JsonSerializer.Serialize(qr.Payload, qr.Payload.GetType(), QueryJsonOptions));
+            });
+        }
+
+        if (outcome.UnknownView is { } badView)
+        {
+            var sessionViews = SessionViewsFor(kind);
+            var views = sessionViews.Count > 0 ? string.Join(", ", sessionViews) : string.Join(", ", allowedViews);
+            return Fail($"query: unknown view '{badView}' for a '{kind}' handle.", "InvalidArgument",
+                $"Valid views: {views}.");
+        }
+
+        if (outcome.InvalidArgument is { } invalid)
+        {
+            return Fail($"query: {invalid}.", "InvalidArgument",
+                "Adjust the argument and retry, e.g. --top-types 20.");
+        }
+
+        // UnknownKind here means the stored artifact's runtime type did not match the handle kind.
+        return Fail($"query: handle '{options.Handle}' could not be rendered as '{kind}'.", "InvalidArgument",
+            "The stored artifact type did not match its handle kind; re-run the originating collect command.");
+    }
+
+    private static CliCommandResult Fail(string summary, string errorKind, string detail)
+    {
+        var result = DiagnosticResult.Fail<object>(
+            summary,
+            new DiagnosticError(errorKind, summary, detail));
+        return BuildResult<object>(result, static (_, _) => { });
+    }
+
     private static async Task<CliCommandResult> GetBytesAsync(
         IServiceProvider services,
         CliOptions options,
@@ -647,7 +808,11 @@ internal static class CliCommands
         // the --json envelope are produced, so neither leaks MCP tool names / call syntax (#301).
         var projected = CliHintProjection.Project(result);
         var human = RenderEnvelope(projected, renderData);
-        return new CliCommandResult(projected.IsError, projected.Cancelled, projected, human);
+        return new CliCommandResult(projected.IsError, projected.Cancelled, projected, human)
+        {
+            Handle = projected.Handle,
+            HandleExpiresAt = projected.HandleExpiresAt,
+        };
     }
 
     private static string RenderEnvelope<T>(DiagnosticResult<T> result, Action<StringBuilder, T> renderData)

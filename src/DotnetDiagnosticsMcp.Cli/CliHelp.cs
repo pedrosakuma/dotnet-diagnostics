@@ -124,6 +124,22 @@ get-bytes options:
   dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll
   dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
 """),
+        new CommandHelp(
+            "session",
+            "Start a stateful REPL that keeps collected handles queryable across commands.",
+"""
+session notes:
+  Builds the diagnostic host once and reads commands from stdin until 'exit'/'quit'/EOF. Handles
+  published by 'collect' stay alive (until they expire or the target exits), so you can drill in with
+  'query --handle <id> --view <view>' without re-collecting. Ctrl-C cancels the running command and
+  keeps the session alive; press it again to force-quit. An idle Ctrl-C leaves the session.
+""",
+"""
+  dotnet-diagnostics-cli session
+  diag> collect --kind gc --pid 1234
+  diag> query --handle <id> --view pauseHistogram
+  diag> exit
+"""),
     };
 
     /// <summary>The full usage screen (every command, options and examples).</summary>
