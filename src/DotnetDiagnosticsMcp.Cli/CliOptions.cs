@@ -104,6 +104,15 @@ internal sealed class CliOptions
     /// <summary>Case-insensitive type substring for the heap <c>retention-paths</c> view (<c>--type-filter</c>). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public string? TypeFilter { get; init; }
 
+    /// <summary>Case-insensitive method substring to re-root the CPU <c>call-tree</c> view (<c>--root-method-filter</c>). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public string? RootMethodFilter { get; init; }
+
+    /// <summary>Maximum call-tree depth for the CPU <c>call-tree</c> view (<c>--max-depth</c>, default 8). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public int? MaxDepth { get; init; }
+
+    /// <summary>Approximate cap on call-tree nodes for the CPU <c>call-tree</c> view (<c>--max-nodes</c>, default 200). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public int? MaxNodes { get; init; }
+
     /// <summary>
     /// Parses <paramref name="args"/>. Returns a populated <see cref="CliOptions"/> on success, or
     /// <c>null</c> with a non-null <paramref name="error"/> describing the first usage problem.
@@ -145,6 +154,9 @@ internal sealed class CliOptions
         string? view = null;
         string? rankBy = null;
         string? typeFilter = null;
+        string? rootMethodFilter = null;
+        int? maxDepth = null;
+        int? maxNodes = null;
 
         for (var i = 0; i < args.Count; i++)
         {
@@ -362,6 +374,30 @@ internal sealed class CliOptions
 
                     typeFilter = typeFilterValue;
                     break;
+                case "--root-method-filter":
+                    if (!TryTakeString(args, ref i, token, out var rootMethodFilterValue, out error))
+                    {
+                        return null;
+                    }
+
+                    rootMethodFilter = rootMethodFilterValue;
+                    break;
+                case "--max-depth":
+                    if (!TryTakeInt(args, ref i, token, out var maxDepthValue, out error))
+                    {
+                        return null;
+                    }
+
+                    maxDepth = maxDepthValue;
+                    break;
+                case "--max-nodes":
+                    if (!TryTakeInt(args, ref i, token, out var maxNodesValue, out error))
+                    {
+                        return null;
+                    }
+
+                    maxNodes = maxNodesValue;
+                    break;
                 default:
                     if (token.StartsWith('-'))
                     {
@@ -414,6 +450,9 @@ internal sealed class CliOptions
             View = view,
             RankBy = rankBy,
             TypeFilter = typeFilter,
+            RootMethodFilter = rootMethodFilter,
+            MaxDepth = maxDepth,
+            MaxNodes = maxNodes,
         };
     }
 
