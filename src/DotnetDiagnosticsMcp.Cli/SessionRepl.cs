@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -26,8 +25,9 @@ namespace DotnetDiagnosticsMcp.Cli;
 /// <para><b>Artifact root.</b> The host is built once with a <see cref="MutableArtifactRootProvider"/>;
 /// the REPL re-points it to each command's resolved root (and back to the session default afterwards)
 /// so <c>dump --out</c> / <c>get-bytes --dump-file</c> behave exactly as in the one-shot path.</para>
-/// <para><b>Dead-PID sweep.</b> A 5s in-process timer mirrors the server's
-/// <c>HandleEvictionBackgroundService</c>: it drops handles whose target process has exited so the
+/// <para><b>Dead-PID sweep.</b> A 5s in-process timer runs the shared, host-neutral
+/// <see cref="DeadProcessHandleEvictor"/> (the same driver behind the server's
+/// <c>HandleEvictionBackgroundService</c>): it drops handles whose target process has exited so the
 /// user never drills into a dead trace.</para>
 /// </remarks>
 internal sealed class SessionRepl
@@ -86,7 +86,10 @@ internal sealed class SessionRepl
             Console.CancelKeyPress += handler;
         }
 
-        var sweep = store is not null ? Task.Run(() => SweepLoopAsync(store, _sessionCts.Token)) : Task.CompletedTask;
+        var evictor = store is not null ? new DeadProcessHandleEvictor(store) : null;
+        var sweep = evictor is not null
+            ? Task.Run(() => evictor.RunAsync(SweepInterval, cancellationToken: _sessionCts.Token))
+            : Task.CompletedTask;
 
         int exitCode;
         try
@@ -424,45 +427,6 @@ internal sealed class SessionRepl
         }
 
         return tokens;
-    }
-
-    // --- Dead-PID sweep -----------------------------------------------------------------------
-
-    private static async Task SweepLoopAsync(MemoryDiagnosticHandleStore store, CancellationToken ct)
-    {
-        using var timer = new PeriodicTimer(SweepInterval);
-        try
-        {
-            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
-            {
-                foreach (var pid in store.RegisteredProcessIds())
-                {
-                    bool exited;
-                    try
-                    {
-                        using var process = Process.GetProcessById(pid);
-                        exited = process.HasExited;
-                    }
-                    catch (ArgumentException)
-                    {
-                        // No process with that id is running — treat as exited.
-                        exited = true;
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        exited = true;
-                    }
-
-                    if (exited)
-                    {
-                        store.InvalidateForProcess(pid);
-                    }
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
     }
 
     // --- Text ---------------------------------------------------------------------------------
