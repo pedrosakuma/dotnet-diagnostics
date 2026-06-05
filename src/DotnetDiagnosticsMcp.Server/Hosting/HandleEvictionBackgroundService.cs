@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -10,9 +9,14 @@ namespace DotnetDiagnosticsMcp.Server.Hosting;
 /// in-memory store from leaking artifacts when the LLM forgets to clean up, and avoids handing
 /// the model a handle whose process is gone (it would otherwise time out only on TTL).
 /// </summary>
+/// <remarks>
+/// The actual sweep is the host-neutral <see cref="DeadProcessHandleEvictor"/> in Core (shared with
+/// the CLI <c>session</c> REPL, issue #300); this hosted service only supplies the hosting lifetime
+/// and wires the evictor's progress/error callbacks to the server logger.
+/// </remarks>
 public sealed class HandleEvictionBackgroundService : BackgroundService
 {
-    private readonly IDiagnosticHandleStore _store;
+    private readonly DeadProcessHandleEvictor _evictor;
     private readonly ILogger<HandleEvictionBackgroundService> _logger;
     private readonly TimeSpan _interval;
 
@@ -21,63 +25,24 @@ public sealed class HandleEvictionBackgroundService : BackgroundService
         ILogger<HandleEvictionBackgroundService>? logger = null,
         TimeSpan? interval = null)
     {
-        _store = store ?? throw new ArgumentNullException(nameof(store));
+        ArgumentNullException.ThrowIfNull(store);
+        _evictor = new DeadProcessHandleEvictor(store);
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<HandleEvictionBackgroundService>.Instance;
         _interval = interval ?? TimeSpan.FromSeconds(5);
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        using var timer = new PeriodicTimer(_interval);
-        while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
-        {
-            try
-            {
-                EvictDeadProcesses();
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Handle eviction sweep failed; will retry on the next tick.");
-            }
-        }
-    }
+    protected override Task ExecuteAsync(CancellationToken stoppingToken)
+        => _evictor.RunAsync(
+            _interval,
+            onEvicted: (pid, count) =>
+                _logger.LogInformation("Invalidated {Count} handle(s) for exited process {Pid}.", count, pid),
+            onError: ex =>
+                _logger.LogWarning(ex, "Handle eviction sweep failed; will retry on the next tick."),
+            cancellationToken: stoppingToken);
 
+    /// <summary>Runs a single eviction sweep synchronously. Retained for tests and ad-hoc triggers.</summary>
     public int EvictDeadProcesses()
-    {
-        if (_store is not MemoryDiagnosticHandleStore memoryStore)
-        {
-            return 0;
-        }
-
-        var pids = memoryStore.RegisteredProcessIds();
-        var removed = 0;
-        foreach (var pid in pids)
-        {
-            if (IsAlive(pid)) continue;
-            var dropped = _store.InvalidateForProcess(pid);
-            if (dropped > 0)
-            {
-                _logger.LogInformation("Invalidated {Count} handle(s) for exited process {Pid}.", dropped, pid);
-                removed += dropped;
-            }
-        }
-        return removed;
-    }
-
-    private static bool IsAlive(int pid)
-    {
-        try
-        {
-            using var p = Process.GetProcessById(pid);
-            return !p.HasExited;
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-        catch (InvalidOperationException)
-        {
-            return false;
-        }
-    }
+        => _evictor.EvictDeadProcesses(
+            onEvicted: (pid, count) =>
+                _logger.LogInformation("Invalidated {Count} handle(s) for exited process {Pid}.", count, pid));
 }
