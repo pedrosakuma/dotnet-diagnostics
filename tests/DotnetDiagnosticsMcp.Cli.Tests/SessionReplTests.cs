@@ -2,6 +2,7 @@ using System.Text;
 using DotnetDiagnosticsMcp.Cli;
 using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.Counters;
+using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.UseCases;
@@ -241,6 +242,91 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_CpuSampleHandle_CallTree_RendersFromTrace()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view call-tree\nexit\n", services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("Root");
+        stdout.Should().Contain("LeafA");
+    }
+
+    [Fact]
+    public async Task Query_CpuSampleHandle_DefaultsToCallTree()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id}\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("Root");
+    }
+
+    [Fact]
+    public async Task Query_CpuSampleHandle_RootMethodFilter_ReRoots()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --root-method-filter LeafA\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("LeafA");
+    }
+
+    [Fact]
+    public async Task Query_AllocationSampleHandle_ResolvesWrappedTrace()
+    {
+        var (services, store) = BuildServices();
+        var alloc = new AllocationSampleArtifact(
+            new AllocationSample(Environment.ProcessId, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), 0, 0, Array.Empty<AllocatedType>(), Array.Empty<AllocatedType>()),
+            CpuTrace());
+        var handle = store.Register(Environment.ProcessId, "allocation-sample", alloc, TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id}\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("Root");
+    }
+
+    [Fact]
+    public async Task Query_CpuSampleHandle_DiffView_ReturnsNotSupportedInSession()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view diff\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("NotSupportedInSession");
+        stdout.Should().Contain("baseline");
+    }
+
+    [Fact]
+    public async Task Query_CpuSampleHandle_UnknownView_ListsCallTree()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view nonsense\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("unknown view 'nonsense'");
+        stdout.Should().Contain("call-tree");
+    }
+
+    [Fact]
     public async Task IdleCancellation_ReturnsOneThirty()
     {
         using var cts = new CancellationTokenSource();
@@ -299,6 +385,14 @@ public sealed class SessionReplTests
         // Server-only views never surface in the session-advertised list.
         sessionViews.Should().NotContain("object");
         sessionViews.Should().NotContain("duplicate-strings");
+    }
+
+    [Fact]
+    public void SessionViewsFor_CpuSampleKinds_ReturnCallTree()
+    {
+        CliCommands.SessionViewsFor("cpu-sample").Should().Equal(CpuSampleQueryDispatcher.CallTreeView);
+        CliCommands.SessionViewsFor("allocation-sample").Should().Equal(CpuSampleQueryDispatcher.CallTreeView);
+        CliCommands.SessionViewsFor("native-alloc-sample").Should().Equal(CpuSampleQueryDispatcher.CallTreeView);
     }
 
     // --- Tokenizer --------------------------------------------------------------------------------
@@ -368,6 +462,14 @@ public sealed class SessionReplTests
         Heap: new DumpHeapSummary(1024, 0, 0, 1024, 0, 0, 1024),
         TopTypesByBytes: new[] { new TypeStat("System.String", "System.Private.CoreLib", 100, 4096, 40.0) },
         TopTypesByInstances: new[] { new TypeStat("System.String", "System.Private.CoreLib", 100, 4096, 40.0) });
+
+    private static CpuSampleTraceArtifact CpuTrace()
+    {
+        var leafA = new CallTreeNode(new SampledFrame("App.dll", "LeafA"), 40, 40, Array.Empty<CallTreeNode>());
+        var leafB = new CallTreeNode(new SampledFrame("App.dll", "LeafB"), 60, 60, Array.Empty<CallTreeNode>());
+        var root = new CallTreeNode(new SampledFrame("App.dll", "Root"), 100, 0, new[] { leafA, leafB });
+        return new CpuSampleTraceArtifact(Environment.ProcessId, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root);
+    }
 
     private static Task<(int Exit, string Stdout, string Stderr)> RunReplAsync(
         string input, CancellationToken ct = default)

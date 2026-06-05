@@ -8,6 +8,7 @@ using DotnetDiagnosticsMcp.Core.Capabilities;
 using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.Contention;
 using DotnetDiagnosticsMcp.Core.Counters;
+using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Db;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
@@ -564,6 +565,15 @@ internal static class CliCommands
         new(StringComparer.OrdinalIgnoreCase) { "gc-overlay" };
 
     /// <summary>
+    /// Handle kinds backing a <see cref="CpuSampleTraceArtifact"/> (directly, or wrapped in an
+    /// <see cref="AllocationSampleArtifact"/>) whose session drill-down is the host-neutral
+    /// <c>call-tree</c> view. Keep in sync with the server's <c>cpu-sample</c> /
+    /// <c>allocation-sample</c> / <c>native-alloc-sample</c> handle registrations.
+    /// </summary>
+    private static readonly HashSet<string> CpuSampleSessionKinds =
+        new(StringComparer.Ordinal) { "cpu-sample", "allocation-sample", "native-alloc-sample" };
+
+    /// <summary>
     /// The subset of <see cref="CollectionQueryDispatcher.ViewsFor(string)"/> that the session
     /// <c>query</c> path can actually render for <paramref name="kind"/> — i.e. minus
     /// <see cref="SessionExcludedViews"/>. Used both to advertise valid views after a collect and to
@@ -574,6 +584,11 @@ internal static class CliCommands
         if (kind == HeapInspectionUseCases.HeapSnapshotKind)
         {
             return HeapSnapshotQueryDispatcher.ProjectionViews;
+        }
+
+        if (CpuSampleSessionKinds.Contains(kind))
+        {
+            return CpuSampleQueryDispatcher.SessionViews;
         }
 
         var all = CollectionQueryDispatcher.ViewsFor(kind);
@@ -636,6 +651,14 @@ internal static class CliCommands
         if (kind == HeapInspectionUseCases.HeapSnapshotKind)
         {
             return QueryHeapSession(options, lookup.Value.Artifact);
+        }
+
+        // CPU / allocation / native-alloc sample handles drill down through the host-neutral
+        // CpuSampleQueryDispatcher (#300): the merged call-tree renders from the collected trace alone.
+        // The `diff` view stays server-only (it correlates a second baseline handle).
+        if (CpuSampleSessionKinds.Contains(kind))
+        {
+            return QueryCpuSampleSession(options, lookup.Value.Artifact);
         }
 
         var allowedViews = CollectionQueryDispatcher.ViewsFor(kind);
@@ -729,6 +752,47 @@ internal static class CliCommands
         // outcome.UnknownView
         return Fail($"query: unknown view '{view}' for a heap snapshot.", "InvalidArgument",
             $"Valid views: {string.Join(", ", HeapSnapshotQueryDispatcher.ProjectionViews)}.");
+    }
+
+    /// <summary>
+    /// Renders a CPU / allocation / native-alloc sample drill-down inside the <c>session</c> REPL via the
+    /// host-neutral <see cref="CpuSampleQueryDispatcher"/>. Only the <c>call-tree</c> view is served; the
+    /// <c>diff</c> view stays server-only (it correlates a baseline handle) and yields a clear
+    /// <c>NotSupportedInSession</c> envelope.
+    /// </summary>
+    private static CliCommandResult QueryCpuSampleSession(CliOptions options, object artifact)
+    {
+        var trace = CpuSampleQueryDispatcher.ResolveTrace(artifact);
+        if (trace is null)
+        {
+            return Fail($"query: handle '{options.Handle}' could not be rendered as a CPU/allocation sample.", "InvalidArgument",
+                "The stored artifact type did not match its handle kind; re-run the originating collect command to get a fresh handle.");
+        }
+
+        var view = string.IsNullOrWhiteSpace(options.View) ? CpuSampleQueryDispatcher.CallTreeView : options.View;
+        var normalized = view.Trim().ToLowerInvariant();
+
+        if (normalized == "diff")
+        {
+            return Fail($"query: view '{view}' for a CPU sample handle is not available in the session yet.", "NotSupportedInSession",
+                "The 'diff' view correlates a baseline handle the session cannot supply; run the MCP server's query_snapshot(view='diff') with a baselineHandle.");
+        }
+
+        if (normalized != CpuSampleQueryDispatcher.CallTreeView)
+        {
+            return Fail($"query: unknown view '{view}' for a CPU sample handle.", "InvalidArgument",
+                $"Valid views: {string.Join(", ", CpuSampleQueryDispatcher.SessionViews)}.");
+        }
+
+        var maxDepth = options.MaxDepth ?? 8;
+        var maxNodes = options.MaxNodes ?? 200;
+        var result = CpuSampleQueryDispatcher.RenderCallTree(trace, options.Handle!, options.RootMethodFilter, maxDepth, maxNodes);
+
+        return BuildResult<CallTreeView>(result, static (sb, tree) =>
+        {
+            sb.AppendLine();
+            sb.AppendLine(JsonSerializer.Serialize(tree, QueryJsonOptions));
+        });
     }
 
     private static CliCommandResult Fail(string summary, string errorKind, string detail)
