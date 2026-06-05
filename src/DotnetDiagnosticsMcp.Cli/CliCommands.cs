@@ -17,9 +17,11 @@ using DotnetDiagnosticsMcp.Core.Exceptions;
 using DotnetDiagnosticsMcp.Core.Gc;
 using DotnetDiagnosticsMcp.Core.Jit;
 using DotnetDiagnosticsMcp.Core.Logs;
+using DotnetDiagnosticsMcp.Core.OffCpu;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Security;
 using DotnetDiagnosticsMcp.Core.ThreadPool;
+using DotnetDiagnosticsMcp.Core.Threads;
 using DotnetDiagnosticsMcp.Core.UseCases;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -574,6 +576,20 @@ internal static class CliCommands
         new(StringComparer.Ordinal) { "cpu-sample", "allocation-sample", "native-alloc-sample" };
 
     /// <summary>
+    /// Handle kind backing a <see cref="ThreadSnapshotArtifact"/> whose session drill-down is served by
+    /// the host-neutral <see cref="ThreadSnapshotQueryDispatcher"/>. Keep in sync with the server's
+    /// <c>collect_thread_snapshot</c> handle registration (<c>thread-snapshot</c>).
+    /// </summary>
+    private const string ThreadSnapshotSessionKind = "thread-snapshot";
+
+    /// <summary>
+    /// Handle kind backing an <see cref="OffCpuSnapshotArtifact"/> whose session drill-down is served by
+    /// the host-neutral <see cref="OffCpuQueryDispatcher"/>. Keep in sync with the server's
+    /// <c>collect_off_cpu_sample</c> handle registration (<c>off-cpu-snapshot</c>).
+    /// </summary>
+    private const string OffCpuSessionKind = "off-cpu-snapshot";
+
+    /// <summary>
     /// The subset of <see cref="CollectionQueryDispatcher.ViewsFor(string)"/> that the session
     /// <c>query</c> path can actually render for <paramref name="kind"/> — i.e. minus
     /// <see cref="SessionExcludedViews"/>. Used both to advertise valid views after a collect and to
@@ -589,6 +605,16 @@ internal static class CliCommands
         if (CpuSampleSessionKinds.Contains(kind))
         {
             return CpuSampleQueryDispatcher.SessionViews;
+        }
+
+        if (kind == ThreadSnapshotSessionKind)
+        {
+            return ThreadSnapshotQueryDispatcher.SessionViews;
+        }
+
+        if (kind == OffCpuSessionKind)
+        {
+            return OffCpuQueryDispatcher.SessionViews;
         }
 
         var all = CollectionQueryDispatcher.ViewsFor(kind);
@@ -659,6 +685,21 @@ internal static class CliCommands
         if (CpuSampleSessionKinds.Contains(kind))
         {
             return QueryCpuSampleSession(options, lookup.Value.Artifact);
+        }
+
+        // Thread-snapshot handles drill down through the host-neutral ThreadSnapshotQueryDispatcher
+        // (#300): every view (threads-summary, stack, lock-graph, deadlocks, top-blocked, unique-stacks,
+        // async-stalls, threadpool) renders from the captured artifact alone — no live ClrMD attach.
+        if (kind == ThreadSnapshotSessionKind)
+        {
+            return QueryThreadSnapshotSession(options, lookup.Value.Artifact);
+        }
+
+        // Off-CPU handles drill down through the host-neutral OffCpuQueryDispatcher (#300): topStacks,
+        // byThread and stack all re-project the captured artifact — no perf re-run.
+        if (kind == OffCpuSessionKind)
+        {
+            return QueryOffCpuSession(options, lookup.Value.Artifact);
         }
 
         var allowedViews = CollectionQueryDispatcher.ViewsFor(kind);
@@ -792,6 +833,67 @@ internal static class CliCommands
         {
             sb.AppendLine();
             sb.AppendLine(JsonSerializer.Serialize(tree, QueryJsonOptions));
+        });
+    }
+
+    /// <summary>
+    /// Renders a thread-snapshot drill-down inside the <c>session</c> REPL via the host-neutral
+    /// <see cref="ThreadSnapshotQueryDispatcher"/>. All eight views render from the captured artifact —
+    /// the dispatcher returns a clear <c>InvalidArgument</c> (listing valid views) for an unknown view,
+    /// which this helper surfaces directly.
+    /// </summary>
+    private static CliCommandResult QueryThreadSnapshotSession(CliOptions options, object artifact)
+    {
+        if (artifact is not ThreadSnapshotArtifact snapshot)
+        {
+            return Fail($"query: handle '{options.Handle}' could not be rendered as a thread snapshot.", "InvalidArgument",
+                "The stored artifact type did not match its handle kind; re-run the originating collect command to get a fresh handle.");
+        }
+
+        var view = string.IsNullOrWhiteSpace(options.View) ? "top-blocked" : options.View;
+        var topN = options.TopTypes ?? 50;
+        var framesToHash = options.FramesToHash ?? 20;
+        var minCount = options.MinCount ?? 1;
+        var result = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, options.Handle!, view, options.ThreadId, topN, framesToHash, minCount);
+
+        return BuildResult<ThreadSnapshotQueryResult>(result, static (sb, qr) =>
+        {
+            sb.AppendLine();
+            sb.AppendLine(JsonSerializer.Serialize(qr, QueryJsonOptions));
+        });
+    }
+
+    /// <summary>
+    /// Renders an off-CPU drill-down inside the <c>session</c> REPL via the host-neutral
+    /// <see cref="OffCpuQueryDispatcher"/>. Because the server's original switch silently treats an
+    /// unknown view as <c>topStacks</c>, this helper validates the view name up front and returns a
+    /// clear <c>InvalidArgument</c> for the CLI operator (a host-specific UX choice; the shared
+    /// dispatcher keeps the server's fall-through behavior).
+    /// </summary>
+    private static CliCommandResult QueryOffCpuSession(CliOptions options, object artifact)
+    {
+        if (artifact is not OffCpuSnapshotArtifact snapshot)
+        {
+            return Fail($"query: handle '{options.Handle}' could not be rendered as an off-CPU snapshot.", "InvalidArgument",
+                "The stored artifact type did not match its handle kind; re-run the originating collect command to get a fresh handle.");
+        }
+
+        var view = string.IsNullOrWhiteSpace(options.View) ? "topStacks" : options.View;
+        var normalized = view.Trim().ToLowerInvariant();
+        if (normalized is not ("topstacks" or "bythread" or "stack"))
+        {
+            return Fail($"query: unknown view '{view}' for an off-CPU snapshot.", "InvalidArgument",
+                $"Valid views: {string.Join(", ", OffCpuQueryDispatcher.SessionViews)}.");
+        }
+
+        var topN = options.TopTypes ?? 25;
+        var result = OffCpuQueryDispatcher.Dispatch(snapshot, view, topN, options.StackRank);
+
+        return BuildResult<OffCpuQueryView>(result, static (sb, qr) =>
+        {
+            sb.AppendLine();
+            sb.AppendLine(JsonSerializer.Serialize(qr, QueryJsonOptions));
         });
     }
 

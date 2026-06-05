@@ -113,6 +113,18 @@ internal sealed class CliOptions
     /// <summary>Approximate cap on call-tree nodes for the CPU <c>call-tree</c> view (<c>--max-nodes</c>, default 200). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public int? MaxNodes { get; init; }
 
+    /// <summary>Thread id for the thread-snapshot <c>stack</c> view (<c>--thread-id</c>): ManagedThreadId for CoreCLR snapshots, OS TID for linux-native-stack. Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public int? ThreadId { get; init; }
+
+    /// <summary>1-based stack rank for the off-CPU <c>stack</c> view (<c>--stack-rank</c>). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public int? StackRank { get; init; }
+
+    /// <summary>Top frames folded into the signature hash for the thread-snapshot <c>unique-stacks</c> view (<c>--frames-to-hash</c>, default 20). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public int? FramesToHash { get; init; }
+
+    /// <summary>Minimum threads per group for the thread-snapshot <c>unique-stacks</c> view (<c>--min-count</c>, default 1). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public int? MinCount { get; init; }
+
     /// <summary>
     /// Parses <paramref name="args"/>. Returns a populated <see cref="CliOptions"/> on success, or
     /// <c>null</c> with a non-null <paramref name="error"/> describing the first usage problem.
@@ -157,6 +169,10 @@ internal sealed class CliOptions
         string? rootMethodFilter = null;
         int? maxDepth = null;
         int? maxNodes = null;
+        int? threadId = null;
+        int? stackRank = null;
+        int? framesToHash = null;
+        int? minCount = null;
 
         for (var i = 0; i < args.Count; i++)
         {
@@ -398,6 +414,38 @@ internal sealed class CliOptions
 
                     maxNodes = maxNodesValue;
                     break;
+                case "--thread-id":
+                    if (!TryTakeInt(args, ref i, token, out var threadIdValue, out error))
+                    {
+                        return null;
+                    }
+
+                    threadId = threadIdValue;
+                    break;
+                case "--stack-rank":
+                    if (!TryTakeInt(args, ref i, token, out var stackRankValue, out error))
+                    {
+                        return null;
+                    }
+
+                    stackRank = stackRankValue;
+                    break;
+                case "--frames-to-hash":
+                    if (!TryTakeInt(args, ref i, token, out var framesToHashValue, out error))
+                    {
+                        return null;
+                    }
+
+                    framesToHash = framesToHashValue;
+                    break;
+                case "--min-count":
+                    if (!TryTakeInt(args, ref i, token, out var minCountValue, out error))
+                    {
+                        return null;
+                    }
+
+                    minCount = minCountValue;
+                    break;
                 default:
                     if (token.StartsWith('-'))
                     {
@@ -453,6 +501,10 @@ internal sealed class CliOptions
             RootMethodFilter = rootMethodFilter,
             MaxDepth = maxDepth,
             MaxNodes = maxNodes,
+            ThreadId = threadId,
+            StackRank = stackRank,
+            FramesToHash = framesToHash,
+            MinCount = minCount,
         };
     }
 
