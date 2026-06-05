@@ -1,11 +1,14 @@
 using System.Text;
 using DotnetDiagnosticsMcp.Cli;
+using DotnetDiagnosticsMcp.Core;
+using DotnetDiagnosticsMcp.Core.Capabilities;
 using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.OffCpu;
+using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Threads;
 using DotnetDiagnosticsMcp.Core.UseCases;
 using FluentAssertions;
@@ -510,6 +513,126 @@ public sealed class SessionReplTests
             .Should().Equal(OffCpuQueryDispatcher.SessionViews);
     }
 
+    // --- Session-target binding (strand C) --------------------------------------------------------
+
+    [Fact]
+    public async Task Target_WhenUnbound_ReportsNoBinding()
+    {
+        var (exit, stdout, stderr) = await RunReplAsync("target\nexit\n");
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("No target bound");
+        stderr.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Target_BindsPid_ConfirmsAndPromptReflectsIt()
+    {
+        var (exit, stdout, stderr) = await RunReplAsync("target 1234\nexit\n");
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("Target bound to pid 1234");
+        stdout.Should().Contain("diag(pid 1234)>");
+        stderr.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Target_PidFlagForm_BindsPid()
+    {
+        var (exit, stdout, _) = await RunReplAsync("target --pid 1234\nexit\n");
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("Target bound to pid 1234");
+    }
+
+    [Fact]
+    public async Task Target_ShowsBinding_AfterBind()
+    {
+        var (exit, stdout, _) = await RunReplAsync("target 4321\ntarget\nexit\n");
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("Target bound to pid 4321.");
+    }
+
+    [Fact]
+    public async Task Target_Clear_UnbindsAndRestoresPrompt()
+    {
+        var (exit, stdout, _) = await RunReplAsync("target 1234\ntarget clear\nexit\n");
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("Target cleared.");
+        // After clearing, the final idle prompt must revert to the bare prompt (no bound pid).
+        stdout.Should().EndWith("diag> ");
+    }
+
+    [Theory]
+    [InlineData("target 0")]
+    [InlineData("target -1")]
+    [InlineData("target abc")]
+    [InlineData("target 1234 5678")]
+    [InlineData("target --pid abc")]
+    [InlineData("target --pid")]
+    [InlineData("target --pid clear")]
+    public async Task Target_InvalidArgument_PrintsUsageError(string command)
+    {
+        var (exit, _, stderr) = await RunReplAsync(command + "\nexit\n");
+
+        exit.Should().Be(0);
+        stderr.Should().Contain("Usage: target <pid>");
+    }
+
+    [Fact]
+    public async Task Use_IsAnAliasForTarget()
+    {
+        var (exit, stdout, _) = await RunReplAsync("use 777\nexit\n");
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("Target bound to pid 777");
+    }
+
+    [Fact]
+    public async Task BoundTarget_IsInheritedByLiveTargetCommand_WhenPidOmitted()
+    {
+        var (services, resolver) = BuildCapabilityServices();
+
+        var (exit, stdout, _) = await RunReplAsync("target 4321\ncapabilities\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("using bound target pid 4321");
+        resolver.LastRequestedPid.Should().Be(4321);
+    }
+
+    [Fact]
+    public async Task ExplicitPid_OverridesBoundTarget_AndSuppressesNote()
+    {
+        var (services, resolver) = BuildCapabilityServices();
+
+        var (exit, stdout, _) = await RunReplAsync("target 4321\ncapabilities --pid 9999\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().NotContain("using bound target");
+        resolver.LastRequestedPid.Should().Be(9999);
+    }
+
+    [Theory]
+    [InlineData("capabilities", true)]
+    [InlineData("collect --kind gc", true)]
+    [InlineData("dump --confirm", true)]
+    [InlineData("inspect-heap", true)]
+    [InlineData("inspect-heap --source live", true)]
+    [InlineData("inspect-heap --source dump --dump-file x.dmp", false)]
+    [InlineData("get-bytes --kind module --mvid abc --asset pe", true)]
+    [InlineData("get-bytes --kind dump --dump-file x.dmp", false)]
+    [InlineData("processes", false)]
+    [InlineData("query --handle x --view y", false)]
+    public void ShouldInheritTarget_GatesPerCommand(string command, bool expected)
+    {
+        var options = CliOptions.Parse(SessionRepl.Tokenize(command), out var error);
+        error.Should().BeNull();
+
+        SessionRepl.ShouldInheritTarget(options!).Should().Be(expected);
+    }
+
     // --- Tokenizer --------------------------------------------------------------------------------
 
     [Fact]
@@ -549,6 +672,47 @@ public sealed class SessionReplTests
             .AddSingleton<IDiagnosticHandleStore>(store)
             .BuildServiceProvider();
         return (services, store);
+    }
+
+    /// <summary>
+    /// Builds a service provider wired with a <see cref="RecordingProcessContextResolver"/> so a
+    /// <c>capabilities</c> command runs to a clean (failure) envelope without a live target while
+    /// capturing the process id it was asked to resolve — proving the session-bound target reached
+    /// the use case (issue #300, strand C).
+    /// </summary>
+    private static (ServiceProvider Services, RecordingProcessContextResolver Resolver) BuildCapabilityServices()
+    {
+        var resolver = new RecordingProcessContextResolver();
+        var services = new ServiceCollection()
+            .AddSingleton<IDiagnosticHandleStore>(new MemoryDiagnosticHandleStore())
+            .AddSingleton<IProcessContextResolver>(resolver)
+            .AddSingleton<ICapabilityDetector>(new ThrowingCapabilityDetector())
+            .BuildServiceProvider();
+        return (services, resolver);
+    }
+
+    /// <summary>
+    /// Captures the requested pid and always returns a structured resolution failure, so the
+    /// capabilities use case short-circuits before touching the (unused) detector.
+    /// </summary>
+    private sealed class RecordingProcessContextResolver : IProcessContextResolver
+    {
+        public int? LastRequestedPid { get; private set; }
+
+        public Task<ProcessContextResolution> ResolveAsync(int? requestedProcessId, CancellationToken cancellationToken)
+        {
+            LastRequestedPid = requestedProcessId;
+            return Task.FromResult(new ProcessContextResolution(
+                Context: null,
+                Error: new DiagnosticError("NotFound", "no process (test stub)"),
+                Candidates: null));
+        }
+    }
+
+    private sealed class ThrowingCapabilityDetector : ICapabilityDetector
+    {
+        public Task<DiagnosticCapabilities> DetectAsync(int processId, CancellationToken cancellationToken = default)
+            => throw new InvalidOperationException("detector should not be reached on the failure-resolution path");
     }
 
     private static DiagnosticHandle SeedCountersHandle(MemoryDiagnosticHandleStore store)
