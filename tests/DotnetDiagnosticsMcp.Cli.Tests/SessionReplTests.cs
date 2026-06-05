@@ -3,6 +3,8 @@ using DotnetDiagnosticsMcp.Cli;
 using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.Drilldown;
+using DotnetDiagnosticsMcp.Core.Dump;
+using DotnetDiagnosticsMcp.Core.UseCases;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -150,10 +152,12 @@ public sealed class SessionReplTests
     }
 
     [Fact]
-    public async Task Query_HeapKindHandle_ReturnsNotSupportedInSession()
+    public async Task Query_ThreadSnapshotKindHandle_ReturnsNotSupportedInSession()
     {
         var (services, store) = BuildServices();
-        var handle = store.Register(Environment.ProcessId, "heap-snapshot", new object(), TimeSpan.FromMinutes(10));
+        // thread-snapshot drill-down routing still lives in the MCP server (it needs a live attach);
+        // the dummy artifact is never touched because the empty-views check fires before dispatch.
+        var handle = store.Register(Environment.ProcessId, "thread-snapshot", new object(), TimeSpan.FromMinutes(10));
 
         var (exit, stdout, _) = await RunReplAsync(
             $"query --handle {handle.Id}\nexit\n", services);
@@ -161,6 +165,79 @@ public sealed class SessionReplTests
         exit.Should().Be(0);
         stdout.Should().Contain("not available in the session yet");
         stdout.Should().Contain("NotSupportedInSession");
+    }
+
+    [Fact]
+    public async Task Query_HeapHandle_TopTypes_RendersFromSnapshot()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, HeapInspectionUseCases.HeapSnapshotKind, HeapSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view top-types\nexit\n", services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("top-types");
+        stdout.Should().Contain("System.String");
+    }
+
+    [Fact]
+    public async Task Query_HeapHandle_DefaultsToTopTypes()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, HeapInspectionUseCases.HeapSnapshotKind, HeapSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id}\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("top-types");
+        stdout.Should().Contain("System.String");
+    }
+
+    [Fact]
+    public async Task Query_HeapHandle_ServerOnlyView_ReturnsNotSupportedInSession()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, HeapInspectionUseCases.HeapSnapshotKind, HeapSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view objsize\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("not available in the session yet");
+        stdout.Should().Contain("NotSupportedInSession");
+        stdout.Should().Contain("live ClrMD attach");
+    }
+
+    [Fact]
+    public async Task Query_HeapHandle_DuplicateStringsView_ExplainsSensitivePolicy()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, HeapInspectionUseCases.HeapSnapshotKind, HeapSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view duplicate-strings\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("NotSupportedInSession");
+        stdout.Should().Contain("sensitive-value policy");
+    }
+
+    [Fact]
+    public async Task Query_HeapHandle_UnknownView_ListsProjectionViews()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, HeapInspectionUseCases.HeapSnapshotKind, HeapSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view nonsense\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("unknown view 'nonsense'");
+        stdout.Should().Contain("top-types");
+        stdout.Should().Contain("gchandles");
     }
 
     [Fact]
@@ -210,6 +287,18 @@ public sealed class SessionReplTests
     {
         CliCommands.SessionViewsFor(CollectionHandleKinds.Counters)
             .Should().Equal("summary", "byProvider");
+    }
+
+    [Fact]
+    public void SessionViewsFor_HeapKind_ReturnsProjectionViews()
+    {
+        var sessionViews = CliCommands.SessionViewsFor(HeapInspectionUseCases.HeapSnapshotKind);
+
+        sessionViews.Should().Equal(HeapSnapshotQueryDispatcher.ProjectionViews);
+        sessionViews.Should().Contain("top-types");
+        // Server-only views never surface in the session-advertised list.
+        sessionViews.Should().NotContain("object");
+        sessionViews.Should().NotContain("duplicate-strings");
     }
 
     // --- Tokenizer --------------------------------------------------------------------------------
@@ -269,6 +358,16 @@ public sealed class SessionReplTests
         // Use the live test process id so the dead-PID sweep never evicts it mid-test.
         return store.Register(Environment.ProcessId, CollectionHandleKinds.Counters, snapshot, TimeSpan.FromMinutes(10));
     }
+
+    private static HeapSnapshotArtifact HeapSnapshot() => new(
+        Origin: HeapSnapshotOrigin.Live,
+        ProcessId: Environment.ProcessId,
+        CapturedAt: DateTimeOffset.UtcNow,
+        WalkDuration: TimeSpan.FromMilliseconds(50),
+        Runtime: new DumpRuntimeInfo("CoreCLR", "10.0.0", "X64", IsServerGC: false, HeapCount: 1),
+        Heap: new DumpHeapSummary(1024, 0, 0, 1024, 0, 0, 1024),
+        TopTypesByBytes: new[] { new TypeStat("System.String", "System.Private.CoreLib", 100, 4096, 40.0) },
+        TopTypesByInstances: new[] { new TypeStat("System.String", "System.Private.CoreLib", 100, 4096, 40.0) });
 
     private static Task<(int Exit, string Stdout, string Stderr)> RunReplAsync(
         string input, CancellationToken ct = default)
