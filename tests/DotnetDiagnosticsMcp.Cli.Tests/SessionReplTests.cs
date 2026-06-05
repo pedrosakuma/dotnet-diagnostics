@@ -5,6 +5,8 @@ using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
+using DotnetDiagnosticsMcp.Core.OffCpu;
+using DotnetDiagnosticsMcp.Core.Threads;
 using DotnetDiagnosticsMcp.Core.UseCases;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
@@ -153,12 +155,13 @@ public sealed class SessionReplTests
     }
 
     [Fact]
-    public async Task Query_ThreadSnapshotKindHandle_ReturnsNotSupportedInSession()
+    public async Task Query_UnsupportedKindHandle_ReturnsNotSupportedInSession()
     {
         var (services, store) = BuildServices();
-        // thread-snapshot drill-down routing still lives in the MCP server (it needs a live attach);
-        // the dummy artifact is never touched because the empty-views check fires before dispatch.
-        var handle = store.Register(Environment.ProcessId, "thread-snapshot", new object(), TimeSpan.FromMinutes(10));
+        // A handle kind with no session drill-down routing (heap/cpu/thread/off-cpu and the collection
+        // kinds are all handled) falls through to the defensive NotSupportedInSession guard. The dummy
+        // artifact is never touched because the empty-views check fires before any dispatch.
+        var handle = store.Register(Environment.ProcessId, "process-dump", new object(), TimeSpan.FromMinutes(10));
 
         var (exit, stdout, _) = await RunReplAsync(
             $"query --handle {handle.Id}\nexit\n", services);
@@ -327,6 +330,104 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_ThreadSnapshotHandle_DefaultsToTopBlocked()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "thread-snapshot", ThreadSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id}\nexit\n", services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("top-blocked");
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotHandle_StackView_RequiresThreadId()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "thread-snapshot", ThreadSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view stack\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("InvalidArgument");
+        stdout.Should().Contain("threadId");
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotHandle_StackView_RendersSelectedThread()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "thread-snapshot", ThreadSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view stack --thread-id 1\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("\"stack\"");
+        stdout.Should().Contain("GroupA.Leaf");
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotHandle_UnknownView_ListsValidViews()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "thread-snapshot", ThreadSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view nonsense\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("InvalidArgument");
+        stdout.Should().Contain("threads-summary");
+    }
+
+    [Fact]
+    public async Task Query_OffCpuHandle_DefaultsToTopStacks()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "off-cpu-snapshot", OffCpuSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id}\nexit\n", services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("topStacks");
+        stdout.Should().Contain("LeafA");
+    }
+
+    [Fact]
+    public async Task Query_OffCpuHandle_StackView_ReturnsRequestedRank()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "off-cpu-snapshot", OffCpuSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view stack --stack-rank 2\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("LeafB");
+    }
+
+    [Fact]
+    public async Task Query_OffCpuHandle_UnknownView_ListsValidViews()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "off-cpu-snapshot", OffCpuSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view nonsense\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("unknown view 'nonsense'");
+        stdout.Should().Contain("byThread");
+    }
+
+    [Fact]
     public async Task IdleCancellation_ReturnsOneThirty()
     {
         using var cts = new CancellationTokenSource();
@@ -393,6 +494,20 @@ public sealed class SessionReplTests
         CliCommands.SessionViewsFor("cpu-sample").Should().Equal(CpuSampleQueryDispatcher.CallTreeView);
         CliCommands.SessionViewsFor("allocation-sample").Should().Equal(CpuSampleQueryDispatcher.CallTreeView);
         CliCommands.SessionViewsFor("native-alloc-sample").Should().Equal(CpuSampleQueryDispatcher.CallTreeView);
+    }
+
+    [Fact]
+    public void SessionViewsFor_ThreadSnapshotKind_ReturnsAllEightViews()
+    {
+        CliCommands.SessionViewsFor("thread-snapshot")
+            .Should().Equal(ThreadSnapshotQueryDispatcher.SessionViews);
+    }
+
+    [Fact]
+    public void SessionViewsFor_OffCpuKind_ReturnsThreeViews()
+    {
+        CliCommands.SessionViewsFor("off-cpu-snapshot")
+            .Should().Equal(OffCpuQueryDispatcher.SessionViews);
     }
 
     // --- Tokenizer --------------------------------------------------------------------------------
@@ -469,6 +584,62 @@ public sealed class SessionReplTests
         var leafB = new CallTreeNode(new SampledFrame("App.dll", "LeafB"), 60, 60, Array.Empty<CallTreeNode>());
         var root = new CallTreeNode(new SampledFrame("App.dll", "Root"), 100, 0, new[] { leafA, leafB });
         return new CpuSampleTraceArtifact(Environment.ProcessId, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root);
+    }
+
+    private static ThreadSnapshotArtifact ThreadSnapshot()
+    {
+        var frames = new[]
+        {
+            new ManagedStackFrame("ManagedMethod", "GroupA.Leaf", "GroupA.Type", "App.dll", 0x1000, 0x2000),
+            new ManagedStackFrame("ManagedMethod", "GroupA.Root", "GroupA.Type", "App.dll", 0x1010, 0x2010),
+        };
+        var thread = new ManagedThread(
+            ManagedThreadId: 1,
+            OSThreadId: 10_001,
+            Address: 1,
+            State: "Wait",
+            IsAlive: true,
+            IsBackground: false,
+            IsFinalizer: false,
+            IsGc: false,
+            IsThreadpoolWorker: true,
+            LockCount: 0,
+            CurrentExceptionType: null,
+            TopFrameMethod: frames[0].DisplayName,
+            Frames: frames)
+        {
+            IsLikelyBlocked = true,
+            InferredWaitReason = "Monitor.Wait",
+        };
+        return new ThreadSnapshotArtifact(
+            Origin: ThreadSnapshotOrigin.Live,
+            ProcessId: Environment.ProcessId,
+            CapturedAt: DateTimeOffset.UtcNow,
+            WalkDuration: TimeSpan.FromMilliseconds(25),
+            RuntimeName: "CoreClr",
+            RuntimeVersion: "10.0.0",
+            Threads: new[] { thread },
+            Locks: Array.Empty<MonitorLockState>())
+        {
+            Source = "clrmd-thread-walk",
+        };
+    }
+
+    private static OffCpuSnapshotArtifact OffCpuSnapshot()
+    {
+        var stackA = new OffCpuStackHotspot("LeafA", 1200, 3, "Sleeping",
+            new[] { new OffCpuFrame("App.dll", "LeafA"), new OffCpuFrame("App.dll", "RootA") });
+        var stackB = new OffCpuStackHotspot("LeafB", 800, 2, "Waiting",
+            new[] { new OffCpuFrame("App.dll", "LeafB"), new OffCpuFrame("App.dll", "RootB") });
+        return new OffCpuSnapshotArtifact(
+            ProcessId: Environment.ProcessId,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(5),
+            TotalOffCpuMicros: 2000,
+            SchedSwitches: 5,
+            Stacks: new[] { stackA, stackB },
+            Threads: new[] { new OffCpuThreadView(101, "worker-1", 1200, 3, "LeafA") },
+            SymbolSource: "user+kernel");
     }
 
     private static Task<(int Exit, string Stdout, string Stderr)> RunReplAsync(
