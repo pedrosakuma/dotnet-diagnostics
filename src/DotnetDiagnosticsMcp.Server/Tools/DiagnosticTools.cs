@@ -1245,7 +1245,7 @@ public sealed class DiagnosticTools
         "named view, without re-running the underlying EventPipe session. Use the `handle` " +
         "returned by snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\") / collect_events(kind=\"db\"). " +
         "Supported views per kind: counters → summary|byProvider; exception-snapshot → " +
-        "summary|byType|recent; gc-events → summary|events|pauseHistogram; event-source → " +
+        "summary|byType|recent; gc-events → summary|events|pauseHistogram|timeline|longestPauses|byGeneration; event-source → " +
         "summary|byEventName|events; activities → summary|bySource|byOperation|activities|gc-overlay; " +
         "log-snapshot → summary|byCategory|byLevel|recent|errors; jit-snapshot → summary|topMethods|tierDistribution|reJIT; threadpool-snapshot → summary|timeline|hillClimbing|workItemOrigins; db-snapshot → summary|byCommand|n+1|connectionPool. " +
         "Handles expire ~10 minutes after collection.")]

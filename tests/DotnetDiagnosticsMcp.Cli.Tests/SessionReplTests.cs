@@ -484,6 +484,41 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_GcHandle_ByGenerationView_RoutesThroughSession()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, CollectionHandleKinds.GcEvents, GcSummaryArtifact(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view byGeneration\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("view=byGeneration");
+        stdout.Should().Contain("background");
+    }
+
+    [Fact]
+    public async Task Query_GcHandle_LongestPausesView_RanksByPause()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, CollectionHandleKinds.GcEvents, GcSummaryArtifact(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view longestPauses --top-types 1\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("view=longestPauses");
+    }
+
+    [Fact]
+    public void SessionViewsFor_GcEvents_IncludesNewDrilldownViews()
+    {
+        var sessionViews = CliCommands.SessionViewsFor(CollectionHandleKinds.GcEvents);
+
+        sessionViews.Should().Contain(new[] { "summary", "events", "pauseHistogram", "timeline", "longestPauses", "byGeneration" });
+    }
+
+    [Fact]
     public async Task Query_ActivitiesGcOverlayView_ReturnsNotSupportedInSession()
     {
         var (services, store) = BuildServices();
@@ -796,6 +831,22 @@ public sealed class SessionReplTests
         var leafB = new CallTreeNode(new SampledFrame("App.dll", "LeafB"), 60, 60, Array.Empty<CallTreeNode>());
         var root = new CallTreeNode(new SampledFrame("App.dll", "Root"), 100, 0, new[] { leafA, leafB });
         return new CpuSampleTraceArtifact(Environment.ProcessId, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root);
+    }
+
+    private static Core.Gc.GcSummary GcSummaryArtifact()
+    {
+        var at = DateTimeOffset.UtcNow;
+        var events = new List<Core.Gc.GcEvent>
+        {
+            new(at.AddMilliseconds(0), 0, "AllocSmall", "NonConcurrentGC", TimeSpan.FromMilliseconds(2)),
+            new(at.AddMilliseconds(10), 2, "AllocSmall", "BackgroundGC", TimeSpan.FromMilliseconds(50)),
+            new(at.AddMilliseconds(30), 2, "AllocLarge", "NonConcurrentGC", TimeSpan.FromMilliseconds(100)),
+        };
+        return new Core.Gc.GcSummary(
+            Environment.ProcessId, at, TimeSpan.FromSeconds(5), events.Count,
+            TimeSpan.FromMilliseconds(152), TimeSpan.FromMilliseconds(100),
+            new List<Core.Gc.GenerationStats> { new(0, 1), new(2, 2) },
+            events);
     }
 
     private static ThreadSnapshotArtifact ThreadSnapshot()

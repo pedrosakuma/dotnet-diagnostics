@@ -30,7 +30,7 @@ public static class CollectionQueryDispatcher
     {
         CollectionHandleKinds.Counters => new[] { "summary", "byProvider" },
         CollectionHandleKinds.ExceptionSnapshot => new[] { "summary", "byType", "recent" },
-        CollectionHandleKinds.GcEvents => new[] { "summary", "events", "pauseHistogram" },
+        CollectionHandleKinds.GcEvents => new[] { "summary", "events", "pauseHistogram", "timeline", "longestPauses", "byGeneration" },
         CollectionHandleKinds.EventSource => new[] { "summary", "byEventName", "events" },
         CollectionHandleKinds.Activities => new[] { "summary", "bySource", "byOperation", "activities", "gc-overlay" },
         CollectionHandleKinds.LogSnapshot => new[] { "summary", "byCategory", "byLevel", "recent", "errors" },
@@ -154,6 +154,9 @@ public static class CollectionQueryDispatcher
         {
             "events" => new GcEventsView(g.TotalCollections, Math.Min(topN, g.Events.Count), g.Events.Take(topN).ToList()),
             "pausehistogram" => BuildHistogram(g),
+            "timeline" => BuildTimeline(g, topN),
+            "longestpauses" => BuildLongestPauses(g, topN),
+            "bygeneration" => BuildByGeneration(g),
             _ /* summary */ => new GcSummaryView(g.TotalCollections, g.TotalPauseTime, g.MaxPauseTime, g.Generations),
         };
 
@@ -190,6 +193,82 @@ public static class CollectionQueryDispatcher
 
         var buckets = bounds.Select((b, i) => new GcPauseBucket(b.Label, b.UpperBoundMs, counts[i])).ToList();
         return new GcPauseHistogramView(g.TotalCollections, g.MaxPauseTime, buckets);
+    }
+
+    // Orders retained GC events by start time (stable on original ordinal to break 1ms-resolution
+    // ties) and assigns each a 0-based timeline Index plus the start-to-start gap from its predecessor.
+    private static List<GcTimelineEntry> BuildTimelineEntries(GcSummary g)
+    {
+        var ordered = g.Events
+            .Select((ev, ordinal) => (ev, ordinal))
+            .OrderBy(x => x.ev.Timestamp)
+            .ThenBy(x => x.ordinal)
+            .ToList();
+
+        var entries = new List<GcTimelineEntry>(ordered.Count);
+        DateTimeOffset? previousStart = null;
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            var ev = ordered[i].ev;
+            var gap = previousStart is { } prev && ev.Timestamp > prev
+                ? ev.Timestamp - prev
+                : TimeSpan.Zero;
+            entries.Add(new GcTimelineEntry(i, ev.Timestamp, ev.Generation, ev.Reason, ev.Type, ev.PauseDuration, gap));
+            previousStart = ev.Timestamp;
+        }
+
+        return entries;
+    }
+
+    private static GcTimelineView BuildTimeline(GcSummary g, int topN)
+    {
+        var entries = BuildTimelineEntries(g);
+        var slice = entries.Take(topN).ToList();
+        return new GcTimelineView(g.TotalCollections, slice.Count, slice);
+    }
+
+    private static GcLongestPausesView BuildLongestPauses(GcSummary g, int topN)
+    {
+        var ranked = BuildTimelineEntries(g)
+            .OrderByDescending(e => e.PauseDuration)
+            .ThenBy(e => e.Index)
+            .Take(topN)
+            .ToList();
+        return new GcLongestPausesView(g.TotalCollections, ranked.Count, ranked);
+    }
+
+    private static GcByGenerationView BuildByGeneration(GcSummary g)
+    {
+        // Background GCs are gen2 by depth but get their own mutually-exclusive bucket: gen2 here
+        // means non-background gen2 only. Buckets with no events are omitted.
+        static string BucketOf(GcEvent ev) =>
+            string.Equals(ev.Type, "BackgroundGC", StringComparison.Ordinal)
+                ? "background"
+                : $"gen{ev.Generation}";
+
+        static int OrderOf(string bucket) => bucket switch
+        {
+            "gen0" => 0,
+            "gen1" => 1,
+            "gen2" => 2,
+            "background" => 3,
+            _ => 4,
+        };
+
+        var stats = g.Events
+            .GroupBy(BucketOf)
+            .Select(grp =>
+            {
+                var total = grp.Aggregate(TimeSpan.Zero, (acc, e) => acc + e.PauseDuration);
+                var count = grp.Count();
+                var max = grp.Max(e => e.PauseDuration);
+                var mean = TimeSpan.FromTicks(total.Ticks / count);
+                return new GcGenerationPauseStats(grp.Key, count, total, mean, max);
+            })
+            .OrderBy(s => OrderOf(s.Bucket))
+            .ToList();
+
+        return new GcByGenerationView(g.TotalCollections, stats);
     }
 
     private static CollectionQueryResult Render(EventSourceCapture es, string view, int topN)
