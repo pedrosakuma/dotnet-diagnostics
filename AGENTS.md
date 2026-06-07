@@ -8,6 +8,8 @@
 
 The server attaches to the .NET runtime diagnostic IPC socket and exposes 9 tools (process discovery, capability detection, EventCounters snapshot, CPU sampling, exception collection, GC events, EventSource passthrough, process dump) over either **Streamable HTTP** (default, with bearer-token auth — designed for sidecar / shared-deploy) or **stdio** (`--stdio`, recommended for local dev — the MCP client owns the process lifecycle, no daemon or bearer token; see issue #74).
 
+The repo also ships a **second deliverable** built on the same Core engine: **`dotnet-diagnostics-cli`** (`src/DotnetDiagnosticsMcp.Cli`, assembly name `dotnet-diagnostics`), a Core-only standalone CLI for humans / scripts / CI — one-shot sub-commands plus a stateful `session` REPL, **no HTTP, no bearer, no daemon**. Both tools publish to NuGet from the same release tag (`dotnet-diagnostics-mcp` and `dotnet-diagnostics-cli`). The CLI references **Core only** (asserted by `NoServerReferenceTests`); document it in [`docs/cli-reference.md`](./docs/cli-reference.md), not the MCP tool reference.
+
 **Status:** MVP complete (Phases 1–6). Active work on Phase 7 is tracked in [issue #17](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/17) and the milestone [`Phase 7 — Roadmap`](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/milestone/1).
 
 ## Repository layout
@@ -16,9 +18,11 @@ The server attaches to the .NET runtime diagnostic IPC socket and exposes 9 tool
 src/
   DotnetDiagnosticsMcp.Core/      — IPC + EventPipe primitives, no MCP knowledge
   DotnetDiagnosticsMcp.Server/    — MCP tools, HTTP transport, bearer auth
+  DotnetDiagnosticsMcp.Cli/       — standalone CLI (dotnet-diagnostics-cli), Core only, one-shot + session REPL
 tests/
   DotnetDiagnosticsMcp.Core.Tests/              — live process tests (spawn sample, attach, assert)
   DotnetDiagnosticsMcp.Server.IntegrationTests/ — HTTP + MCP protocol tests
+  DotnetDiagnosticsMcp.Cli.Tests/               — CLI parsing, command, and session-REPL tests
 samples/
   CoreClrSample/      — minimal ASP.NET API used by Core tests
   NativeAotSample/    — used to validate capability detection
@@ -27,7 +31,7 @@ deploy/
   Dockerfile          — multi-stage publish; copies .editorconfig for analyzers
   k8s/sample-sidecar.yaml — reference K8s topology
 docs/
-  README.md, tool-reference.md, investigation-playbooks.md,
+  README.md, tool-reference.md, cli-reference.md, investigation-playbooks.md,
   bad-code-scenarios.md, local-docker-sidecar.md, client-setup.md
 ```
 
@@ -47,6 +51,10 @@ dotnet test tests/DotnetDiagnosticsMcp.Server.IntegrationTests/ -c Release --no-
 
 # Run the MCP server locally (launch profile listens on http://localhost:5130)
 dotnet run --project src/DotnetDiagnosticsMcp.Server -c Release
+
+# Run the standalone CLI (Core-only; one-shot or `session` REPL)
+dotnet run --project src/DotnetDiagnosticsMcp.Cli -c Release -- processes
+dotnet run --project src/DotnetDiagnosticsMcp.Cli -c Release -- session
 
 # Run a single live test
 dotnet test tests/DotnetDiagnosticsMcp.Core.Tests/ -c Release --no-build \

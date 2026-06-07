@@ -12,6 +12,7 @@
 
 | File | What it covers |
 |---|---|
+| [`cli-reference.md`](./cli-reference.md) | **Standalone `dotnet-diagnostics-cli`** — install, every command + flags, and the stateful `session` REPL (the human/script counterpart to the MCP server) |
 | [`tool-reference.md`](./tool-reference.md) | Every MCP tool: parameters, returns, runtime requirements, examples |
 | [`investigation-playbooks.md`](./investigation-playbooks.md) | Step-by-step recipes for common symptoms (slow, leaking, 5xx, slow HTTP, NativeAOT) |
 | [`client-setup.md`](./client-setup.md) | Connecting to the server from the C# SDK, GUI MCP clients, and `curl` smoke tests |
