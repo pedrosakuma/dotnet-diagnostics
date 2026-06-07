@@ -7,12 +7,25 @@ An **MCP server** for LLM-driven performance diagnostics on **.NET 10** applicat
 > **Status:** 15 unified tools, HTTP + stdio transports, IoT-style triage (6+ steps → 2 steps).
 > See [`docs/`](./docs) for full reference.
 
+### Two ways to use it
+
+This repo ships **two NuGet tools** built on the same Core diagnostics engine — pick by who is driving:
+
+| Package | Driver | Surface | Docs |
+|---|---|---|---|
+| **`dotnet-diagnostics-mcp`** | An **LLM**, via an MCP client | MCP tools over HTTP (bearer) or stdio | this README + [`docs/`](./docs) |
+| **`dotnet-diagnostics-cli`** | A **human** / script / CI | Sub-commands + a stateful `session` REPL (no HTTP, no bearer, no daemon) | [`docs/cli-reference.md`](./docs/cli-reference.md) |
+
+Most of this README is about the **MCP server**. If you want to run diagnostics yourself, jump to the
+[Standalone CLI](#standalone-cli) section or the [CLI reference](./docs/cli-reference.md).
+
 ---
 
 ## Table of Contents
 
 - [Quick Start](#quick-start)
 - [Install](#install)
+- [Standalone CLI](#standalone-cli)
 - [Tools Overview](#tools-overview)
 - [Documentation](#documentation)
 - [Goals](#goals)
@@ -68,27 +81,6 @@ docker run -d -p 127.0.0.1:8787:8080 \
 ```
 
 <details>
-<summary><strong>Standalone one-shot CLI (no MCP client)</strong></summary>
-
-`dotnet-diagnostics-cli` is a separate package that runs the same Core diagnostics engine
-as a one-shot command — no HTTP server, bearer token, or MCP client. Useful for scripts,
-CI, and `kubectl exec` into the sidecar (the container image ships it on `PATH`).
-
-```bash
-dotnet tool install -g dotnet-diagnostics-cli
-dotnet-diagnostics-cli processes
-dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
-
-# Inside the sidecar container (image bundles the CLI):
-kubectl exec -it <pod> -c diagnostics-mcp -- dotnet-diagnostics-cli inspect-heap --pid 1
-```
-
-Self-contained per-OS binaries are attached to each [Release](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/releases)
-as `dotnet-diagnostics-cli-<version>-<rid>`.
-
-</details>
-
-<details>
 <summary><strong>Transport options</strong></summary>
 
 | Transport | Use case | Auth |
@@ -116,6 +108,40 @@ docker compose -f deploy/docker-compose.yml up -d
 ```
 
 </details>
+
+---
+
+## Standalone CLI
+
+`dotnet-diagnostics-cli` is a separate NuGet tool that runs the **same Core diagnostics engine** as a
+command you drive yourself — no HTTP server, bearer token, MCP client, or daemon. Useful for scripts, CI,
+and `kubectl exec` into the sidecar (the container image ships it on `PATH`).
+
+```bash
+dotnet tool install -g dotnet-diagnostics-cli
+
+# One-shot
+dotnet-diagnostics-cli processes
+dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
+dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
+
+# Inside the sidecar container (image bundles the CLI):
+kubectl exec -it <pod> -c diagnostics-mcp -- dotnet-diagnostics-cli inspect-heap --pid 1
+```
+
+A stateful `session` REPL keeps collected handles queryable across commands so you can drill in
+(`query --handle <id> --view <view>`) without re-collecting, and bind a target pid once with `target <pid>`:
+
+```text
+dotnet-diagnostics-cli session
+diag> target 1234
+diag(pid 1234)> collect --kind gc --duration 10
+diag(pid 1234)> query --handle <id> --view pauseHistogram
+diag(pid 1234)> exit
+```
+
+Self-contained per-OS binaries are attached to each [Release](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/releases)
+as `dotnet-diagnostics-cli-<version>-<rid>`. **Full reference:** [`docs/cli-reference.md`](./docs/cli-reference.md).
 
 ---
 
@@ -147,7 +173,8 @@ docker compose -f deploy/docker-compose.yml up -d
 
 | Doc | Contents |
 |-----|----------|
-| [`docs/tool-reference.md`](./docs/tool-reference.md) | Full schemas and return shapes |
+| [`docs/cli-reference.md`](./docs/cli-reference.md) | **Standalone CLI** — commands, flags, and the `session` REPL |
+| [`docs/tool-reference.md`](./docs/tool-reference.md) | Full MCP tool schemas and return shapes |
 | [`docs/investigation-playbooks.md`](./docs/investigation-playbooks.md) | Common investigation recipes |
 | [`docs/aot-coverage.md`](./docs/aot-coverage.md) | NativeAOT coverage matrix |
 | [`docs/client-setup.md`](./docs/client-setup.md) | MCP client configuration |
