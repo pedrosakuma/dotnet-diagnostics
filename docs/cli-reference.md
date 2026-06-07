@@ -213,6 +213,22 @@ A `collect` or `inspect-heap` command prints a handle plus the views you can re-
 Handles are evicted when they expire (a TTL) or when the target process exits — a 5 s in-process sweep drops
 dead-target handles so you never drill into a stale trace.
 
+For CPU/allocation sample handles (`cpu-sample`, `allocation-sample`, `native-alloc-sample`), the session
+exposes drilldown views computed from the merged call tree without re-sampling:
+
+| View | What it shows | Relevant flags |
+| --- | --- | --- |
+| `call-tree` (default) | the merged inclusive/exclusive call tree | `--max-nodes`, `--min-count`, `--root-method-filter`, `--rank-by` |
+| `top-methods` | methods ranked by sample cost | `--top` (default `20`), `--rank-by exclusive\|inclusive` |
+| `by-module` | samples grouped by owning module | `--top`, `--rank-by` |
+| `by-namespace` | samples grouped by namespace | `--top`, `--rank-by` |
+| `hot-path` | the dominant stack from the root down | `--threshold` (percent, default `50`) |
+| `caller-callee` | a focus method with its direct callers + callees | `--root-method-filter <substring>` (required), `--top` |
+
+`--rank-by inclusive` ranks/credits by inclusive samples; any other value (including the default) uses
+exclusive samples. `caller-callee` requires `--root-method-filter` to resolve exactly one method: zero matches
+return a `NotFound` envelope, more than one returns `InvalidArgument` with the candidate list.
+
 ### Cancellation (Ctrl-C)
 
 - **While a command runs:** the first Ctrl-C cancels only that command (cleaning up any temp `.nettrace` /

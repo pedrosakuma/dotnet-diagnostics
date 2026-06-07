@@ -333,6 +333,46 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_CpuSampleHandle_TopMethodsView_RanksByExclusive()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view top-methods --top 1\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("LeafB"); // 60 exclusive beats LeafA's 40
+    }
+
+    [Fact]
+    public async Task Query_CpuSampleHandle_HotPathView_FollowsDominantChild()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view hot-path\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("LeafB");
+    }
+
+    [Fact]
+    public async Task Query_CpuSampleHandle_CallerCalleeView_ResolvesFocusMethod()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view caller-callee --root-method-filter LeafA\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("LeafA");
+        stdout.Should().Contain("Root"); // the caller
+    }
+
+    [Fact]
     public async Task Query_ThreadSnapshotHandle_DefaultsToTopBlocked()
     {
         var (services, store) = BuildServices();
@@ -492,11 +532,19 @@ public sealed class SessionReplTests
     }
 
     [Fact]
-    public void SessionViewsFor_CpuSampleKinds_ReturnCallTree()
+    public void SessionViewsFor_CpuSampleKinds_ReturnAnalyticsViews()
     {
-        CliCommands.SessionViewsFor("cpu-sample").Should().Equal(CpuSampleQueryDispatcher.CallTreeView);
-        CliCommands.SessionViewsFor("allocation-sample").Should().Equal(CpuSampleQueryDispatcher.CallTreeView);
-        CliCommands.SessionViewsFor("native-alloc-sample").Should().Equal(CpuSampleQueryDispatcher.CallTreeView);
+        CliCommands.SessionViewsFor("cpu-sample").Should().Equal(CpuSampleQueryDispatcher.SessionViews);
+        CliCommands.SessionViewsFor("allocation-sample").Should().Equal(CpuSampleQueryDispatcher.SessionViews);
+        CliCommands.SessionViewsFor("native-alloc-sample").Should().Equal(CpuSampleQueryDispatcher.SessionViews);
+
+        var views = CliCommands.SessionViewsFor("cpu-sample");
+        views.Should().Contain(CpuSampleQueryDispatcher.CallTreeView);
+        views.Should().Contain("top-methods");
+        views.Should().Contain("by-module");
+        views.Should().Contain("by-namespace");
+        views.Should().Contain("hot-path");
+        views.Should().Contain("caller-callee");
     }
 
     [Fact]

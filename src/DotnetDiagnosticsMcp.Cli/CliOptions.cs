@@ -125,6 +125,12 @@ internal sealed class CliOptions
     /// <summary>Minimum threads per group for the thread-snapshot <c>unique-stacks</c> view (<c>--min-count</c>, default 1). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public int? MinCount { get; init; }
 
+    /// <summary>Row cap for the CPU <c>top-methods</c> / <c>by-module</c> / <c>by-namespace</c> / <c>caller-callee</c> views (<c>--top</c>, default 20). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public int? Top { get; init; }
+
+    /// <summary>Hot-path threshold percent for the CPU <c>hot-path</c> view (<c>--threshold</c>, default 50): a child must carry at least this % of its parent's inclusive samples to extend the chain. Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public int? Threshold { get; init; }
+
     /// <summary>
     /// Parses <paramref name="args"/>. Returns a populated <see cref="CliOptions"/> on success, or
     /// <c>null</c> with a non-null <paramref name="error"/> describing the first usage problem.
@@ -173,6 +179,8 @@ internal sealed class CliOptions
         int? stackRank = null;
         int? framesToHash = null;
         int? minCount = null;
+        int? top = null;
+        int? threshold = null;
 
         for (var i = 0; i < args.Count; i++)
         {
@@ -414,6 +422,22 @@ internal sealed class CliOptions
 
                     maxNodes = maxNodesValue;
                     break;
+                case "--top":
+                    if (!TryTakeInt(args, ref i, token, out var topValue, out error))
+                    {
+                        return null;
+                    }
+
+                    top = topValue;
+                    break;
+                case "--threshold":
+                    if (!TryTakeInt(args, ref i, token, out var thresholdValue, out error))
+                    {
+                        return null;
+                    }
+
+                    threshold = thresholdValue;
+                    break;
                 case "--thread-id":
                     if (!TryTakeInt(args, ref i, token, out var threadIdValue, out error))
                     {
@@ -505,6 +529,8 @@ internal sealed class CliOptions
             StackRank = stackRank,
             FramesToHash = framesToHash,
             MinCount = minCount,
+            Top = top,
+            Threshold = threshold,
         };
     }
 
