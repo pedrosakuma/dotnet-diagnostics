@@ -213,7 +213,7 @@ Visões disponíveis por `kind`:
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `object`, `gcroot`, `objsize`, `async`, `diff` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
-| `cpu-sample` / `allocation-sample` / `native-alloc-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` | `call-tree`, `diff` |
+| `cpu-sample` / `allocation-sample` / `native-alloc-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `diff` |
 
 Autorização é aplicada por kind no dispatcher (`heap-read` para heap,
 `ptrace` para thread, `eventpipe` para off-CPU, `investigation-export` para
@@ -226,6 +226,22 @@ contrato de cada legado verbatim (RFC 0002 §4.1).
 and `allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second
 rates when the two capture windows use different durations and surface both raw + normalized
 metrics in each row.
+
+The CPU drilldown views (`top-methods`, `by-module`, `by-namespace`, `hot-path`,
+`caller-callee`, issue #313) re-aggregate the already-collected merged call tree — no new
+sampling. They reuse the existing `query_snapshot` parameters: `topN` caps the number of rows
+(default `20`), `rankBy` chooses the sort/credit metric (`inclusive` selects inclusive samples;
+any other value, including the default, selects exclusive samples), and `rootMethodFilter`
+supplies the focus method substring for `caller-callee`. `hot-path` additionally accepts
+`hotPathThresholdPercent` (default `50`, range `0 < x <= 100`): the path descends into the
+heaviest child while each step still carries at least that percentage of its parent's inclusive
+samples. `top-methods`/`by-module`/`by-namespace` return ranked exclusive+inclusive sample
+stats with percentages; `caller-callee` returns the focus method's aggregated cost plus its
+direct callers and callees. The synthetic `<root>` frame is excluded from the ranked/grouped
+views (`top-methods`/`by-module`/`by-namespace`/`hot-path`); in `caller-callee` it appears as a
+caller named `<root>` to mark a top-level entry point (matching PerfView's ROOT pseudo-node).
+A `caller-callee` filter that matches zero methods returns `NotFound`; one that matches more
+than one distinct method returns `InvalidArgument` with the candidate list.
 
 `view="resolve-address"` (thread-snapshot, issue #275) re-opens the snapshot origin (dump file or
 live pid) and classifies one or more addresses passed via `address` (comma-separated, decimal or

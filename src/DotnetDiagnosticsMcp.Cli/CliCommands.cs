@@ -819,21 +819,39 @@ internal static class CliCommands
                 "The 'diff' view correlates a baseline handle the session cannot supply; run the MCP server's query_snapshot(view='diff') with a baselineHandle.");
         }
 
-        if (normalized != CpuSampleQueryDispatcher.CallTreeView)
+        var handle = options.Handle!;
+        var topN = options.Top ?? CpuSampleQueryDispatcher.DefaultTopN;
+
+        switch (normalized)
         {
-            return Fail($"query: unknown view '{view}' for a CPU sample handle.", "InvalidArgument",
-                $"Valid views: {string.Join(", ", CpuSampleQueryDispatcher.SessionViews)}.");
+            case CpuSampleQueryDispatcher.TopMethodsView:
+                return BuildResult(CpuSampleQueryDispatcher.RenderTopMethods(trace, handle, options.RankBy, topN), SerializeQuery);
+            case CpuSampleQueryDispatcher.ByModuleView:
+                return BuildResult(CpuSampleQueryDispatcher.RenderByModule(trace, handle, topN), SerializeQuery);
+            case CpuSampleQueryDispatcher.ByNamespaceView:
+                return BuildResult(CpuSampleQueryDispatcher.RenderByNamespace(trace, handle, topN), SerializeQuery);
+            case CpuSampleQueryDispatcher.HotPathView:
+                return BuildResult(CpuSampleQueryDispatcher.RenderHotPath(trace, handle, options.Threshold ?? CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent), SerializeQuery);
+            case CpuSampleQueryDispatcher.CallerCalleeView:
+                return BuildResult(CpuSampleQueryDispatcher.RenderCallerCallee(trace, handle, options.RootMethodFilter, topN), SerializeQuery);
+            case CpuSampleQueryDispatcher.CallTreeView:
+                break;
+            default:
+                return Fail($"query: unknown view '{view}' for a CPU sample handle.", "InvalidArgument",
+                    $"Valid views: {string.Join(", ", CpuSampleQueryDispatcher.SessionViews)}.");
         }
 
         var maxDepth = options.MaxDepth ?? 8;
         var maxNodes = options.MaxNodes ?? 200;
-        var result = CpuSampleQueryDispatcher.RenderCallTree(trace, options.Handle!, options.RootMethodFilter, maxDepth, maxNodes);
+        var result = CpuSampleQueryDispatcher.RenderCallTree(trace, handle, options.RootMethodFilter, maxDepth, maxNodes);
 
-        return BuildResult<CallTreeView>(result, static (sb, tree) =>
-        {
-            sb.AppendLine();
-            sb.AppendLine(JsonSerializer.Serialize(tree, QueryJsonOptions));
-        });
+        return BuildResult<CallTreeView>(result, SerializeQuery);
+    }
+
+    private static void SerializeQuery<T>(StringBuilder sb, T payload)
+    {
+        sb.AppendLine();
+        sb.AppendLine(JsonSerializer.Serialize(payload, QueryJsonOptions));
     }
 
     /// <summary>

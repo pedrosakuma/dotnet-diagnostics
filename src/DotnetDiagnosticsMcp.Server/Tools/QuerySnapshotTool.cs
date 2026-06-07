@@ -50,6 +50,19 @@ public sealed class QuerySnapshotTool
     internal const string CallTreeView = "call-tree";
     internal const string DiffView = "diff";
 
+    // Every view the cpu-sample / allocation-sample / native-alloc-sample kinds accept (analytics
+    // views from #313 plus the original call-tree and the server-only diff).
+    private static readonly string[] CpuViewNames =
+    {
+        CallTreeView,
+        CpuSampleQueryDispatcher.TopMethodsView,
+        CpuSampleQueryDispatcher.ByModuleView,
+        CpuSampleQueryDispatcher.ByNamespaceView,
+        CpuSampleQueryDispatcher.HotPathView,
+        CpuSampleQueryDispatcher.CallerCalleeView,
+        DiffView,
+    };
+
     // Thread-snapshot view that re-opens the origin and classifies arbitrary addresses into
     // (module, rva, build-id) or an unmapped verdict (issue #275).
     internal const string ResolveAddressView = "resolve-address";
@@ -90,7 +103,7 @@ public sealed class QuerySnapshotTool
         "`off-cpu-snapshot` → off-CPU views (topStacks | byThread | stack); " +
         "`counters` / `exception-snapshot` / `gc-events` / `event-source` / `activities` / `log-snapshot` / `threadpool-snapshot` / `contention-snapshot` / `db-snapshot` → collection views " +
         "(summary | byProvider | byType | recent | events | pauseHistogram | byEventName | bySource | byOperation | activities | byCategory | byLevel | errors | timeline | hillClimbing | workItemOrigins | byCallSite | byOwner | byCommand | n+1 | connectionPool); " +
-        "`cpu-sample` / `allocation-sample` / `native-alloc-sample` → `call-tree` | `diff`; `heap-snapshot` → `diff` in addition to heap views. `diff` compares the current handle against `baselineHandle`; `call-tree` preserves get_call_tree behaviour with " +
+        "`cpu-sample` / `allocation-sample` / `native-alloc-sample` → `call-tree` | `top-methods` | `by-module` | `by-namespace` | `hot-path` | `caller-callee` | `diff`; `heap-snapshot` → `diff` in addition to heap views. `diff` compares the current handle against `baselineHandle`; `call-tree` preserves get_call_tree behaviour with " +
         "rootMethodFilter, maxDepth, maxNodes. " +
         "Unknown handle kinds, unknown views and parameter-shape violations return structured InvalidArgument " +
         "envelopes — never a 500. Authorization is preserved per kind: heap-read for heap, ptrace for thread, " +
@@ -105,7 +118,7 @@ public sealed class QuerySnapshotTool
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
         [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, snapshot_counters, collect_exceptions, collect_gc_events, collect_event_source, collect_activities, collect_events(kind=\"logs\"), collect_events(kind=\"threadpool\"), collect_events(kind=\"contention\"), collect_events(kind=\"db\")).")] string handle,
-        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|pauseHistogram|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool. cpu-sample/allocation-sample/native-alloc-sample: call-tree|diff. Omit to use the kind's default view.")] string? view = null,
+        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|pauseHistogram|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
         [Description("Maximum entries returned by any ranked-list view. Omit to use the per-kind legacy default: 50 for heap / thread / collection, 25 for off-CPU. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
         [Description("Heap view='top-types' only: ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
@@ -120,6 +133,7 @@ public sealed class QuerySnapshotTool
         [Description("Call-tree only: approximate cap on the number of nodes returned (top children at each level). Must be >= 1. Defaults to 200.")] int maxNodes = 200,
         [Description("Diff view only: baseline handle to compare against the current `handle`. Required for view=diff.")] string? baselineHandle = null,
         [Description("Diff view only: minimum absolute delta percentage required for a row to surface in `Changed`. Defaults to 5.0.")] double minDeltaPct = 5.0,
+        [Description("cpu-sample/allocation-sample 'hot-path' view only: a child must carry at least this percent of its parent's inclusive samples to extend the chain. Defaults to 50.")] double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         CancellationToken cancellationToken = default)
     {
@@ -222,6 +236,38 @@ public sealed class QuerySnapshotTool
                     {
                         return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, minDeltaPct, topN);
                     }
+
+                    // Analytics views (top-methods / by-module / by-namespace / hot-path / caller-callee,
+                    // issue #313) render from the same merged trace as call-tree via the host-neutral
+                    // CpuSampleQueryDispatcher (shared with the CLI `session` REPL).
+                    var cpuView = string.IsNullOrWhiteSpace(view) ? CpuSampleQueryDispatcher.CallTreeView : view!;
+                    if (!string.Equals(cpuView, CpuSampleQueryDispatcher.CallTreeView, StringComparison.Ordinal)
+                        && CpuSampleQueryDispatcher.IsKnownView(cpuView))
+                    {
+                        var trace = CpuSampleQueryDispatcher.ResolveTrace(lookup.Value.Artifact);
+                        if (trace is null)
+                        {
+                            return HandleExpiredError(null, handle);
+                        }
+
+                        var cpuTopN = topN ?? CpuSampleQueryDispatcher.DefaultTopN;
+                        return cpuView switch
+                        {
+                            CpuSampleQueryDispatcher.TopMethodsView => AsObjectEnvelope(
+                                CpuSampleQueryDispatcher.RenderTopMethods(trace, handle,
+                                    string.Equals(rankBy, "inclusive", StringComparison.OrdinalIgnoreCase) ? "inclusive" : "exclusive", cpuTopN)),
+                            CpuSampleQueryDispatcher.ByModuleView => AsObjectEnvelope(
+                                CpuSampleQueryDispatcher.RenderByModule(trace, handle, cpuTopN)),
+                            CpuSampleQueryDispatcher.ByNamespaceView => AsObjectEnvelope(
+                                CpuSampleQueryDispatcher.RenderByNamespace(trace, handle, cpuTopN)),
+                            CpuSampleQueryDispatcher.HotPathView => AsObjectEnvelope(
+                                CpuSampleQueryDispatcher.RenderHotPath(trace, handle, hotPathThresholdPercent)),
+                            CpuSampleQueryDispatcher.CallerCalleeView => AsObjectEnvelope(
+                                CpuSampleQueryDispatcher.RenderCallerCallee(trace, handle, rootMethodFilter, cpuTopN)),
+                            _ => UnknownView(cpuView, kind, CpuViewNames),
+                        };
+                    }
+
                     // get_call_tree exposes a single projection; require either the canonical
                     // `call-tree` view or an omitted value, and reject anything else with a
                     // structured InvalidArgument envelope so a confused caller sees the same
@@ -229,7 +275,7 @@ public sealed class QuerySnapshotTool
                     if (!string.IsNullOrWhiteSpace(view)
                         && !string.Equals(view, CallTreeView, StringComparison.Ordinal))
                     {
-                        return UnknownView(view!, kind, new[] { CallTreeView, DiffView });
+                        return UnknownView(view!, kind, CpuViewNames);
                     }
                     var callTree = DiagnosticTools.GetCallTree(
                         handles,
