@@ -229,6 +229,19 @@ exposes drilldown views computed from the merged call tree without re-sampling:
 exclusive samples. `caller-callee` requires `--root-method-filter` to resolve exactly one method: zero matches
 return a `NotFound` envelope, more than one returns `InvalidArgument` with the candidate list.
 
+GC handles (`collect --kind gc`) expose pause-analysis views over the events already collected:
+
+| View | What it shows | Relevant flags |
+| --- | --- | --- |
+| `summary` (default) | total/max pause + per-generation counts | — |
+| `events` | raw GC events | `--top-types` (cap) |
+| `pauseHistogram` | pause-duration buckets | — |
+| `timeline` | per-GC rows (index, gen, reason, type, pause, gap-since-previous-start) ordered by start time | `--top-types` (earliest N) |
+| `longestPauses` | the N longest pauses, ranked descending | `--top-types` (N) |
+| `byGeneration` | count + total/mean/max pause per gen0/gen1/gen2/background bucket | — |
+
+`byGeneration` keeps background GCs in their own bucket, so `gen2` counts non-background gen2 collections only.
+
 ### Cancellation (Ctrl-C)
 
 - **While a command runs:** the first Ctrl-C cancels only that command (cleaning up any temp `.nettrace` /

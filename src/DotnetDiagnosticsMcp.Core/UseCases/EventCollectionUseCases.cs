@@ -295,7 +295,7 @@ public static class EventCollectionUseCases
             handle.ExpiresAt,
             primaryHint,
             new NextActionHint("query_snapshot",
-                "Drill into these GC events without re-collecting (views: summary, events, pauseHistogram).",
+                "Drill into these GC events without re-collecting (views: summary, events, pauseHistogram, timeline, longestPauses, byGeneration).",
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "pauseHistogram" })),
             resolved.Context);
     }

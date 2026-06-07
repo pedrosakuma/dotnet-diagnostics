@@ -83,6 +83,58 @@ public sealed record GcPauseHistogramView(
 /// <param name="Count">Number of GC events whose pause falls in this bucket.</param>
 public sealed record GcPauseBucket(string Label, int UpperBoundMs, int Count);
 
+/// <summary>Per-GC timeline ordered by start time, capped to the earliest <c>topN</c> collections.</summary>
+/// <param name="TotalCollections">Total GCs retained on the artifact (may be capped by the collector's maxEvents).</param>
+/// <param name="Returned">Number of timeline rows actually returned (earliest by start time).</param>
+/// <param name="Entries">The chronological GC rows.</param>
+public sealed record GcTimelineView(
+    int TotalCollections,
+    int Returned,
+    IReadOnlyList<GcTimelineEntry> Entries);
+
+/// <summary>One GC in the <see cref="GcTimelineView"/> (also reused by <see cref="GcLongestPausesView"/>).</summary>
+/// <param name="Index">0-based position in the start-time-ordered timeline (stable cross-reference key).</param>
+/// <param name="Timestamp">GCStart time of this collection.</param>
+/// <param name="Generation">Collected generation (0/1/2).</param>
+/// <param name="Reason">Runtime-reported GC reason.</param>
+/// <param name="Type">GC type — one of <c>NonConcurrentGC</c>, <c>BackgroundGC</c>, <c>ForegroundGC</c>.</param>
+/// <param name="PauseDuration">GCStart→GCStop elapsed (for background GCs this is collected elapsed, not pure stop-the-world pause).</param>
+/// <param name="GapSincePreviousStart">Start-to-start gap from the previous timeline entry (0 for the first; clamped to non-negative).</param>
+public sealed record GcTimelineEntry(
+    int Index,
+    DateTimeOffset Timestamp,
+    int Generation,
+    string Reason,
+    string Type,
+    TimeSpan PauseDuration,
+    TimeSpan GapSincePreviousStart);
+
+/// <summary>The N longest GC pauses, ranked by pause descending. Each entry keeps its timeline <see cref="GcTimelineEntry.Index"/>.</summary>
+public sealed record GcLongestPausesView(
+    int TotalCollections,
+    int Returned,
+    IReadOnlyList<GcTimelineEntry> Pauses);
+
+/// <summary>Pause statistics split per generation, with background GCs called out as their own mutually-exclusive bucket.</summary>
+/// <param name="TotalCollections">Total GCs retained on the artifact.</param>
+/// <param name="Generations">One row per non-empty bucket (gen0/gen1/gen2/background), in that order.</param>
+public sealed record GcByGenerationView(
+    int TotalCollections,
+    IReadOnlyList<GcGenerationPauseStats> Generations);
+
+/// <summary>Count + total/mean/max pause for one generation bucket.</summary>
+/// <param name="Bucket">One of <c>gen0</c>, <c>gen1</c>, <c>gen2</c>, <c>background</c>. <c>gen2</c> excludes background GCs.</param>
+/// <param name="Count">Number of GCs in this bucket.</param>
+/// <param name="TotalPause">Sum of pause durations in this bucket.</param>
+/// <param name="MeanPause">Mean pause (<see cref="TotalPause"/> / <see cref="Count"/>).</param>
+/// <param name="MaxPause">Longest single pause in this bucket.</param>
+public sealed record GcGenerationPauseStats(
+    string Bucket,
+    int Count,
+    TimeSpan TotalPause,
+    TimeSpan MeanPause,
+    TimeSpan MaxPause);
+
 // --- EventSource views ------------------------------------------------------------------------
 
 /// <summary>Counts grouped by EventName.</summary>

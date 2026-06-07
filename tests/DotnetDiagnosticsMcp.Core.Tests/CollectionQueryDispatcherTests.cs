@@ -114,6 +114,121 @@ public class CollectionQueryDispatcherTests
         payload.Buckets.Select(b => b.Count).Should().Equal(1, 1, 1, 1, 1);
     }
 
+    // gen0 @+0ms (2ms), background gen2 @+10ms (50ms), gen1 @+30ms (5ms), gen2 @+40ms (100ms).
+    // Deliberately enqueued out of chronological order to exercise the timeline sort.
+    private static GcSummary ScrambledGc()
+    {
+        var events = new List<GcEvent>
+        {
+            new(At.AddMilliseconds(40), 2, "AllocLarge", "NonConcurrentGC", TimeSpan.FromMilliseconds(100)),
+            new(At.AddMilliseconds(0), 0, "AllocSmall", "NonConcurrentGC", TimeSpan.FromMilliseconds(2)),
+            new(At.AddMilliseconds(10), 2, "AllocSmall", "BackgroundGC", TimeSpan.FromMilliseconds(50)),
+            new(At.AddMilliseconds(30), 1, "Induced", "NonConcurrentGC", TimeSpan.FromMilliseconds(5)),
+        };
+        return new GcSummary(42, At, TimeSpan.FromSeconds(5), events.Count,
+            TimeSpan.FromMilliseconds(157), TimeSpan.FromMilliseconds(100),
+            new List<GenerationStats> { new(0, 1), new(1, 1), new(2, 2) },
+            events);
+    }
+
+    private static GcSummary EmptyGc() =>
+        new(42, At, TimeSpan.FromSeconds(5), 0, TimeSpan.Zero, TimeSpan.Zero,
+            new List<GenerationStats>(), new List<GcEvent>());
+
+    [Fact]
+    public void Gc_Timeline_OrdersByStartAndComputesGaps()
+    {
+        var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "timeline", ScrambledGc(), 50);
+
+        var payload = outcome.Result!.Payload.Should().BeOfType<GcTimelineView>().Subject;
+        payload.Returned.Should().Be(4);
+        payload.Entries.Select(e => e.Index).Should().Equal(0, 1, 2, 3);
+        payload.Entries.Select(e => e.Generation).Should().Equal(0, 2, 1, 2);
+        payload.Entries.Select(e => e.GapSincePreviousStart.TotalMilliseconds)
+            .Should().Equal(0, 10, 20, 10);
+    }
+
+    [Fact]
+    public void Gc_Timeline_CapsToTopN()
+    {
+        var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "timeline", ScrambledGc(), 2);
+
+        var payload = outcome.Result!.Payload.Should().BeOfType<GcTimelineView>().Subject;
+        payload.Returned.Should().Be(2);
+        payload.Entries.Select(e => e.Index).Should().Equal(0, 1); // earliest two by start time
+    }
+
+    [Fact]
+    public void Gc_LongestPauses_RanksByPauseDescending()
+    {
+        var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "longestPauses", ScrambledGc(), 2);
+
+        var payload = outcome.Result!.Payload.Should().BeOfType<GcLongestPausesView>().Subject;
+        payload.Returned.Should().Be(2);
+        payload.Pauses.Select(p => p.PauseDuration.TotalMilliseconds).Should().Equal(100, 50);
+        payload.Pauses.Select(p => p.Index).Should().Equal(3, 1); // timeline indices retained
+    }
+
+    [Fact]
+    public void Gc_ByGeneration_BucketsBackgroundSeparatelyWithStats()
+    {
+        var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "byGeneration", ScrambledGc(), 50);
+
+        var payload = outcome.Result!.Payload.Should().BeOfType<GcByGenerationView>().Subject;
+        payload.Generations.Select(s => s.Bucket).Should().Equal("gen0", "gen1", "gen2", "background");
+
+        var gen2 = payload.Generations.Single(s => s.Bucket == "gen2");
+        gen2.Count.Should().Be(1); // background gen2 excluded
+        gen2.MaxPause.Should().Be(TimeSpan.FromMilliseconds(100));
+        gen2.MeanPause.Should().Be(TimeSpan.FromMilliseconds(100));
+
+        var background = payload.Generations.Single(s => s.Bucket == "background");
+        background.Count.Should().Be(1);
+        background.TotalPause.Should().Be(TimeSpan.FromMilliseconds(50));
+    }
+
+    [Fact]
+    public void Gc_ByGeneration_AggregatesMeanAndTotalAcrossEvents()
+    {
+        var events = new List<GcEvent>
+        {
+            new(At.AddMilliseconds(0), 0, "AllocSmall", "NonConcurrentGC", TimeSpan.FromMilliseconds(2)),
+            new(At.AddMilliseconds(5), 0, "AllocSmall", "NonConcurrentGC", TimeSpan.FromMilliseconds(8)),
+        };
+        var g = new GcSummary(42, At, TimeSpan.FromSeconds(5), 2,
+            TimeSpan.FromMilliseconds(10), TimeSpan.FromMilliseconds(8),
+            new List<GenerationStats> { new(0, 2) }, events);
+
+        var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "byGeneration", g, 50);
+
+        var gen0 = outcome.Result!.Payload.Should().BeOfType<GcByGenerationView>().Subject
+            .Generations.Single(s => s.Bucket == "gen0");
+        gen0.Count.Should().Be(2);
+        gen0.TotalPause.Should().Be(TimeSpan.FromMilliseconds(10));
+        gen0.MeanPause.Should().Be(TimeSpan.FromMilliseconds(5));
+        gen0.MaxPause.Should().Be(TimeSpan.FromMilliseconds(8));
+    }
+
+    [Fact]
+    public void Gc_NewViews_HandleEmptyEvents()
+    {
+        var empty = EmptyGc();
+
+        CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "timeline", empty, 50)
+            .Result!.Payload.Should().BeOfType<GcTimelineView>().Subject.Entries.Should().BeEmpty();
+        CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "longestPauses", empty, 50)
+            .Result!.Payload.Should().BeOfType<GcLongestPausesView>().Subject.Pauses.Should().BeEmpty();
+        CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "byGeneration", empty, 50)
+            .Result!.Payload.Should().BeOfType<GcByGenerationView>().Subject.Generations.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Gc_ViewsFor_IncludesNewDrilldownViews()
+    {
+        CollectionQueryDispatcher.ViewsFor(CollectionHandleKinds.GcEvents)
+            .Should().Contain(new[] { "timeline", "longestPauses", "byGeneration" });
+    }
+
     [Fact]
     public void EventSource_ByEventNameView_OrdersByCount()
     {

@@ -202,7 +202,7 @@ Visões disponíveis por `kind`:
 |---|---|---|
 | `counters` | `collect_events(kind="counters")` | `summary` (default), `byProvider` |
 | `exception-snapshot` | `collect_events(kind="exceptions")` | `summary` (default = `byType.Take(topN)`), `byType`, `recent` |
-| `gc-events` | `collect_events(kind="gc")` | `summary` (default), `events`, `pauseHistogram` |
+| `gc-events` | `collect_events(kind="gc")` | `summary` (default), `events`, `pauseHistogram`, `timeline`, `longestPauses`, `byGeneration` |
 | `activities` | `collect_events(kind="activities")` | `summary` (default), `bySource`, `byOperation`, `activities` |
 | `event-source` | `collect_events(kind="event_source")` | `summary` (default), `byEventName`, `events` |
 | `log-snapshot` | `collect_events(kind="logs")` | `summary` (default), `byCategory`, `byLevel`, `recent`, `errors` |
@@ -242,6 +242,17 @@ views (`top-methods`/`by-module`/`by-namespace`/`hot-path`); in `caller-callee` 
 caller named `<root>` to mark a top-level entry point (matching PerfView's ROOT pseudo-node).
 A `caller-callee` filter that matches zero methods returns `NotFound`; one that matches more
 than one distinct method returns `InvalidArgument` with the candidate list.
+
+The GC drilldown views (`timeline`, `longestPauses`, `byGeneration`, issue #314) re-aggregate the
+GC events already retained behind a `gc-events` handle — no new collection. `timeline` orders the
+collections by start time and returns the earliest `topN` rows, each with a 0-based `Index`, the
+GC `Generation`/`Reason`/`Type`, the `PauseDuration` (GCStart→GCStop elapsed), and
+`GapSincePreviousStart` (start-to-start gap from the previous collection). `longestPauses` ranks
+the same rows by pause descending and returns the top `topN` (each keeps its timeline `Index` for
+cross-reference). `byGeneration` reports `Count` + total/mean/max pause per generation bucket
+(`gen0`/`gen1`/`gen2`/`background`); background GCs form their own mutually-exclusive bucket, so
+`gen2` counts non-background gen2 collections only. Note these views describe only the events
+retained on the artifact (the collector caps at `maxEvents`).
 
 `view="resolve-address"` (thread-snapshot, issue #275) re-opens the snapshot origin (dump file or
 live pid) and classifies one or more addresses passed via `address` (comma-separated, decimal or
