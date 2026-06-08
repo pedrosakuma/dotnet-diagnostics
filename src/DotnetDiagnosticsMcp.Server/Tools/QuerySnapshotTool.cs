@@ -384,7 +384,7 @@ public sealed class QuerySnapshotTool
                     {
                         return forbidden!;
                     }
-                    if (IsDiffView(view) && string.Equals(kind, CollectionHandleKinds.GcEvents, StringComparison.Ordinal))
+                    if (IsDiffView(view) && IsComparableDiffKind(kind))
                     {
                         return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN, depth);
                     }
@@ -417,6 +417,31 @@ public sealed class QuerySnapshotTool
 
     private static bool IsDiffView(string? view)
         => string.Equals(view, DiffView, StringComparison.Ordinal);
+
+    // Legacy typed pairwise (N=2 baselineHandle) kinds handled by SampleDiffer in their own
+    // case blocks. They also gain N-ary comparable projectors over time; this list backs the
+    // registry-driven diffable-kind reporting so the InvalidKindPair message stays accurate as
+    // projectors are added.
+    private static readonly string[] LegacyTypedDiffKinds =
+    {
+        DiagnosticTools.HeapSnapshotKind,
+        "cpu-sample",
+        "allocation-sample",
+        DiagnosticTools.NativeAllocHandleKind,
+    };
+
+    // A grouped-collection handle kind is diffable via view='diff' iff a comparable projector is
+    // registered for it. Replacing the former gc-events special-case keeps this registry-driven:
+    // registering a projector auto-enables its diff gating (issue #338).
+    private static bool IsComparableDiffKind(string kind)
+        => ComparableProjectors.Any(p => string.Equals(p.Kind, kind, StringComparison.Ordinal));
+
+    private static string DiffableKindsList()
+        => string.Join(
+            ", ",
+            LegacyTypedDiffKinds
+                .Concat(ComparableProjectors.Select(p => p.Kind))
+                .Distinct(StringComparer.Ordinal));
 
     private static async Task<DiagnosticResult<object>> ResolveThreadAddressesAsync(
         IDiagnosticHandleStore handles,
@@ -663,7 +688,7 @@ public sealed class QuerySnapshotTool
 
     private static DiagnosticResult<object> InvalidKindPair(string currentKind, string baselineKind)
     {
-        var message = $"query_snapshot(view='diff') requires handles of the same supported kind. Accepted pairs/kinds: heap-snapshot, cpu-sample, allocation-sample, native-alloc-sample, gc-datas, counters, gc-events. Received baseline/comparison={baselineKind}, current={currentKind}.";
+        var message = $"query_snapshot(view='diff') requires handles of the same supported kind. Accepted pairs/kinds: {DiffableKindsList()}. Received baseline/comparison={baselineKind}, current={currentKind}.";
         return DiagnosticResult.Fail<object>(
             message,
             new DiagnosticError("InvalidArgument", message, "baselineHandle"),
@@ -688,6 +713,7 @@ public sealed class QuerySnapshotTool
         CollectionHandleKinds.LogSnapshot,
         CollectionHandleKinds.JitSnapshot,
         CollectionHandleKinds.ThreadPoolSnapshot,
+        CollectionHandleKinds.ContentionSnapshot,
         CollectionHandleKinds.DbSnapshot,
     };
 
