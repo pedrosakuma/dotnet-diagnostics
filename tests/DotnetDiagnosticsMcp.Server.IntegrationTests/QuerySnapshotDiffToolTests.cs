@@ -7,6 +7,7 @@ using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.Memory;
 using DotnetDiagnosticsMcp.Core.Security;
 using DotnetDiagnosticsMcp.Core.Gc;
+using DotnetDiagnosticsMcp.Server.Resources;
 using DotnetDiagnosticsMcp.Server.Tools;
 using FluentAssertions;
 
@@ -97,7 +98,7 @@ public sealed class QuerySnapshotDiffToolTests
     }
 
     [Fact]
-    public async Task Diff_CountersBaselineHandle_ReturnsJourneyDiff()
+    public async Task Diff_CountersBaselineHandle_ReturnsJourneyDiffInlineWhenSmall()
     {
         var store = new MemoryDiagnosticHandleStore();
         var baseline = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshot(10), TimeSpan.FromMinutes(10));
@@ -106,10 +107,56 @@ public sealed class QuerySnapshotDiffToolTests
         var result = await QuerySnapshot(store, current.Id, baseline.Id);
 
         result.Error.Should().BeNull();
+        result.Handle.Should().BeNull();
         var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
         diff.Kind.Should().Be(CollectionHandleKinds.Counters);
         diff.Labels.Should().Equal("baseline", "current");
         diff.MetricSeries.Should().Contain(series => series.Definition.Name == "counter:System.Runtime/cpu-usage");
+    }
+
+    [Fact]
+    public async Task Diff_CountersBaselineHandle_CompactDepthBoundsInlinePayload()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var baseline = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshotMany(0, 8), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshotMany(10, 8), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, baseline.Id, topN: 2, depth: "compact");
+
+        result.Error.Should().BeNull();
+        result.Handle.Should().BeNull();
+        var summary = result.Data.Should().BeOfType<JourneyDiffCompactSummary>().Subject;
+        summary.Counts.MetricSeries.Should().Be(8);
+        summary.MetricSeries.Should().HaveCount(2);
+        summary.KeyMatrix.Should().BeEmpty();
+        summary.ResourceUri.Should().BeNull();
+        summary.Depth.Should().Be("compact");
+    }
+
+    [Fact]
+    public async Task Diff_CountersBaselineHandle_LargeDiffReturnsCompactSummaryAndResourceHandle()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var baseline = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshotMany(0, 700), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshotMany(10, 700), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, baseline.Id, topN: 3);
+
+        result.Error.Should().BeNull();
+        result.Handle.Should().NotBeNullOrWhiteSpace();
+        var summary = result.Data.Should().BeOfType<JourneyDiffCompactSummary>().Subject;
+        summary.ResourceUri.Should().Be(JourneyDiffPresentation.ResourceUri(result.Handle!));
+        summary.MetricSeries.Should().HaveCount(3);
+        summary.Counts.MetricSeries.Should().Be(700);
+
+        var retained = store.TryGet<SnapshotJourneyDiff>(result.Handle!);
+        retained.Should().NotBeNull();
+        retained!.MetricSeries.Should().HaveCount(700);
+
+        var resourceJson = JourneyDiffResources.ReadDiff(store, result.Handle!);
+        var resourceDiff = System.Text.Json.JsonSerializer.Deserialize(resourceJson, ComparableSnapshotJsonContext.Default.SnapshotJourneyDiff);
+        resourceDiff.Should().NotBeNull();
+        resourceDiff!.MetricSeries.Should().HaveCount(700);
     }
 
     [Fact]
@@ -147,7 +194,9 @@ public sealed class QuerySnapshotDiffToolTests
         MemoryDiagnosticHandleStore store,
         string currentHandle,
         string? baselineHandle = null,
-        string[]? comparisonHandles = null)
+        string[]? comparisonHandles = null,
+        int? topN = null,
+        string depth = "full")
         => await QuerySnapshotTool.QuerySnapshot(
             store,
             new StubDumpInspector(),
@@ -157,8 +206,10 @@ public sealed class QuerySnapshotDiffToolTests
             new DotnetDiagnosticsMcp.Core.Symbols.ClrMdNativeAddressResolver(),
             handle: currentHandle,
             view: "diff",
+            topN: topN,
             baselineHandle: baselineHandle,
             comparisonHandles: comparisonHandles,
+            depth: depth,
             cancellationToken: CancellationToken.None);
 
     private static CpuSampleTraceArtifact CpuArtifact(long exclusiveSamples)
@@ -246,6 +297,17 @@ public sealed class QuerySnapshotDiffToolTests
             [
                 new CounterValue("System.Runtime", "cpu-usage", "CPU Usage", cpuUsage, CounterKind.Mean, "%"),
             ],
+            Meters: Array.Empty<MeterInstrumentValue>(),
+            Notes: Array.Empty<string>());
+
+    private static CounterSnapshot CounterSnapshotMany(double baseValue, int count)
+        => new(
+            ProcessId: 123,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(5),
+            Counters: Enumerable.Range(0, count)
+                .Select(i => new CounterValue("System.Runtime", $"counter-{i}", $"Counter {i}", baseValue + i, CounterKind.Mean, "units"))
+                .ToArray(),
             Meters: Array.Empty<MeterInstrumentValue>(),
             Notes: Array.Empty<string>());
 

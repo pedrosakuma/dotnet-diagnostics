@@ -156,7 +156,7 @@ dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.
 
 ### `compare`
 
-Compare two or more saved comparable snapshots from `collect --save`. Human output prints the journey verdict, first→last headline, and top metric/key deltas; `--json` emits the full `SnapshotJourneyDiff`.
+Compare two or more saved comparable snapshots from `collect --save`. Human output keeps the compact verdict, first→last headline, and top metric/key deltas in the terminal; `--json` emits the full `SnapshotJourneyDiff`, and `--save` writes that full matrix to a file. The MCP `compare_to_baseline` / `query_snapshot(view="diff")` path follows the same contract but uses a `journey://diff/{handle}` Resource link instead of a file when the matrix is large.
 
 | Option | Meaning |
 |---|---|

@@ -146,6 +146,7 @@ public sealed class QuerySnapshotTool
         [Description("Diff view only: baseline handle to compare against the current `handle`. Required for legacy pairwise diff unless `comparisonHandles` is supplied.")] string? baselineHandle = null,
         [Description("Diff view only: ordered handles to compare before the current `handle` for N-way journey diffs. Do not combine with `baselineHandle`; the current handle is appended as the final capture.")] string[]? comparisonHandles = null,
         [Description("Diff view only: minimum absolute delta percentage required for a row to surface in `Changed`. Defaults to 5.0.")] double minDeltaPct = 5.0,
+        [Description("Diff view only: inline verbosity for comparable journey diffs. `full` returns the full matrix when it is below the inline threshold; `compact` returns verdict/headline/counts/notes plus top-N metric and key deltas. Large full diffs always return compact inline data plus a journey://diff/{handle} Resource link. Defaults to `full`.")] string depth = "full",
         [Description("cpu-sample/allocation-sample 'hot-path' view only: a child must carry at least this percent of its parent's inclusive samples to extend the chain. Defaults to 50.")] double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         CancellationToken cancellationToken = default)
@@ -174,7 +175,7 @@ public sealed class QuerySnapshotTool
                     }
                     if (IsDiffView(view))
                     {
-                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN);
+                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN, depth);
                     }
                     var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultHeapView : view!;
                     var heap = await DiagnosticTools.QueryHeapSnapshot(
@@ -247,7 +248,7 @@ public sealed class QuerySnapshotTool
                     }
                     if (IsDiffView(view))
                     {
-                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN);
+                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN, depth);
                     }
 
                     // Analytics views (top-methods / by-module / by-namespace / hot-path / caller-callee,
@@ -308,7 +309,7 @@ public sealed class QuerySnapshotTool
                     }
                     if (IsDiffView(view))
                     {
-                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN);
+                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN, depth);
                     }
                     var resolvedView = string.IsNullOrWhiteSpace(view) ? null : view;
                     var collection = DiagnosticTools.QueryCollection(
@@ -351,7 +352,7 @@ public sealed class QuerySnapshotTool
                     }
                     if (IsDiffView(view))
                     {
-                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN);
+                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN, depth);
                     }
 
                     var snapshot = handles.TryGet<GcDatasSnapshot>(handle);
@@ -385,7 +386,7 @@ public sealed class QuerySnapshotTool
                     }
                     if (IsDiffView(view) && string.Equals(kind, CollectionHandleKinds.GcEvents, StringComparison.Ordinal))
                     {
-                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN);
+                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN, depth);
                     }
                     // Forward null/empty unchanged so query_collection's own default
                     // (`summary`) kicks in — guarantees byte-equal envelopes with the legacy
@@ -503,7 +504,8 @@ public sealed class QuerySnapshotTool
         string? baselineHandle,
         string[]? comparisonHandles,
         double minDeltaPct,
-        int? topN)
+        int? topN,
+        string depth)
     {
         var hasBaseline = !string.IsNullOrWhiteSpace(baselineHandle);
         var hasComparisonHandles = comparisonHandles is { Length: > 0 };
@@ -533,9 +535,14 @@ public sealed class QuerySnapshotTool
             return InvalidArgument(nameof(topN), "must be >= 1 when view='diff'");
         }
 
+        if (!JourneyDiffPresentation.TryParseDepth(depth, out var journeyDepth))
+        {
+            return InvalidArgument(nameof(depth), "must be either 'compact' or 'full' when view='diff'");
+        }
+
         if (hasComparisonHandles)
         {
-            return TryBuildComparableJourneyDiff(handles, handle, currentLookup, comparisonHandles!, minDeltaPct, effectiveTopN);
+            return TryBuildComparableJourneyDiff(handles, handle, currentLookup, comparisonHandles!, minDeltaPct, effectiveTopN, journeyDepth);
         }
 
         var baselineLookup = handles.TryGetWithKind(baselineHandle!);
@@ -563,7 +570,7 @@ public sealed class QuerySnapshotTool
             "allocation-sample" when currentLookup.Artifact is AllocationSampleArtifact current && baselineLookup.Value.Artifact is AllocationSampleArtifact baseline
                 => WrapDiff(currentLookup.Kind, baselineHandle!, handle, SampleDiffer.Compare(baseline.Summary, baselineHandle!, current.Summary, handle, minDeltaPct, effectiveTopN)),
 
-            _ => TryBuildComparableJourneyDiff(handles, handle, currentLookup, new[] { baselineHandle! }, minDeltaPct, effectiveTopN)
+            _ => TryBuildComparableJourneyDiff(handles, handle, currentLookup, new[] { baselineHandle! }, minDeltaPct, effectiveTopN, journeyDepth)
         };
     }
 
@@ -573,7 +580,8 @@ public sealed class QuerySnapshotTool
         HandleLookup currentLookup,
         string[] comparisonHandles,
         double minDeltaPct,
-        int topN)
+        int topN,
+        JourneyDiffDepth depth)
     {
         var projector = ComparableProjectors.FirstOrDefault(p => string.Equals(p.Kind, currentLookup.Kind, StringComparison.Ordinal));
         if (projector is null || !projector.CanProject(currentLookup.Artifact))
@@ -614,7 +622,15 @@ public sealed class QuerySnapshotTool
 
         snapshots.Add(projector.Project(currentLookup.Artifact, "current"));
         var diff = SnapshotDiffer.Compare(snapshots, JourneyMode.Trend, minDeltaPct, topN);
-        return AsObjectEnvelope(DiagnosticResult.Ok(diff, BuildJourneyDiffSummary(diff, currentHandle, comparisonHandles)));
+        return JourneyDiffPresentation.BuildResult(
+            diff,
+            handles,
+            currentLookup.Handle.ProcessId,
+            topN,
+            depth,
+            BuildJourneyDiffSummary(diff, currentHandle, comparisonHandles),
+            currentLookup.Handle.Origin == HandleOrigin.Live,
+            currentLookup.Handle.Origin);
     }
 
     private static DiagnosticResult<object> UnsupportedDiffKind(string kind)
