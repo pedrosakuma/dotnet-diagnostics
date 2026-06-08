@@ -178,4 +178,39 @@ public sealed class ComparableProjectorTests
         snap.Metrics.Should().HaveCount(2);
         snap.Metrics.Select(m => m.Definition.Name).Distinct().Should().HaveCount(2);
     }
+
+    [Fact]
+    public void GcEventsProjector_EmitsPauseAndGenerationMetrics()
+    {
+        var snapshot = new GcSummary(
+            ProcessId: 42,
+            StartedAt: new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            Duration: TimeSpan.FromSeconds(10),
+            TotalCollections: 3,
+            TotalPauseTime: TimeSpan.FromMilliseconds(25),
+            MaxPauseTime: TimeSpan.FromMilliseconds(12),
+            Generations: new[] { new GenerationStats(0, 2), new GenerationStats(2, 1) },
+            Events: new[]
+            {
+                new GcEvent(DateTimeOffset.UtcNow, 0, "AllocSmall", "NonConcurrent", TimeSpan.FromMilliseconds(5)),
+                new GcEvent(DateTimeOffset.UtcNow, 2, "Induced", "Blocking", TimeSpan.FromMilliseconds(12)),
+            });
+
+        var snap = new GcEventsComparableProjector().Project(snapshot, "after");
+
+        snap.Kind.Should().Be("gc-events");
+        snap.Label.Should().Be("after");
+        snap.ProcessId.Should().Be(42);
+        snap.Rows.Should().BeEmpty();
+
+        var byName = snap.Metrics.ToDictionary(m => m.Definition.Name);
+        byName["totalCollections"].Value.Should().Be(3);
+        byName["totalCollections"].Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        byName["totalPauseTimeMs"].Value.Should().Be(25);
+        byName["pauseTimePercent"].Value.Should().Be(0.25);
+        byName["maxPauseTimeMs"].Definition.Role.Should().Be(MetricRole.Secondary);
+        byName["gen0Collections"].Value.Should().Be(2);
+        byName["gen1Collections"].Value.Should().Be(0);
+        byName["gen2Collections"].Value.Should().Be(1);
+    }
 }
