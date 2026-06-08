@@ -11,6 +11,7 @@ using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Db;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
+using DotnetDiagnosticsMcp.Core.Gc;
 using DotnetDiagnosticsMcp.Core.Jit;
 using DotnetDiagnosticsMcp.Core.JitCapture;
 using DotnetDiagnosticsMcp.Core.Logs;
@@ -1922,6 +1923,242 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         incidents.Incidents.Should().Contain(incident => incident.Count >= 15);
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task Gc_HandleEnablesDrilldownViews()
+    {
+        // GC drill-down views (#317): collect once against a live process and re-project the same
+        // captured collections under timeline / longestPauses / byGeneration without re-collecting.
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeGcCollector();
+        var handles = new MemoryDiagnosticHandleStore();
+        var resolver = new FixedProcessContextResolver(badSample.ProcessId);
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            for (var i = 0; i < 8; i++)
+            {
+                using var loh = await http.GetAsync("/loh-alloc?count=200");
+                loh.EnsureSuccessStatusCode();
+                using var leak = await http.GetAsync("/leak?mb=8");
+                leak.EnsureSuccessStatusCode();
+            }
+        });
+
+        var collected = await DiagnosticTools.CollectGcEvents(
+            collector,
+            resolver,
+            handles,
+            processId: badSample.ProcessId,
+            durationSeconds: 6,
+            depth: SamplingDepth.Detail,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        collected.Error.Should().BeNull();
+        collected.Handle.Should().NotBeNullOrWhiteSpace();
+        collected.Data.Should().NotBeNull();
+        collected.Data!.TotalCollections.Should().BeGreaterThan(0);
+
+        var timelineResult = await QueryHandleAsync(handles, collected.Handle!, "timeline", topN: collected.Data.TotalCollections);
+        timelineResult.Error.Should().BeNull();
+        var timelineQuery = timelineResult.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        timelineQuery.Kind.Should().Be(CollectionHandleKinds.GcEvents);
+        timelineQuery.View.Should().Be("timeline");
+        var timeline = timelineQuery.Payload.Should().BeOfType<GcTimelineView>().Subject;
+        timeline.Entries.Should().NotBeEmpty();
+        timeline.Entries.Should().BeInAscendingOrder(entry => entry.Index);
+
+        var longestResult = await QueryHandleAsync(handles, collected.Handle!, "longestPauses", topN: 5);
+        longestResult.Error.Should().BeNull();
+        var longestQuery = longestResult.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        longestQuery.View.Should().Be("longestPauses");
+        var longest = longestQuery.Payload.Should().BeOfType<GcLongestPausesView>().Subject;
+        longest.Pauses.Should().NotBeEmpty();
+        longest.Pauses.Should().BeInDescendingOrder(pause => pause.PauseDuration);
+
+        var byGenResult = await QueryHandleAsync(handles, collected.Handle!, "byGeneration");
+        byGenResult.Error.Should().BeNull();
+        var byGenQuery = byGenResult.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        byGenQuery.View.Should().Be("byGeneration");
+        var byGen = byGenQuery.Payload.Should().BeOfType<GcByGenerationView>().Subject;
+        byGen.Generations.Should().NotBeEmpty();
+        byGen.Generations.Sum(bucket => bucket.Count).Should().Be(byGen.TotalCollections);
+    }
+
+    [Trait("Category", "Flaky")]
+    [SkipOnLinuxCiFact("Quarantined on Linux CI: EventPipe SampleProfiler can crash the host under ubuntu-latest load (tracked in #147). Runnable locally and on Windows CI.", Timeout = 90_000)]
+    public async Task Cpu_HandleEnablesDrilldownViews()
+    {
+        // CPU drill-down analytics views (#316): top-methods / by-module / by-namespace / hot-path /
+        // caller-callee re-project the same merged sample trace behind the cpu-sample handle.
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var sampler = new EventPipeCpuSampler();
+        var sample = await SampleCpuUnderLoadAsync(http, sampler, "/generics?iterations=200000", TimeSpan.FromSeconds(10));
+
+        var handles = new MemoryDiagnosticHandleStore();
+        var handle = handles.Register(Pid, "cpu-sample", sample.Artifact, TimeSpan.FromMinutes(10)).Id;
+
+        var topMethodsResult = await QueryHandleAsync(handles, handle, "top-methods", topN: 25);
+        topMethodsResult.Error.Should().BeNull();
+        var topMethods = topMethodsResult.Data.Should().BeOfType<TopMethodsView>().Subject;
+        topMethods.Methods.Should().NotBeEmpty();
+        topMethods.TotalSamples.Should().BeGreaterThan(0);
+
+        var byModuleResult = await QueryHandleAsync(handles, handle, "by-module", topN: 25);
+        byModuleResult.Error.Should().BeNull();
+        var byModule = byModuleResult.Data.Should().BeOfType<GroupedSamplesView>().Subject;
+        byModule.GroupBy.Should().Be("module");
+        byModule.Groups.Should().NotBeEmpty();
+
+        var byNamespaceResult = await QueryHandleAsync(handles, handle, "by-namespace", topN: 25);
+        byNamespaceResult.Error.Should().BeNull();
+        var byNamespace = byNamespaceResult.Data.Should().BeOfType<GroupedSamplesView>().Subject;
+        byNamespace.GroupBy.Should().Be("namespace");
+        byNamespace.Groups.Should().NotBeEmpty();
+
+        var hotPathResult = await QueryHandleAsync(handles, handle, "hot-path");
+        hotPathResult.Error.Should().BeNull();
+        var hotPath = hotPathResult.Data.Should().BeOfType<HotPathView>().Subject;
+        hotPath.Frames.Should().NotBeEmpty();
+        hotPath.Depth.Should().BeGreaterThan(0);
+
+        // Anchor caller-callee on the first top method that resolves to a *single* focus method.
+        // The hottest exclusive frame in a thread-pool-heavy workload is often a generic wait whose
+        // bare name (e.g. "Wait") matches several runtime methods; iterate until one is unambiguous.
+        CallerCalleeView? callerCallee = null;
+        string? resolvedFilter = null;
+        foreach (var candidate in topMethods.Methods)
+        {
+            var bare = candidate.Method.Split('(')[0];
+            bare = bare[(bare.LastIndexOf('.') + 1)..];
+            if (string.IsNullOrWhiteSpace(bare))
+            {
+                continue;
+            }
+
+            var attempt = await QueryHandleAsync(handles, handle, "caller-callee", rootMethodFilter: bare);
+            if (attempt.Error is null)
+            {
+                callerCallee = attempt.Data.Should().BeOfType<CallerCalleeView>().Subject;
+                resolvedFilter = bare;
+                break;
+            }
+        }
+
+        callerCallee.Should().NotBeNull("at least one top method should resolve to a single caller-callee focus");
+        callerCallee!.Method.Should().Contain(resolvedFilter!);
+        (callerCallee.Callers.Count + callerCallee.Callees.Count).Should().BeGreaterThan(0);
+    }
+
+    [Fact(Timeout = 90_000)]
+    public async Task Datas_HandleEnablesDrilldownViews()
+    {
+        // DATAS drill-down views (#319): overview / tuning / samples / gen2. DATAS tuning events are
+        // default-on under Server GC, which we force here so the happy path is deterministic; under a
+        // degraded/quiet host the collector returns a documented NoDatasEvents result instead.
+        await using var badSample = await StartPublishedSampleAsync(
+            "BadCodeSample",
+            new Dictionary<string, string>
+            {
+                ["DOTNET_gcServer"] = "1",
+                ["DOTNET_GCDynamicAdaptationMode"] = "1",
+            });
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeGcDatasCollector();
+        var handles = new MemoryDiagnosticHandleStore();
+        var resolver = new FixedProcessContextResolver(badSample.ProcessId);
+
+        using var driverCts = new CancellationTokenSource();
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(800), driverCts.Token);
+            while (!driverCts.IsCancellationRequested)
+            {
+                try
+                {
+                    using var loh = await http.GetAsync("/loh-alloc?count=80", driverCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch
+                {
+                    // best-effort load; transient HTTP errors must not fail the collection window.
+                }
+            }
+        });
+
+        var collected = await DiagnosticTools.CollectGcDatas(
+            collector,
+            resolver,
+            handles,
+            processId: badSample.ProcessId,
+            durationSeconds: 15,
+            cancellationToken: CancellationToken.None);
+
+        driverCts.Cancel();
+        try { await driver; } catch { /* expected on cancel */ }
+
+        // Data-OR-documented-note contract: if the host honoured Server GC and produced DATAS events,
+        // validate every drill-down view; otherwise assert the graceful no-events contract so a quiet
+        // CI host degrades to a documented skip rather than a flaky failure.
+        if (collected.Error is not null)
+        {
+            collected.Error.Kind.Should().BeOneOf("NoDatasEvents", "UnsupportedDatasPayload");
+            return;
+        }
+
+        collected.Handle.Should().NotBeNullOrWhiteSpace();
+        collected.Data.Should().NotBeNull();
+        collected.Data!.HasData.Should().BeTrue();
+
+        var overviewResult = await QueryHandleAsync(handles, collected.Handle!, "overview");
+        overviewResult.Error.Should().BeNull();
+        var overview = overviewResult.Data.Should().BeOfType<DatasOverviewView>().Subject;
+        (overview.SampleCount + overview.TuningEventCount).Should().BeGreaterThan(0);
+
+        var tuningResult = await QueryHandleAsync(handles, collected.Handle!, "tuning", topN: 50);
+        tuningResult.Error.Should().BeNull();
+        tuningResult.Data.Should().BeOfType<DatasTuningView>();
+
+        var samplesResult = await QueryHandleAsync(handles, collected.Handle!, "samples", topN: 50);
+        samplesResult.Error.Should().BeNull();
+        var samples = samplesResult.Data.Should().BeOfType<DatasSamplesView>().Subject;
+        samples.TotalSamples.Should().Be(collected.Data.Samples.Count);
+
+        var gen2Result = await QueryHandleAsync(handles, collected.Handle!, "gen2");
+        gen2Result.Error.Should().BeNull();
+        gen2Result.Data.Should().BeOfType<DatasGen2View>();
+    }
+
+    private static Task<DiagnosticResult<object>> QueryHandleAsync(
+        IDiagnosticHandleStore handles,
+        string handle,
+        string view,
+        int? topN = null,
+        string? rootMethodFilter = null,
+        bool changesOnly = false)
+        => QuerySnapshotTool.QuerySnapshot(
+            handles,
+            new ClrMdDumpInspector(),
+            new SensitiveDataRedactor(),
+            new SensitiveValueGate(null),
+            new RootPrincipalAccessor(),
+            new DotnetDiagnosticsMcp.Core.Symbols.ClrMdNativeAddressResolver(),
+            handle,
+            view: view,
+            topN: topN,
+            rootMethodFilter: rootMethodFilter,
+            changesOnly: changesOnly,
+            cancellationToken: CancellationToken.None);
+
     private static IEnumerable<CallTreeNode> Flatten(CallTreeNode root)
     {
         var stack = new Stack<CallTreeNode>();
@@ -1985,7 +2222,9 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         }
     }
 
-    private static async Task<RunningSample> StartPublishedSampleAsync(string sampleName)
+    private static async Task<RunningSample> StartPublishedSampleAsync(
+        string sampleName,
+        IReadOnlyDictionary<string, string>? extraEnv = null)
     {
         var sampleDll = LocateSampleDll(sampleName)
             ?? throw SkipException.ForReason($"{sampleName}.dll not found.");
@@ -2004,6 +2243,13 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         psi.ArgumentList.Add("http://127.0.0.1:0");
         psi.Environment["DOTNET_NOLOGO"] = "1";
         psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
+        if (extraEnv is not null)
+        {
+            foreach (var (key, value) in extraEnv)
+            {
+                psi.Environment[key] = value;
+            }
+        }
 
         var process = Process.Start(psi)
             ?? throw SkipException.ForReason($"Failed to start {sampleName}.");
