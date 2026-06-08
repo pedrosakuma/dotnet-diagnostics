@@ -5,6 +5,7 @@ using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.EventSources;
+using DotnetDiagnosticsMcp.Core.Gc;
 using DotnetDiagnosticsMcp.Core.Security;
 using DotnetDiagnosticsMcp.Core.Symbols;
 using DotnetDiagnosticsMcp.Core.Threads;
@@ -131,6 +132,7 @@ public sealed class QuerySnapshotTool
         [Description("Off-CPU view='stack' only: 1-based rank of the stack in the top-stacks list.")] int? stackRank = null,
         [Description("Call-tree (cpu-sample / allocation-sample) only: optional case-insensitive substring; the tree is re-rooted at the highest-ranked frame whose method name contains this text. Event-catalog views reuse this as an event-name substring filter.")] string? rootMethodFilter = null,
         [Description("Event-catalog views only: optional case-insensitive provider-name substring filter.")] string? providerFilter = null,
+        [Description("DATAS 'tuning' view only: when true, emit only the rows where the heap-count decision changed versus the previous GC (plus the first row as a baseline).")] bool changesOnly = false,
         [Description("Call-tree only: maximum tree depth from the root. Must be >= 1. Defaults to 8.")] int maxDepth = 8,
         [Description("Call-tree only: approximate cap on the number of nodes returned (top children at each level). Must be >= 1. Defaults to 200.")] int maxNodes = 200,
         [Description("Diff view only: baseline handle to compare against the current `handle`. Required for view=diff.")] string? baselineHandle = null,
@@ -325,6 +327,28 @@ public sealed class QuerySnapshotTool
                         topN ?? EventCatalogQueryDispatcher.DefaultTopN,
                         providerFilter,
                         rootMethodFilter);
+                    return AsObjectEnvelope(result);
+                }
+
+                case CollectionHandleKinds.GcDatas:
+                {
+                    if (!RequireScope(principal, ScopeEventPipe, out var forbidden))
+                    {
+                        return forbidden!;
+                    }
+
+                    var snapshot = handles.TryGet<GcDatasSnapshot>(handle);
+                    if (snapshot is null)
+                    {
+                        return HandleExpiredError(null, handle);
+                    }
+
+                    var result = GcDatasQueryDispatcher.Render(
+                        snapshot,
+                        handle,
+                        view,
+                        topN ?? GcDatasQueryDispatcher.DefaultTopN,
+                        changesOnly);
                     return AsObjectEnvelope(result);
                 }
 

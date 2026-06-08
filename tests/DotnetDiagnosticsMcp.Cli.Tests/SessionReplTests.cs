@@ -557,6 +557,54 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_GcDatasHandle_DefaultsToOverview()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, CollectionHandleKinds.GcDatas, GcDatasArtifact(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id}\nexit\n", services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("\"heapCountChanges\"");
+    }
+
+    [Fact]
+    public async Task Query_GcDatasHandle_TuningChangesOnly_RoutesThroughSession()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, CollectionHandleKinds.GcDatas, GcDatasArtifact(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view tuning --changes-only\nexit\n", services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("\"changesOnly\": true");
+    }
+
+    [Fact]
+    public async Task Query_GcDatasHandle_UnknownView_ListsValidViews()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, CollectionHandleKinds.GcDatas, GcDatasArtifact(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view bogus\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("overview").And.Contain("tuning");
+    }
+
+    [Fact]
+    public void SessionViewsFor_GcDatas_ReturnsDedicatedViews()
+    {
+        CliCommands.SessionViewsFor(CollectionHandleKinds.GcDatas)
+            .Should().Equal(Core.Gc.GcDatasQueryDispatcher.SessionViews);
+    }
+
+    [Fact]
     public async Task Query_ActivitiesGcOverlayView_ReturnsNotSupportedInSession()
     {
         var (services, store) = BuildServices();
@@ -885,6 +933,28 @@ public sealed class SessionReplTests
             TimeSpan.FromMilliseconds(152), TimeSpan.FromMilliseconds(100),
             new List<Core.Gc.GenerationStats> { new(0, 1), new(2, 2) },
             events);
+    }
+
+    private static Core.Gc.GcDatasSnapshot GcDatasArtifact()
+    {
+        var at = DateTimeOffset.UtcNow;
+        var samples = new List<Core.Gc.DatasSampleEvent>
+        {
+            new(at.AddMilliseconds(0), 1, 1000, 100, 0, 0, 2UL * 1024 * 1024, 1024 * 1024),
+            new(at.AddMilliseconds(20), 2, 1000, 120, 0, 0, 2UL * 1024 * 1024, 1024 * 1024),
+        };
+        var tuning = new List<Core.Gc.DatasTuningEvent>
+        {
+            new(at.AddMilliseconds(0), 4, 16, 1, 1, 1000, 1.0f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            new(at.AddMilliseconds(20), 8, 16, 1, 2, 1000, 1.5f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        };
+        var gen2 = new List<Core.Gc.DatasFullGcTuningEvent>
+        {
+            new(at.AddMilliseconds(10), 8, 1, 1.0f, 0, 0, 0, 0, 0, 0, 0),
+        };
+        return new Core.Gc.GcDatasSnapshot(
+            Environment.ProcessId, at, TimeSpan.FromSeconds(15),
+            samples, tuning, gen2, new Core.Gc.DatasParseStats(0, 0, 0));
     }
 
     private static EventCatalogSnapshot EventCatalogArtifact()

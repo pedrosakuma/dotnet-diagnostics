@@ -85,6 +85,7 @@ internal static class CliCommands
         "counters",
         "exceptions",
         "gc",
+        "datas",
         "catalog",
         "event_source",
         "activities",
@@ -390,7 +391,7 @@ internal static class CliCommands
         var handles = services.GetRequiredService<IDiagnosticHandleStore>();
         var pid = options.Pid;
         // Mirror the MCP collect_events per-kind duration defaults (counters: 5; all others: 10).
-        var duration = options.DurationSeconds ?? (options.Kind == "counters" ? 5 : 10);
+        var duration = options.DurationSeconds ?? (options.Kind == "counters" ? 5 : options.Kind == "datas" ? 15 : 10);
         // The CLI is a stateless one-shot: the in-memory handle store is disposed when the command
         // returns, so a drilldown handle can never be queried in a follow-up invocation. Default to
         // Detail so the captured records stay inline (and land in --json) instead of being trimmed
@@ -415,6 +416,10 @@ internal static class CliCommands
             "gc" => Wrap(await EventCollectionUseCases.CollectGcEvents(
                 services.GetRequiredService<IGcCollector>(), resolver, handles,
                 pid, duration, options.MaxEvents ?? 200, depth, cancellationToken).ConfigureAwait(false)),
+
+            "datas" => Wrap(await EventCollectionUseCases.CollectGcDatas(
+                services.GetRequiredService<IGcDatasCollector>(), resolver, handles,
+                pid, duration, options.MaxEvents ?? 1000, cancellationToken).ConfigureAwait(false)),
 
             "catalog" => Wrap(await EventCollectionUseCases.CollectEventCatalog(
                 services.GetRequiredService<IEventCatalogCollector>(), resolver, handles,
@@ -627,6 +632,11 @@ internal static class CliCommands
             return EventCatalogQueryDispatcher.SessionViews;
         }
 
+        if (kind == CollectionHandleKinds.GcDatas)
+        {
+            return GcDatasQueryDispatcher.SessionViews;
+        }
+
         var all = CollectionQueryDispatcher.ViewsFor(kind);
         var result = new List<string>(all.Count);
         foreach (var view in all)
@@ -715,6 +725,13 @@ internal static class CliCommands
         if (kind == CollectionHandleKinds.EventCatalog)
         {
             return QueryEventCatalogSession(options, lookup.Value.Artifact);
+        }
+
+        // DATAS handles drill down through the host-neutral GcDatasQueryDispatcher (#315): overview,
+        // tuning, samples and gen2 all re-project the captured snapshot — no EventPipe re-run.
+        if (kind == CollectionHandleKinds.GcDatas)
+        {
+            return QueryGcDatasSession(options, lookup.Value.Artifact);
         }
 
         var allowedViews = CollectionQueryDispatcher.ViewsFor(kind);
@@ -897,6 +914,38 @@ internal static class CliCommands
             topN,
             options.ProviderFilter,
             options.RootMethodFilter);
+
+        return BuildResult<object>(result, SerializeQuery);
+    }
+
+    /// <summary>
+    /// Renders a DATAS drill-down inside the <c>session</c> REPL via the host-neutral
+    /// <see cref="GcDatasQueryDispatcher"/>. The overview, tuning, samples and gen2 views all render
+    /// from the captured snapshot alone — no EventPipe re-run. The <c>tuning</c> view honours
+    /// <c>--changes-only</c>.
+    /// </summary>
+    private static CliCommandResult QueryGcDatasSession(CliOptions options, object artifact)
+    {
+        if (artifact is not GcDatasSnapshot snapshot)
+        {
+            return Fail($"query: handle '{options.Handle}' could not be rendered as a DATAS snapshot.", "InvalidArgument",
+                "The stored artifact type did not match its handle kind; re-run collect --kind datas to get a fresh handle.");
+        }
+
+        var view = string.IsNullOrWhiteSpace(options.View) ? GcDatasQueryDispatcher.OverviewView : options.View;
+        if (!GcDatasQueryDispatcher.IsKnownView(view))
+        {
+            return Fail($"query: unknown view '{view}' for a DATAS handle.", "InvalidArgument",
+                $"Valid views: {string.Join(", ", GcDatasQueryDispatcher.SessionViews)}.");
+        }
+
+        var topN = options.Top ?? options.TopTypes ?? GcDatasQueryDispatcher.DefaultTopN;
+        var result = GcDatasQueryDispatcher.Render(
+            snapshot,
+            options.Handle!,
+            view,
+            topN,
+            options.ChangesOnly);
 
         return BuildResult<object>(result, SerializeQuery);
     }

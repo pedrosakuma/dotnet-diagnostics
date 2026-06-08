@@ -1428,6 +1428,26 @@ public sealed class DiagnosticTools
 
     [RequireScope("eventpipe")]
     [Description(
+        "Captures DATAS (Dynamic Adaptation To Application Sizes) GC tuning events: heap-count " +
+        "decisions, per-GC samples and gen2 backstop tuning. Requires Server GC (DATAS is default-on " +
+        "in .NET 9+); Workstation GC returns a graceful NoDatasEvents result.")]
+    public static async Task<DiagnosticResult<GcDatasSnapshot>> CollectGcDatas(
+        IGcDatasCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 15. DATAS decisions accrue over time, so give it a sustained window.")] int durationSeconds = 15,
+        [Description("Maximum number of events to retain per kind (samples/tuning/gen2). Must be >= 1. Defaults to 1000.")] int maxEvents = 1000,
+        CancellationToken cancellationToken = default)
+    {
+        return await EventCollectionUseCases.CollectGcDatas(
+            collector, resolver, handles,
+            processId, durationSeconds, maxEvents,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    [RequireScope("eventpipe")]
+    [Description(
         "Captures a broad metadata-only EventPipe catalog: provider, event name, level and timestamp. " +
         "Payload values are intentionally omitted; use collect_events(kind=event_source) for targeted payload capture.")]
     public static async Task<DiagnosticResult<EventCatalogSnapshot>> CollectEventCatalog(
