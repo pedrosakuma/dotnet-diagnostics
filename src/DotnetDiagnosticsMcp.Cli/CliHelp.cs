@@ -136,10 +136,11 @@ get-bytes options:
 compare options:
       --json                    Emit the full SnapshotJourneyDiff JSON.
       --save <file>             Write the full journey diff JSON to disk.
+      --mode <mode>             Journey mode: trend (default) or dispersion.
 """,
 """
   dotnet-diagnostics-cli compare ./before.json ./after.json
-  dotnet-diagnostics-cli compare ./a.json ./b.json ./c.json --save ./matrix.json
+  dotnet-diagnostics-cli compare ./a.json ./b.json ./c.json --mode dispersion --save ./matrix.json
 """),
         new CommandHelp(
             "session",

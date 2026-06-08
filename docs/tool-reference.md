@@ -226,7 +226,11 @@ qualquer um dos 5 escopos para o tool surface; o boundary por kind preserva o
 contrato de cada legado verbatim (RFC 0002 §4.1).
 
 `view="diff"` accepts `baselineHandle` or ordered `comparisonHandles`, `minDeltaPct`
-(default `5.0`), `topN` (default `25`) and `depth` (`"full"` default, or `"compact"`).
+(default `5.0`), `topN` (default `25`), `depth` (`"full"` default, or `"compact"`),
+and `mode` (`"trend"` default, or `"dispersion"`). Trend treats captures as ordered over
+time. Dispersion treats captures as unordered replicas and reports `uniform`, `dispersed`,
+`no_overlap`, or `incomparable`; it requires N-way comparable captures via `comparisonHandles`
+and is rejected for the legacy pairwise `baselineHandle` sample diffs.
 For comparable journey diffs (`gc-datas`, `counters`, `gc-events`, `contention-snapshot`,
 `threadpool-snapshot`), `depth="compact"` returns verdict + headline + counts + notes +
 top-N metric/key deltas. `depth="full"`
@@ -237,6 +241,15 @@ inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap
 `allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second rates
 when the two capture windows use different durations and surface both raw + normalized metrics
 in each row.
+
+`compare_to_baseline(snapshotsJson=[...])` accepts the same comparable journey knobs:
+`topN`, `depth`, and `mode="trend"|"dispersion"`. Legacy `InvestigationSummary` JSON
+comparison ignores journey mode because it still returns the older two-summary `SummaryDiff`.
+
+For compact dispersion summaries, metric series are ranked by their dispersion coefficient of
+variation. Key-set rows are likewise ranked by coefficient of variation computed from row values
+at presentation time. `KeyMatrixRow` does not persist per-row dispersion statistics yet; richer
+row-level stats are a future enhancement.
 
 For an end-to-end comparative workflow (before/after and N-way trend journeys, verdict and
 trend interpretation, and the two doors) see

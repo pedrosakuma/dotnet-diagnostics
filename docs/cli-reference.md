@@ -162,9 +162,11 @@ Compare two or more saved comparable snapshots from `collect --save`. Human outp
 |---|---|
 | `--json` | Emit the full journey diff JSON. |
 | `--save <file>` | Write the full journey diff JSON to disk. |
+| `--mode trend\|dispersion` | Interpret captures as an ordered trend (default) or unordered replicas for dispersion/outlier detection. |
 
 ```bash
 dotnet-diagnostics-cli compare ./before.json ./after.json
+dotnet-diagnostics-cli compare ./pod-a.json ./pod-b.json ./pod-c.json --mode dispersion
 dotnet-diagnostics-cli compare ./before.json ./mid.json ./after.json --save ./matrix.json
 ```
 

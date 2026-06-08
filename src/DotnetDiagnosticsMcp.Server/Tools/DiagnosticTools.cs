@@ -2599,11 +2599,17 @@ public sealed class DiagnosticTools
         [Description("Current summary JSON (from export_investigation_summary on the new investigation). Optional when snapshotsJson is supplied.")] string? currentSummaryJson = null,
         [Description("Ordered ComparableSnapshot JSON bodies to compare as a journey. JSON bodies only; do not pass file paths.")] string[]? snapshotsJson = null,
         [Description("ComparableSnapshot journey only: maximum metric series / key rows returned in compact inline payloads and used to bound key-matrix construction. Must be >= 1. Defaults to 25.")] int topN = 25,
-        [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix when it is below the inline threshold; `compact` returns verdict/headline/counts/notes plus top-N metric and key deltas. Large full diffs always return compact inline data plus a journey://diff/{handle} Resource link. Defaults to `full`.")] string depth = "full")
+        [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix when it is below the inline threshold; `compact` returns verdict/headline/counts/notes plus top-N metric and key deltas. Large full diffs always return compact inline data plus a journey://diff/{handle} Resource link. Defaults to `full`.")] string depth = "full",
+        [Description("ComparableSnapshot journey only: `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers.")] string? mode = null)
     {
+        if (!JourneyModeParser.TryParse(mode, out var journeyMode))
+        {
+            return InvalidArg<object>(nameof(mode), "must be either 'trend' or 'dispersion'");
+        }
+
         if (snapshotsJson is { Length: > 0 })
         {
-            return CompareSnapshotBodies(comparer, handles, snapshotsJson, topN, depth);
+            return CompareSnapshotBodies(comparer, handles, snapshotsJson, topN, depth, journeyMode);
         }
 
         if (string.IsNullOrWhiteSpace(baselineSummaryJson)) return InvalidArg<object>(nameof(baselineSummaryJson), "is required when snapshotsJson is omitted");
@@ -2612,7 +2618,7 @@ public sealed class DiagnosticTools
         return CompareInvestigationSummaries(comparer, baselineSummaryJson, currentSummaryJson);
     }
 
-    private static DiagnosticResult<object> CompareSnapshotBodies(ISummaryComparer comparer, IDiagnosticHandleStore handles, string[] snapshotsJson, int topN, string depth)
+    private static DiagnosticResult<object> CompareSnapshotBodies(ISummaryComparer comparer, IDiagnosticHandleStore handles, string[] snapshotsJson, int topN, string depth, JourneyMode mode)
     {
         var schemas = new List<string>(snapshotsJson.Length);
         for (var i = 0; i < snapshotsJson.Length; i++)
@@ -2665,7 +2671,7 @@ public sealed class DiagnosticTools
                     new DiagnosticError("InvalidArgument", $"Received {snapshotsJson.Length} InvestigationSummary documents.", nameof(snapshotsJson)),
                     new NextActionHint("compare_to_baseline", "Pass exactly two InvestigationSummary JSON documents, or pass 2..N ComparableSnapshot documents.")),
             ComparableSnapshot.SchemaV1 => snapshotsJson.Length >= 2
-                ? CompareComparableSnapshots(handles, snapshotsJson, topN, journeyDepth)
+                ? CompareComparableSnapshots(handles, snapshotsJson, topN, journeyDepth, mode)
                 : DiagnosticResult.Fail<object>(
                     "ComparableSnapshot comparison requires at least two JSON documents.",
                     new DiagnosticError("InvalidArgument", $"Received {snapshotsJson.Length} ComparableSnapshot document.", nameof(snapshotsJson)),
@@ -2733,7 +2739,7 @@ public sealed class DiagnosticTools
                 new Dictionary<string, object?> { ["durationSeconds"] = 20 }));
     }
 
-    private static DiagnosticResult<object> CompareComparableSnapshots(IDiagnosticHandleStore handles, string[] snapshotsJson, int topN, JourneyDiffDepth depth)
+    private static DiagnosticResult<object> CompareComparableSnapshots(IDiagnosticHandleStore handles, string[] snapshotsJson, int topN, JourneyDiffDepth depth, JourneyMode mode)
     {
         var snapshots = new List<ComparableSnapshot>(snapshotsJson.Length);
         try
@@ -2775,7 +2781,7 @@ public sealed class DiagnosticTools
             }
         }
 
-        var diff = SnapshotDiffer.Compare(snapshots, topN: topN);
+        var diff = SnapshotDiffer.Compare(snapshots, mode, topN: topN);
         var headline = diff.Pairwise?.Headline;
         var headlineText = headline is null
             ? "No pairwise headline."

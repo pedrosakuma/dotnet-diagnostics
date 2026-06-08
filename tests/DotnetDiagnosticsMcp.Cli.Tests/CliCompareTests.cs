@@ -111,6 +111,33 @@ public sealed class CliCompareTests : IDisposable
     }
 
     [Fact]
+    public async Task Compare_DispersionMode_ParsesAndPlumbsMode()
+    {
+        var pod0 = WriteMetricSnapshot("pod0", ("outlier", 10), ("monotonic-0", 10), ("monotonic-1", 10), ("monotonic-2", 10), ("monotonic-3", 10), ("monotonic-4", 10));
+        var pod1 = WriteMetricSnapshot("pod1", ("outlier", 100), ("monotonic-0", 50), ("monotonic-1", 51), ("monotonic-2", 52), ("monotonic-3", 53), ("monotonic-4", 54));
+        var pod2 = WriteMetricSnapshot("pod2", ("outlier", 10), ("monotonic-0", 90), ("monotonic-1", 90), ("monotonic-2", 90), ("monotonic-3", 90), ("monotonic-4", 90));
+
+        var (exit, stdout, stderr) = await RunAsync("compare", "--mode", "dispersion", pod0, pod1, pod2);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("compare: gc-datas Dispersion pod0→pod2 verdict=dispersed");
+        stdout.Should().Contain("outlier: cv");
+    }
+
+    [Fact]
+    public async Task Compare_InvalidMode_ReturnsUsageError()
+    {
+        var before = WriteSnapshot("before", 1);
+        var after = WriteSnapshot("after", 3);
+
+        var (exit, _, stderr) = await RunAsync("compare", "--mode", "fleet", before, after);
+
+        exit.Should().Be(2);
+        stderr.Should().Contain("Unknown --mode 'fleet'");
+    }
+
+    [Fact]
     public async Task Compare_Json_EmitsSnapshotJourneyDiff()
     {
         var before = WriteSnapshot("before", 1);
@@ -143,6 +170,9 @@ public sealed class CliCompareTests : IDisposable
     }
 
     private string WriteSnapshot(string label, double heapCountChanges)
+        => WriteMetricSnapshot(label, ("heapCountChanges", heapCountChanges));
+
+    private string WriteMetricSnapshot(string label, params (string name, double value)[] metrics)
     {
         var path = Path.Combine(_root, label + ".json");
         var snapshot = new ComparableSnapshot(
@@ -151,12 +181,9 @@ public sealed class CliCompareTests : IDisposable
             label,
             DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture),
             Environment.ProcessId,
-            new[]
-            {
-                new MetricValue(
-                    new MetricDefinition("heapCountChanges", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "count"),
-                    heapCountChanges),
-            },
+            metrics.Select(metric => new MetricValue(
+                new MetricDefinition(metric.name, MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "count"),
+                metric.value)).ToArray(),
             Array.Empty<ComparableRow>());
         using var stream = File.Create(path);
         JsonSerializer.Serialize(stream, snapshot, ComparableSnapshotJsonContext.Default.ComparableSnapshot);

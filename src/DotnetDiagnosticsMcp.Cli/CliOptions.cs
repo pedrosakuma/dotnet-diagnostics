@@ -23,6 +23,9 @@ internal sealed class CliOptions
     /// <summary>Comparable snapshot JSON paths for the <c>compare</c> command.</summary>
     public IReadOnlyList<string> ComparePaths { get; init; } = Array.Empty<string>();
 
+    /// <summary>Journey interpretation for the <c>compare</c> command (<c>--mode</c>): trend or dispersion.</summary>
+    public string? Mode { get; init; }
+
     /// <summary>True when <c>--help</c>/<c>-h</c> was supplied.</summary>
     public bool Help { get; init; }
 
@@ -158,6 +161,7 @@ internal sealed class CliOptions
         var help = false;
         string? savePath = null;
         var comparePaths = new List<string>();
+        string? mode = null;
         string? kind = null;
         int? durationSeconds = null;
         var providers = new List<string>();
@@ -344,6 +348,14 @@ internal sealed class CliOptions
                     }
 
                     depth = depthValue;
+                    break;
+                case "--mode":
+                    if (!TryTakeString(args, ref i, token, out var modeValue, out error))
+                    {
+                        return null;
+                    }
+
+                    mode = modeValue;
                     break;
                 case "--dump-file":
                     if (!TryTakeString(args, ref i, token, out var dumpFileValue, out error))
@@ -536,6 +548,7 @@ internal sealed class CliOptions
             Json = json,
             SavePath = savePath,
             ComparePaths = comparePaths,
+            Mode = mode,
             Help = help,
             Kind = kind,
             DurationSeconds = durationSeconds,

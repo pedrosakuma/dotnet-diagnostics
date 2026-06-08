@@ -58,7 +58,7 @@ public static class SnapshotDiffer
         var isKeySet = snapshots.Any(s => s.Rows.Count > 0);
         var metricSeries = BuildMetricSeries(snapshots, mode, minDeltaPct, notes);
         var (keyMatrix, keySetPrimaryDir) = isKeySet
-            ? BuildKeyMatrix(snapshots, minDeltaPct, topN, notes)
+            ? BuildKeyMatrix(snapshots, mode, minDeltaPct, topN, notes)
             : (Array.Empty<KeyMatrixRow>(), (BetterDirection?)null);
 
         if (mode == JourneyMode.Dispersion)
@@ -156,7 +156,7 @@ public static class SnapshotDiffer
     // ---- Key matrix -------------------------------------------------------------------------
 
     private static (IReadOnlyList<KeyMatrixRow> Rows, BetterDirection? PrimaryDir) BuildKeyMatrix(
-        IReadOnlyList<ComparableSnapshot> snapshots, double minDeltaPct, int topN, List<string> notes)
+        IReadOnlyList<ComparableSnapshot> snapshots, JourneyMode mode, double minDeltaPct, int topN, List<string> notes)
     {
         var lookups = snapshots.Select(s => KeyLookup(s, notes)).ToArray();
 
@@ -203,15 +203,23 @@ public static class SnapshotDiffer
         }
 
         var total = rows.Count;
-        var sorted = rows
-            .OrderByDescending(r => r.DeltaAbs.HasValue ? Math.Abs(r.DeltaAbs.Value) : double.MaxValue)
-            .ThenByDescending(r => r.Values.LastOrDefault(v => v.HasValue) ?? 0)
-            .Take(topN)
-            .ToArray();
+        var sorted = mode == JourneyMode.Dispersion
+            ? rows
+                .OrderByDescending(r => Dispersion(r.Values.ToArray())?.CoefficientOfVariation ?? -1)
+                .ThenBy(r => r.DisplayName, StringComparer.Ordinal)
+                .Take(topN)
+                .ToArray()
+            : rows
+                .OrderByDescending(r => r.DeltaAbs.HasValue ? Math.Abs(r.DeltaAbs.Value) : double.MaxValue)
+                .ThenByDescending(r => r.Values.LastOrDefault(v => v.HasValue) ?? 0)
+                .Take(topN)
+                .ToArray();
 
         if (total > topN)
         {
-            notes.Add($"Key matrix truncated to top {topN} of {total} rows by |first→last| delta.");
+            notes.Add(mode == JourneyMode.Dispersion
+                ? $"Key matrix truncated to top {topN} of {total} rows by coefficient of variation."
+                : $"Key matrix truncated to top {topN} of {total} rows by |first→last| delta.");
         }
 
         return (sorted, primaryDir);
