@@ -102,6 +102,9 @@ internal static class CliCommands
     {
         new GcDatasComparableProjector(),
         new CountersComparableProjector(),
+        new GcEventsComparableProjector(),
+        new ContentionComparableProjector(),
+        new ThreadPoolComparableProjector(),
     };
 
     private static readonly string SupportedComparableKinds = string.Join(", ", ComparableProjectors.Select(p => p.Kind));

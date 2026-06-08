@@ -1,5 +1,6 @@
 using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.Comparison;
+using DotnetDiagnosticsMcp.Core.Contention;
 using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Drilldown;
@@ -7,6 +8,7 @@ using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.Memory;
 using DotnetDiagnosticsMcp.Core.Security;
 using DotnetDiagnosticsMcp.Core.Gc;
+using DotnetDiagnosticsMcp.Core.ThreadPool;
 using DotnetDiagnosticsMcp.Server.Resources;
 using DotnetDiagnosticsMcp.Server.Tools;
 using FluentAssertions;
@@ -253,6 +255,47 @@ public sealed class QuerySnapshotDiffToolTests
     }
 
     [Fact]
+    public async Task Diff_ContentionComparisonHandles_ReturnsJourneyDiffWithKeySetVerdict()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var first = store.Register(123, CollectionHandleKinds.ContentionSnapshot, ContentionSnapshot(("MyApp.dll", "MyApp.Locking.Slow", 5, 1)), TimeSpan.FromMinutes(10));
+        var second = store.Register(123, CollectionHandleKinds.ContentionSnapshot, ContentionSnapshot(("MyApp.dll", "MyApp.Locking.Slow", 10, 1)), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, CollectionHandleKinds.ContentionSnapshot, ContentionSnapshot(("MyApp.dll", "MyApp.Locking.Slow", 20, 1)), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, comparisonHandles: [first.Id, second.Id]);
+
+        result.Error.Should().BeNull();
+        var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
+        diff.Kind.Should().Be(CollectionHandleKinds.ContentionSnapshot);
+        diff.Verdict.Should().Be("regression");
+        diff.Labels.Should().Equal("comparison-1", "comparison-2", "current");
+        diff.KeyMatrix.Should().ContainSingle(row => row.Key.Module == "MyApp.dll" && row.Key.MethodName == "MyApp.Locking.Slow");
+        diff.Pairwise.Should().NotBeNull();
+        diff.Pairwise!.Headline.Verdict.Should().Be("regression");
+    }
+
+    [Fact]
+    public async Task Diff_ThreadPoolComparisonHandles_ReturnsJourneyDiffWithScalarVerdict()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var first = store.Register(123, CollectionHandleKinds.ThreadPoolSnapshot, ThreadPoolSnapshot(starvationAdjustments: 0, pendingWorkItems: 0), TimeSpan.FromMinutes(10));
+        var second = store.Register(123, CollectionHandleKinds.ThreadPoolSnapshot, ThreadPoolSnapshot(starvationAdjustments: 1, pendingWorkItems: 2), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, CollectionHandleKinds.ThreadPoolSnapshot, ThreadPoolSnapshot(starvationAdjustments: 4, pendingWorkItems: 12), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, comparisonHandles: [first.Id, second.Id]);
+
+        result.Error.Should().BeNull();
+        var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
+        diff.Kind.Should().Be(CollectionHandleKinds.ThreadPoolSnapshot);
+        diff.Verdict.Should().Be("regression");
+        diff.KeyMatrix.Should().BeEmpty();
+        diff.MetricSeries.Should().Contain(series => series.Definition.Name == "starvationAdjustments" && series.Direction == "regressed");
+        diff.MetricSeries.Should().Contain(series => series.Definition.Name == "pendingWorkItemsEstimate" && series.Direction == "regressed");
+        diff.Pairwise.Should().NotBeNull();
+        diff.Pairwise!.Headline.Verdict.Should().Be("regression");
+    }
+
+    [Fact]
     public async Task Diff_RejectsBaselineHandleWithComparisonHandles()
     {
         var store = new MemoryDiagnosticHandleStore();
@@ -404,6 +447,54 @@ public sealed class QuerySnapshotDiffToolTests
             [
                 new GcEvent(DateTimeOffset.UtcNow, 0, "AllocSmall", "NonConcurrent", TimeSpan.FromMilliseconds(totalPauseMs / 2)),
             ]);
+
+    private static ContentionSnapshot ContentionSnapshot(params (string module, string method, double durationMs, ulong lockId)[] events)
+        => new(
+            ProcessId: 123,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(5),
+            TotalEvents: events.Length,
+            DistinctMonitors: events.Select(static item => item.lockId).Distinct().Count(),
+            TotalContentionDuration: TimeSpan.FromMilliseconds(events.Sum(static item => item.durationMs)),
+            P50ContentionDuration: TimeSpan.Zero,
+            P95ContentionDuration: TimeSpan.Zero,
+            MaxContentionDuration: TimeSpan.FromMilliseconds(events.Max(static item => item.durationMs)),
+            Events: events.Select(static item => new ContentionEventSample(
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow.AddMilliseconds(item.durationMs),
+                TimeSpan.FromMilliseconds(item.durationMs),
+                ContendingThreadId: 1,
+                OwnerManagedThreadId: 2,
+                LockId: item.lockId,
+                AssociatedObjectId: 0,
+                CallSiteMethod: item.method,
+                CallSiteModule: item.module)).ToArray(),
+            Notes: Array.Empty<string>());
+
+    private static ThreadPoolEventSnapshot ThreadPoolSnapshot(int starvationAdjustments, int pendingWorkItems)
+    {
+        var timestamp = DateTimeOffset.UtcNow;
+        var hillClimbing = Enumerable.Range(0, starvationAdjustments)
+            .Select(i => new ThreadPoolHillClimbingSample(timestamp.AddMilliseconds(i), "Starvation", i, i + 1, 100 - i))
+            .ToArray();
+
+        return new ThreadPoolEventSnapshot(
+            ProcessId: 123,
+            StartedAt: timestamp,
+            Duration: TimeSpan.FromSeconds(5),
+            WorkerThreadTimeline:
+            [
+                new ThreadPoolCountBucket(timestamp, 2),
+                new ThreadPoolCountBucket(timestamp.AddSeconds(1), 2 + starvationAdjustments),
+            ],
+            IocpThreadTimeline: [new ThreadPoolCountBucket(timestamp, 1)],
+            HillClimbing: hillClimbing,
+            WorkItemOrigins: [new ThreadPoolWorkItemOrigin("MyApp.Queue.Work", 99)],
+            EffectiveSettings: new ThreadPoolEffectiveSettings(1, 100, 1, 100),
+            TotalEnqueueEvents: 100 + pendingWorkItems,
+            TotalDequeueEvents: 100,
+            Notes: Array.Empty<string>());
+    }
 
     private sealed class StubDumpInspector : IDumpInspector
     {

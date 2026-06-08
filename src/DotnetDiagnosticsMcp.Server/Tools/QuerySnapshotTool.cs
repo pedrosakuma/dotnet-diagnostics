@@ -86,6 +86,8 @@ public sealed class QuerySnapshotTool
         new CpuSampleComparableProjector(),
         new NativeAllocSampleComparableProjector(),
         new AllocationSampleComparableProjector(),
+        new ContentionComparableProjector(),
+        new ThreadPoolComparableProjector(),
     ];
 
     // Scopes (mirrored from RFC §4.1 / the legacy [RequireScope] attributes).
@@ -117,7 +119,7 @@ public sealed class QuerySnapshotTool
         "`off-cpu-snapshot` → off-CPU views (topStacks | byThread | stack); " +
         "`counters` / `exception-snapshot` / `gc-events` / `gc-datas` / `event-catalog` / `event-source` / `activities` / `log-snapshot` / `threadpool-snapshot` / `contention-snapshot` / `db-snapshot` → collection views " +
         "(summary | byProvider | byType | recent | events | catalog | pauseHistogram | longestPauses | byGeneration | byEventName | bySource | byOperation | activities | byCategory | byLevel | errors | timeline | hillClimbing | workItemOrigins | byCallSite | byOwner | byCommand | n+1 | connectionPool); " +
-        "`cpu-sample` / `allocation-sample` / `native-alloc-sample` → `call-tree` | `top-methods` | `by-module` | `by-namespace` | `hot-path` | `caller-callee` | `diff`; `heap-snapshot` → `diff` in addition to heap views; `gc-datas` / `counters` / `gc-events` → `diff` via comparable journey projection. `diff` compares the current handle against `baselineHandle` or appends it after ordered `comparisonHandles`; `call-tree` preserves get_call_tree behaviour with " +
+        "`cpu-sample` / `allocation-sample` / `native-alloc-sample` → `call-tree` | `top-methods` | `by-module` | `by-namespace` | `hot-path` | `caller-callee` | `diff`; `heap-snapshot` → `diff` in addition to heap views; `gc-datas` / `counters` / `gc-events` / `contention-snapshot` / `threadpool-snapshot` → `diff` via comparable journey projection. `diff` compares the current handle against `baselineHandle` or appends it after ordered `comparisonHandles`; `call-tree` preserves get_call_tree behaviour with " +
         "rootMethodFilter, maxDepth, maxNodes. " +
         "Unknown handle kinds, unknown views and parameter-shape violations return structured InvalidArgument " +
         "envelopes — never a 500. Authorization is preserved per kind: heap-read for heap, ptrace for thread, " +

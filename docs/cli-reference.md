@@ -83,7 +83,7 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 | `--category <glob>` | `logs`: ILogger category filter (repeatable). |
 | `--min-level <level>` | `logs`: minimum level (default `Information`). |
 | `--unsafe-provider` | `event_source`: opt in to a non-allowlisted provider. |
-| `--save <file>` | Save a comparable snapshot JSON. Supported artifact kinds: `counters`, `gc-datas` (`collect --kind datas`). |
+| `--save <file>` | Save a comparable snapshot JSON. Supported collect kinds: `counters`, `datas` (`gc-datas`), `gc` (`gc-events`), `contention`, `threadpool`. |
 
 ```bash
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5

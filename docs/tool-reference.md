@@ -227,8 +227,9 @@ contrato de cada legado verbatim (RFC 0002 §4.1).
 
 `view="diff"` accepts `baselineHandle` or ordered `comparisonHandles`, `minDeltaPct`
 (default `5.0`), `topN` (default `25`) and `depth` (`"full"` default, or `"compact"`).
-For comparable journey diffs (`gc-datas`, `counters`, `gc-events`), `depth="compact"`
-returns verdict + headline + counts + notes + top-N metric/key deltas. `depth="full"`
+For comparable journey diffs (`gc-datas`, `counters`, `gc-events`, `contention-snapshot`,
+`threadpool-snapshot`), `depth="compact"` returns verdict + headline + counts + notes +
+top-N metric/key deltas. `depth="full"`
 returns the full `SnapshotJourneyDiff` only while it stays below the 32 KiB inline threshold;
 larger matrices are retained in memory and the inline payload includes `journey://diff/{handle}`
 so the assistant can pull the full matrix as an MCP Resource. Pairwise sample diffs remain
