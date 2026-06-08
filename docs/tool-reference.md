@@ -237,6 +237,10 @@ inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap
 when the two capture windows use different durations and surface both raw + normalized metrics
 in each row.
 
+For an end-to-end comparative workflow (before/after and N-way trend journeys, verdict and
+trend interpretation, and the two doors) see
+[investigation-playbooks.md §1d](./investigation-playbooks.md#1d-did-my-fix-actually-help--comparative--n-way-trend-journeys).
+
 The CPU drilldown views (`top-methods`, `by-module`, `by-namespace`, `hot-path`,
 `caller-callee`, issue #313) re-aggregate the already-collected merged call tree — no new
 sampling. They reuse the existing `query_snapshot` parameters: `topN` caps the number of rows

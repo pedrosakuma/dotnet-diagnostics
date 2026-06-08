@@ -168,6 +168,9 @@ dotnet-diagnostics-cli compare ./before.json ./after.json
 dotnet-diagnostics-cli compare ./before.json ./mid.json ./after.json --save ./matrix.json
 ```
 
+For how to read the verdict / trend and when to reach for a journey, see
+[investigation-playbooks.md §1d](./investigation-playbooks.md#1d-did-my-fix-actually-help--comparative--n-way-trend-journeys).
+
 ### `query`
 
 Re-render a previously-collected handle under a different view **without re-collecting**.
