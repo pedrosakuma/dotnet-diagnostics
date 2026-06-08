@@ -204,6 +204,14 @@ internal static class CliHost
             return 2;
         }
 
+        if (options.Command == "compare" && !CliCommands.TryValidateCompare(options, out var compareError))
+        {
+            await stderr.WriteLineAsync(compareError).ConfigureAwait(false);
+            await stderr.WriteLineAsync().ConfigureAwait(false);
+            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+            return 2;
+        }
+
         using var host = BuildHost(options);
 
         try

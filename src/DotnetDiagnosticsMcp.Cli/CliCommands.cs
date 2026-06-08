@@ -6,6 +6,7 @@ using DotnetDiagnosticsMcp.Core.Activities;
 using DotnetDiagnosticsMcp.Core.Bytes;
 using DotnetDiagnosticsMcp.Core.Capabilities;
 using DotnetDiagnosticsMcp.Core.Collection;
+using DotnetDiagnosticsMcp.Core.Comparison;
 using DotnetDiagnosticsMcp.Core.Contention;
 using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
@@ -61,6 +62,7 @@ internal static class CliCommands
         "dump",
         "query",
         "get-bytes",
+        "compare",
         "session",
     };
 
@@ -96,6 +98,14 @@ internal static class CliCommands
         "db",
     };
 
+    private static readonly IComparableProjector[] ComparableProjectors =
+    {
+        new GcDatasComparableProjector(),
+        new CountersComparableProjector(),
+    };
+
+    private static readonly string SupportedComparableKinds = string.Join(", ", ComparableProjectors.Select(p => p.Kind));
+
     public static async Task<CliCommandResult> RunAsync(
         IServiceProvider services,
         CliOptions options,
@@ -113,6 +123,7 @@ internal static class CliCommands
             "dump" => await DumpAsync(services, options, cancellationToken).ConfigureAwait(false),
             "query" => Query(),
             "get-bytes" => await GetBytesAsync(services, options, cancellationToken).ConfigureAwait(false),
+            "compare" => await CompareAsync(options, cancellationToken).ConfigureAwait(false),
             _ => throw new ArgumentException($"Unknown command '{options.Command}'.", nameof(options)),
         };
     }
@@ -134,6 +145,7 @@ internal static class CliCommands
             "inspect-heap" => TryValidateInspectHeap(options, out error),
             "dump" => TryValidateDump(options, out error),
             "get-bytes" => TryValidateGetBytes(options, out error),
+            "compare" => TryValidateCompare(options, out error),
             _ => true,
         };
     }
@@ -332,6 +344,20 @@ internal static class CliCommands
         return true;
     }
 
+    public static bool TryValidateCompare(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+
+        if (options.ComparePaths.Count < 2)
+        {
+            error = "The 'compare' command requires at least two snapshot JSON paths.";
+            return false;
+        }
+
+        return true;
+    }
+
     private static CliCommandResult Processes(IServiceProvider services)
     {
         var discovery = services.GetRequiredService<IProcessDiscovery>();
@@ -404,54 +430,54 @@ internal static class CliCommands
 
         return options.Kind switch
         {
-            "counters" => Wrap(await EventCollectionUseCases.SnapshotCounters(
+            "counters" => Wrap(options, await EventCollectionUseCases.SnapshotCounters(
                 services.GetRequiredService<ICounterCollector>(), resolver, handles,
                 pid, duration, NullIfEmptyArray(options.Providers), NullIfEmptyArray(options.Meters),
                 options.IntervalSeconds ?? 1, 1000, depth, cancellationToken).ConfigureAwait(false)),
 
-            "exceptions" => Wrap(await EventCollectionUseCases.CollectExceptions(
+            "exceptions" => Wrap(options, await EventCollectionUseCases.CollectExceptions(
                 services.GetRequiredService<IExceptionCollector>(), resolver, handles,
                 pid, duration, options.MaxEvents ?? 100, depth, cancellationToken).ConfigureAwait(false)),
 
-            "gc" => Wrap(await EventCollectionUseCases.CollectGcEvents(
+            "gc" => Wrap(options, await EventCollectionUseCases.CollectGcEvents(
                 services.GetRequiredService<IGcCollector>(), resolver, handles,
                 pid, duration, options.MaxEvents ?? 200, depth, cancellationToken).ConfigureAwait(false)),
 
-            "datas" => Wrap(await EventCollectionUseCases.CollectGcDatas(
+            "datas" => Wrap(options, await EventCollectionUseCases.CollectGcDatas(
                 services.GetRequiredService<IGcDatasCollector>(), resolver, handles,
                 pid, duration, options.MaxEvents ?? 1000, cancellationToken).ConfigureAwait(false)),
 
-            "catalog" => Wrap(await EventCollectionUseCases.CollectEventCatalog(
+            "catalog" => Wrap(options, await EventCollectionUseCases.CollectEventCatalog(
                 services.GetRequiredService<IEventCatalogCollector>(), resolver, handles,
                 pid, duration, NullIfEmptyList(options.Providers), options.MaxEvents ?? 200, depth, cancellationToken).ConfigureAwait(false)),
 
-            "logs" => Wrap(await EventCollectionUseCases.CollectLogs(
+            "logs" => Wrap(options, await EventCollectionUseCases.CollectLogs(
                 services.GetRequiredService<ILogCollector>(), resolver, handles,
                 pid, duration, NullIfEmptyList(options.Categories), options.MinLevel ?? "Information",
                 options.MaxEvents ?? 500, 4096, depth, cancellationToken).ConfigureAwait(false)),
 
-            "jit" => Wrap(await EventCollectionUseCases.CollectJit(
+            "jit" => Wrap(options, await EventCollectionUseCases.CollectJit(
                 services.GetRequiredService<IJitCollector>(), resolver, handles,
                 pid, duration, depth, cancellationToken).ConfigureAwait(false)),
 
-            "threadpool" => Wrap(CliHintProjection.ProjectThreadPoolNotes(await EventCollectionUseCases.CollectThreadPool(
+            "threadpool" => Wrap(options, CliHintProjection.ProjectThreadPoolNotes(await EventCollectionUseCases.CollectThreadPool(
                 services.GetRequiredService<IThreadPoolCollector>(), resolver, handles,
                 pid, duration, depth, cancellationToken).ConfigureAwait(false))),
 
-            "contention" => Wrap(await EventCollectionUseCases.CollectContention(
+            "contention" => Wrap(options, await EventCollectionUseCases.CollectContention(
                 services.GetRequiredService<IContentionCollector>(), resolver, handles,
                 pid, duration, depth, cancellationToken).ConfigureAwait(false)),
 
-            "db" => Wrap(await EventCollectionUseCases.CollectDb(
+            "db" => Wrap(options, await EventCollectionUseCases.CollectDb(
                 services.GetRequiredService<IDbCollector>(), resolver, handles,
                 pid, duration, options.IntervalSeconds ?? 1, depth, cancellationToken).ConfigureAwait(false)),
 
-            "activities" => Wrap(await EventCollectionUseCases.CollectActivities(
+            "activities" => Wrap(options, await EventCollectionUseCases.CollectActivities(
                 services.GetRequiredService<IActivityCollector>(), resolver, handles,
                 pid, NullIfEmptyList(options.Sources), duration, options.MaxEvents ?? 200,
                 cancellationToken).ConfigureAwait(false)),
 
-            "event_source" => Wrap(await EventCollectionUseCases.CollectEventSource(
+            "event_source" => Wrap(options, await EventCollectionUseCases.CollectEventSource(
                 services.GetRequiredService<IEventSourceCollector>(), resolver, handles,
                 services.GetRequiredService<EventSourceAllowlist>(),
                 services.GetRequiredService<SensitiveValueGate>(),
@@ -467,8 +493,69 @@ internal static class CliCommands
         };
     }
 
-    private static CliCommandResult Wrap<T>(DiagnosticResult<T> result) =>
-        BuildResult<T>(result, static (_, _) => { });
+    private static CliCommandResult Wrap<T>(CliOptions options, DiagnosticResult<T> result) =>
+        BuildResultWithComparableSave(options, result, static (_, _) => { });
+
+    private static async Task<CliCommandResult> CompareAsync(CliOptions options, CancellationToken cancellationToken)
+    {
+        var snapshots = new List<ComparableSnapshot>(options.ComparePaths.Count);
+        foreach (var path in options.ComparePaths)
+        {
+            ComparableSnapshot? snapshot;
+            try
+            {
+                await using var stream = File.OpenRead(path);
+                snapshot = await JsonSerializer.DeserializeAsync(
+                    stream,
+                    ComparableSnapshotJsonContext.Default.ComparableSnapshot,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException or NotSupportedException)
+            {
+                return BuildResult<object>(DiagnosticResult.Fail<object>(
+                    $"compare: failed to read '{path}'.",
+                    new DiagnosticError("InvalidSnapshot", ex.Message)), static (_, _) => { });
+            }
+
+            if (snapshot is null || !string.Equals(snapshot.Schema, ComparableSnapshot.SchemaV1, StringComparison.Ordinal))
+            {
+                return BuildResult<object>(DiagnosticResult.Fail<object>(
+                    $"compare: '{path}' is not a comparable snapshot v1 JSON file.",
+                    new DiagnosticError("InvalidSnapshot", $"Expected schema '{ComparableSnapshot.SchemaV1}'.")), static (_, _) => { });
+            }
+
+            snapshots.Add(snapshot);
+        }
+
+        var diff = SnapshotDiffer.Compare(snapshots);
+        if (!string.IsNullOrWhiteSpace(options.SavePath))
+        {
+            try
+            {
+                var fullPath = Path.GetFullPath(options.SavePath);
+                var directory = Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                await using var output = File.Create(fullPath);
+                await JsonSerializer.SerializeAsync(
+                    output,
+                    diff,
+                    ComparableSnapshotJsonContext.Default.SnapshotJourneyDiff,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+            {
+                return BuildResult<object>(DiagnosticResult.Fail<object>(
+                    $"compare: failed to write '{options.SavePath}'.",
+                    new DiagnosticError("OutputWriteFailure", ex.Message)), static (_, _) => { });
+            }
+        }
+
+        return new CliCommandResult(IsError: false, Cancelled: false, diff, RenderJourneyDiff(diff));
+    }
 
     private static async Task<CliCommandResult> InspectHeapAsync(
         IServiceProvider services,
@@ -1070,6 +1157,91 @@ internal static class CliCommands
         });
     }
 
+    internal static string RenderJourneyDiff(SnapshotJourneyDiff diff)
+    {
+        ArgumentNullException.ThrowIfNull(diff);
+        var sb = new StringBuilder();
+        var first = diff.Labels.Count > 0 ? diff.Labels[0] : "first";
+        var last = diff.Labels.Count > 0 ? diff.Labels[^1] : "last";
+        sb.AppendLine(CultureInfo.InvariantCulture, $"compare: {diff.Kind} {diff.Mode} {first}→{last} verdict={diff.Verdict}");
+        if (diff.Pairwise?.Headline is { } headline)
+        {
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  headline: {headline.Relation} {headline.Verdict}");
+        }
+
+        AppendMetricDeltas(sb, diff.MetricSeries);
+        AppendKeyDeltas(sb, diff.KeyMatrix);
+
+        if (diff.Notes.Count > 0)
+        {
+            sb.AppendLine("  notes:");
+            foreach (var note in diff.Notes.Take(3))
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"    - {note}");
+            }
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
+    private static void AppendMetricDeltas(StringBuilder sb, IReadOnlyList<MetricSeries> series)
+    {
+        var rows = series
+            .Where(s => s.DeltaAbs.HasValue || s.DeltaPct.HasValue)
+            .OrderByDescending(s => Math.Abs(s.DeltaPct ?? 0))
+            .ThenBy(s => s.Definition.Name, StringComparer.Ordinal)
+            .Take(5)
+            .ToArray();
+        if (rows.Length == 0)
+        {
+            return;
+        }
+
+        sb.AppendLine("  metrics:");
+        foreach (var row in rows)
+        {
+            var first = FirstValue(row.Values);
+            var last = LastValue(row.Values);
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"    - {row.Definition.Name}: {FormatNumber(first)} → {FormatNumber(last)} (Δ {FormatSigned(row.DeltaAbs)}, {FormatSignedPercent(row.DeltaPct)}, {row.Direction}, trend {row.Trend})");
+        }
+    }
+
+    private static void AppendKeyDeltas(StringBuilder sb, IReadOnlyList<KeyMatrixRow> rows)
+    {
+        var top = rows
+            .Where(r => r.DeltaAbs.HasValue || r.DeltaPct.HasValue)
+            .OrderByDescending(r => Math.Abs(r.DeltaPct ?? 0))
+            .ThenBy(r => r.DisplayName, StringComparer.Ordinal)
+            .Take(5)
+            .ToArray();
+        if (top.Length == 0)
+        {
+            return;
+        }
+
+        sb.AppendLine("  keys:");
+        foreach (var row in top)
+        {
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"    - {row.DisplayName}: {FormatNumber(FirstValue(row.Values))} → {FormatNumber(LastValue(row.Values))} (Δ {FormatSigned(row.DeltaAbs)}, {FormatSignedPercent(row.DeltaPct)}, {row.Direction})");
+        }
+    }
+
+    private static double? FirstValue(IReadOnlyList<double?> values) => values.Count == 0 ? null : values[0];
+
+    private static double? LastValue(IReadOnlyList<double?> values) => values.Count == 0 ? null : values[^1];
+
+    private static string FormatNumber(double? value) => value?.ToString("G4", CultureInfo.InvariantCulture) ?? "n/a";
+
+    private static string FormatSigned(double? value) => value.HasValue
+        ? value.Value.ToString("+0.####;-0.####;0", CultureInfo.InvariantCulture)
+        : "n/a";
+
+    private static string FormatSignedPercent(double? value) => value.HasValue
+        ? string.Concat(value.Value.ToString("+0.##;-0.##;0", CultureInfo.InvariantCulture), "%")
+        : "n/a";
+
     internal static void RenderTopTypes(StringBuilder sb, IReadOnlyList<TypeStat> topByBytes)
     {
         if (topByBytes.Count == 0)
@@ -1133,6 +1305,93 @@ internal static class CliCommands
 
     private static IReadOnlyList<string>? NullIfEmptyList(IReadOnlyList<string> values) =>
         values.Count == 0 ? null : values;
+
+    internal static bool TrySaveComparableSnapshot(object artifact, string savePath, out ComparableSnapshot? snapshot, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        ArgumentException.ThrowIfNullOrWhiteSpace(savePath);
+
+        snapshot = null;
+        error = null;
+        var projector = ComparableProjectors.FirstOrDefault(p => p.CanProject(artifact));
+        if (projector is null)
+        {
+            error = $"kind '{InferComparableKind(artifact)}' is not yet comparable (--save supports: {SupportedComparableKinds})";
+            return false;
+        }
+
+        var label = Path.GetFileNameWithoutExtension(savePath);
+        if (string.IsNullOrWhiteSpace(label))
+        {
+            label = "capture";
+        }
+
+        snapshot = projector.Project(artifact, label);
+        try
+        {
+            var fullPath = Path.GetFullPath(savePath);
+            var directory = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            using var stream = File.Create(fullPath);
+            JsonSerializer.Serialize(stream, snapshot, ComparableSnapshotJsonContext.Default.ComparableSnapshot);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            error = $"failed to write comparable snapshot to '{savePath}': {ex.Message}";
+            snapshot = null;
+            return false;
+        }
+    }
+
+    private static string InferComparableKind(object artifact) => artifact switch
+    {
+        CounterSnapshot => CollectionHandleKinds.Counters,
+        GcDatasSnapshot => CollectionHandleKinds.GcDatas,
+        ExceptionSnapshot => CollectionHandleKinds.ExceptionSnapshot,
+        GcSummary => CollectionHandleKinds.GcEvents,
+        EventSourceCapture => CollectionHandleKinds.EventSource,
+        EventCatalogSnapshot => CollectionHandleKinds.EventCatalog,
+        ActivityCapture => CollectionHandleKinds.Activities,
+        LogSnapshot => CollectionHandleKinds.LogSnapshot,
+        JitSnapshot => CollectionHandleKinds.JitSnapshot,
+        ThreadPoolEventSnapshot => CollectionHandleKinds.ThreadPoolSnapshot,
+        ContentionSnapshot => CollectionHandleKinds.ContentionSnapshot,
+        DbSnapshot => CollectionHandleKinds.DbSnapshot,
+        _ => artifact.GetType().Name,
+    };
+
+    private static CliCommandResult BuildResultWithComparableSave<T>(
+        CliOptions options,
+        DiagnosticResult<T> result,
+        Action<StringBuilder, T> renderData)
+    {
+        if (result is { IsError: false, Data: { } data } && !string.IsNullOrWhiteSpace(options.SavePath))
+        {
+            if (!TrySaveComparableSnapshot(data, options.SavePath, out var saved, out var error))
+            {
+                var failure = DiagnosticResult.Fail<object>(
+                    error!,
+                    new DiagnosticError("NotSupported", "Choose a comparable collection kind and re-run collect with --save."));
+                return BuildResult<object>(failure, static (_, _) => { });
+            }
+
+            var built = BuildResult(result, renderData);
+            return built with
+            {
+                Human = string.Concat(
+                    built.Human,
+                    Environment.NewLine,
+                    string.Create(CultureInfo.InvariantCulture, $"  saved comparable snapshot: {saved!.Label} -> {options.SavePath}")),
+            };
+        }
+
+        return BuildResult(result, renderData);
+    }
 
     /// <summary>
     /// Renders the host-neutral parts of any <see cref="DiagnosticResult{T}"/> (summary, error,

@@ -1,0 +1,144 @@
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using DotnetDiagnosticsMcp.Cli;
+using DotnetDiagnosticsMcp.Core.Collection;
+using DotnetDiagnosticsMcp.Core.Comparison;
+using DotnetDiagnosticsMcp.Core.Counters;
+using FluentAssertions;
+
+namespace DotnetDiagnosticsMcp.Cli.Tests;
+
+public sealed class CliCompareTests : IDisposable
+{
+    private readonly string _root = Path.Combine(AppContext.BaseDirectory, "CliCompareTests", Guid.NewGuid().ToString("N"));
+
+    public CliCompareTests()
+    {
+        Directory.CreateDirectory(_root);
+    }
+
+    [Fact]
+    public void TrySaveComparableSnapshot_Counters_WritesSnapshotJson()
+    {
+        var output = Path.Combine(_root, "counter-before.json");
+        var snapshot = new CounterSnapshot(
+            Environment.ProcessId,
+            DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture),
+            TimeSpan.FromSeconds(5),
+            new[] { new CounterValue("System.Runtime", "cpu-usage", "CPU Usage", 12.5, CounterKind.Mean, "%") },
+            Array.Empty<MeterInstrumentValue>(),
+            Array.Empty<string>());
+
+        var saved = CliCommands.TrySaveComparableSnapshot(snapshot, output, out var comparable, out var error);
+
+        saved.Should().BeTrue(error);
+        comparable.Should().NotBeNull();
+        File.Exists(output).Should().BeTrue();
+        using var stream = File.OpenRead(output);
+        var roundTrip = JsonSerializer.Deserialize(stream, ComparableSnapshotJsonContext.Default.ComparableSnapshot);
+        roundTrip.Should().NotBeNull();
+        roundTrip!.Schema.Should().Be(ComparableSnapshot.SchemaV1);
+        roundTrip.Kind.Should().Be(CollectionHandleKinds.Counters);
+        roundTrip.Label.Should().Be("counter-before");
+        roundTrip.Metrics.Should().Contain(m => m.Definition.Name == "counter:System.Runtime/cpu-usage" && m.Value == 12.5);
+    }
+
+    [Fact]
+    public async Task Compare_TwoSnapshots_RendersHeadlineVerdict()
+    {
+        var before = WriteSnapshot("before", 1);
+        var after = WriteSnapshot("after", 3);
+
+        var (exit, stdout, stderr) = await RunAsync("compare", before, after);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("compare: gc-datas Trend before→after verdict=regression");
+        stdout.Should().Contain("headline: first→last regression");
+        stdout.Should().Contain("heapCountChanges");
+    }
+
+    [Fact]
+    public async Task Compare_ThreeSnapshots_RendersTrendAndCanSaveFullDiff()
+    {
+        var before = WriteSnapshot("before", 1);
+        var middle = WriteSnapshot("middle", 2);
+        var final = WriteSnapshot("final", 3);
+        var output = Path.Combine(_root, "matrix.json");
+
+        var (exit, stdout, stderr) = await RunAsync("compare", before, middle, final, "--save", output);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("before→final verdict=regression");
+        stdout.Should().Contain("trend MonotonicUp");
+        File.Exists(output).Should().BeTrue();
+        using var stream = File.OpenRead(output);
+        var diff = JsonSerializer.Deserialize(stream, ComparableSnapshotJsonContext.Default.SnapshotJourneyDiff);
+        diff.Should().NotBeNull();
+        diff!.Labels.Should().Equal("before", "middle", "final");
+        diff.Verdict.Should().Be("regression");
+    }
+
+    [Fact]
+    public async Task Compare_Json_EmitsSnapshotJourneyDiff()
+    {
+        var before = WriteSnapshot("before", 1);
+        var after = WriteSnapshot("after", 3);
+
+        var (exit, stdout, _) = await RunAsync("compare", before, after, "--json");
+
+        exit.Should().Be(0);
+        using var doc = JsonDocument.Parse(stdout);
+        doc.RootElement.GetProperty("kind").GetString().Should().Be(CollectionHandleKinds.GcDatas);
+        doc.RootElement.GetProperty("verdict").GetString().Should().Be("regression");
+        doc.RootElement.TryGetProperty("metricSeries", out _).Should().BeTrue();
+    }
+
+    [Fact]
+    public void TrySaveComparableSnapshot_UnsupportedKind_ReturnsActionableMessage()
+    {
+        var saved = CliCommands.TrySaveComparableSnapshot(new object(), Path.Combine(_root, "unsupported.json"), out _, out var error);
+
+        saved.Should().BeFalse();
+        error.Should().Be("kind 'Object' is not yet comparable (--save supports: gc-datas, counters)");
+    }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_root))
+        {
+            Directory.Delete(_root, recursive: true);
+        }
+    }
+
+    private string WriteSnapshot(string label, double heapCountChanges)
+    {
+        var path = Path.Combine(_root, label + ".json");
+        var snapshot = new ComparableSnapshot(
+            ComparableSnapshot.SchemaV1,
+            CollectionHandleKinds.GcDatas,
+            label,
+            DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture),
+            Environment.ProcessId,
+            new[]
+            {
+                new MetricValue(
+                    new MetricDefinition("heapCountChanges", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "count"),
+                    heapCountChanges),
+            },
+            Array.Empty<ComparableRow>());
+        using var stream = File.Create(path);
+        JsonSerializer.Serialize(stream, snapshot, ComparableSnapshotJsonContext.Default.ComparableSnapshot);
+        return path;
+    }
+
+    private static async Task<(int Exit, string Stdout, string Stderr)> RunAsync(params string[] args)
+    {
+        var stdout = new StringWriter(new StringBuilder());
+        var stderr = new StringWriter(new StringBuilder());
+        var exit = await CliHost.RunAsync(args, stdout, stderr, CancellationToken.None);
+        return (exit, stdout.ToString().Trim(), stderr.ToString().Trim());
+    }
+}

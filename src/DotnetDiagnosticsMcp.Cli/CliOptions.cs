@@ -17,6 +17,12 @@ internal sealed class CliOptions
     /// <summary>Emit the raw <see cref="DotnetDiagnosticsMcp.Core.DiagnosticResult{T}"/> envelope as JSON (<c>--json</c>).</summary>
     public bool Json { get; init; }
 
+    /// <summary>Comparable snapshot/diff destination path (<c>--save</c>) for <c>collect</c> / <c>compare</c>.</summary>
+    public string? SavePath { get; init; }
+
+    /// <summary>Comparable snapshot JSON paths for the <c>compare</c> command.</summary>
+    public IReadOnlyList<string> ComparePaths { get; init; } = Array.Empty<string>();
+
     /// <summary>True when <c>--help</c>/<c>-h</c> was supplied.</summary>
     public bool Help { get; init; }
 
@@ -150,6 +156,8 @@ internal sealed class CliOptions
         int? pid = null;
         var json = false;
         var help = false;
+        string? savePath = null;
+        var comparePaths = new List<string>();
         string? kind = null;
         int? durationSeconds = null;
         var providers = new List<string>();
@@ -201,6 +209,14 @@ internal sealed class CliOptions
                     break;
                 case "--json":
                     json = true;
+                    break;
+                case "--save":
+                    if (!TryTakeString(args, ref i, token, out var saveValue, out error))
+                    {
+                        return null;
+                    }
+
+                    savePath = saveValue;
                     break;
                 case "--unsafe-provider":
                     unsafeProvider = true;
@@ -498,6 +514,12 @@ internal sealed class CliOptions
 
                     if (command is not null)
                     {
+                        if (string.Equals(command, "compare", StringComparison.Ordinal))
+                        {
+                            comparePaths.Add(token);
+                            break;
+                        }
+
                         error = $"Unexpected argument '{token}'. Only one command is accepted.";
                         return null;
                     }
@@ -512,6 +534,8 @@ internal sealed class CliOptions
             Command = command,
             Pid = pid,
             Json = json,
+            SavePath = savePath,
+            ComparePaths = comparePaths,
             Help = help,
             Kind = kind,
             DurationSeconds = durationSeconds,
