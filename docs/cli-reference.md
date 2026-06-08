@@ -72,12 +72,12 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 
 | Option | Meaning |
 |---|---|
-| `--kind <kind>` | One of `counters`, `exceptions`, `gc`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`. |
+| `--kind <kind>` | One of `counters`, `exceptions`, `gc`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`. |
 | `-d, --duration <int>` | Window in seconds (default: `counters` 5, others 10). |
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
-| `--max-events <int>` | Per-kind cap (events / exceptions / activities). |
+| `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |
 | `--interval <int>` | Refresh interval in seconds (`counters`, `db`). Default 1. |
-| `--provider <name>` | `counters`: EventCounter provider (repeatable); `event_source`: required provider name. |
+| `--provider <name>` | `counters`: EventCounter provider (repeatable); `catalog`: EventPipe provider (repeatable; replaces broad defaults); `event_source`: required provider name. |
 | `--meter <name>` | `counters`: Meter name (repeatable). |
 | `--source <name>` | `activities`: ActivitySource filter (repeatable, `*` / `?` globs). |
 | `--category <glob>` | `logs`: ILogger category filter (repeatable). |
@@ -86,7 +86,7 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 
 ```bash
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
-dotnet-diagnostics-cli collect --kind gc --pid 1234 --json
+dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
 dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
 ```
 
@@ -241,6 +241,21 @@ GC handles (`collect --kind gc`) expose pause-analysis views over the events alr
 | `byGeneration` | count + total/mean/max pause per gen0/gen1/gen2/background bucket | — |
 
 `byGeneration` keeps background GCs in their own bucket, so `gen2` counts non-background gen2 collections only.
+
+Catalog handles (`collect --kind catalog`) expose a metadata-only event inventory. The collector captures
+provider name, event name, level and timestamps only — no payload field values. By default it enables a
+broad curated provider set (`Microsoft-Windows-DotNETRuntime`, `System.Runtime`,
+`Microsoft-Diagnostics-DiagnosticSource`, `Microsoft-Extensions-Logging`,
+`System.Threading.Tasks.TplEventSource`) at Informational level; pass `--provider` one or more times to
+replace that set for custom EventSources, because EventPipe cannot wildcard providers.
+
+| View | What it shows | Relevant flags |
+| --- | --- | --- |
+| `catalog` (default) | distinct `(provider,eventName,level)` rows ranked by count | `--top`, `--provider-filter`, `--root-method-filter` (event-name substring) |
+| `byProvider` | provider rollup with total count + distinct event type count | `--top`, `--provider-filter`, `--root-method-filter` |
+| `events` | bounded chronological metadata occurrence sample, never payloads | `--top`, `--provider-filter`, `--root-method-filter` |
+
+Use the targeted `event_source` collector if you need payload values; it carries the allowlist/redaction gates.
 
 ### Cancellation (Ctrl-C)
 

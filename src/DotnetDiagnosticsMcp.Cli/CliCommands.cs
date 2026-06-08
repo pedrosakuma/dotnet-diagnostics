@@ -85,6 +85,7 @@ internal static class CliCommands
         "counters",
         "exceptions",
         "gc",
+        "catalog",
         "event_source",
         "activities",
         "logs",
@@ -415,6 +416,10 @@ internal static class CliCommands
                 services.GetRequiredService<IGcCollector>(), resolver, handles,
                 pid, duration, options.MaxEvents ?? 200, depth, cancellationToken).ConfigureAwait(false)),
 
+            "catalog" => Wrap(await EventCollectionUseCases.CollectEventCatalog(
+                services.GetRequiredService<IEventCatalogCollector>(), resolver, handles,
+                pid, duration, NullIfEmptyList(options.Providers), options.MaxEvents ?? 200, depth, cancellationToken).ConfigureAwait(false)),
+
             "logs" => Wrap(await EventCollectionUseCases.CollectLogs(
                 services.GetRequiredService<ILogCollector>(), resolver, handles,
                 pid, duration, NullIfEmptyList(options.Categories), options.MinLevel ?? "Information",
@@ -617,6 +622,11 @@ internal static class CliCommands
             return OffCpuQueryDispatcher.SessionViews;
         }
 
+        if (kind == CollectionHandleKinds.EventCatalog)
+        {
+            return EventCatalogQueryDispatcher.SessionViews;
+        }
+
         var all = CollectionQueryDispatcher.ViewsFor(kind);
         var result = new List<string>(all.Count);
         foreach (var view in all)
@@ -700,6 +710,11 @@ internal static class CliCommands
         if (kind == OffCpuSessionKind)
         {
             return QueryOffCpuSession(options, lookup.Value.Artifact);
+        }
+
+        if (kind == CollectionHandleKinds.EventCatalog)
+        {
+            return QueryEventCatalogSession(options, lookup.Value.Artifact);
         }
 
         var allowedViews = CollectionQueryDispatcher.ViewsFor(kind);
@@ -852,6 +867,38 @@ internal static class CliCommands
     {
         sb.AppendLine();
         sb.AppendLine(JsonSerializer.Serialize(payload, QueryJsonOptions));
+    }
+
+    /// <summary>
+    /// Renders an event-catalog drill-down inside the <c>session</c> REPL via the host-neutral
+    /// <see cref="EventCatalogQueryDispatcher"/>. Occurrence samples are metadata-only; payload values
+    /// are never captured by the catalog collector.
+    /// </summary>
+    private static CliCommandResult QueryEventCatalogSession(CliOptions options, object artifact)
+    {
+        if (artifact is not EventCatalogSnapshot snapshot)
+        {
+            return Fail($"query: handle '{options.Handle}' could not be rendered as an event catalog.", "InvalidArgument",
+                "The stored artifact type did not match its handle kind; re-run collect --kind catalog to get a fresh handle.");
+        }
+
+        var view = string.IsNullOrWhiteSpace(options.View) ? EventCatalogQueryDispatcher.CatalogView : options.View;
+        if (!EventCatalogQueryDispatcher.IsKnownView(view))
+        {
+            return Fail($"query: unknown view '{view}' for an event-catalog handle.", "InvalidArgument",
+                $"Valid views: {string.Join(", ", EventCatalogQueryDispatcher.SessionViews)}.");
+        }
+
+        var topN = options.Top ?? options.TopTypes ?? EventCatalogQueryDispatcher.DefaultTopN;
+        var result = EventCatalogQueryDispatcher.Render(
+            snapshot,
+            options.Handle!,
+            view,
+            topN,
+            options.ProviderFilter,
+            options.RootMethodFilter);
+
+        return BuildResult<object>(result, SerializeQuery);
     }
 
     /// <summary>

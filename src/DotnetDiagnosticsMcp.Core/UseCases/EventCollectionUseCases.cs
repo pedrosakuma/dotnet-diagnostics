@@ -300,6 +300,60 @@ public static class EventCollectionUseCases
             resolved.Context);
     }
 
+    /// <summary>
+    /// Captures a broad metadata-only EventPipe catalog: provider, event name, level and timestamp.
+    /// Payload values are intentionally omitted; use CollectEventSource for targeted payload capture.
+    /// </summary>
+    public static async Task<DiagnosticResult<EventCatalogSnapshot>> CollectEventCatalog(
+        IEventCatalogCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        int? processId = null,
+        int durationSeconds = 10,
+        IReadOnlyList<string>? providers = null,
+        int maxEvents = 200,
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<EventCatalogSnapshot>(nameof(durationSeconds), "must be >= 1");
+        if (maxEvents < 1) return InvalidArg<EventCatalogSnapshot>(nameof(maxEvents), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<EventCatalogSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+
+        var snapshot = await collector.CaptureAsync(
+            pid, TimeSpan.FromSeconds(durationSeconds), providers, maxEvents, cancellationToken).ConfigureAwait(false);
+
+        var inlineSnapshot = snapshot;
+        var droppedSample = 0;
+        if (depth == SamplingDepth.Summary && snapshot.Sample.Count > 0)
+        {
+            droppedSample = snapshot.Sample.Count;
+            inlineSnapshot = snapshot with { Sample = Array.Empty<CatalogEventOccurrence>() };
+        }
+
+        var summary = snapshot.TotalEvents == 0
+            ? $"No catalog events captured in {durationSeconds}s. EventPipe requires explicit provider names; pass providers to target custom EventSources."
+            : (depth == SamplingDepth.Summary && droppedSample > 0
+                ? $"Cataloged {snapshot.TotalEvents} metadata-only event(s) across {snapshot.DistinctEventTypes} event type(s) over {durationSeconds}s. Dropped {droppedSample} sampled occurrence(s) from inline (handle has all)."
+                : $"Cataloged {snapshot.TotalEvents} metadata-only event(s) across {snapshot.DistinctEventTypes} event type(s) over {durationSeconds}s.");
+
+        var handle = handles.Register(pid, CollectionHandleKinds.EventCatalog, snapshot, CollectionHandleTtl);
+        return WithContext(DiagnosticResult.OkWithHandle(
+            inlineSnapshot,
+            summary,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint("query_snapshot",
+                "Drill into this metadata-only event catalog (views: catalog, byProvider, events).",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = EventCatalogQueryDispatcher.CatalogView }),
+            new NextActionHint("collect_events",
+                "Use kind=event_source for targeted payload capture when you know the provider and have the required allowlist/scope.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "event_source", ["providerName"] = "<provider>" })),
+            resolved.Context);
+    }
+
     /// <summary>Curates the Microsoft-Extensions-Logging EventSource into an ILogger view.</summary>
     public static async Task<DiagnosticResult<LogSnapshot>> CollectLogs(
         ILogCollector collector,

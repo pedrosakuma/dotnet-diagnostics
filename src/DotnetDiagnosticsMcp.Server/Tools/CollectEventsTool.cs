@@ -48,6 +48,7 @@ public sealed class CollectEventsTool
         "counters",
         "exceptions",
         "gc",
+        "catalog",
         "event_source",
         "activities",
         "logs",
@@ -60,7 +61,7 @@ public sealed class CollectEventsTool
     [RequireAnyScope("read-counters", "eventpipe")]
     [McpServerTool(
         Name = "collect_events",
-        Title = "Collect EventPipe events (counters | exceptions | gc | event_source | activities | logs | jit | threadpool | contention | db)",
+        Title = "Collect EventPipe events (counters | exceptions | gc | catalog | event_source | activities | logs | jit | threadpool | contention | db)",
         Destructive = false,
         ReadOnly = true,
         Idempotent = false,
@@ -68,13 +69,14 @@ public sealed class CollectEventsTool
     [Description(
         "Unified EventPipe collector entry-point (RFC 0002 §4.5). Set 'kind' to choose what to " +
         "capture: 'counters' (EventCounter snapshot — cheap first signal), 'exceptions' (managed " +
-        "exception stream), 'gc' (GC start/stop pairs and pause durations), 'event_source' " +
+        "exception stream), 'gc' (GC start/stop pairs and pause durations), 'catalog' " +
+        "(metadata-only provider/event-name catalog across a broad curated provider set), 'event_source' " +
         "(generic provider passthrough — requires providerName), 'activities' (ActivitySource " +
         "spans), 'logs' (curated ILogger view from Microsoft-Extensions-Logging), 'jit' " +
         "(tiered compilation / ReadyToRun activity), 'threadpool' (runtime ThreadPool starvation view: worker/IOCP timelines, hill-climbing transitions, and work-item origins), 'contention' (runtime lock-contention aggregation by call site and owner thread), or 'db' (curated EF Core / SqlClient command and pool view). Each kind preserves the full behavior of its legacy collector tool, including " +
         "the original authorization scope: 'counters' uses 'read-counters'; all other kinds use " +
         "'eventpipe'. Returns a polymorphic envelope with exactly one of " +
-        "{counters, exceptions, gc, eventSource, activities, logs, jit, threadPool, contention, db} populated alongside the chosen " +
+        "{counters, exceptions, gc, catalog, eventSource, activities, logs, jit, threadPool, contention, db} populated alongside the chosen " +
         "kind, the issued handle, and standard NextActionHints. " +
         "IMPORTANT: for 'exceptions' and 'gc', start collection BEFORE the workload you want to " +
         "observe — EventPipe sessions take ~500 ms–1 s to fully start and events before then are " +
@@ -87,6 +89,7 @@ public sealed class CollectEventsTool
         IGcCollector gcCollector,
         IActivityCollector activityCollector,
         IEventSourceCollector eventSourceCollector,
+        IEventCatalogCollector eventCatalogCollector,
         ILogCollector logCollector,
         IJitCollector jitCollector,
         IThreadPoolCollector threadPoolCollector,
@@ -99,7 +102,7 @@ public sealed class CollectEventsTool
         IPrincipalAccessor principalAccessor,
         [Description(
             "Which EventPipe family to collect. One of: 'counters', 'exceptions', 'gc', " +
-            "'event_source', 'activities', 'logs', 'jit', 'threadpool', 'contention', 'db'. Each kind preserves the options of its legacy " +
+            "'catalog', 'event_source', 'activities', 'logs', 'jit', 'threadpool', 'contention', 'db'. Each kind preserves the options of its legacy " +
             "collector tool; irrelevant options are ignored.")]
         string kind = "counters",
         // Shared options.
@@ -110,7 +113,7 @@ public sealed class CollectEventsTool
         [Description("Verbosity (summary|detail|raw). Applies to all kinds; semantics match the legacy collectors — 'summary' trims the bulky inline list (Counters, Recent, Events) but keeps it behind the issued handle.")]
         SamplingDepth depth = SamplingDepth.Summary,
         // kind=counters
-        [Description("kind=counters only. Optional list of EventCounter provider names to subscribe to. If null, defaults to System.Runtime, Microsoft.AspNetCore.Hosting and Microsoft-AspNetCore-Server-Kestrel. Pass an empty list to skip legacy EventCounters.")]
+        [Description("kind=counters or kind=catalog. For counters: optional EventCounter provider names; null uses runtime/ASP.NET defaults and empty skips legacy EventCounters. For catalog: optional EventPipe provider names; null/empty uses a broad curated default set, and custom EventSources must be named explicitly because EventPipe has no wildcard.")]
         string[]? providers = null,
         [Description("kind=counters only. Optional list of Meter names to subscribe to through System.Diagnostics.Metrics. Null/empty disables Meter collection.")]
         string[]? meters = null,
@@ -121,8 +124,8 @@ public sealed class CollectEventsTool
         // kind=exceptions
         [Description("kind=exceptions only. Maximum number of individual exception details to return. Must be >= 1. Defaults to 100.")]
         int maxRecent = 100,
-        // kind=gc / kind=event_source / kind=logs
-        [Description("kind=gc, kind=event_source, or kind=logs. Maximum number of events to return. Must be >= 1. Defaults to 200 for gc/event_source and 500 for logs when omitted through the kind-specific path.")]
+        // kind=gc / kind=catalog / kind=event_source / kind=logs
+        [Description("kind=gc, kind=catalog, kind=event_source, or kind=logs. Maximum number of events to return. Must be >= 1. Defaults to 200 for gc/catalog/event_source and 500 for logs when omitted through the kind-specific path. Catalog samples are metadata-only; payload values are never captured.")]
         int? maxEvents = null,
         // kind=event_source
         [Description("kind=event_source only. EventSource provider name (e.g. 'System.Net.Http' or 'Microsoft.AspNetCore.Hosting'). Required when kind='event_source'.")]
@@ -213,6 +216,14 @@ public sealed class CollectEventsTool
                             ct).ConfigureAwait(false),
                         "gc",
                         (env, data) => env with { Gc = data }),
+
+                    "catalog" => Project(
+                        await DiagnosticTools.CollectEventCatalog(
+                            eventCatalogCollector, resolver, handles,
+                            processId, effectiveDuration, providers, maxEvents ?? 200, depth,
+                            ct).ConfigureAwait(false),
+                        "catalog",
+                        (env, data) => env with { Catalog = data }),
 
                     "event_source" => Project(
                         await DiagnosticTools.CollectEventSource(
@@ -324,7 +335,7 @@ public sealed class CollectEventsTool
 /// <summary>
 /// Polymorphic payload returned by <see cref="CollectEventsTool.CollectEvents"/>. Exactly one
 /// of the kind-specific fields (<see cref="Counters"/>, <see cref="Exceptions"/>,
-/// <see cref="Gc"/>, <see cref="EventSource"/>, <see cref="Activities"/>, <see cref="Logs"/>, <see cref="Jit"/>, <see cref="ThreadPool"/>, <see cref="Contention"/>, <see cref="Db"/>) is populated, matched
+/// <see cref="Gc"/>, <see cref="Catalog"/>, <see cref="EventSource"/>, <see cref="Activities"/>, <see cref="Logs"/>, <see cref="Jit"/>, <see cref="ThreadPool"/>, <see cref="Contention"/>, <see cref="Db"/>) is populated, matched
 /// by <see cref="Kind"/>. Mirrors the discriminator-envelope convention used by other
 /// consolidated tools (e.g. <c>get_method_il</c>).
 /// </summary>
@@ -333,6 +344,7 @@ public sealed record CollectEventsEnvelope(
     CounterSnapshot? Counters = null,
     ExceptionSnapshot? Exceptions = null,
     GcSummary? Gc = null,
+    EventCatalogSnapshot? Catalog = null,
     EventSourceCapture? EventSource = null,
     ActivityCapture? Activities = null,
     LogSnapshot? Logs = null,

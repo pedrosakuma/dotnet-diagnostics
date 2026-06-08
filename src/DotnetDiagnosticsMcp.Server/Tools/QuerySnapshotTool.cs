@@ -4,6 +4,7 @@ using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
+using DotnetDiagnosticsMcp.Core.EventSources;
 using DotnetDiagnosticsMcp.Core.Security;
 using DotnetDiagnosticsMcp.Core.Symbols;
 using DotnetDiagnosticsMcp.Core.Threads;
@@ -101,8 +102,8 @@ public sealed class QuerySnapshotTool
         "`thread-snapshot` → thread views (threads-summary | stack | lock-graph | deadlocks | top-blocked | " +
         "unique-stacks | async-stalls | threadpool); " +
         "`off-cpu-snapshot` → off-CPU views (topStacks | byThread | stack); " +
-        "`counters` / `exception-snapshot` / `gc-events` / `event-source` / `activities` / `log-snapshot` / `threadpool-snapshot` / `contention-snapshot` / `db-snapshot` → collection views " +
-        "(summary | byProvider | byType | recent | events | pauseHistogram | longestPauses | byGeneration | byEventName | bySource | byOperation | activities | byCategory | byLevel | errors | timeline | hillClimbing | workItemOrigins | byCallSite | byOwner | byCommand | n+1 | connectionPool); " +
+        "`counters` / `exception-snapshot` / `gc-events` / `event-catalog` / `event-source` / `activities` / `log-snapshot` / `threadpool-snapshot` / `contention-snapshot` / `db-snapshot` → collection views " +
+        "(summary | byProvider | byType | recent | events | catalog | pauseHistogram | longestPauses | byGeneration | byEventName | bySource | byOperation | activities | byCategory | byLevel | errors | timeline | hillClimbing | workItemOrigins | byCallSite | byOwner | byCommand | n+1 | connectionPool); " +
         "`cpu-sample` / `allocation-sample` / `native-alloc-sample` → `call-tree` | `top-methods` | `by-module` | `by-namespace` | `hot-path` | `caller-callee` | `diff`; `heap-snapshot` → `diff` in addition to heap views. `diff` compares the current handle against `baselineHandle`; `call-tree` preserves get_call_tree behaviour with " +
         "rootMethodFilter, maxDepth, maxNodes. " +
         "Unknown handle kinds, unknown views and parameter-shape violations return structured InvalidArgument " +
@@ -117,8 +118,8 @@ public sealed class QuerySnapshotTool
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
-        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, snapshot_counters, collect_exceptions, collect_gc_events, collect_event_source, collect_activities, collect_events(kind=\"logs\"), collect_events(kind=\"threadpool\"), collect_events(kind=\"contention\"), collect_events(kind=\"db\")).")] string handle,
-        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|pauseHistogram|longestPauses|byGeneration|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
+        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, snapshot_counters, collect_exceptions, collect_gc_events, collect_events(kind=\"catalog\"), collect_event_source, collect_activities, collect_events(kind=\"logs\"), collect_events(kind=\"threadpool\"), collect_events(kind=\"contention\"), collect_events(kind=\"db\")).")] string handle,
+        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|catalog|pauseHistogram|longestPauses|byGeneration|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
         [Description("Maximum entries returned by any ranked-list view. Omit to use the per-kind legacy default: 50 for heap / thread / collection, 25 for off-CPU. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
         [Description("Heap view='top-types' only: ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
@@ -128,7 +129,8 @@ public sealed class QuerySnapshotTool
         [Description("Thread view='unique-stacks' only: number of top frames folded into the signature hash. Defaults to 20.")] int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
         [Description("Thread view='unique-stacks' only: drop groups with fewer than this many threads. Defaults to 1.")] int minCount = 1,
         [Description("Off-CPU view='stack' only: 1-based rank of the stack in the top-stacks list.")] int? stackRank = null,
-        [Description("Call-tree (cpu-sample / allocation-sample) only: optional case-insensitive substring; the tree is re-rooted at the highest-ranked frame whose method name contains this text.")] string? rootMethodFilter = null,
+        [Description("Call-tree (cpu-sample / allocation-sample) only: optional case-insensitive substring; the tree is re-rooted at the highest-ranked frame whose method name contains this text. Event-catalog views reuse this as an event-name substring filter.")] string? rootMethodFilter = null,
+        [Description("Event-catalog views only: optional case-insensitive provider-name substring filter.")] string? providerFilter = null,
         [Description("Call-tree only: maximum tree depth from the root. Must be >= 1. Defaults to 8.")] int maxDepth = 8,
         [Description("Call-tree only: approximate cap on the number of nodes returned (top children at each level). Must be >= 1. Defaults to 200.")] int maxNodes = 200,
         [Description("Diff view only: baseline handle to compare against the current `handle`. Required for view=diff.")] string? baselineHandle = null,
@@ -301,6 +303,29 @@ public sealed class QuerySnapshotTool
                         resolvedView,
                         topN ?? 50);
                     return AsObjectEnvelope(collection);
+                }
+
+                case CollectionHandleKinds.EventCatalog:
+                {
+                    if (!RequireScope(principal, ScopeEventPipe, out var forbidden))
+                    {
+                        return forbidden!;
+                    }
+
+                    var snapshot = handles.TryGet<EventCatalogSnapshot>(handle);
+                    if (snapshot is null)
+                    {
+                        return HandleExpiredError(null, handle);
+                    }
+
+                    var result = EventCatalogQueryDispatcher.Render(
+                        snapshot,
+                        handle,
+                        view,
+                        topN ?? EventCatalogQueryDispatcher.DefaultTopN,
+                        providerFilter,
+                        rootMethodFilter);
+                    return AsObjectEnvelope(result);
                 }
 
                 case CollectionHandleKinds.ExceptionSnapshot:
@@ -521,6 +546,7 @@ public sealed class QuerySnapshotTool
         CollectionHandleKinds.Counters,
         CollectionHandleKinds.ExceptionSnapshot,
         CollectionHandleKinds.GcEvents,
+        CollectionHandleKinds.EventCatalog,
         CollectionHandleKinds.EventSource,
         CollectionHandleKinds.Activities,
         CollectionHandleKinds.LogSnapshot,

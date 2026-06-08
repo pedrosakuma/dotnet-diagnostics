@@ -81,6 +81,7 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<IExceptionCollector, EventPipeExceptionCollector>();
         services.AddSingleton<IGcCollector, EventPipeGcCollector>();
         services.AddSingleton<IEventSourceCollector, EventPipeEventSourceCollector>();
+        services.AddSingleton<IEventCatalogCollector, EventPipeEventCatalogCollector>();
         services.AddSingleton<IActivityCollector, EventPipeActivityCollector>();
         services.AddSingleton<ILogCollector, EventPipeLogCollector>();
         services.AddSingleton<IJitCollector, EventPipeJitCollector>();

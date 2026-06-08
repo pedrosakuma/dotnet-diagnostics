@@ -1241,19 +1241,19 @@ public sealed class DiagnosticTools
 
     [RequireAnyScope("read-counters", "eventpipe")]
     [Description(
-        "Re-projects a previously-collected counter/exception/GC/EventSource/Activity/log/JIT/ThreadPool/db artifact under a " +
+        "Re-projects a previously-collected counter/exception/GC/event-catalog/EventSource/Activity/log/JIT/ThreadPool/db artifact under a " +
         "named view, without re-running the underlying EventPipe session. Use the `handle` " +
-        "returned by snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\") / collect_events(kind=\"db\"). " +
+        "returned by snapshot_counters / collect_exceptions / collect_gc_events / collect_events(kind=\"catalog\") / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\") / collect_events(kind=\"db\"). " +
         "Supported views per kind: counters → summary|byProvider; exception-snapshot → " +
-        "summary|byType|recent; gc-events → summary|events|pauseHistogram|timeline|longestPauses|byGeneration; event-source → " +
+        "summary|byType|recent; gc-events → summary|events|pauseHistogram|timeline|longestPauses|byGeneration; event-catalog → catalog|byProvider|events; event-source → " +
         "summary|byEventName|events; activities → summary|bySource|byOperation|activities|gc-overlay; " +
         "log-snapshot → summary|byCategory|byLevel|recent|errors; jit-snapshot → summary|topMethods|tierDistribution|reJIT; threadpool-snapshot → summary|timeline|hillClimbing|workItemOrigins; db-snapshot → summary|byCommand|n+1|connectionPool. " +
         "Handles expire ~10 minutes after collection.")]
     public static DiagnosticResult<CollectionQueryResult> QueryCollection(
         IDiagnosticHandleStore handles,
         IPrincipalAccessor principalAccessor,
-        [Description("Handle returned by a prior collection tool (snapshot_counters / collect_exceptions / collect_gc_events / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\") / collect_events(kind=\"db\")). ")] string handle,
-        [Description("View name (kind-dependent). Defaults to 'summary'.")] string? view = null,
+        [Description("Handle returned by a prior collection tool (snapshot_counters / collect_exceptions / collect_gc_events / collect_events(kind=\"catalog\") / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\") / collect_events(kind=\"db\")). ")] string handle,
+        [Description("View name (kind-dependent). Defaults to 'summary', except event-catalog defaults to 'catalog'.")] string? view = null,
         [Description("Cap on inline items for paginated views (recent / events / byType / byEventName / bySource / byOperation / activities / byCategory / byLevel / errors / topMethods / reJIT / hillClimbing / workItemOrigins / byCommand / n+1 / connectionPool). Must be >= 1. Defaults to 50.")] int topN = 50,
         [Description("Handle to a gc-events artifact for correlation views (required for activities view='gc-overlay').")] string? gcHandle = null)
     {
@@ -1312,6 +1312,30 @@ public sealed class DiagnosticTools
             }
         }
 
+        if (entry.Value.Kind == CollectionHandleKinds.EventCatalog && entry.Value.Artifact is EventCatalogSnapshot catalogSnapshot)
+        {
+            var effectiveView = string.IsNullOrWhiteSpace(view) ? EventCatalogQueryDispatcher.CatalogView : view.Trim();
+            var catalogResult = EventCatalogQueryDispatcher.Render(catalogSnapshot, handle, effectiveView, topN);
+            if (catalogResult.IsError)
+            {
+                return new DiagnosticResult<CollectionQueryResult>(catalogResult.Summary, catalogResult.Hints, catalogResult.Error);
+            }
+
+            var queryResult = new CollectionQueryResult(
+                CollectionHandleKinds.EventCatalog,
+                effectiveView,
+                catalogSnapshot.ProcessId,
+                catalogSnapshot.StartedAt,
+                catalogSnapshot.Duration,
+                catalogResult.Data!);
+            return DiagnosticResult.Ok(
+                queryResult,
+                $"Rendered view '{queryResult.View}' for kind '{queryResult.Kind}' (collected {queryResult.Duration.TotalSeconds:F1}s starting {queryResult.StartedAt:HH:mm:ss}Z, pid {queryResult.ProcessId}).",
+                new NextActionHint("query_snapshot",
+                    $"Switch to another view: {string.Join(" | ", EventCatalogQueryDispatcher.SessionViews)}.",
+                    new Dictionary<string, object?> { ["handle"] = handle }));
+        }
+
         var outcome = CollectionQueryDispatcher.Dispatch(entry.Value.Kind, view, entry.Value.Artifact, topN, correlateArtifact);
 
         if (outcome.UnknownKind is not null)
@@ -1320,7 +1344,7 @@ public sealed class DiagnosticTools
                 $"Handle '{handle}' is of kind '{outcome.UnknownKind}' which query_collection does not support.",
                 new DiagnosticError(
                     "UnsupportedHandleKind",
-                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot, CollectionHandleKinds.DbSnapshot })}.",
+                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventCatalog, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot, CollectionHandleKinds.DbSnapshot })}.",
                     outcome.UnknownKind),
                 new NextActionHint("query_snapshot", "Use the kind-specific drill-down tool for heap/thread/cpu handles.", null));
         }
@@ -1399,6 +1423,28 @@ public sealed class DiagnosticTools
         return await EventCollectionUseCases.CollectGcEvents(
             collector, resolver, handles,
             processId, durationSeconds, maxEvents, depth,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    [RequireScope("eventpipe")]
+    [Description(
+        "Captures a broad metadata-only EventPipe catalog: provider, event name, level and timestamp. " +
+        "Payload values are intentionally omitted; use collect_events(kind=event_source) for targeted payload capture.")]
+    public static async Task<DiagnosticResult<EventCatalogSnapshot>> CollectEventCatalog(
+        IEventCatalogCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
+        [Description("Optional provider names. When omitted, enables a broad curated default set; custom EventSources must be named explicitly because EventPipe has no wildcard.")] IReadOnlyList<string>? providers = null,
+        [Description("Maximum number of metadata-only occurrence samples to retain. Must be >= 1. Defaults to 200.")] int maxEvents = 200,
+        [Description("Verbosity (summary|detail|raw). Default 'summary' drops Sample[] inline while keeping the ranked Catalog; the handle retains the bounded sample.")]
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        return await EventCollectionUseCases.CollectEventCatalog(
+            collector, resolver, handles,
+            processId, durationSeconds, providers, maxEvents, depth,
             cancellationToken).ConfigureAwait(false);
     }
 

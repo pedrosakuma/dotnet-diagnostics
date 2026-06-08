@@ -7,6 +7,7 @@ using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
+using DotnetDiagnosticsMcp.Core.EventSources;
 using DotnetDiagnosticsMcp.Core.OffCpu;
 using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
 using DotnetDiagnosticsMcp.Core.Threads;
@@ -519,6 +520,43 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_EventCatalogHandle_CatalogView_RoutesThroughSession()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, CollectionHandleKinds.EventCatalog, EventCatalogArtifact(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view catalog --provider-filter AspNet --root-method-filter Start\nexit\n", services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("RequestStart");
+        stdout.Should().NotContain("GcStart");
+    }
+
+    [Fact]
+    public async Task Query_EventCatalogHandle_ByProviderView_RoutesThroughSession()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, CollectionHandleKinds.EventCatalog, EventCatalogArtifact(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view byProvider\nexit\n", services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("Busiest: Microsoft.AspNetCore.Hosting");
+        stdout.Should().Contain("Microsoft-Windows-DotNETRuntime");
+    }
+
+    [Fact]
+    public void SessionViewsFor_EventCatalog_ReturnsDedicatedViews()
+    {
+        CliCommands.SessionViewsFor(CollectionHandleKinds.EventCatalog)
+            .Should().Equal(EventCatalogQueryDispatcher.SessionViews);
+    }
+
+    [Fact]
     public async Task Query_ActivitiesGcOverlayView_ReturnsNotSupportedInSession()
     {
         var (services, store) = BuildServices();
@@ -847,6 +885,33 @@ public sealed class SessionReplTests
             TimeSpan.FromMilliseconds(152), TimeSpan.FromMilliseconds(100),
             new List<Core.Gc.GenerationStats> { new(0, 1), new(2, 2) },
             events);
+    }
+
+    private static EventCatalogSnapshot EventCatalogArtifact()
+    {
+        var at = DateTimeOffset.UtcNow;
+        var catalog = new List<EventCatalogEntry>
+        {
+            new("Microsoft.AspNetCore.Hosting", "RequestStart", "Informational", 5),
+            new("Microsoft.AspNetCore.Hosting", "RequestStop", "Informational", 3),
+            new("Microsoft-Windows-DotNETRuntime", "GcStart", "Informational", 2),
+        };
+        var sample = new List<CatalogEventOccurrence>
+        {
+            new(at.AddMilliseconds(1), "Microsoft.AspNetCore.Hosting", "RequestStart", "Informational"),
+            new(at.AddMilliseconds(2), "Microsoft-Windows-DotNETRuntime", "GcStart", "Informational"),
+        };
+
+        return new EventCatalogSnapshot(
+            Environment.ProcessId,
+            at,
+            TimeSpan.FromSeconds(5),
+            new[] { "Microsoft.AspNetCore.Hosting", "Microsoft-Windows-DotNETRuntime" },
+            10,
+            catalog.Count,
+            catalog,
+            10,
+            sample);
     }
 
     private static ThreadSnapshotArtifact ThreadSnapshot()
