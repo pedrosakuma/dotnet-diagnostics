@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using DotnetDiagnosticsMcp.Core;
 using DotnetDiagnosticsMcp.Core.Collection;
+using DotnetDiagnosticsMcp.Core.Comparison;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
@@ -76,6 +77,13 @@ public sealed class QuerySnapshotTool
     internal const string DefaultOffCpuView = "topStacks";
     internal const string DefaultCollectionView = "summary";
 
+    private static readonly IComparableProjector[] ComparableProjectors =
+    [
+        new GcDatasComparableProjector(),
+        new CountersComparableProjector(),
+        new GcEventsComparableProjector(),
+    ];
+
     // Scopes (mirrored from RFC §4.1 / the legacy [RequireScope] attributes).
     private const string ScopeHeapRead = "heap-read";
     private const string ScopePtrace = "ptrace";
@@ -103,9 +111,9 @@ public sealed class QuerySnapshotTool
         "`thread-snapshot` → thread views (threads-summary | stack | lock-graph | deadlocks | top-blocked | " +
         "unique-stacks | async-stalls | threadpool); " +
         "`off-cpu-snapshot` → off-CPU views (topStacks | byThread | stack); " +
-        "`counters` / `exception-snapshot` / `gc-events` / `event-catalog` / `event-source` / `activities` / `log-snapshot` / `threadpool-snapshot` / `contention-snapshot` / `db-snapshot` → collection views " +
+        "`counters` / `exception-snapshot` / `gc-events` / `gc-datas` / `event-catalog` / `event-source` / `activities` / `log-snapshot` / `threadpool-snapshot` / `contention-snapshot` / `db-snapshot` → collection views " +
         "(summary | byProvider | byType | recent | events | catalog | pauseHistogram | longestPauses | byGeneration | byEventName | bySource | byOperation | activities | byCategory | byLevel | errors | timeline | hillClimbing | workItemOrigins | byCallSite | byOwner | byCommand | n+1 | connectionPool); " +
-        "`cpu-sample` / `allocation-sample` / `native-alloc-sample` → `call-tree` | `top-methods` | `by-module` | `by-namespace` | `hot-path` | `caller-callee` | `diff`; `heap-snapshot` → `diff` in addition to heap views. `diff` compares the current handle against `baselineHandle`; `call-tree` preserves get_call_tree behaviour with " +
+        "`cpu-sample` / `allocation-sample` / `native-alloc-sample` → `call-tree` | `top-methods` | `by-module` | `by-namespace` | `hot-path` | `caller-callee` | `diff`; `heap-snapshot` → `diff` in addition to heap views; `gc-datas` / `counters` / `gc-events` → `diff` via comparable journey projection. `diff` compares the current handle against `baselineHandle` or appends it after ordered `comparisonHandles`; `call-tree` preserves get_call_tree behaviour with " +
         "rootMethodFilter, maxDepth, maxNodes. " +
         "Unknown handle kinds, unknown views and parameter-shape violations return structured InvalidArgument " +
         "envelopes — never a 500. Authorization is preserved per kind: heap-read for heap, ptrace for thread, " +
@@ -119,7 +127,7 @@ public sealed class QuerySnapshotTool
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
-        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, snapshot_counters, collect_exceptions, collect_gc_events, collect_events(kind=\"catalog\"), collect_event_source, collect_activities, collect_events(kind=\"logs\"), collect_events(kind=\"threadpool\"), collect_events(kind=\"contention\"), collect_events(kind=\"db\")).")] string handle,
+        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, snapshot_counters, collect_exceptions, collect_gc_events, collect_events(kind=\"datas\"), collect_events(kind=\"catalog\"), collect_event_source, collect_activities, collect_events(kind=\"logs\"), collect_events(kind=\"threadpool\"), collect_events(kind=\"contention\"), collect_events(kind=\"db\")).")] string handle,
         [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|catalog|pauseHistogram|longestPauses|byGeneration|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
         [Description("Maximum entries returned by any ranked-list view. Omit to use the per-kind legacy default: 50 for heap / thread / collection, 25 for off-CPU. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
         [Description("Heap view='top-types' only: ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
@@ -135,7 +143,8 @@ public sealed class QuerySnapshotTool
         [Description("DATAS 'tuning' view only: when true, emit only the rows where the heap-count decision changed versus the previous GC (plus the first row as a baseline).")] bool changesOnly = false,
         [Description("Call-tree only: maximum tree depth from the root. Must be >= 1. Defaults to 8.")] int maxDepth = 8,
         [Description("Call-tree only: approximate cap on the number of nodes returned (top children at each level). Must be >= 1. Defaults to 200.")] int maxNodes = 200,
-        [Description("Diff view only: baseline handle to compare against the current `handle`. Required for view=diff.")] string? baselineHandle = null,
+        [Description("Diff view only: baseline handle to compare against the current `handle`. Required for legacy pairwise diff unless `comparisonHandles` is supplied.")] string? baselineHandle = null,
+        [Description("Diff view only: ordered handles to compare before the current `handle` for N-way journey diffs. Do not combine with `baselineHandle`; the current handle is appended as the final capture.")] string[]? comparisonHandles = null,
         [Description("Diff view only: minimum absolute delta percentage required for a row to surface in `Changed`. Defaults to 5.0.")] double minDeltaPct = 5.0,
         [Description("cpu-sample/allocation-sample 'hot-path' view only: a child must carry at least this percent of its parent's inclusive samples to extend the chain. Defaults to 50.")] double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
@@ -165,7 +174,7 @@ public sealed class QuerySnapshotTool
                     }
                     if (IsDiffView(view))
                     {
-                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, minDeltaPct, topN);
+                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN);
                     }
                     var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultHeapView : view!;
                     var heap = await DiagnosticTools.QueryHeapSnapshot(
@@ -238,7 +247,7 @@ public sealed class QuerySnapshotTool
                     }
                     if (IsDiffView(view))
                     {
-                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, minDeltaPct, topN);
+                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN);
                     }
 
                     // Analytics views (top-methods / by-module / by-namespace / hot-path / caller-callee,
@@ -297,6 +306,10 @@ public sealed class QuerySnapshotTool
                     {
                         return forbidden!;
                     }
+                    if (IsDiffView(view))
+                    {
+                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN);
+                    }
                     var resolvedView = string.IsNullOrWhiteSpace(view) ? null : view;
                     var collection = DiagnosticTools.QueryCollection(
                         handles,
@@ -336,6 +349,10 @@ public sealed class QuerySnapshotTool
                     {
                         return forbidden!;
                     }
+                    if (IsDiffView(view))
+                    {
+                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN);
+                    }
 
                     var snapshot = handles.TryGet<GcDatasSnapshot>(handle);
                     if (snapshot is null)
@@ -365,6 +382,10 @@ public sealed class QuerySnapshotTool
                     if (!RequireScope(principal, ScopeEventPipe, out var forbidden))
                     {
                         return forbidden!;
+                    }
+                    if (IsDiffView(view) && string.Equals(kind, CollectionHandleKinds.GcEvents, StringComparison.Ordinal))
+                    {
+                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN);
                     }
                     // Forward null/empty unchanged so query_collection's own default
                     // (`summary`) kicks in — guarantees byte-equal envelopes with the legacy
@@ -480,12 +501,25 @@ public sealed class QuerySnapshotTool
         string handle,
         HandleLookup currentLookup,
         string? baselineHandle,
+        string[]? comparisonHandles,
         double minDeltaPct,
         int? topN)
     {
-        if (string.IsNullOrWhiteSpace(baselineHandle))
+        var hasBaseline = !string.IsNullOrWhiteSpace(baselineHandle);
+        var hasComparisonHandles = comparisonHandles is { Length: > 0 };
+        if (hasBaseline && hasComparisonHandles)
         {
-            return InvalidArgument(nameof(baselineHandle), "is required when view='diff'");
+            return InvalidArgument(nameof(comparisonHandles), "cannot be combined with baselineHandle; pass either baselineHandle for legacy pairwise diff or comparisonHandles for an ordered N-way journey diff");
+        }
+
+        if (!hasBaseline && comparisonHandles is { Length: 0 })
+        {
+            return InvalidArgument(nameof(comparisonHandles), "must contain at least one handle when supplied for view='diff'");
+        }
+
+        if (!hasBaseline && !hasComparisonHandles)
+        {
+            return InvalidArgument(nameof(baselineHandle), "is required when view='diff' unless comparisonHandles is supplied");
         }
 
         if (minDeltaPct < 0)
@@ -499,10 +533,15 @@ public sealed class QuerySnapshotTool
             return InvalidArgument(nameof(topN), "must be >= 1 when view='diff'");
         }
 
-        var baselineLookup = handles.TryGetWithKind(baselineHandle);
+        if (hasComparisonHandles)
+        {
+            return TryBuildComparableJourneyDiff(handles, handle, currentLookup, comparisonHandles!, minDeltaPct, effectiveTopN);
+        }
+
+        var baselineLookup = handles.TryGetWithKind(baselineHandle!);
         if (baselineLookup is null)
         {
-            return HandleExpiredError("Baseline", baselineHandle);
+            return HandleExpiredError("Baseline", baselineHandle!);
         }
 
         if (!string.Equals(currentLookup.Kind, baselineLookup.Value.Kind, StringComparison.Ordinal))
@@ -513,28 +552,84 @@ public sealed class QuerySnapshotTool
         return currentLookup.Kind switch
         {
             DiagnosticTools.HeapSnapshotKind when currentLookup.Artifact is HeapSnapshotArtifact current && baselineLookup.Value.Artifact is HeapSnapshotArtifact baseline
-                => WrapDiff(currentLookup.Kind, baselineHandle, handle, SampleDiffer.Compare(baseline, baselineHandle, current, handle, minDeltaPct, effectiveTopN)),
+                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, SampleDiffer.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
 
             "cpu-sample" when currentLookup.Artifact is CpuSampleTraceArtifact current && baselineLookup.Value.Artifact is CpuSampleTraceArtifact baseline
-                => WrapDiff(currentLookup.Kind, baselineHandle, handle, SampleDiffer.Compare(baseline, baselineHandle, current, handle, minDeltaPct, effectiveTopN)),
+                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, SampleDiffer.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
 
             DiagnosticTools.NativeAllocHandleKind when currentLookup.Artifact is CpuSampleTraceArtifact current && baselineLookup.Value.Artifact is CpuSampleTraceArtifact baseline
-                => WrapDiff(currentLookup.Kind, baselineHandle, handle, SampleDiffer.Compare(baseline, baselineHandle, current, handle, minDeltaPct, effectiveTopN)),
+                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, SampleDiffer.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
 
             "allocation-sample" when currentLookup.Artifact is AllocationSampleArtifact current && baselineLookup.Value.Artifact is AllocationSampleArtifact baseline
-                => WrapDiff(currentLookup.Kind, baselineHandle, handle, SampleDiffer.Compare(baseline.Summary, baselineHandle, current.Summary, handle, minDeltaPct, effectiveTopN)),
+                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, SampleDiffer.Compare(baseline.Summary, baselineHandle!, current.Summary, handle, minDeltaPct, effectiveTopN)),
 
-            _ => DiagnosticResult.Fail<object>(
-                $"Handle kind '{currentLookup.Kind}' cannot be diffed via view='diff'.",
-                new DiagnosticError("InvalidArgument", $"Handle kind '{currentLookup.Kind}' cannot be diffed via view='diff'.", "view"))
+            _ => TryBuildComparableJourneyDiff(handles, handle, currentLookup, new[] { baselineHandle! }, minDeltaPct, effectiveTopN)
         };
     }
+
+    private static DiagnosticResult<object> TryBuildComparableJourneyDiff(
+        IDiagnosticHandleStore handles,
+        string currentHandle,
+        HandleLookup currentLookup,
+        string[] comparisonHandles,
+        double minDeltaPct,
+        int topN)
+    {
+        var projector = ComparableProjectors.FirstOrDefault(p => string.Equals(p.Kind, currentLookup.Kind, StringComparison.Ordinal));
+        if (projector is null || !projector.CanProject(currentLookup.Artifact))
+        {
+            return UnsupportedDiffKind(currentLookup.Kind);
+        }
+
+        var snapshots = new List<ComparableSnapshot>(comparisonHandles.Length + 1);
+        var seenHandles = new HashSet<string>(StringComparer.Ordinal) { currentHandle };
+        for (var i = 0; i < comparisonHandles.Length; i++)
+        {
+            var comparisonHandle = comparisonHandles[i];
+            if (string.IsNullOrWhiteSpace(comparisonHandle))
+            {
+                return InvalidArgument(nameof(comparisonHandles), $"entry {i} is empty");
+            }
+            if (!seenHandles.Add(comparisonHandle))
+            {
+                return InvalidArgument(nameof(comparisonHandles), $"entry {i} duplicates another comparison handle or the current handle");
+            }
+
+            var lookup = handles.TryGetWithKind(comparisonHandle);
+            if (lookup is null)
+            {
+                return HandleExpiredError($"Comparison[{i}]", comparisonHandle);
+            }
+            if (!string.Equals(currentLookup.Kind, lookup.Value.Kind, StringComparison.Ordinal))
+            {
+                return InvalidKindPair(currentLookup.Kind, lookup.Value.Kind);
+            }
+            if (!projector.CanProject(lookup.Value.Artifact))
+            {
+                return UnsupportedDiffKind(lookup.Value.Kind);
+            }
+
+            snapshots.Add(projector.Project(lookup.Value.Artifact, comparisonHandles.Length == 1 ? "baseline" : $"comparison-{i + 1}"));
+        }
+
+        snapshots.Add(projector.Project(currentLookup.Artifact, "current"));
+        var diff = SnapshotDiffer.Compare(snapshots, JourneyMode.Trend, minDeltaPct, topN);
+        return AsObjectEnvelope(DiagnosticResult.Ok(diff, BuildJourneyDiffSummary(diff, currentHandle, comparisonHandles)));
+    }
+
+    private static DiagnosticResult<object> UnsupportedDiffKind(string kind)
+        => DiagnosticResult.Fail<object>(
+            $"Handle kind '{kind}' cannot be diffed via view='diff'.",
+            new DiagnosticError("InvalidArgument", $"Handle kind '{kind}' cannot be diffed via view='diff'.", "view"));
 
     private static DiagnosticResult<object> WrapDiff<TKey, TMetric>(string kind, string baselineHandle, string currentHandle, SampleDiff<TKey, TMetric> diff)
         => AsObjectEnvelope(DiagnosticResult.Ok(diff, BuildDiffSummary(kind, baselineHandle, currentHandle, diff)));
 
     private static string BuildDiffSummary<TKey, TMetric>(string kind, string baselineHandle, string currentHandle, SampleDiff<TKey, TMetric> diff)
         => $"Compared {kind} handle '{currentHandle}' against baseline '{baselineHandle}': {diff.TotalAdded} added, {diff.TotalRemoved} removed, {diff.TotalChanged} changed — verdict {diff.Verdict}.";
+
+    private static string BuildJourneyDiffSummary(SnapshotJourneyDiff diff, string currentHandle, string[] comparisonHandles)
+        => $"Compared {diff.Kind} handle '{currentHandle}' across {comparisonHandles.Length + 1} captures: {diff.MetricSeries.Count} metric series, {diff.KeyMatrix.Count} key rows — verdict {diff.Verdict}.";
 
     private static DiagnosticResult<object> HandleExpiredError(string? side, string handle)
     {
@@ -552,7 +647,7 @@ public sealed class QuerySnapshotTool
 
     private static DiagnosticResult<object> InvalidKindPair(string currentKind, string baselineKind)
     {
-        var message = $"query_snapshot(view='diff') requires baseline/current handles of the same supported kind. Accepted pairs: heap-snapshot×heap-snapshot, cpu-sample×cpu-sample, allocation-sample×allocation-sample, native-alloc-sample×native-alloc-sample. Received baseline={baselineKind}, current={currentKind}.";
+        var message = $"query_snapshot(view='diff') requires handles of the same supported kind. Accepted pairs/kinds: heap-snapshot, cpu-sample, allocation-sample, native-alloc-sample, gc-datas, counters, gc-events. Received baseline/comparison={baselineKind}, current={currentKind}.";
         return DiagnosticResult.Fail<object>(
             message,
             new DiagnosticError("InvalidArgument", message, "baselineHandle"),
@@ -570,6 +665,7 @@ public sealed class QuerySnapshotTool
         CollectionHandleKinds.Counters,
         CollectionHandleKinds.ExceptionSnapshot,
         CollectionHandleKinds.GcEvents,
+        CollectionHandleKinds.GcDatas,
         CollectionHandleKinds.EventCatalog,
         CollectionHandleKinds.EventSource,
         CollectionHandleKinds.Activities,

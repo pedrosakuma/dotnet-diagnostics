@@ -1,8 +1,12 @@
+using DotnetDiagnosticsMcp.Core.Collection;
+using DotnetDiagnosticsMcp.Core.Comparison;
+using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Drilldown;
 using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.Memory;
 using DotnetDiagnosticsMcp.Core.Security;
+using DotnetDiagnosticsMcp.Core.Gc;
 using DotnetDiagnosticsMcp.Server.Tools;
 using FluentAssertions;
 
@@ -74,7 +78,76 @@ public sealed class QuerySnapshotDiffToolTests
         diff.Changed.Should().ContainSingle(row => row.Key.TypeFullName == "System.String");
     }
 
-    private static async Task<DotnetDiagnosticsMcp.Core.DiagnosticResult<object>> QuerySnapshot(MemoryDiagnosticHandleStore store, string currentHandle, string baselineHandle)
+    [Fact]
+    public async Task Diff_GcDatasComparisonHandles_ReturnsJourneyDiff()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var first = store.Register(123, CollectionHandleKinds.GcDatas, GcDatasSnapshot(2.0f), TimeSpan.FromMinutes(10));
+        var second = store.Register(123, CollectionHandleKinds.GcDatas, GcDatasSnapshot(4.0f), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, CollectionHandleKinds.GcDatas, GcDatasSnapshot(7.0f), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, comparisonHandles: [first.Id, second.Id]);
+
+        result.Error.Should().BeNull();
+        var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
+        diff.Kind.Should().Be(CollectionHandleKinds.GcDatas);
+        diff.Labels.Should().Equal("comparison-1", "comparison-2", "current");
+        diff.MetricSeries.Should().Contain(series => series.Definition.Name == "meanMedianThroughputCostPercent" && series.Values.Count == 3);
+        diff.Pairwise.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Diff_CountersBaselineHandle_ReturnsJourneyDiff()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var baseline = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshot(10), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshot(25), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, baseline.Id);
+
+        result.Error.Should().BeNull();
+        var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
+        diff.Kind.Should().Be(CollectionHandleKinds.Counters);
+        diff.Labels.Should().Equal("baseline", "current");
+        diff.MetricSeries.Should().Contain(series => series.Definition.Name == "counter:System.Runtime/cpu-usage");
+    }
+
+    [Fact]
+    public async Task Diff_GcEventsBaselineHandle_ReturnsJourneyDiff()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var baseline = store.Register(123, CollectionHandleKinds.GcEvents, GcSummary(totalCollections: 2, totalPauseMs: 5), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, CollectionHandleKinds.GcEvents, GcSummary(totalCollections: 5, totalPauseMs: 20), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, baseline.Id);
+
+        result.Error.Should().BeNull();
+        var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
+        diff.Kind.Should().Be(CollectionHandleKinds.GcEvents);
+        diff.Verdict.Should().Be("regression");
+        diff.MetricSeries.Should().Contain(series => series.Definition.Name == "totalPauseTimeMs");
+    }
+
+    [Fact]
+    public async Task Diff_RejectsBaselineHandleWithComparisonHandles()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var baseline = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshot(10), TimeSpan.FromMinutes(10));
+        var extra = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshot(12), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshot(25), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, baseline.Id, [extra.Id]);
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("InvalidArgument");
+        result.Error.Message.Should().Contain("cannot be combined");
+    }
+
+    private static async Task<DotnetDiagnosticsMcp.Core.DiagnosticResult<object>> QuerySnapshot(
+        MemoryDiagnosticHandleStore store,
+        string currentHandle,
+        string? baselineHandle = null,
+        string[]? comparisonHandles = null)
         => await QuerySnapshotTool.QuerySnapshot(
             store,
             new StubDumpInspector(),
@@ -85,6 +158,7 @@ public sealed class QuerySnapshotDiffToolTests
             handle: currentHandle,
             view: "diff",
             baselineHandle: baselineHandle,
+            comparisonHandles: comparisonHandles,
             cancellationToken: CancellationToken.None);
 
     private static CpuSampleTraceArtifact CpuArtifact(long exclusiveSamples)
@@ -146,6 +220,51 @@ public sealed class QuerySnapshotDiffToolTests
             new CallTreeNode(new SampledFrame(string.Empty, "<root>"), totalEvents, 0, Array.Empty<CallTreeNode>()));
         return new AllocationSampleArtifact(summary, trace);
     }
+
+    private static GcDatasSnapshot GcDatasSnapshot(float medianThroughputCostPercent)
+        => new(
+            ProcessId: 123,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(10),
+            Samples:
+            [
+                new DatasSampleEvent(DateTimeOffset.UtcNow, 1, 1000, 50, 0, 0, 20_000_000, 12 * 1024 * 1024),
+            ],
+            TuningEvents:
+            [
+                new DatasTuningEvent(DateTimeOffset.UtcNow, 4, 16, 1, 1, 20_000_000, medianThroughputCostPercent, medianThroughputCostPercent, 0, 3, 0, 5, 1, 0, 0, 1, 0, 0),
+            ],
+            FullGcTuningEvents: Array.Empty<DatasFullGcTuningEvent>(),
+            ParseStats: new DatasParseStats(0, 0, 0));
+
+    private static CounterSnapshot CounterSnapshot(double cpuUsage)
+        => new(
+            ProcessId: 123,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(5),
+            Counters:
+            [
+                new CounterValue("System.Runtime", "cpu-usage", "CPU Usage", cpuUsage, CounterKind.Mean, "%"),
+            ],
+            Meters: Array.Empty<MeterInstrumentValue>(),
+            Notes: Array.Empty<string>());
+
+    private static GcSummary GcSummary(int totalCollections, double totalPauseMs)
+        => new(
+            ProcessId: 123,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(10),
+            TotalCollections: totalCollections,
+            TotalPauseTime: TimeSpan.FromMilliseconds(totalPauseMs),
+            MaxPauseTime: TimeSpan.FromMilliseconds(totalPauseMs / 2),
+            Generations:
+            [
+                new GenerationStats(0, totalCollections),
+            ],
+            Events:
+            [
+                new GcEvent(DateTimeOffset.UtcNow, 0, "AllocSmall", "NonConcurrent", TimeSpan.FromMilliseconds(totalPauseMs / 2)),
+            ]);
 
     private sealed class StubDumpInspector : IDumpInspector
     {
