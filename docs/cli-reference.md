@@ -83,11 +83,12 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 | `--category <glob>` | `logs`: ILogger category filter (repeatable). |
 | `--min-level <level>` | `logs`: minimum level (default `Information`). |
 | `--unsafe-provider` | `event_source`: opt in to a non-allowlisted provider. |
+| `--save <file>` | Save a comparable snapshot JSON. Supported artifact kinds: `counters`, `gc-datas` (`collect --kind datas`). |
 
 ```bash
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
+dotnet-diagnostics-cli collect --kind datas --pid 1234 --duration 30 --save ./before.json
 dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
-dotnet-diagnostics-cli collect --kind datas --pid 1234 --duration 30
 dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
 ```
 
@@ -153,6 +154,20 @@ dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./
 dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
 ```
 
+### `compare`
+
+Compare two or more saved comparable snapshots from `collect --save`. Human output prints the journey verdict, first→last headline, and top metric/key deltas; `--json` emits the full `SnapshotJourneyDiff`.
+
+| Option | Meaning |
+|---|---|
+| `--json` | Emit the full journey diff JSON. |
+| `--save <file>` | Write the full journey diff JSON to disk. |
+
+```bash
+dotnet-diagnostics-cli compare ./before.json ./after.json
+dotnet-diagnostics-cli compare ./before.json ./mid.json ./after.json --save ./matrix.json
+```
+
 ### `query`
 
 Re-render a previously-collected handle under a different view **without re-collecting**.
@@ -183,6 +198,9 @@ diag(pid 1234)> collect --kind gc --duration 10
   → handle 1TA2BA7KT9PYT60WTWE0 (expires 23:10:18Z) — query --handle 1TA2BA7KT9PYT60WTWE0 --view <pauseHistogram|...>
 diag(pid 1234)> query --handle 1TA2BA7KT9PYT60WTWE0 --view pauseHistogram
 ... re-rendered view, no re-collection ...
+diag(pid 1234)> collect --kind datas --duration 15 --save before.json
+diag(pid 1234)> collect --kind datas --duration 15 --save after.json
+diag(pid 1234)> compare before.json after.json
 diag(pid 1234)> exit
 ```
 

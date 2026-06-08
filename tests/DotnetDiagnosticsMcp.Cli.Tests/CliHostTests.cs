@@ -21,6 +21,7 @@ public sealed class CliHostTests
         stdout.Should().Contain("dump");
         stdout.Should().Contain("query");
         stdout.Should().Contain("get-bytes");
+        stdout.Should().Contain("compare");
         stderr.Should().BeEmpty();
     }
 

@@ -13,6 +13,12 @@ namespace DotnetDiagnosticsMcp.Core.Comparison;
     UseStringEnumConverter = true,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(ComparableSnapshot))]
+[JsonSerializable(typeof(SnapshotJourneyDiff))]
+[JsonSerializable(typeof(MetricSeries))]
+[JsonSerializable(typeof(KeyMatrixRow))]
+[JsonSerializable(typeof(PairwiseJourney))]
+[JsonSerializable(typeof(PairwiseComparison))]
+[JsonSerializable(typeof(DispersionStats))]
 [JsonSerializable(typeof(MetricValue))]
 [JsonSerializable(typeof(MetricDefinition))]
 [JsonSerializable(typeof(ComparableRow))]

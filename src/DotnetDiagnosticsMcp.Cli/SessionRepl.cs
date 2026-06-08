@@ -576,6 +576,7 @@ internal sealed class SessionRepl
           dump [...] --confirm            Write a process dump to disk.
           get-bytes --kind <k> [...]      Materialise a module or dump file to disk.
           query --handle <id> --view <v>  Re-render a collected handle under a different view.
+          compare <a.json> <b.json> [...] Compare saved comparable snapshots.
           <command> --help                Show full options for a command.
           help                            Show this list.
           exit | quit                     Leave the session (Ctrl-D / EOF also exits).

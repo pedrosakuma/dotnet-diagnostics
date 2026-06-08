@@ -60,10 +60,11 @@ collect options:
       --category <glob>         logs: ILogger category filter (repeatable).
       --min-level <level>       logs: minimum level (default Information).
       --unsafe-provider         event_source: opt in to a non-allowlisted provider.
+      --save <file>             Save a comparable snapshot JSON (supports counters, datas).
 """,
 """
   dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
-  dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
+  dotnet-diagnostics-cli collect --kind datas --pid 1234 --save ./before.json
   dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
 """),
         new CommandHelp(
@@ -127,6 +128,18 @@ get-bytes options:
 """
   dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll
   dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
+"""),
+        new CommandHelp(
+            "compare",
+            "Compare two or more comparable snapshot JSON files.",
+"""
+compare options:
+      --json                    Emit the full SnapshotJourneyDiff JSON.
+      --save <file>             Write the full journey diff JSON to disk.
+""",
+"""
+  dotnet-diagnostics-cli compare ./before.json ./after.json
+  dotnet-diagnostics-cli compare ./a.json ./b.json ./c.json --save ./matrix.json
 """),
         new CommandHelp(
             "session",

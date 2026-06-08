@@ -98,6 +98,27 @@ public sealed class CliOptionsTests
     }
 
     [Fact]
+    public void Parse_ComparePathsAndSave_AreCaptured()
+    {
+        var options = CliOptions.Parse(new[] { "compare", "a.json", "b.json", "c.json", "--save", "out.json", "--json" }, out var error);
+
+        error.Should().BeNull();
+        options!.Command.Should().Be("compare");
+        options.ComparePaths.Should().Equal("a.json", "b.json", "c.json");
+        options.SavePath.Should().Be("out.json");
+        options.Json.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Parse_CollectSave_IsCaptured()
+    {
+        var options = CliOptions.Parse(new[] { "collect", "--kind", "counters", "--save", "snapshot.json" }, out var error);
+
+        error.Should().BeNull();
+        options!.SavePath.Should().Be("snapshot.json");
+    }
+
+    [Fact]
     public void Parse_CollectFlags_AreCaptured()
     {
         var options = CliOptions.Parse(
