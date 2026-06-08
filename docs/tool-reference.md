@@ -75,6 +75,7 @@ Per-tool `Summary` semantics:
 | `collect_sample(kind="off_cpu")` | `TopBlockingStacks` truncated to the top 3 (handle keeps `topN`). |
 | `collect_events(kind="exceptions")` | The `Recent[]` list. `Total` and `ByType` remain exact (counts at every depth). |
 | `collect_events(kind="gc")` | The `Events[]` list. Totals, max pause, per-gen counts remain exact. |
+| `collect_events(kind="datas")` | The full `Samples[]`, `TuningEvents[]` and `FullGcTuningEvents[]` lists. Drill in with `query_snapshot(handle, view=overview\|tuning\|samples\|gen2)`. |
 | `collect_events(kind="catalog")` | The metadata-only `Sample[]` occurrence list. The ranked `Catalog[]` remains inline; payload values are never captured. |
 | `collect_events(kind="event_source")` | The `Events[]` list. Provider + total count remain. Drill in with `query_snapshot(handle, view=byEventName)`. |
 | `collect_events(kind="logs")` | The `Recent[]` list. Level counts + per-category rollups remain exact for the window. |
@@ -204,6 +205,7 @@ Visões disponíveis por `kind`:
 | `counters` | `collect_events(kind="counters")` | `summary` (default), `byProvider` |
 | `exception-snapshot` | `collect_events(kind="exceptions")` | `summary` (default = `byType.Take(topN)`), `byType`, `recent` |
 | `gc-events` | `collect_events(kind="gc")` | `summary` (default), `events`, `pauseHistogram`, `timeline`, `longestPauses`, `byGeneration` |
+| `gc-datas` | `collect_events(kind="datas")` | `overview` (default), `tuning` (honours `changesOnly`), `samples`, `gen2` |
 | `event-catalog` | `collect_events(kind="catalog")` | `catalog` (default), `byProvider`, `events` |
 | `activities` | `collect_events(kind="activities")` | `summary` (default), `bySource`, `byOperation`, `activities` |
 | `event-source` | `collect_events(kind="event_source")` | `summary` (default), `byEventName`, `events` |
@@ -268,6 +270,18 @@ metadata-only occurrence sample (`maxEvents`). Use `topN` for caps, `providerFil
 case-insensitive provider substring, and `rootMethodFilter` as the event-name substring filter. If
 you need payload field values, use the targeted `event_source` collector, which carries the
 allowlist/redaction/unsafe-provider machinery.
+
+The DATAS views (`overview`, `tuning`, `samples`, `gen2`) expose **D**ynamic **A**daptation **T**o
+**A**pplication **S**izes — the Server GC's adaptive heap-count/gen0-budget tuning loop (default-on in
+.NET 9+). `collect_events(kind="datas")` collects `Microsoft-Windows-DotNETRuntime` at `GCKeyword`
+(`0x1`) / Informational and decodes the three DATAS `GCDynamicEvent` payloads
+(`SizeAdaptationSample`, `SizeAdaptationTuning`, `SizeAdaptationFullGCTuning`). `overview` rolls up the
+heap-count range, the number of heap-count changes, throughput-cost-percent (TCP) statistics and mean
+gen0 budget / SOH stable size. `tuning` is the per-decision heap-count timeline (pass `changesOnly` to
+collapse it to just the transitions plus a baseline row); `samples` returns the per-GC measurements
+behind those decisions; `gen2` returns the gen2 "backstop" tuning events. Requires **Server GC** —
+Workstation GC emits no DATAS events, so the collector returns a graceful `NoDatasEvents` result rather
+than an error. The default collection window is 15 s (DATAS decisions accrue over time).
 
 `view="resolve-address"` (thread-snapshot, issue #275) re-opens the snapshot origin (dump file or
 live pid) and classifies one or more addresses passed via `address` (comma-separated, decimal or
@@ -811,12 +825,12 @@ identical, but each carries a `DEPRECATED` notice and will be removed in
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`. Case-sensitive. |
+| `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `datas`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`. Case-sensitive. |
 | `processId` | `int?` | auto | Target process id. |
-| `durationSeconds` | `int` | 5 (counters) / 10 (others) | Collection window. |
+| `durationSeconds` | `int` | 5 (counters) / 15 (datas) / 10 (others) | Collection window. |
 | `providers` / `meters` / `intervalSeconds` / `maxInstrumentTimeSeries` | counters only | — | Same as [`collect_events(kind="counters")`](#collect_events(kind="counters")). |
 | `maxRecent` | exceptions only | 100 | Same as [`collect_events(kind="exceptions")`](#collect_events(kind="exceptions")). |
-| `maxEvents` | gc / event_source / logs only | 200 (`gc`, `event_source`) / 500 (`logs`) | Same as the underlying tool. |
+| `maxEvents` | gc / datas / event_source / logs only | 200 (`gc`, `event_source`) / 1000 (`datas`) / 500 (`logs`) | Same as the underlying tool. |
 | `providerName` / `keywords` / `eventLevel` / `depth` / `unsafeProvider` | event_source only | — | Same as [`collect_events(kind="event_source")`](#collect_events(kind="event_source")). |
 | `sources` / `maxActivities` | activities only | — | Same as [`collect_events(kind="activities")`](#collect_events(kind="activities")). |
 | `categories` / `minLevel` / `maxMessageBytes` / `depth` | logs only | — | Same as [`collect_events(kind="logs")`](#collect_events(kind="logs")). |
@@ -825,7 +839,7 @@ identical, but each carries a `DEPRECATED` notice and will be removed in
 
 **Returns:** `CollectEventsEnvelope` — a polymorphic record that carries the
 `kind` discriminator plus exactly one populated payload field
-(`counters` / `exceptions` / `gc` / `eventSource` / `activities` / `logs` /
+(`counters` / `exceptions` / `gc` / `datas` / `eventSource` / `activities` / `logs` /
 `jit` / `threadPool` / `contention` / `db`). The envelope's `summary`, `hints`,
 `handle`, `handleExpiresAt`, and `resolvedProcess` are passed through from the
 underlying collector verbatim, so `query_snapshot` drilldowns continue to work

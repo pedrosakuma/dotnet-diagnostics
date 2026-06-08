@@ -110,6 +110,9 @@ internal sealed class CliOptions
     /// <summary>Case-insensitive provider substring for event-catalog query views (<c>--provider-filter</c>). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public string? ProviderFilter { get; init; }
 
+    /// <summary>DATAS <c>tuning</c> query view only: emit only rows where the heap-count decision changed versus the previous GC (<c>--changes-only</c>). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public bool ChangesOnly { get; init; }
+
     /// <summary>Maximum call-tree depth for the CPU <c>call-tree</c> view (<c>--max-depth</c>, default 8). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public int? MaxDepth { get; init; }
 
@@ -169,6 +172,7 @@ internal sealed class CliOptions
         string? dumpType = null;
         string? outDir = null;
         var confirm = false;
+        var changesOnly = false;
         string? mvid = null;
         string? asset = null;
         string? handle = null;
@@ -215,6 +219,9 @@ internal sealed class CliOptions
                     break;
                 case "--confirm":
                     confirm = true;
+                    break;
+                case "--changes-only":
+                    changesOnly = true;
                     break;
                 case "--pid":
                 case "-p":
@@ -536,6 +543,7 @@ internal sealed class CliOptions
             TypeFilter = typeFilter,
             RootMethodFilter = rootMethodFilter,
             ProviderFilter = providerFilter,
+            ChangesOnly = changesOnly,
             MaxDepth = maxDepth,
             MaxNodes = maxNodes,
             ThreadId = threadId,

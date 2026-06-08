@@ -72,8 +72,8 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 
 | Option | Meaning |
 |---|---|
-| `--kind <kind>` | One of `counters`, `exceptions`, `gc`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`. |
-| `-d, --duration <int>` | Window in seconds (default: `counters` 5, others 10). |
+| `--kind <kind>` | One of `counters`, `exceptions`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`. |
+| `-d, --duration <int>` | Window in seconds (default: `counters` 5, `datas` 15, others 10). |
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
 | `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |
 | `--interval <int>` | Refresh interval in seconds (`counters`, `db`). Default 1. |
@@ -87,6 +87,7 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 ```bash
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
 dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
+dotnet-diagnostics-cli collect --kind datas --pid 1234 --duration 30
 dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
 ```
 
@@ -256,6 +257,19 @@ replace that set for custom EventSources, because EventPipe cannot wildcard prov
 | `events` | bounded chronological metadata occurrence sample, never payloads | `--top`, `--provider-filter`, `--root-method-filter` |
 
 Use the targeted `event_source` collector if you need payload values; it carries the allowlist/redaction gates.
+
+DATAS handles (`collect --kind datas`) expose the Server GC's **D**ynamic **A**daptation **T**o
+**A**pplication **S**izes tuning loop (default-on in .NET 9+; Workstation GC emits nothing, returning a
+graceful `NoDatasEvents` result). The collector decodes the three DATAS `GCDynamicEvent` payloads from
+`Microsoft-Windows-DotNETRuntime` (`GCKeyword`, Informational). The default window is 15 s — DATAS
+decisions accrue over time, so a sustained window is best.
+
+| View | What it shows | Relevant flags |
+| --- | --- | --- |
+| `overview` (default) | heap-count range + change count, TCP statistics, mean gen0 budget / SOH stable size | — |
+| `tuning` | per-decision heap-count timeline | `--top`, `--changes-only` (only transitions + baseline) |
+| `samples` | per-GC measurements behind the decisions | `--top` |
+| `gen2` | gen2 "backstop" tuning events | `--top` |
 
 ### Cancellation (Ctrl-C)
 

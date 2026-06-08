@@ -354,6 +354,73 @@ public static class EventCollectionUseCases
             resolved.Context);
     }
 
+    /// <summary>
+    /// Captures DATAS (Dynamic Adaptation To Application Sizes) GC tuning events. Populated only on
+    /// Server GC with DATAS enabled (default-on in .NET 9+); Workstation GC emits no DATAS events,
+    /// in which case this returns a graceful <c>NoDatasEvents</c> result.
+    /// </summary>
+    public static async Task<DiagnosticResult<GcDatasSnapshot>> CollectGcDatas(
+        IGcDatasCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        int? processId = null,
+        int durationSeconds = 15,
+        int maxEvents = 1000,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<GcDatasSnapshot>(nameof(durationSeconds), "must be >= 1");
+        if (maxEvents < 1) return InvalidArg<GcDatasSnapshot>(nameof(maxEvents), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<GcDatasSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+
+        var snapshot = await collector.CollectAsync(
+            pid, TimeSpan.FromSeconds(durationSeconds), maxEvents, cancellationToken).ConfigureAwait(false);
+
+        if (!snapshot.HasData)
+        {
+            var parseStats = snapshot.ParseStats;
+            var sawUnparseable = parseStats.MalformedPayloads > 0 || parseStats.UnsupportedVersion > 0;
+            var message = sawUnparseable
+                ? $"DATAS events were present but none could be decoded ({parseStats.UnsupportedVersion} unsupported-version, {parseStats.MalformedPayloads} malformed). The target runtime may emit a newer DATAS event version than this build understands."
+                : $"No DATAS events observed in {durationSeconds}s. DATAS tuning events require Server GC (default-on in .NET 9+; otherwise set DOTNET_GCDynamicAdaptationMode=1). Workstation GC, .NET < 9, or a quiet/short window all produce no events.";
+            var code = sawUnparseable ? "UnsupportedDatasPayload" : "NoDatasEvents";
+            return WithContext(
+                DiagnosticResult.Fail<GcDatasSnapshot>(
+                    message,
+                    new DiagnosticError(code, message),
+                    new NextActionHint("collect_events",
+                        "Confirm the target uses Server GC, then re-run kind=datas during sustained allocation.",
+                        new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "datas", ["durationSeconds"] = 20 })),
+                resolved.Context);
+        }
+
+        var changes = 0;
+        var ordered = snapshot.TuningEvents.OrderBy(t => t.Timestamp).ThenBy(t => t.GcIndex).ToList();
+        for (var i = 1; i < ordered.Count; i++)
+        {
+            if (ordered[i].NewHeapCount != ordered[i - 1].NewHeapCount) changes++;
+        }
+
+        var hcRange = ordered.Count == 0
+            ? "n/a"
+            : $"{ordered.Min(t => t.NewHeapCount)}–{ordered.Max(t => t.NewHeapCount)}";
+        var summary =
+            $"DATAS over {durationSeconds}s: {snapshot.Samples.Count} sample(s), {snapshot.TuningEvents.Count} tuning event(s) (heap count {hcRange}, {changes} change(s)), {snapshot.FullGcTuningEvents.Count} gen2 backstop event(s).";
+
+        var handle = handles.Register(pid, CollectionHandleKinds.GcDatas, snapshot, CollectionHandleTtl);
+        return WithContext(DiagnosticResult.OkWithHandle(
+            snapshot,
+            summary,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint("query_snapshot",
+                "Drill into DATAS tuning (views: overview, tuning, samples, gen2; tuning supports changesOnly).",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = GcDatasQueryDispatcher.OverviewView })),
+            resolved.Context);
+    }
+
     /// <summary>Curates the Microsoft-Extensions-Logging EventSource into an ILogger view.</summary>
     public static async Task<DiagnosticResult<LogSnapshot>> CollectLogs(
         ILogCollector collector,

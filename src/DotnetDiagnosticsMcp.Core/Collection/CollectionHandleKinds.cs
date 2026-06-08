@@ -16,6 +16,9 @@ public static class CollectionHandleKinds
     /// <summary>Handle backing a <see cref="Gc.GcSummary"/> emitted by <c>collect_gc_events</c>.</summary>
     public const string GcEvents = "gc-events";
 
+    /// <summary>Handle backing a <see cref="Gc.GcDatasSnapshot"/> emitted by <c>collect_events(kind="datas")</c>.</summary>
+    public const string GcDatas = "gc-datas";
+
     /// <summary>Handle backing an <see cref="EventSources.EventSourceCapture"/> emitted by <c>collect_event_source</c>.</summary>
     public const string EventSource = "event-source";
 

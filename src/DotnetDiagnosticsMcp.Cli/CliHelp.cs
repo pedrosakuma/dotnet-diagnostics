@@ -46,9 +46,9 @@ Options:
             "Open an EventPipe session and collect events (--kind required).",
 """
 collect options:
-      --kind <kind>             Required. One of: counters, exceptions, gc, catalog,
+      --kind <kind>             Required. One of: counters, exceptions, gc, datas, catalog,
                                 event_source, activities, logs, jit, threadpool, contention, db.
-  -d, --duration <int>          Collection window in seconds (default: counters 5, others 10).
+  -d, --duration <int>          Collection window in seconds (default: counters 5, datas 15, others 10).
       --depth <level>           Verbosity: summary, detail (default), raw.
       --max-events <int>        Per-kind cap (events / exceptions / activities).
       --interval <int>          Refresh interval in seconds (counters, db). Default 1.
@@ -106,6 +106,7 @@ query options:
       --handle <id>             Drill-down handle (accepted but not honoured — see note).
       --view <name>             Drill-down view (accepted but not honoured — see note).
       --provider-filter <text>  Session query: event-catalog provider substring filter.
+      --changes-only            Session query: DATAS 'tuning' view; show only heap-count changes.
       --root-method-filter <t>  Session query: CPU method filter; event-catalog event-name filter.
   Note: drill-down handles are MCP-session scoped; the one-shot CLI emits its full result
   inline on the originating command (use --depth detail / --json). 'query' always returns a

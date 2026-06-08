@@ -80,6 +80,7 @@ public static class DiagnosticCoreServiceRegistration
             sp => sp.GetRequiredService<DotnetDiagnosticsMcp.Core.NativeAlloc.PerfNativeAllocSampler>());
         services.AddSingleton<IExceptionCollector, EventPipeExceptionCollector>();
         services.AddSingleton<IGcCollector, EventPipeGcCollector>();
+        services.AddSingleton<IGcDatasCollector, EventPipeGcDatasCollector>();
         services.AddSingleton<IEventSourceCollector, EventPipeEventSourceCollector>();
         services.AddSingleton<IEventCatalogCollector, EventPipeEventCatalogCollector>();
         services.AddSingleton<IActivityCollector, EventPipeActivityCollector>();
