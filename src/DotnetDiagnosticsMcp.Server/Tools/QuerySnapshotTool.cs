@@ -82,6 +82,10 @@ public sealed class QuerySnapshotTool
         new GcDatasComparableProjector(),
         new CountersComparableProjector(),
         new GcEventsComparableProjector(),
+        new HeapSnapshotComparableProjector(),
+        new CpuSampleComparableProjector(),
+        new NativeAllocSampleComparableProjector(),
+        new AllocationSampleComparableProjector(),
     ];
 
     // Scopes (mirrored from RFC §4.1 / the legacy [RequireScope] attributes).

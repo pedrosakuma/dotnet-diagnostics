@@ -1,6 +1,9 @@
 using DotnetDiagnosticsMcp.Core.Comparison;
 using DotnetDiagnosticsMcp.Core.Counters;
+using DotnetDiagnosticsMcp.Core.CpuSampling;
+using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.Gc;
+using DotnetDiagnosticsMcp.Core.Memory;
 using FluentAssertions;
 
 namespace DotnetDiagnosticsMcp.Core.Tests;
@@ -212,5 +215,178 @@ public sealed class ComparableProjectorTests
         byName["gen0Collections"].Value.Should().Be(2);
         byName["gen1Collections"].Value.Should().Be(0);
         byName["gen2Collections"].Value.Should().Be(1);
+    }
+
+    [Fact]
+    public void HeapProjector_UsesTotalBytesAsLowerBetterPrimary_AndTypeKeys()
+    {
+        var mvid = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var baseline = new HeapSnapshotComparableProjector().Project(HeapSnapshotForProjector("System.Byte[]", "System.Private.CoreLib.dll", 100, 1, mvid, 0x02000042), "baseline");
+        var current = new HeapSnapshotComparableProjector().Project(HeapSnapshotForProjector("System.Byte[]", "System.Private.CoreLib.dll", 150, 2, mvid, 0x02000042), "current");
+
+        var row = baseline.Rows.Should().ContainSingle().Subject;
+        row.Key.ExactId.Should().Be("11111111-1111-1111-1111-111111111111:0x02000042");
+        row.Key.StableId.Should().Be("System.Private.CoreLib.dll!System.Byte[]");
+        var primary = row.Metrics.Single(m => m.Definition.Role == MetricRole.Primary);
+        primary.Definition.Name.Should().Be("totalBytes");
+        primary.Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        row.Metrics.Should().Contain(m => m.Definition.Name == "instanceCount" && m.Definition.Role == MetricRole.Secondary);
+
+        SnapshotDiffer.Compare(new[] { baseline, current }).Verdict.Should().Be("regression");
+        SnapshotDiffer.Compare(new[] { current, baseline }).Verdict.Should().Be("improvement");
+    }
+
+    [Fact]
+    public void CpuProjector_UsesExclusivePercentAsLowerBetterPrimary_AndMethodKeys()
+    {
+        var mvid = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var identity = new MethodIdentity("DoWork", 0, "MyApp.dll", ModuleVersionId: mvid, MetadataToken: 0x06000042, TypeFullName: "MyApp.Worker");
+        var baseline = new CpuSampleComparableProjector().Project(CpuTraceForProjector("MyApp.dll", "MyApp.Worker.DoWork", identity, 10, totalSamples: 100), "baseline");
+        var current = new CpuSampleComparableProjector().Project(CpuTraceForProjector("MyApp.dll", "MyApp.Worker.DoWork", identity, 20, totalSamples: 100), "current");
+
+        var row = baseline.Rows.Should().ContainSingle().Subject;
+        row.Key.ExactId.Should().Be("22222222-2222-2222-2222-222222222222:0x06000042");
+        row.Key.StableId.Should().Be("MyApp.dll!MyApp.Worker.DoWork");
+        var primary = row.Metrics.Single(m => m.Definition.Role == MetricRole.Primary);
+        primary.Definition.Name.Should().Be("exclusivePercent");
+        primary.Definition.Aggregation.Should().Be(MetricAggregation.Percent);
+        primary.Definition.NormalizedBy.Should().Be(MetricNormalization.SampleCount);
+        primary.Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        primary.Value.Should().Be(10);
+
+        SnapshotDiffer.Compare(new[] { baseline, current }).Verdict.Should().Be("regression");
+        SnapshotDiffer.Compare(new[] { current, baseline }).Verdict.Should().Be("improvement");
+    }
+
+    [Fact]
+    public void NativeAllocProjector_UsesExclusivePercentAsLowerBetterPrimary_WithNativeKind()
+    {
+        var baseline = new NativeAllocSampleComparableProjector().Project(CpuTraceForProjector("libnative.so", "malloc", identity: null, exclusiveSamples: 5, totalSamples: 100), "baseline");
+        var current = new NativeAllocSampleComparableProjector().Project(CpuTraceForProjector("libnative.so", "malloc", identity: null, exclusiveSamples: 20, totalSamples: 100), "current");
+
+        baseline.Kind.Should().Be("native-alloc-sample");
+        var row = baseline.Rows.Should().ContainSingle().Subject;
+        row.Key.Kind.Should().Be("native-alloc-sample");
+        row.Key.StableId.Should().Be("libnative.so!malloc");
+        var primary = row.Metrics.Single(m => m.Definition.Role == MetricRole.Primary);
+        primary.Definition.Name.Should().Be("exclusivePercent");
+        primary.Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        primary.Value.Should().Be(5);
+
+        SnapshotDiffer.Compare(new[] { baseline, current }).Verdict.Should().Be("regression");
+        SnapshotDiffer.Compare(new[] { current, baseline }).Verdict.Should().Be("improvement");
+    }
+
+    [Fact]
+    public void AllocationProjector_UsesBytesPerSecondAsLowerBetterPrimary_AndTypeKeys()
+    {
+        var mvid = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        var baseline = new AllocationSampleComparableProjector().Project(AllocationArtifactForProjector("System.String", "System.Private.CoreLib.dll", 4_000, 40, 4, mvid, 0x02000043), "baseline");
+        var current = new AllocationSampleComparableProjector().Project(AllocationArtifactForProjector("System.String", "System.Private.CoreLib.dll", 8_000, 80, 4, mvid, 0x02000043), "current");
+
+        var row = baseline.Rows.Should().ContainSingle().Subject;
+        row.Key.ExactId.Should().Be("33333333-3333-3333-3333-333333333333:0x02000043");
+        row.Key.StableId.Should().Be("System.Private.CoreLib.dll!System.String");
+        var primary = row.Metrics.Single(m => m.Definition.Role == MetricRole.Primary);
+        primary.Definition.Name.Should().Be("bytesPerSecond");
+        primary.Definition.Aggregation.Should().Be(MetricAggregation.Rate);
+        primary.Definition.NormalizedBy.Should().Be(MetricNormalization.DurationSeconds);
+        primary.Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        primary.Value.Should().Be(1_000);
+
+        SnapshotDiffer.Compare(new[] { baseline, current }).Verdict.Should().Be("regression");
+        SnapshotDiffer.Compare(new[] { current, baseline }).Verdict.Should().Be("improvement");
+    }
+
+    private static CpuSampleTraceArtifact CpuTraceForProjector(
+        string module,
+        string method,
+        MethodIdentity? identity,
+        long exclusiveSamples,
+        long totalSamples)
+    {
+        var symbol = new SymbolRef(module, method);
+        var identities = identity is null
+            ? null
+            : new Dictionary<SymbolRef, MethodIdentity> { [symbol] = identity };
+        return new CpuSampleTraceArtifact(
+            123,
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            TimeSpan.FromSeconds(5),
+            totalSamples,
+            new CallTreeNode(
+                new SampledFrame(string.Empty, "<root>"),
+                totalSamples,
+                0,
+                [new CallTreeNode(new SampledFrame(module, method), exclusiveSamples, exclusiveSamples, Array.Empty<CallTreeNode>())]),
+            MethodIdentities: identities);
+    }
+
+    private static HeapSnapshotArtifact HeapSnapshotForProjector(
+        string typeName,
+        string moduleName,
+        long bytes,
+        long instances,
+        Guid mvid,
+        int metadataToken)
+    {
+        var stats = new[]
+        {
+            new TypeStat(
+                typeName,
+                moduleName,
+                instances,
+                bytes,
+                TotalBytesPercent: 0,
+                Identity: new TypeIdentity(typeName)
+                {
+                    ModuleName = moduleName,
+                    ModuleVersionId = mvid,
+                    MetadataToken = metadataToken,
+                }),
+        };
+
+        return new HeapSnapshotArtifact(
+            HeapSnapshotOrigin.Live,
+            ProcessId: 123,
+            CapturedAt: new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            WalkDuration: TimeSpan.FromMilliseconds(10),
+            Runtime: new DumpRuntimeInfo("CoreCLR", "10.0.0", "x64", IsServerGC: false, HeapCount: 1),
+            Heap: new DumpHeapSummary(1024, 0, 0, 1024, 0, 0, 1024),
+            TopTypesByBytes: stats,
+            TopTypesByInstances: stats);
+    }
+
+    private static AllocationSampleArtifact AllocationArtifactForProjector(
+        string typeName,
+        string moduleName,
+        long totalBytes,
+        long totalEvents,
+        int seconds,
+        Guid mvid,
+        int metadataToken)
+    {
+        var identity = new TypeIdentity(typeName)
+        {
+            ModuleName = moduleName,
+            ModuleVersionId = mvid,
+            MetadataToken = metadataToken,
+        };
+        var types = new[] { new AllocatedType(typeName, totalBytes, totalEvents, HeapKind.Small, identity) };
+        var summary = new AllocationSample(
+            ProcessId: 123,
+            StartedAt: new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            Duration: TimeSpan.FromSeconds(seconds),
+            TotalEvents: totalEvents,
+            TotalBytes: totalBytes,
+            TopByBytes: types,
+            TopByCount: types);
+        var trace = new CpuSampleTraceArtifact(
+            123,
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            TimeSpan.FromSeconds(seconds),
+            totalEvents,
+            new CallTreeNode(new SampledFrame(string.Empty, "<root>"), totalEvents, 0, Array.Empty<CallTreeNode>()));
+        return new AllocationSampleArtifact(summary, trace);
     }
 }
