@@ -108,7 +108,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             "topTypes", "includeRetentionPaths", "retentionPathLimit",
             "view",
             "stackRank",
-            "baselineSummaryJson", "currentSummaryJson", "snapshotsJson",
+            "baselineSummaryJson", "currentSummaryJson", "snapshotsJson", "depth",
         };
 
         foreach (var tool in tools)
@@ -364,6 +364,8 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
 
         templates.Should().Contain(t => t.UriTemplate == "trace://session/{handle}",
             "trace://session/{handle} must be advertised so clients can pull drill-down artifacts directly");
+        templates.Should().Contain(t => t.UriTemplate == "journey://diff/{handle}",
+            "journey://diff/{handle} must be advertised so clients can pull full comparison matrices directly");
     }
 
     [Fact]
@@ -383,6 +385,25 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         text.Should().NotBeNullOrWhiteSpace();
         text!.Should().Contain("unknown",
             "expired/unknown handles must serialize a deterministic JSON body so consumers can branch");
+    }
+
+    [Fact]
+    public async Task ReadJourneyDiffResource_ReturnsUnknownPayloadForExpiredHandle()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.ReadResourceAsync(
+            "journey://diff/DEADBEEFDEADBEEFDEAD",
+            cancellationToken: CancellationToken.None);
+
+        result.Contents.Should().NotBeEmpty();
+        var text = result.Contents
+            .OfType<ModelContextProtocol.Protocol.TextResourceContents>()
+            .Select(c => c.Text)
+            .FirstOrDefault();
+        text.Should().NotBeNullOrWhiteSpace();
+        text!.Should().Contain("unknown",
+            "expired/unknown journey diff handles must serialize a deterministic JSON body so consumers can branch");
     }
 
     [Fact]
@@ -1088,7 +1109,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
-    public async Task CompareToBaseline_ComparableSnapshots_ReturnsJourneyDiff()
+    public async Task CompareToBaseline_ComparableSnapshots_ReturnsJourneyDiffInlineWhenSmall()
     {
         await using var client = await ConnectAsync();
         var baseline = SnapshotJson("baseline", 10);
@@ -1103,12 +1124,76 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             cancellationToken: CancellationToken.None);
 
         result.IsError.Should().NotBe(true);
-        var diff = DeserializeStructured<SnapshotJourneyDiff>(result);
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Handle.Should().BeNull();
+        var diff = envelope.Data.Deserialize<SnapshotJourneyDiff>(DeserializeOptions);
         diff.Should().NotBeNull();
         diff!.Verdict.Should().Be("regression");
         diff.Pairwise.Should().NotBeNull();
         diff.Pairwise!.Headline.Verdict.Should().Be("regression");
         diff.MetricSeries.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task CompareToBaseline_ComparableSnapshots_CompactDepthAndTopNBoundInlinePayload()
+    {
+        await using var client = await ConnectAsync();
+        var baseline = SnapshotJson("baseline", 10, metricCount: 6);
+        var current = SnapshotJson("current", 20, metricCount: 6);
+
+        var result = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["snapshotsJson"] = new[] { baseline, current },
+                ["topN"] = 2,
+                ["depth"] = "compact",
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var summary = DeserializeStructured<JourneyDiffCompactSummary>(result);
+        summary.Should().NotBeNull();
+        summary!.Counts.MetricSeries.Should().Be(6);
+        summary.MetricSeries.Should().HaveCount(2);
+        summary.ResourceUri.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CompareToBaseline_ComparableSnapshots_LargeDiffReturnsResourceLinkReadableViaResource()
+    {
+        await using var client = await ConnectAsync();
+        var baseline = SnapshotJson("baseline", 10, metricCount: 700);
+        var current = SnapshotJson("current", 20, metricCount: 700);
+
+        var result = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["snapshotsJson"] = new[] { baseline, current },
+                ["topN"] = 3,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Handle.Should().NotBeNullOrWhiteSpace();
+        var summary = envelope.Data.Deserialize<JourneyDiffCompactSummary>(DeserializeOptions);
+        summary.Should().NotBeNull();
+        summary!.ResourceUri.Should().Be($"journey://diff/{envelope.Handle}");
+        summary.MetricSeries.Should().HaveCount(3);
+
+        var resource = await client.ReadResourceAsync(summary.ResourceUri!, cancellationToken: CancellationToken.None);
+        var text = resource.Contents
+            .OfType<ModelContextProtocol.Protocol.TextResourceContents>()
+            .Select(c => c.Text)
+            .FirstOrDefault();
+        text.Should().NotBeNullOrWhiteSpace();
+        var fullDiff = JsonSerializer.Deserialize(text!, ComparableSnapshotJsonContext.Default.SnapshotJourneyDiff);
+        fullDiff.Should().NotBeNull();
+        fullDiff!.MetricSeries.Should().HaveCount(700);
     }
 
     [Fact]
@@ -1403,26 +1488,27 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         return JsonSerializer.Serialize(summary, InvestigationSummaryJsonContext.Default.InvestigationSummary);
     }
 
-    private static string SnapshotJson(string label, double cpuPercent)
+    private static string SnapshotJson(string label, double cpuPercent, int metricCount = 1)
     {
+        var metrics = Enumerable.Range(0, metricCount)
+            .Select(i => new MetricValue(
+                new MetricDefinition(
+                    i == 0 ? "cpu.percent" : $"cpu.extra.{i}",
+                    MetricRole.Primary,
+                    BetterDirection.Lower,
+                    MetricAggregation.Percent,
+                    MetricNormalization.None,
+                    "%"),
+                cpuPercent + i))
+            .ToArray();
+
         var snapshot = new ComparableSnapshot(
             ComparableSnapshot.SchemaV1,
             Kind: "counters",
             Label: label,
             CapturedAt: DateTimeOffset.UnixEpoch,
             ProcessId: 1234,
-            Metrics:
-            [
-                new MetricValue(
-                    new MetricDefinition(
-                        "cpu.percent",
-                        MetricRole.Primary,
-                        BetterDirection.Lower,
-                        MetricAggregation.Percent,
-                        MetricNormalization.None,
-                        "%"),
-                    cpuPercent)
-            ],
+            Metrics: metrics,
             Rows: []);
 
         return JsonSerializer.Serialize(snapshot, ComparableSnapshotJsonContext.Default.ComparableSnapshot);

@@ -225,11 +225,17 @@ cpu/allocation call-tree + diff, `heap-read` para heap diff, `read-counters`|`ev
 qualquer um dos 5 escopos para o tool surface; o boundary por kind preserva o
 contrato de cada legado verbatim (RFC 0002 §4.1).
 
-`view="diff"` accepts `baselineHandle` (required), `minDeltaPct` (default `5.0`) and `topN`
-(default `25`). Accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap-snapshot`
-and `allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second
-rates when the two capture windows use different durations and surface both raw + normalized
-metrics in each row.
+`view="diff"` accepts `baselineHandle` or ordered `comparisonHandles`, `minDeltaPct`
+(default `5.0`), `topN` (default `25`) and `depth` (`"full"` default, or `"compact"`).
+For comparable journey diffs (`gc-datas`, `counters`, `gc-events`), `depth="compact"`
+returns verdict + headline + counts + notes + top-N metric/key deltas. `depth="full"`
+returns the full `SnapshotJourneyDiff` only while it stays below the 32 KiB inline threshold;
+larger matrices are retained in memory and the inline payload includes `journey://diff/{handle}`
+so the assistant can pull the full matrix as an MCP Resource. Pairwise sample diffs remain
+inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap-snapshot` and
+`allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second rates
+when the two capture windows use different durations and surface both raw + normalized metrics
+in each row.
 
 The CPU drilldown views (`top-methods`, `by-module`, `by-namespace`, `hot-path`,
 `caller-callee`, issue #313) re-aggregate the already-collected merged call tree — no new

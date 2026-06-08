@@ -2589,18 +2589,21 @@ public sealed class DiagnosticTools
     [Description(
         "Diffs either two InvestigationSummary JSON documents (produced by export_investigation_summary) " +
         "or 2..N persisted ComparableSnapshot JSON documents. Legacy summaries return the same " +
-        "SummaryDiff as before; comparable snapshots return a compact SnapshotJourneyDiff with verdict, " +
-        "headline pairwise comparison, metric series and bounded key matrix. Pass JSON bodies only; " +
-        "the stateless sidecar never reads comparison inputs from file paths.")]
+        "SummaryDiff as before; comparable snapshots return either the full SnapshotJourneyDiff when small " +
+        "or a compact verdict/headline/top-deltas summary with a journey://diff/{handle} Resource link for large matrices. " +
+        "Pass JSON bodies only; the stateless sidecar never reads comparison inputs from file paths.")]
     public static DiagnosticResult<object> CompareToBaseline(
         ISummaryComparer comparer,
+        IDiagnosticHandleStore handles,
         [Description("Baseline summary JSON (from a prior export_investigation_summary). Optional when snapshotsJson is supplied.")] string? baselineSummaryJson = null,
         [Description("Current summary JSON (from export_investigation_summary on the new investigation). Optional when snapshotsJson is supplied.")] string? currentSummaryJson = null,
-        [Description("Ordered ComparableSnapshot JSON bodies to compare as a journey. JSON bodies only; do not pass file paths.")] string[]? snapshotsJson = null)
+        [Description("Ordered ComparableSnapshot JSON bodies to compare as a journey. JSON bodies only; do not pass file paths.")] string[]? snapshotsJson = null,
+        [Description("ComparableSnapshot journey only: maximum metric series / key rows returned in compact inline payloads and used to bound key-matrix construction. Must be >= 1. Defaults to 25.")] int topN = 25,
+        [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix when it is below the inline threshold; `compact` returns verdict/headline/counts/notes plus top-N metric and key deltas. Large full diffs always return compact inline data plus a journey://diff/{handle} Resource link. Defaults to `full`.")] string depth = "full")
     {
         if (snapshotsJson is { Length: > 0 })
         {
-            return CompareSnapshotBodies(comparer, snapshotsJson);
+            return CompareSnapshotBodies(comparer, handles, snapshotsJson, topN, depth);
         }
 
         if (string.IsNullOrWhiteSpace(baselineSummaryJson)) return InvalidArg<object>(nameof(baselineSummaryJson), "is required when snapshotsJson is omitted");
@@ -2609,7 +2612,7 @@ public sealed class DiagnosticTools
         return CompareInvestigationSummaries(comparer, baselineSummaryJson, currentSummaryJson);
     }
 
-    private static DiagnosticResult<object> CompareSnapshotBodies(ISummaryComparer comparer, string[] snapshotsJson)
+    private static DiagnosticResult<object> CompareSnapshotBodies(ISummaryComparer comparer, IDiagnosticHandleStore handles, string[] snapshotsJson, int topN, string depth)
     {
         var schemas = new List<string>(snapshotsJson.Length);
         for (var i = 0; i < snapshotsJson.Length; i++)
@@ -2634,6 +2637,16 @@ public sealed class DiagnosticTools
             schemas.Add(schema!);
         }
 
+        if (topN < 1)
+        {
+            return InvalidArg<object>(nameof(topN), "must be >= 1 when snapshotsJson is supplied");
+        }
+
+        if (!JourneyDiffPresentation.TryParseDepth(depth, out var journeyDepth))
+        {
+            return InvalidArg<object>(nameof(depth), "must be either 'compact' or 'full' when snapshotsJson is supplied");
+        }
+
         var distinctSchemas = schemas.Distinct(StringComparer.Ordinal).ToArray();
         if (distinctSchemas.Length > 1)
         {
@@ -2652,7 +2665,7 @@ public sealed class DiagnosticTools
                     new DiagnosticError("InvalidArgument", $"Received {snapshotsJson.Length} InvestigationSummary documents.", nameof(snapshotsJson)),
                     new NextActionHint("compare_to_baseline", "Pass exactly two InvestigationSummary JSON documents, or pass 2..N ComparableSnapshot documents.")),
             ComparableSnapshot.SchemaV1 => snapshotsJson.Length >= 2
-                ? CompareComparableSnapshots(snapshotsJson)
+                ? CompareComparableSnapshots(handles, snapshotsJson, topN, journeyDepth)
                 : DiagnosticResult.Fail<object>(
                     "ComparableSnapshot comparison requires at least two JSON documents.",
                     new DiagnosticError("InvalidArgument", $"Received {snapshotsJson.Length} ComparableSnapshot document.", nameof(snapshotsJson)),
@@ -2720,7 +2733,7 @@ public sealed class DiagnosticTools
                 new Dictionary<string, object?> { ["durationSeconds"] = 20 }));
     }
 
-    private static DiagnosticResult<object> CompareComparableSnapshots(string[] snapshotsJson)
+    private static DiagnosticResult<object> CompareComparableSnapshots(IDiagnosticHandleStore handles, string[] snapshotsJson, int topN, JourneyDiffDepth depth)
     {
         var snapshots = new List<ComparableSnapshot>(snapshotsJson.Length);
         try
@@ -2762,15 +2775,26 @@ public sealed class DiagnosticTools
             }
         }
 
-        var diff = SnapshotDiffer.Compare(snapshots);
+        var diff = SnapshotDiffer.Compare(snapshots, topN: topN);
         var headline = diff.Pairwise?.Headline;
         var headlineText = headline is null
             ? "No pairwise headline."
-            : $"{headline.Relation}: {headline.Verdict} ({diff.Labels[headline.FromIndex]} → {diff.Labels[headline.ToIndex]}).";
-        var summaryLine = $"Verdict: {diff.Verdict}. {headlineText} " +
-                          $"Metrics: {diff.MetricSeries.Count}; rows: {diff.KeyMatrix.Count}.";
+            : string.Create(
+                CultureInfo.InvariantCulture,
+                $"{headline.Relation}: {headline.Verdict} ({diff.Labels[headline.FromIndex]} → {diff.Labels[headline.ToIndex]}).");
+        var summaryLine = string.Create(
+            CultureInfo.InvariantCulture,
+            $"Verdict: {diff.Verdict}. {headlineText} Metrics: {diff.MetricSeries.Count}; rows: {diff.KeyMatrix.Count}.");
 
-        return DiagnosticResult.Ok<object>(diff, summaryLine,
+        return JourneyDiffPresentation.BuildResult(
+            diff,
+            handles,
+            snapshots[^1].ProcessId,
+            topN,
+            depth,
+            summaryLine,
+            evictWhenProcessExits: false,
+            HandleOrigin.Imported,
             new NextActionHint("compare_to_baseline", "Optional: compare another persisted snapshot journey with the same kind."));
     }
 
