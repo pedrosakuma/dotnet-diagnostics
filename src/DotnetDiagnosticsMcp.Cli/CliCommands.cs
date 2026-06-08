@@ -358,6 +358,12 @@ internal static class CliCommands
             return false;
         }
 
+        if (!JourneyModeParser.TryParse(options.Mode, out _))
+        {
+            error = $"Unknown --mode '{options.Mode}'. Valid values: trend, dispersion.";
+            return false;
+        }
+
         return true;
     }
 
@@ -530,7 +536,14 @@ internal static class CliCommands
             snapshots.Add(snapshot);
         }
 
-        var diff = SnapshotDiffer.Compare(snapshots);
+        if (!JourneyModeParser.TryParse(options.Mode, out var mode))
+        {
+            return BuildResult<object>(DiagnosticResult.Fail<object>(
+                $"compare: unknown --mode '{options.Mode}'.",
+                new DiagnosticError("InvalidArgument", "Valid values: trend, dispersion.", nameof(options.Mode))), static (_, _) => { });
+        }
+
+        var diff = SnapshotDiffer.Compare(snapshots, mode);
         if (!string.IsNullOrWhiteSpace(options.SavePath))
         {
             try
@@ -1172,8 +1185,8 @@ internal static class CliCommands
             sb.AppendLine(CultureInfo.InvariantCulture, $"  headline: {headline.Relation} {headline.Verdict}");
         }
 
-        AppendMetricDeltas(sb, diff.MetricSeries);
-        AppendKeyDeltas(sb, diff.KeyMatrix);
+        AppendMetricDeltas(sb, diff.MetricSeries, diff.Mode, diff.Labels);
+        AppendKeyDeltas(sb, diff.KeyMatrix, diff.Mode, diff.Labels);
 
         if (diff.Notes.Count > 0)
         {
@@ -1187,14 +1200,21 @@ internal static class CliCommands
         return sb.ToString().TrimEnd();
     }
 
-    private static void AppendMetricDeltas(StringBuilder sb, IReadOnlyList<MetricSeries> series)
+    private static void AppendMetricDeltas(StringBuilder sb, IReadOnlyList<MetricSeries> series, JourneyMode mode, IReadOnlyList<string> labels)
     {
-        var rows = series
-            .Where(s => s.DeltaAbs.HasValue || s.DeltaPct.HasValue)
-            .OrderByDescending(s => Math.Abs(s.DeltaPct ?? 0))
-            .ThenBy(s => s.Definition.Name, StringComparer.Ordinal)
-            .Take(5)
-            .ToArray();
+        var rows = mode == JourneyMode.Dispersion
+            ? series
+                .Where(s => s.Dispersion is not null)
+                .OrderByDescending(s => s.Dispersion!.CoefficientOfVariation)
+                .ThenBy(s => s.Definition.Name, StringComparer.Ordinal)
+                .Take(5)
+                .ToArray()
+            : series
+                .Where(s => s.DeltaAbs.HasValue || s.DeltaPct.HasValue)
+                .OrderByDescending(s => Math.Abs(s.DeltaPct ?? 0))
+                .ThenBy(s => s.Definition.Name, StringComparer.Ordinal)
+                .Take(5)
+                .ToArray();
         if (rows.Length == 0)
         {
             return;
@@ -1203,6 +1223,13 @@ internal static class CliCommands
         sb.AppendLine("  metrics:");
         foreach (var row in rows)
         {
+            if (mode == JourneyMode.Dispersion && row.Dispersion is { } dispersion)
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture,
+                    $"    - {row.Definition.Name}: cv {FormatNumber(dispersion.CoefficientOfVariation)} outlier {LabelAt(labels, dispersion.OutlierIndex)} values [{FormatValues(row.Values)}]");
+                continue;
+            }
+
             var first = FirstValue(row.Values);
             var last = LastValue(row.Values);
             sb.AppendLine(CultureInfo.InvariantCulture,
@@ -1210,26 +1237,94 @@ internal static class CliCommands
         }
     }
 
-    private static void AppendKeyDeltas(StringBuilder sb, IReadOnlyList<KeyMatrixRow> rows)
+    private static void AppendKeyDeltas(StringBuilder sb, IReadOnlyList<KeyMatrixRow> rows, JourneyMode mode, IReadOnlyList<string> labels)
     {
-        var top = rows
-            .Where(r => r.DeltaAbs.HasValue || r.DeltaPct.HasValue)
-            .OrderByDescending(r => Math.Abs(r.DeltaPct ?? 0))
-            .ThenBy(r => r.DisplayName, StringComparer.Ordinal)
-            .Take(5)
-            .ToArray();
+        var top = mode == JourneyMode.Dispersion
+            ? rows
+                .Select(r => (Row: r, Stats: DispersionStatsFor(r.Values)))
+                .Where(r => r.Stats.Cv >= 0)
+                .OrderByDescending(r => r.Stats.Cv)
+                .ThenBy(r => r.Row.DisplayName, StringComparer.Ordinal)
+                .Take(5)
+                .ToArray()
+            : rows
+                .Where(r => r.DeltaAbs.HasValue || r.DeltaPct.HasValue)
+                .OrderByDescending(r => Math.Abs(r.DeltaPct ?? 0))
+                .ThenBy(r => r.DisplayName, StringComparer.Ordinal)
+                .Take(5)
+                .Select(r => (Row: r, Stats: (Cv: -1.0, OutlierIndex: -1)))
+                .ToArray();
         if (top.Length == 0)
         {
             return;
         }
 
         sb.AppendLine("  keys:");
-        foreach (var row in top)
+        foreach (var item in top)
         {
+            var row = item.Row;
+            if (mode == JourneyMode.Dispersion)
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture,
+                    $"    - {row.DisplayName}: cv {FormatNumber(item.Stats.Cv)} outlier {LabelAt(labels, item.Stats.OutlierIndex)} values [{FormatValues(row.Values)}]");
+                continue;
+            }
+
             sb.AppendLine(CultureInfo.InvariantCulture,
                 $"    - {row.DisplayName}: {FormatNumber(FirstValue(row.Values))} → {FormatNumber(LastValue(row.Values))} (Δ {FormatSigned(row.DeltaAbs)}, {FormatSignedPercent(row.DeltaPct)}, {row.Direction})");
         }
     }
+
+    private static (double Cv, int OutlierIndex) DispersionStatsFor(IReadOnlyList<double?> values)
+    {
+        var observed = values
+            .Select((value, index) => (Value: value, Index: index))
+            .Where(static item => item.Value.HasValue)
+            .Select(static item => (Value: item.Value!.Value, item.Index))
+            .ToArray();
+        if (observed.Length < 2)
+        {
+            return (-1, -1);
+        }
+
+        var nums = observed.Select(static item => item.Value).ToArray();
+        var min = nums.Min();
+        var max = nums.Max();
+        var mean = nums.Average();
+        var median = Median(nums);
+        var variance = nums.Select(value => (value - mean) * (value - mean)).Average();
+        var stdDev = Math.Sqrt(variance);
+        var denominator = Math.Abs(mean);
+        var cv = denominator > 0 ? stdDev / denominator : stdDev == 0 ? 0 : double.PositiveInfinity;
+        var outlierIndex = -1;
+        var tol = Math.Max(1e-9, 1e-6 * Math.Max(Math.Abs(max), Math.Abs(min)));
+        if (stdDev > tol)
+        {
+            var furthest = observed
+                .OrderByDescending(item => Math.Abs(item.Value - median))
+                .ThenBy(static item => item.Index)
+                .First();
+            if (Math.Abs(furthest.Value - median) > 2 * stdDev)
+            {
+                outlierIndex = furthest.Index;
+            }
+        }
+
+        return (cv, outlierIndex);
+    }
+
+    private static double Median(double[] values)
+    {
+        var ordered = values.OrderBy(static value => value).ToArray();
+        var mid = ordered.Length / 2;
+        return ordered.Length % 2 == 0 ? (ordered[mid - 1] + ordered[mid]) / 2 : ordered[mid];
+    }
+
+    private static string FormatValues(IReadOnlyList<double?> values)
+        => string.Join(", ", values.Select(FormatNumber));
+
+    private static string LabelAt(IReadOnlyList<string> labels, int index)
+        => index < 0 ? "none" : index < labels.Count ? labels[index] : index.ToString(CultureInfo.InvariantCulture);
 
     private static double? FirstValue(IReadOnlyList<double?> values) => values.Count == 0 ? null : values[0];
 

@@ -173,6 +173,33 @@ The headline verdict is still
 the change happened. This is how you tell "settled" from "still adapting" — a `Converged`
 series with a quiet tail is healthy; a `MonotonicUp` allocation-rate series at the tail is not.
 
+### Replica consistency recipe (dispersion mode)
+
+Use this when the question is **"are my N replicas consistent right now?"** rather than
+"did one process change over time?" Capture the same kind/window from each pod or replica,
+then compare them as an unordered fleet:
+
+- MCP handles: `query_snapshot(handle="<pod-c>", view="diff", comparisonHandles=["<pod-a>","<pod-b>"], mode="dispersion")`.
+- Persisted JSON: `compare_to_baseline(snapshotsJson=[<pod-a-json>, <pod-b-json>, <pod-c-json>], mode="dispersion")`.
+- CLI: `compare pod-a.json pod-b.json pod-c.json --mode dispersion`.
+
+Read the dispersion verdicts as:
+
+- `uniform` — shared metrics/key rows are close enough across captures.
+- `dispersed` — at least one metric/key row has a high coefficient of variation; inspect the
+  `Dispersion` stats on metric series or compact top key rows for the outlier.
+- `no_overlap` — captures do not share comparable metrics/key rows.
+- `incomparable` — fewer than two captures or mixed kinds.
+
+For compact summaries, metric series are ranked by their dispersion coefficient of variation.
+Key-set row ranking computes coefficient of variation from the row values at presentation time
+because `KeyMatrixRow` does not yet persist per-row dispersion stats. Richer row-level dispersion
+stats are a future enhancement.
+
+`mode="dispersion"` is available only on N-way comparable journeys; legacy pairwise
+`baselineHandle` sample diffs (`cpu-sample`, `heap-snapshot`, `allocation-sample`,
+`native-alloc-sample`) are rejected because their pairwise diff shape cannot represent dispersion.
+
 ### Token guidance (compact verdict in context, full matrix on demand)
 
 Large journeys must not flood the LLM context:

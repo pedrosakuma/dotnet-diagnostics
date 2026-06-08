@@ -177,6 +177,53 @@ public sealed class QuerySnapshotDiffToolTests
     }
 
     [Fact]
+    public async Task Diff_GcDatasComparisonHandles_DispersionModeReturnsDispersionVerdict()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var first = store.Register(123, CollectionHandleKinds.GcDatas, GcDatasSnapshot(10.0f), TimeSpan.FromMinutes(10));
+        var second = store.Register(123, CollectionHandleKinds.GcDatas, GcDatasSnapshot(50.0f), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, CollectionHandleKinds.GcDatas, GcDatasSnapshot(10.0f), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, comparisonHandles: [first.Id, second.Id], mode: "dispersion");
+
+        result.Error.Should().BeNull();
+        var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
+        diff.Mode.Should().Be(JourneyMode.Dispersion);
+        diff.Verdict.Should().Be("dispersed");
+        diff.Pairwise.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Diff_DispersionModeRejectsLegacyPairwiseBaselineHandle()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var baselineHandle = store.Register(123, "cpu-sample", CpuArtifact(2), TimeSpan.FromMinutes(10));
+        var currentHandle = store.Register(123, "cpu-sample", CpuArtifact(6), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, currentHandle.Id, baselineHandle.Id, mode: "dispersion");
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("InvalidArgument");
+        result.Error.Message.Should().Contain("comparisonHandles");
+        result.Error.Message.Should().Contain("cpu-sample");
+    }
+
+    [Fact]
+    public async Task Diff_InvalidModeReturnsInvalidArgument()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var baseline = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshot(10), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshot(25), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, baseline.Id, mode: "fleet");
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("InvalidArgument");
+        result.Error.Message.Should().Contain("trend");
+        result.Error.Message.Should().Contain("dispersion");
+    }
+
+    [Fact]
     public async Task Diff_CountersBaselineHandle_ReturnsJourneyDiffInlineWhenSmall()
     {
         var store = new MemoryDiagnosticHandleStore();
@@ -296,6 +343,65 @@ public sealed class QuerySnapshotDiffToolTests
     }
 
     [Fact]
+    public void CompactDispersionSummary_RanksMetricSeriesByCoefficientOfVariation()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var diff = SnapshotDiffer.Compare(
+            new[]
+            {
+                MetricSnapshot("pod0", ("outlier", 10), ("monotonic", 10)),
+                MetricSnapshot("pod1", ("outlier", 100), ("monotonic", 50)),
+                MetricSnapshot("pod2", ("outlier", 10), ("monotonic", 90)),
+            },
+            JourneyMode.Dispersion);
+
+        var result = JourneyDiffPresentation.BuildResult(
+            diff,
+            store,
+            processId: 123,
+            topN: 1,
+            JourneyDiffDepth.Compact,
+            "summary",
+            evictWhenProcessExits: false,
+            HandleOrigin.Imported);
+
+        result.Error.Should().BeNull();
+        var summary = result.Data.Should().BeOfType<JourneyDiffCompactSummary>().Subject;
+        summary.MetricSeries.Should().ContainSingle();
+        summary.MetricSeries[0].Definition.Name.Should().Be("outlier");
+    }
+
+    [Fact]
+    public void CompactDispersionSummary_RanksKeyRowsByCoefficientOfVariation()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var diff = SnapshotDiffer.Compare(
+            new[]
+            {
+                KeySnapshot("pod0", ("outlier", 10), ("monotonic", 10)),
+                KeySnapshot("pod1", ("outlier", 100), ("monotonic", 50)),
+                KeySnapshot("pod2", ("outlier", 10), ("monotonic", 90)),
+            },
+            JourneyMode.Dispersion,
+            topN: 1);
+
+        var result = JourneyDiffPresentation.BuildResult(
+            diff,
+            store,
+            processId: 123,
+            topN: 1,
+            JourneyDiffDepth.Compact,
+            "summary",
+            evictWhenProcessExits: false,
+            HandleOrigin.Imported);
+
+        result.Error.Should().BeNull();
+        var summary = result.Data.Should().BeOfType<JourneyDiffCompactSummary>().Subject;
+        summary.KeyMatrix.Should().ContainSingle();
+        summary.KeyMatrix[0].DisplayName.Should().Be("outlier");
+    }
+
+    [Fact]
     public async Task Diff_RejectsBaselineHandleWithComparisonHandles()
     {
         var store = new MemoryDiagnosticHandleStore();
@@ -316,7 +422,8 @@ public sealed class QuerySnapshotDiffToolTests
         string? baselineHandle = null,
         string[]? comparisonHandles = null,
         int? topN = null,
-        string depth = "full")
+        string depth = "full",
+        string? mode = null)
         => await QuerySnapshotTool.QuerySnapshot(
             store,
             new StubDumpInspector(),
@@ -330,7 +437,31 @@ public sealed class QuerySnapshotDiffToolTests
             baselineHandle: baselineHandle,
             comparisonHandles: comparisonHandles,
             depth: depth,
+            mode: mode,
             cancellationToken: CancellationToken.None);
+
+    private static ComparableSnapshot MetricSnapshot(string label, params (string name, double value)[] metrics)
+        => new(
+            ComparableSnapshot.SchemaV1,
+            CollectionHandleKinds.Counters,
+            label,
+            DateTimeOffset.UnixEpoch,
+            123,
+            metrics.Select(metric => new MetricValue(new MetricDefinition(metric.name, MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Point, MetricNormalization.None, "count"), metric.value)).ToArray(),
+            Array.Empty<ComparableRow>());
+
+    private static ComparableSnapshot KeySnapshot(string label, params (string id, double value)[] rows)
+        => new(
+            ComparableSnapshot.SchemaV1,
+            "cpu-sample",
+            label,
+            DateTimeOffset.UnixEpoch,
+            123,
+            Array.Empty<MetricValue>(),
+            rows.Select(row => new ComparableRow(
+                new ComparableKey("cpu-sample", row.id),
+                row.id,
+                [new MetricValue(new MetricDefinition("exclusivePercent", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Point, MetricNormalization.None, "%"), row.value)])).ToArray());
 
     private static CpuSampleTraceArtifact CpuArtifact(long exclusiveSamples)
         => new(

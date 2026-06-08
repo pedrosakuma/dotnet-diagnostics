@@ -127,8 +127,8 @@ internal static class JourneyDiffPresentation
         JourneyDiffDepth depth,
         DiagnosticHandle? handle)
     {
-        var metricSeries = TopMetricSeries(diff.MetricSeries, topN);
-        var keyRows = TopKeyRows(diff.KeyMatrix, topN);
+        var metricSeries = TopMetricSeries(diff.MetricSeries, topN, diff.Mode);
+        var keyRows = TopKeyRows(diff.KeyMatrix, topN, diff.Mode);
 
         return new JourneyDiffCompactSummary(
             diff.Kind,
@@ -173,21 +173,66 @@ internal static class JourneyDiffPresentation
     private static string LabelAt(IReadOnlyList<string> labels, int index)
         => index >= 0 && index < labels.Count ? labels[index] : index.ToString(CultureInfo.InvariantCulture);
 
-    private static MetricSeries[] TopMetricSeries(IReadOnlyList<MetricSeries> series, int topN)
-        => series
+    private static MetricSeries[] TopMetricSeries(IReadOnlyList<MetricSeries> series, int topN, JourneyMode mode)
+    {
+        if (mode == JourneyMode.Dispersion)
+        {
+            return series
+                .OrderByDescending(s => s.Dispersion?.CoefficientOfVariation ?? -1)
+                .ThenBy(s => s.Definition.Name, StringComparer.Ordinal)
+                .Take(topN)
+                .ToArray();
+        }
+
+        return series
             .OrderByDescending(s => AbsOrMinusOne(s.DeltaPct))
             .ThenByDescending(s => AbsOrMinusOne(s.DeltaAbs))
             .ThenBy(s => s.Definition.Name, StringComparer.Ordinal)
             .Take(topN)
             .ToArray();
+    }
 
-    private static KeyMatrixRow[] TopKeyRows(IReadOnlyList<KeyMatrixRow> rows, int topN)
-        => rows
+    private static KeyMatrixRow[] TopKeyRows(IReadOnlyList<KeyMatrixRow> rows, int topN, JourneyMode mode)
+    {
+        if (mode == JourneyMode.Dispersion)
+        {
+            return rows
+                .OrderByDescending(r => CoefficientOfVariation(r.Values))
+                .ThenBy(r => r.DisplayName, StringComparer.Ordinal)
+                .Take(topN)
+                .ToArray();
+        }
+
+        return rows
             .OrderByDescending(r => AbsOrMinusOne(r.DeltaPct))
             .ThenByDescending(r => AbsOrMinusOne(r.DeltaAbs))
             .ThenBy(r => r.DisplayName, StringComparer.Ordinal)
             .Take(topN)
             .ToArray();
+    }
 
     private static double AbsOrMinusOne(double? value) => value.HasValue ? Math.Abs(value.Value) : -1;
+
+    private static double CoefficientOfVariation(IReadOnlyList<double?> values)
+    {
+        var observed = values
+            .Where(static v => v.HasValue)
+            .Select(static v => v!.Value)
+            .ToArray();
+        if (observed.Length < 2)
+        {
+            return -1;
+        }
+
+        var mean = observed.Average();
+        var variance = observed.Select(v => Math.Pow(v - mean, 2)).Average();
+        var stdDev = Math.Sqrt(variance);
+        var denominator = Math.Abs(mean);
+        if (denominator > 0)
+        {
+            return stdDev / denominator;
+        }
+
+        return stdDev == 0 ? 0 : double.PositiveInfinity;
+    }
 }

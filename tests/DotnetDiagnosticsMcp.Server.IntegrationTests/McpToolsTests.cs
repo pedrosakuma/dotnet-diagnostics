@@ -108,7 +108,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             "topTypes", "includeRetentionPaths", "retentionPathLimit",
             "view",
             "stackRank",
-            "baselineSummaryJson", "currentSummaryJson", "snapshotsJson", "depth",
+            "baselineSummaryJson", "currentSummaryJson", "snapshotsJson", "depth", "mode",
         };
 
         foreach (var tool in tools)
@@ -1133,6 +1133,54 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         diff.Pairwise.Should().NotBeNull();
         diff.Pairwise!.Headline.Verdict.Should().Be("regression");
         diff.MetricSeries.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task CompareToBaseline_ComparableSnapshots_DispersionModeReturnsDispersionVerdict()
+    {
+        await using var client = await ConnectAsync();
+        var pod0 = SnapshotJson("pod0", 10);
+        var pod1 = SnapshotJson("pod1", 50);
+        var pod2 = SnapshotJson("pod2", 10);
+
+        var result = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["snapshotsJson"] = new[] { pod0, pod1, pod2 },
+                ["mode"] = "dispersion",
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        var diff = envelope!.Data.Deserialize<SnapshotJourneyDiff>(DeserializeOptions);
+        diff.Should().NotBeNull();
+        diff!.Mode.Should().Be(JourneyMode.Dispersion);
+        diff.Verdict.Should().Be("dispersed");
+        diff.Pairwise.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CompareToBaseline_InvalidModeReturnsInvalidArgument()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["snapshotsJson"] = new[] { SnapshotJson("baseline", 10), SnapshotJson("current", 20) },
+                ["mode"] = "fleet",
+            },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Error!.Kind.Should().Be("InvalidArgument");
+        envelope.Error.Message.Should().Contain("trend");
+        envelope.Error.Message.Should().Contain("dispersion");
     }
 
     [Fact]
