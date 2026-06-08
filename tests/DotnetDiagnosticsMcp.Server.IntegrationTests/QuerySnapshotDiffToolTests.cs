@@ -80,6 +80,83 @@ public sealed class QuerySnapshotDiffToolTests
     }
 
     [Fact]
+    public async Task Diff_NativeAllocHandle_ReturnsSampleDiffEnvelope()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var baselineHandle = store.Register(123, DiagnosticTools.NativeAllocHandleKind, CpuArtifact(2), TimeSpan.FromMinutes(10));
+        var currentHandle = store.Register(123, DiagnosticTools.NativeAllocHandleKind, CpuArtifact(6), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, currentHandle.Id, baselineHandle.Id);
+
+        result.Error.Should().BeNull();
+        result.Data.Should().BeOfType<SampleDiff<MethodDiffKey, CpuDiffMetric>>();
+    }
+
+    [Fact]
+    public async Task Diff_HeapComparisonHandles_ReturnsJourneyDiff()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var first = store.Register(123, "heap-snapshot", HeapSnapshot(("System.Byte[]", 128, 1)), TimeSpan.FromMinutes(10));
+        var second = store.Register(123, "heap-snapshot", HeapSnapshot(("System.Byte[]", 256, 2)), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, "heap-snapshot", HeapSnapshot(("System.Byte[]", 512, 4)), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, comparisonHandles: [first.Id, second.Id]);
+
+        result.Error.Should().BeNull();
+        var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
+        diff.Kind.Should().Be("heap-snapshot");
+        diff.KeyMatrix.Should().Contain(row => row.DisplayName == "System.Byte[]");
+    }
+
+    [Fact]
+    public async Task Diff_CpuComparisonHandles_ReturnsJourneyDiff()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var first = store.Register(123, "cpu-sample", CpuArtifact(2), TimeSpan.FromMinutes(10));
+        var second = store.Register(123, "cpu-sample", CpuArtifact(4), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, "cpu-sample", CpuArtifact(6), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, comparisonHandles: [first.Id, second.Id]);
+
+        result.Error.Should().BeNull();
+        var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
+        diff.Kind.Should().Be("cpu-sample");
+        diff.KeyMatrix.Should().Contain(row => row.DisplayName.Contains("DoWork", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Diff_NativeAllocComparisonHandles_ReturnsJourneyDiff()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var first = store.Register(123, DiagnosticTools.NativeAllocHandleKind, CpuArtifact(2), TimeSpan.FromMinutes(10));
+        var second = store.Register(123, DiagnosticTools.NativeAllocHandleKind, CpuArtifact(4), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, DiagnosticTools.NativeAllocHandleKind, CpuArtifact(6), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, comparisonHandles: [first.Id, second.Id]);
+
+        result.Error.Should().BeNull();
+        var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
+        diff.Kind.Should().Be(DiagnosticTools.NativeAllocHandleKind);
+        diff.KeyMatrix.Should().Contain(row => row.DisplayName.Contains("DoWork", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Diff_AllocationComparisonHandles_ReturnsJourneyDiff()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var first = store.Register(123, "allocation-sample", AllocationArtifact(2_000, 20, 4), TimeSpan.FromMinutes(10));
+        var second = store.Register(123, "allocation-sample", AllocationArtifact(4_000, 40, 4), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, "allocation-sample", AllocationArtifact(8_000, 80, 4), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, comparisonHandles: [first.Id, second.Id]);
+
+        result.Error.Should().BeNull();
+        var diff = result.Data.Should().BeOfType<SnapshotJourneyDiff>().Subject;
+        diff.Kind.Should().Be("allocation-sample");
+        diff.KeyMatrix.Should().Contain(row => row.DisplayName == "System.String");
+    }
+
+    [Fact]
     public async Task Diff_GcDatasComparisonHandles_ReturnsJourneyDiff()
     {
         var store = new MemoryDiagnosticHandleStore();
