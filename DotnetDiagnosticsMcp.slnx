@@ -13,5 +13,6 @@
     <Project Path="tests/DotnetDiagnosticsMcp.Cli.Tests/DotnetDiagnosticsMcp.Cli.Tests.csproj" />
     <Project Path="tests/DotnetDiagnosticsMcp.Core.Tests/DotnetDiagnosticsMcp.Core.Tests.csproj" />
     <Project Path="tests/DotnetDiagnosticsMcp.Server.IntegrationTests/DotnetDiagnosticsMcp.Server.IntegrationTests.csproj" />
+    <Project Path="tests/DotnetDiagnosticsMcp.TestSupport/DotnetDiagnosticsMcp.TestSupport.csproj" />
   </Folder>
 </Solution>

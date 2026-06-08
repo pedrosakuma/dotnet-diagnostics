@@ -34,100 +34,52 @@ namespace DotnetDiagnosticsMcp.Core.Tests;
 [Collection("LiveProcess")]
 public class LiveCoreClrProcessTests : IAsyncLifetime
 {
-    private Process? _sampleProcess;
-    private readonly TaskCompletionSource<string> _listeningUrlTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private LiveSampleProcess? _sample;
 
-    private int Pid => _sampleProcess?.Id ?? throw new InvalidOperationException("Sample not started.");
+    private int Pid => _sample?.ProcessId ?? throw new InvalidOperationException("Sample not started.");
 
     public async Task InitializeAsync()
     {
-        var sampleDll = LocateSampleDll();
-        if (sampleDll is null)
-        {
-            return;
-        }
-
         // Execute the published DLL directly with `dotnet <dll>` so the captured PID
         // *is* the application process — `dotnet run` creates a wrapper process whose
         // own EventCounters surface (mostly idle) sometimes returns no payloads
         // before our short collection window ends, which made tests flaky.
-        var psi = new ProcessStartInfo("dotnet")
+        // The shared harness throws SkipException when the binary is missing / fails to
+        // start; swallow it so per-test EnsureSampleRunning() guards remain the skip point.
+        try
         {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WorkingDirectory = Path.GetDirectoryName(sampleDll)!,
-        };
-        psi.ArgumentList.Add(sampleDll);
-        psi.ArgumentList.Add("--urls");
-        psi.ArgumentList.Add("http://127.0.0.1:0");
-        psi.Environment["DOTNET_NOLOGO"] = "1";
-        psi.Environment["DOTNET_gcServer"] = "0";
-        psi.Environment["DOTNET_TieredCompilation"] = "1";
-        psi.Environment["DOTNET_TC_QuickJit"] = "1";
-        psi.Environment["DOTNET_TieredPGO"] = "1";
-        psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
-        psi.Environment["SECRET_TOKEN"] = "abc";
-        psi.Environment["MY_KEY"] = "xyz";
-
-        _sampleProcess = Process.Start(psi);
-        if (_sampleProcess is null)
-        {
-            return;
-        }
-
-        // Consume stdout so the OS pipe buffer never fills (would deadlock the sample),
-        // and harvest the "Now listening on: http://127.0.0.1:NNNN" line that Kestrel
-        // emits when binding to port 0 picks an ephemeral port.
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                using var reader = _sampleProcess.StandardOutput;
-                string? line;
-                while ((line = await reader.ReadLineAsync()) is not null)
+            _sample = await LiveSampleProcess.StartPublishedAsync(
+                "CoreClrSample",
+                new LiveSampleOptions
                 {
-                    var idx = line.IndexOf("Now listening on:", StringComparison.Ordinal);
-                    if (idx >= 0 && !_listeningUrlTcs.Task.IsCompleted)
+                    HarvestListeningUrl = true,
+                    DiagnosticTimeout = TimeSpan.FromSeconds(30),
+                    Environment = new Dictionary<string, string>
                     {
-                        var url = line[(idx + "Now listening on:".Length)..].Trim();
-                        _listeningUrlTcs.TrySetResult(url);
-                    }
-                }
-            }
-            catch
-            {
-                // best-effort; if the read fails the URL TCS is never set and HTTP-driven
-                // tests will just skip via EnsureListeningUrlAsync's timeout.
-            }
-        });
-        _ = Task.Run(async () =>
+                        ["DOTNET_NOLOGO"] = "1",
+                        ["DOTNET_gcServer"] = "0",
+                        ["DOTNET_TieredCompilation"] = "1",
+                        ["DOTNET_TC_QuickJit"] = "1",
+                        ["DOTNET_TieredPGO"] = "1",
+                        ["ASPNETCORE_ENVIRONMENT"] = "Development",
+                        ["SECRET_TOKEN"] = "abc",
+                        ["MY_KEY"] = "xyz",
+                    },
+                });
+        }
+        catch (SkipException)
         {
-            try { using var err = _sampleProcess.StandardError; while (await err.ReadLineAsync() is not null) { } }
-            catch { /* best-effort */ }
-        });
-
-        await WaitForDiagnosticEndpointAsync(_sampleProcess.Id, TimeSpan.FromSeconds(30));
+            // Sample binary not built / failed to start; leave _sample null so the
+            // per-test guards skip with a descriptive message.
+        }
     }
 
-    public Task DisposeAsync()
+    public async Task DisposeAsync()
     {
-        if (_sampleProcess is { HasExited: false })
+        if (_sample is not null)
         {
-            try
-            {
-                _sampleProcess.Kill(entireProcessTree: true);
-                _sampleProcess.WaitForExit(5_000);
-            }
-            catch (Exception)
-            {
-                // best-effort
-            }
+            await _sample.DisposeAsync();
         }
-
-        _sampleProcess?.Dispose();
-        return Task.CompletedTask;
     }
 
     [Fact]
@@ -2175,132 +2127,32 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
     }
 
     private async Task<string> EnsureListeningUrlAsync(TimeSpan timeout)
-    {
-        using var cts = new CancellationTokenSource(timeout);
-        try
-        {
-            var url = await _listeningUrlTcs.Task.WaitAsync(cts.Token);
-            await WaitForHttpReadyAsync(url, timeout);
-            return url;
-        }
-        catch (OperationCanceledException)
-        {
-            throw SkipException.ForReason("CoreClrSample did not advertise an HTTP listening URL within the timeout.");
-        }
-    }
+        => await _sample!.WaitForListeningUrlAsync(timeout, "/weatherforecast");
 
-    internal static async Task WaitForHttpReadyAsync(string baseUrl, TimeSpan timeout, string readinessPath = "/weatherforecast")
-    {
-        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            try
-            {
-                using var response = await http.GetAsync(readinessPath, CancellationToken.None);
-                if (response.IsSuccessStatusCode)
-                {
-                    return;
-                }
-            }
-            catch (HttpRequestException)
-            {
-                // Kestrel sometimes logs the listening URL just before the socket is fully ready.
-            }
-
-            await Task.Delay(250);
-        }
-
-        throw SkipException.ForReason($"Sample did not accept HTTP requests on {baseUrl}{readinessPath} within the timeout.");
-    }
+    internal static Task WaitForHttpReadyAsync(string baseUrl, TimeSpan timeout, string readinessPath = "/weatherforecast")
+        => DiagnosticReadiness.WaitForHttpReadyAsync(baseUrl, timeout, readinessPath);
 
     private void EnsureSampleRunning()
     {
-        if (_sampleProcess is null || _sampleProcess.HasExited)
+        if (_sample is null || !_sample.IsRunning)
         {
             throw SkipException.ForReason("CoreClrSample is not running (could not start the sample process).");
         }
     }
 
-    private static async Task<RunningSample> StartPublishedSampleAsync(
+    private static Task<LiveSampleProcess> StartPublishedSampleAsync(
         string sampleName,
         IReadOnlyDictionary<string, string>? extraEnv = null)
-    {
-        var sampleDll = LocateSampleDll(sampleName)
-            ?? throw SkipException.ForReason($"{sampleName}.dll not found.");
-
-        var listeningUrlTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var psi = new ProcessStartInfo("dotnet")
+        => LiveSampleProcess.StartPublishedAsync(sampleName, new LiveSampleOptions
         {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WorkingDirectory = Path.GetDirectoryName(sampleDll)!,
-        };
-        psi.ArgumentList.Add(sampleDll);
-        psi.ArgumentList.Add("--urls");
-        psi.ArgumentList.Add("http://127.0.0.1:0");
-        psi.Environment["DOTNET_NOLOGO"] = "1";
-        psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
-        if (extraEnv is not null)
-        {
-            foreach (var (key, value) in extraEnv)
-            {
-                psi.Environment[key] = value;
-            }
-        }
-
-        var process = Process.Start(psi)
-            ?? throw SkipException.ForReason($"Failed to start {sampleName}.");
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                using var reader = process.StandardOutput;
-                string? line;
-                while ((line = await reader.ReadLineAsync()) is not null)
-                {
-                    var idx = line.IndexOf("Now listening on:", StringComparison.Ordinal);
-                    if (idx >= 0 && !listeningUrlTcs.Task.IsCompleted)
-                    {
-                        listeningUrlTcs.TrySetResult(line[(idx + "Now listening on:".Length)..].Trim());
-                    }
-                }
-            }
-            catch
-            {
-            }
+            Environment = extraEnv,
+            HarvestListeningUrl = true,
+            WaitForHttpReady = true,
+            ReadinessPath = "/",
         });
 
-        _ = Task.Run(async () =>
-        {
-            try { using var reader = process.StandardError; while (await reader.ReadLineAsync() is not null) { } }
-            catch { }
-        });
-
-        await WaitForDiagnosticEndpointAsync(process.Id, TimeSpan.FromSeconds(30));
-        var baseUrl = await listeningUrlTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        await WaitForHttpReadyAsync(baseUrl, TimeSpan.FromSeconds(30), "/");
-        return new RunningSample(process, baseUrl);
-    }
-
-    internal static async Task WaitForDiagnosticEndpointAsync(int pid, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (Microsoft.Diagnostics.NETCore.Client.DiagnosticsClient
-                .GetPublishedProcesses()
-                .Contains(pid))
-            {
-                return;
-            }
-
-            await Task.Delay(500);
-        }
-    }
+    internal static Task WaitForDiagnosticEndpointAsync(int pid, TimeSpan timeout)
+        => DiagnosticReadiness.WaitForDiagnosticEndpointAsync(pid, timeout);
 
     private static async Task<AuxiliarySampleHost> StartAuxiliarySampleAsync(string sampleName)
     {
@@ -2364,66 +2216,10 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
     }
 
     private static string? LocateSampleDll(string sampleName = "CoreClrSample")
-        => LocateProjectDll("samples", sampleName, sampleName);
+        => SampleLocator.LocateSampleDll(sampleName);
 
     private static string? LocateProjectDll(string topLevelDirectory, string projectDirectoryName, string assemblyName)
-    {
-        var probe = AppContext.BaseDirectory;
-        for (var i = 0; i < 8; i++)
-        {
-            var projectDir = Path.Combine(probe, topLevelDirectory, projectDirectoryName);
-            if (Directory.Exists(projectDir))
-            {
-                foreach (var configuration in new[] { "Release", "Debug" })
-                {
-                    var dll = Path.Combine(projectDir, "bin", configuration, "net10.0", $"{assemblyName}.dll");
-                    if (File.Exists(dll))
-                    {
-                        return dll;
-                    }
-                }
-
-                return null;
-            }
-
-            probe = Path.GetFullPath(Path.Combine(probe, ".."));
-        }
-
-        return null;
-    }
-
-    private sealed class RunningSample : IAsyncDisposable
-    {
-        private readonly Process _process;
-
-        public RunningSample(Process process, string baseUrl)
-        {
-            _process = process;
-            BaseUrl = baseUrl;
-        }
-
-        public int ProcessId => _process.Id;
-
-        public string BaseUrl { get; }
-
-        public ValueTask DisposeAsync()
-        {
-            if (!_process.HasExited)
-            {
-                try
-                {
-                    _process.Kill(entireProcessTree: true);
-                    _process.WaitForExit(5_000);
-                }
-                catch
-                {
-                }
-            }
-
-            _process.Dispose();
-            return ValueTask.CompletedTask;
-        }
-    }
+        => SampleLocator.LocateProjectDll(topLevelDirectory, projectDirectoryName, assemblyName);
 
     private sealed class FixedProcessContextResolver(int processId) : IProcessContextResolver
     {
@@ -2706,16 +2502,6 @@ internal sealed class AuxiliarySampleHost : IAsyncDisposable
             throw SkipException.ForReason($"{_sampleName} did not advertise an HTTP listening URL within the timeout.");
         }
     }
-}
-
-/// <summary>Thrown to skip a test (in lieu of pulling a separate Skippable package).</summary>
-public sealed class SkipException : Exception
-{
-    private SkipException(string reason) : base(reason)
-    {
-    }
-
-    public static SkipException ForReason(string reason) => new(reason);
 }
 
 [CollectionDefinition("LiveProcess", DisableParallelization = true)]

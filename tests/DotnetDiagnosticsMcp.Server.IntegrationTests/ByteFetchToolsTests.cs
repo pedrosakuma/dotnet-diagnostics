@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -10,7 +9,6 @@ using DotnetDiagnosticsMcp.Core.Dump;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Diagnostics.NETCore.Client;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
@@ -19,11 +17,10 @@ namespace DotnetDiagnosticsMcp.Server.IntegrationTests;
 [Collection(nameof(EnvSerial))]
 public sealed class ByteFetchToolsTests : IAsyncLifetime
 {
-    private Process? _sampleProcess;
-    private string? _sampleDll;
+    private LiveSampleProcess? _sample;
 
-    private int SampleProcessId => _sampleProcess?.Id ?? throw new InvalidOperationException("Sample not started.");
-    private string SampleDll => _sampleDll ?? throw new InvalidOperationException("Sample DLL not resolved.");
+    private int SampleProcessId => _sample?.ProcessId ?? throw new InvalidOperationException("Sample not started.");
+    private string SampleDll => _sample?.SampleDll ?? throw new InvalidOperationException("Sample DLL not resolved.");
 
     [Fact]
     public async Task GetModuleBytes_MissingScope_IsRejectedByAuthorizationFilter()
@@ -182,45 +179,18 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _sampleDll = LocateSampleDll() ?? throw new InvalidOperationException("CoreClrSample.dll not found.");
-        var psi = new ProcessStartInfo("dotnet")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WorkingDirectory = Path.GetDirectoryName(_sampleDll)!,
-        };
-        psi.ArgumentList.Add(_sampleDll);
-        psi.ArgumentList.Add("--urls");
-        psi.ArgumentList.Add("http://127.0.0.1:0");
-        psi.Environment["DOTNET_NOLOGO"] = "1";
-        psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
-
-        _sampleProcess = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start CoreClrSample.");
-        _ = DrainAsync(_sampleProcess.StandardOutput);
-        _ = DrainAsync(_sampleProcess.StandardError);
-        await WaitForDiagnosticEndpointAsync(_sampleProcess.Id, TimeSpan.FromSeconds(30));
-        await WaitForModuleVisibilityAsync(_sampleProcess.Id, _sampleDll, TimeSpan.FromSeconds(30));
+        _sample = await LiveSampleProcess.StartPublishedAsync(
+            "CoreClrSample",
+            new LiveSampleOptions { DiagnosticTimeout = TimeSpan.FromSeconds(30) });
+        await WaitForModuleVisibilityAsync(_sample.ProcessId, _sample.SampleDll, TimeSpan.FromSeconds(30));
     }
 
-    public Task DisposeAsync()
+    public async Task DisposeAsync()
     {
-        if (_sampleProcess is { HasExited: false })
+        if (_sample is not null)
         {
-            try
-            {
-                _sampleProcess.Kill(entireProcessTree: true);
-                _sampleProcess.WaitForExit(5_000);
-            }
-            catch
-            {
-                // best effort
-            }
+            await _sample.DisposeAsync();
         }
-
-        _sampleProcess?.Dispose();
-        return Task.CompletedTask;
     }
 
     private string GetSampleMvid()
@@ -298,36 +268,6 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         return JsonSerializer.Deserialize<DiagnosticResult<JsonElement>>(json, DeserializeOptions);
     }
 
-    private static async Task DrainAsync(StreamReader reader)
-    {
-        try
-        {
-            while (await reader.ReadLineAsync().ConfigureAwait(false) is not null)
-            {
-            }
-        }
-        catch
-        {
-            // best effort
-        }
-    }
-
-    private static async Task WaitForDiagnosticEndpointAsync(int processId, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (DiagnosticsClient.GetPublishedProcesses().Contains(processId))
-            {
-                return;
-            }
-
-            await Task.Delay(500).ConfigureAwait(false);
-        }
-
-        throw new TimeoutException($"CoreClrSample pid {processId} did not expose a diagnostic endpoint within {timeout}.");
-    }
-
     private static async Task WaitForModuleVisibilityAsync(int processId, string sampleDll, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
@@ -347,32 +287,6 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         }
 
         throw new TimeoutException($"CoreClrSample mvid {mvid:D} was not visible in pid {processId} within {timeout}.");
-    }
-
-    private static string? LocateSampleDll()
-    {
-        var probe = AppContext.BaseDirectory;
-        for (var i = 0; i < 8; i++)
-        {
-            var sampleDir = Path.Combine(probe, "samples", "CoreClrSample");
-            if (Directory.Exists(sampleDir))
-            {
-                foreach (var configuration in new[] { "Release", "Debug" })
-                {
-                    var dll = Path.Combine(sampleDir, "bin", configuration, "net10.0", "CoreClrSample.dll");
-                    if (File.Exists(dll))
-                    {
-                        return dll;
-                    }
-                }
-
-                return null;
-            }
-
-            probe = Path.GetFullPath(Path.Combine(probe, ".."));
-        }
-
-        return null;
     }
 
     private static TestDirectory CreateArtifactRoot()
