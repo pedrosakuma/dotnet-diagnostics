@@ -6,6 +6,7 @@ using DotnetDiagnosticsMcp.Core;
 using DotnetDiagnosticsMcp.Core.Activities;
 using DotnetDiagnosticsMcp.Core.Capabilities;
 using DotnetDiagnosticsMcp.Core.Collection;
+using DotnetDiagnosticsMcp.Core.Comparison;
 using DotnetDiagnosticsMcp.Core.Container;
 using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
@@ -83,7 +84,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             ["capture_method_bytes"] = new[] { "moduleVersionId", "metadataToken" },
             ["start_investigation"] = Array.Empty<string>(),
             ["export_investigation_summary"] = new[] { "handle" },
-            ["compare_to_baseline"] = new[] { "baselineSummaryJson", "currentSummaryJson" },
+            ["compare_to_baseline"] = Array.Empty<string>(),
         };
 
         // The spirit of elicit-graceful: no user-facing parameter (durationSeconds, topN,
@@ -107,6 +108,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             "topTypes", "includeRetentionPaths", "retentionPathLimit",
             "view",
             "stackRank",
+            "baselineSummaryJson", "currentSummaryJson", "snapshotsJson",
         };
 
         foreach (var tool in tools)
@@ -1063,6 +1065,126 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task CompareToBaseline_LegacySummaries_ReturnsSummaryDiff()
+    {
+        await using var client = await ConnectAsync();
+        var baseline = SummaryJson("baseline", 10);
+        var current = SummaryJson("current", 15);
+
+        var result = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["baselineSummaryJson"] = baseline,
+                ["currentSummaryJson"] = current,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var diff = DeserializeStructured<SummaryDiff>(result);
+        diff.Should().NotBeNull();
+        diff!.Verdict.Should().Be("regression_increased_hotspot");
+        diff.ChangedHotspots.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task CompareToBaseline_ComparableSnapshots_ReturnsJourneyDiff()
+    {
+        await using var client = await ConnectAsync();
+        var baseline = SnapshotJson("baseline", 10);
+        var current = SnapshotJson("current", 20);
+
+        var result = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["snapshotsJson"] = new[] { baseline, current },
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var diff = DeserializeStructured<SnapshotJourneyDiff>(result);
+        diff.Should().NotBeNull();
+        diff!.Verdict.Should().Be("regression");
+        diff.Pairwise.Should().NotBeNull();
+        diff.Pairwise!.Headline.Verdict.Should().Be("regression");
+        diff.MetricSeries.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task CompareToBaseline_RejectsSingleComparableSnapshot()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["snapshotsJson"] = new[] { SnapshotJson("baseline", 10) },
+            },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Error!.Kind.Should().Be("InvalidArgument");
+    }
+
+    [Fact]
+    public async Task CompareToBaseline_RejectsMalformedComparableSnapshotFields()
+    {
+        await using var client = await ConnectAsync();
+        const string malformedMetric = "{\"Schema\":\"dotnet-diagnostics-mcp/comparable-snapshot/v1\",\"Kind\":\"counters\",\"Label\":\"bad\",\"CapturedAt\":\"1970-01-01T00:00:00+00:00\",\"ProcessId\":1234,\"Metrics\":[{\"Value\":1}],\"Rows\":[]}";
+
+        var result = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["snapshotsJson"] = new[] { malformedMetric, SnapshotJson("current", 20) },
+            },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Error!.Kind.Should().Be("InvalidSnapshotJson");
+    }
+
+    [Fact]
+    public async Task CompareToBaseline_RejectsMixedSnapshotSchemas()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["snapshotsJson"] = new[] { SnapshotJson("baseline", 10), SummaryJson("current", 15) },
+            },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Error!.Kind.Should().Be("MixedSchemas");
+    }
+
+    [Fact]
+    public async Task CompareToBaseline_RejectsUnknownSnapshotSchema()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["snapshotsJson"] = new[] { "{\"Schema\":\"example/unknown\"}" },
+            },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Error!.Kind.Should().Be("UnsupportedSchema");
+    }
+
+    [Fact]
     public async Task CompareToBaseline_RejectsMalformedJson()
     {
         await using var client = await ConnectAsync();
@@ -1255,6 +1377,56 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         PropertyNameCaseInsensitive = true,
         Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
     };
+
+    private static string SummaryJson(string investigationId, double inclusivePercent)
+    {
+        var summary = new InvestigationSummary(
+            InvestigationSummary.SchemaV1,
+            investigationId,
+            DateTimeOffset.UnixEpoch,
+            ProcessId: 1234,
+            new InvestigationProvenance("test-host"),
+            new InvestigationFindings(
+                TotalSamples: 100,
+                StartedAt: DateTimeOffset.UnixEpoch,
+                Duration: TimeSpan.FromSeconds(10),
+                TopHotspots:
+                [
+                    new HotspotSummary(
+                        new SymbolRef("Sample.dll", "Sample.Work"),
+                        InclusiveSamples: 50,
+                        ExclusiveSamples: 40,
+                        InclusivePercent: inclusivePercent,
+                        ExclusivePercent: inclusivePercent)
+                ]));
+
+        return JsonSerializer.Serialize(summary, InvestigationSummaryJsonContext.Default.InvestigationSummary);
+    }
+
+    private static string SnapshotJson(string label, double cpuPercent)
+    {
+        var snapshot = new ComparableSnapshot(
+            ComparableSnapshot.SchemaV1,
+            Kind: "counters",
+            Label: label,
+            CapturedAt: DateTimeOffset.UnixEpoch,
+            ProcessId: 1234,
+            Metrics:
+            [
+                new MetricValue(
+                    new MetricDefinition(
+                        "cpu.percent",
+                        MetricRole.Primary,
+                        BetterDirection.Lower,
+                        MetricAggregation.Percent,
+                        MetricNormalization.None,
+                        "%"),
+                    cpuPercent)
+            ],
+            Rows: []);
+
+        return JsonSerializer.Serialize(snapshot, ComparableSnapshotJsonContext.Default.ComparableSnapshot);
+    }
 
     private static string? ToolParamString(object? value)
         => value switch
