@@ -118,10 +118,10 @@ legacy EventCounters. Look at:
 ## 1d. "Did my fix actually help?" — comparative + N-way trend journeys
 
 Use this when you have **two or more captures of the same kind** and want a verdict instead of
-eyeballing two payloads. It covers the metric kinds with a comparable projector today —
-`gc-datas`, `counters`, and `gc-events` — across **before/after** (N=2) and **N-way trend**
-(N≥3) journeys. The engine and verdict semantics are identical regardless of which "door" you
-use; only the transport differs.
+eyeballing two payloads. It covers the current comparable projector kinds — `gc-datas`,
+`counters`, `gc-events`, `contention-snapshot`, and `threadpool-snapshot` — across
+**before/after** (N=2) and **N-way trend** (N≥3) journeys. The engine and verdict semantics
+are identical regardless of which "door" you use; only the transport differs.
 
 ### Two doors, one engine
 
@@ -132,14 +132,15 @@ use; only the transport differs.
 - **MCP, persisted JSON bodies** — `compare_to_baseline(snapshotsJson=[<json0>, <json1>, …])`.
   Pass **JSON bodies only** (never file paths — the sidecar is stateless). Dispatch is by the
   `Schema` field, so the same tool still compares two `InvestigationSummary` documents.
-- **CLI** — `collect --kind datas|counters|gc --save <file>` writes a `ComparableSnapshot`,
+- **CLI** — `collect --kind datas|counters|gc|contention|threadpool --save <file>` writes a `ComparableSnapshot`,
   then `compare a.json b.json …` runs the same engine locally. Works one-shot and inside
   `session` (`--save` then `compare`).
 
 ### Before/after recipe (N=2)
 
 1. Capture a **baseline** window on the healthy / pre-fix build:
-   `collect_events(kind="datas")` (or `kind="counters"` / `kind="gc"`).
+   `collect_events(kind="datas")` (or `kind="counters"` / `kind="gc"` / `kind="contention"` /
+   `kind="threadpool"`).
 2. Apply the fix / config change and re-capture the **same** window on the new build.
 3. Compare — MCP: `query_snapshot(view="diff", baselineHandle="<baseline>")`; CLI:
    `compare before.json after.json`.
@@ -157,8 +158,9 @@ use; only the transport differs.
 
 ### N-way trend recipe (N≥3)
 
-Capture `t0..tn` of the **same kind** (especially `gc-datas` and `counters`) while a workload
-ramps or a tuning loop runs, then compare all of them in order. The headline verdict is still
+Capture `t0..tn` of the **same kind** (especially `gc-datas`, `counters`, `contention`, or
+`threadpool`) while a workload ramps or a tuning loop runs, then compare all of them in order.
+The headline verdict is still
 `first→last`, but the real signal is each metric's **`Trend`**:
 
 - `MonotonicUp` / `MonotonicDown` — moving steadily one way (still trending).

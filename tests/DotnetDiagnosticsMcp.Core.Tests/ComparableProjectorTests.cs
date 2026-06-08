@@ -1,9 +1,12 @@
+using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.Comparison;
+using DotnetDiagnosticsMcp.Core.Contention;
 using DotnetDiagnosticsMcp.Core.Counters;
 using DotnetDiagnosticsMcp.Core.CpuSampling;
 using DotnetDiagnosticsMcp.Core.Dump;
 using DotnetDiagnosticsMcp.Core.Gc;
 using DotnetDiagnosticsMcp.Core.Memory;
+using DotnetDiagnosticsMcp.Core.ThreadPool;
 using FluentAssertions;
 
 namespace DotnetDiagnosticsMcp.Core.Tests;
@@ -298,6 +301,69 @@ public sealed class ComparableProjectorTests
         SnapshotDiffer.Compare(new[] { current, baseline }).Verdict.Should().Be("improvement");
     }
 
+    [Fact]
+    public void ContentionProjector_GroupsRowsByCallSite_AndDrivesKeySetVerdicts()
+    {
+        var projector = new ContentionComparableProjector();
+        var baseline = projector.Project(ContentionSnapshot(("MyApp.dll", "MyApp.Locking.Slow", 10, 2)), "baseline");
+        var regression = projector.Project(ContentionSnapshot(("MyApp.dll", "MyApp.Locking.Slow", 30, 3)), "regression");
+        var improvement = projector.Project(ContentionSnapshot(("MyApp.dll", "MyApp.Locking.Slow", 3, 1)), "improvement");
+
+        baseline.Kind.Should().Be(CollectionHandleKinds.ContentionSnapshot);
+        baseline.Rows.Should().ContainSingle();
+        var row = baseline.Rows.Single();
+        row.Key.Kind.Should().Be("contention-callsite");
+        row.Key.Module.Should().Be("MyApp.dll");
+        row.Key.MethodName.Should().Be("MyApp.Locking.Slow");
+        row.Metrics[0].Definition.Name.Should().Be("totalContentionDurationMs");
+        row.Metrics[0].Definition.Role.Should().Be(MetricRole.Primary);
+        row.Metrics[0].Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        row.Metrics[0].Value.Should().Be(10);
+
+        SnapshotDiffer.Compare(new[] { baseline, regression }).Verdict.Should().Be("regression");
+        SnapshotDiffer.Compare(new[] { baseline, improvement }).Verdict.Should().Be("improvement");
+    }
+
+    [Fact]
+    public void ThreadPoolProjector_EmitsScalarMetricsOnly_WithDirections()
+    {
+        var snapshot = new ThreadPoolEventSnapshot(
+            ProcessId: 11,
+            StartedAt: new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            Duration: TimeSpan.FromSeconds(5),
+            WorkerThreadTimeline:
+            [
+                new ThreadPoolCountBucket(DateTimeOffset.UtcNow, 2),
+                new ThreadPoolCountBucket(DateTimeOffset.UtcNow, 8),
+                new ThreadPoolCountBucket(DateTimeOffset.UtcNow, 6),
+            ],
+            IocpThreadTimeline: [new ThreadPoolCountBucket(DateTimeOffset.UtcNow, 1)],
+            HillClimbing:
+            [
+                new ThreadPoolHillClimbingSample(DateTimeOffset.UtcNow, "Warmup", 1, 2, 100),
+                new ThreadPoolHillClimbingSample(DateTimeOffset.UtcNow, "Starvation", 2, 4, 90),
+            ],
+            WorkItemOrigins: [new ThreadPoolWorkItemOrigin("MyApp.Queue.Work", 7)],
+            EffectiveSettings: new ThreadPoolEffectiveSettings(1, 100, 1, 100),
+            TotalEnqueueEvents: 12,
+            TotalDequeueEvents: 5,
+            Notes: Array.Empty<string>());
+
+        var snap = new ThreadPoolComparableProjector().Project(snapshot, "after");
+
+        snap.Kind.Should().Be(CollectionHandleKinds.ThreadPoolSnapshot);
+        snap.Rows.Should().BeEmpty();
+        var byName = snap.Metrics.ToDictionary(m => m.Definition.Name);
+        byName["starvationAdjustments"].Value.Should().Be(1);
+        byName["starvationAdjustments"].Definition.Role.Should().Be(MetricRole.Primary);
+        byName["starvationAdjustments"].Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        byName["pendingWorkItemsEstimate"].Value.Should().Be(7);
+        byName["peakWorkerThreadCount"].Value.Should().Be(8);
+        byName["peakWorkerThreadCount"].Definition.Role.Should().Be(MetricRole.Primary);
+        byName["latestWorkerThreadCount"].Value.Should().Be(6);
+        byName["workItemOriginCount"].Definition.Role.Should().Be(MetricRole.Context);
+    }
+
     private static CpuSampleTraceArtifact CpuTraceForProjector(
         string module,
         string method,
@@ -389,4 +455,27 @@ public sealed class ComparableProjectorTests
             new CallTreeNode(new SampledFrame(string.Empty, "<root>"), totalEvents, 0, Array.Empty<CallTreeNode>()));
         return new AllocationSampleArtifact(summary, trace);
     }
+
+    private static ContentionSnapshot ContentionSnapshot(params (string module, string method, double durationMs, ulong lockId)[] events)
+        => new(
+            ProcessId: 42,
+            StartedAt: new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            Duration: TimeSpan.FromSeconds(5),
+            TotalEvents: events.Length,
+            DistinctMonitors: events.Select(static item => item.lockId).Distinct().Count(),
+            TotalContentionDuration: TimeSpan.FromMilliseconds(events.Sum(static item => item.durationMs)),
+            P50ContentionDuration: TimeSpan.Zero,
+            P95ContentionDuration: TimeSpan.Zero,
+            MaxContentionDuration: TimeSpan.FromMilliseconds(events.Max(static item => item.durationMs)),
+            Events: events.Select(static item => new ContentionEventSample(
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow.AddMilliseconds(item.durationMs),
+                TimeSpan.FromMilliseconds(item.durationMs),
+                ContendingThreadId: 1,
+                OwnerManagedThreadId: 2,
+                LockId: item.lockId,
+                AssociatedObjectId: 0,
+                CallSiteMethod: item.method,
+                CallSiteModule: item.module)).ToArray(),
+            Notes: Array.Empty<string>());
 }

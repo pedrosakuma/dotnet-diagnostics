@@ -60,7 +60,7 @@ collect options:
       --category <glob>         logs: ILogger category filter (repeatable).
       --min-level <level>       logs: minimum level (default Information).
       --unsafe-provider         event_source: opt in to a non-allowlisted provider.
-      --save <file>             Save a comparable snapshot JSON (supports counters, datas).
+      --save <file>             Save a comparable snapshot JSON (supports counters, datas, gc, contention, threadpool).
 """,
 """
   dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5

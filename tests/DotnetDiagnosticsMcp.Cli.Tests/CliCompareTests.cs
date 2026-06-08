@@ -5,6 +5,7 @@ using DotnetDiagnosticsMcp.Cli;
 using DotnetDiagnosticsMcp.Core.Collection;
 using DotnetDiagnosticsMcp.Core.Comparison;
 using DotnetDiagnosticsMcp.Core.Counters;
+using DotnetDiagnosticsMcp.Core.ThreadPool;
 using FluentAssertions;
 
 namespace DotnetDiagnosticsMcp.Cli.Tests;
@@ -42,6 +43,34 @@ public sealed class CliCompareTests : IDisposable
         roundTrip.Kind.Should().Be(CollectionHandleKinds.Counters);
         roundTrip.Label.Should().Be("counter-before");
         roundTrip.Metrics.Should().Contain(m => m.Definition.Name == "counter:System.Runtime/cpu-usage" && m.Value == 12.5);
+    }
+
+    [Fact]
+    public void TrySaveComparableSnapshot_ThreadPool_WritesScalarOnlySnapshotJson()
+    {
+        var output = Path.Combine(_root, "threadpool-after.json");
+        var timestamp = DateTimeOffset.Parse("2026-01-01T00:00:00Z", CultureInfo.InvariantCulture);
+        var snapshot = new ThreadPoolEventSnapshot(
+            Environment.ProcessId,
+            timestamp,
+            TimeSpan.FromSeconds(5),
+            [new ThreadPoolCountBucket(timestamp, 2), new ThreadPoolCountBucket(timestamp.AddSeconds(1), 5)],
+            Array.Empty<ThreadPoolCountBucket>(),
+            [new ThreadPoolHillClimbingSample(timestamp, "Starvation", 2, 5, 10)],
+            [new ThreadPoolWorkItemOrigin("MyApp.Queue.Work", 3)],
+            new ThreadPoolEffectiveSettings(1, 100, 1, 100),
+            TotalEnqueueEvents: 10,
+            TotalDequeueEvents: 7,
+            Notes: Array.Empty<string>());
+
+        var saved = CliCommands.TrySaveComparableSnapshot(snapshot, output, out var comparable, out var error);
+
+        saved.Should().BeTrue(error);
+        comparable.Should().NotBeNull();
+        comparable!.Kind.Should().Be(CollectionHandleKinds.ThreadPoolSnapshot);
+        comparable.Rows.Should().BeEmpty();
+        comparable.Metrics.Should().Contain(m => m.Definition.Name == "starvationAdjustments" && m.Value == 1);
+        File.Exists(output).Should().BeTrue();
     }
 
     [Fact]
@@ -102,7 +131,7 @@ public sealed class CliCompareTests : IDisposable
         var saved = CliCommands.TrySaveComparableSnapshot(new object(), Path.Combine(_root, "unsupported.json"), out _, out var error);
 
         saved.Should().BeFalse();
-        error.Should().Be("kind 'Object' is not yet comparable (--save supports: gc-datas, counters)");
+        error.Should().Be("kind 'Object' is not yet comparable (--save supports: gc-datas, counters, gc-events, contention-snapshot, threadpool-snapshot)");
     }
 
     public void Dispose()
