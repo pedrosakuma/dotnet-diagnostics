@@ -75,6 +75,7 @@ Per-tool `Summary` semantics:
 | `collect_sample(kind="off_cpu")` | `TopBlockingStacks` truncated to the top 3 (handle keeps `topN`). |
 | `collect_events(kind="exceptions")` | The `Recent[]` list. `Total` and `ByType` remain exact (counts at every depth). |
 | `collect_events(kind="gc")` | The `Events[]` list. Totals, max pause, per-gen counts remain exact. |
+| `collect_events(kind="catalog")` | The metadata-only `Sample[]` occurrence list. The ranked `Catalog[]` remains inline; payload values are never captured. |
 | `collect_events(kind="event_source")` | The `Events[]` list. Provider + total count remain. Drill in with `query_snapshot(handle, view=byEventName)`. |
 | `collect_events(kind="logs")` | The `Recent[]` list. Level counts + per-category rollups remain exact for the window. |
 | `collect_events(kind="jit")` | Method rows beyond the hottest 10. Healthcheck + tier counts remain exact for the window. |
@@ -203,6 +204,7 @@ Visões disponíveis por `kind`:
 | `counters` | `collect_events(kind="counters")` | `summary` (default), `byProvider` |
 | `exception-snapshot` | `collect_events(kind="exceptions")` | `summary` (default = `byType.Take(topN)`), `byType`, `recent` |
 | `gc-events` | `collect_events(kind="gc")` | `summary` (default), `events`, `pauseHistogram`, `timeline`, `longestPauses`, `byGeneration` |
+| `event-catalog` | `collect_events(kind="catalog")` | `catalog` (default), `byProvider`, `events` |
 | `activities` | `collect_events(kind="activities")` | `summary` (default), `bySource`, `byOperation`, `activities` |
 | `event-source` | `collect_events(kind="event_source")` | `summary` (default), `byEventName`, `events` |
 | `log-snapshot` | `collect_events(kind="logs")` | `summary` (default), `byCategory`, `byLevel`, `recent`, `errors` |
@@ -253,6 +255,19 @@ cross-reference). `byGeneration` reports `Count` + total/mean/max pause per gene
 (`gen0`/`gen1`/`gen2`/`background`); background GCs form their own mutually-exclusive bucket, so
 `gen2` counts non-background gen2 collections only. Note these views describe only the events
 retained on the artifact (the collector caps at `maxEvents`).
+
+The event-catalog views (`catalog`, `byProvider`, `events`) answer "what events does this app
+emit?" without exposing EventSource payload values. `collect_events(kind="catalog")` enables a
+broad curated provider set at Informational level (`Microsoft-Windows-DotNETRuntime`,
+`System.Runtime`, `Microsoft-Diagnostics-DiagnosticSource`, `Microsoft-Extensions-Logging`, and
+`System.Threading.Tasks.TplEventSource`); pass `providers` to replace that set when you need custom
+EventSources, because EventPipe has no wildcard provider subscription. The catalog records only
+provider name, event name, level and timestamp: `catalog` ranks distinct `(provider,eventName,level)`
+rows by count, `byProvider` rolls counts up per provider, and `events` returns the bounded
+metadata-only occurrence sample (`maxEvents`). Use `topN` for caps, `providerFilter` for a
+case-insensitive provider substring, and `rootMethodFilter` as the event-name substring filter. If
+you need payload field values, use the targeted `event_source` collector, which carries the
+allowlist/redaction/unsafe-provider machinery.
 
 `view="resolve-address"` (thread-snapshot, issue #275) re-opens the snapshot origin (dump file or
 live pid) and classifies one or more addresses passed via `address` (comma-separated, decimal or

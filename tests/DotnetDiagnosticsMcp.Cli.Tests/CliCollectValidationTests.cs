@@ -95,7 +95,7 @@ public sealed class CliCollectValidationTests
         // Keep the CLI's accepted kinds aligned with the MCP collect_events discriminator family.
         CliCommands.CollectKinds.Should().BeEquivalentTo(new[]
         {
-            "counters", "exceptions", "gc", "event_source", "activities",
+            "counters", "exceptions", "gc", "catalog", "event_source", "activities",
             "logs", "jit", "threadpool", "contention", "db",
         });
     }

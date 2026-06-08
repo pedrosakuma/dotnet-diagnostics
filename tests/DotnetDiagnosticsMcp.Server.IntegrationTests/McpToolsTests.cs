@@ -549,6 +549,44 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task CollectEventCatalog_RunsAgainstSelfHost()
+    {
+        await using var client = await ConnectAsync();
+
+        var gcPump = Task.Run(() =>
+        {
+            for (var i = 0; i < 6; i++)
+            {
+                Thread.Sleep(300);
+                GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+            }
+        });
+
+        var result = await client.CallToolAsync(
+            "collect_events",
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "catalog",
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 3,
+                ["maxEvents"] = 50,
+                ["providers"] = new[] { "Microsoft-Windows-DotNETRuntime" },
+                ["depth"] = "detail",
+            },
+            cancellationToken: CancellationToken.None);
+        await gcPump.ConfigureAwait(false);
+
+        result.IsError.Should().NotBe(true);
+        var envelope = DeserializeStructured<CollectEventsEnvelope>(result);
+        envelope.Should().NotBeNull();
+        envelope!.Catalog.Should().NotBeNull();
+        envelope.Catalog!.ProcessId.Should().Be(Environment.ProcessId);
+        envelope.Catalog.Catalog.Should().NotBeEmpty();
+        envelope.Catalog.Catalog.Should().Contain(e => e.Provider == "Microsoft-Windows-DotNETRuntime");
+        envelope.Catalog.Sample.Should().OnlyContain(e => e.Provider.Length > 0 && e.EventName.Length > 0 && e.Level.Length > 0);
+    }
+
+    [Fact]
     public async Task CollectActivities_CapturesGeneratedActivitySourceEvents()
     {
         await using var client = await ConnectAsync();

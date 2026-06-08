@@ -46,13 +46,14 @@ Options:
             "Open an EventPipe session and collect events (--kind required).",
 """
 collect options:
-      --kind <kind>             Required. One of: counters, exceptions, gc, event_source,
-                                activities, logs, jit, threadpool, contention, db.
+      --kind <kind>             Required. One of: counters, exceptions, gc, catalog,
+                                event_source, activities, logs, jit, threadpool, contention, db.
   -d, --duration <int>          Collection window in seconds (default: counters 5, others 10).
       --depth <level>           Verbosity: summary, detail (default), raw.
       --max-events <int>        Per-kind cap (events / exceptions / activities).
       --interval <int>          Refresh interval in seconds (counters, db). Default 1.
       --provider <name>         counters: EventCounter provider (repeatable);
+                                catalog: EventPipe provider (repeatable; replaces broad defaults);
                                 event_source: required provider name.
       --meter <name>            counters: Meter name (repeatable).
       --source <name>           activities: ActivitySource filter (repeatable, * / ? globs).
@@ -62,7 +63,7 @@ collect options:
 """,
 """
   dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
-  dotnet-diagnostics-cli collect --kind gc --pid 1234 --json
+  dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
   dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
 """),
         new CommandHelp(
@@ -104,6 +105,8 @@ dump options:
 query options:
       --handle <id>             Drill-down handle (accepted but not honoured — see note).
       --view <name>             Drill-down view (accepted but not honoured — see note).
+      --provider-filter <text>  Session query: event-catalog provider substring filter.
+      --root-method-filter <t>  Session query: CPU method filter; event-catalog event-name filter.
   Note: drill-down handles are MCP-session scoped; the one-shot CLI emits its full result
   inline on the originating command (use --depth detail / --json). 'query' always returns a
   NotSupported envelope (exit 1).

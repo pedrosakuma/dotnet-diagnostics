@@ -579,6 +579,7 @@ internal sealed class SessionRepl
           <command> --help                Show full options for a command.
           help                            Show this list.
           exit | quit                     Leave the session (Ctrl-D / EOF also exits).
+        Event catalog query filters: --provider-filter <text>, --root-method-filter <event-name>.
         A bound target (shown as 'diag(pid <id>)>') is overridden by an explicit --pid on any command.
         Ctrl-C cancels the running command and keeps the session alive; press it again to force-quit.
         """;

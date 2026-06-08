@@ -20,7 +20,7 @@ internal sealed class CliOptions
     /// <summary>True when <c>--help</c>/<c>-h</c> was supplied.</summary>
     public bool Help { get; init; }
 
-    /// <summary>EventPipe collection kind for the <c>collect</c> command (<c>--kind</c>): counters, exceptions, gc, event_source, activities, logs, jit, threadpool, contention, db.</summary>
+    /// <summary>EventPipe collection kind for the <c>collect</c> command (<c>--kind</c>): counters, exceptions, gc, catalog, event_source, activities, logs, jit, threadpool, contention, db.</summary>
     public string? Kind { get; init; }
 
     /// <summary>Collection window in seconds (<c>--duration</c>/<c>-d</c>). Null applies the per-kind default (counters: 5; others: 10).</summary>
@@ -104,8 +104,11 @@ internal sealed class CliOptions
     /// <summary>Case-insensitive type substring for the heap <c>retention-paths</c> view (<c>--type-filter</c>). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public string? TypeFilter { get; init; }
 
-    /// <summary>Case-insensitive method substring to re-root the CPU <c>call-tree</c> view (<c>--root-method-filter</c>). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    /// <summary>Case-insensitive method substring to re-root the CPU <c>call-tree</c> view (<c>--root-method-filter</c>). Event-catalog query reuses it as an event-name filter. Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public string? RootMethodFilter { get; init; }
+
+    /// <summary>Case-insensitive provider substring for event-catalog query views (<c>--provider-filter</c>). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public string? ProviderFilter { get; init; }
 
     /// <summary>Maximum call-tree depth for the CPU <c>call-tree</c> view (<c>--max-depth</c>, default 8). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public int? MaxDepth { get; init; }
@@ -173,6 +176,7 @@ internal sealed class CliOptions
         string? rankBy = null;
         string? typeFilter = null;
         string? rootMethodFilter = null;
+        string? providerFilter = null;
         int? maxDepth = null;
         int? maxNodes = null;
         int? threadId = null;
@@ -406,6 +410,14 @@ internal sealed class CliOptions
 
                     rootMethodFilter = rootMethodFilterValue;
                     break;
+                case "--provider-filter":
+                    if (!TryTakeString(args, ref i, token, out var providerFilterValue, out error))
+                    {
+                        return null;
+                    }
+
+                    providerFilter = providerFilterValue;
+                    break;
                 case "--max-depth":
                     if (!TryTakeInt(args, ref i, token, out var maxDepthValue, out error))
                     {
@@ -523,6 +535,7 @@ internal sealed class CliOptions
             RankBy = rankBy,
             TypeFilter = typeFilter,
             RootMethodFilter = rootMethodFilter,
+            ProviderFilter = providerFilter,
             MaxDepth = maxDepth,
             MaxNodes = maxNodes,
             ThreadId = threadId,
