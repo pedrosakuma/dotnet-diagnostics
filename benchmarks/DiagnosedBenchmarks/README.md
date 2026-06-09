@@ -2,7 +2,8 @@
 
 A sample that combines a [BenchmarkDotNet](https://benchmarkdotnet.org/) run with the perf
 indicators captured by this repo's engine, via the
-[`dotnet-diagnostics-benchmarkdotnet`](../../src/DotnetDiagnostics.BenchmarkDotNet) library.
+[`dotnet-diagnostics-benchmarkdotnet`](https://www.nuget.org/packages/dotnet-diagnostics-benchmarkdotnet)
+NuGet package.
 
 It answers *"can we capture perf indicators combined with a BenchmarkDotNet run?"* — the answer is
 **yes, for diagnosis** (explaining *why* a workload behaves the way it does), not as a replacement
@@ -10,10 +11,10 @@ for clean measurement.
 
 ## What it does
 
-The [`DotnetDiagnosticsDiagnoser`](../../src/DotnetDiagnostics.BenchmarkDotNet/DotnetDiagnosticsDiagnoser.cs)
+The `DotnetDiagnosticsDiagnoser`
 runs the diagnostic engine **in-process** (in the BenchmarkDotNet orchestrator, not the measured
 child) and attaches its EventPipe collectors to the per-benchmark child process while it runs. No
-shell-out, no CLI on disk — the library references the engine directly.
+shell-out, no CLI on disk — the package references the engine directly.
 
 The resulting EventPipe envelope (GC stats, lock contention, counters, …) is written to
 `BenchmarkDotNet.Artifacts/diagnostics/<case>.<seq>.<kind>.json`, and a consolidated
@@ -78,4 +79,6 @@ This pattern **diagnoses** benchmarks; it does not produce publication-grade tim
 | `Program.cs` | `BenchmarkSwitcher` entry point. |
 
 The diagnoser, `[DiagnosticKind]` attribute, and the offenders report exporter all live in the
-reusable [`dotnet-diagnostics-benchmarkdotnet`](../../src/DotnetDiagnostics.BenchmarkDotNet) library.
+reusable [`dotnet-diagnostics-benchmarkdotnet`](https://www.nuget.org/packages/dotnet-diagnostics-benchmarkdotnet)
+NuGet package — add it to your own benchmark project with
+`dotnet add package dotnet-diagnostics-benchmarkdotnet`.

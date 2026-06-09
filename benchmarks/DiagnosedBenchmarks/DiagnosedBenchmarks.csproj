@@ -14,10 +14,11 @@
     <PackageReference Include="BenchmarkDotNet" />
   </ItemGroup>
 
-  <!-- Reference the in-process diagnoser library directly: no shell-out, no CLI on disk.
-       The library pulls in dotnet-diagnostics-core transitively. -->
+  <!-- Consume the published diagnoser package, exactly as an external benchmark
+       project would: no shell-out, no CLI on disk. The package pulls in
+       dotnet-diagnostics-core transitively. -->
   <ItemGroup>
-    <ProjectReference Include="..\..\src\DotnetDiagnostics.BenchmarkDotNet\DotnetDiagnostics.BenchmarkDotNet.csproj" />
+    <PackageReference Include="dotnet-diagnostics-benchmarkdotnet" />
   </ItemGroup>
 
 </Project>
