@@ -66,6 +66,11 @@ jobs:
 
       - name: Pack
         run: |
+          dotnet pack src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj \
+            -c Release \
+            -o artifacts/nupkg \
+            -p:Version=${{ steps.derive-version.outputs.version }} \
+            --no-restore
           dotnet pack src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
             -c Release \
             -o artifacts/nupkg \
