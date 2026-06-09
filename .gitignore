@@ -20,6 +20,9 @@ coverage/
 *.dmp
 artifacts/
 
+# BenchmarkDotNet output (results, logs, captured diagnostics)
+BenchmarkDotNet.Artifacts/
+
 # OS
 .DS_Store
 Thumbs.db
