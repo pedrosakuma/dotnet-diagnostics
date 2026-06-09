@@ -7,7 +7,7 @@
 #       --image=dotnet-diagnostics-mcp:dev \
 #       --image-pull-policy=IfNotPresent \
 #       --target=app \
-#       deploy/sample-target -- dotnet DotnetDiagnosticsMcp.Server.dll
+#       deploy/sample-target -- dotnet DotnetDiagnostics.Mcp.dll
 #
 # `--target=app` makes the ephemeral container share the PID namespace of the
 # `app` container, so the diagnostic IPC socket created by the runtime at

@@ -21,17 +21,17 @@ WORKDIR /src
 
 # Bring in the files needed to restore first so the layer caches well.
 COPY global.json Directory.Build.props Directory.Packages.props .editorconfig ./
-COPY src/DotnetDiagnosticsMcp.Core/DotnetDiagnosticsMcp.Core.csproj src/DotnetDiagnosticsMcp.Core/
-COPY src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj src/DotnetDiagnosticsMcp.Server/
-COPY src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj src/DotnetDiagnosticsMcp.Cli/
+COPY src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj src/DotnetDiagnostics.Core/
+COPY src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj src/DotnetDiagnostics.Mcp/
+COPY src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj src/DotnetDiagnostics.Cli/
 
-RUN dotnet restore src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj \
- && dotnet restore src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj
+RUN dotnet restore src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
+ && dotnet restore src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj
 
 # Copy the rest of the source needed by the server project.
 COPY src/ src/
 
-RUN dotnet publish src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj \
+RUN dotnet publish src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
     -c Release \
     -o /app/publish \
     --no-restore \
@@ -42,7 +42,7 @@ RUN dotnet publish src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.c
 # into the sidecar and run `dotnet-diagnostics-cli ...` against the shared target
 # process without standing up the HTTP server. UseAppHost=true so the symlink in
 # the runtime stage has a native launcher to point at.
-RUN dotnet publish src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj \
+RUN dotnet publish src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \
     -c Release \
     -o /app/cli \
     --no-restore \
@@ -102,4 +102,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1
 
-ENTRYPOINT ["dotnet", "DotnetDiagnosticsMcp.Server.dll"]
+ENTRYPOINT ["dotnet", "DotnetDiagnostics.Mcp.dll"]

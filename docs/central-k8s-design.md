@@ -279,8 +279,8 @@ Introduce an explicit target concept such as `target = (namespace, pod, containe
 
 **Expected file touch list**
 
-- `src/DotnetDiagnosticsMcp.Server/` tool argument models and request plumbing
-- `src/DotnetDiagnosticsMcp.Core/` abstractions for remote target resolution if needed
+- `src/DotnetDiagnostics.Mcp/` tool argument models and request plumbing
+- `src/DotnetDiagnostics.Core/` abstractions for remote target resolution if needed
 - `docs/tool-reference.md`
 - `docs/client-setup.md` if examples need target-aware flows
 
@@ -302,7 +302,7 @@ Implement the Kubernetes-facing launcher that turns a selected target Pod into a
 
 **Expected file touch list**
 
-- `src/DotnetDiagnosticsMcp.Server/` orchestration layer or attach service
+- `src/DotnetDiagnostics.Mcp/` orchestration layer or attach service
 - possible new `src/...Kubernetes...` integration project if separation helps
 - `deploy/k8s/` RBAC examples
 - `docs/central-k8s-design.md` for status updates

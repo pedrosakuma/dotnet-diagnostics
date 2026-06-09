@@ -8,7 +8,7 @@
 
 The server attaches to the .NET runtime diagnostic IPC socket and exposes 9 tools (process discovery, capability detection, EventCounters snapshot, CPU sampling, exception collection, GC events, EventSource passthrough, process dump) over either **Streamable HTTP** (default, with bearer-token auth — designed for sidecar / shared-deploy) or **stdio** (`--stdio`, recommended for local dev — the MCP client owns the process lifecycle, no daemon or bearer token; see issue #74).
 
-The repo also ships a **second deliverable** built on the same Core engine: **`dotnet-diagnostics-cli`** (`src/DotnetDiagnosticsMcp.Cli`, assembly name `dotnet-diagnostics`), a Core-only standalone CLI for humans / scripts / CI — one-shot sub-commands plus a stateful `session` REPL, **no HTTP, no bearer, no daemon**. Both tools publish to NuGet from the same release tag (`dotnet-diagnostics-mcp` and `dotnet-diagnostics-cli`). The CLI references **Core only** (asserted by `NoServerReferenceTests`); document it in [`docs/cli-reference.md`](./docs/cli-reference.md), not the MCP tool reference.
+The repo also ships a **second deliverable** built on the same Core engine: **`dotnet-diagnostics-cli`** (`src/DotnetDiagnostics.Cli`, assembly name `dotnet-diagnostics`), a Core-only standalone CLI for humans / scripts / CI — one-shot sub-commands plus a stateful `session` REPL, **no HTTP, no bearer, no daemon**. Both tools publish to NuGet from the same release tag (`dotnet-diagnostics-mcp` and `dotnet-diagnostics-cli`). The CLI references **Core only** (asserted by `NoServerReferenceTests`); document it in [`docs/cli-reference.md`](./docs/cli-reference.md), not the MCP tool reference.
 
 **Status:** MVP complete (Phases 1–6). Active work on Phase 7 is tracked in [issue #17](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/17) and the milestone [`Phase 7 — Roadmap`](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/milestone/1).
 
@@ -16,13 +16,13 @@ The repo also ships a **second deliverable** built on the same Core engine: **`d
 
 ```
 src/
-  DotnetDiagnosticsMcp.Core/      — IPC + EventPipe primitives, no MCP knowledge
-  DotnetDiagnosticsMcp.Server/    — MCP tools, HTTP transport, bearer auth
-  DotnetDiagnosticsMcp.Cli/       — standalone CLI (dotnet-diagnostics-cli), Core only, one-shot + session REPL
+  DotnetDiagnostics.Core/      — IPC + EventPipe primitives, no MCP knowledge
+  DotnetDiagnostics.Mcp/    — MCP tools, HTTP transport, bearer auth
+  DotnetDiagnostics.Cli/       — standalone CLI (dotnet-diagnostics-cli), Core only, one-shot + session REPL
 tests/
-  DotnetDiagnosticsMcp.Core.Tests/              — live process tests (spawn sample, attach, assert)
-  DotnetDiagnosticsMcp.Server.IntegrationTests/ — HTTP + MCP protocol tests
-  DotnetDiagnosticsMcp.Cli.Tests/               — CLI parsing, command, and session-REPL tests
+  DotnetDiagnostics.Core.Tests/              — live process tests (spawn sample, attach, assert)
+  DotnetDiagnostics.Mcp.IntegrationTests/ — HTTP + MCP protocol tests
+  DotnetDiagnostics.Cli.Tests/               — CLI parsing, command, and session-REPL tests
 samples/
   CoreClrSample/      — minimal ASP.NET API used by Core tests
   NativeAotSample/    — used to validate capability detection
@@ -41,23 +41,23 @@ All commands are run from the repo root.
 
 ```bash
 # Build everything
-dotnet build DotnetDiagnosticsMcp.slnx -c Release
+dotnet build DotnetDiagnostics.slnx -c Release
 
 # Run all tests (Core tests spawn a live sample process; require .NET 10 SDK on PATH)
-dotnet test DotnetDiagnosticsMcp.slnx -c Release --no-build
+dotnet test DotnetDiagnostics.slnx -c Release --no-build
 
 # Run only the integration tests
-dotnet test tests/DotnetDiagnosticsMcp.Server.IntegrationTests/ -c Release --no-build
+dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/ -c Release --no-build
 
 # Run the MCP server locally (launch profile listens on http://localhost:5130)
-dotnet run --project src/DotnetDiagnosticsMcp.Server -c Release
+dotnet run --project src/DotnetDiagnostics.Mcp -c Release
 
 # Run the standalone CLI (Core-only; one-shot or `session` REPL)
-dotnet run --project src/DotnetDiagnosticsMcp.Cli -c Release -- processes
-dotnet run --project src/DotnetDiagnosticsMcp.Cli -c Release -- session
+dotnet run --project src/DotnetDiagnostics.Cli -c Release -- processes
+dotnet run --project src/DotnetDiagnostics.Cli -c Release -- session
 
 # Run a single live test
-dotnet test tests/DotnetDiagnosticsMcp.Core.Tests/ -c Release --no-build \
+dotnet test tests/DotnetDiagnostics.Core.Tests/ -c Release --no-build \
   --filter FullyQualifiedName~Counters_ReturnsSystemRuntimeMetrics
 ```
 
@@ -149,7 +149,7 @@ dotnet … collect_events(kind="exceptions")  # synchronous
 
 ### 🧪 Live tests are real
 
-`tests/DotnetDiagnosticsMcp.Core.Tests/LiveCoreClrProcessTests.cs` spawns the `CoreClrSample` webapi by invoking its published DLL directly (`dotnet …/CoreClrSample.dll`) and attaches to the resulting PID. The fixture deliberately avoids `dotnet run`, which creates a wrapper host process whose PID is not the application. Required: .NET 10 SDK on `PATH`, ability to bind to `127.0.0.1:0`, and ~10s of runtime. CI runs both Linux and Windows runners.
+`tests/DotnetDiagnostics.Core.Tests/LiveCoreClrProcessTests.cs` spawns the `CoreClrSample` webapi by invoking its published DLL directly (`dotnet …/CoreClrSample.dll`) and attaches to the resulting PID. The fixture deliberately avoids `dotnet run`, which creates a wrapper host process whose PID is not the application. Required: .NET 10 SDK on `PATH`, ability to bind to `127.0.0.1:0`, and ~10s of runtime. CI runs both Linux and Windows runners.
 
 ### 🎯 One MCP tool per concept (15 tools after RFC 0002 §7.3 alias removal)
 

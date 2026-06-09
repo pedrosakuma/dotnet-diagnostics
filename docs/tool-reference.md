@@ -6,7 +6,7 @@ delivered over Streamable HTTP at `POST /mcp` and require an
 `Authorization: Bearer <token>` header (see [client-setup.md](./client-setup.md)).
 
 > Return shapes link back to the C# record definitions in
-> [`src/DotnetDiagnosticsMcp.Core`](../src/DotnetDiagnosticsMcp.Core), which are the source of
+> [`src/DotnetDiagnostics.Core`](../src/DotnetDiagnostics.Core), which are the source of
 > truth for field names and types.
 
 ### Bootstrap implícito (`processId` is optional)

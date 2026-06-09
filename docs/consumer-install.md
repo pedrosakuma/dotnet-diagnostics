@@ -27,7 +27,7 @@ dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 
 Upgrade: `dotnet tool update -g dotnet-diagnostics-mcp`. Uninstall: `dotnet tool uninstall -g dotnet-diagnostics-mcp`.
 
-> **Renamed in v0.2.2.** The NuGet package id was `DotnetDiagnosticsMcp.Server` for 0.1.0–0.2.1 and is now `dotnet-diagnostics-mcp` (matches the tool command and the sibling `dotnet-assembly-mcp`). If you have the old id installed, run `dotnet tool uninstall -g DotnetDiagnosticsMcp.Server` first, then install the new one. The legacy id has been unlisted on NuGet.org.
+> **Renamed in v0.2.2.** The NuGet package id was `DotnetDiagnostics.Mcp` for 0.1.0–0.2.1 and is now `dotnet-diagnostics-mcp` (matches the tool command and the sibling `dotnet-assembly-mcp`). If you have the old id installed, run `dotnet tool uninstall -g DotnetDiagnostics.Mcp` first, then install the new one. The legacy id has been unlisted on NuGet.org.
 
 ### 1b. Container
 

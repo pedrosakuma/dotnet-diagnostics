@@ -37,8 +37,8 @@ This RFC is grounded in:
 - `docs/tool-reference.md` — current public-facing tool contracts.
 - `docs/central-orchestrator-design.md` — orchestrator boundaries.
 - `docs/handoff-contract.md` — external stability constraints for MethodIdentity and byte fetch.
-- `src/DotnetDiagnosticsMcp.Server/Tools/DiagnosticTools.cs`
-- `src/DotnetDiagnosticsMcp.Server/Tools/OrchestratorTools.cs`
+- `src/DotnetDiagnostics.Mcp/Tools/DiagnosticTools.cs`
+- `src/DotnetDiagnostics.Mcp/Tools/OrchestratorTools.cs`
 
 ### 1.3 Design constraints
 
@@ -62,7 +62,7 @@ This RFC is grounded in:
 The authoritative tool count comes from:
 
 ```bash
-grep -rn '\[McpServerTool\b' src/DotnetDiagnosticsMcp.Server/Tools/
+grep -rn '\[McpServerTool\b' src/DotnetDiagnostics.Mcp/Tools/
 ```
 
 Doc/test touch-points below were gathered by exact-name search on the current branch.

@@ -1,5 +1,5 @@
 using System.Text.Json;
-using DotnetDiagnosticsMcp.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.ProcessDiscovery;
 
 if (args.Length != 1 || !int.TryParse(args[0], out var processId) || processId <= 0)
 {

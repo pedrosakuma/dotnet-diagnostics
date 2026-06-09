@@ -23,7 +23,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT="${REPO_ROOT}/src/DotnetDiagnosticsMcp.Server"
+PROJECT="${REPO_ROOT}/src/DotnetDiagnostics.Mcp"
 PIDFILE="${LOCAL_MCP_PIDFILE:-/tmp/dotnet-diagnostics-mcp.pid}"
 LOGFILE="${LOCAL_MCP_LOGFILE:-/tmp/dotnet-diagnostics-mcp.log}"
 URL="${LOCAL_MCP_URL:-http://127.0.0.1:8787}"
@@ -58,7 +58,7 @@ cmd_start() {
 
     # Ensure a fresh Release build exists — idempotent.
     echo "building (Release) ..."
-    dotnet build "${REPO_ROOT}/DotnetDiagnosticsMcp.slnx" -c Release --nologo -v q >/dev/null
+    dotnet build "${REPO_ROOT}/DotnetDiagnostics.slnx" -c Release --nologo -v q >/dev/null
 
     echo "starting on $URL ..."
     # setsid + nohup so the process survives this shell. --no-launch-profile

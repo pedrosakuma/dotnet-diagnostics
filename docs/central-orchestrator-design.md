@@ -584,7 +584,7 @@ without rewriting every tool body.
 - This design doc.
 - Alignment on whether target selection is session-bound by default.
 #### What actually shipped
-- New `ISessionTargetBindingStore` + `MemorySessionTargetBindingStore` (TTL-aware, thread-safe, lazy eviction on read) in `src/DotnetDiagnosticsMcp.Core/ProcessDiscovery/`.
+- New `ISessionTargetBindingStore` + `MemorySessionTargetBindingStore` (TTL-aware, thread-safe, lazy eviction on read) in `src/DotnetDiagnostics.Core/ProcessDiscovery/`.
 - New `SessionTargetBinding` record with `(ProcessId, Source, ExpiresAt?)`.
 - New `IProcessContextResolver.ResolveAsync(string? sessionId, int? requestedProcessId, CancellationToken)` overload. Default interface method delegates to the legacy overload so every external resolver implementation stays compatible.
 - `ProcessContextResolver` accepts an optional `ISessionTargetBindingStore` via ctor. Resolution precedence: explicit pid > session binding > local auto-resolve > ambiguous/not-found error.
@@ -612,10 +612,10 @@ Add the fleet-discovery and attach path:
 - Decision to use in-process kube client plus direct port-forward streams.
 - Agreement on namespace-first scope and label allowlist policy.
 #### Expected file touch list
-- `src/DotnetDiagnosticsMcp.Server/Tools/DiagnosticTools.cs`
-- new orchestrator/Kubernetes integration services under `src/DotnetDiagnosticsMcp.Server/`
-- auth/config wiring in `src/DotnetDiagnosticsMcp.Server/Program.cs`
-- potential new option models in `src/DotnetDiagnosticsMcp.Core/` if shared envelope types belong there
+- `src/DotnetDiagnostics.Mcp/Tools/DiagnosticTools.cs`
+- new orchestrator/Kubernetes integration services under `src/DotnetDiagnostics.Mcp/`
+- auth/config wiring in `src/DotnetDiagnostics.Mcp/Program.cs`
+- potential new option models in `src/DotnetDiagnostics.Core/` if shared envelope types belong there
 - `docs/tool-reference.md`
 - `docs/client-setup.md`
 - `README.md` summary paragraph if the server now supports orchestrator mode
@@ -637,9 +637,9 @@ Add the session-management half of the orchestrator:
 - P3 attach/session plumbing.
 - Agreement on default TTL policy.
 #### Expected file touch list
-- `src/DotnetDiagnosticsMcp.Server/Tools/DiagnosticTools.cs`
-- session store / lease services under `src/DotnetDiagnosticsMcp.Server/`
-- logging/audit helpers under `src/DotnetDiagnosticsMcp.Server/`
+- `src/DotnetDiagnostics.Mcp/Tools/DiagnosticTools.cs`
+- session store / lease services under `src/DotnetDiagnostics.Mcp/`
+- logging/audit helpers under `src/DotnetDiagnostics.Mcp/`
 - `docs/tool-reference.md`
 - `docs/central-orchestrator-design.md` if design notes need status callouts
 #### Test strategy
@@ -793,7 +793,7 @@ DOTNET_DBG_MCP_ORCH_URL=http://127.0.0.1:5130 \
 DOTNET_DBG_MCP_ORCH_TOKEN=kind-test-bearer-token \
 DOTNET_DBG_MCP_KIND_NAMESPACE=p6-sample \
 DOTNET_DBG_MCP_KIND_TARGET_LABEL=p6-target=a \
-dotnet test tests/DotnetDiagnosticsMcp.Server.IntegrationTests/ -c Release \
+dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/ -c Release \
   --filter "Category=KindIntegration"
 ```
 

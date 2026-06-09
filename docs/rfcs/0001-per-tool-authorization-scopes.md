@@ -11,7 +11,7 @@
 ### 1.1 Current state
 
 The MCP server exposes **34 tools** today, every one of them gated by a *single*
-`MCP_BEARER_TOKEN`. Enumeration from `src/DotnetDiagnosticsMcp.Server/Tools/`:
+`MCP_BEARER_TOKEN`. Enumeration from `src/DotnetDiagnostics.Mcp/Tools/`:
 
 `DiagnosticTools.cs` (30 tools). Line numbers are anchored to commit `292264e`; treat
 the table here as the authoritative inventory and the per-scope tables in §2 as views
@@ -58,7 +58,7 @@ over it. If `[McpServerTool]` decorations move, only this section must be re-pin
 | `list_active_investigations` | OrchestratorTools.cs:430 |
 
 The single bearer is parsed in
-`src/DotnetDiagnosticsMcp.Server/Auth/BearerTokenMiddleware.cs:14-39`. There is no
+`src/DotnetDiagnostics.Mcp/Auth/BearerTokenMiddleware.cs:14-39`. There is no
 authorization layer between "request authenticated" and "tool handler invoked".
 
 ### 1.2 Privileged primitives behind the bearer
@@ -88,16 +88,16 @@ Several recent merges introduced *ad-hoc* opt-in flags that this RFC subsumes:
 
 | Flag | Defined at | Subsumed by scope |
 |---|---|---|
-| `Orchestrator:AllowCrossSessionAdmin` | `src/DotnetDiagnosticsMcp.Server/Orchestrator/OrchestratorOptions.cs:140` (used at `OrchestratorTools.cs:384, 466`, `Hosting/InvestigationProxyEndpoints.cs:161`) | `orchestrator-admin` |
-| `Diagnostics:AllowSensitiveHeapValues` | `src/DotnetDiagnosticsMcp.Core/Security/SecurityOptions.cs:32` (used by `SensitiveValueGate.cs:16`, `collect_event_source` per `DiagnosticTools.cs:1316`) | `sensitive-heap-read` |
-| `Diagnostics:EventSourceAllowlist` | `src/DotnetDiagnosticsMcp.Core/Security/SecurityOptions.cs:35` (used by `EventSourceAllowlist.cs:42`) | **Kept** — an allowlist is a content filter, not a scope. Scope `eventpipe` still required to call `collect_event_source`. |
-| `Diagnostics:SymbolServerAllowlist` | `src/DotnetDiagnosticsMcp.Core/Security/SecurityOptions.cs:39` (used by `SymbolServerAllowlist.cs:20`) | **Kept** — same rationale: an SSRF host filter, orthogonal to scope. |
+| `Orchestrator:AllowCrossSessionAdmin` | `src/DotnetDiagnostics.Mcp/Orchestrator/OrchestratorOptions.cs:140` (used at `OrchestratorTools.cs:384, 466`, `Hosting/InvestigationProxyEndpoints.cs:161`) | `orchestrator-admin` |
+| `Diagnostics:AllowSensitiveHeapValues` | `src/DotnetDiagnostics.Core/Security/SecurityOptions.cs:32` (used by `SensitiveValueGate.cs:16`, `collect_event_source` per `DiagnosticTools.cs:1316`) | `sensitive-heap-read` |
+| `Diagnostics:EventSourceAllowlist` | `src/DotnetDiagnostics.Core/Security/SecurityOptions.cs:35` (used by `EventSourceAllowlist.cs:42`) | **Kept** — an allowlist is a content filter, not a scope. Scope `eventpipe` still required to call `collect_event_source`. |
+| `Diagnostics:SymbolServerAllowlist` | `src/DotnetDiagnostics.Core/Security/SecurityOptions.cs:39` (used by `SymbolServerAllowlist.cs:20`) | **Kept** — same rationale: an SSRF host filter, orthogonal to scope. |
 
 The `collect_event_source` help text already advertises the future state — see
 `DiagnosticTools.cs:1316` ("the per-tool scope mechanism in #166 (B5) will replace this
 flag").
 
-The B1/H9 non-loopback startup guard (`src/DotnetDiagnosticsMcp.Server/Program.cs:97-113`)
+The B1/H9 non-loopback startup guard (`src/DotnetDiagnostics.Mcp/Program.cs:97-113`)
 is the foundation this RFC builds on: networked deployments are already required to
 configure an operator-managed bearer; this RFC tightens that bearer into a scope set.
 
@@ -202,7 +202,7 @@ tokens, request bodies, mailboxes.
 
 Replaces `Diagnostics:AllowSensitiveHeapValues`. Only meaningful when stacked with
 `heap-read` or `eventpipe`. Unlocks string-content surfaces that are currently gated by
-`SensitiveValueGate` (`src/DotnetDiagnosticsMcp.Core/Security/SensitiveValueGate.cs:16`)
+`SensitiveValueGate` (`src/DotnetDiagnostics.Core/Security/SensitiveValueGate.cs:16`)
 and the `unsafeProvider=true` switch on `collect_event_source`
 (`DiagnosticTools.cs:1297`).
 
@@ -391,7 +391,7 @@ A token granted `*` resolves to the union of every scope above. Used by:
 
 ### 2.14 Coverage check
 
-Every `[McpServerTool]` decoration in `src/DotnetDiagnosticsMcp.Server/Tools/` is
+Every `[McpServerTool]` decoration in `src/DotnetDiagnostics.Mcp/Tools/` is
 assigned to exactly one *primary* scope (the scope a caller minimally needs).
 `inspect_live_heap` additionally requires `ptrace` (§2.3) and `collect_process_dump`
 additionally requires `ptrace` (§2.6). `query_collection` is the lone tool with
