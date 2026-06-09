@@ -34,6 +34,7 @@ public sealed class DotnetDiagnosticsDiagnoser : IDiagnoser, IDisposable
     private readonly ConcurrentBag<BenchmarkDiagnosticEntry> _entries = new();
     private readonly List<string> _resultLines = new();
     private string? _artifactsDir;
+    private int _captureSequence;
 
     /// <summary>The diagnostic entries captured across the whole run, consumed by the report exporter.</summary>
     public IReadOnlyCollection<BenchmarkDiagnosticEntry> Entries => _entries;
@@ -83,7 +84,7 @@ public sealed class DotnetDiagnosticsDiagnoser : IDiagnoser, IDisposable
         Directory.CreateDirectory(_artifactsDir);
 
         var key = BenchmarkKey(parameters);
-        var capture = new RunningCapture(attribute);
+        var capture = new RunningCapture(attribute, Interlocked.Increment(ref _captureSequence));
         var token = capture.Cancellation.Token;
 
         // Run each kind sequentially (EventPipe collectors must not overlap on one PID) on a
@@ -130,34 +131,45 @@ public sealed class DotnetDiagnosticsDiagnoser : IDiagnoser, IDisposable
 
         var label = parameters.BenchmarkCase.DisplayInfo;
 
-        using (capture)
+        // Bound the wait: sum of per-kind windows plus generous startup/teardown slack.
+        var budget = TimeSpan.FromSeconds((capture.Attribute.KindList.Count * (capture.Attribute.DurationSeconds + 8)) + 15);
+        bool completed;
+        try
         {
-            // Bound the wait: sum of per-kind windows plus generous startup/teardown slack.
-            var budget = TimeSpan.FromSeconds((capture.Attribute.KindList.Count * (capture.Attribute.DurationSeconds + 8)) + 15);
-            try
-            {
-                if (!capture.Task.Wait(budget))
-                {
-                    // Cancel the wedged collector so a hung EventPipe session can't leak past the run.
-                    // In-process we cannot kill a child; we cancel and abandon (the orchestrator exits
-                    // after the run anyway).
-                    capture.Cancellation.Cancel();
-                    capture.Task.Wait(TimeSpan.FromSeconds(5));
-                    _resultLines.Add($"{label}: diagnostics timed out after {budget.TotalSeconds:N0}s (collector canceled)");
-                    return;
-                }
-            }
+            completed = capture.Task.Wait(budget);
+        }
 #pragma warning disable CA1031 // teardown is best-effort; surface the failure in the report, never throw
-            catch (Exception ex)
-            {
-                _resultLines.Add($"{label}: diagnostics failed — {ex.GetBaseException().Message}");
-                return;
-            }
+        catch (Exception ex)
+        {
+            // Wait throws only after the task has completed (faulted); disposing the capture is safe.
+            capture.Dispose();
+            _resultLines.Add($"{label}: diagnostics failed — {ex.GetBaseException().Message}");
+            return;
+        }
 #pragma warning restore CA1031
 
+        if (!completed)
+        {
+            // Cancel the wedged collector so a hung EventPipe session can't leak past the run.
+            // In-process we cannot kill a child; we cancel and abandon. The background task may
+            // still be running, so we must NOT dispose the capture (and its CTS) now — defer the
+            // disposal to a continuation that fires once the task actually unwinds.
+            capture.Cancellation.Cancel();
+            capture.Task.ContinueWith(
+                static (_, state) => ((RunningCapture)state!).Dispose(),
+                capture,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            _resultLines.Add($"{label}: diagnostics timed out after {budget.TotalSeconds:N0}s (collector canceled)");
+            return;
+        }
+
+        using (capture)
+        {
             foreach (var (kind, capt) in capture.Captures)
             {
-                var fileName = $"{Sanitize(key)}.{kind}.json";
+                var fileName = $"{Sanitize(key)}.{capture.Sequence}.{kind}.json";
                 var path = Path.Combine(_artifactsDir!, fileName);
                 File.WriteAllText(path, capt.Json);
                 _entries.Add(new BenchmarkDiagnosticEntry(label, kind, capt.IsError, capt.Summary, capt.Headline, path));
@@ -240,9 +252,11 @@ public sealed class DotnetDiagnosticsDiagnoser : IDiagnoser, IDisposable
 
     public void Dispose() => _collector.Dispose();
 
-    private sealed class RunningCapture(DiagnosticKindAttribute attribute) : IDisposable
+    private sealed class RunningCapture(DiagnosticKindAttribute attribute, int sequence) : IDisposable
     {
         public DiagnosticKindAttribute Attribute { get; } = attribute;
+
+        public int Sequence { get; } = sequence;
 
         public Task? Task { get; set; }
 
