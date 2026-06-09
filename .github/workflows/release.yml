@@ -66,6 +66,11 @@ jobs:
 
       - name: Pack
         run: |
+          dotnet pack src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj \
+            -c Release \
+            -o artifacts/nupkg \
+            -p:Version=${{ steps.derive-version.outputs.version }} \
+            --no-restore
           dotnet pack src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
             -c Release \
             -o artifacts/nupkg \
@@ -89,7 +94,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nupkg
-          path: artifacts/nupkg/*.nupkg
+          path: |
+            artifacts/nupkg/*.nupkg
+            artifacts/nupkg/*.snupkg
           if-no-files-found: error
 
   # ----- 2) Build per-OS single-file self-contained binaries -----
@@ -221,6 +228,7 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/nupkg/*.nupkg
+            artifacts/nupkg/*.snupkg
             artifacts/binary-*/dotnet-diagnostics-mcp-*
             artifacts/binary-*/dotnet-diagnostics-cli-*
 
