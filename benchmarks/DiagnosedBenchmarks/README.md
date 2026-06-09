@@ -37,12 +37,16 @@ The [`DiagnosedConfig`](DiagnosedConfig.cs) pairs the diagnoser with the **nativ
 
 ## Run it
 
+BenchmarkDotNet's CsProj toolchain regenerates and compiles a per-benchmark project, so it needs the
+sample's `.csproj` on the working-directory search path — run from the project directory:
+
 ```bash
-# Run one workload (BDN must run in Release, outside a debugger).
-dotnet run -c Release --project benchmarks/DiagnosedBenchmarks -- --filter '*GcChurn*'
+# BDN must run in Release, outside a debugger.
+cd benchmarks/DiagnosedBenchmarks
+dotnet run -c Release -- --filter '*GcChurn*'
 ```
 
-Then inspect the captured indicators (path is relative to the directory you ran from):
+Then inspect the captured indicators (under the project's `BenchmarkDotNet.Artifacts/`):
 
 ```bash
 cat BenchmarkDotNet.Artifacts/results/*-dotnet-diagnostics-report.md
