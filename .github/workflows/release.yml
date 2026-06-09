@@ -66,12 +66,12 @@ jobs:
 
       - name: Pack
         run: |
-          dotnet pack src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj \
+          dotnet pack src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
             -c Release \
             -o artifacts/nupkg \
             -p:Version=${{ steps.derive-version.outputs.version }} \
             --no-restore
-          dotnet pack src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj \
+          dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \
             -c Release \
             -o artifacts/nupkg \
             -p:Version=${{ steps.derive-version.outputs.version }} \
@@ -131,7 +131,7 @@ jobs:
       - name: Publish self-contained single-file binaries
         shell: bash
         run: |
-          dotnet publish src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj \
+          dotnet publish src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
             -c Release \
             -r ${{ matrix.rid }} \
             --self-contained true \
@@ -139,7 +139,7 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true \
             -p:Version=${{ needs.pack-tool.outputs.version }} \
             -o artifacts/server/${{ matrix.rid }}
-          dotnet publish src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj \
+          dotnet publish src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \
             -c Release \
             -r ${{ matrix.rid }} \
             --self-contained true \
@@ -155,16 +155,16 @@ jobs:
         # AssemblyName as a global MSBuild property propagates to the referenced
         # Core project, renaming its DLL to the same name and triggering NETSDK1152
         # "multiple publish output files with the same relative path". The server's
-        # apphost is DotnetDiagnosticsMcp.Server; the CLI's is dotnet-diagnostics
+        # apphost is DotnetDiagnostics.Mcp; the CLI's is dotnet-diagnostics
         # (its csproj AssemblyName) which we surface to users as dotnet-diagnostics-cli.
         run: |
           srv=artifacts/server/${{ matrix.rid }}
           cli=artifacts/cli/${{ matrix.rid }}
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            mv "$srv/DotnetDiagnosticsMcp.Server.exe" "$srv/dotnet-diagnostics-mcp.exe"
+            mv "$srv/DotnetDiagnostics.Mcp.exe" "$srv/dotnet-diagnostics-mcp.exe"
             mv "$cli/dotnet-diagnostics.exe" "$cli/dotnet-diagnostics-cli.exe"
           else
-            mv "$srv/DotnetDiagnosticsMcp.Server" "$srv/dotnet-diagnostics-mcp"
+            mv "$srv/DotnetDiagnostics.Mcp" "$srv/dotnet-diagnostics-mcp"
             mv "$cli/dotnet-diagnostics" "$cli/dotnet-diagnostics-cli"
           fi
 

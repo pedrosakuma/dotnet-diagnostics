@@ -143,7 +143,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
           // the diag image with USER root or change the app's USER directive.
           command: [
             'dotnet'
-            'DotnetDiagnosticsMcp.Server.dll'
+            'DotnetDiagnostics.Mcp.dll'
           ]
           env: [
             {

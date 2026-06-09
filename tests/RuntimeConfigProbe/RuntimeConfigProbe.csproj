@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\DotnetDiagnosticsMcp.Core\DotnetDiagnosticsMcp.Core.csproj" />
+    <ProjectReference Include="..\..\src\DotnetDiagnostics.Core\DotnetDiagnostics.Core.csproj" />
   </ItemGroup>
 
 </Project>

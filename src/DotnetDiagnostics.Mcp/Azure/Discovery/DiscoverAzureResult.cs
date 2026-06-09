@@ -1,0 +1,14 @@
+namespace DotnetDiagnostics.Mcp.Azure.Discovery;
+
+/// <summary>
+/// Discriminated payload for <see cref="DotnetDiagnostics.Mcp.Tools.DiscoverAzureTool"/>.
+/// Exactly one of <see cref="WebApps"/> / <see cref="ContainerApps"/> / <see cref="AksClusters"/>
+/// is populated, matching <see cref="Kind"/>; the rest are <c>null</c>. Mirrors the shape
+/// used by <c>list_orchestrator</c> so JSON consumers can branch on <c>data.kind</c>
+/// without re-running the tool.
+/// </summary>
+public sealed record DiscoverAzureResult(
+    string Kind,
+    AzurePagedResult<AzureWebAppCandidate>? WebApps = null,
+    AzurePagedResult<AzureContainerAppCandidate>? ContainerApps = null,
+    AzurePagedResult<AzureAksClusterCandidate>? AksClusters = null);

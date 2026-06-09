@@ -7,7 +7,7 @@
 
 ## What changed
 
-- new `DotnetDiagnosticsMcp.Core.Db` collector + snapshot types
+- new `DotnetDiagnostics.Core.Db` collector + snapshot types
 - server wiring in `CollectEventsTool`, `DiagnosticTools`, `QuerySnapshotTool`, DI registration, and collection dispatcher
 - redaction hardening for quoted connection-string passwords and more SQL numeric literal forms
 - BadCodeSample now drives reproducible N+1 query bursts with SQLite + EF Core
@@ -16,8 +16,8 @@
 
 ## Verification
 
-- `dotnet build DotnetDiagnosticsMcp.slnx -c Release`
-- `dotnet test tests/DotnetDiagnosticsMcp.Core.Tests/ -c Release --no-build --filter "FullyQualifiedName~Db"`
-- `dotnet test tests/DotnetDiagnosticsMcp.Server.IntegrationTests/ -c Release --no-build`
+- `dotnet build DotnetDiagnostics.slnx -c Release`
+- `dotnet test tests/DotnetDiagnostics.Core.Tests/ -c Release --no-build --filter "FullyQualifiedName~Db"`
+- `dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/ -c Release --no-build`
 
 Closes #250.

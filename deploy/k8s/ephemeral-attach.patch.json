@@ -8,7 +8,7 @@
         "targetContainerName": "app",
         "stdin": false,
         "tty": false,
-        "command": ["dotnet", "DotnetDiagnosticsMcp.Server.dll"],
+        "command": ["dotnet", "DotnetDiagnostics.Mcp.dll"],
         "env": [
           { "name": "ASPNETCORE_URLS", "value": "http://0.0.0.0:8787" },
           { "name": "MCP_BEARER_TOKEN", "value": "devtoken" }

@@ -1,0 +1,2481 @@
+using System.Collections.Immutable;
+using System.Diagnostics;
+using System.Text.Json;
+using DotnetDiagnostics.Core.Activities;
+using DotnetDiagnostics.Core.Artifacts;
+using DotnetDiagnostics.Core.Capabilities;
+using DotnetDiagnostics.Core.Collection;
+using DotnetDiagnostics.Core.Contention;
+using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Db;
+using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Jit;
+using DotnetDiagnostics.Core.JitCapture;
+using DotnetDiagnostics.Core.Logs;
+using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.ThreadPool;
+using DotnetDiagnostics.Core.Threads;
+using DotnetDiagnostics.Mcp.Security;
+using DotnetDiagnostics.Mcp.Tools;
+using FluentAssertions;
+using Microsoft.Extensions.Logging;
+
+namespace DotnetDiagnostics.Core.Tests;
+
+/// <summary>
+/// End-to-end tests that spawn the <c>CoreClrSample</c> webapi and exercise the diagnostic
+/// pipeline against it. The sample project is built+run via <c>dotnet run</c> so the test only
+/// requires the .NET SDK to be on PATH (CI satisfies this).
+/// </summary>
+[Collection("LiveProcess")]
+public class LiveCoreClrProcessTests : IAsyncLifetime
+{
+    private Process? _sampleProcess;
+    private readonly TaskCompletionSource<string> _listeningUrlTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private int Pid => _sampleProcess?.Id ?? throw new InvalidOperationException("Sample not started.");
+
+    public async Task InitializeAsync()
+    {
+        var sampleDll = LocateSampleDll();
+        if (sampleDll is null)
+        {
+            return;
+        }
+
+        // Execute the published DLL directly with `dotnet <dll>` so the captured PID
+        // *is* the application process — `dotnet run` creates a wrapper process whose
+        // own EventCounters surface (mostly idle) sometimes returns no payloads
+        // before our short collection window ends, which made tests flaky.
+        var psi = new ProcessStartInfo("dotnet")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(sampleDll)!,
+        };
+        psi.ArgumentList.Add(sampleDll);
+        psi.ArgumentList.Add("--urls");
+        psi.ArgumentList.Add("http://127.0.0.1:0");
+        psi.Environment["DOTNET_NOLOGO"] = "1";
+        psi.Environment["DOTNET_gcServer"] = "0";
+        psi.Environment["DOTNET_TieredCompilation"] = "1";
+        psi.Environment["DOTNET_TC_QuickJit"] = "1";
+        psi.Environment["DOTNET_TieredPGO"] = "1";
+        psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
+        psi.Environment["SECRET_TOKEN"] = "abc";
+        psi.Environment["MY_KEY"] = "xyz";
+
+        _sampleProcess = Process.Start(psi);
+        if (_sampleProcess is null)
+        {
+            return;
+        }
+
+        // Consume stdout so the OS pipe buffer never fills (would deadlock the sample),
+        // and harvest the "Now listening on: http://127.0.0.1:NNNN" line that Kestrel
+        // emits when binding to port 0 picks an ephemeral port.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var reader = _sampleProcess.StandardOutput;
+                string? line;
+                while ((line = await reader.ReadLineAsync()) is not null)
+                {
+                    var idx = line.IndexOf("Now listening on:", StringComparison.Ordinal);
+                    if (idx >= 0 && !_listeningUrlTcs.Task.IsCompleted)
+                    {
+                        var url = line[(idx + "Now listening on:".Length)..].Trim();
+                        _listeningUrlTcs.TrySetResult(url);
+                    }
+                }
+            }
+            catch
+            {
+                // best-effort; if the read fails the URL TCS is never set and HTTP-driven
+                // tests will just skip via EnsureListeningUrlAsync's timeout.
+            }
+        });
+        _ = Task.Run(async () =>
+        {
+            try { using var err = _sampleProcess.StandardError; while (await err.ReadLineAsync() is not null) { } }
+            catch { /* best-effort */ }
+        });
+
+        await WaitForDiagnosticEndpointAsync(_sampleProcess.Id, TimeSpan.FromSeconds(30));
+    }
+
+    public Task DisposeAsync()
+    {
+        if (_sampleProcess is { HasExited: false })
+        {
+            try
+            {
+                _sampleProcess.Kill(entireProcessTree: true);
+                _sampleProcess.WaitForExit(5_000);
+            }
+            catch (Exception)
+            {
+                // best-effort
+            }
+        }
+
+        _sampleProcess?.Dispose();
+        return Task.CompletedTask;
+    }
+
+    [Fact]
+    public void Discovery_FindsRunningSample()
+    {
+        EnsureSampleRunning();
+
+        var discovery = new LocalProcessDiscovery();
+        var processes = discovery.ListProcesses();
+        processes.Should().Contain(p => p.ProcessId == Pid);
+
+        var info = discovery.TryGetProcess(Pid);
+        info.Should().NotBeNull();
+        info!.CommandLine.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task Capabilities_DetectsCoreClr()
+    {
+        EnsureSampleRunning();
+
+        var detector = new CapabilityDetector();
+        var caps = await detector.DetectAsync(Pid, CancellationToken.None);
+
+        caps.Runtime.Should().Be(RuntimeFlavor.CoreClr);
+        caps.CanSampleCpu.Should().BeTrue();
+        caps.CanReadEventCounters.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Counters_ReturnsSystemRuntimeMetrics()
+    {
+        EnsureSampleRunning();
+
+        var collector = new EventPipeCounterCollector();
+        var snapshot = await collector.CollectAsync(
+            Pid,
+            // EventPipe session startup takes ~500ms-1s, then EventCounters are emitted
+            // at intervalSeconds boundaries. 6s gives consistent headroom for 3-5 ticks.
+            TimeSpan.FromSeconds(6),
+            providers: new[] { "System.Runtime" },
+            intervalSeconds: 1,
+            cancellationToken: CancellationToken.None);
+
+        snapshot.Counters.Should().NotBeEmpty();
+        snapshot.Counters.Should().Contain(c => c.Provider == "System.Runtime" && c.Name == "cpu-usage");
+    }
+
+    [LinuxOnlyFact]
+    public async Task Resources_DetectsFdLeak_FromBadCodeSample()
+    {
+
+        await using var sample = await LiveHttpSample.StartAsync("BadCodeSample", "/");
+        var collector = new ProcessResourcesCollector();
+        var before = await collector.CollectAsync(sample.ProcessId, durationSeconds: 0, sampleEverySeconds: 2, CancellationToken.None);
+
+        using var http = new HttpClient { BaseAddress = new Uri(sample.BaseUrl) };
+        using var response = await http.GetAsync("/fd-leak?count=64");
+        response.EnsureSuccessStatusCode();
+
+        var after = await collector.CollectAsync(sample.ProcessId, durationSeconds: 0, sampleEverySeconds: 2, CancellationToken.None);
+        after.FdCount.Should().NotBeNull();
+        after.FdCount!.Value.Should().BeGreaterThan((before.FdCount ?? 0) + 50);
+    }
+
+    [LinuxOnlyFact]
+    public async Task Resources_DetectsCloseWaitGrowth()
+    {
+
+        await using var sample = await LiveHttpSample.StartAsync("BadCodeSample", "/");
+        using var http = new HttpClient { BaseAddress = new Uri(sample.BaseUrl) };
+        using var response = await http.GetAsync("/socket-leak?count=8");
+        response.EnsureSuccessStatusCode();
+        await Task.Delay(500);
+
+        var collector = new ProcessResourcesCollector();
+        var resources = await collector.CollectAsync(sample.ProcessId, durationSeconds: 0, sampleEverySeconds: 2, CancellationToken.None);
+        resources.Sockets.Should().NotBeNull();
+        resources.Sockets!.CloseWait.Should().BeGreaterThan(0);
+    }
+
+    [LinuxOnlyFact]
+    public async Task Resources_RlimitFraction_IsCalculated()
+    {
+
+        await using var sample = await LiveHttpSample.StartAsync("BadCodeSample", "/");
+        using var http = new HttpClient { BaseAddress = new Uri(sample.BaseUrl) };
+        using var response = await http.GetAsync("/fd-leak?count=8");
+        response.EnsureSuccessStatusCode();
+
+        var collector = new ProcessResourcesCollector();
+        var resources = await collector.CollectAsync(sample.ProcessId, durationSeconds: 0, sampleEverySeconds: 2, CancellationToken.None);
+        resources.Limits.Should().NotBeNull();
+        resources.Limits!.NoFileSoft.Should().NotBeNull();
+        resources.Limits.NoFileUsageFraction.Should().NotBeNull();
+        resources.Limits.NoFileUsageFraction.Should().BeGreaterThan(0);
+        resources.Limits.NoFileUsageFraction.Should().BeLessThan(1);
+    }
+
+    [Fact]
+    public async Task Resources_TrendModeReturnsSamples()
+    {
+        EnsureSampleRunning();
+
+        var collector = new ProcessResourcesCollector();
+        var resources = await collector.CollectAsync(Pid, durationSeconds: 5, sampleEverySeconds: 2, CancellationToken.None);
+
+        resources.Trend.Should().NotBeNull();
+        resources.Trend!.Samples.Should().HaveCountGreaterThanOrEqualTo(2);
+        resources.CapturedAt.Should().Be(resources.Trend.Samples[^1].Timestamp);
+    }
+
+    [Fact]
+    public async Task RuntimeConfig_ReportsClrSettings_And_AllowlistedEnvironment()
+    {
+        EnsureSampleRunning();
+
+        var runtimeConfig = await ProbeRuntimeConfigAsync(Pid);
+
+        var notes = runtimeConfig.Notes.Count == 0 ? string.Empty : string.Join(" | ", runtimeConfig.Notes);
+
+        runtimeConfig.ProcessId.Should().Be(Pid);
+
+        // GC / ThreadPool are recovered via a best-effort ClrMD live attach that can be
+        // unavailable on a loaded CI host (heap not yet walkable, ptrace timing). The contract
+        // is therefore "data OR a documented reason" — when a sub-section is null we require the
+        // specific diagnostic note rather than accepting any failure silently (#294).
+        if (runtimeConfig.Gc is not null)
+        {
+            runtimeConfig.Gc.IsServerGc.Should().BeFalse();
+        }
+        else
+        {
+            runtimeConfig.Notes.Should().Contain(
+                note => note.Contains("GC / ThreadPool info unavailable", StringComparison.OrdinalIgnoreCase),
+                $"a null Gc must be explained by a live-attach note. notes: {notes}");
+        }
+
+        if (runtimeConfig.ThreadPool is not null)
+        {
+            runtimeConfig.ThreadPool.MinWorkerThreads.Should().BeGreaterThan(0);
+            runtimeConfig.ThreadPool.MaxWorkerThreads.GetValueOrDefault()
+                .Should().BeGreaterThan(runtimeConfig.ThreadPool.MinWorkerThreads.GetValueOrDefault());
+        }
+        else
+        {
+            runtimeConfig.Notes.Should().Contain(
+                note => note.Contains("ThreadPool settings unavailable", StringComparison.OrdinalIgnoreCase)
+                    || note.Contains("GC / ThreadPool info unavailable", StringComparison.OrdinalIgnoreCase),
+                $"a null ThreadPool must be explained by a live-attach note. notes: {notes}");
+        }
+
+        // TieredCompilation is sourced from the startup env overrides the sample sets
+        // (DOTNET_TieredCompilation / _TC_QuickJit / _TieredPGO). It is therefore reliably
+        // populated only where env vars are introspectable (Linux /proc); on Windows/macOS the
+        // inspector cannot read them, so a null section is expected and the env vars are absent.
+        if (runtimeConfig.TieredCompilation is not null)
+        {
+            runtimeConfig.TieredCompilation.Enabled.Should().BeTrue();
+            runtimeConfig.TieredCompilation.QuickJitEnabled.Should().BeTrue();
+            runtimeConfig.TieredCompilation.DynamicPgoEnabled.Should().BeTrue();
+        }
+        else
+        {
+            // Guard against a regression where the override IS visible but parsing silently
+            // dropped it: if any tiered-compilation env var is present the section must be built.
+            runtimeConfig.EnvVars.Should().NotContain(
+                entry => entry.Name.Equals("DOTNET_TieredCompilation", StringComparison.OrdinalIgnoreCase)
+                    || entry.Name.Equals("DOTNET_TC_QuickJit", StringComparison.OrdinalIgnoreCase)
+                    || entry.Name.Equals("DOTNET_TieredPGO", StringComparison.OrdinalIgnoreCase),
+                $"TieredCompilation may only be null when its env overrides are not visible. notes: {notes}");
+            runtimeConfig.Notes.Should().Contain(
+                note => note.Contains("Tiered compilation settings unavailable", StringComparison.OrdinalIgnoreCase),
+                $"a null TieredCompilation must be explained by a note. notes: {notes}");
+        }
+
+        // The allowlist + secret-redaction invariants hold for every platform (vacuously true
+        // when env vars are unavailable). The "contains DOTNET_" positive check only applies
+        // where env vars were actually read.
+        runtimeConfig.EnvVars.Should().OnlyContain(entry => RuntimeConfigInspector.IsAllowlistedEnvironmentVariable(entry.Name));
+        runtimeConfig.EnvVars.Should().NotContain(entry => entry.Name == "SECRET_TOKEN" || entry.Name == "MY_KEY");
+        if (runtimeConfig.EnvVars.Count > 0)
+        {
+            runtimeConfig.EnvVars.Should().Contain(entry => entry.Name.StartsWith("DOTNET_", StringComparison.OrdinalIgnoreCase));
+        }
+        else
+        {
+            runtimeConfig.Notes.Should().Contain(
+                note => note.Contains("Environment variable inspection", StringComparison.OrdinalIgnoreCase)
+                    || note.Contains("environ", StringComparison.OrdinalIgnoreCase),
+                $"empty EnvVars must be explained by a platform note. notes: {notes}");
+        }
+
+        runtimeConfig.AppContextSwitches.Should().BeEmpty();
+        runtimeConfig.Notes.Should().Contain(note => note.Contains("security boundary", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task RequestsNow_CapturesInFlightBadCodeSampleRequest()
+    {
+        await using var sample = await LiveHttpSample.StartAsync("BadCodeSample", "/");
+        using var http = new HttpClient
+        {
+            BaseAddress = new Uri(sample.BaseUrl),
+            Timeout = TimeSpan.FromSeconds(15),
+        };
+        var collector = new RequestsNowCollector(new ClrMdThreadSnapshotInspector());
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/slow-hang?seconds=5", CancellationToken.None);
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            sample.ProcessId,
+            TimeSpan.FromSeconds(2),
+            topFrames: 8,
+            CancellationToken.None);
+
+        var request = snapshot.Requests.Should().Contain(request =>
+            request.ThreadId > 0 &&
+            request.TopFrames.Count > 0 &&
+            (request.Endpoint.Contains("slow-hang", StringComparison.OrdinalIgnoreCase) || request.Endpoint == "(unknown)"))
+            .Subject;
+        request.Method.Should().NotBeNullOrWhiteSpace();
+        request.TraceId.Should().NotBeNullOrWhiteSpace();
+
+        await driver;
+    }
+
+    [WindowsOnlyFact]
+    public async Task Resources_ReturnsHandleCount_OnWindows()
+    {
+
+        EnsureSampleRunning();
+        var collector = new ProcessResourcesCollector();
+        var resources = await collector.CollectAsync(Pid, durationSeconds: 0, sampleEverySeconds: 2, CancellationToken.None);
+
+        resources.HandleCount.Should().NotBeNull();
+        resources.HandleCount!.Value.Should().BeGreaterThan(0);
+        resources.Fd.Should().BeNull();
+        resources.Sockets.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task MeterApi_ReturnsBusinessCounter_FromBadCodeSample()
+    {
+        await using var sample = await StartAuxiliarySampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(sample.BaseUrl) };
+        var collector = new EventPipeCounterCollector();
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/meter-spam?count=8&kind=counter");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            sample.ProcessId,
+            TimeSpan.FromSeconds(6),
+            providers: Array.Empty<string>(),
+            meters: new[] { "BadCodeSample" },
+            intervalSeconds: 1,
+            maxInstrumentTimeSeries: 32,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        snapshot.Meters.Any(m =>
+            m.Meter == "BadCodeSample" &&
+            m.Instrument == "orders.total" &&
+            m.LastValue.HasValue &&
+            m.LastValue.Value > 0).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task MeterApi_ReconstitutesAspNetCoreRequestHistogram()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var collector = new EventPipeCounterCollector();
+        using var cts = new CancellationTokenSource();
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200), cts.Token);
+            while (!cts.IsCancellationRequested)
+            {
+                using var response = await http.GetAsync("/weatherforecast", cts.Token);
+                response.EnsureSuccessStatusCode();
+                await Task.Delay(75, cts.Token);
+            }
+        }, cts.Token);
+
+        try
+        {
+            var snapshot = await collector.CollectAsync(
+                Pid,
+                TimeSpan.FromSeconds(6),
+                providers: Array.Empty<string>(),
+                meters: new[] { "Microsoft.AspNetCore.Hosting", "Microsoft.AspNetCore.Server.Kestrel" },
+                intervalSeconds: 1,
+                maxInstrumentTimeSeries: 256,
+                cancellationToken: CancellationToken.None);
+
+            var requestDuration = snapshot.Meters.Single(m =>
+                m.Instrument == "http.server.request.duration" &&
+                m.Histogram != null &&
+                m.Histogram.P95 > 0);
+
+            requestDuration.Histogram!.P50.Should().BeGreaterThan(0);
+            requestDuration.Histogram!.P99.Should().BeGreaterThanOrEqualTo(requestDuration.Histogram.P95);
+        }
+        finally
+        {
+            cts.Cancel();
+            try { await driver; } catch (OperationCanceledException) { }
+        }
+    }
+
+    [Fact]
+    public async Task MeterApi_HonoursCardinalityCap()
+    {
+        await using var sample = await StartAuxiliarySampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(sample.BaseUrl) };
+        var collector = new EventPipeCounterCollector();
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/meter-spam?count=25&kind=counter");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            sample.ProcessId,
+            TimeSpan.FromSeconds(6),
+            providers: Array.Empty<string>(),
+            meters: new[] { "BadCodeSample" },
+            intervalSeconds: 1,
+            maxInstrumentTimeSeries: 5,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        snapshot.Meters.Count.Should().BeLessOrEqualTo(5);
+        snapshot.Notes.Should().Contain(note => note.Contains("TimeSeriesLimitReached", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CollectActivities_CapturesSampleActivitySourceEvents()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var collector = new EventPipeActivityCollector();
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/activity?delayMs=40");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var capture = await collector.CollectAsync(
+            Pid,
+            TimeSpan.FromSeconds(4),
+            sources: new[] { "CoreClrSample.Activities" },
+            maxActivities: 20,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        capture.TotalActivities.Should().BeGreaterThanOrEqualTo(2, "the /activity fixture emits a parent + child Activity");
+        capture.BySource.Should().Contain(summary => summary.SourceName == "CoreClrSample.Activities");
+        capture.ByOperation.Should().Contain(summary => summary.SourceName == "CoreClrSample.Activities" && summary.OperationName == "CoreClrSample.Outer");
+        capture.ByOperation.Should().Contain(summary => summary.SourceName == "CoreClrSample.Activities" && summary.OperationName == "CoreClrSample.Inner");
+
+        var outer = capture.Activities.Should().ContainSingle(activity =>
+            activity.SourceName == "CoreClrSample.Activities" && activity.OperationName == "CoreClrSample.Outer").Subject;
+        outer.Id.Should().NotBeNullOrWhiteSpace();
+        outer.TraceId.Should().NotBeNullOrWhiteSpace();
+        outer.SpanId.Should().NotBeNullOrWhiteSpace();
+        outer.Duration.Should().NotBeNull();
+        outer.Duration!.Value.Should().BeGreaterThan(TimeSpan.Zero);
+        outer.Tags.Should().ContainKey("endpoint");
+        outer.Tags["endpoint"].Should().Be("/activity");
+
+        capture.Activities.Should().Contain(activity =>
+            activity.SourceName == "CoreClrSample.Activities" &&
+            activity.OperationName == "CoreClrSample.Inner" &&
+            activity.ParentId == outer.Id);
+    }
+
+    [Fact(Skip = "Quarantined: crashes ubuntu-latest test host (EventPipe SampleProfiler). Tracked in #147.")]
+    public async Task CpuSampler_ProducesHotspots()
+    {
+        EnsureSampleRunning();
+
+        var sampler = new EventPipeCpuSampler();
+        var result = await sampler.SampleAsync(
+            Pid,
+            TimeSpan.FromSeconds(3),
+            topN: 10,
+            cancellationToken: CancellationToken.None);
+
+        result.Summary.TotalSamples.Should().BeGreaterThan(0);
+        result.Summary.TopHotspots.Should().NotBeEmpty();
+        result.Artifact.Root.Children.Should().NotBeEmpty("the call-tree artifact must capture at least one stack");
+    }
+
+    [Fact(Skip = "Quarantined: crashes ubuntu-latest test host (EventPipe SampleProfiler). Tracked in #147.")]
+    public async Task CpuSampler_ResolvesSourceLines_WhenEnabled()
+    {
+        EnsureSampleRunning();
+
+        var sampler = new EventPipeCpuSampler();
+        var result = await sampler.SampleAsync(
+            Pid,
+            TimeSpan.FromSeconds(3),
+            topN: 25,
+            sourceResolution: new SourceResolutionOptions(Enabled: true, SymbolPath: null, MaxResolved: 10),
+            cancellationToken: CancellationToken.None);
+
+        // Wiring contract: with resolveSourceLines enabled, the artifact always carries a
+        // non-null ResolvedSources map. Whether it's populated depends on the runtime's
+        // ability to locate PDBs (env-dependent — framework binaries usually ship without
+        // PDBs side-by-side, so an empty dictionary is acceptable degradation, not failure).
+        // Asserting NotBeEmpty here would contradict the comment above and racily fail on
+        // runners where the sample's PDB lookup path differs (observed on windows-latest CI).
+        result.Artifact.ResolvedSources.Should().NotBeNull();
+    }
+
+    [Fact(Skip = "Quarantined: crashes ubuntu-latest test host (EventPipe SampleProfiler). Tracked in #147.")]
+    public async Task CpuSampler_EmitsMethodIdentities_ForUserCode()
+    {
+        EnsureSampleRunning();
+
+        var sampleDll = LocateSampleDll()
+            ?? throw new InvalidOperationException("CoreClrSample.dll not found.");
+
+        var expectedMvid = new MvidReader().TryRead(sampleDll);
+        expectedMvid.Should().NotBeNull("the published sample DLL must have a readable MVID for the handoff contract test");
+
+        var sampler = new EventPipeCpuSampler();
+        var result = await sampler.SampleAsync(
+            Pid,
+            TimeSpan.FromSeconds(3),
+            topN: 50,
+            cancellationToken: CancellationToken.None);
+
+        result.Artifact.MethodIdentities.Should().NotBeNull();
+        result.Artifact.MethodIdentities.Should().NotBeEmpty(
+            "the sampler must always emit a handoff payload for ranked hotspots");
+
+        // At least one hotspot should map to a method from CoreClrSample itself.
+        var userCodeIdentity = result.Artifact.MethodIdentities.Values
+            .FirstOrDefault(id => id.ModuleVersionId == expectedMvid);
+
+        userCodeIdentity.Should().NotBeNull(
+            "the sampler must resolve user-code hotspots to the publishing assembly's MVID for the assembly-mcp handoff");
+        userCodeIdentity!.MetadataToken.Should().BeGreaterThan(0, "the handoff pair (MVID, token) must round-trip to the assembly-mcp");
+        userCodeIdentity.MethodName.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task DumpInspector_ExtractsHeapStats_AndTypeIdentityForUserCode()
+    {
+        EnsureSampleRunning();
+
+        var sampleDll = LocateSampleDll()
+            ?? throw new InvalidOperationException("CoreClrSample.dll not found.");
+        var expectedMvid = new MvidReader().TryRead(sampleDll);
+        expectedMvid.Should().NotBeNull();
+
+        // Capture a WithHeap dump (the only kind that supports heap walk).
+        var dumpRoot = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-inspect-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dumpRoot);
+        try
+        {
+            var dumper = new DotnetDiagnostics.Core.Dump.DiagnosticsClientDumper(
+                new TestArtifactRootProvider(dumpRoot));
+            var dump = await dumper.WriteDumpAsync(Pid, ProcessDumpType.WithHeap, outputDirectory: null, CancellationToken.None);
+            File.Exists(dump.FilePath).Should().BeTrue();
+            dump.FileSizeBytes.Should().BeGreaterThan(0);
+
+            var inspector = new ClrMdDumpInspector();
+            var inspection = await inspector.InspectAsync(
+                dump.FilePath,
+                new DumpInspectionOptions(TopTypes: 25),
+                CancellationToken.None);
+
+            inspection.Runtime.Name.Should().NotBeNullOrEmpty();
+            inspection.Runtime.Version.Should().NotBeNullOrEmpty();
+            inspection.Heap.TotalBytes.Should().BeGreaterThan(0, "WithHeap dump must contain a walkable managed heap");
+            inspection.TopTypesByBytes.Should().NotBeEmpty();
+            inspection.TopTypesByInstances.Should().NotBeEmpty();
+
+            // System types (Object[], String, etc.) always dominate; we only need to confirm at
+            // least one TypeStat carries an Identity with a non-null MVID — that's the handoff
+            // proof. CoreClrSample's own types are tiny by bytes so we don't rely on user code
+            // appearing in the top-25.
+            var withMvid = inspection.TopTypesByBytes
+                .Concat(inspection.TopTypesByInstances)
+                .FirstOrDefault(s => s.Identity is { ModuleVersionId: not null, MetadataToken: not null });
+            withMvid.Should().NotBeNull(
+                "ClrMdDumpInspector must populate TypeIdentity (mvid + token) for handoff to dotnet-assembly-mcp");
+        }
+        finally
+        {
+            try { Directory.Delete(dumpRoot, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task DumpInspector_InspectsObjectGcRootAndObjectSize_FromLiveHeapSnapshot()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+
+        for (var i = 0; i < 4; i++)
+        {
+            var response = await http.GetAsync("/leak");
+            response.EnsureSuccessStatusCode();
+        }
+
+        var inspector = new ClrMdDumpInspector();
+        var snapshot = await inspector.InspectLiveAsync(
+            Pid,
+            new DumpInspectionOptions(TopTypes: 25, IncludeRetentionPaths: true),
+            CancellationToken.None);
+
+        var leakedBufferPath = snapshot.RetentionPaths?
+            .FirstOrDefault(path => string.Equals(path.TargetTypeFullName, "System.Byte[]", StringComparison.Ordinal));
+        leakedBufferPath.Should().NotBeNull(
+            "the /leak workload retains 1 MiB byte[] objects that should surface in the live heap snapshot's retention paths");
+
+        var leakedBufferAddress = leakedBufferPath!.TargetObjectAddress;
+        var objectView = await inspector.InspectObjectAsync(snapshot, leakedBufferAddress, CancellationToken.None);
+        objectView.TypeFullName.Should().Be("System.Byte[]");
+        objectView.IsArray.Should().BeTrue();
+        objectView.ArrayLength.Should().Be(1_048_576);
+        objectView.ArraySample.Should().NotBeNull();
+        objectView.ArraySample!.Should().NotBeEmpty();
+        objectView.ArraySample.Should().OnlyContain(e => e.Value == "0",
+            "freshly-allocated byte[] entries are zero-initialized");
+
+        var gcrootView = await inspector.InspectGcRootAsync(snapshot, leakedBufferAddress, CancellationToken.None);
+        gcrootView.Chain.Should().NotBeEmpty();
+        gcrootView.Chain[0].RootKind.Should().NotBeNullOrWhiteSpace(
+            "the leaked byte[] must remain reachable from some GC root through the endpoint's retained list");
+        gcrootView.Chain[^1].ObjectAddress.Should().Be(leakedBufferAddress);
+
+        var objectSize = await inspector.InspectObjectSizeAsync(snapshot, leakedBufferAddress, CancellationToken.None);
+        objectSize.ObjectCount.Should().Be(1, "a byte[] retains only itself in the object graph walk");
+        objectSize.RetainedBytes.Should().Be(objectView.Size);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task DumpInspector_InspectLiveAsync_FindsPendingAsyncStateMachines()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        using var response = await http.GetAsync("/async-pending?count=3", CancellationToken.None);
+        response.EnsureSuccessStatusCode();
+        await Task.Delay(500);
+
+        var inspector = new ClrMdDumpInspector();
+        var snapshot = await inspector.InspectLiveAsync(Pid, cancellationToken: CancellationToken.None);
+
+        snapshot.AsyncOperations.Should().NotBeNullOrEmpty(
+            "the async fixture roots never-completing tasks so the heap walk can reconstruct their state machines");
+
+        var sampleOperations = snapshot.AsyncOperations!
+            .Where(op => op.StateMachineTypeFullName.Contains("AsyncFixture+<", StringComparison.Ordinal))
+            .ToList();
+
+        sampleOperations.Should().NotBeEmpty(
+            "the /async-pending endpoint launches nested async methods whose compiler-generated state machines must remain on the heap");
+        sampleOperations.Should().Contain(op => op.State >= 0,
+            "pending async methods should expose a non-completed state via <>1__state");
+        sampleOperations.Any(op => op.AwaiterTypeFullName is not null && op.AwaiterTypeFullName.Contains("TaskAwaiter", StringComparison.Ordinal))
+            .Should().BeTrue("the fixture awaits a TaskCompletionSource-backed Task so the awaiter must be visible");
+        sampleOperations.Any(op => op.Stack is not null && op.Stack.Count >= 2)
+            .Should().BeTrue("nested awaits should produce a best-effort continuation chain with at least one parent frame");
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task DumpInspector_InspectLiveAsync_AggregatesPinnedGcHandles_FromBadCodeSample()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+
+        using var requestCts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var leakTask = http.GetAsync("/handle-leak?type=pinned&count=5000&seconds=25", requestCts.Token);
+        await Task.Delay(TimeSpan.FromSeconds(10), CancellationToken.None);
+        leakTask.IsCompleted.Should().BeFalse("/handle-leak should still be sleeping while the snapshot runs");
+
+        HeapSnapshotArtifact snapshot;
+        try
+        {
+            snapshot = await new ClrMdDumpInspector().InspectLiveAsync(
+                badSample.ProcessId,
+                new DumpInspectionOptions(TopTypes: 25),
+                CancellationToken.None);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            throw SkipException.ForReason($"ptrace/ClrMD attach unavailable in this environment: {ex.Message}");
+        }
+
+        var pinned = snapshot.GcHandles?
+            .ByKind
+            .Single(bucket => bucket.Kind == "Pinned");
+
+        pinned.Should().NotBeNull();
+        pinned!.Count.Should().BeGreaterThanOrEqualTo(200,
+            "the /handle-leak fixture holds 5,000 pinned GCHandles alive while the heap snapshot runs, so the live view should surface at least a few hundred of them");
+
+        using var response = await leakTask;
+        response.EnsureSuccessStatusCode();
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ThreadSnapshot_InspectLive_EnumeratesManagedThreads()
+    {
+        EnsureSampleRunning();
+
+        var inspector = new ClrMdThreadSnapshotInspector();
+        var snapshot = await inspector.InspectLiveAsync(
+            Pid,
+            new ThreadSnapshotOptions(MaxFramesPerThread: 32),
+            CancellationToken.None);
+
+        snapshot.Origin.Should().Be(ThreadSnapshotOrigin.Live);
+        snapshot.ProcessId.Should().Be(Pid);
+        snapshot.RuntimeName.Should().NotBeNullOrEmpty();
+        snapshot.Threads.Should().NotBeEmpty("a running ASP.NET process has at least the main + GC + finalizer threads");
+        snapshot.Threads.Should().Contain(t => t.IsFinalizer, "every CoreCLR process has a finalizer thread");
+        snapshot.Threads.Where(t => t.Frames.Count > 0).Should().NotBeEmpty(
+            "at least one thread should have a captured managed stack");
+        snapshot.Locks.Should().NotBeNull();
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task AsyncStallClassifier_FindsTcsPending_FromBadCodeSample()
+    {
+        await using var sample = await LiveHttpSample.StartAsync("BadCodeSample", "/");
+        using var http = new HttpClient { BaseAddress = new Uri(sample.BaseUrl) };
+        var requestTask = http.GetAsync("/async-stall?bucket=tcs&seconds=4", CancellationToken.None);
+        var inspector = new ClrMdThreadSnapshotInspector();
+
+        await Task.Delay(TimeSpan.FromMilliseconds(150));
+
+        AsyncStallsView? matched = null;
+        for (var attempt = 0; attempt < 8 && matched is null; attempt++)
+        {
+            var snapshot = await inspector.InspectLiveAsync(
+                sample.ProcessId,
+                new ThreadSnapshotOptions(MaxFramesPerThread: 32),
+                CancellationToken.None);
+
+            var view = AsyncStallClassifier.Classify(snapshot, topN: 10);
+            if (view.ByBucket.Any(bucket => bucket.Bucket == "TcsPending" && bucket.Count >= 1))
+            {
+                matched = view;
+                break;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(200));
+        }
+
+        using var response = await requestTask;
+        response.EnsureSuccessStatusCode();
+        matched.Should().NotBeNull("the /async-stall?bucket=tcs fixture should leave at least one TCS-backed async continuation visible to the classifier");
+        matched!.ByBucket.Should().Contain(bucket => bucket.Bucket == "TcsPending" && bucket.Count >= 1);
+    }
+
+    [Fact]
+    public async Task JitMapEmitter_EmitsPerfMap_WithManagedSymbols()
+    {
+        // Slice 2c Eixo B live coverage: against a real CoreClrSample process the emitter
+        // must (1) open a rundown session, (2) capture at least one MethodDCStop, (3) write
+        // /tmp/perf-<pid>.map in the perf format, (4) populate the symbol→identity dict.
+        // Linux-only: macOS does not have /tmp/perf-<pid>.map convention and Windows
+        // ETW already attaches managed names to user frames natively.
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        EnsureSampleRunning();
+
+        var emitter = new DotnetDiagnostics.Core.OffCpu.JitMapEmitter();
+        var result = await emitter.EmitAsync(Pid, rundownTimeout: TimeSpan.FromSeconds(5));
+
+        result.Should().NotBeNull("EventPipe rundown session against a running CoreCLR app must succeed");
+        result!.MapPath.Should().Be(Path.Combine(Path.GetTempPath(), $"perf-{Pid}.map"));
+        File.Exists(result.MapPath).Should().BeTrue("perf-<pid>.map file must be on disk for perf to consume");
+
+        try
+        {
+            result.MethodCount.Should().BeGreaterThan(0,
+                "the CLR rundown must enumerate at least a handful of already-JITted framework methods");
+            result.Methods.Should().NotBeEmpty("the per-method range list must be populated for parser enrichment");
+
+            var lines = await File.ReadAllLinesAsync(result.MapPath);
+            lines.Should().NotBeEmpty();
+            // Format: "<hexStart> <hexSize> <symbol>" — assert at least one line parses cleanly.
+            var parsed = lines.Where(l => l.Length > 0)
+                              .Select(l => l.Split(' ', 3))
+                              .Where(p => p.Length == 3)
+                              .ToList();
+            parsed.Should().NotBeEmpty("at least one entry must follow the perf-map line format");
+            parsed[0][0].Should().MatchRegex("^[0-9a-fA-F]+$", "start address is a hex string");
+            parsed[0][1].Should().MatchRegex("^[0-9a-fA-F]+$", "size is a hex string");
+            parsed[0][2].Should().NotBeNullOrWhiteSpace();
+
+            // At least some methods in the range list should carry an MVID — modules backing
+            // System.Private.CoreLib etc. exist on disk so MvidReader will read them.
+            result.Methods.Should().Contain(r => r.Identity.ModuleVersionId.HasValue,
+                "at least one rundown method should resolve its module MVID on disk");
+
+            // Sanity-check Resolve on the live data: pick the first range, ask for an address
+            // inside it, assert we get the same identity back. Address-based lookup is the
+            // parser's authoritative path so a broken Resolve would silently drop all enrichment.
+            // The end-exclusive boundary case is covered deterministically in
+            // JitMapResultResolveTests (an adjacent JIT range starting at sample.StartAddress +
+            // sample.Size is legal here and would make a boundary assertion flaky).
+            var sample = result.Methods.First(r => r.Size > 0);
+            result.Resolve(sample.StartAddress).Should().BeSameAs(sample.Identity,
+                "Resolve must return the range's identity for an address at the method start");
+            result.Resolve(sample.StartAddress + (sample.Size / 2)).Should().BeSameAs(sample.Identity,
+                "Resolve must return the same identity for an address in the middle of the range");
+        }
+        finally
+        {
+            try { File.Delete(result.MapPath); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task JitCapture_DumpsHotspotBytesToDisk()
+    {
+        EnsureSampleRunning();
+
+        var sampler = new EventPipeCpuSampler();
+        var sample = await sampler.SampleAsync(
+            Pid,
+            TimeSpan.FromSeconds(3),
+            topN: 50,
+            cancellationToken: CancellationToken.None);
+
+        var identity = sample.Artifact.MethodIdentities.Values
+            .FirstOrDefault(id => id.ModuleVersionId is { } && id.MetadataToken is > 0);
+        identity.Should().NotBeNull("the sampler must surface at least one JITted method for the capture handoff");
+
+        var mvid = identity!.ModuleVersionId!.Value;
+        var token = identity.MetadataToken!.Value;
+
+        var outDir = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-jitcap-{Guid.NewGuid():N}");
+        try
+        {
+            var capturer = new ClrMdJitMethodCapturer(new TestArtifactRootProvider(outDir));
+            var artifact = await capturer.CaptureLiveAsync(
+                Pid,
+                new MethodCaptureRequest(mvid, token, OutputDirectory: null),
+                CancellationToken.None);
+
+            artifact.Origin.Should().Be(CapturedMethodBytesOrigin.Live);
+            artifact.ProcessId.Should().Be(Pid);
+            artifact.Architecture.Should().NotBeNullOrEmpty();
+            artifact.Method.ModuleVersionId.Should().Be(mvid);
+            artifact.Method.MetadataToken.Should().Be(token);
+            artifact.Regions.Should().NotBeEmpty("a JITted method must expose at least its Hot region");
+
+            var hot = artifact.Regions.FirstOrDefault(r => r.Region == "Hot");
+            hot.Should().NotBeNull("JIT-emitted code always has a Hot region");
+            hot!.Size.Should().BeGreaterThan(0);
+            File.Exists(hot.FilePath).Should().BeTrue("the capturer must materialise the bytes file on disk");
+            new FileInfo(hot.FilePath).Length.Should().Be(hot.Size,
+                "the file size must match the reported region size for the native-mcp handoff");
+        }
+        finally
+        {
+            try { Directory.Delete(outDir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    // Quarantined on Linux CI only: this test reliably segfaults the xunit test host on
+    // ubuntu-latest under full-suite load (native crash inside libcoreclr's EventPipe
+    // SampleProfiler — see #147). Runs locally on Linux/macOS and on Windows CI so the
+    // closed-generic handoff contract from #21 stays covered while we pursue the upstream
+    // CoreCLR fix.
+    [Trait("Category", "Flaky")]
+    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #147 (dump artifact 7161760638 on run 26290739828). Runnable locally and on Windows CI.", Timeout = 60_000)]
+    public async Task CpuSampler_EmitsClosedGenericInstantiations_FromCoreClrSampleFixture()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        var sampleDll = LocateSampleDll()
+            ?? throw new InvalidOperationException("CoreClrSample.dll not found.");
+        var expectedMvid = new MvidReader().TryRead(sampleDll);
+        expectedMvid.Should().NotBeNull();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+
+        // Drive the /generics endpoint in a tight loop on a background task so the CPU
+        // sampler's window overlaps with hot Box<T>.Wrap / GenericFixture.Echo<T> frames.
+        var driver = Task.Run(async () =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                try { _ = await http.GetAsync("/generics?iterations=200000", cts.Token); }
+                catch (OperationCanceledException) { break; }
+                catch { /* tolerate transient races */ }
+            }
+        }, cts.Token);
+
+        try
+        {
+            var sampler = new EventPipeCpuSampler();
+            var result = await sampler.SampleAsync(
+                Pid,
+                TimeSpan.FromSeconds(8),
+                topN: 100,
+                cancellationToken: CancellationToken.None);
+
+            // Look for at least one hotspot identity that (a) belongs to CoreClrSample
+            // and (b) carries a closed instantiation block — either type-level (Box`1)
+            // or method-level (Echo<T>).
+            var userCode = result.Artifact.MethodIdentities.Values
+                .Where(id => id.ModuleVersionId == expectedMvid)
+                .ToList();
+            var closed = userCode
+                .Where(id => id.GenericTypeArguments is { } gi
+                          && (gi.Type.Count > 0 || gi.Method.Count > 0))
+                .ToList();
+
+            closed.Should().NotBeEmpty(
+                "the /generics fixture exercises Box<int>/Box<string> (type-level) and " +
+                "Echo<int>/Echo<string> (method-level) closed generics — the sampler " +
+                "must surface GenericTypeArguments on at least one user-code hotspot " +
+                "per issue #21's acceptance bullet (UserCodeIdentities={0}, TotalSamples={1})",
+                userCode.Count, result.Summary.TotalSamples);
+
+            // Tighten the assertion so a regression on either axis fails the test rather
+            // than slipping through on a single matching frame. Both axes are part of #21's
+            // acceptance bullets: type-level (Box`1) AND method-level (Echo<T>).
+            //
+            // NOTE on shared generics: the CLR JITs ONE body shared across all reference-
+            // type instantiations using System.__Canon (e.g. Box<string> appears as
+            // Box<System.__Canon> in the trace). Value-type instantiations are unique
+            // (Box<int> → Box<System.Int32>). The handoff contract surfaces whatever the
+            // runtime emits — we therefore assert int as the unique value-type arg and
+            // accept either System.String or System.__Canon for the reference-type arg.
+            // See docs/handoff-contract.md §3.5 / "shared generics" note.
+            var typeLevel = closed
+                .Where(id => id.GenericTypeArguments!.Type.Count > 0
+                          && (id.TypeFullName?.Contains("Box", StringComparison.Ordinal) ?? false))
+                .ToList();
+            typeLevel.Should().NotBeEmpty(
+                "Box<int>/Box<string>.Wrap must surface as type-level closed instantiations");
+            var typeArgs = typeLevel
+                .SelectMany(id => id.GenericTypeArguments!.Type)
+                .ToHashSet(StringComparer.Ordinal);
+            typeArgs.Should().Contain(a => a.Contains("System.Int32", StringComparison.Ordinal),
+                "Box<int>.Wrap must round-trip its closed type-arg as System.Int32 (value types get unique JIT code)");
+            typeArgs.Should().Contain(
+                a => a.Contains("System.String", StringComparison.Ordinal)
+                  || a.Contains("System.__Canon", StringComparison.Ordinal),
+                "Box<string>.Wrap must round-trip as System.String or the runtime's shared System.__Canon (reference-type instantiations share JIT code)");
+
+            var methodLevel = closed
+                .Where(id => id.GenericTypeArguments!.Method.Count > 0
+                          && string.Equals(id.MethodName, "Echo", StringComparison.Ordinal))
+                .ToList();
+
+            // Best-effort method-level assertion: at the time of writing, Linux EventPipe +
+            // TraceLog does NOT synthesise the `<T>` suffix on a generic method's
+            // FullMethodName — `GenericFixture.Echo<int>` arrives as plain
+            // `GenericFixture.Echo` with `GenericArity=0`. Tracked in issue #85; until that
+            // closes, we accept either outcome but never both axes missing.
+            if (methodLevel.Count > 0)
+            {
+                var methodArgs = methodLevel
+                    .SelectMany(id => id.GenericTypeArguments!.Method)
+                    .ToHashSet(StringComparer.Ordinal);
+                methodArgs.Should().Contain(a => a.Contains("System.Int32", StringComparison.Ordinal),
+                    "Echo<int> must round-trip its closed method-arg as System.Int32 (value types get unique JIT code)");
+                methodArgs.Should().Contain(
+                    a => a.Contains("System.String", StringComparison.Ordinal)
+                      || a.Contains("System.__Canon", StringComparison.Ordinal),
+                    "Echo<string> must round-trip as System.String or the runtime's shared System.__Canon");
+            }
+
+            // Every emitted instantiation arg must be a CLR reflection-style FQN with
+            // no assembly qualification (per docs/handoff-contract.md §3.5).
+            foreach (var gi in closed.Select(c => c.GenericTypeArguments!))
+            {
+                foreach (var arg in gi.Type.Concat(gi.Method))
+                {
+                    arg.Should().NotBeNullOrWhiteSpace();
+                    arg.Should().NotContain(",", "type args must NOT be assembly-qualified " +
+                        $"per the handoff contract; got '{arg}'");
+                }
+            }
+        }
+        finally
+        {
+            cts.Cancel();
+            try { await driver; } catch { /* expected on cancel */ }
+        }
+    }
+
+    // Quarantined on Linux CI only (same native libcoreclr crash family as #147; this
+    // specific test is tracked in #145). Stays runnable locally and on Windows CI so the
+    // ClrMD opt-in method-level instantiation enrichment from #86 keeps coverage.
+    [Trait("Category", "Flaky")]
+    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #145 / #147 (dump artifact 7161760638 on run 26290739828). Runnable locally and on Windows CI.", Timeout = 90_000)]
+    public async Task CpuSampler_ResolvesMethodLevelClosedGenerics_OnlyWhenOptInEnabled()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        var sampleDll = LocateSampleDll()
+            ?? throw new InvalidOperationException("CoreClrSample.dll not found.");
+        var expectedMvid = new MvidReader().TryRead(sampleDll);
+        expectedMvid.Should().NotBeNull();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var driver = Task.Run(async () =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                try { _ = await http.GetAsync("/generics?iterations=200000", cts.Token); }
+                catch (OperationCanceledException) { break; }
+                catch { /* tolerate transient races */ }
+            }
+        }, cts.Token);
+
+        try
+        {
+            var sampler = new EventPipeCpuSampler();
+            var baseline = await sampler.SampleAsync(
+                Pid,
+                TimeSpan.FromSeconds(6),
+                topN: 100,
+                cancellationToken: CancellationToken.None);
+            var enriched = await sampler.SampleAsync(
+                Pid,
+                TimeSpan.FromSeconds(6),
+                topN: 100,
+                methodInstantiationResolution: new MethodInstantiationResolutionOptions(Enabled: true, MaxResolved: 100),
+                cancellationToken: CancellationToken.None);
+
+            var withoutMethodArgs = baseline.Artifact.MethodIdentities.Values
+                .Where(id => id.ModuleVersionId == expectedMvid)
+                .Where(id => string.Equals(id.MethodName, "Echo", StringComparison.Ordinal))
+                .Where(id => id.GenericTypeArguments is { Method.Count: > 0 })
+                .ToList();
+            var withMethodArgs = enriched.Artifact.MethodIdentities.Values
+                .Where(id => id.ModuleVersionId == expectedMvid)
+                .Where(id => string.Equals(id.MethodName, "Echo", StringComparison.Ordinal))
+                .Where(id => id.GenericTypeArguments is { Method.Count: > 0 })
+                .ToList();
+
+            if (OperatingSystem.IsLinux())
+            {
+                withoutMethodArgs.Should().BeEmpty(
+                    "Linux EventPipe alone only knows the open MethodDef for Echo<T>; closed method args arrive via the opt-in ClrMD enrichment (issue #86)");
+            }
+
+            withMethodArgs.Should().NotBeEmpty(
+                "resolveMethodInstantiations=true must recover closed method args for Echo<T> from the hottest sampled frames");
+            withMethodArgs.Should().OnlyContain(id => !string.IsNullOrWhiteSpace(id.ClosedSignature),
+                "resolved method-level instantiations must also stamp ClosedSignature for operator-facing display");
+
+            var methodArgs = withMethodArgs
+                .SelectMany(id => id.GenericTypeArguments!.Method)
+                .ToHashSet(StringComparer.Ordinal);
+            methodArgs.Should().Contain(a => a.Contains("System.Int32", StringComparison.Ordinal),
+                "Echo<int> must round-trip its closed method-arg as System.Int32");
+            methodArgs.Should().Contain(
+                a => a.Contains("System.String", StringComparison.Ordinal)
+                  || a.Contains("System.__Canon", StringComparison.Ordinal),
+                "Echo<string> must round-trip as System.String or the runtime's shared System.__Canon");
+        }
+        finally
+        {
+            cts.Cancel();
+            try { await driver; } catch { /* expected on cancel */ }
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ThreadSnapshot_InspectLive_CapturesThreadPoolSnapshot()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        HttpResponseMessage? response = null;
+        for (var attempt = 0; attempt < 40 && response is null; attempt++)
+        {
+            try
+            {
+                response = await http.GetAsync(
+                    "/threadpool/queue?globalItems=256&localItems=256&blockMs=4000",
+                    CancellationToken.None);
+            }
+            catch (HttpRequestException) when (attempt < 39)
+            {
+                EnsureSampleRunning();
+                await Task.Delay(250);
+            }
+        }
+        response.Should().NotBeNull();
+        using (response!)
+        {
+            response.EnsureSuccessStatusCode();
+        }
+
+        await Task.Delay(250);
+
+        var inspector = new ClrMdThreadSnapshotInspector();
+        var snapshot = await inspector.InspectLiveAsync(
+            Pid,
+            new ThreadSnapshotOptions(MaxFramesPerThread: 32),
+            CancellationToken.None);
+
+        snapshot.ThreadPool.Should().NotBeNull("CoreCLR ClrMD snapshots should capture ThreadPool state for view='threadpool'");
+        snapshot.ThreadPool!.Initialized.Should().BeTrue();
+        snapshot.ThreadPool.Workers.Max.Should().BeGreaterThanOrEqualTo(snapshot.ThreadPool.Workers.Min);
+        snapshot.ThreadPool.PendingWorkItems.Should().BeGreaterThanOrEqualTo(0);
+        snapshot.ThreadPool.Notes.Should().NotBeNullOrEmpty(
+            "the live fallback should explain when it uses lightweight thread-snapshot + static ThreadPool root inspection instead of a heap walk");
+        snapshot.ThreadPool.Notes.Should().Contain(note => note.Contains("heap-wide walks", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task AllocationSampler_ProducesTopTypes_WhenWorkloadAllocates()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+
+        // Drive the /render endpoint in a tight loop: each request does O(n²) string concat,
+        // producing a heavy stream of System.String allocations visible to GCAllocationTick.
+        var driver = Task.Run(async () =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                try { _ = await http.GetAsync("/render?count=1000", cts.Token); }
+                catch (OperationCanceledException) { break; }
+                catch { /* tolerate transient races */ }
+            }
+        }, cts.Token);
+
+        try
+        {
+            var sampler = new EventPipeAllocationSampler();
+            var result = await sampler.SampleAsync(
+                Pid,
+                TimeSpan.FromSeconds(8),
+                topN: 25,
+                cancellationToken: CancellationToken.None);
+
+            result.Summary.TotalEvents.Should().BeGreaterThan(0,
+                "the /render workload performs heavy string allocations that must surface GCAllocationTick events");
+            result.Summary.TopByBytes.Should().NotBeEmpty(
+                "at least one type must be aggregated from GCAllocationTick events");
+            result.Summary.TopByCount.Should().NotBeEmpty();
+
+            // System.String dominates the /render endpoint's O(n²) concat workload.
+            result.Summary.TopByBytes.Should().Contain(t =>
+                t.TypeName.Contains("String", StringComparison.OrdinalIgnoreCase) ||
+                t.TypeName.Contains("Char", StringComparison.OrdinalIgnoreCase) ||
+                t.TypeName.Contains("Object", StringComparison.OrdinalIgnoreCase),
+                "the render workload allocates strings heavily — at least one string-related type must appear");
+
+            // Call-tree artifact should have captured call stacks from GCAllocationTick events.
+            result.Artifact.Root.Children.Should().NotBeEmpty(
+                "the allocation call-tree artifact must capture at least one stack when events were observed");
+
+            var stamped = CallTreeIdentityProjector.Stamp(result.Artifact.Root, result.Artifact.MethodIdentities);
+            Flatten(stamped)
+                .Any(node => node.Identity is { ModuleVersionId: not null, MetadataToken: not null })
+                .Should().BeTrue("allocation drill-down must surface at least one MethodIdentity-backed frame for assembly-mcp handoff");
+        }
+        finally
+        {
+            cts.Cancel();
+            try { await driver; } catch { /* expected on cancel */ }
+        }
+    }
+
+    [Trait("Category", "Flaky")]
+    [SkipOnLinuxCiFact("Quarantined on Linux CI: EventPipe SampleProfiler can crash the host under ubuntu-latest load (tracked in #147). Runnable locally and on Windows CI.", Timeout = 90_000)]
+    public async Task Diff_CpuSample_DetectsRegression()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var sampler = new EventPipeCpuSampler();
+
+        var baseline = await SampleCpuUnderLoadAsync(http, sampler, "/generics?iterations=20000", TimeSpan.FromSeconds(10));
+        var current = await SampleCpuUnderLoadAsync(http, sampler, "/generics?iterations=200000", TimeSpan.FromSeconds(10));
+
+        var diff = SampleDiffer.Compare(baseline.Artifact, "baseline", current.Artifact, "current", minDeltaPct: 1, topN: 25);
+
+        diff.Verdict.Should().BeOneOf("regression", "mixed");
+        diff.Added.Concat(diff.Changed).Any(row =>
+            row.Key.Symbol.Module.Contains("CoreClrSample", StringComparison.Ordinal)
+            && (row.Direction == "added" || row.Direction == "up")
+            && (row.Key.Symbol.MethodFullName.Contains("GenericFixture", StringComparison.Ordinal)
+                || row.Key.Symbol.MethodFullName.Contains("Box`1", StringComparison.Ordinal)
+                || row.Key.Symbol.MethodFullName.Contains("Wrap", StringComparison.Ordinal)
+                || row.Key.Symbol.MethodFullName.Contains("Echo", StringComparison.Ordinal)))
+            .Should().BeTrue();
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Diff_HeapSnapshot_DetectsTypeGrowth()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var inspector = new ClrMdDumpInspector();
+
+        using (var response = await http.GetAsync("/leak?mb=4", CancellationToken.None))
+        {
+            response.EnsureSuccessStatusCode();
+        }
+
+        var baseline = await inspector.InspectLiveAsync(
+            Pid,
+            new DumpInspectionOptions(TopTypes: 50),
+            CancellationToken.None);
+
+        for (var i = 0; i < 3; i++)
+        {
+            using var response = await http.GetAsync("/leak?mb=4", CancellationToken.None);
+            response.EnsureSuccessStatusCode();
+        }
+
+        var current = await inspector.InspectLiveAsync(
+            Pid,
+            new DumpInspectionOptions(TopTypes: 50),
+            CancellationToken.None);
+
+        var diff = SampleDiffer.Compare(baseline, "baseline", current, "current", minDeltaPct: 5, topN: 25);
+
+        diff.Verdict.Should().BeOneOf("regression", "mixed");
+        diff.Changed.Should().Contain(row => row.Direction == "up" && row.Key.TypeFullName == "System.Byte[]");
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Diff_RejectsMixedKinds()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var cpu = await SampleCpuUnderLoadAsync(http, new EventPipeCpuSampler(), "/generics?iterations=20000", TimeSpan.FromSeconds(8));
+        var heap = await new ClrMdDumpInspector().InspectLiveAsync(Pid, new DumpInspectionOptions(TopTypes: 25), CancellationToken.None);
+
+        var store = new MemoryDiagnosticHandleStore();
+        var cpuHandle = store.Register(Pid, "cpu-sample", cpu.Artifact, TimeSpan.FromMinutes(10));
+        var heapHandle = store.Register(Pid, "heap-snapshot", heap, TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshotTool.QuerySnapshot(
+            store,
+            new ClrMdDumpInspector(),
+            new SensitiveDataRedactor(null),
+            new SensitiveValueGate(null),
+            new NullPrincipalAccessor(),
+            new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            handle: cpuHandle.Id,
+            view: "diff",
+            baselineHandle: heapHandle.Id,
+            cancellationToken: CancellationToken.None);
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("InvalidArgument");
+    }
+
+    [Fact(Timeout = 90_000)]
+    public async Task Diff_AllocationSample_NormalizesByDuration()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var driver = Task.Run(async () =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                try { _ = await http.GetAsync("/render?count=1000", cts.Token); }
+                catch (OperationCanceledException) { break; }
+                catch { /* tolerate transient races */ }
+            }
+        }, cts.Token);
+
+        try
+        {
+            var sampler = new EventPipeAllocationSampler();
+            var baseline = await sampler.SampleAsync(Pid, TimeSpan.FromSeconds(4), topN: 25, cancellationToken: CancellationToken.None);
+            var current = await sampler.SampleAsync(Pid, TimeSpan.FromSeconds(8), topN: 25, cancellationToken: CancellationToken.None);
+
+            var diff = SampleDiffer.Compare(baseline.Summary, "baseline", current.Summary, "current", minDeltaPct: 0, topN: 50);
+            diff.Notes.Should().Contain(note => note.Contains("normalized totals to per-second rates", StringComparison.Ordinal));
+
+            var typeName = baseline.Summary.TopByBytes[0].TypeName;
+            var row = diff.Changed.Should().ContainSingle(candidate => candidate.Key.TypeFullName == typeName).Subject;
+            row.Baseline.Should().NotBeNull();
+            row.Current.Should().NotBeNull();
+            row.Current!.TotalBytes.Should().BeGreaterThan(row.Baseline!.TotalBytes,
+                "the longer capture window should accumulate more raw bytes before normalization");
+
+            var rawRatio = (double)row.Current.TotalBytes / row.Baseline.TotalBytes;
+            var normalizedRatio = row.Current.BytesPerSecond / row.Baseline.BytesPerSecond;
+            rawRatio.Should().BeGreaterThan(1.5,
+                "the 8s capture should accumulate materially more raw bytes than the 4s baseline");
+            normalizedRatio.Should().BeLessThan(rawRatio,
+                "per-second normalization should dampen the duration-driven spread visible in raw totals");
+        }
+        finally
+        {
+            cts.Cancel();
+            try { await driver; } catch { /* expected on cancel */ }
+        }
+    }
+
+    private async Task<CpuSampleResult> SampleCpuUnderLoadAsync(
+        HttpClient http,
+        EventPipeCpuSampler sampler,
+        string path,
+        TimeSpan sampleDuration)
+    {
+        using var cts = new CancellationTokenSource(sampleDuration + TimeSpan.FromSeconds(4));
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200), cts.Token);
+            while (!cts.IsCancellationRequested)
+            {
+                try
+                {
+                    using var response = await http.GetAsync(path, cts.Token);
+                    response.EnsureSuccessStatusCode();
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }, cts.Token);
+
+        var result = await sampler.SampleAsync(
+            Pid,
+            sampleDuration,
+            topN: 100,
+            cancellationToken: CancellationToken.None);
+
+        cts.Cancel();
+        try { await driver; } catch { /* expected on cancel */ }
+        return result;
+    }
+
+    [Fact(Timeout = 90_000)]
+    public async Task ThreadPool_CapturesStarvationTrajectory_FromBadCodeSample()
+    {
+        // A single 6s window did not reliably observe a hill-climbing starvation transition on a
+        // loaded/fast CI host. Retry the whole drive-and-collect cycle against a freshly started
+        // sample (so ThreadPool state is reset each attempt) with a wider window, stopping as soon
+        // as the full success predicate is satisfied (#294).
+        const int maxAttempts = 3;
+        ThreadPoolEventSnapshot? snapshot = null;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            snapshot = await RunStarvationAttemptAsync();
+            if (IsStarvationObserved(snapshot))
+            {
+                break;
+            }
+        }
+
+        snapshot.Should().NotBeNull();
+        snapshot!.HillClimbing.Should().NotBeEmpty($"notes: {string.Join(" | ", snapshot.Notes)}");
+        snapshot.HillClimbing.Should().Contain(
+            sample => string.Equals(sample.Reason, "Starvation", StringComparison.OrdinalIgnoreCase),
+            $"reasons: {string.Join(", ", snapshot.HillClimbing.Select(static sample => sample.Reason))}");
+        snapshot.WorkerThreadTimeline.Should().NotBeEmpty();
+        snapshot.WorkerThreadTimeline.Max(static bucket => bucket.Count)
+            .Should().BeGreaterThan(snapshot.WorkerThreadTimeline.Min(static bucket => bucket.Count));
+
+        static bool IsStarvationObserved(ThreadPoolEventSnapshot snapshot)
+            => snapshot.HillClimbing.Count > 0
+                && snapshot.HillClimbing.Any(sample => string.Equals(sample.Reason, "Starvation", StringComparison.OrdinalIgnoreCase))
+                && snapshot.WorkerThreadTimeline.Count > 0
+                && snapshot.WorkerThreadTimeline.Max(static bucket => bucket.Count)
+                    > snapshot.WorkerThreadTimeline.Min(static bucket => bucket.Count);
+
+        static async Task<ThreadPoolEventSnapshot> RunStarvationAttemptAsync()
+        {
+            await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+            using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+            var collector = new EventPipeThreadPoolCollector();
+
+            using var driverCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var driver = Task.Run(async () =>
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(1200), driverCts.Token);
+                using var response = await http.GetAsync("/threadpool-starve?blockers=50", driverCts.Token);
+                response.EnsureSuccessStatusCode();
+
+                using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(driverCts.Token);
+                requestCts.CancelAfter(TimeSpan.FromSeconds(6));
+                var probes = Enumerable.Range(0, 24)
+                    .Select(_ => Task.Run(async () =>
+                    {
+                        while (!requestCts.IsCancellationRequested)
+                        {
+                            try
+                            {
+                                using var probe = await http.GetAsync("/", requestCts.Token);
+                                var _ = probe.StatusCode;
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                break;
+                            }
+                            catch
+                            {
+                            }
+                        }
+                    }, requestCts.Token))
+                    .ToArray();
+
+                try
+                {
+                    await Task.WhenAll(probes);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }, driverCts.Token);
+
+            var snapshot = await collector.CollectAsync(
+                badSample.ProcessId,
+                TimeSpan.FromSeconds(10),
+                CancellationToken.None);
+
+            // Always drain the driver before the next attempt so EventPipe sessions never overlap
+            // against the same PID and load does not bleed across attempts.
+            driverCts.Cancel();
+            try
+            {
+                await driver;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+
+            return snapshot;
+        }
+    }
+
+    [WindowsOnlyFact("ContentionStart/Stop EventPipe events are not emitted by current non-Windows runtimes in this test environment.", Timeout = 60_000)]
+    public async Task Contention_CollectorAggregatesLockStorm_FromBadCodeSample()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeContentionCollector();
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/lock-storm?seconds=3&blockers=8");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            badSample.ProcessId,
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        await driver;
+
+        snapshot.TotalEvents.Should().BeGreaterThan(0, $"notes: {string.Join(" | ", snapshot.Notes)}");
+        snapshot.DistinctMonitors.Should().BeGreaterThan(0);
+        snapshot.TotalContentionDuration.Should().BeGreaterThan(TimeSpan.Zero);
+        snapshot.MaxContentionDuration.Should().BeGreaterThan(TimeSpan.Zero);
+        snapshot.Events.Should().Contain(sample =>
+            sample.CallSiteMethod.Contains("BadCodeSample", StringComparison.OrdinalIgnoreCase)
+            || sample.CallSiteModule.Contains("BadCodeSample", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [WindowsOnlyFact("ContentionStart/Stop EventPipe events are not emitted by current non-Windows runtimes in this test environment.", Timeout = 60_000)]
+    public async Task Contention_HandleEnablesDrilldownViews()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeContentionCollector();
+        var handles = new MemoryDiagnosticHandleStore();
+        var resolver = new FixedProcessContextResolver(badSample.ProcessId);
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/lock-storm?seconds=3&blockers=8");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var collected = await DiagnosticTools.CollectContention(
+            collector,
+            resolver,
+            handles,
+            processId: badSample.ProcessId,
+            durationSeconds: 5,
+            depth: SamplingDepth.Detail,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        collected.Handle.Should().NotBeNullOrWhiteSpace();
+        var drilled = await QuerySnapshotTool.QuerySnapshot(
+            handles,
+            new ClrMdDumpInspector(),
+            new SensitiveDataRedactor(),
+            new SensitiveValueGate(null),
+            new RootPrincipalAccessor(),
+            new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            collected.Handle!,
+            view: "byCallSite",
+            topN: 10,
+            cancellationToken: CancellationToken.None);
+
+        drilled.Error.Should().BeNull();
+        var query = drilled.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        query.Kind.Should().Be(CollectionHandleKinds.ContentionSnapshot);
+        query.View.Should().Be("byCallSite");
+        var byCallSite = query.Payload.Should().BeOfType<ContentionByCallSiteView>().Subject;
+        byCallSite.TotalEvents.Should().BeGreaterThan(0);
+        byCallSite.CallSites.Should().NotBeEmpty();
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Logs_CapturesWarningStorm_FromBadCodeSample()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeLogCollector(new SensitiveDataRedactor());
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/log-spam?count=40&level=warning");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            badSample.ProcessId,
+            TimeSpan.FromSeconds(4),
+            categories: new[] { "BadCodeSample.LogSpam" },
+            minLevel: LogLevel.Warning,
+            maxEvents: 100,
+            includeJsonPayload: false,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        snapshot.TotalEvents.Should().Be(40);
+        snapshot.EventsByLevelWarning.Should().Be(40);
+        snapshot.ByCategory.Should().ContainSingle(group => group.Category == "BadCodeSample.LogSpam" && group.Count == 40);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Logs_HonoursMinLevel()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeLogCollector(new SensitiveDataRedactor());
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/log-spam?count=10&level=debug");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            badSample.ProcessId,
+            TimeSpan.FromSeconds(4),
+            categories: new[] { "BadCodeSample.LogSpam" },
+            minLevel: LogLevel.Information,
+            maxEvents: 50,
+            includeJsonPayload: false,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        snapshot.TotalEvents.Should().Be(0);
+        snapshot.Recent.Should().BeEmpty();
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Logs_RedactsScopes()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeLogCollector(new SensitiveDataRedactor());
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/log-spam?count=5&level=warning");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            badSample.ProcessId,
+            TimeSpan.FromSeconds(4),
+            categories: new[] { "BadCodeSample.LogSpam" },
+            minLevel: LogLevel.Warning,
+            maxEvents: 20,
+            includeJsonPayload: true,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        snapshot.Recent.Should().NotBeEmpty();
+        snapshot.Recent.Should().Contain(entry => entry.Scopes != null && entry.Scopes.Count > 0);
+        snapshot.Recent
+            .SelectMany(entry => entry.Scopes ?? new Dictionary<string, string>())
+            .Should().Contain(pair => pair.Key == "Password" && pair.Value == SensitiveDataRedactor.RedactedPlaceholder);
+        snapshot.Recent
+            .SelectMany(entry => entry.Scopes ?? new Dictionary<string, string>())
+            .Should().NotContain(pair => pair.Value.Contains("super-secret", StringComparison.Ordinal));
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Logs_CapturesExceptionDetails_WhenErrorJsonEnabled()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeLogCollector(new SensitiveDataRedactor());
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/log-spam?count=4&level=error");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            badSample.ProcessId,
+            TimeSpan.FromSeconds(4),
+            categories: new[] { "BadCodeSample.LogSpam" },
+            minLevel: LogLevel.Error,
+            maxEvents: 20,
+            includeJsonPayload: true,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        snapshot.EventsByLevelError.Should().Be(4);
+        snapshot.Recent.Should().Contain(entry => entry.ExceptionType != null);
+        snapshot.Recent.Should().Contain(entry => entry.ExceptionMessage != null && entry.ExceptionMessage.Contains("boom-", StringComparison.Ordinal));
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Logs_HandleEnablesDrilldown()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeLogCollector(new SensitiveDataRedactor());
+        var handles = new MemoryDiagnosticHandleStore();
+        var resolver = new FixedProcessContextResolver(badSample.ProcessId);
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/log-spam?count=6&level=warning");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var collected = await DiagnosticTools.CollectLogs(
+            collector,
+            resolver,
+            handles,
+            processId: badSample.ProcessId,
+            durationSeconds: 4,
+            categories: new[] { "BadCodeSample.LogSpam" },
+            minLevel: "Warning",
+            maxEvents: 20,
+            maxMessageBytes: 4096,
+            depth: SamplingDepth.Detail,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        collected.Handle.Should().NotBeNullOrWhiteSpace();
+        var drilled = await QuerySnapshotTool.QuerySnapshot(
+            handles,
+            new ClrMdDumpInspector(),
+            new SensitiveDataRedactor(),
+            new SensitiveValueGate(null),
+            new RootPrincipalAccessor(),
+            new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            collected.Handle!,
+            view: "errors",
+            topN: 20,
+            cancellationToken: CancellationToken.None);
+
+        drilled.Error.Should().BeNull();
+        var query = drilled.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        query.Kind.Should().Be(CollectionHandleKinds.LogSnapshot);
+        query.View.Should().Be("errors");
+        var errors = query.Payload.Should().BeOfType<LogErrorsView>().Subject;
+        errors.Returned.Should().Be(6);
+        errors.Errors.Should().OnlyContain(entry =>
+            entry.Level == "Warning" || entry.Level == "Error" || entry.Level == "Critical");
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Jit_HandleEnablesDrilldown()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeJitCollector();
+        var handles = new MemoryDiagnosticHandleStore();
+        var resolver = new FixedProcessContextResolver(badSample.ProcessId);
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/jit-pressure?count=200");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var collected = await DiagnosticTools.CollectJit(
+            collector,
+            resolver,
+            handles,
+            processId: badSample.ProcessId,
+            durationSeconds: 5,
+            depth: SamplingDepth.Detail,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        collected.Error.Should().BeNull();
+        collected.Handle.Should().NotBeNullOrWhiteSpace();
+        collected.Data.Should().NotBeNull();
+        collected.Data!.Methods.Should().Contain(method =>
+            method.MethodName.Contains("JitPressureDynamicMethod", StringComparison.Ordinal));
+
+        var topMethodsResult = await QuerySnapshotTool.QuerySnapshot(
+            handles,
+            new ClrMdDumpInspector(),
+            new SensitiveDataRedactor(),
+            new SensitiveValueGate(null),
+            new RootPrincipalAccessor(),
+            new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            collected.Handle!,
+            view: "topMethods",
+            topN: collected.Data.Methods.Count,
+            cancellationToken: CancellationToken.None);
+
+        topMethodsResult.Error.Should().BeNull();
+        var topMethodsQuery = topMethodsResult.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        topMethodsQuery.Kind.Should().Be(CollectionHandleKinds.JitSnapshot);
+        topMethodsQuery.View.Should().Be("topMethods");
+        var topMethods = topMethodsQuery.Payload.Should().BeOfType<JitTopMethodsView>().Subject;
+        topMethods.Methods.Should().Contain(method =>
+            method.MethodName.Contains("JitPressureDynamicMethod", StringComparison.Ordinal));
+
+        var tierResult = await QuerySnapshotTool.QuerySnapshot(
+            handles,
+            new ClrMdDumpInspector(),
+            new SensitiveDataRedactor(),
+            new SensitiveValueGate(null),
+            new RootPrincipalAccessor(),
+            new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            collected.Handle!,
+            view: "tierDistribution",
+            cancellationToken: CancellationToken.None);
+
+        tierResult.Error.Should().BeNull();
+        var tierQuery = tierResult.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        tierQuery.Kind.Should().Be(CollectionHandleKinds.JitSnapshot);
+        tierQuery.View.Should().Be("tierDistribution");
+        var tierDistribution = tierQuery.Payload.Should().BeOfType<JitTierDistributionView>().Subject;
+        tierDistribution.Distribution.Tier0.Should().BeGreaterThan(0);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Db_CollectorDetectsNPlusOne_AndRedactsConnectionPassword()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeDbCollector(new SensitiveDataRedactor());
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/db-n+1?count=15");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            badSample.ProcessId,
+            TimeSpan.FromSeconds(4),
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        snapshot.TotalCommands.Should().BeGreaterThanOrEqualTo(15);
+        snapshot.NPlusOne.Should().Contain(incident => incident.Count >= 15);
+        snapshot.ByCommand.Should().Contain(command =>
+            command.ConnectionStringSanitized.Contains(SensitiveDataRedactor.RedactedPlaceholder, StringComparison.Ordinal));
+        snapshot.ByCommand.Should().NotContain(command =>
+            command.ConnectionStringSanitized.Contains("super-secret", StringComparison.Ordinal));
+        snapshot.ByCommand.Should().Contain(command =>
+            command.CommandTextSanitized.Contains("<redacted:literal>", StringComparison.Ordinal));
+        snapshot.ByCommand.Should().NotContain(command =>
+            command.CommandTextSanitized.Contains("LIMIT 1", StringComparison.Ordinal));
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Db_HandleEnablesDrilldownViews()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeDbCollector(new SensitiveDataRedactor());
+        var handles = new MemoryDiagnosticHandleStore();
+        var resolver = new FixedProcessContextResolver(badSample.ProcessId);
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/db-n+1?count=15");
+            response.EnsureSuccessStatusCode();
+        });
+
+        var collected = await DiagnosticTools.CollectDb(
+            collector,
+            resolver,
+            handles,
+            processId: badSample.ProcessId,
+            durationSeconds: 4,
+            intervalSeconds: 1,
+            depth: SamplingDepth.Detail,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        collected.Handle.Should().NotBeNullOrWhiteSpace();
+        var drilled = await QuerySnapshotTool.QuerySnapshot(
+            handles,
+            new ClrMdDumpInspector(),
+            new SensitiveDataRedactor(),
+            new SensitiveValueGate(null),
+            new RootPrincipalAccessor(),
+            new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            collected.Handle!,
+            view: "n+1",
+            topN: 20,
+            cancellationToken: CancellationToken.None);
+
+        drilled.Error.Should().BeNull();
+        var query = drilled.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        query.Kind.Should().Be(CollectionHandleKinds.DbSnapshot);
+        query.View.Should().Be("n+1");
+        var incidents = query.Payload.Should().BeOfType<DbNPlusOneView>().Subject;
+        incidents.TotalIncidents.Should().BeGreaterThan(0);
+        incidents.Incidents.Should().Contain(incident => incident.Count >= 15);
+    }
+
+    private static IEnumerable<CallTreeNode> Flatten(CallTreeNode root)
+    {
+        var stack = new Stack<CallTreeNode>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var current = stack.Pop();
+            yield return current;
+            foreach (var child in current.Children)
+            {
+                stack.Push(child);
+            }
+        }
+    }
+
+    private async Task<string> EnsureListeningUrlAsync(TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        try
+        {
+            var url = await _listeningUrlTcs.Task.WaitAsync(cts.Token);
+            await WaitForHttpReadyAsync(url, timeout);
+            return url;
+        }
+        catch (OperationCanceledException)
+        {
+            throw SkipException.ForReason("CoreClrSample did not advertise an HTTP listening URL within the timeout.");
+        }
+    }
+
+    internal static async Task WaitForHttpReadyAsync(string baseUrl, TimeSpan timeout, string readinessPath = "/weatherforecast")
+    {
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                using var response = await http.GetAsync(readinessPath, CancellationToken.None);
+                if (response.IsSuccessStatusCode)
+                {
+                    return;
+                }
+            }
+            catch (HttpRequestException)
+            {
+                // Kestrel sometimes logs the listening URL just before the socket is fully ready.
+            }
+
+            await Task.Delay(250);
+        }
+
+        throw SkipException.ForReason($"Sample did not accept HTTP requests on {baseUrl}{readinessPath} within the timeout.");
+    }
+
+    private void EnsureSampleRunning()
+    {
+        if (_sampleProcess is null || _sampleProcess.HasExited)
+        {
+            throw SkipException.ForReason("CoreClrSample is not running (could not start the sample process).");
+        }
+    }
+
+    private static async Task<RunningSample> StartPublishedSampleAsync(string sampleName)
+    {
+        var sampleDll = LocateSampleDll(sampleName)
+            ?? throw SkipException.ForReason($"{sampleName}.dll not found.");
+
+        var listeningUrlTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var psi = new ProcessStartInfo("dotnet")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(sampleDll)!,
+        };
+        psi.ArgumentList.Add(sampleDll);
+        psi.ArgumentList.Add("--urls");
+        psi.ArgumentList.Add("http://127.0.0.1:0");
+        psi.Environment["DOTNET_NOLOGO"] = "1";
+        psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
+
+        var process = Process.Start(psi)
+            ?? throw SkipException.ForReason($"Failed to start {sampleName}.");
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var reader = process.StandardOutput;
+                string? line;
+                while ((line = await reader.ReadLineAsync()) is not null)
+                {
+                    var idx = line.IndexOf("Now listening on:", StringComparison.Ordinal);
+                    if (idx >= 0 && !listeningUrlTcs.Task.IsCompleted)
+                    {
+                        listeningUrlTcs.TrySetResult(line[(idx + "Now listening on:".Length)..].Trim());
+                    }
+                }
+            }
+            catch
+            {
+            }
+        });
+
+        _ = Task.Run(async () =>
+        {
+            try { using var reader = process.StandardError; while (await reader.ReadLineAsync() is not null) { } }
+            catch { }
+        });
+
+        await WaitForDiagnosticEndpointAsync(process.Id, TimeSpan.FromSeconds(30));
+        var baseUrl = await listeningUrlTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await WaitForHttpReadyAsync(baseUrl, TimeSpan.FromSeconds(30), "/");
+        return new RunningSample(process, baseUrl);
+    }
+
+    internal static async Task WaitForDiagnosticEndpointAsync(int pid, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (Microsoft.Diagnostics.NETCore.Client.DiagnosticsClient
+                .GetPublishedProcesses()
+                .Contains(pid))
+            {
+                return;
+            }
+
+            await Task.Delay(500);
+        }
+    }
+
+    private static async Task<AuxiliarySampleHost> StartAuxiliarySampleAsync(string sampleName)
+    {
+        var sampleDll = LocateSampleDll(sampleName)
+            ?? throw SkipException.ForReason($"{sampleName}.dll not found. Build the sample before running this test.");
+        return await AuxiliarySampleHost.StartAsync(sampleName, sampleDll);
+    }
+
+    private static async Task<RuntimeConfigView> ProbeRuntimeConfigAsync(int processId)
+    {
+        // The GC / ThreadPool sub-sections come from a best-effort ClrMD live attach that can
+        // intermittently return null on a loaded CI host. Re-probe a few times and keep the most
+        // complete snapshot so the strong assertions exercise the happy path when achievable,
+        // falling back to a partial (but documented) snapshot otherwise (#294).
+        RuntimeConfigView? best = null;
+        var bestScore = -1;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var candidate = await ProbeRuntimeConfigOnceAsync(processId);
+            var score = (candidate.Gc is not null ? 1 : 0) + (candidate.ThreadPool is not null ? 1 : 0);
+            if (score > bestScore)
+            {
+                best = candidate;
+                bestScore = score;
+            }
+
+            if (candidate.Gc is not null && candidate.ThreadPool is not null)
+            {
+                return candidate;
+            }
+        }
+
+        return best!;
+    }
+
+    private static async Task<RuntimeConfigView> ProbeRuntimeConfigOnceAsync(int processId)
+    {
+        var probeDll = LocateProjectDll("tests", "RuntimeConfigProbe", "RuntimeConfigProbe")
+            ?? throw SkipException.ForReason("RuntimeConfigProbe.dll not found. Build the helper before running this test.");
+
+        var psi = new ProcessStartInfo("dotnet")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(probeDll)!,
+        };
+        psi.ArgumentList.Add(probeDll);
+        psi.ArgumentList.Add(processId.ToString());
+
+        using var process = Process.Start(psi)
+            ?? throw SkipException.ForReason("Failed to start RuntimeConfigProbe.");
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        var stderr = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        process.ExitCode.Should().Be(0, stderr);
+        return JsonSerializer.Deserialize<RuntimeConfigView>(stdout)
+            ?? throw new InvalidOperationException($"RuntimeConfigProbe returned invalid JSON. stderr={stderr}");
+    }
+
+    private static string? LocateSampleDll(string sampleName = "CoreClrSample")
+        => LocateProjectDll("samples", sampleName, sampleName);
+
+    private static string? LocateProjectDll(string topLevelDirectory, string projectDirectoryName, string assemblyName)
+    {
+        var probe = AppContext.BaseDirectory;
+        for (var i = 0; i < 8; i++)
+        {
+            var projectDir = Path.Combine(probe, topLevelDirectory, projectDirectoryName);
+            if (Directory.Exists(projectDir))
+            {
+                foreach (var configuration in new[] { "Release", "Debug" })
+                {
+                    var dll = Path.Combine(projectDir, "bin", configuration, "net10.0", $"{assemblyName}.dll");
+                    if (File.Exists(dll))
+                    {
+                        return dll;
+                    }
+                }
+
+                return null;
+            }
+
+            probe = Path.GetFullPath(Path.Combine(probe, ".."));
+        }
+
+        return null;
+    }
+
+    private sealed class RunningSample : IAsyncDisposable
+    {
+        private readonly Process _process;
+
+        public RunningSample(Process process, string baseUrl)
+        {
+            _process = process;
+            BaseUrl = baseUrl;
+        }
+
+        public int ProcessId => _process.Id;
+
+        public string BaseUrl { get; }
+
+        public ValueTask DisposeAsync()
+        {
+            if (!_process.HasExited)
+            {
+                try
+                {
+                    _process.Kill(entireProcessTree: true);
+                    _process.WaitForExit(5_000);
+                }
+                catch
+                {
+                }
+            }
+
+            _process.Dispose();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class FixedProcessContextResolver(int processId) : IProcessContextResolver
+    {
+        public Task<ProcessContextResolution> ResolveAsync(int? requestedProcessId, CancellationToken cancellationToken)
+            => Task.FromResult(new ProcessContextResolution(
+                new ProcessContext(requestedProcessId ?? processId, RuntimeFlavor.CoreClr, true, true, false, "10.0-test", "explicit"),
+                null));
+    }
+
+    private sealed class RootPrincipalAccessor : IPrincipalAccessor
+    {
+        private static readonly BearerPrincipal Principal = new("test-root", ImmutableHashSet.Create(BearerPrincipal.RootScope));
+
+        public BearerPrincipal? Current => Principal;
+    }
+}
+
+internal sealed class LiveHttpSample : IAsyncDisposable
+{
+    private readonly TaskCompletionSource<string> _listeningUrlTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private Process? _process;
+
+    internal static string? LocateSampleDll(string sampleName)
+    {
+        var probe = AppContext.BaseDirectory;
+        for (var i = 0; i < 8; i++)
+        {
+            var sampleDir = Path.Combine(probe, "samples", sampleName);
+            if (Directory.Exists(sampleDir))
+            {
+                foreach (var configuration in new[] { "Release", "Debug" })
+                {
+                    var dll = Path.Combine(sampleDir, "bin", configuration, "net10.0", $"{sampleName}.dll");
+                    if (File.Exists(dll))
+                    {
+                        return dll;
+                    }
+                }
+
+                return null;
+            }
+
+            probe = Path.GetFullPath(Path.Combine(probe, ".."));
+        }
+
+        return null;
+    }
+
+    private LiveHttpSample()
+    {
+    }
+
+    public int ProcessId => _process?.Id ?? throw new InvalidOperationException("Sample not started.");
+
+    public string BaseUrl { get; private set; } = string.Empty;
+
+    public static async Task<LiveHttpSample> StartAsync(string sampleName, string readyPath)
+    {
+        var sampleDll = LocateSampleDll(sampleName)
+            ?? throw new InvalidOperationException($"{sampleName}.dll not found.");
+
+        var sample = new LiveHttpSample();
+        await sample.StartCoreAsync(sampleDll, readyPath, sampleName).ConfigureAwait(false);
+        return sample;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_process is { HasExited: false })
+        {
+            try
+            {
+                _process.Kill(entireProcessTree: true);
+                await _process.WaitForExitAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+        }
+
+        _process?.Dispose();
+    }
+
+    private async Task StartCoreAsync(string sampleDll, string readyPath, string sampleName)
+    {
+        var psi = new ProcessStartInfo("dotnet")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(sampleDll)!,
+        };
+        psi.ArgumentList.Add(sampleDll);
+        psi.ArgumentList.Add("--urls");
+        psi.ArgumentList.Add("http://127.0.0.1:0");
+        psi.Environment["DOTNET_NOLOGO"] = "1";
+        psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
+
+        _process = Process.Start(psi) ?? throw new InvalidOperationException($"Failed to start {sampleName}.");
+        _ = ConsumeStandardOutputAsync(_process);
+        _ = Task.Run(async () =>
+        {
+            try { using var err = _process.StandardError; while (await err.ReadLineAsync() is not null) { } }
+            catch { }
+        });
+
+        await LiveCoreClrProcessTests.WaitForDiagnosticEndpointAsync(_process.Id, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        BaseUrl = await EnsureListeningUrlAsync(sampleName, readyPath, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+    }
+
+    private async Task ConsumeStandardOutputAsync(Process process)
+    {
+        try
+        {
+            using var reader = process.StandardOutput;
+            string? line;
+            while ((line = await reader.ReadLineAsync()) is not null)
+            {
+                var idx = line.IndexOf("Now listening on:", StringComparison.Ordinal);
+                if (idx >= 0 && !_listeningUrlTcs.Task.IsCompleted)
+                {
+                    var url = line[(idx + "Now listening on:".Length)..].Trim();
+                    _listeningUrlTcs.TrySetResult(url);
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task<string> EnsureListeningUrlAsync(string sampleName, string readyPath, TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        try
+        {
+            var url = await _listeningUrlTcs.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+            await WaitForHttpReadyAsync(url, readyPath, timeout, sampleName).ConfigureAwait(false);
+            return url;
+        }
+        catch (OperationCanceledException)
+        {
+            throw SkipException.ForReason($"{sampleName} did not advertise an HTTP listening URL within the timeout.");
+        }
+    }
+
+    private static async Task WaitForHttpReadyAsync(string baseUrl, string readyPath, TimeSpan timeout, string sampleName)
+    {
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                using var response = await http.GetAsync(readyPath, CancellationToken.None).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                {
+                    return;
+                }
+            }
+            catch (HttpRequestException)
+            {
+            }
+
+            await Task.Delay(250).ConfigureAwait(false);
+        }
+
+        throw SkipException.ForReason($"{sampleName} did not accept HTTP requests on {baseUrl} within the timeout.");
+    }
+}
+
+internal sealed class AuxiliarySampleHost : IAsyncDisposable
+{
+    private readonly Process _process;
+    private readonly TaskCompletionSource<string> _listeningUrlTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly string _sampleName;
+
+    private AuxiliarySampleHost(string sampleName, Process process)
+    {
+        _sampleName = sampleName;
+        _process = process;
+    }
+
+    public int ProcessId => _process.Id;
+
+    public string BaseUrl { get; private set; } = string.Empty;
+
+    public static async Task<AuxiliarySampleHost> StartAsync(string sampleName, string sampleDll)
+    {
+        var psi = new ProcessStartInfo("dotnet")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(sampleDll)!,
+        };
+        psi.ArgumentList.Add(sampleDll);
+        psi.ArgumentList.Add("--urls");
+        psi.ArgumentList.Add("http://127.0.0.1:0");
+        psi.Environment["DOTNET_NOLOGO"] = "1";
+        psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
+
+        var process = Process.Start(psi)
+            ?? throw SkipException.ForReason($"Failed to start {sampleName}.");
+        var host = new AuxiliarySampleHost(sampleName, process);
+        host.PumpOutput();
+        await LiveCoreClrProcessTests.WaitForDiagnosticEndpointAsync(process.Id, TimeSpan.FromSeconds(30));
+        host.BaseUrl = await host.EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        return host;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (!_process.HasExited)
+        {
+            try
+            {
+                _process.Kill(entireProcessTree: true);
+                await _process.WaitForExitAsync();
+            }
+            catch
+            {
+                // best-effort
+            }
+        }
+
+        _process.Dispose();
+    }
+
+    private void PumpOutput()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var reader = _process.StandardOutput;
+                string? line;
+                while ((line = await reader.ReadLineAsync()) is not null)
+                {
+                    var idx = line.IndexOf("Now listening on:", StringComparison.Ordinal);
+                    if (idx >= 0 && !_listeningUrlTcs.Task.IsCompleted)
+                    {
+                        _listeningUrlTcs.TrySetResult(line[(idx + "Now listening on:".Length)..].Trim());
+                    }
+                }
+            }
+            catch
+            {
+                // best-effort
+            }
+        });
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var reader = _process.StandardError;
+                while (await reader.ReadLineAsync() is not null) { }
+            }
+            catch
+            {
+                // best-effort
+            }
+        });
+    }
+
+    private async Task<string> EnsureListeningUrlAsync(TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        try
+        {
+            var url = await _listeningUrlTcs.Task.WaitAsync(cts.Token);
+            await LiveCoreClrProcessTests.WaitForHttpReadyAsync(url, timeout, _sampleName == "BadCodeSample" ? "/" : "/weatherforecast");
+            return url;
+        }
+        catch (OperationCanceledException)
+        {
+            throw SkipException.ForReason($"{_sampleName} did not advertise an HTTP listening URL within the timeout.");
+        }
+    }
+}
+
+/// <summary>Thrown to skip a test (in lieu of pulling a separate Skippable package).</summary>
+public sealed class SkipException : Exception
+{
+    private SkipException(string reason) : base(reason)
+    {
+    }
+
+    public static SkipException ForReason(string reason) => new(reason);
+}
+
+[CollectionDefinition("LiveProcess", DisableParallelization = true)]
+public class LiveProcessCollection;
+
+file sealed class NullPrincipalAccessor : IPrincipalAccessor
+{
+    public BearerPrincipal? Current => null;
+}

@@ -146,7 +146,7 @@ jobs:
           DOTNET_DBG_MCP_KIND_NAMESPACE: p6-sample
           DOTNET_DBG_MCP_KIND_TARGET_LABEL: p6-target=a
         run: |
-          dotnet test tests/DotnetDiagnosticsMcp.Server.IntegrationTests/DotnetDiagnosticsMcp.Server.IntegrationTests.csproj \
+          dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj \
             --no-build --configuration Release \
             --filter "Category=KindIntegration" \
             --blame-hang-timeout 5m \

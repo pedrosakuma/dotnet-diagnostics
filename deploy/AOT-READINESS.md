@@ -5,7 +5,7 @@ Tracking issue for the AOT publish goal (todo `aot-publish-server`).
 ## TL;DR
 
 `PublishAot=true` and even `PublishTrimmed=true` are **not viable today** for
-`DotnetDiagnosticsMcp.Server`. The blockers live in dependencies we don't
+`DotnetDiagnostics.Mcp`. The blockers live in dependencies we don't
 control, not in our own code. The recommended sidecar build is therefore the
 **framework-dependent (FDD)** publish, deployed on top of the official
 `mcr.microsoft.com/dotnet/aspnet:10.0` base image.
@@ -74,7 +74,7 @@ For a fully self-contained image (no runtime base image dependency, larger but
 portable to a `mcr.microsoft.com/dotnet/runtime-deps` minimal layer):
 
 ```bash
-dotnet publish src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj \
+dotnet publish src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
     -c Release -p:RuntimeIdentifier=linux-x64 --self-contained true -o ./out
 ```
 
@@ -84,7 +84,7 @@ methods, eliminating the first-request JIT spike at the cost of a ~9 MB bigger
 image:
 
 ```bash
-dotnet publish src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj \
+dotnet publish src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
     -c Release -p:RuntimeIdentifier=linux-x64 --self-contained true \
     -p:PublishReadyToRun=true -o ./out
 ```

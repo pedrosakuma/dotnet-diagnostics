@@ -49,7 +49,7 @@ spawn / tear down the process per session:
 
 ```bash
 export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"
-dotnet run --project src/DotnetDiagnosticsMcp.Server
+dotnet run --project src/DotnetDiagnostics.Mcp
 # Server listens on http://localhost:5000 (or whatever ASP.NET picks)
 ```
 
@@ -142,7 +142,7 @@ var processes = await client.CallToolAsync(
     arguments: new Dictionary<string, object?> { ["view"] = "list" });
 ```
 
-See [`tests/DotnetDiagnosticsMcp.Server.IntegrationTests/McpToolsTests.cs`](../tests/DotnetDiagnosticsMcp.Server.IntegrationTests/McpToolsTests.cs)
+See [`tests/DotnetDiagnostics.Mcp.IntegrationTests/McpToolsTests.cs`](../tests/DotnetDiagnostics.Mcp.IntegrationTests/McpToolsTests.cs)
 for a full working example covering every tool.
 
 ## 3. Connect from Claude Desktop / a generic MCP client
