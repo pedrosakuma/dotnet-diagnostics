@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/BadCodeSample/BadCodeSample.csproj" />
     <Project Path="samples/CoreClrSample/CoreClrSample.csproj" />

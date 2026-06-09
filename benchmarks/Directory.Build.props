@@ -1,0 +1,13 @@
+<Project>
+  <Import Project="..\Directory.Build.props" />
+  <PropertyGroup>
+    <!-- BenchmarkDotNet generates and compiles boilerplate per benchmark; keep analyzers
+         non-fatal here and skip XML docs (these are sample projects, not shipped APIs). -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <IsPackable>false</IsPackable>
+    <!-- BenchmarkDotNet methods are intentionally instance methods even when they touch no
+         instance state, so CA1822 ("mark as static") is noise here. -->
+    <NoWarn>$(NoWarn);CA1822</NoWarn>
+  </PropertyGroup>
+</Project>
