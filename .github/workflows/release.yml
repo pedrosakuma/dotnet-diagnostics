@@ -71,6 +71,11 @@ jobs:
             -o artifacts/nupkg \
             -p:Version=${{ steps.derive-version.outputs.version }} \
             --no-restore
+          dotnet pack src/DotnetDiagnostics.BenchmarkDotNet/DotnetDiagnostics.BenchmarkDotNet.csproj \
+            -c Release \
+            -o artifacts/nupkg \
+            -p:Version=${{ steps.derive-version.outputs.version }} \
+            --no-restore
           dotnet pack src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
             -c Release \
             -o artifacts/nupkg \
