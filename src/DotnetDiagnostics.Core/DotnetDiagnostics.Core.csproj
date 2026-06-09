@@ -39,7 +39,9 @@
   <ItemGroup>
     <InternalsVisibleTo Include="DotnetDiagnostics.Core.Tests" />
     <InternalsVisibleTo Include="DotnetDiagnostics.Mcp" />
-    <InternalsVisibleTo Include="DotnetDiagnostics.Cli" />
+    <!-- The CLI's AssemblyName is `dotnet-diagnostics` (not the project name); InternalsVisibleTo
+         matches assembly identity, so the grant must use the assembly name. -->
+    <InternalsVisibleTo Include="dotnet-diagnostics" />
   </ItemGroup>
 
 </Project>
