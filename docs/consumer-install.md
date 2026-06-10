@@ -37,7 +37,7 @@ docker run -d \
   --restart unless-stopped \
   -p 127.0.0.1:8787:8080 \
   -e MCP_BEARER_TOKEN=$(openssl rand -hex 32) \
-  ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:latest
+  ghcr.io/pedrosakuma/dotnet-diagnostics:latest
 ```
 
 Attaching to a **live local process** from inside the container requires UID parity + a shared `/tmp` mount — see [docs/local-docker-sidecar.md](./local-docker-sidecar.md) for the canonical walkthrough.
