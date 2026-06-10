@@ -43,6 +43,9 @@ jobs:
   linux-crash-repro:
     name: Repro SampleProfiler crash under strace
     runs-on: ubuntu-latest
+    # Ultimate backstop: even if both the sentinel reaper AND its bounded loop
+    # somehow fail to free strace, GitHub tears the job down here.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -102,6 +105,23 @@ jobs:
       #   signal-delivery-stops are always reported (we do NOT pass
       #   `-e signal=none`), which is how the SIGSEGV si_addr lands in the log.
       #   -o strace.log   single combined log (threads share the address space)
+      #
+      # AVOIDING THE strace HANG. `strace -f` does not exit until EVERY followed
+      # tracee has exited. Un-quarantining the sampler tests also runs the
+      # ClrMD/ptrace live tests, which cannot attach while strace owns the only
+      # ptrace slot, fail, and leak their CoreClrSample/BadCodeSample web-server
+      # children (infinite loops). Those orphans would keep strace alive forever
+      # (observed: a ~21 min hang on the first dispatch). Worse, a waiting
+      # `strace -f` IGNORES SIGINT/SIGTERM — only SIGKILL frees it — and SIGKILL
+      # is fine here because strace flushes its `-o` log per event, so the caught
+      # SIGSEGV line is already on disk before we kill it. So:
+      #   1. Run strace in the BACKGROUND so $! is strace's own PID.
+      #   2. The traced subtree drops a `test.done` sentinel the instant
+      #      `dotnet test` returns (still inside the tree, so it is itself traced).
+      #   3. A reaper SIGKILLs strace the moment the sentinel appears -> prompt
+      #      exit with a complete log, regardless of leaked children. The reaper's
+      #      bounded loop (3600 x 1s) doubles as a 60 min backstop, and the
+      #      job-level timeout-minutes is the final safety net.
       - name: Test (Core) under strace
         id: strace_run
         continue-on-error: true
@@ -110,14 +130,35 @@ jobs:
           DOTNET_DBG_MCP_RUN_QUARANTINED_LINUX_TESTS: "1"
         run: |
           set -x
+          rm -f test.done
           strace -f -tt -T -y -s 256 \
             -e trace=openat,close,mmap,munmap,mprotect \
             -o strace.log \
-            dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj \
-              --no-build --configuration Release \
-              --blame-hang-timeout 5m --blame-hang-dump-type none \
-              --logger "trx;LogFileName=core-crash-repro.trx" \
-              --results-directory TestResults
+            bash -c '
+              dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj \
+                --no-build --configuration Release \
+                --blame-hang-timeout 5m --blame-hang-dump-type none \
+                --logger "trx;LogFileName=core-crash-repro.trx" \
+                --results-directory TestResults
+              rc=$?
+              : > test.done
+              exit $rc
+            ' &
+          strace_pid=$!
+          # Reaper: SIGKILL strace as soon as the tests finish. SIGKILL is the
+          # only signal that frees a `strace -f` blocked on leaked tracees; the
+          # log is already flushed so nothing captured is lost. The bounded loop
+          # (<=60 min) is the backstop if the sentinel never lands.
+          (
+            for _ in $(seq 1 3600); do
+              [ -f test.done ] && break
+              sleep 1
+            done
+            kill -KILL "$strace_pid" 2>/dev/null || true
+          ) &
+          reaper_pid=$!
+          wait "$strace_pid" 2>/dev/null || true
+          kill -KILL "$reaper_pid" 2>/dev/null || true
 
       - name: Summarize strace log
         if: always()
