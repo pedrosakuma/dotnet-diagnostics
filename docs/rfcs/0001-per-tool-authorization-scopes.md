@@ -1,7 +1,7 @@
 # RFC 0001 — Per-tool authorization scopes
 
 - **Audit batch:** B5 (gpt-5.5 security audit, finding H3)
-- **Tracking issue:** [#166](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/166)
+- **Tracking issue:** [#166](https://github.com/pedrosakuma/dotnet-diagnostics/issues/166)
 - **Status:** Approved; B5.1 (foundation) and B5.2 (per-tool decoration + enforcement filter) shipped. Per-handle §2.12 enforcement deferred — `query_collection` is the lone tool with a coarser `RequireAnyScope` approximation pending handle-store work.
 - **Depends on:** B3 (issue #164 — investigation proxy), B4 (issue #165 — heap secret/event source/symbol allowlists)
 - **Author:** Copilot (drafting on behalf of @pedrosakuma)

@@ -1,6 +1,6 @@
 # Cloud platform integrations design
 
-_Status: Phase 1 spike for [issue #16](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/16)._
+_Status: Phase 1 spike for [issue #16](https://github.com/pedrosakuma/dotnet-diagnostics/issues/16)._
 This document answers one question: **which managed cloud platforms can host `dotnet-diagnostics-mcp` close enough to a target .NET process to make the existing MCP server useful, and what is the right first implementation path on each platform?**
 Short answer:
 - **AWS ECS / Fargate is the strongest near-term fit.**
@@ -37,7 +37,7 @@ This spike exists to make follow-up implementation work cheaper. Its goals are:
 
 This document does **not**:
 - duplicate the central-topology recommendation from [issue
-  #15](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/15),
+  #15](https://github.com/pedrosakuma/dotnet-diagnostics/issues/15),
 - define a new MCP tool surface,
 - ship deployable recipes,
 - close issue #16,
@@ -46,9 +46,9 @@ This document does **not**:
 ### 1.3 Relation to other infrastructure work
 
 Three nearby issues matter:
-- [#15](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/15): central Kubernetes topology without a permanent sidecar in every Pod.
-- [#20](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/20): a central orchestrator that can manage many target Pods.
-- [#22](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/22): cloud recipes for ECS/Fargate and Cloud Run.
+- [#15](https://github.com/pedrosakuma/dotnet-diagnostics/issues/15): central Kubernetes topology without a permanent sidecar in every Pod.
+- [#20](https://github.com/pedrosakuma/dotnet-diagnostics/issues/20): a central orchestrator that can manage many target Pods.
+- [#22](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22): cloud recipes for ECS/Fargate and Cloud Run.
 The cloud recipes in this document should be read as **consumers** of that broader topology work, not as replacements for it. Where possible, managed-cloud deployment should converge on the same mental model:
 - one MCP server per investigation surface,
 - bearer-token auth,
@@ -651,11 +651,11 @@ Repository-local references:
   - "Shell escapes when driving gh / git"
 - [`deploy/k8s/sample-sidecar.yaml`](../deploy/k8s/sample-sidecar.yaml)
 - [`docs/local-docker-sidecar.md`](./local-docker-sidecar.md)
-- [Issue #15: central K8s topology](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/15)
-- [Issue #16: cloud platform integrations](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/16)
-- [Issue #20: central MCP orchestrator](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/20)
-- [Issue #22: cloud recipes for ECS/Fargate and Cloud Run](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/22)
-- [PR #137 central K8s design doc](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/pull/137)
+- [Issue #15: central K8s topology](https://github.com/pedrosakuma/dotnet-diagnostics/issues/15)
+- [Issue #16: cloud platform integrations](https://github.com/pedrosakuma/dotnet-diagnostics/issues/16)
+- [Issue #20: central MCP orchestrator](https://github.com/pedrosakuma/dotnet-diagnostics/issues/20)
+- [Issue #22: cloud recipes for ECS/Fargate and Cloud Run](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22)
+- [PR #137 central K8s design doc](https://github.com/pedrosakuma/dotnet-diagnostics/pull/137)
 Platform references used for this spike:
 - Azure App Service sidecars overview: <https://learn.microsoft.com/en-us/azure/app-service/overview-sidecar>
 - Azure App Service sidecar configuration: <https://learn.microsoft.com/en-us/azure/app-service/configure-sidecar>

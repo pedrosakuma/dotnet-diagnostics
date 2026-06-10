@@ -1,6 +1,6 @@
 # Central Kubernetes topology design
 
-_Status: Phase 1 spike for [issue #15](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/15)._
+_Status: Phase 1 spike for [issue #15](https://github.com/pedrosakuma/dotnet-diagnostics/issues/15)._
 
 This document answers one question: **can `dotnet-diagnostics-mcp` move from one sidecar per Pod to a central Kubernetes topology without changing target app code?**
 
@@ -386,7 +386,7 @@ We are explicitly **not** accepting in the first implementation:
    - add one `attach_to_pod` step that returns a scoped session,
    - or support both?
 2. **How does the central MCP server authenticate and authorize multiple clients?**
-   This overlaps with [issue #20](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/20) and the broader shared-endpoint auth problem.
+   This overlaps with [issue #20](https://github.com/pedrosakuma/dotnet-diagnostics/issues/20) and the broader shared-endpoint auth problem.
 3. **Should the first orchestrator scope be one namespace or one cluster?**
    This document recommends namespace-first, but the product boundary should be explicit.
 4. **Do we require prepared targets in documentation only, or do we also detect and explain missing `/tmp` / UID prerequisites at runtime?**
@@ -422,10 +422,10 @@ For Phase 1, the decision is:
 
 ### Issue references
 
-- [#15 feat(infra): central K8s topology (no per-pod sidecar)](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/15)
-- [#16 feat(infra): cloud platform integrations](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/16)
-- [#20 Central MCP orchestrator (multi-pod fleet)](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/20)
-- [#22 Cloud recipes: AWS ECS/Fargate + GCP Cloud Run](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/22)
+- [#15 feat(infra): central K8s topology (no per-pod sidecar)](https://github.com/pedrosakuma/dotnet-diagnostics/issues/15)
+- [#16 feat(infra): cloud platform integrations](https://github.com/pedrosakuma/dotnet-diagnostics/issues/16)
+- [#20 Central MCP orchestrator (multi-pod fleet)](https://github.com/pedrosakuma/dotnet-diagnostics/issues/20)
+- [#22 Cloud recipes: AWS ECS/Fargate + GCP Cloud Run](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22)
 
 ### Kubernetes references
 

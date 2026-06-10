@@ -14,8 +14,8 @@
     <PackageId>dotnet-diagnostics-benchmarkdotnet</PackageId>
     <Authors>pedrosakuma</Authors>
     <Company>pedrosakuma</Company>
-    <PackageProjectUrl>https://github.com/pedrosakuma/dotnet-diagnostics-mcp</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/pedrosakuma/dotnet-diagnostics-mcp</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/pedrosakuma/dotnet-diagnostics</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/pedrosakuma/dotnet-diagnostics</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>benchmarkdotnet;diagnostics;dotnet;performance;profiling;gc;eventpipe;diagnoser</PackageTags>

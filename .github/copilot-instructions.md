@@ -16,5 +16,5 @@ The canonical agent guide for this repository is **[`AGENTS.md`](../AGENTS.md)**
 
 ## Where to work
 
-- [Phase 7 tracking issue #17](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/17) — dependency graph + execution order
+- [Phase 7 tracking issue #17](https://github.com/pedrosakuma/dotnet-diagnostics/issues/17) — dependency graph + execution order
 - [`docs/`](../docs) — tool reference, **CLI reference**, investigation playbooks, sidecar walkthroughs

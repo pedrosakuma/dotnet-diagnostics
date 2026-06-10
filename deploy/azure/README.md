@@ -199,8 +199,8 @@ az group delete -n diag-rg -y
 
 ## Roadmap
 
-- AWS ECS / Fargate sidecar recipe — [tracking issue #22](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/22).
-- GCP Cloud Run multi-container recipe — [tracking issue #22](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/22).
+- AWS ECS / Fargate sidecar recipe — [tracking issue #22](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22).
+- GCP Cloud Run multi-container recipe — [tracking issue #22](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22).
 - Optional managed-identity-based auth for the MCP HTTP transport (today the
   bearer token is the only mechanism).
 

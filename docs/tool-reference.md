@@ -45,7 +45,7 @@ tool calls within an investigation pay the probe cost once.
 
 ### Verbosidade (`depth`)
 
-Issue [#41 slice 2c](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/41)
+Issue [#41 slice 2c](https://github.com/pedrosakuma/dotnet-diagnostics/issues/41)
 adds a uniform `depth` parameter to every windowed collector. Values:
 `Summary` (default), `Detail`, `Raw`. Contract:
 

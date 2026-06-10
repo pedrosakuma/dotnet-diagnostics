@@ -19,7 +19,7 @@ dotnet tool install -g dotnet-diagnostics-cli   # requires the .NET 10 SDK
 ```
 
 Self-contained, per-OS binaries (no SDK required) are attached to every
-[GitHub Release](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/releases) as
+[GitHub Release](https://github.com/pedrosakuma/dotnet-diagnostics/releases) as
 `dotnet-diagnostics-cli-<version>-<rid>`. The diagnostics sidecar container image also ships the CLI on
 `PATH`, so `kubectl exec … -- dotnet-diagnostics-cli …` works inside the pod.
 
@@ -83,8 +83,8 @@ diag(pid 1234)> exit
 
 ## Documentation
 
-- **Full CLI reference:** [`docs/cli-reference.md`](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/blob/main/docs/cli-reference.md)
-- **Project README & MCP server:** [github.com/pedrosakuma/dotnet-diagnostics-mcp](https://github.com/pedrosakuma/dotnet-diagnostics-mcp)
+- **Full CLI reference:** [`docs/cli-reference.md`](https://github.com/pedrosakuma/dotnet-diagnostics/blob/main/docs/cli-reference.md)
+- **Project README & MCP server:** [github.com/pedrosakuma/dotnet-diagnostics](https://github.com/pedrosakuma/dotnet-diagnostics)
 
 ## Linux note (ClrMD-backed tools)
 

@@ -1,7 +1,7 @@
 # dotnet-diagnostics-benchmarkdotnet
 
 A [BenchmarkDotNet](https://benchmarkdotnet.org) `IDiagnoser` that attaches the
-[`dotnet-diagnostics`](https://github.com/pedrosakuma/dotnet-diagnostics-mcp) engine **in-process**
+[`dotnet-diagnostics`](https://github.com/pedrosakuma/dotnet-diagnostics) engine **in-process**
 to a benchmark's child process while it runs and captures EventPipe perf indicators (GC, contention,
 thread pool, exceptions, JIT, counters, …) as JSON artifacts plus a per-run **"biggest offenders"**
 markdown report.

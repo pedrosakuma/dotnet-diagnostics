@@ -17,8 +17,8 @@
     <PackageId>dotnet-diagnostics-core</PackageId>
     <Authors>pedrosakuma</Authors>
     <Company>pedrosakuma</Company>
-    <PackageProjectUrl>https://github.com/pedrosakuma/dotnet-diagnostics-mcp</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/pedrosakuma/dotnet-diagnostics-mcp</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/pedrosakuma/dotnet-diagnostics</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/pedrosakuma/dotnet-diagnostics</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>diagnostics;dotnet;performance;profiling;cpu;gc;eventpipe;heap;dump;clrmd;traceevent</PackageTags>

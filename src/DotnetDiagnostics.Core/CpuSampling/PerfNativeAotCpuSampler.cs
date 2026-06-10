@@ -131,7 +131,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         var seconds = Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
         // NativeAOT binaries may not always emit frame pointers; dwarf unwinding is required
         // for reliable callstacks. The trade-off is larger perf.data files, but the cap is
-        // implicit in the sampling window. See https://github.com/pedrosakuma/dotnet-diagnostics-mcp
+        // implicit in the sampling window. See https://github.com/pedrosakuma/dotnet-diagnostics
         // notes on NativeAOT validation for the bug history.
         var args = $"record -F {_samplingFrequencyHz} --call-graph dwarf -p {pid} -o \"{outputPath}\" -- sleep {seconds}";
         _logger.LogDebug("Spawning perf: {Bin} {Args}", ResolvePerfPath()!, args);

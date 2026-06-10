@@ -1,6 +1,6 @@
 # BenchmarkDotNet diagnoser — shipping design
 
-_Status: design doc for [issue #346](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/346)._
+_Status: design doc for [issue #346](https://github.com/pedrosakuma/dotnet-diagnostics/issues/346)._
 _This document is design only. It adds no library, package, or rename — those land in the follow-up PRs below._
 
 This document answers one question:

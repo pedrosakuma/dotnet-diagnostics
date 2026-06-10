@@ -44,7 +44,7 @@ Attaching to a **live local process** from inside the container requires UID par
 
 ### 1c. Single-file binary
 
-Grab the per-OS archive from the [GitHub Releases](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/releases) page (`linux-x64`, `linux-arm64`, `win-x64`, `win-arm64`, `osx-arm64`), extract, and place `dotnet-diagnostics-mcp` on PATH.
+Grab the per-OS archive from the [GitHub Releases](https://github.com/pedrosakuma/dotnet-diagnostics/releases) page (`linux-x64`, `linux-arm64`, `win-x64`, `win-arm64`, `osx-arm64`), extract, and place `dotnet-diagnostics-mcp` on PATH.
 
 ```bash
 tar -xzf dotnet-diagnostics-mcp-*-linux-x64.tar.gz -C ~/.local/bin
@@ -173,7 +173,7 @@ Add this to your `mcp-config.json` (Claude Desktop, Claude Code, Copilot CLI, Cu
 
 ## 4. Optional — pair with `dotnet-assembly-mcp`
 
-The diagnostics server resolves PDBs locally and stamps `SourceLocation` directly onto every `MethodIdentity` it emits for CPU samples (see [#28](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/28)). That means **in a dev environment** where the source tree is open in your editor, `dotnet-diagnostics-mcp` alone is enough to follow a hotspot to its source line.
+The diagnostics server resolves PDBs locally and stamps `SourceLocation` directly onto every `MethodIdentity` it emits for CPU samples (see [#28](https://github.com/pedrosakuma/dotnet-diagnostics/issues/28)). That means **in a dev environment** where the source tree is open in your editor, `dotnet-diagnostics-mcp` alone is enough to follow a hotspot to its source line.
 
 The partner [`pedrosakuma/dotnet-assembly-mcp`](https://github.com/pedrosakuma/dotnet-assembly-mcp) remains the right call for:
 
