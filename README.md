@@ -1,6 +1,6 @@
 # dotnet-diagnostics-mcp
 
-[![CI](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/pedrosakuma/dotnet-diagnostics/actions/workflows/ci.yml/badge.svg)](https://github.com/pedrosakuma/dotnet-diagnostics/actions/workflows/ci.yml)
 
 An **MCP server** for LLM-driven performance diagnostics on **.NET 10** applications — zero instrumentation required.
 
@@ -140,7 +140,7 @@ diag(pid 1234)> query --handle <id> --view pauseHistogram
 diag(pid 1234)> exit
 ```
 
-Self-contained per-OS binaries are attached to each [Release](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/releases)
+Self-contained per-OS binaries are attached to each [Release](https://github.com/pedrosakuma/dotnet-diagnostics/releases)
 as `dotnet-diagnostics-cli-<version>-<rid>`. **Full reference:** [`docs/cli-reference.md`](./docs/cli-reference.md).
 
 ---

@@ -1,5 +1,5 @@
 # Central MCP orchestrator design
-_Status: Phase 1 spike for [issue #20](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/20)._
+_Status: Phase 1 spike for [issue #20](https://github.com/pedrosakuma/dotnet-diagnostics/issues/20)._
 This document answers one question:
 **How should `dotnet-diagnostics-mcp` expose a fleet of prepared Kubernetes Pods through one MCP endpoint without changing the current diagnostic tool bodies?**
 Short answer:
@@ -355,7 +355,7 @@ In practice the deployment guidance is now: prefer option (1) when you can co-lo
 > [Path hints are untrusted](./handoff-contract.md#path-hints-are-untrusted)
 > section of the handoff contract for the producer/consumer rules and a
 > worked example. This applies especially to the shipped **cross-MCP byte
-> fetch** mitigation (option 2 above, [#144](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/144)):
+> fetch** mitigation (option 2 above, [#144](https://github.com/pedrosakuma/dotnet-diagnostics/issues/144)):
 > the materialised scratch path the LLM hands to the client-side sibling MCP
 > inherits the same untrusted-hint contract and must be validated identically.
 
@@ -718,11 +718,11 @@ Meet the issue's acceptance criterion with a realistic cluster test:
 - [`deploy/k8s/ephemeral-attach.patch.json`](../deploy/k8s/ephemeral-attach.patch.json)
 - PR #137 (`docs/central-k8s-design.md` on that branch; complementary feasibility/design spike)
 ### Related issues
-- [#15 feat(infra): central K8s topology (no per-pod sidecar)](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/15)
-- [#16 feat(infra): cloud platform integrations (App Service / ACA / ECS / Lambda)](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/16)
-- [#17 Phase 7 — Post-MVP Roadmap](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/17)
-- [#20 Central MCP orchestrator (multi-pod fleet)](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/20)
-- [#22 Cloud recipes: AWS ECS/Fargate + GCP Cloud Run](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/22)
+- [#15 feat(infra): central K8s topology (no per-pod sidecar)](https://github.com/pedrosakuma/dotnet-diagnostics/issues/15)
+- [#16 feat(infra): cloud platform integrations (App Service / ACA / ECS / Lambda)](https://github.com/pedrosakuma/dotnet-diagnostics/issues/16)
+- [#17 Phase 7 — Post-MVP Roadmap](https://github.com/pedrosakuma/dotnet-diagnostics/issues/17)
+- [#20 Central MCP orchestrator (multi-pod fleet)](https://github.com/pedrosakuma/dotnet-diagnostics/issues/20)
+- [#22 Cloud recipes: AWS ECS/Fargate + GCP Cloud Run](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22)
 ### Kubernetes references
 - [Ephemeral Containers](https://kubernetes.io/docs/concepts/workloads/pods/ephemeral-containers/)
 - [Debugging with an ephemeral container](https://kubernetes.io/docs/tasks/debug/debug-application/debug-running-pod/#ephemeral-container)

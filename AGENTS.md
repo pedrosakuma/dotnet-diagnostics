@@ -10,7 +10,7 @@ The server attaches to the .NET runtime diagnostic IPC socket and exposes 9 tool
 
 The repo also ships a **second deliverable** built on the same Core engine: **`dotnet-diagnostics-cli`** (`src/DotnetDiagnostics.Cli`, assembly name `dotnet-diagnostics`), a Core-only standalone CLI for humans / scripts / CI — one-shot sub-commands plus a stateful `session` REPL, **no HTTP, no bearer, no daemon**. Both tools publish to NuGet from the same release tag (`dotnet-diagnostics-mcp` and `dotnet-diagnostics-cli`). The CLI references **Core only** (asserted by `NoServerReferenceTests`); document it in [`docs/cli-reference.md`](./docs/cli-reference.md), not the MCP tool reference.
 
-**Status:** MVP complete (Phases 1–6). Active work on Phase 7 is tracked in [issue #17](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/17) and the milestone [`Phase 7 — Roadmap`](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/milestone/1).
+**Status:** MVP complete (Phases 1–6). Active work on Phase 7 is tracked in [issue #17](https://github.com/pedrosakuma/dotnet-diagnostics/issues/17) and the milestone [`Phase 7 — Roadmap`](https://github.com/pedrosakuma/dotnet-diagnostics/milestone/1).
 
 ## Repository layout
 
@@ -179,18 +179,18 @@ Anthropic recommends ≤10 tools per LLM context. We have 15 tools after RFC 000
    answers parameterized follow-up questions. This keeps the tool surface flat while letting the
    LLM ask narrowly-scoped questions without re-paying the collection cost.
 
-See Phase 7 issues [#8 `mcp-drilldown`](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/8)
-and [#24 wave 1 heap drilldown](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/24).
+See Phase 7 issues [#8 `mcp-drilldown`](https://github.com/pedrosakuma/dotnet-diagnostics/issues/8)
+and [#24 wave 1 heap drilldown](https://github.com/pedrosakuma/dotnet-diagnostics/issues/24).
 
 ## Phase 7 — what is being designed and why
 
-All open work has a GitHub issue. **Read the meta tracking issue first**: [#17 Phase 7 — Post-MVP Roadmap](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/17). It carries the current dependency graph, execution order, label taxonomy, and links to the two deep-research artifacts that back the design. Don't inline that taxonomy here — it drifts.
+All open work has a GitHub issue. **Read the meta tracking issue first**: [#17 Phase 7 — Post-MVP Roadmap](https://github.com/pedrosakuma/dotnet-diagnostics/issues/17). It carries the current dependency graph, execution order, label taxonomy, and links to the two deep-research artifacts that back the design. Don't inline that taxonomy here — it drifts.
 
 ## How to contribute as an agent
 
 When picking up an issue:
 
-1. **Read the meta tracking issue** ([#17](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/17)) for the dependency graph. Don't start blocked work.
+1. **Read the meta tracking issue** ([#17](https://github.com/pedrosakuma/dotnet-diagnostics/issues/17)) for the dependency graph. Don't start blocked work.
 2. **Read the linked research findings** in the issue body before designing.
 3. **Build + run tests** before and after — `dotnet build` and `dotnet test` from the repo root.
 4. **Don't add tools without an issue** — discuss first in the relevant `drilldown` or `discoverability` issue.
@@ -236,6 +236,6 @@ to every contributor and every agent on this repo.
 ## Things deliberately not in scope
 
 - **Modifying the target application** — non-goal. Everything must work over the diagnostic socket.
-- **Persistent server-side state** — server stays stateless; investigation memory is portable JSON the agent persists externally (see issue [#10](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/10)).
+- **Persistent server-side state** — server stays stateless; investigation memory is portable JSON the agent persists externally (see issue [#10](https://github.com/pedrosakuma/dotnet-diagnostics/issues/10)).
 - **A web UI** — this is an MCP server; the UI is whatever MCP client the human uses.
 - **Replacing dotnet-monitor** — different goals. `dotnet-monitor` is rule-based collection for ops; we are interactive diagnosis for an LLM. They complement each other.

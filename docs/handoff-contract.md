@@ -100,7 +100,7 @@ module / image index keyed by MVID / build-id. The path is consulted only when
 the identity is not yet known to the consumer **and** the path survives the
 four checks above. This pattern naturally protects every handoff endpoint —
 including the shipped cross-MCP byte-fetch tools (`get_bytes(kind="module")` /
-`get_bytes(kind="dump")`, [#144](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/144)) — without
+`get_bytes(kind="dump")`, [#144](https://github.com/pedrosakuma/dotnet-diagnostics/issues/144)) — without
 spreading validation logic across every tool entry-point.
 
 ### Worked example

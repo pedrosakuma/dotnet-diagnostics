@@ -230,7 +230,7 @@ out. `ServerInstructions` still describes the same hierarchy for clients that do
 
 ## Long-running collectors: cutover to MCP-native progress and cancellation
 
-Stage A of [RFC 0002 §7.3 #7 / issue #211](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/211)
+Stage A of [RFC 0002 §7.3 #7 / issue #211](https://github.com/pedrosakuma/dotnet-diagnostics/issues/211)
 adds MCP-native progress and cancellation to `collect_sample(kind="cpu")` and
 `collect_events`. Clients should stop using the legacy polling bridge as soon
 as their MCP runtime supports `notifications/progress` + `notifications/cancelled`
@@ -260,7 +260,7 @@ Cutover plan:
 2. Either path is sufficient: progress + cancel notifications cover the
    in-request lifecycle, while MCP Tasks cover the detached-poll lifecycle.
 
-> **Stage B (RFC 0002 §7.3 #7 / [issue #211](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/211)).**
+> **Stage B (RFC 0002 §7.3 #7 / [issue #211](https://github.com/pedrosakuma/dotnet-diagnostics/issues/211)).**
 > The legacy `collect_sample(kind="cpu")(runAsJob=true)` + `get_collection_status` +
 > `cancel_collection` polling bridge has been removed. The tool surface
 > dropped by two: clients that still depend on the polling path must adopt

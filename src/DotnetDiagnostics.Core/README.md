@@ -1,7 +1,7 @@
 # dotnet-diagnostics-core
 
 The transport-agnostic **.NET diagnostics engine** behind the
-[`dotnet-diagnostics-mcp`](https://github.com/pedrosakuma/dotnet-diagnostics-mcp) MCP server and
+[`dotnet-diagnostics-mcp`](https://github.com/pedrosakuma/dotnet-diagnostics) MCP server and
 the `dotnet-diagnostics-cli`. It attaches to a live .NET process over the runtime diagnostic IPC
 socket — **no modification to the target app** — and turns the raw EventPipe / ClrMD / TraceEvent
 streams into structured results.

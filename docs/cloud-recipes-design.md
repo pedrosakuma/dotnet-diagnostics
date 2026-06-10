@@ -1,7 +1,7 @@
 # Cloud recipes design
 
-_Status: design doc for [issue #22](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/22)._  
-_Parent design: [PR #138 — cloud platform integrations design](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/pull/138)._  
+_Status: design doc for [issue #22](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22)._  
+_Parent design: [PR #138 — cloud platform integrations design](https://github.com/pedrosakuma/dotnet-diagnostics/pull/138)._  
 _This file is design only. It adds no templates under `deploy/aws/` or `deploy/gcp/`._
 
 ## Context
@@ -587,10 +587,10 @@ is a follow-up choice, not part of the initial ship.
 Repository references:
 
 - [`AGENTS.md`](../AGENTS.md)
-- [Issue #16 — cloud platform integrations](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/16)
-- [Issue #20 — Central MCP orchestrator](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/20)
-- [Issue #22 — Cloud recipes: AWS ECS/Fargate + GCP Cloud Run](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/22)
-- [PR #138 — cloud platform integrations design](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/pull/138)
+- [Issue #16 — cloud platform integrations](https://github.com/pedrosakuma/dotnet-diagnostics/issues/16)
+- [Issue #20 — Central MCP orchestrator](https://github.com/pedrosakuma/dotnet-diagnostics/issues/20)
+- [Issue #22 — Cloud recipes: AWS ECS/Fargate + GCP Cloud Run](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22)
+- [PR #138 — cloud platform integrations design](https://github.com/pedrosakuma/dotnet-diagnostics/pull/138)
 - [`deploy/azure/README.md`](../deploy/azure/README.md)
 - [`deploy/azure/container-apps/main.bicep`](../deploy/azure/container-apps/main.bicep)
 - [`deploy/azure/app-service/main.bicep`](../deploy/azure/app-service/main.bicep)

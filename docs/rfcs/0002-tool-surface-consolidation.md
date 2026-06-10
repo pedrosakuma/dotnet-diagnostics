@@ -1,6 +1,6 @@
 # RFC 0002 — Tool surface consolidation
 
-- **Tracking issue:** [#197](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/197)
+- **Tracking issue:** [#197](https://github.com/pedrosakuma/dotnet-diagnostics/issues/197)
 - **Status:** Draft
 - **Author:** Copilot (drafting on behalf of @pedrosakuma)
 

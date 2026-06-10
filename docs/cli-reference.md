@@ -27,7 +27,7 @@ dotnet-diagnostics-cli --help
 Other distributions:
 
 - **Self-contained binary** (no SDK): per-OS archives are attached to every
-  [Release](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/releases) as
+  [Release](https://github.com/pedrosakuma/dotnet-diagnostics/releases) as
   `dotnet-diagnostics-cli-<version>-<rid>` (`linux-x64`, `linux-arm64`, `osx-arm64`, `win-x64`, `win-arm64`).
 - **In the sidecar container**: the diagnostics sidecar image bundles the CLI on `PATH`, so
   `kubectl exec -it <pod> -c diagnostics-mcp -- dotnet-diagnostics-cli processes` works against the

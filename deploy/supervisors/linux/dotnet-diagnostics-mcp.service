@@ -1,6 +1,6 @@
 [Unit]
 Description=dotnet-diagnostics-mcp (local MCP server for .NET diagnostics)
-Documentation=https://github.com/pedrosakuma/dotnet-diagnostics-mcp/blob/main/docs/consumer-install.md
+Documentation=https://github.com/pedrosakuma/dotnet-diagnostics/blob/main/docs/consumer-install.md
 After=default.target
 
 [Service]

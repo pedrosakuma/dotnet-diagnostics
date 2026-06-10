@@ -244,7 +244,7 @@ internal static class DiagnosticServiceRegistration
                         "On-demand performance diagnostics for running .NET applications " +
                         "(CoreCLR and NativeAOT) over the runtime diagnostic IPC socket. " +
                         "No target-side instrumentation required. Designed for K8s sidecar deployments.",
-                    WebsiteUrl = "https://github.com/pedrosakuma/dotnet-diagnostics-mcp",
+                    WebsiteUrl = "https://github.com/pedrosakuma/dotnet-diagnostics",
                 };
 
                 options.ServerInstructions = ServerInstructionsText;

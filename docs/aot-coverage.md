@@ -2,7 +2,7 @@
 
 This document maps every diagnostic tool to its runtime × OS support and points
 to the gap-filling tool when the canonical one doesn't apply. **NativeAOT
-parity (meta [#91](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/91))
+parity (meta [#91](https://github.com/pedrosakuma/dotnet-diagnostics/issues/91))
 is functionally complete since v0.3.1**, with the remaining honest non-goals
 (managed-type retention, lock-graph identity) called out below.
 
@@ -60,7 +60,7 @@ Legend: `✅` works · `⚠️` works with caveats (footnote) · `❌` unavailab
 | `collect_sample(kind="cpu")` | ✅ EventPipe | ✅ EventPipe | ✅ `perf` (`symbols.map`) | ✅ ETW (`pdb-export`) [^win-etw-elev] |
 | `collect_sample(kind="off_cpu")` | ✅ `perf` | ⚠️ ETW kernel logger, elevated [^win-etw-elev] | ✅ `perf` [^perf-install] | ⚠️ ETW kernel logger, elevated [^win-etw-elev] |
 | `collect_sample(kind="allocation")` | ✅ TypeName populated | ✅ TypeName populated | ⚠️ TypeName empty [^aot-typename] | ⚠️ TypeName empty [^aot-typename] |
-| `collect_thread_snapshot` | ✅ `clrmd-thread-walk` | ✅ `clrmd-thread-walk` | ✅ `linux-native-stack` ([#92](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/92)) | ✅ `etw-native-stack` ([#93](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/93)) |
+| `collect_thread_snapshot` | ✅ `clrmd-thread-walk` | ✅ `clrmd-thread-walk` | ✅ `linux-native-stack` ([#92](https://github.com/pedrosakuma/dotnet-diagnostics/issues/92)) | ✅ `etw-native-stack` ([#93](https://github.com/pedrosakuma/dotnet-diagnostics/issues/93)) |
 | `query_snapshot` | ✅ full lock graph | ✅ full lock graph | ⚠️ no managed lock graph [^lock-graph] | ⚠️ no managed lock graph [^lock-graph] |
 | `inspect_heap(source="live")` / `query_snapshot` | ✅ | ✅ | ❌ [^heap] | ❌ [^heap] |
 | `inspect_heap(source="dump")` (heap) | ✅ | ✅ | ❌ [^heap] | ❌ [^heap] |
@@ -68,11 +68,11 @@ Legend: `✅` works · `⚠️` works with caveats (footnote) · `❌` unavailab
 | `capture_method_bytes` | ✅ JIT code-heap | ✅ JIT code-heap | ❌ [^jit-only] | ❌ [^jit-only] |
 | `start_investigation` / `export_investigation_summary` / `compare_to_baseline` | ✅ | ✅ | ✅ | ✅ |
 
-[^stale]: Resolved in [#108](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/108): stale diagnostic sockets and Linux TID collisions are filtered out via thread-group-leader validation. Affected `v0.3.0` and `v0.3.1`; fixed on `main`.
+[^stale]: Resolved in [#108](https://github.com/pedrosakuma/dotnet-diagnostics/issues/108): stale diagnostic sockets and Linux TID collisions are filtered out via thread-group-leader validation. Affected `v0.3.0` and `v0.3.1`; fixed on `main`.
 [^aot-eventsource]: The provider must be embedded in the AOT binary at publish time. Sources added via assembly load after publish are not reachable.
-[^perf-install]: The default sidecar image now ships `perf`. Pass `--build-arg INSTALL_PERF=false` (or pull the `-lean` GHCR tag) to opt out. Runtime still needs `CAP_PERFMON` for `perf` to actually collect. See [`local-docker-sidecar.md`](./local-docker-sidecar.md) and [#104](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/104).
+[^perf-install]: The default sidecar image now ships `perf`. Pass `--build-arg INSTALL_PERF=false` (or pull the `-lean` GHCR tag) to opt out. Runtime still needs `CAP_PERFMON` for `perf` to actually collect. See [`local-docker-sidecar.md`](./local-docker-sidecar.md) and [#104](https://github.com/pedrosakuma/dotnet-diagnostics/issues/104).
 [^win-etw-elev]: NT Kernel Logger sessions require either local **Administrators** membership or `SeSystemProfilePrivilege` (`Profile system performance`). For the Windows service setup, see [`windows-sidecar-service.md`](./windows-sidecar-service.md).
-[^aot-typename]: NativeAOT does not populate `GCAllocationTick.TypeName`. Total events and bytes are correct; rollup is `<unknown>`. Cross-reference with `collect_sample(kind="cpu")` for native allocation-site frames (`RhNewObject`, `RhNewArray`, `RhAllocateObject`). Improvement tracked in [#100](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/100).
+[^aot-typename]: NativeAOT does not populate `GCAllocationTick.TypeName`. Total events and bytes are correct; rollup is `<unknown>`. Cross-reference with `collect_sample(kind="cpu")` for native allocation-site frames (`RhNewObject`, `RhNewArray`, `RhAllocateObject`). Improvement tracked in [#100](https://github.com/pedrosakuma/dotnet-diagnostics/issues/100).
 [^lock-graph]: There is no native equivalent to a managed `SyncBlock`. Thread states and stacks are accurate; ownership/waiter edges between managed objects are not recoverable without runtime cooperation. Pure-native locks (futex, srwlock) still show up as off-CPU stacks via `collect_sample(kind="off_cpu")`.
 [^heap]: ClrMD's DAC has no NativeAOT implementation; there is no public design for one upstream. See **Honest non-goals** below.
 [^jit-only]: `capture_method_bytes` reads the JIT code-heap of a live process. On NativeAOT and pure ReadyToRun there is no code-heap — the code is in the on-disk binary. Use the `dotnet-native-mcp.disassemble` companion server against the published ELF/PE.
@@ -154,8 +154,8 @@ target before any data is collected.
 
 ## Related issues
 
-- Meta: [#91 NativeAOT coverage parity](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/91)
-- Slice 1 (thread snapshot): [#92](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/92) Linux · [#93](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/93) Windows · [#94](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/94) perf-replay fallback
-- Slice 2 (allocation): [#95](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/95) collector · [#100](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/100) TypeName projection
-- Slice 3 (memory trend): [#96](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/96)
-- Open follow-ups: [#104](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/104) perf install default · [#108](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/108) stale-socket enumeration
+- Meta: [#91 NativeAOT coverage parity](https://github.com/pedrosakuma/dotnet-diagnostics/issues/91)
+- Slice 1 (thread snapshot): [#92](https://github.com/pedrosakuma/dotnet-diagnostics/issues/92) Linux · [#93](https://github.com/pedrosakuma/dotnet-diagnostics/issues/93) Windows · [#94](https://github.com/pedrosakuma/dotnet-diagnostics/issues/94) perf-replay fallback
+- Slice 2 (allocation): [#95](https://github.com/pedrosakuma/dotnet-diagnostics/issues/95) collector · [#100](https://github.com/pedrosakuma/dotnet-diagnostics/issues/100) TypeName projection
+- Slice 3 (memory trend): [#96](https://github.com/pedrosakuma/dotnet-diagnostics/issues/96)
+- Open follow-ups: [#104](https://github.com/pedrosakuma/dotnet-diagnostics/issues/104) perf install default · [#108](https://github.com/pedrosakuma/dotnet-diagnostics/issues/108) stale-socket enumeration

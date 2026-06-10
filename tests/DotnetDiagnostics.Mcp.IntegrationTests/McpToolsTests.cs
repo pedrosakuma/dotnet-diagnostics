@@ -423,7 +423,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         client.ServerInfo.Title.Should().Be(".NET Diagnostics");
         client.ServerInfo.Description.Should().NotBeNullOrWhiteSpace(
             "serverInfo.description is required for low-context LLMs to identify what this server is for");
-        client.ServerInfo.WebsiteUrl.Should().Be("https://github.com/pedrosakuma/dotnet-diagnostics-mcp");
+        client.ServerInfo.WebsiteUrl.Should().Be("https://github.com/pedrosakuma/dotnet-diagnostics");
 
         client.ServerInstructions.Should().NotBeNullOrWhiteSpace(
             "instructions are surfaced verbatim by clients on session start");

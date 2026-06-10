@@ -206,7 +206,7 @@ or a `localhost` port set up via `aws ssm start-session` port forwarding).
 - [`docs/cloud-recipes-design.md`](../../../docs/cloud-recipes-design.md) — the design that drives this recipe
 - [`docs/cloud-integrations-design.md`](../../../docs/cloud-integrations-design.md) — parent portfolio decision
 - [`AGENTS.md`](../../../AGENTS.md) — diagnostic socket UID and `CAP_SYS_PTRACE` invariants
-- [Issue #22](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/22) — acceptance criteria
+- [Issue #22](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22) — acceptance criteria
 
 ## Production: pin to a digest
 

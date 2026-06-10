@@ -221,7 +221,7 @@ through Identity-Aware Proxy, or an SSH tunnel.
 - [`docs/cloud-integrations-design.md`](../../../docs/cloud-integrations-design.md) — parent portfolio decision
 - [`AGENTS.md`](../../../AGENTS.md) — diagnostic socket UID invariant
 - [Cloud Run multi-container services](https://cloud.google.com/run/docs/deploying#multicontainer) — GCP docs
-- [Issue #22](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/22) — acceptance criteria
+- [Issue #22](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22) — acceptance criteria
 
 ## Production: pin to a digest
 

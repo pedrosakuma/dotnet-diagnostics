@@ -1,6 +1,6 @@
 # Azure discovery
 
-> v1 design for the `discover_azure` MCP tool. Tracking parent: [#230](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/230). Contract PR: [#232](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/232).
+> v1 design for the `discover_azure` MCP tool. Tracking parent: [#230](https://github.com/pedrosakuma/dotnet-diagnostics/issues/230). Contract PR: [#232](https://github.com/pedrosakuma/dotnet-diagnostics/issues/232).
 
 ## Overview
 
@@ -9,9 +9,9 @@ Azure subscription, across three platforms:
 
 | `kind`           | Platform                    | Backend PR |
 |------------------|-----------------------------|------------|
-| `webapps`        | Azure App Service           | [#233](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/233) (shipped) |
-| `containerapps`  | Azure Container Apps        | [#233](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/233) (shipped) |
-| `aksclusters`    | Azure Kubernetes Service    | [#234](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/234) |
+| `webapps`        | Azure App Service           | [#233](https://github.com/pedrosakuma/dotnet-diagnostics/issues/233) (shipped) |
+| `containerapps`  | Azure Container Apps        | [#233](https://github.com/pedrosakuma/dotnet-diagnostics/issues/233) (shipped) |
+| `aksclusters`    | Azure Kubernetes Service    | [#234](https://github.com/pedrosakuma/dotnet-diagnostics/issues/234) |
 
 Hard rules baked into the contract:
 
@@ -264,7 +264,7 @@ diagnostic credentials have different blast radii. A token holding
 
 ## What this PR ships
 
-[#232](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/232) ships
+[#232](https://github.com/pedrosakuma/dotnet-diagnostics/issues/232) ships
 **only the contract**:
 
 - The `discover_azure` tool with `kind`-dispatch, scope enforcement, structured
@@ -283,7 +283,7 @@ The real backends arrive in #233 (App Service + Container Apps) and #234 (AKS).
 ## AKS kubeconfig handoff (#234)
 
 The `kind=aksclusters` backend implemented in
-[#234](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/234) is the
+[#234](https://github.com/pedrosakuma/dotnet-diagnostics/issues/234) is the
 first surface that produces a credential-bearing artifact. To keep blast radius
 contained, the kubeconfig YAML never reaches the LLM or the response envelope —
 the backend stores the bytes in a process-local handle table and returns a
