@@ -42,6 +42,7 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
         "exceptions",
         "gc",
         "cpu",
+        "allocation",
         "datas",
         "catalog",
         "activities",
@@ -57,6 +58,9 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
     /// available behind the issued handle; this only bounds the inline hotspot list.
     /// </summary>
     private const int CpuTopHotspots = 25;
+
+    /// <summary>Number of top types (by bytes and by count) the allocation summary retains.</summary>
+    private const int AllocationTopTypes = 25;
 
     /// <summary>TTL for the CPU-sample drill-down handle registered in the in-process store.</summary>
     private static readonly TimeSpan CpuSampleHandleTtl = TimeSpan.FromMinutes(10);
@@ -97,6 +101,8 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
                 services.GetRequiredService<IGcCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
             "cpu" => Materialize(kind, await CollectCpuAsync(
                 services.GetRequiredService<EventPipeCpuSampler>(), handles, processId, durationSeconds, cancellationToken).ConfigureAwait(false)),
+            "allocation" => Materialize(kind, await CollectAllocationAsync(
+                services.GetRequiredService<EventPipeAllocationSampler>(), handles, processId, durationSeconds, cancellationToken).ConfigureAwait(false)),
             "datas" => Materialize(kind, await EventCollectionUseCases.CollectGcDatas(
                 services.GetRequiredService<IGcDatasCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
             "catalog" => Materialize(kind, await EventCollectionUseCases.CollectEventCatalog(
@@ -256,6 +262,76 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
         }
 
         return (best.Key.Method, best.Value.Exclusive, best.Value.Inclusive);
+    }
+
+    /// <summary>
+    /// Allocation sampling (<c>GCAllocationTick</c>) likewise has no <see cref="EventCollectionUseCases"/>
+    /// facade, so the diagnoser drives <see cref="EventPipeAllocationSampler"/> directly: it aggregates
+    /// per-type allocated bytes / event counts (SOH vs LOH) and retains the merged allocation call-site
+    /// tree behind a handle. The sampler is <b>observe-only</b> — it enables a native EventPipe keyword
+    /// and reads events the target runtime already emits; it performs no managed allocation in the
+    /// measured process, so it does not inflate the benchmark's own <c>Allocated</c> counter. With the
+    /// default (out-of-process) toolchain the sampler also runs in this orchestrator process, never the
+    /// measured child. The only co-located case (in-process toolchain) is flagged in the summary.
+    /// </summary>
+    private static async Task<DiagnosticResult<AllocationSample>> CollectAllocationAsync(
+        EventPipeAllocationSampler sampler,
+        IDiagnosticHandleStore handles,
+        int processId,
+        int durationSeconds,
+        CancellationToken cancellationToken)
+    {
+        var result = await sampler.SampleAsync(
+            processId,
+            TimeSpan.FromSeconds(durationSeconds),
+            AllocationTopTypes,
+            cancellationToken).ConfigureAwait(false);
+
+        var coLocated = processId == Environment.ProcessId;
+        var handle = handles.Register(
+            processId, "allocation-sample", new AllocationSampleArtifact(result.Summary, result.Artifact), CpuSampleHandleTtl);
+        var summary = BuildAllocationSummary(result.Summary, durationSeconds, coLocated);
+        return DiagnosticResult.OkWithHandle(
+            result.Summary,
+            summary,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint(
+                "query_snapshot",
+                "Walk the merged allocation call-site tree to find which code paths allocate the most.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = 8, ["maxNodes"] = 200 }));
+    }
+
+    /// <summary>
+    /// Builds the one-line allocation headline used by the offenders report. Exposed (internal) so the
+    /// test project can assert the phrasing without a live sampler. Reports total events/bytes and the
+    /// top allocating type by bytes, with the NativeAOT (<c>&lt;unknown&gt;</c> TypeName) caveat. When
+    /// <paramref name="coLocated"/> is true the benchmark shared this process (in-process toolchain),
+    /// so the numbers are not isolated from <c>MemoryDiagnoser</c> — that is flagged explicitly.
+    /// </summary>
+    internal static string BuildAllocationSummary(AllocationSample sample, int durationSeconds, bool coLocated)
+    {
+        string headline;
+        if (sample.TotalEvents <= 0 || sample.TopByBytes.Count == 0)
+        {
+            headline = $"Captured {sample.TotalEvents} allocation event(s) over {durationSeconds}s but no type aggregation surfaced " +
+                "\u2014 increase durationSeconds or drive a workload that allocates during the window.";
+        }
+        else
+        {
+            var top = sample.TopByBytes[0];
+            var unknownOnly = string.Equals(top.TypeName, "<unknown>", StringComparison.Ordinal) && sample.TopByBytes.Count == 1;
+            headline = unknownOnly
+                ? $"Captured {sample.TotalEvents} allocation event(s) ({sample.TotalBytes:N0} bytes) over {durationSeconds}s, " +
+                    "but TypeName was empty for all events (expected on NativeAOT). Drill into call sites via the call-tree handle."
+                : $"Captured {sample.TotalEvents} allocation event(s) ({sample.TotalBytes:N0} bytes) over {durationSeconds}s across {sample.TopByBytes.Count} type(s). " +
+                    $"Top by bytes: {top.TypeName} ({top.TotalBytes:N0} bytes, {top.EventCount} event(s), {top.DominantKind} heap).";
+        }
+
+        return coLocated
+            ? headline + " \u26a0 benchmark ran in-process with the diagnoser (in-process toolchain) \u2014 these allocations " +
+                "are NOT isolated from MemoryDiagnoser; use the default out-of-process toolchain (or a separate diagnostic job) for clean numbers."
+            : headline;
     }
 
     private static ServiceProvider BuildProvider()

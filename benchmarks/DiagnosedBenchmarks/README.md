@@ -66,10 +66,12 @@ This pattern **diagnoses** benchmarks; it does not produce publication-grade tim
 - **No parallel EventPipe on one PID.** The runtime has no start-session timeout, so two concurrent
   EventPipe sessions against the same process can wedge the IPC. The diagnoser collects multiple
   kinds **sequentially**; keep `[DiagnosticKind]` to 1–2 kinds with short durations.
-- **CPU sampling is supported; allocation sampling is not.** The `cpu` kind runs the EventPipe CPU
-  sampler in-process and attributes cost per stack frame (exclusive/inclusive samples + call tree).
-  Allocation *sampling* remains MCP-server-only; for per-type allocation here use the `gc` kind or
-  BDN's native `MemoryDiagnoser`.
+- **CPU and allocation sampling are supported.** The `cpu` kind runs the EventPipe CPU sampler
+  in-process and attributes cost per stack frame (exclusive/inclusive samples + call tree); the
+  `allocation` kind attributes allocated bytes per managed type (SOH/LOH + allocation call-site
+  tree) — the per-type complement to `MemoryDiagnoser`'s `Allocated` column. Both are observe-only
+  and, with the default out-of-process toolchain, run in the orchestrator process, so they don't
+  perturb the benchmark's measured allocation numbers.
 - **Linux/WSL:** EventPipe collectors do **not** need `CAP_SYS_PTRACE`.
 
 ## Files
