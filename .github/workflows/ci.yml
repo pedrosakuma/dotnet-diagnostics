@@ -8,6 +8,10 @@ on:
 
 permissions:
   contents: read
+  # dorny/paths-filter calls the PR "list files" REST API on pull_request
+  # events (default token); without this it 403s, fails the `changes` job, and
+  # deadlocks the required checks that depend on it.
+  pull-requests: read
 
 # Quieter, faster dotnet invocations across every job.
 env:

@@ -8,6 +8,9 @@ on:
 
 permissions:
   contents: read
+  # Required by dorny/paths-filter on pull_request events (PR list-files REST
+  # API). Omitting it 403s the `changes` job and deadlocks the required check.
+  pull-requests: read
 
 env:
   DOTNET_NOLOGO: true
