@@ -26,6 +26,7 @@ you're using, then reach for the cross-cutting references.
 | File | What it covers |
 |---|---|
 | [`tool-reference.md`](./tool-reference.md) | Every MCP tool: parameters, returns, runtime requirements, examples |
+| [`authorization.md`](./authorization.md) | **Bearer scopes** — which scope each tool needs, default policy per transport, token config, and the `confirm=true` gate |
 | [`client-setup.md`](./client-setup.md) | Connecting to the server from the C# SDK, GUI MCP clients, and `curl` smoke tests |
 | [`local-docker-sidecar.md`](./local-docker-sidecar.md) | Reproducing the K8s sidecar topology locally with plain Docker (`--pid=container:` + shared `/tmp`) |
 | [`../deploy/k8s/README.md`](../deploy/k8s/README.md) | Sidecar topology for Kubernetes, including the required pod-level settings |

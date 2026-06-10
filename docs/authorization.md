@@ -1,0 +1,142 @@
+# Authorization (bearer scopes)
+
+How the **MCP server** (`dotnet-diagnostics-mcp`) decides which tools a caller may
+invoke. Every networked tool call is gated by a **bearer token** whose **scopes** are
+checked before the tool runs.
+
+> **Not affected:** the **CLI** (`dotnet-diagnostics-cli`) and the **BenchmarkDotNet
+> diagnoser** run in-process with no HTTP transport — there is no bearer and no scope
+> check. `--stdio` mode is likewise unscoped (the MCP client *is* the process owner).
+> Scopes only matter for the **HTTP** transport.
+
+## Scopes
+
+Scope names are kebab-case and **stable — never renamed**. Each is a distinct trust
+boundary. A tool declares its requirement with `[RequireScope]` / `[RequireAnyScope]`;
+startup fails fast if any `[McpServerTool]` is missing one.
+
+### Primary scopes
+
+| Scope | Grants | Representative tools |
+|---|---|---|
+| `read-counters` | Process discovery + aggregated counters (`/proc` reads, bounded numeric EventCounters). No per-event data, no ptrace. | `inspect_process` (all views), `collect_events(kind="counters")` |
+| `eventpipe` | EventPipe sessions + the handles their collectors mint. Exposes exception messages, allocation type names, activity/EventSource payloads. | `collect_events` (gc, exceptions, threadpool, contention, db, …), `collect_sample` (cpu / off_cpu / allocation), `query_snapshot` over those handles |
+| `heap-read` | Read-only heap walks (type graphs, retention chains, addresses). | `inspect_heap(source="dump")`; **`inspect_heap(source="live")` additionally requires `ptrace`** |
+| `ptrace` | Operations needing `CAP_SYS_PTRACE` (Linux) / debug privilege (Windows) — suspend + read another process's address space. | `collect_thread_snapshot`, `capture_method_bytes`, `inspect_heap(source="live")` (+`heap-read`), `collect_process_dump` (+`dump-write`) |
+| `dump-write` | Writes a full process dump (entire address space, zero redaction) to disk. **The single most dangerous scope.** Stacks on `ptrace`. | `collect_process_dump` (also needs `confirm=true` — see [below](#per-call-confirmation)) |
+| `investigation-export` | Read-only meta/planning tools + drilldown over already-collected handles. | `start_investigation`, `export_investigation_summary`, `compare_to_baseline`, `query_snapshot(view="call-tree")` |
+| `orchestrator-list` | Enumerate pods the orchestrator may see. Pure discovery. | `list_orchestrator(kind="pods")` |
+| `orchestrator-attach` | Mutating Kubernetes calls that create ephemeral debug containers. | `attach_to_pod`, `detach_from_pod` |
+| `azure-discovery` | Enumerate .NET workload candidates in an Azure subscription. | `discover_azure` |
+
+The unified dispatcher tools span two scopes and authorize with **any** of them:
+`collect_events` and `query_snapshot` accept `read-counters` **or** `eventpipe`;
+`list_orchestrator` accepts `orchestrator-list` **or** `orchestrator-attach`. The
+per-kind / per-view branch then tightens to the exact scope the requested operation
+needs.
+
+### Modifier scopes
+
+Modifier scopes are checked with **literal membership** (`HasExplicitScope`) — the `*`
+root pseudo-scope does **not** auto-grant them. An operator must layer each one on
+deliberately.
+
+| Modifier | Unlocks |
+|---|---|
+| `sensitive-heap-read` | Raw string contents / field-value previews (otherwise redacted) on heap + EventSource surfaces. |
+| `eventsource-any` | `collect_events(kind="event_source")` against non-allowlisted providers (`unsafeProvider=true`). |
+| `symbols-remote` | Remote symbol servers (`srv*http(s)://…`) outside the configured allowlist. |
+| `orchestrator-admin` | List / operate on investigation handles minted by **other** MCP sessions. |
+| `module-bytes-read` | `get_bytes` — stream raw PE / PDB / dump bytes out of the pod. Literal; gates the tool entirely. |
+
+### The `*` (root) pseudo-scope
+
+A token granted `*` resolves to the union of every **primary** scope (but **not** the
+modifier scopes above). Used by `--stdio` / loopback defaults and the legacy
+`MCP_BEARER_TOKEN` (see [Backward compatibility](#backward-compatibility)).
+
+## Default policy by transport
+
+| Transport | Default token resolution |
+|---|---|
+| **stdio** (`--stdio`) | Synthetic in-memory token with `*` scope. The MCP client is the process owner; no bearer ever crosses a network. |
+| **Loopback HTTP** (`127.0.0.1` / `[::1]`) | Configured `Auth:BearerTokens` if present, else legacy `MCP_BEARER_TOKEN` → `*`. Developer ergonomics; unreachable from outside the host. |
+| **Non-loopback HTTP** | `Auth:BearerTokens` is **required** — each entry must declare a non-empty scope set. Legacy `MCP_BEARER_TOKEN` is accepted but logs a deprecation `Warning`; a future release removes that fallback and refuses to start without scoped bearers. |
+
+## Bearer tokens (config)
+
+### `appsettings.json`
+
+```json
+{
+  "Auth": {
+    "BearerTokens": [
+      { "Name": "dashboard",          "Token": "8f5e0c1a…", "Scopes": ["read-counters"] },
+      { "Name": "oncall-investigator", "Token": "2c9447aa…", "Scopes": ["read-counters", "eventpipe", "heap-read", "investigation-export"] },
+      { "Name": "platform-ops",        "Token": "…",         "Scopes": ["*"] }
+    ]
+  }
+}
+```
+
+Env-var binder equivalent (ASP.NET Core rules — env overrides file):
+`Auth__BearerTokens__0__Name=dashboard`, `Auth__BearerTokens__0__Token=…`,
+`Auth__BearerTokens__0__Scopes__0=read-counters`, …
+
+### Helm `values.yaml`
+
+```yaml
+mcp:
+  bearerTokens:
+    - name: dashboard
+      valueFrom: { secretKeyRef: { name: mcp-bearer-tokens, key: dashboard } }
+      scopes: [read-counters]
+    - name: oncall-investigator
+      valueFrom: { secretKeyRef: { name: mcp-bearer-tokens, key: oncall } }
+      scopes: [read-counters, eventpipe, heap-read, investigation-export]
+    - name: platform-ops
+      valueFrom: { secretKeyRef: { name: mcp-bearer-tokens, key: platform-ops } }
+      scopes: ["*"]
+```
+
+The chart expands each entry to the `Auth__BearerTokens__<i>__*` env shape above, sourcing
+`Token` from the referenced Secret. Recommended Secret layout is a single multi-key
+`Opaque` Secret (`stringData: { dashboard: …, oncall: …, platform-ops: … }`); token
+*names* are non-sensitive and appear in logs, only values are secret. Cloud Run maps the
+same env shape via `--set-secrets` / `--set-env-vars`. See
+[`deploy/helm/README.md`](../deploy/helm/README.md) for the chart specifics.
+
+## Per-call confirmation
+
+`collect_process_dump` requires an explicit **`confirm=true`** parameter on top of its
+`dump-write` + `ptrace` scopes (defense in depth — a dump is irreversible and unbounded).
+Without it the tool returns a structured `{ "kind": "confirmation_required", targetPid,
+dumpType, outputDirectory }` envelope and writes nothing — no attach, no `createdump`.
+No other tool takes `confirm`: adding it to read-only tools would train callers to set it
+reflexively and destroy its signal.
+
+## Drilldown over handles
+
+`query_snapshot` reads from handles minted by a collector. The tool itself accepts
+`read-counters` **or** `eventpipe`, then **re-applies the exact scope the originating
+collector required** at runtime, keyed on the handle kind — so a handle minted under
+`eventpipe` still demands `eventpipe` at query time even though the tool entry is broader.
+
+On top of that, specific `(handle origin, view)` pairs require a **modifier** scope: e.g.
+the `retention-paths` view on either a live or a dump heap snapshot requires
+`sensitive-heap-read` (it can transitively expose managed-string contents). Reaching an
+investigation handle minted by a **different** MCP session requires `orchestrator-admin`.
+
+## Backward compatibility
+
+| Situation | Behaviour |
+|---|---|
+| Only `MCP_BEARER_TOKEN`, stdio / loopback | Resolves to a synthetic `{ Name: "legacy", Scopes: ["*"] }`. No warning. |
+| Only `MCP_BEARER_TOKEN`, non-loopback | Accepted but logs a deprecation `Warning`; a future release refuses it (use `Auth:BearerTokens`). |
+| Both `MCP_BEARER_TOKEN` and `Auth:BearerTokens` | The scoped registry wins; the legacy variable is ignored with a `Warning`. |
+
+Two content allowlists remain independent policies (a caller without the matching modifier
+scope can still use allowlisted entries): `Diagnostics:EventSourceAllowlist` (vs
+`eventsource-any`) and `Diagnostics:SymbolServerAllowlist` (vs `symbols-remote`). The old
+deployment-wide `Diagnostics:AllowSensitiveHeapValues` flag is superseded by the
+`sensitive-heap-read` scope.
