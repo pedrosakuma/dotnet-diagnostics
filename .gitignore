@@ -20,6 +20,11 @@ coverage/
 *.dmp
 artifacts/
 
+# linux-crash-repro: built LD_PRELOAD shim + its capture outputs (CI-only)
+tools/linux-crash-repro/*.so
+mmaptrace.log
+mmaptrace.log.gz
+
 # BenchmarkDotNet output (results, logs, captured diagnostics)
 BenchmarkDotNet.Artifacts/
 
