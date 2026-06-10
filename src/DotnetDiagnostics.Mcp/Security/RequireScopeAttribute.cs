@@ -4,7 +4,7 @@ namespace DotnetDiagnostics.Mcp.Security;
 
 /// <summary>
 /// Declares the per-tool authorization scopes required to invoke a method decorated with
-/// <c>[ModelContextProtocol.Server.McpServerTool]</c>. RFC 0001 §2 taxonomy is enforced by
+/// <c>[ModelContextProtocol.Server.McpServerTool]</c>. docs/authorization.md#scopes taxonomy is enforced by
 /// the <see cref="ToolScopeAuthorizationFilter"/> at MCP CallTool dispatch time.
 /// </summary>
 /// <remarks>
@@ -15,7 +15,7 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// <c>dump-write</c>; <c>inspect_live_heap</c> stacks <c>heap-read</c> and <c>ptrace</c>.</para>
 /// <para>For tools whose handle can be minted under multiple originating scopes (e.g.
 /// <c>query_collection</c> reads handles from both <c>read-counters</c> and
-/// <c>eventpipe</c> collectors per RFC §2.12), use <see cref="RequireAnyScopeAttribute"/>
+/// <c>eventpipe</c> collectors per docs/authorization.md#drilldown-over-handles), use <see cref="RequireAnyScopeAttribute"/>
 /// instead.</para>
 /// </remarks>
 [AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
@@ -47,15 +47,15 @@ public sealed class RequireScopeAttribute : Attribute
 /// Like <see cref="RequireScopeAttribute"/> but with <b>OR</b> semantics: the principal
 /// satisfies the gate iff it holds <i>at least one</i> listed scope. Used by drilldown
 /// tools whose backing handle could have been minted by collectors with different
-/// scopes (RFC §2.12 handle-ownership rule, simplified for B5.2 where the handle store
+/// scopes (docs/authorization.md#drilldown-over-handles handle-ownership rule, simplified for B5.2 where the handle store
 /// does not yet record per-handle <c>RequiredScopes</c>).
 /// </summary>
 /// <remarks>
 /// Example: <c>query_collection</c> drills into a handle minted by either
 /// <c>snapshot_counters</c> (<c>read-counters</c>) or any of the <c>collect_*</c>
 /// EventPipe tools (<c>eventpipe</c>). The attribute lists both scopes; the call is
-/// authorized when the principal holds either. A future PR (tracked under §2.12 of the
-/// RFC) will tighten this to an exact per-handle <c>RequiredScopes</c> check.
+/// authorized when the principal holds either. A future PR will tighten this to an
+/// exact per-handle <c>RequiredScopes</c> check.
 /// </remarks>
 [AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
 public sealed class RequireAnyScopeAttribute : Attribute

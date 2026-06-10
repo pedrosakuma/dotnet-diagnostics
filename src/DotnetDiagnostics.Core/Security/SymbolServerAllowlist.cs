@@ -87,7 +87,7 @@ public sealed class SymbolServerAllowlist
     /// remote <c>http(s)</c> URL. Substring-matching <c>"http://"</c> against
     /// the raw path is intentionally avoided so a local cache directory whose
     /// name happens to contain that token does not produce a false positive
-    /// (B5.4 / RFC 0001 §7.3 deprecation telemetry).
+    /// (B5.4 / docs/authorization.md#backward-compatibility deprecation telemetry).
     /// </summary>
     public static bool ContainsRemoteUrl(string? symbolPath)
     {

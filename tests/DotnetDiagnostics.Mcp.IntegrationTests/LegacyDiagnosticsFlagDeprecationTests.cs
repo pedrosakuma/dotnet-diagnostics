@@ -12,7 +12,7 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
 /// <summary>
 /// B5.4 — every legacy <c>Diagnostics:Allow*</c> path that unlocks a sensitive
-/// operation while the matching RFC 0001 modifier scope is absent on the bearer
+/// operation while the matching docs/authorization.md modifier scope is absent on the bearer
 /// principal must fire a once-per-process deprecation warning. The allowlist
 /// policies themselves remain in place; only the implicit deployment-wide
 /// "every caller can do X" pattern is being deprecated.
@@ -158,7 +158,7 @@ public sealed class LegacyDiagnosticsFlagDeprecationTests
     {
         // unsafeProvider path while the principal lacks 'eventsource-any' →
         // the deprecating flag that unlocked the call is AllowSensitiveHeapValues,
-        // so the *sensitive-heap-read* warning is the one that fires (per RFC §7.3
+        // so the *sensitive-heap-read* warning is the one that fires (per docs/authorization.md#backward-compatibility
         // — that flag is the only one truly going away).
         var (provider, deprecation) = NewDeprecation();
         var collector = NewCollector();

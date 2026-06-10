@@ -5,7 +5,7 @@ namespace DotnetDiagnostics.Mcp.Hosting;
 
 /// <summary>
 /// H9/B1 startup helpers. Centralised so the non-loopback bind detection used by the
-/// bearer-auth bind guard (RFC 0001 §5 + Program.cs) is unit-testable and lives in
+/// bearer-auth bind guard (docs/authorization.md#default-policy-by-transport + Program.cs) is unit-testable and lives in
 /// one place.
 /// </summary>
 internal static class BindingInspector

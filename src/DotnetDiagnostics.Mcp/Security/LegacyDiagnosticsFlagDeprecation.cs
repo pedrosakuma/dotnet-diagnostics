@@ -7,14 +7,14 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// <summary>
 /// Emits a once-per-process <c>Warning</c>-level log the first time each of the legacy
 /// B4 diagnostics gates is the mechanism that unlocks a sensitive operation while the
-/// matching RFC 0001 modifier scope is absent on the bearer principal. Lets operators
+/// matching docs/authorization.md modifier scope is absent on the bearer principal. Lets operators
 /// see — without spam — that they are still depending on a deployment-wide flag /
 /// allowlist for caller-level distinction that is now better expressed with a scoped
 /// bearer token.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Scope-first semantics (B5.4 / RFC 0001 §7.3): the predicate the call site evaluates
+/// Scope-first semantics (B5.4 / docs/authorization.md#backward-compatibility): the predicate the call site evaluates
 /// is now <c>principal.HasExplicitScope("&lt;scope&gt;") OR &lt;legacy-flag-or-allowlist-allows&gt;</c>.
 /// Functionally identical to the B5.2 "either path is sufficient" behaviour; this class
 /// only adds the deprecation telemetry on the legacy branch.
@@ -23,7 +23,7 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// The <c>AllowSensitiveHeapValues</c> boolean is the only flag truly going away in a
 /// future release. The <c>EventSourceAllowlist</c> and <c>SymbolServerAllowlist</c>
 /// policies are <b>retained</b> as fallback value-shaping policies for tokens lacking
-/// the modifier scope (RFC 0001 §2.3 / §2.5). What the warnings deprecate is the
+/// the modifier scope (docs/authorization.md#scopes). What the warnings deprecate is the
 /// pattern of relying on a single deployment-wide setting to mean "every caller can
 /// do X" — that responsibility moves to scoped bearer tokens.
 /// </para>

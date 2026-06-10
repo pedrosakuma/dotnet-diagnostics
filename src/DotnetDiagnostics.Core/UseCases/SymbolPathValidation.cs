@@ -7,7 +7,7 @@ namespace DotnetDiagnostics.Core.UseCases;
 /// Host-neutral validation of a caller-supplied <c>symbolPath</c> against the configured
 /// <see cref="SymbolServerAllowlist"/>. Extracted from the MCP Server in #288 so the standalone CLI
 /// and the MCP tools share one source of truth. The transport-specific bypass decision (does the
-/// caller hold the RFC 0001 <c>symbols-remote</c> scope?) is hoisted into a precomputed
+/// caller hold the docs/authorization.md <c>symbols-remote</c> scope?) is hoisted into a precomputed
 /// <c>principalAllowsSymbolsRemote</c> flag, and the legacy deprecation telemetry is routed through
 /// the <see cref="ISymbolServerDeprecationSink"/> seam.
 /// </summary>
@@ -33,7 +33,7 @@ public static class SymbolPathValidation
         var validation = allowlist.Validate(symbolPath);
         if (validation.IsAllowed)
         {
-            // RFC 0001 §7.3: only emit when a remote host was actually accepted (not for
+            // docs/authorization.md#backward-compatibility: only emit when a remote host was actually accepted (not for
             // null / empty / pure local paths). Defers to SymbolServerAllowlist's own
             // tokenizer so a local cache directory whose name contains "http://" is not
             // a false positive.

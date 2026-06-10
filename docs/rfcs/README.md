@@ -7,4 +7,3 @@ accepted, the implementation work is broken into sub-issues that reference the R
 
 | # | Title | Tracking issue | Status |
 |---|---|---|---|
-| 0001 | [Per-tool authorization scopes](./0001-per-tool-authorization-scopes.md) | [#166](https://github.com/pedrosakuma/dotnet-diagnostics/issues/166) | Draft |

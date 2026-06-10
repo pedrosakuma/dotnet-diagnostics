@@ -25,7 +25,7 @@ public sealed class DiscoverAzureScopeTests
         method.Should().NotBeNull();
         var require = method!.GetCustomAttribute<RequireScopeAttribute>();
         require.Should().NotBeNull(
-            "every [McpServerTool] must declare a scope (RFC 0001 §2 / B5.2 coverage rule)");
+            "every [McpServerTool] must declare a scope (docs/authorization.md#scopes coverage rule)");
         require!.Scopes.Should().Equal("azure-discovery");
     }
 

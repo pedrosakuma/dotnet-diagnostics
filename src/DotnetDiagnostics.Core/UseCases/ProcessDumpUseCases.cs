@@ -6,7 +6,7 @@ using static DotnetDiagnostics.Core.UseCases.ProcessResolutionHelpers;
 namespace DotnetDiagnostics.Core.UseCases;
 
 /// <summary>
-/// Host-neutral process-dump use case (issue #288 PR3b). Owns the RFC 0001 §4 confirmation gate,
+/// Host-neutral process-dump use case (issue #288 PR3b). Owns the docs/authorization.md#per-call-confirmation confirmation gate,
 /// process resolution, attach guarding and the dump-write orchestration for <c>collect_process_dump</c>.
 /// Depends on Core abstractions only, so the MCP <c>collect_process_dump</c> tool and the standalone
 /// <c>dotnet-diagnostics dump</c> CLI share one behavior.
@@ -38,10 +38,10 @@ public static class ProcessDumpUseCases
     {
         if (!confirm)
         {
-            // RFC 0001 §4 / §8: confirmation-required is a misuse signal, not an attack.
+            // docs/authorization.md#per-call-confirmation: confirmation-required is a misuse signal, not an attack.
             // Log at Information level with the token name (never the bearer value), the
             // tool name and the reason as structured properties so audit consumers can
-            // filter on the RFC-mandated `tool` / `reason` fields.
+            // filter on the structured `tool` / `reason` audit fields.
             //
             // The confirmation gate runs BEFORE process-context resolution (#187 review):
             // ResolveContextAsync would otherwise open an EventPipe session via

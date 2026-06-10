@@ -60,7 +60,7 @@ internal static class DiagnosticServiceRegistration
         // small set of registrations that intentionally stay host-specific.
         services.AddDiagnosticCoreServices(securityOptions, configuredSymbolPath);
 
-        // B5.4 / RFC 0001 §7.3 — once-per-process deprecation warnings when a legacy
+        // B5.4 / docs/authorization.md#backward-compatibility — once-per-process deprecation warnings when a legacy
         // Diagnostics:Allow* flag is the path that unlocks a sensitive operation for a
         // principal lacking the matching modifier scope. Singleton so the once-flags
         // survive across requests. Server-owned (not a Core type).
@@ -207,7 +207,7 @@ internal static class DiagnosticServiceRegistration
                     ToolErrorSurfaceFilter.Create(
                         () => loggerFactoryAccessor()?.CreateLogger(typeof(ToolErrorSurfaceFilter).FullName!)));
 
-                // B5.2 / RFC 0001 §2 — per-tool authorization. Sits AFTER ToolErrorSurfaceFilter
+                // B5.2 / docs/authorization.md#scopes — per-tool authorization. Sits AFTER ToolErrorSurfaceFilter
                 // in the registration order, which means it runs BEFORE it in the dispatch
                 // pipeline (filters wrap last-in-first-out), so a forbidden envelope short-
                 // circuits before the surface filter and is returned verbatim. The scope index

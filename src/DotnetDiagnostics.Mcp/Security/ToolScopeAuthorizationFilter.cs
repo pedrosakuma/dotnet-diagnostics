@@ -7,7 +7,7 @@ namespace DotnetDiagnostics.Mcp.Security;
 
 /// <summary>
 /// MCP CallTool filter that enforces the <see cref="RequireScopeAttribute"/> /
-/// <see cref="RequireAnyScopeAttribute"/> taxonomy from RFC 0001 §2. Runs before the
+/// <see cref="RequireAnyScopeAttribute"/> taxonomy from docs/authorization.md#scopes Runs before the
 /// tool body; a scope miss short-circuits with a structured <c>"forbidden"</c> envelope
 /// (per MCP spec — return a tool error result, never throw at the SDK).
 /// </summary>
@@ -18,13 +18,13 @@ namespace DotnetDiagnostics.Mcp.Security;
 ///   in the index built at startup. Unknown tools deny (defense in depth).</description></item>
 ///   <item><description>Resolve the active principal via <see cref="IPrincipalAccessor"/>.
 ///   For HTTP, this is the principal stamped by <c>BearerTokenMiddleware</c>; for stdio
-///   it is the synthetic root principal (RFC §5).</description></item>
+///   it is the synthetic root principal (docs/authorization.md#default-policy-by-transport).</description></item>
 ///   <item><description>Check the principal against the requirement. Wildcard (<c>root</c>
 ///   / <c>*</c>) scopes satisfy every gate — preserves the legacy
 ///   <c>MCP_BEARER_TOKEN</c> behavior byte-for-byte.</description></item>
 /// </list>
 /// </para>
-/// <para>Audit logging (RFC §8) is per-tool: allow at Information, deny at Warning,
+/// <para>Audit logging is per-tool: allow at Information, deny at Warning,
 /// neither carries the presented bearer value.</para>
 /// </remarks>
 internal static class ToolScopeAuthorizationFilter

@@ -8,7 +8,7 @@ namespace DotnetDiagnostics.Mcp.Security;
 
 /// <summary>
 /// v1 <see cref="IPrincipalResolver"/> backed by an in-memory table parsed from the
-/// <c>Auth:BearerTokens</c> configuration section (canonical shape per RFC 0001 §3 / §6).
+/// <c>Auth:BearerTokens</c> configuration section (canonical shape per docs/authorization.md#bearer-tokens-config).
 /// </summary>
 /// <remarks>
 /// Construction is the only validation path: duplicates, empty fields, and missing scopes
@@ -47,7 +47,7 @@ internal sealed class BearerTokenRegistry : IPrincipalResolver
         // *within* a length class; different-length presentations short-circuit inside
         // the framework call but every registered token is still compared. This avoids
         // a timing oracle on slot position without claiming length-hiding semantics
-        // (acceptable trade-off documented in RFC 0001 §3.1).
+        // (acceptable trade-off documented in docs/authorization.md#bearer-tokens-config).
         foreach (var (tokenBytes, principal) in _entries)
         {
             var equal = CryptographicOperations.FixedTimeEquals(tokenBytes, presentedBytes);
@@ -62,7 +62,7 @@ internal sealed class BearerTokenRegistry : IPrincipalResolver
     }
 
     /// <summary>Builds a registry from <paramref name="configuration"/> plus the legacy
-    /// <c>MCP_BEARER_TOKEN</c> environment variable, honouring the RFC 0001 §7
+    /// <c>MCP_BEARER_TOKEN</c> environment variable, honouring the docs/authorization.md#backward-compatibility
     /// coexistence + back-compat rules:
     /// <list type="bullet">
     ///   <item>Scoped tokens win when both shapes are configured; the legacy var is

@@ -726,7 +726,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
                     ["processId"] = Environment.ProcessId,
                     ["dumpType"] = "Mini",
                     ["outputDirectory"] = relativeSub,
-                    // B5.6 / RFC 0001 §4: confirm=true is now required for the dump to actually be written.
+                    // B5.6 / docs/authorization.md#per-call-confirmation: confirm=true is now required for the dump to actually be written.
                     ["confirm"] = true,
                 },
                 cancellationToken: CancellationToken.None);
@@ -761,7 +761,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     [Fact]
     public async Task CollectProcessDump_WithoutConfirm_ReturnsConfirmationRequired_AndWritesNothing()
     {
-        // B5.6 / RFC 0001 §4: omitting confirm must return a structured preview envelope
+        // B5.6 / docs/authorization.md#per-call-confirmation: omitting confirm must return a structured preview envelope
         // and MUST NOT write anything to disk. The preview echoes back the resolved pid,
         // the dump type, and the requested output directory.
         await using var client = await ConnectAsync();

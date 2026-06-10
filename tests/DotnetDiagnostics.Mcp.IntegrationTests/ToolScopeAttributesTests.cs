@@ -219,7 +219,7 @@ public sealed class ToolScopeAuthorizationTests
     [Fact]
     public void HasExplicitScope_Does_Not_Honour_Wildcard()
     {
-        // Modifier-scope guards (RFC §2.3-§2.7) must NOT fire just because the principal
+        // Modifier-scope guards (docs/authorization.md#modifier-scopes) must NOT fire just because the principal
         // is root — sensitive-heap-read / symbols-remote / eventsource-any / orchestrator-admin
         // are explicit additive opt-ins by design.
         var root = With(BearerPrincipal.RootScope);

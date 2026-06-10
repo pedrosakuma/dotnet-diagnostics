@@ -2,7 +2,7 @@ namespace DotnetDiagnostics.Core.Security;
 
 /// <summary>
 /// Host-neutral seam for the once-per-process deprecation telemetry emitted when a legacy
-/// deployment-wide gate (rather than an RFC 0001 modifier scope) is the mechanism that unlocks a
+/// deployment-wide gate (rather than an docs/authorization.md modifier scope) is the mechanism that unlocks a
 /// sensitive EventSource capture. Extracted in #288 so the Core <c>collect</c> orchestration owns
 /// no transport/logging assumptions: the MCP Server adapts its
 /// <c>LegacyDiagnosticsFlagDeprecation</c> singleton onto this interface, while the standalone CLI

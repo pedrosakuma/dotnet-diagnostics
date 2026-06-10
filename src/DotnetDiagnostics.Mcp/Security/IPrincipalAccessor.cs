@@ -7,7 +7,7 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// over the HTTP transport (where the principal is stamped on
 /// <see cref="HttpContext.Items"/> by <c>BearerTokenMiddleware</c>) and the stdio
 /// transport (which has no HTTP context — the local client owns the process, so
-/// authorization degrades to "root scope" per RFC 0001 §5).
+/// authorization degrades to "root scope" per docs/authorization.md#default-policy-by-transport).
 /// </summary>
 public interface IPrincipalAccessor
 {
@@ -32,7 +32,7 @@ internal sealed class HttpContextPrincipalAccessor : IPrincipalAccessor
 
 /// <summary>Stdio-transport implementation: returns a synthetic root principal so every
 /// <c>[RequireScope]</c>-gated tool remains callable. The local MCP client owns the
-/// process lifecycle — there is no transport-level identity to project (RFC 0001 §5).</summary>
+/// process lifecycle — there is no transport-level identity to project (docs/authorization.md#default-policy-by-transport).</summary>
 internal sealed class StdioRootPrincipalAccessor : IPrincipalAccessor
 {
     public static readonly StdioRootPrincipalAccessor Instance = new();

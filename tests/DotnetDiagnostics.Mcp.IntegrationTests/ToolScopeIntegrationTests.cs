@@ -195,7 +195,7 @@ public sealed class ToolScopeIntegrationTests
     public async Task LegacyRootToken_Continues_To_Satisfy_Every_Scope()
     {
         // MCP_BEARER_TOKEN → synthesized 'legacy-root' principal with scope {"root"}.
-        // RFC 0001 §2.13 / B5.2: root wildcard must satisfy every per-tool [RequireScope]
+        // docs/authorization.md#scopes: root wildcard must satisfy every per-tool [RequireScope]
         // gate so existing deployments keep working byte-for-byte.
         Environment.SetEnvironmentVariable("MCP_BEARER_TOKEN", "legacy-root-secret-fff");
         try
@@ -244,7 +244,7 @@ public sealed class ToolScopeIntegrationTests
         {
             r.Level.Should().Be(LogLevel.Warning);
             r.Message.Should().NotContain("verysecret-do-not-log-ggg",
-                "bearer values must never appear in audit logs (RFC 0001 §8)");
+                "bearer values must never appear in audit logs (docs/authorization.md#bearer-tokens-config)");
         });
         // Belt-and-braces: scan the entire log buffer for the bearer string.
         logSink.Records.Should().NotContain(r => r.Message.Contains("verysecret-do-not-log-ggg", StringComparison.Ordinal));

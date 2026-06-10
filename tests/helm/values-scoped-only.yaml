@@ -1,4 +1,4 @@
-# Smoke fixture: scoped `bearerTokens` only (RFC 0001 §6).
+# Smoke fixture: scoped `bearerTokens` only (docs/authorization.md#bearer-tokens-config).
 # The legacy `bearerToken.value` is left at its public placeholder; the chart
 # must NOT render the legacy Secret nor the legacy MCP_BEARER_TOKEN env var.
 bearerTokens:
