@@ -27,9 +27,10 @@ you're using, then reach for the cross-cutting references.
 |---|---|
 | [`tool-reference.md`](./tool-reference.md) | Every MCP tool: parameters, returns, runtime requirements, examples |
 | [`authorization.md`](./authorization.md) | **Bearer scopes** — which scope each tool needs, default policy per transport, token config, and the `confirm=true` gate |
+| [`aot-coverage.md`](./aot-coverage.md) | NativeAOT capability matrix and limitations |
+| [`consumer-install.md`](./consumer-install.md) | Full install walkthrough (global tool, container, self-contained binary, Linux ptrace) |
 | [`client-setup.md`](./client-setup.md) | Connecting to the server from the C# SDK, GUI MCP clients, and `curl` smoke tests |
 | [`local-docker-sidecar.md`](./local-docker-sidecar.md) | Reproducing the K8s sidecar topology locally with plain Docker (`--pid=container:` + shared `/tmp`) |
-| [`../deploy/k8s/README.md`](../deploy/k8s/README.md) | Sidecar topology for Kubernetes, including the required pod-level settings |
 
 ### CLI (`dotnet-diagnostics-cli`)
 
@@ -43,8 +44,12 @@ you're using, then reach for the cross-cutting references.
 |---|---|
 | [`../src/DotnetDiagnostics.BenchmarkDotNet/README.md`](../src/DotnetDiagnostics.BenchmarkDotNet/README.md) | The in-process `[DiagnosticKind]` diagnoser — attach Core captures to a `[Benchmark]` |
 
-Planned but not yet written:
+### Deployment
 
-- `architecture.md` — high-level component map (Core vs Server, EventPipe pipeline)
-- `nativeaot-support.md` — capability matrix and limitations (currently summarized inside `tool-reference.md` and `investigation-playbooks.md`)
-
+| Platform | Guide |
+|---|---|
+| Kubernetes sidecar | [`../deploy/k8s/README.md`](../deploy/k8s/README.md) |
+| Helm chart | [`../deploy/helm/README.md`](../deploy/helm/README.md) |
+| Azure | [`../deploy/azure/README.md`](../deploy/azure/README.md) |
+| AWS | [`../deploy/aws/README.md`](../deploy/aws/README.md) |
+| GCP | [`../deploy/gcp/README.md`](../deploy/gcp/README.md) |
