@@ -8,6 +8,16 @@ on:
 
 permissions:
   contents: read
+  # dorny/paths-filter calls the PR "list files" REST API on pull_request
+  # events (default token); without this it 403s, fails the `changes` job, and
+  # deadlocks the required checks that depend on it.
+  pull-requests: read
+
+# Quieter, faster dotnet invocations across every job.
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
 
 # Cancel in-progress runs for the same PR when a new commit is pushed.
 # main is excluded so a fast-follow merge after a green PR still gets recorded.
@@ -16,8 +26,34 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Lightweight gate so docs-only changes don't pay for the full build/test
+  # matrix. The expensive jobs below still RUN (and report success) — they just
+  # skip their heavy steps when `code` is false. Skipping the whole job instead
+  # would leave the required status checks pending forever and deadlock branch
+  # protection. `code` is true whenever any non-markdown file changed.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        id: filter
+        with:
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+
   build-test:
     name: Build & Test (${{ matrix.os }})
+    needs: changes
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -25,10 +61,12 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        if: needs.changes.outputs.code == 'true'
         with:
           persist-credentials: false
 
       - name: Setup .NET 10
+        if: needs.changes.outputs.code == 'true'
         uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5
         with:
           global-json-file: global.json
@@ -37,6 +75,7 @@ jobs:
       # version manifest + every project file — any package add / version bump
       # invalidates correctly. Saves ~10-25s per job.
       - name: Cache NuGet packages
+        if: needs.changes.outputs.code == 'true'
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: ~/.nuget/packages
@@ -45,9 +84,11 @@ jobs:
             nuget-${{ runner.os }}-
 
       - name: Restore
+        if: needs.changes.outputs.code == 'true'
         run: dotnet restore
 
       - name: Build
+        if: needs.changes.outputs.code == 'true'
         run: dotnet build --no-restore --configuration Release
 
       # `--blame-hang-timeout 5m` aborts any single test that hangs longer than
@@ -75,6 +116,7 @@ jobs:
       # TestResults directory is preserved as TestResults.attempt1/ so the
       # crash dump survives upload.
       - name: Test (Core)
+        if: needs.changes.outputs.code == 'true'
         run: scripts/ci-test-with-retry.sh core-test-results.trx -- dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=core-test-results.trx" --results-directory TestResults
 
       # CLI tests are lightweight (parser/exit-code units + a `processes --json` smoke and the
@@ -82,26 +124,42 @@ jobs:
       # plain step. Kept separate from the live-process suites to preserve the no-cross-assembly-
       # parallelism invariant documented above.
       - name: Test (CLI)
+        if: needs.changes.outputs.code == 'true'
         run: dotnet test tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj --no-build --configuration Release --logger "trx;LogFileName=cli-test-results.trx" --results-directory TestResults
 
       # Pack smoke (issue #288): `dotnet build` + the CLI unit tests do NOT exercise the
       # PackAsTool metadata, README packing, or tool-manifest layout — those only fail at
       # release/tag time otherwise. Packing here catches a broken tool package on every PR.
       - name: Pack smoke (CLI tool)
+        if: needs.changes.outputs.code == 'true'
         run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --configuration Release -o artifacts/nupkg-smoke
 
       - name: Test (Server integration)
+        if: needs.changes.outputs.code == 'true'
         run: scripts/ci-test-with-retry.sh server-test-results.trx -- dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --filter "Category!=KindIntegration" --logger "trx;LogFileName=server-test-results.trx" --results-directory TestResults
 
-      - name: Upload test results
-        if: always()
+      # TRX result files are tiny — always keep them when tests ran. Crash dumps
+      # (full process dumps from `--blame-crash`, hundreds of MB) are uploaded
+      # only on failure: on a green run they used to add ~2min of upload for an
+      # artifact nobody reads. The #147 phantom-crash investigations have their
+      # own dedicated workflows (linux-crash-repro*.yml).
+      - name: Upload test results (TRX)
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-results-${{ matrix.os }}
           path: |
             **/TestResults/*.trx
-            **/TestResults/**/*.dmp
             **/TestResults.attempt1/*.trx
+          if-no-files-found: ignore
+
+      - name: Upload crash dumps
+        if: ${{ failure() && needs.changes.outputs.code == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: crash-dumps-${{ matrix.os }}
+          path: |
+            **/TestResults/**/*.dmp
             **/TestResults.attempt1/**/*.dmp
           if-no-files-found: ignore
 
@@ -110,22 +168,28 @@ jobs:
   # both set together during migration). Tiny job — `helm template` + a few
   # greps — kept separate from the .NET matrix so it doesn't block the slow
   # live-process tests above and so a Helm-only regression has an obvious
-  # owner in the checks list.
+  # owner in the checks list. Skips its steps on docs-only PRs (but still runs
+  # and reports success so the required check is satisfied).
   helm-render-smoke:
     name: Helm render smoke (B5.5)
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        if: needs.changes.outputs.code == 'true'
         with:
           persist-credentials: false
 
       - name: Set up Helm
+        if: needs.changes.outputs.code == 'true'
         uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
         with:
           version: v3.16.3
 
       - name: helm lint (default values)
+        if: needs.changes.outputs.code == 'true'
         run: helm lint deploy/helm/dotnet-diagnostics-orchestrator
 
       - name: helm render smoke (legacy + scoped + both)
+        if: needs.changes.outputs.code == 'true'
         run: tests/helm/render-smoke.sh

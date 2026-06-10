@@ -69,6 +69,20 @@ sets `DOTNET_DBG_MCP_KIND_TEST=1` plus its companion env vars. The standard
 `ci.yml` server-integration leg filters `Category!=KindIntegration` so it
 never appears as a misleading "Passed" no-op there.
 
+**CI docs-only fast path — gate STEPS, never the job.** Branch protection
+requires four contexts: `Build & Test (ubuntu-latest)`, `Build & Test
+(windows-latest)`, `Kind Integration (ubuntu-latest)`, `Helm render smoke
+(B5.5)`. A `changes` job (`dorny/paths-filter`, `code` = any non-`*.md` file
+changed) lets docs-only PRs skip the expensive work — but each heavy job still
+**runs** and gates its individual steps on `needs.changes.outputs.code == 'true'`.
+Do **not** put the `if:` on the job (or use `paths-ignore` at the workflow
+level): a *skipped* required job never reports its context and deadlocks the PR
+in "Expected — Waiting" forever. A job whose `needs` succeeded but whose steps
+all skip still reports **success**, which is what satisfies the required check.
+The Kind workflow additionally caches Docker layers via `type=gha`; GHA cache is
+branch-scoped (PRs read `main`'s cache, write their own). Crash dumps upload only
+on failure (`if: ${{ failure() && … }}`); TRX always.
+
 **Bearer token.** The server reads `MCP_BEARER_TOKEN` from the environment. If unset, it
 generates an ephemeral 32-byte hex token at startup and logs it as a warning — there is no
 hard-coded default. The local docker walkthroughs explicitly pass `MCP_BEARER_TOKEN=dev-token`.
