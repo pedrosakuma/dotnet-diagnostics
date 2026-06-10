@@ -53,11 +53,14 @@ caller→callee call tree is retained behind the envelope's drill-down handle. S
 generic-instantiation resolution are disabled in-process (no PDB/SourceLink I/O, no ClrMD attach).
 
 The `allocation` kind runs the EventPipe **allocation sampler** (`GCAllocationTick`) and attributes
-allocated bytes **per managed type** (top-N by bytes and by event count, SOH vs LOH), with the
-merged allocation call-site tree behind the handle. It is the per-type complement to
-`MemoryDiagnoser`'s `Allocated` column — *which* types, not just how many bytes. On NativeAOT the
-runtime emits the event without a `TypeName`, so everything rolls up under `<unknown>` (flagged in
-the summary).
+allocated bytes **per managed type** (top-N by bytes and by event count, SOH vs LOH) **and per
+call site** (`TopBySite` — the leaf frame that allocated, byte-weighted, with a `MethodIdentity`
+for the assembly-mcp handoff), with the full merged allocation call-site tree behind the handle. It
+is the per-type *and per-origin* complement to `MemoryDiagnoser`'s `Allocated` column — *which*
+types and *where* they came from, not just how many bytes. The headline reports the top type and
+the top site (e.g. `Top site: System.Private.CoreLib!System.String.Ctor(wchar,int32) (… bytes)`).
+On NativeAOT the runtime emits the event without a `TypeName`, so types roll up under `<unknown>`
+(flagged in the summary); drill the call-tree handle for native allocation sites.
 
 > **Does the diagnostic count as allocation?** No. The sampler is *observe-only* — it enables a
 > native EventPipe keyword and reads events the target runtime already emits; it performs **no
