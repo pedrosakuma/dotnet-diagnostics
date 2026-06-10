@@ -1224,6 +1224,14 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             result.Artifact.Root.Children.Should().NotBeEmpty(
                 "the allocation call-tree artifact must capture at least one stack when events were observed");
 
+            // Per-call-site (origin) attribution: the leaf-frame byte rollup must be populated and
+            // at least one site must carry a MethodIdentity for the assembly-mcp handoff.
+            result.Summary.TopBySite.Should().NotBeEmpty(
+                "allocation origin must be attributed to leaf call sites when stacks were captured");
+            result.Summary.TopBySite.Should().Contain(
+                s => s.Identity != null && s.Identity.ModuleVersionId != null && s.Identity.MetadataToken != null,
+                "at least one allocation site must surface a MethodIdentity-backed frame");
+
             var stamped = CallTreeIdentityProjector.Stamp(result.Artifact.Root, result.Artifact.MethodIdentities);
             Flatten(stamped)
                 .Any(node => node.Identity is { ModuleVersionId: not null, MetadataToken: not null })

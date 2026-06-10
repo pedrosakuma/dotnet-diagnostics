@@ -21,6 +21,21 @@ public sealed record AllocatedType(
     TypeIdentity? Identity = null);
 
 /// <summary>
+/// A single allocation <em>call site</em> — the leaf (innermost) frame of the sampled
+/// allocation stack — with the bytes and event count attributed to it. This is the byte-weighted
+/// allocation analogue of CPU <see cref="Hotspot"/> exclusive (self) cost: it answers
+/// <em>"which code path allocated the most"</em>, complementing <see cref="AllocatedType"/>'s
+/// <em>"what type was allocated"</em>. Attribution is leaf-exact; the full root→leaf path remains
+/// available in the call-tree artifact behind the sample handle.
+/// </summary>
+public sealed record AllocationSite(
+    SampledFrame Frame,
+    long TotalBytes,
+    long EventCount,
+    HeapKind DominantKind,
+    DotnetDiagnostics.Core.Memory.MethodIdentity? Identity = null);
+
+/// <summary>
 /// Summary of an allocation sampling pass: top-N types by allocated bytes and by event count,
 /// plus totals for the entire window.
 /// </summary>
@@ -39,7 +54,17 @@ public sealed record AllocationSample(
     long TotalEvents,
     long TotalBytes,
     IReadOnlyList<AllocatedType> TopByBytes,
-    IReadOnlyList<AllocatedType> TopByCount);
+    IReadOnlyList<AllocatedType> TopByCount)
+{
+    /// <summary>
+    /// Top allocation call sites by attributed bytes — the <em>origin</em> of the allocations,
+    /// not just their type. Each entry is the leaf (innermost) frame of a sampled allocation stack
+    /// with its bytes/events; the byte-weighted analogue of CPU exclusive cost. Empty when no
+    /// allocation stacks were captured (e.g. NativeAOT native-only frames may still resolve to
+    /// addresses). For the full root→leaf path, drill into the call-tree artifact via the handle.
+    /// </summary>
+    public IReadOnlyList<AllocationSite> TopBySite { get; init; } = Array.Empty<AllocationSite>();
+}
 
 /// <summary>
 /// Combined result of an allocation sampling pass: the compact <see cref="AllocationSample"/>

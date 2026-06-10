@@ -145,6 +145,9 @@ public sealed class EventPipeAllocationSampler
             // Per-type byte/event accumulators.
             var byType = new Dictionary<string, TypeAccumulator>(StringComparer.Ordinal);
 
+            // Per-call-site (leaf frame) byte/event accumulators — the allocation "origin".
+            var bySite = new Dictionary<string, SiteAccumulator>(StringComparer.Ordinal);
+
             // Merged allocation call tree (all types combined, weighted by byte amount).
             var rootBuilder = new CallTreeBuilder();
             var modules = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -222,6 +225,15 @@ public sealed class EventPipeAllocationSampler
                     if (stackFrames.Count > 0)
                     {
                         rootBuilder.AddStack(stackFrames, stackFrames[^1].Key);
+
+                        // Attribute the bytes to the leaf (innermost) frame — the allocation origin.
+                        var leaf = stackFrames[^1];
+                        if (!bySite.TryGetValue(leaf.Key, out var siteAcc))
+                        {
+                            siteAcc = new SiteAccumulator(leaf.Module, leaf.Display);
+                            bySite[leaf.Key] = siteAcc;
+                        }
+                        siteAcc.Add(bytes, kind);
                     }
                 }
             }
@@ -247,7 +259,20 @@ public sealed class EventPipeAllocationSampler
 
             var identities = BuildMethodIdentities(ranked, modules, traceCodeAddressByFrameKey);
 
-            var summary = new AllocationSample(pid, startedAt, duration, totalEvents, totalBytes, topByBytes, topByCount);
+            var topBySite = bySite.Values
+                .OrderByDescending(s => s.TotalBytes)
+                .Take(topN)
+                .Select(s =>
+                {
+                    identities.TryGetValue(new SymbolRef(s.Module, s.Display), out var identity);
+                    return s.ToRecord(identity);
+                })
+                .ToList();
+
+            var summary = new AllocationSample(pid, startedAt, duration, totalEvents, totalBytes, topByBytes, topByCount)
+            {
+                TopBySite = topBySite,
+            };
             var artifact = new CpuSampleTraceArtifact(
                 pid, startedAt, duration, totalEvents,
                 rootBuilder.Build(),
@@ -366,5 +391,38 @@ public sealed class EventPipeAllocationSampler
                 _eventCount,
                 _largeCount > _smallCount ? HeapKind.Large : HeapKind.Small,
                 new TypeIdentity(TypeName));
+    }
+
+    private sealed class SiteAccumulator
+    {
+        private long _totalBytes;
+        private long _eventCount;
+        private long _smallCount;
+        private long _largeCount;
+
+        public SiteAccumulator(string module, string display)
+        {
+            Module = module;
+            Display = display;
+        }
+
+        public string Module { get; }
+        public string Display { get; }
+        public long TotalBytes => _totalBytes;
+
+        public void Add(long bytes, HeapKind kind)
+        {
+            _totalBytes += bytes;
+            _eventCount++;
+            if (kind == HeapKind.Large) _largeCount++; else _smallCount++;
+        }
+
+        public AllocationSite ToRecord(MethodIdentity? identity)
+            => new(
+                new SampledFrame(Module, Display),
+                _totalBytes,
+                _eventCount,
+                _largeCount > _smallCount ? HeapKind.Large : HeapKind.Small,
+                identity);
     }
 }

@@ -326,6 +326,15 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
                     "but TypeName was empty for all events (expected on NativeAOT). Drill into call sites via the call-tree handle."
                 : $"Captured {sample.TotalEvents} allocation event(s) ({sample.TotalBytes:N0} bytes) over {durationSeconds}s across {sample.TopByBytes.Count} type(s). " +
                     $"Top by bytes: {top.TypeName} ({top.TotalBytes:N0} bytes, {top.EventCount} event(s), {top.DominantKind} heap).";
+
+            if (sample.TopBySite.Count > 0)
+            {
+                var site = sample.TopBySite[0];
+                var where = string.IsNullOrEmpty(site.Frame.Module)
+                    ? site.Frame.Method
+                    : $"{site.Frame.Module}!{site.Frame.Method}";
+                headline += $" Top site: {where} ({site.TotalBytes:N0} bytes, {site.EventCount} event(s)).";
+            }
         }
 
         return coLocated

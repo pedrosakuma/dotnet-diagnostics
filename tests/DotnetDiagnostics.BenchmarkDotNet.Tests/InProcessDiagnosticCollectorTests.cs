@@ -148,6 +148,37 @@ public class InProcessDiagnosticCollectorTests
     }
 
     [Fact]
+    public void BuildAllocationSummary_WithCallSites_ReportsTopOrigin()
+    {
+        var sample = new AllocationSample(
+            ProcessId: 1234,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(5),
+            TotalEvents: 120,
+            TotalBytes: 4_200_000,
+            TopByBytes: new[]
+            {
+                new AllocatedType("System.String", TotalBytes: 1_800_000, EventCount: 64, DominantKind: HeapKind.Small),
+            },
+            TopByCount: Array.Empty<AllocatedType>())
+        {
+            TopBySite = new[]
+            {
+                new AllocationSite(
+                    new SampledFrame("MyApp", "MyApp.Workload.Churn()"),
+                    TotalBytes: 1_700_000,
+                    EventCount: 60,
+                    DominantKind: HeapKind.Small),
+            },
+        };
+
+        var summary = InProcessDiagnosticCollector.BuildAllocationSummary(sample, durationSeconds: 5, coLocated: false);
+
+        summary.Should().Contain("Top site: MyApp!MyApp.Workload.Churn()");
+        summary.Should().Contain("1,700,000 bytes");
+    }
+
+    [Fact]
     public void BuildAllocationSummary_CoLocated_FlagsMeasurementNotIsolated()
     {
         var sample = new AllocationSample(
