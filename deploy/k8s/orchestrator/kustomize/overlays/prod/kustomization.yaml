@@ -7,7 +7,7 @@ configMapGenerator:
   - name: orchestrator-settings
     literals:
       - targetNamespace=diagnosticsmcp-prod
-      - orchestratorImage=ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:v0.1.0
+      - orchestratorImage=ghcr.io/pedrosakuma/dotnet-diagnostics:v0.1.0
 secretGenerator:
   - name: dotnet-diagnostics-orchestrator-bearer
     literals:

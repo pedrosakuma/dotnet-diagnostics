@@ -37,7 +37,7 @@ For Kubernetes (AKS or any cluster), use the generic recipes under
    ```
 3. **Container images reachable by Azure**:
    - The diagnostic sidecar image: published as
-     `ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:0.3.1` (or build your own via
+     `ghcr.io/pedrosakuma/dotnet-diagnostics:0.3.1` (or build your own via
      `docker build -f deploy/Dockerfile .` and push to your registry).
    - Your application image, built however you build today.
    - If either lives in a private registry (ACR, GHCR, etc.) you'll need to
@@ -112,7 +112,7 @@ az deployment group create \
       name=diag-demo \
       environmentId=$ENV_ID \
       appImage=$APP_IMAGE \
-      diagImage=ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:0.3.1 \
+      diagImage=ghcr.io/pedrosakuma/dotnet-diagnostics:0.3.1 \
       diagBearerToken=$DIAG_TOKEN
 ```
 
@@ -169,7 +169,7 @@ az deployment group create \
   --parameters \
       siteName=diag-demo-app \
       appImage=$APP_IMAGE \
-      diagImage=ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:0.3.1 \
+      diagImage=ghcr.io/pedrosakuma/dotnet-diagnostics:0.3.1 \
       diagBearerToken=$DIAG_TOKEN
 ```
 
@@ -207,7 +207,7 @@ az group delete -n diag-rg -y
 ## Production: pin to a digest
 
 The defaults above use a released version tag
-(`ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:0.3.1`) rather than `:latest`, so a
+(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.3.1`) rather than `:latest`, so a
 new upstream push cannot silently re-deploy under your stack. For production
 workloads go one step further and pin to a **content-addressable digest** so the
 exact image bytes are immutable across replicas, rollbacks, and pull retries:
@@ -215,12 +215,12 @@ exact image bytes are immutable across replicas, rollbacks, and pull retries:
 ```bash
 # Resolve the current digest for the version tag you trust:
 docker buildx imagetools inspect \
-  ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:0.3.1 \
+  ghcr.io/pedrosakuma/dotnet-diagnostics:0.3.1 \
   --format '{{json .Manifest}}' | jq -r .digest
 # -> sha256:...
 
 # Use the digest form in your parameters / Bicep / service.yaml / template:
-ghcr.io/pedrosakuma/dotnet-diagnostics-mcp@sha256:<digest>
+ghcr.io/pedrosakuma/dotnet-diagnostics@sha256:<digest>
 ```
 
 Mirror the digest into your private registry (Artifact Registry, ECR, ACR) for

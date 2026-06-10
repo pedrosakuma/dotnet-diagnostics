@@ -75,7 +75,7 @@ dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 # Container (no SDK needed)
 docker run -d -p 127.0.0.1:8787:8080 \
   -e MCP_BEARER_TOKEN=$(openssl rand -hex 32) \
-  ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:latest
+  ghcr.io/pedrosakuma/dotnet-diagnostics:latest
 
 # Self-contained binary — see Releases page
 ```
