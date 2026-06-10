@@ -526,7 +526,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             activity.ParentId == outer.Id);
     }
 
-    [Fact(Skip = "Quarantined: crashes ubuntu-latest test host (EventPipe SampleProfiler). Tracked in #147.")]
+    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
     public async Task CpuSampler_ProducesHotspots()
     {
         EnsureSampleRunning();
@@ -543,7 +543,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         result.Artifact.Root.Children.Should().NotBeEmpty("the call-tree artifact must capture at least one stack");
     }
 
-    [Fact(Skip = "Quarantined: crashes ubuntu-latest test host (EventPipe SampleProfiler). Tracked in #147.")]
+    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
     public async Task CpuSampler_ResolvesSourceLines_WhenEnabled()
     {
         EnsureSampleRunning();
@@ -565,7 +565,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         result.Artifact.ResolvedSources.Should().NotBeNull();
     }
 
-    [Fact(Skip = "Quarantined: crashes ubuntu-latest test host (EventPipe SampleProfiler). Tracked in #147.")]
+    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
     public async Task CpuSampler_EmitsMethodIdentities_ForUserCode()
     {
         EnsureSampleRunning();
