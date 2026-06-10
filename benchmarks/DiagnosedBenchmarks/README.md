@@ -29,6 +29,14 @@ public long GcChurn() { /* allocation churn */ }
 [Benchmark]
 [DiagnosticKind("contention", durationSeconds: 5)]
 public long LockStorm() { /* lock storm */ }
+
+[Benchmark]
+[DiagnosticKind("cpu", durationSeconds: 5)]
+public long CpuHotPath() { /* tight numeric loop — per-frame self/inclusive cost */ }
+
+[Benchmark]
+[DiagnosticKind("allocation", durationSeconds: 5)]
+public long AllocChurn() { /* per-type allocation churn — bytes by managed type */ }
 ```
 
 The [`DiagnosedConfig`](DiagnosedConfig.cs) pairs the diagnoser with the **native**
@@ -79,7 +87,7 @@ This pattern **diagnoses** benchmarks; it does not produce publication-grade tim
 | File | Role |
 | --- | --- |
 | `DiagnosedConfig.cs` | Monitoring job + the diagnoser + native `MemoryDiagnoser`. |
-| `WorkloadBenchmarks.cs` | `GcChurn` and `LockStorm` diagnosis fixtures. |
+| `WorkloadBenchmarks.cs` | `GcChurn`, `LockStorm`, `CpuHotPath`, and `AllocChurn` diagnosis fixtures. |
 | `Program.cs` | `BenchmarkSwitcher` entry point. |
 
 The diagnoser, `[DiagnosticKind]` attribute, and the offenders report exporter all live in the
