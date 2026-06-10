@@ -8,7 +8,7 @@ public class InProcessDiagnosticCollectorTests
 {
     private static readonly string[] ExpectedKinds =
     {
-        "counters", "exceptions", "gc", "cpu", "datas", "catalog",
+        "counters", "exceptions", "gc", "cpu", "allocation", "datas", "catalog",
         "activities", "logs", "jit", "threadpool", "contention", "db",
     };
 
@@ -23,6 +23,7 @@ public class InProcessDiagnosticCollectorTests
     [Theory]
     [InlineData("gc", true)]
     [InlineData("cpu", true)]
+    [InlineData("allocation", true)]
     [InlineData("contention", true)]
     [InlineData("event_source", false)]
     [InlineData("nonsense", false)]
@@ -118,5 +119,90 @@ public class InProcessDiagnosticCollectorTests
         var summary = InProcessDiagnosticCollector.BuildCpuSummary(sample, root: null, durationSeconds: 5);
 
         summary.Should().Contain("no method aggregation");
+    }
+
+    [Fact]
+    public void BuildAllocationSummary_ReportsTopTypeByBytes()
+    {
+        var sample = new AllocationSample(
+            ProcessId: 1234,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(5),
+            TotalEvents: 120,
+            TotalBytes: 4_200_000,
+            TopByBytes: new[]
+            {
+                new AllocatedType("System.String", TotalBytes: 1_800_000, EventCount: 64, DominantKind: HeapKind.Small),
+                new AllocatedType("System.Byte[]", TotalBytes: 900_000, EventCount: 20, DominantKind: HeapKind.Large),
+            },
+            TopByCount: Array.Empty<AllocatedType>());
+
+        var summary = InProcessDiagnosticCollector.BuildAllocationSummary(sample, durationSeconds: 5, coLocated: false);
+
+        summary.Should().Contain("120 allocation event(s)");
+        summary.Should().Contain("4,200,000 bytes");
+        summary.Should().Contain("System.String");
+        summary.Should().Contain("1,800,000 bytes");
+        summary.Should().Contain("Small heap");
+        summary.Should().NotContain("in-process toolchain");
+    }
+
+    [Fact]
+    public void BuildAllocationSummary_CoLocated_FlagsMeasurementNotIsolated()
+    {
+        var sample = new AllocationSample(
+            ProcessId: 1234,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(5),
+            TotalEvents: 10,
+            TotalBytes: 50_000,
+            TopByBytes: new[]
+            {
+                new AllocatedType("System.String", TotalBytes: 50_000, EventCount: 10, DominantKind: HeapKind.Small),
+            },
+            TopByCount: Array.Empty<AllocatedType>());
+
+        var summary = InProcessDiagnosticCollector.BuildAllocationSummary(sample, durationSeconds: 5, coLocated: true);
+
+        summary.Should().Contain("System.String");
+        summary.Should().Contain("in-process toolchain");
+        summary.Should().Contain("NOT isolated from MemoryDiagnoser");
+    }
+
+    [Fact]
+    public void BuildAllocationSummary_NativeAotUnknownOnly_ExplainsEmptyTypeName()
+    {
+        var sample = new AllocationSample(
+            ProcessId: 1234,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(5),
+            TotalEvents: 40,
+            TotalBytes: 3_000_000,
+            TopByBytes: new[]
+            {
+                new AllocatedType("<unknown>", TotalBytes: 3_000_000, EventCount: 40, DominantKind: HeapKind.Small),
+            },
+            TopByCount: Array.Empty<AllocatedType>());
+
+        var summary = InProcessDiagnosticCollector.BuildAllocationSummary(sample, durationSeconds: 5, coLocated: false);
+
+        summary.Should().Contain("expected on NativeAOT");
+    }
+
+    [Fact]
+    public void BuildAllocationSummary_EmptySample_ExplainsNoAggregation()
+    {
+        var sample = new AllocationSample(
+            ProcessId: 1234,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(5),
+            TotalEvents: 0,
+            TotalBytes: 0,
+            TopByBytes: Array.Empty<AllocatedType>(),
+            TopByCount: Array.Empty<AllocatedType>());
+
+        var summary = InProcessDiagnosticCollector.BuildAllocationSummary(sample, durationSeconds: 5, coLocated: false);
+
+        summary.Should().Contain("no type aggregation");
     }
 }

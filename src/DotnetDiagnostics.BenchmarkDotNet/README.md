@@ -41,9 +41,9 @@ child PID; results land in `<artifacts>/diagnostics/*.json` and a consolidated
 
 ## Supported collect kinds
 
-`counters`, `exceptions`, `gc`, `cpu`, `datas`, `catalog`, `activities`, `logs`, `jit`,
-`threadpool`, `contention`, `db`. (`event_source` is intentionally excluded — it needs an explicit
-provider name.)
+`counters`, `exceptions`, `gc`, `cpu`, `allocation`, `datas`, `catalog`, `activities`, `logs`,
+`jit`, `threadpool`, `contention`, `db`. (`event_source` is intentionally excluded — it needs an
+explicit provider name.)
 
 The `cpu` kind runs the EventPipe **CPU sampler** (CoreCLR only) against the benchmark child and
 attributes cost **per stack frame**: each hotspot carries its *exclusive* (self) and *inclusive*
@@ -51,6 +51,23 @@ attributes cost **per stack frame**: each hotspot carries its *exclusive* (self)
 hottest self-cost frame (e.g. `Hottest self-cost: MyApp.Serialize (59.7% exclusive)`). The full
 caller→callee call tree is retained behind the envelope's drill-down handle. Source-line and
 generic-instantiation resolution are disabled in-process (no PDB/SourceLink I/O, no ClrMD attach).
+
+The `allocation` kind runs the EventPipe **allocation sampler** (`GCAllocationTick`) and attributes
+allocated bytes **per managed type** (top-N by bytes and by event count, SOH vs LOH), with the
+merged allocation call-site tree behind the handle. It is the per-type complement to
+`MemoryDiagnoser`'s `Allocated` column — *which* types, not just how many bytes. On NativeAOT the
+runtime emits the event without a `TypeName`, so everything rolls up under `<unknown>` (flagged in
+the summary).
+
+> **Does the diagnostic count as allocation?** No. The sampler is *observe-only* — it enables a
+> native EventPipe keyword and reads events the target runtime already emits; it performs **no
+> managed allocation in the measured process**, so it cannot inflate the benchmark's `Allocated`
+> counter. With the default (out-of-process) toolchain the sampler additionally runs in the
+> orchestrator process, never the measured child — `MemoryDiagnoser` reads the child's own GC
+> counters across a different run. The one exception is the **in-process toolchain** (`[InProcess]`):
+> there the benchmark shares this process, `GC.GetTotalAllocatedBytes()` is process-wide, and a
+> co-located capture is **not** isolated — the `allocation` summary flags this explicitly. Prefer the
+> default toolchain (or a dedicated diagnostic job) for clean allocation numbers.
 
 EventPipe collectors must not run concurrently against one PID, so multiple kinds on a single method
 are collected **sequentially** within the measurement window. Keep the count small (1–2) and the
