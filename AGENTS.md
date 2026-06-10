@@ -151,6 +151,12 @@ dotnet … collect_events(kind="exceptions")  # synchronous
 
 `tests/DotnetDiagnostics.Core.Tests/LiveCoreClrProcessTests.cs` spawns the `CoreClrSample` webapi by invoking its published DLL directly (`dotnet …/CoreClrSample.dll`) and attaches to the resulting PID. The fixture deliberately avoids `dotnet run`, which creates a wrapper host process whose PID is not the application. Required: .NET 10 SDK on `PATH`, ability to bind to `127.0.0.1:0`, and ~10s of runtime. CI runs both Linux and Windows runners.
 
+### 💥 SampleProfiler Linux host-crash flake (issues #147 / dotnet/runtime#128525)
+
+A handful of CPU-sampler tests reliably segfault the xunit host on `ubuntu-latest` under full-suite load (native crash inside libcoreclr's EventPipe SampleProfiler — no managed exception). They are quarantined on Linux CI via `[SkipOnLinuxCiFact]` (still run locally + on Windows), and `scripts/ci-test-with-retry.sh` tolerates the phantom host crash.
+
+The runtime team asked for an `mmap`/`munmap` log to identify what was previously mapped at the now-unmapped fault address. The `.github/workflows/linux-crash-repro.yml` job (manual `workflow_dispatch` + nightly) un-quarantines those tests by exporting `DOTNET_DBG_MCP_RUN_QUARANTINED_LINUX_TESTS=1` (the opt-in escape-hatch on `SkipOnLinuxCiFactAttribute`) and runs the full Core suite under `strace -f` tracing `openat,close,mmap,munmap,mprotect`. `strace` (not `LD_AUDIT`) because the fault address is **not** file-backed — only `strace` sees anonymous/JIT executable mappings. The job deliberately does **not** pass `--blame-crash`: createdump ptrace-attaches the test host and collides with strace's tracer (one ptrace tracer per process), so it would produce no dump. strace alone suffices — its signal-delivery-stop logs the caught `SIGSEGV` `si_addr`, and the surrounding drop-free mmap/munmap history shows what was mapped there. Re-run the job until it reproduces, then hand the strace log upstream.
+
 ### 🎯 One MCP tool per concept (15 tools after RFC 0002 §7.3 alias removal)
 
 Anthropic recommends ≤10 tools per LLM context. We have 15 tools after RFC 0002 §7.3 #213 consolidated
