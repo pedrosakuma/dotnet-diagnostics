@@ -44,3 +44,8 @@ deploy/azure/**/main.json
 nupkgs/
 .venv-cfnlint/
 .commit-msg.txt
+
+# Transient PR / issue body scratch files (use --body-file with these names)
+/pr-body.md
+/pr-body*.md
+/issue-body*.md
