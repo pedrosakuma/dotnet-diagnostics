@@ -4,7 +4,7 @@ This document answers one question:
 **How should `dotnet-diagnostics-mcp` expose a fleet of prepared Kubernetes Pods through one MCP endpoint without changing the current diagnostic tool bodies?**
 Short answer:
 **Add a central orchestrator that manages per-investigation ephemeral attaches and proxies the existing pod-local MCP server for exactly one target Pod at a time.**
-This is intentionally complementary to the central-topology feasibility spike in PR #137, which introduced `docs/central-k8s-design.md` on its branch. That earlier document established that a central topology is viable only if the data plane still launches something close to the target Pod. This document focuses on the missing follow-up: the MCP **orchestrator** that turns the current single-pod recipe into a fleet-facing surface.
+This is intentionally complementary to the central-topology feasibility work (PR #137), which established that a central topology is viable only if the data plane still launches something close to the target Pod. This document focuses on the missing follow-up: the MCP **orchestrator** that turns the current single-pod recipe into a fleet-facing surface.
 ---
 ## 1. Context
 ### 1.1 What `CENTRAL-TOPOLOGY.md` ships today
@@ -22,7 +22,7 @@ That topology is already the correct answer for the runtime's hard constraints:
 - it must see the same `/tmp/dotnet-diagnostic-*` socket path,
 - it must run under the same UID,
 - and some ClrMD-backed tools additionally need `CAP_SYS_PTRACE`.
-`docs/central-k8s-design.md` therefore made the right earlier decision: central topology is feasible, but only if the attach primitive still runs **in or extremely near** the target Pod context. The recommended primitive remains a **per-investigation ephemeral debug container**.
+The central-topology feasibility work (PR #137) therefore made the right earlier decision: central topology is feasible, but only if the attach primitive still runs **in or extremely near** the target Pod context. The recommended primitive remains a **per-investigation ephemeral debug container**.
 ### 1.2 What gap remains
 The current topology is still operator-driven and single-pod.
 A human or an external script must still:
@@ -89,7 +89,7 @@ The orchestrator intentionally inherits the same constraints as the current on-d
 - and no silent mutation of every Pod in the namespace.
 ### 2.4 Kubernetes-only scope; serverless container hosts use sidecar recipes
 The orchestrator is intentionally **Kubernetes-only**. Its data plane depends on the Kubernetes API surface — pod listing, ephemeral container injection, `pods/portforward` — and on Linux primitives (UID match, shared PID namespace, `CAP_SYS_PTRACE`) that serverless container hosts either do not expose or expose differently per provider. There is no plan to grow a parallel orchestrator for AWS ECS / Fargate, GCP Cloud Run, Azure Container Apps, or Azure App Service.
-For those serverless container hosts the answer is the **per-service sidecar recipes** under `deploy/azure/`, `deploy/aws/`, and `deploy/gcp/`. Each recipe wires one diagnostics MCP sidecar next to one target container in the same task / revision, sharing `/tmp` for the diagnostic IPC socket, and the MCP client talks to that endpoint directly. That is a smaller surface than the orchestrator (no fleet enumeration, no attach lifecycle, no portforward proxy) but it is the right shape for hosts where "attach a debug container to an existing workload" is not a first-class primitive. The cross-host capability matrix is documented in [`docs/cloud-recipes-design.md`](./cloud-recipes-design.md).
+For those serverless container hosts the answer is the **per-service sidecar recipes** under `deploy/azure/`, `deploy/aws/`, and `deploy/gcp/`. Each recipe wires one diagnostics MCP sidecar next to one target container in the same task / revision, sharing `/tmp` for the diagnostic IPC socket, and the MCP client talks to that endpoint directly. That is a smaller surface than the orchestrator (no fleet enumeration, no attach lifecycle, no portforward proxy) but it is the right shape for hosts where "attach a debug container to an existing workload" is not a first-class primitive. Each recipe's README documents its per-host constraints.
 ---
 ## 3. Tool surface
 ### 3.1 Principle
@@ -716,7 +716,7 @@ Meet the issue's acceptance criterion with a realistic cluster test:
 - [`deploy/k8s/CENTRAL-TOPOLOGY.md`](../deploy/k8s/CENTRAL-TOPOLOGY.md)
 - [`deploy/k8s/central-target.yaml`](../deploy/k8s/central-target.yaml)
 - [`deploy/k8s/ephemeral-attach.patch.json`](../deploy/k8s/ephemeral-attach.patch.json)
-- PR #137 (`docs/central-k8s-design.md` on that branch; complementary feasibility/design spike)
+- PR #137 (central K8s topology feasibility/design spike)
 ### Related issues
 - [#15 feat(infra): central K8s topology (no per-pod sidecar)](https://github.com/pedrosakuma/dotnet-diagnostics/issues/15)
 - [#16 feat(infra): cloud platform integrations (App Service / ACA / ECS / Lambda)](https://github.com/pedrosakuma/dotnet-diagnostics/issues/16)

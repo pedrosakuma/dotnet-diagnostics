@@ -8,9 +8,7 @@ IPC socket (created in `/tmp`), so the target app needs **no code changes**.
 
 This is the GCP-native counterpart to the
 [Azure Container Apps recipe](../../azure/container-apps/) and the
-[AWS ECS / Fargate recipe](../../aws/ecs-fargate/). It implements
-[`docs/cloud-recipes-design.md`](../../../docs/cloud-recipes-design.md)
-Phase 2.
+[AWS ECS / Fargate recipe](../../aws/ecs-fargate/).
 
 | Artifact | Purpose |
 |---|---|
@@ -201,8 +199,8 @@ through Identity-Aware Proxy, or an SSH tunnel.
 
 ## Out of scope
 
-- **Public-by-default ingress.** The recipe defaults to internal ingress
-  per the design doc. Public exposure is an explicit override.
+- **Public-by-default ingress.** The recipe defaults to internal ingress.
+  Public exposure is an explicit override.
 - **External load balancer / IAP setup.** Cloud Run supports IAP and
   serverless NEGs, but provisioning them belongs in your platform's
   ingress layer, not in a diagnostics sidecar recipe.
@@ -217,8 +215,6 @@ through Identity-Aware Proxy, or an SSH tunnel.
 
 ## Reference
 
-- [`docs/cloud-recipes-design.md`](../../../docs/cloud-recipes-design.md) — the design that drives this recipe
-- [`docs/cloud-integrations-design.md`](../../../docs/cloud-integrations-design.md) — parent portfolio decision
 - [`AGENTS.md`](../../../AGENTS.md) — diagnostic socket UID invariant
 - [Cloud Run multi-container services](https://cloud.google.com/run/docs/deploying#multicontainer) — GCP docs
 - [Issue #22](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22) — acceptance criteria

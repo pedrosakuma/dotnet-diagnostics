@@ -7,9 +7,7 @@ sidecar attaches to the app via the .NET runtime's diagnostic IPC socket
 (created in `/tmp`), so the target app needs **no code changes**.
 
 This is the AWS-native counterpart to the
-[Azure Container Apps recipe](../../azure/container-apps/). It implements
-[`docs/cloud-recipes-design.md`](../../../docs/cloud-recipes-design.md)
-Phase 1.
+[Azure Container Apps recipe](../../azure/container-apps/).
 
 | Artifact | Purpose |
 |---|---|
@@ -26,9 +24,7 @@ For Kubernetes on EKS (or any other cluster), use the generic recipes under
 > `collect_process_dump`).
 >
 > **AWS Lambda is out of scope** for this recipe — Lambda's freeze-between-
-> invocations model breaks long-running diagnostic sessions. See
-> [`docs/cloud-integrations-design.md`](../../../docs/cloud-integrations-design.md)
-> for the deferred discussion.
+> invocations model breaks long-running diagnostic sessions.
 
 ---
 
@@ -97,7 +93,7 @@ underlying invariant.
 |---|---|---|
 | EventPipe (`snapshot_counters`, `collect_cpu_sample`, `collect_gc_events`, …) | ✅ Yes | Only needs socket access + UID match. |
 | ClrMD / `ptrace` (`collect_thread_snapshot`, `inspect_live_heap`, `inspect_dump`, `collect_process_dump`) | ✅ Yes | Requires `LinuxParameters.Capabilities.Add: [SYS_PTRACE]` (template adds it). |
-| `perf`-based off-CPU sampling (`collect_off_cpu_sample`) | ❌ Not validated | Fargate does not expose `CAP_PERFMON` or paranoia tuning. Tracked as an open question in [`docs/cloud-recipes-design.md`](../../../docs/cloud-recipes-design.md#open-questions). |
+| `perf`-based off-CPU sampling (`collect_off_cpu_sample`) | ❌ Not validated | Fargate does not expose `CAP_PERFMON` or paranoia tuning. |
 
 ## Deploy
 
@@ -190,21 +186,17 @@ or a `localhost` port set up via `aws ssm start-session` port forwarding).
 ## Out of scope
 
 - **Public-by-default ingress.** This template does not provision a public
-  ALB. Front the service with an **internal** ALB if you need stable DNS;
-  see [`docs/cloud-recipes-design.md`](../../../docs/cloud-recipes-design.md)
-  for the rationale.
+  ALB. Front the service with an **internal** ALB if you need stable DNS.
 - **AWS-API discovery tools.** A future `list_ecs_tasks` style tool that
   hits the ECS API to enumerate candidate workloads lives in a separate
   issue and is intentionally not part of this recipe.
 - **CDK / Terraform variants.** Native CloudFormation is the first
-  reference. Alternate IaC dialects are noted as Phase 4 in the design doc.
+  reference. Alternate IaC dialects are deferred.
 - **`collect_off_cpu_sample`.** Fargate does not currently advertise
   `CAP_PERFMON`. The recipe leaves this tool documented as not-validated.
 
 ## Reference
 
-- [`docs/cloud-recipes-design.md`](../../../docs/cloud-recipes-design.md) — the design that drives this recipe
-- [`docs/cloud-integrations-design.md`](../../../docs/cloud-integrations-design.md) — parent portfolio decision
 - [`AGENTS.md`](../../../AGENTS.md) — diagnostic socket UID and `CAP_SYS_PTRACE` invariants
 - [Issue #22](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22) — acceptance criteria
 

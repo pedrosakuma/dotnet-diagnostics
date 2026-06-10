@@ -38,6 +38,3 @@ For Kubernetes on GKE (or any other cluster), use the generic recipes under
   reference is the Knative-style Service YAML applied with
   `gcloud run services replace`, for parity with the Azure Bicep and AWS
   CloudFormation recipes already in this repo.
-
-See [`../../docs/cloud-recipes-design.md`](../../docs/cloud-recipes-design.md)
-for the design that drives these recipes.
