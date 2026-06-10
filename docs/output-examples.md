@@ -252,6 +252,28 @@ allocation *origin*, new in v0.13.0):
 > — the leaf (immediate-allocator) frame, with a MethodIdentity for handoff. The full
 > caller→callee allocation tree stays behind the sampler's `query_snapshot` handle (MCP path).
 
+### offenders report — consolidated BDN markdown
+
+Alongside the per-method `.json` artifacts, the diagnoser writes one
+`*-dotnet-diagnostics-report.md` into `BenchmarkDotNet.Artifacts/results/` — the **simplified,
+human-facing** view: one row per `[DiagnosticKind]` × benchmark job, each carrying the same
+`headline` as the indicator line plus a pointer to the full JSON for drill-down.
+
+```markdown
+# dotnet-diagnostics — biggest offenders
+
+## WorkloadBenchmarks.CpuHotPath: ShortRun(IterationCount=3, LaunchCount=1, WarmupCount=3)
+
+| kind | status | headline | artifact |
+| --- | --- | --- | --- |
+| cpu | ok | Captured 2035 sample(s) over 5s across 25 hotspot(s). Hottest self-cost: System.Threading.Thread.<PollGC>g__PollGCWorker\|67_0() (77.8% exclusive — 1584 self / 1584 inclusive sample(s)). | `…_CpuHotPath_ShortRun-ShortRun.2.cpu.json` |
+```
+
+> The trio is consistent: the **indicator line** (one line, in the BDN console), the **offenders
+> report** (this table, one row per kind × job), and the **JSON artifact** (the full envelope for
+> drill-down). `status` is `ok` or `⚠ error`; a failed capture keeps its `NotSupported` /
+> `PermissionDenied` detail in the `headline`.
+
 ---
 
 ## Other kinds — canonical shapes in `tool-reference.md`
