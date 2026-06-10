@@ -870,8 +870,8 @@ underlying collector verbatim, so `query_snapshot` drilldowns continue to work
 unchanged.
 
 **Authorization.** The dispatcher is gated by `RequireAnyScope("read-counters","eventpipe")`
-and re-checks the per-kind scope inside the call so the boundaries of RFC 0001
-§2 are preserved: `kind="counters"` requires `read-counters`, every other
+and re-checks the per-kind scope inside the call so the scope boundaries
+are preserved: `kind="counters"` requires `read-counters`, every other
 kind requires `eventpipe` (`event_source` additionally honors the existing
 `eventsource-any` modifier).
 
@@ -1602,7 +1602,7 @@ name and captures the events it emits in the window. Use for HTTP activity
 
 Writes a process dump to disk via the diagnostic IPC channel.
 
-> **Defense in depth — `confirm=true` required (B5.6 / RFC 0001 §4).** Without
+> **Defense in depth — `confirm=true` required ([authorization](./authorization.md#per-call-confirmation)).** Without
 > `confirm=true` the tool returns a `{ "kind": "confirmation_required", ... }`
 > envelope describing the dump that *would* have been written (`targetPid`,
 > `dumpType`, `outputDirectory`) and writes nothing to disk. The
@@ -1633,7 +1633,7 @@ Writes a process dump to disk via the diagnostic IPC channel.
 | `processId` | `int` | — | Target process id |
 | `dumpType` | `string` | `"Mini"` | `Mini` / `Triage` / `WithHeap` / `Full` |
 | `outputDirectory` | `string?` | artifact root | **Relative** sub-path under `MCP_ARTIFACT_ROOT`. Must not be absolute. |
-| `confirm` | `bool` | `false` | **Required `true` to actually write the dump.** Without it, the tool returns a `confirmation_required` preview and writes nothing. See RFC 0001 §4. |
+| `confirm` | `bool` | `false` | **Required `true` to actually write the dump.** Without it, the tool returns a `confirmation_required` preview and writes nothing. See [authorization](./authorization.md#per-call-confirmation). |
 
 **Returns:** `DumpToolResult` — a discriminated envelope:
 
@@ -1968,7 +1968,7 @@ from the `Diagnostics:` configuration section and can be set via env vars
 (`Diagnostics__AllowSensitiveHeapValues=true`, `Diagnostics__EventSourceAllowlist__0=…`,
 `Diagnostics__SymbolServerAllowlist__0=msdl.microsoft.com`).
 
-> **B5.4 — modifier scopes preferred.** All three gates now accept an RFC 0001 modifier
+> **B5.4 — modifier scopes preferred.** All three gates now accept a modifier
 > scope on the bearer principal as an alternative authorisation path:
 > `sensitive-heap-read`, `eventsource-any`, `symbols-remote`. The scope-first predicate is
 > `principal.HasExplicitScope("<scope>") OR <legacy-flag-or-allowlist-allows>` — either
@@ -1991,7 +1991,8 @@ with `<redacted:metadata-only>` and the LLM gets length / type / address metadat
 
 To opt-in (**scope-first path, recommended**):
 
-1. mint a bearer token with the `sensitive-heap-read` scope (RFC 0001 §2.3 — see
+1. mint a bearer token with the `sensitive-heap-read` scope (see
+   [`authorization.md`](./authorization.md#modifier-scopes) and
    `deploy/helm/README.md` for the chart-level shape), **and**
 2. pass `includeSensitiveValues=true` on the per-call invocation.
 

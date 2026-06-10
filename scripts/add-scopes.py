@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """B5.2 — insert [RequireScope]/[RequireAnyScope] before each [McpServerTool(
 Name = "...") block in the tool surface files. Idempotent: skips lines that
-already carry a scope attribute. Mapping comes from RFC 0001 §2 / task body."""
+already carry a scope attribute. Mapping comes from docs/authorization.md#scopes / task body."""
 
 import re
 import sys

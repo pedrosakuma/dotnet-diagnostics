@@ -12,7 +12,7 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
 /// <summary>
 /// B5.4 — every legacy <c>Diagnostics:Allow*</c> path that unlocks a sensitive
-/// operation while the matching RFC 0001 modifier scope is absent on the bearer
+/// operation while the matching docs/authorization.md modifier scope is absent on the bearer
 /// principal must fire a once-per-process deprecation warning. The allowlist
 /// policies themselves remain in place; only the implicit deployment-wide
 /// "every caller can do X" pattern is being deprecated.

@@ -9,7 +9,7 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// presented bearer value.
 /// </summary>
 /// <remarks>
-/// Foundational type for RFC 0001 (per-tool authorization scopes). B5.2 will consume
+/// Foundational type for docs/authorization.md (per-tool authorization scopes). B5.2 will consume
 /// this via <c>[RequireScope]</c>; this PR (B5.1) only ensures the principal is
 /// available so downstream filters have something to call <see cref="HasScope"/> on.
 /// The root <see cref="RootScope"/> wildcard is honoured here so consumers never need
@@ -19,12 +19,12 @@ public sealed class BearerPrincipal
 {
     /// <summary>The wildcard scope: a principal granted this single scope is treated as
     /// holding every scope. Both <c>"root"</c> (task-spec spelling used by the legacy
-    /// synthesized principal) and <c>"*"</c> (RFC 0001 §2.13 spelling used in
+    /// synthesized principal) and <c>"*"</c> (docs/authorization.md#scopes spelling used in
     /// <c>Auth:BearerTokens</c> config examples) are accepted as wildcards via
     /// <see cref="IsWildcard"/>.</summary>
     public const string RootScope = "root";
 
-    /// <summary>Alternative spelling of the wildcard scope per RFC 0001 §2.13.</summary>
+    /// <summary>Alternative spelling of the wildcard scope per docs/authorization.md#scopes</summary>
     public const string RootScopeAlt = "*";
 
     /// <summary>Synthetic token name attached to the legacy <c>MCP_BEARER_TOKEN</c> path
@@ -68,7 +68,7 @@ public sealed class BearerPrincipal
 
     /// <summary>Like <see cref="HasScope"/> but does NOT honour the root/wildcard
     /// shortcut — only literal membership in <see cref="Scopes"/> counts. Used for
-    /// the modifier scopes in RFC 0001 §2.3-§2.7 (<c>sensitive-heap-read</c>,
+    /// the modifier scopes in docs/authorization.md#modifier-scopes (<c>sensitive-heap-read</c>,
     /// <c>eventsource-any</c>, <c>symbols-remote</c>, <c>orchestrator-admin</c>),
     /// which are deliberately additive — operators must explicitly mint a bearer
     /// with the modifier scope rather than getting it for free from a root token.

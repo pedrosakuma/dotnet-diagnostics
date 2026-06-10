@@ -159,7 +159,7 @@ internal static class InvestigationProxyEndpoints
         // — this is the operator/central-orchestrator topology where a single
         // bearer is authoritative across MCP sessions.
         var orchOptions = context.RequestServices.GetRequiredService<OrchestratorOptions>();
-        // B5.2 (RFC 0001 §2.7) + B5.3 (issue #184): also accept the per-bearer
+        // B5.2 (docs/authorization.md#scopes) + B5.3 (issue #184): also accept the per-bearer
         // 'orchestrator-admin' modifier scope. The deployment-wide
         // AllowCrossSessionAdmin flag keeps working byte-for-byte; routing
         // through OrchestratorAdminBypassPolicy emits a one-shot deprecation

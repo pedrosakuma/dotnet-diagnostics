@@ -3,7 +3,7 @@ namespace DotnetDiagnostics.Core.Security;
 /// <summary>
 /// Host-neutral seam for the once-per-process deprecation telemetry emitted when a remote symbol
 /// server host is accepted via the <c>Diagnostics:SymbolServerAllowlist</c> deployment-wide gate
-/// (rather than an RFC 0001 <c>symbols-remote</c> modifier scope). Extracted in #288 so the Core
+/// (rather than an docs/authorization.md <c>symbols-remote</c> modifier scope). Extracted in #288 so the Core
 /// symbol-path validation owns no transport/logging assumptions: the MCP Server adapts its
 /// <c>LegacyDiagnosticsFlagDeprecation</c> singleton onto this interface, while the standalone CLI
 /// (a synthetic-root caller that never trips the legacy branch) simply passes <c>null</c>.

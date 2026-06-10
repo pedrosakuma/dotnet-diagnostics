@@ -45,7 +45,7 @@ var orchestratorEnabled = builder.Services.AddOrchestratorServices(builder.Confi
 builder.AddOrchestratorObservability(orchestratorEnabled);
 builder.Services.AddAzureDiscoveryServices(builder.Configuration);
 
-// B5.2 (RFC 0001 §5): the [RequireScope] filter reads the bearer principal off
+// B5.2 (docs/authorization.md#default-policy-by-transport): the [RequireScope] filter reads the bearer principal off
 // HttpContext.Items. Register the typed accessor so the filter is decoupled from
 // IHttpContextAccessor directly, easing the stdio fallback and unit-test isolation.
 builder.Services.AddHttpContextAccessor();
@@ -105,7 +105,7 @@ var app = builder.Build();
 loggerFactoryHolder = app.Services.GetRequiredService<ILoggerFactory>();
 servicesHolder = app.Services;
 
-// B5.1 / RFC 0001 §5 + §7: scoped bearer auth replaces the previous single-bearer
+// B5.1 / docs/authorization.md#default-policy-by-transport + §7: scoped bearer auth replaces the previous single-bearer
 // path. The registry is constructed before the app starts handling requests so any
 // validation error (duplicate token, empty scope set, missing legacy token on a
 // non-loopback bind) surfaces as a startup failure with a clear log line — never a
@@ -129,11 +129,11 @@ if (boundToNonLoopback && !hasScopedTokens && !hasLegacyToken && !oidcJwtAuth.Is
 
 if (boundToNonLoopback && !hasScopedTokens && hasLegacyToken)
 {
-    // RFC 0001 §7.1 v1 transition: legacy var is still accepted on non-loopback binds
+    // docs/authorization.md#backward-compatibility v1 transition: legacy var is still accepted on non-loopback binds
     // but operators are nudged toward Auth:BearerTokens before v2 removes the fallback.
     app.Logger.LogWarning(
         "MCP_BEARER_TOKEN is set without Auth:BearerTokens; the legacy variable resolves to root scope " +
-        "and is deprecated for non-loopback deployments. See RFC 0001 (docs/rfcs/0001-per-tool-authorization-scopes.md).");
+        "and is deprecated for non-loopback deployments. See docs/authorization.md#default-policy-by-transport.");
 }
 
 BearerTokenRegistry registry;
@@ -159,7 +159,7 @@ else
     }
 }
 
-// Singleton resolver — keeps the JWT/OIDC swap path (RFC 0001 §3.3) a one-line DI
+// Singleton resolver — keeps the JWT/OIDC swap path (docs/authorization.md#bearer-tokens-config) a one-line DI
 // change. We pass it positionally to UseMiddleware because the registry is built
 // post-app.Build (it needs the resolved logger + final config) and DI is locked by
 // then; UseMiddleware<T>(args) matches the registry by constructor parameter type.
@@ -216,7 +216,7 @@ static async Task<int> RunStdioAsync(string[] args)
     hostBuilder.AddOrchestratorObservability(orchestratorEnabled);
     hostBuilder.Services.AddAzureDiscoveryServices(hostBuilder.Configuration);
 
-    // B5.2 / RFC 0001 §5: stdio has no HTTP context — the local MCP client owns the
+    // B5.2 / docs/authorization.md#default-policy-by-transport: stdio has no HTTP context — the local MCP client owns the
     // process so authorization degrades to root scope. Registering the stdio accessor
     // here keeps the [RequireScope] filter graceful across transports without each
     // tool body branching on transport kind.

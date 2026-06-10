@@ -33,7 +33,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// (<c>read-counters</c> ∪ <c>eventpipe</c>) via <see cref="RequireAnyScopeAttribute"/>, then
 /// re-checks the kind-specific scope inside the body so a caller holding only
 /// <c>read-counters</c> cannot exfiltrate GC/exception/EventSource data through the new entry
-/// point. This preserves RFC 0001 §2 boundaries verbatim.</para>
+/// point. This preserves docs/authorization.md#scopes boundaries verbatim.</para>
 /// <para>RFC 0002 §7.3 #9 / #213 — the legacy collectors have been deleted in the alias
 /// removal wave; this is now the sole entry point for the EventPipe collector family.</para>
 /// </remarks>

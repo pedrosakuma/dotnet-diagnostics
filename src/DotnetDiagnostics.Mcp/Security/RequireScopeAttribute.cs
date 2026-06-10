@@ -4,7 +4,7 @@ namespace DotnetDiagnostics.Mcp.Security;
 
 /// <summary>
 /// Declares the per-tool authorization scopes required to invoke a method decorated with
-/// <c>[ModelContextProtocol.Server.McpServerTool]</c>. RFC 0001 §2 taxonomy is enforced by
+/// <c>[ModelContextProtocol.Server.McpServerTool]</c>. docs/authorization.md#scopes taxonomy is enforced by
 /// the <see cref="ToolScopeAuthorizationFilter"/> at MCP CallTool dispatch time.
 /// </summary>
 /// <remarks>

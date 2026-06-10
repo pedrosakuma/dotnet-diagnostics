@@ -114,7 +114,7 @@ internal sealed class ToolScopeRegistry
         {
             throw new InvalidOperationException(
                 "Every [McpServerTool] must declare a scope via [RequireScope] or [RequireAnyScope] " +
-                "(RFC 0001 §2 / sub-issue B5.2). Missing: " + string.Join(", ", missing));
+                "(docs/authorization.md#scopes / sub-issue B5.2). Missing: " + string.Join(", ", missing));
         }
 
         return new ToolScopeRegistry(builder.ToImmutable());

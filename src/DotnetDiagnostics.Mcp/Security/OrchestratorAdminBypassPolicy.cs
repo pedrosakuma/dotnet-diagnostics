@@ -7,7 +7,7 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// <summary>
 /// B5.3 (issue #184) — single source of truth for "may this caller bypass the
 /// cross-session owner check on an investigation handle?". Scope-first: the
-/// per-bearer <c>orchestrator-admin</c> modifier scope (RFC 0001 §2.7) is the
+/// per-bearer <c>orchestrator-admin</c> modifier scope (docs/authorization.md#scopes) is the
 /// primary gate. The deployment-wide
 /// <see cref="OrchestratorOptions.AllowCrossSessionAdmin"/> flag remains accepted
 /// as a deprecated alias so existing operator deployments keep working unchanged.

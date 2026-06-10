@@ -27,7 +27,7 @@ public sealed record DumpResult(
 /// <c>confirm=true</c> and both required scopes — <c>dump-write</c> + <c>ptrace</c>)
 /// or a preview of the dump that would have been written (the
 /// <c>confirmation_required</c> defense-in-depth path described in
-/// <c>docs/rfcs/0001-per-tool-authorization-scopes.md</c> §4).
+/// <c>docs/authorization.md</c> § per-call confirmation).
 /// </summary>
 /// <remarks>
 /// Wrapping <see cref="DumpResult"/> rather than overloading it keeps the on-success

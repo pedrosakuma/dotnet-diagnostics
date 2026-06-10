@@ -824,7 +824,7 @@ public static class EventCollectionUseCases
         // B4 / issue #165 / M2: gate non-curated providers behind the sensitive-value flag.
         // Custom EventSources frequently log user ids, auth-failure context, etc.
         var allowedByDefault = allowlist.IsAllowed(providerName);
-        // RFC 0001 §2.3 / B5.4: scope-first predicate is
+        // docs/authorization.md#scopes: scope-first predicate is
         // 'principal.HasExplicitScope("eventsource-any") OR allowlist allows'.
         // The principal-side check lets us emit a once-per-process deprecation warning
         // when the allowlist (not the scope) was the bypass mechanism. The allowlist
@@ -846,7 +846,7 @@ public static class EventCollectionUseCases
                     $"EventSource provider '{providerName}' is not on the allowlist.",
                     new DiagnosticError(
                         "EventSourceProviderNotAllowed",
-                        "Add the provider to `Diagnostics:EventSourceAllowlist` (env: `Diagnostics__EventSourceAllowlist__0=<provider>`), grant the caller the 'eventsource-any' scope (RFC 0001 §2.3), or — on legacy deployments — set `Diagnostics:AllowSensitiveHeapValues=true` on the server AND pass `unsafeProvider=true` per call. Curated allowlist includes: " + preview + (allowlist.AllowedProviders.Count > 8 ? ", …" : "") + ". Tracked by issue #165 (B4); subsumed into the 'eventsource-any' modifier scope by B5.4.",
+                        "Add the provider to `Diagnostics:EventSourceAllowlist` (env: `Diagnostics__EventSourceAllowlist__0=<provider>`), grant the caller the 'eventsource-any' scope (docs/authorization.md#scopes), or — on legacy deployments — set `Diagnostics:AllowSensitiveHeapValues=true` on the server AND pass `unsafeProvider=true` per call. Curated allowlist includes: " + preview + (allowlist.AllowedProviders.Count > 8 ? ", …" : "") + ". Tracked by issue #165 (B4); subsumed into the 'eventsource-any' modifier scope by B5.4.",
                         providerName));
             }
 

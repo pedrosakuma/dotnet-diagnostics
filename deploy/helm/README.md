@@ -117,7 +117,7 @@ for the port-forward stream that `KubernetesPortForwardManager` opens.
 
 ## Scoped bearer tokens (recommended)
 
-> **B5.5 (#186) — implements [RFC 0001 §6](../../docs/rfcs/0001-per-tool-authorization-scopes.md#6-wire-format-and-config-examples).**
+> **B5.5 (#186) — implements the scoped bearer-token model ([`authorization.md`](../../docs/authorization.md#bearer-tokens-config)).**
 > The legacy `bearerToken.value` / `bearerToken.existingSecret` path keeps working
 > unchanged for backward compatibility, but new deployments should bind one or
 > more scoped tokens via `bearerTokens`. Each token is restricted to a subset of
@@ -208,7 +208,7 @@ kubectl -n diagnosticsmcp-system create secret generic dotnet-diag-tokens \
 
 The same env shape (`Auth__BearerTokens__N__Name` / `__Token` / `__Scopes__M`)
 is what `BearerTokenRegistry` reads regardless of platform. See
-[RFC 0001 §6.4](../../docs/rfcs/0001-per-tool-authorization-scopes.md#64-cloud-run--secret-manager-sketch)
+[`authorization.md` → bearer tokens](../../docs/authorization.md#bearer-tokens-config)
 for the Cloud Run + Secret Manager mapping (`--set-secrets` for token values,
 `--set-env-vars` for names and scope lists). The same approach applies to ECS
 task definitions, Azure Container Apps secrets, and any other env-var-driven
@@ -216,7 +216,7 @@ container platform.
 
 ### Modifier scopes vs legacy `Diagnostics__Allow*` flags (B5.4 / #185)
 
-Three RFC 0001 scopes — `sensitive-heap-read`, `eventsource-any`, and
+Three modifier scopes — `sensitive-heap-read`, `eventsource-any`, and
 `symbols-remote` — subsume the legacy deployment-wide flags
 `Diagnostics:AllowSensitiveHeapValues`, `Diagnostics:EventSourceAllowlist`, and
 `Diagnostics:SymbolServerAllowlist`. Layer them onto specific bearer tokens
@@ -240,7 +240,7 @@ auto-grant them, so the deployment-wide gate still applies unless the operator
 explicitly layers the scope on top of a privileged token. The legacy flags
 remain available as fallback; they log a once-per-process deprecation warning
 when they are what unlocked a call. See `docs/tool-reference.md` § "Security
-gates (B4)" and `docs/rfcs/0001-per-tool-authorization-scopes.md` § 7 for the
+gates (B4)" and `docs/authorization.md` § backward compatibility for the
 deprecation timeline.
 
 ## OIDC / JWT auth (Phase 8 / #196)

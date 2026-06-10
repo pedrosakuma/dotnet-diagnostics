@@ -381,7 +381,7 @@ public sealed class OrchestratorTools
 
         // B3 (issue #164): require owner-session match before closing — without this any
         // authenticated caller who learns a handle id could DoS another session's
-        // investigation. B5.2 (RFC 0001 §2.7) adds an additive escape hatch: bearer
+        // investigation. B5.2 (docs/authorization.md#scopes) adds an additive escape hatch: bearer
         // principals holding 'orchestrator-admin' bypass the owner check, mirroring the
         // deployment-wide AllowCrossSessionAdmin flag but scoped per-bearer. B5.3
         // (issue #184) routes both checks through the shared policy helper so the
@@ -473,7 +473,7 @@ public sealed class OrchestratorTools
         // handles created on the same un-scoped transport, so the secure
         // behavior degrades sensibly.
         var callerSessionId = TryGetServerSessionId(server!);
-        // B5.2 (RFC 0001 §2.7) + B5.3 (issue #184): admin listing requires EITHER the legacy
+        // B5.2 (docs/authorization.md#scopes) + B5.3 (issue #184): admin listing requires EITHER the legacy
         // AllowCrossSessionAdmin deployment flag OR the per-bearer 'orchestrator-admin'
         // modifier scope. Both are operator-grade. The shared policy helper logs a one-shot
         // deprecation warning the first time the legacy flag is the bypass path.

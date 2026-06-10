@@ -8,7 +8,7 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// <remarks>
 /// The v1 implementation (<see cref="BearerTokenRegistry"/>) compares against a static
 /// configuration table using constant-time comparison. The interface is promoted into
-/// v1 — per the gpt-5.5 review of RFC 0001 — so a future JWT / OIDC variant is a
+/// v1 — per the gpt-5.5 review of docs/authorization.md — so a future JWT / OIDC variant is a
 /// drop-in registration with no changes to consumers (the auth middleware in this PR,
 /// the <c>[RequireScope]</c> filter in B5.2).
 /// </remarks>

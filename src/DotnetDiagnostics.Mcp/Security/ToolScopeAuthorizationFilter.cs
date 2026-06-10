@@ -7,7 +7,7 @@ namespace DotnetDiagnostics.Mcp.Security;
 
 /// <summary>
 /// MCP CallTool filter that enforces the <see cref="RequireScopeAttribute"/> /
-/// <see cref="RequireAnyScopeAttribute"/> taxonomy from RFC 0001 §2. Runs before the
+/// <see cref="RequireAnyScopeAttribute"/> taxonomy from docs/authorization.md#scopes Runs before the
 /// tool body; a scope miss short-circuits with a structured <c>"forbidden"</c> envelope
 /// (per MCP spec — return a tool error result, never throw at the SDK).
 /// </summary>

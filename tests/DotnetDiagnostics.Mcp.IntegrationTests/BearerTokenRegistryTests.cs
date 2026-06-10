@@ -237,7 +237,7 @@ public sealed class BearerTokenRegistryTests
     [Fact]
     public void BearerPrincipal_HasScope_HonoursStarWildcard_PerRFCSpelling()
     {
-        // RFC 0001 §2.13 / §6.1 spell the root pseudo-scope as "*". Tokens that
+        // docs/authorization.md#scopes spell the root pseudo-scope as "*". Tokens that
         // operators configure with Scopes: ["*"] must satisfy every HasScope check.
         var p = new BearerPrincipal("rfc-root-holder", ImmutableHashSet.Create("*"));
         p.HasScope("read-counters").Should().BeTrue();

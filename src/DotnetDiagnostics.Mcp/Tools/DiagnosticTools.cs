@@ -1610,7 +1610,7 @@ public sealed class DiagnosticTools
         EventSourceAllowlist allowlist,
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
-        [Description("EventSource provider name, e.g. 'System.Net.Http' or 'Microsoft.AspNetCore.Hosting'. Must be on the curated allowlist (see `Diagnostics:EventSourceAllowlist`) unless the bearer principal holds the 'eventsource-any' scope (RFC 0001 §2.3 / B5.4) — or, on legacy deployments, `unsafeProvider=true` AND the server has `Diagnostics:AllowSensitiveHeapValues=true` (issue #165 / M2).")] string providerName,
+        [Description("EventSource provider name, e.g. 'System.Net.Http' or 'Microsoft.AspNetCore.Hosting'. Must be on the curated allowlist (see `Diagnostics:EventSourceAllowlist`) unless the bearer principal holds the 'eventsource-any' scope (docs/authorization.md#scopes) — or, on legacy deployments, `unsafeProvider=true` AND the server has `Diagnostics:AllowSensitiveHeapValues=true` (issue #165 / M2).")] string providerName,
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
         [Description("Duration of the capture window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("EventSource keyword mask. -1 (default) means all keywords. For non-allowlisted providers (when opted in via unsafeProvider=true) this is clamped to a safer default when left at -1; pass an explicit positive mask to override.")] long keywords = -1,
@@ -1642,7 +1642,7 @@ public sealed class DiagnosticTools
         "server's filesystem (path returned) so it can be analyzed offline with dotnet-dump or WinDbg. " +
         "Dump types in increasing size/cost: Mini < Triage < WithHeap < Full. " +
         "Heavyweight — use only when live collectors are insufficient. " +
-        "**Requires `confirm=true` (defense in depth — RFC 0001 §4 / B5.6).** Without it the tool " +
+        "**Requires `confirm=true` (defense in depth — docs/authorization.md#per-call-confirmation).** Without it the tool " +
         "returns a `confirmation_required` envelope describing what would have been written and " +
         "writes nothing to disk; the operator-facing client should surface this preview to a human " +
         "and only retry with `confirm=true` after explicit approval. The `dump-write` + `ptrace` " +
@@ -1655,7 +1655,7 @@ public sealed class DiagnosticTools
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
         [Description("Dump type: 'Mini', 'Triage', 'WithHeap' or 'Full'. Defaults to Mini.")] ProcessDumpType dumpType = ProcessDumpType.Mini,
         [Description("Optional sub-path under the artifact root (MCP_ARTIFACT_ROOT, default <temp>/dotnet-diagnostics-mcp). MUST be relative — absolute paths and '..' traversal are rejected (InvalidArtifactPath). Dump files are written with POSIX mode 0600.")] string? outputDirectory = null,
-        [Description("Defense-in-depth confirmation flag. Must be true to actually write a dump file; without it the tool returns a `confirmation_required` envelope describing what would have been written. See RFC 0001 §4.")] bool confirm = false,
+        [Description("Defense-in-depth confirmation flag. Must be true to actually write a dump file; without it the tool returns a `confirmation_required` envelope describing what would have been written. See docs/authorization.md#per-call-confirmation")] bool confirm = false,
         CancellationToken cancellationToken = default)
         // Orchestration lives in Core (UseCases/ProcessDumpUseCases) since #288 PR3b. This thin
         // forward creates the logger with the existing audit category and hoists the audit principal
@@ -1810,7 +1810,7 @@ public sealed class DiagnosticTools
                     new Dictionary<string, object?> { ["processId"] = "<pid>" }));
         }
 
-        // RFC 0001 §2.4: the legacy AllowSensitiveHeapValues flag is the deployment-wide gate;
+        // docs/authorization.md#scopes: the legacy AllowSensitiveHeapValues flag is the deployment-wide gate;
         // a principal holding the 'sensitive-heap-read' scope opts in per-bearer (B5.2). The
         // caller still has to pass includeSensitiveValues=true to actually receive raw content.
         var principalUnlocksSensitive = principalAccessor.Current?.HasExplicitScope("sensitive-heap-read") == true;
@@ -3211,10 +3211,10 @@ public sealed class DiagnosticTools
     /// denial. Must be invoked from every tool that forwards a caller-supplied
     /// <c>symbolPath</c> into a SymbolReader / native symbolicator backend. B5.2 layers a
     /// principal-side modifier scope on top: callers holding <c>symbols-remote</c>
-    /// (RFC 0001 §2.5) bypass the allowlist entirely. The legacy server-wide allowlist
+    /// (docs/authorization.md#scopes) bypass the allowlist entirely. The legacy server-wide allowlist
     /// keeps working byte-for-byte for principals without the scope.
     ///
-    /// B5.4 / RFC 0001 §7.3: when the allowlist (not the scope) was the path that allowed
+    /// B5.4 / docs/authorization.md#backward-compatibility: when the allowlist (not the scope) was the path that allowed
     /// a remote host through, fires a once-per-process deprecation warning via
     /// <paramref name="deprecation"/>. The allowlist policy itself is retained — only the
     /// pattern of relying on a single deployment-wide allowlist for caller-level
@@ -3222,7 +3222,7 @@ public sealed class DiagnosticTools
     /// </summary>
     // Symbol-path validation lives in Core (UseCases/SymbolPathValidation) since #288 so the CLI and
     // the MCP tools share one source of truth. This thin forward hoists the transport-specific bypass
-    // decision (the RFC 0001 `symbols-remote` scope) into a precomputed bool and adapts the Server's
+    // decision (the docs/authorization.md `symbols-remote` scope) into a precomputed bool and adapts the Server's
     // LegacyDiagnosticsFlagDeprecation singleton onto the host-neutral ISymbolServerDeprecationSink.
     private static DiagnosticResult<T>? ValidateSymbolPath<T>(
         SymbolServerAllowlist allowlist,

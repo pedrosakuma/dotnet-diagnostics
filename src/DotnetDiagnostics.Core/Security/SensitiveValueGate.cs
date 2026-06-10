@@ -30,7 +30,7 @@ public sealed class SensitiveValueGate
     /// Resolves the effective "emit sensitive values" decision for a single tool call.
     /// Returns true when the caller explicitly asked for it AND either the server-side
     /// gate is open OR the bearer principal holds the <c>sensitive-heap-read</c>
-    /// modifier scope (RFC 0001 §2.4). The principal path is additive — the legacy flag
+    /// modifier scope (docs/authorization.md#scopes). The principal path is additive — the legacy flag
     /// keeps working byte-for-byte until B5.4 retires it.
     /// </summary>
     public bool ShouldEmit(bool callerOptedIn, bool principalHasScope)

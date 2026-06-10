@@ -1,13 +1,13 @@
 # Documentation
 
-> **Breaking change — `collect_process_dump` now requires `confirm=true` (B5.6 / RFC 0001 §4 / issue #187).**
+> **Breaking change — `collect_process_dump` now requires `confirm=true` (issue #187).**
 > Existing callers that omit `confirm` will receive a structured
 > `{ "kind": "confirmation_required", ... }` envelope describing the dump that would
 > have been written (`targetPid`, `dumpType`, `outputDirectory`) and **no file is
 > written to disk**. Pass `confirm=true` (in addition to holding the existing
 > `dump-write` + `ptrace` scopes) to perform the dump. The other ptrace-stack tools
 > (`capture_method_bytes`, `inspect_heap(source="live")`, `collect_thread_snapshot`) are
-> deliberately unchanged. See [`rfcs/0001-per-tool-authorization-scopes.md`](./rfcs/0001-per-tool-authorization-scopes.md) §4
+> deliberately unchanged. See [`authorization.md` → per-call confirmation](./authorization.md#per-call-confirmation)
 > and [`tool-reference.md` → `collect_process_dump`](./tool-reference.md#collect_process_dump).
 
 The repo ships **three deliverables** on one shared Core capture engine. Start with the track
@@ -48,7 +48,7 @@ you're using, then reach for the cross-cutting references.
 
 | File | What it covers |
 |---|---|
-| [`rfcs/`](./rfcs/README.md) | Numbered design documents for cross-cutting changes (e.g. [RFC 0001 — per-tool authorization scopes](./rfcs/0001-per-tool-authorization-scopes.md)) |
+| [`rfcs/`](./rfcs/README.md) | Numbered design documents for cross-cutting changes |
 
 Planned but not yet written:
 
