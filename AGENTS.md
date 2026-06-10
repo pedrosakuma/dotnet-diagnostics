@@ -132,6 +132,10 @@ When any of the above bites, the diagnostic signature is: `gh` exits 0, no URL o
 
 Our `.dockerignore` starts with `*` (deny-all) and re-includes specific paths. **If you remove the `!.editorconfig` line, the publish breaks** with CA1848/CA1873 errors because the analyzer suppressions live in `.editorconfig`. Same applies to `!samples/` for sample images.
 
+### 📝 Documentation is written in English
+
+All committed docs (`docs/**`, `README.md`, `AGENTS.md`, XML-doc / `[Description]` strings, code comments) are **English**. The audience for the tool reference and tool descriptions is the LLM / MCP client. Do not introduce Portuguese (or any non-English) prose into committed files, even when the working conversation is in another language — translate before committing. If you find an existing non-English passage, normalize it to English as part of the change you are making.
+
 ### ⏱️ EventPipe session startup is not instant
 
 EventPipe sessions take ~500ms–1s to fully start. Then `EventCounters` payloads arrive at `EventCounterIntervalSec` boundaries.

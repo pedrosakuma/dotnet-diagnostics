@@ -9,7 +9,7 @@ delivered over Streamable HTTP at `POST /mcp` and require an
 > [`src/DotnetDiagnostics.Core`](../src/DotnetDiagnostics.Core), which are the source of
 > truth for field names and types.
 
-### Bootstrap implícito (`processId` is optional)
+### Implicit bootstrap (`processId` is optional)
 
 Since issue #42 every tool that targets a live .NET process accepts `processId`
 as optional. When the caller omits it the server lists the visible .NET
@@ -43,7 +43,7 @@ a single `<tool>` call when there is only one .NET process visible to the
 sidecar. The capability digest is cached per pid for 60 seconds so back-to-back
 tool calls within an investigation pay the probe cost once.
 
-### Verbosidade (`depth`)
+### Verbosity (`depth`)
 
 Issue [#41 slice 2c](https://github.com/pedrosakuma/dotnet-diagnostics/issues/41)
 adds a uniform `depth` parameter to every windowed collector. Values:
@@ -59,11 +59,8 @@ adds a uniform `depth` parameter to every windowed collector. Values:
 **Key invariant — the handle store always carries the FULL artifact**, regardless
 of `depth`. The depth knob only filters the *inline* response. Drilldown is now
 unified behind a single verb — **[`query_snapshot(handle, view, …)`](#query_snapshot)**
-(RFC 0002 §4.1 / #207) — which dispatches on the handle's recorded artifact kind
-and re-projects everything the original collection captured. The five legacy
-drilldown tools (`query_snapshot`, `query_snapshot`,
-`query_snapshot`, `query_snapshot`, `query_snapshot(view="call-tree")`) remain registered
-through the 0.9.0 deprecation window as byte-equal aliases of the unified verb.
+— which dispatches on the handle's recorded artifact kind
+and re-projects everything the original collection captured.
 
 Per-tool `Summary` semantics:
 
@@ -110,7 +107,7 @@ and marks these tools with `execution.taskSupport: "optional"` in `tools/list`:
 3. fetch the terminal `CallToolResult` via `tasks/result`
 4. cancel via `tasks/cancel`
 
-### MCP-native progress and cancellation (RFC 0002 §7.3 #7 / issue #211)
+### MCP-native progress and cancellation (issue #211)
 
 In addition to MCP Tasks, long-running collectors emit standard MCP
 `notifications/progress` messages and honor `notifications/cancelled` on the
@@ -138,7 +135,7 @@ How it works:
   the cancellation as an `OperationCanceledException` instead of returning
   the envelope — both shapes are spec-conformant.
 
-> **Removed in Stage B (RFC 0002 §7.3 #7 / issue #211).** The legacy polling
+> **Removed in Stage B (issue #211).** The legacy polling
 > bridge — `collect_sample(kind="cpu")(runAsJob=true)`, `get_collection_status(handle)`,
 > `cancel_collection(handle)` — has been removed. Clients must use MCP Tasks or
 > the in-request progress/cancel notifications described above.
@@ -164,43 +161,36 @@ Every prompt returns a single `user`-role message whose content is annotated
 with `audience: ["assistant"]` so MCP clients that distinguish user-facing
 templates from assistant-facing context route them directly into the LLM's
 context window. Each prompt embeds the hypothesis tree from the playbook plus
-exact tool-call examples (with placeholder args reflecting bootstrap implícito).
+exact tool-call examples (with placeholder args reflecting the implicit bootstrap).
 The LLM may always ignore a prompt and drive ad-hoc.
 
-### Handle chaining nos coletores (`query_snapshot`)
+### Handle chaining in the collectors (`query_snapshot`)
 
-Os 7 coletores windowed — `collect_events(kind="counters")`, `collect_events(kind="exceptions")`,
-`collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`, `collect_events(kind="logs")`, `collect_events(kind="jit")` — devolvem, junto do summary +
-Os 6 coletores windowed — `collect_events(kind="counters")`, `collect_events(kind="exceptions")`,
-`collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`, `collect_events(kind="logs")`, `collect_events(kind="threadpool")` — devolvem, junto do summary +
-`collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`, `collect_events(kind="logs")`, `collect_events(kind="db")` — devolvem, junto do summary +
-`collect_events(kind="contention")` — devolve o summary + handle do snapshot de contenção para drilldown por call-site/owner sem repetir a janela.
-top-N inline, um `handle` opaco (Crockford-base32, TTL ~10 min) registrado num
-store em memória. A LLM pode então re-projetar o mesmo artefato sob outra
-visão **sem rodar o EventPipe de novo** chamando `query_snapshot`:
+The windowed collectors — every `collect_events(kind=…)` variant (`counters`,
+`exceptions`, `gc`, `datas`, `catalog`, `activities`, `event_source`, `logs`,
+`jit`, `threadpool`, `contention`, `db`) — return, alongside the inline summary
++ top-N, an opaque `handle` (Crockford-base32, TTL ~10 min) registered in an
+in-memory store. The LLM can then re-project the same artifact under a
+different view **without re-running EventPipe** by calling `query_snapshot`:
 
 ```jsonc
-// 1. coleta uma vez
+// 1. collect once
 collect_events(kind="exceptions")(processId=4242, durationSeconds=10)
   → { summary: "30 exceptions (3 types)", handle: "01H...XY", data: { … top-N } }
 
-// 2. drilldown N vezes dentro da janela TTL
+// 2. drill down N times within the TTL window
 query_snapshot(handle="01H...XY", view="recent", topN=20)
 query_snapshot(handle="01H...XY", view="byType")
 ```
 
-`query_snapshot` (RFC 0002 §4.1 / #207) é o verbo único de drilldown — ele
-faz dispatch pelo `kind` que o handle carrega e cobre os 11 kinds emitidos
-pelos coletores acima + heap (`heap-snapshot`), thread (`thread-snapshot`),
-off-CPU (`off-cpu-snapshot`) e call-tree (`cpu-sample` / `allocation-sample`).
-Os 5 verbos legados (`query_snapshot`, `query_snapshot`,
-`query_snapshot`, `query_snapshot`, `query_snapshot(view="call-tree")`) seguem
-registrados como aliases byte-equal durante a janela de depreciação 0.9.0
-(asserted por `QuerySnapshotCompatibilityTests`).
+`query_snapshot` is the single drilldown verb — it dispatches on the `kind` the
+handle carries and covers every kind emitted by the collectors above plus heap
+(`heap-snapshot`), thread (`thread-snapshot`), off-CPU (`off-cpu-snapshot`) and
+call-tree (`cpu-sample` / `allocation-sample` / `native-alloc-sample`).
 
-Visões disponíveis por `kind`:
+Views available per `kind`:
 
-| Kind | Emitido por | Views aceitas |
+| Kind | Emitted by | Accepted views |
 |---|---|---|
 | `counters` | `collect_events(kind="counters")` | `summary` (default), `byProvider` |
 | `exception-snapshot` | `collect_events(kind="exceptions")` | `summary` (default = `byType.Take(topN)`), `byType`, `recent` |
@@ -219,11 +209,12 @@ Visões disponíveis por `kind`:
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
 | `cpu-sample` / `allocation-sample` / `native-alloc-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `diff` |
 
-Autorização é aplicada por kind no dispatcher (`heap-read` para heap,
-`ptrace` para thread, `eventpipe` para off-CPU, `investigation-export` para
-cpu/allocation call-tree + diff, `heap-read` para heap diff, `read-counters`|`eventpipe` para collection) — o gate estático aceita
-qualquer um dos 5 escopos para o tool surface; o boundary por kind preserva o
-contrato de cada legado verbatim (RFC 0002 §4.1).
+Authorization is applied per kind at the dispatcher (`heap-read` for heap,
+`ptrace` for thread, `eventpipe` for off-CPU, `investigation-export` for
+cpu/allocation call-tree + diff, `heap-read` for heap diff,
+`read-counters`|`eventpipe` for collection) — the static gate accepts any of
+those scopes for the tool surface, and the per-kind boundary preserves each
+former verb's contract verbatim.
 
 `view="diff"` accepts `baselineHandle` or ordered `comparisonHandles`, `minDeltaPct`
 (default `5.0`), `topN` (default `25`), `depth` (`"full"` default, or `"compact"`),
@@ -318,94 +309,94 @@ same way at capture time (`AddressKind` / `Rva` / `BuildId` on each frame, `Disp
 `module+0x<rva>` or `<unmapped-or-not-captured 0x…>`). Hand the `(buildId, rva)` to
 `dotnet-native-mcp` for symbolication.
 
-> **Nota — truncação em `event-source`:** o coletor para de armazenar eventos
-> ao atingir `maxEvents`, mas continua contando o total. As views
-> `summary`/`byEventName` agora trazem `capturedCount` e `truncated`; quando
-> `truncated=true` os grupos refletem só o prefixo capturado — re-rode
-> `collect_events(kind="event_source")` com `maxEvents` maior pra agregados exatos.
+> **Note — `event-source` truncation:** the collector stops storing events
+> once it reaches `maxEvents`, but keeps counting the total. The
+> `summary`/`byEventName` views now carry `capturedCount` and `truncated`; when
+> `truncated=true` the groups reflect only the captured prefix — re-run
+> `collect_events(kind="event_source")` with a larger `maxEvents` for exact aggregates.
 
-Handles invalidam quando: o TTL expira, o processo alvo morre (evicção
-automática), ou um restart do server zera o store. Acesso a handle
-desconhecido devolve `DiagnosticError { Kind: "HandleExpired" }` com um
-`NextActionHint` apontando o coletor original.
+Handles are invalidated when: the TTL expires, the target process dies
+(automatic eviction), or a server restart clears the store. Accessing an
+unknown handle returns `DiagnosticError { Kind: "HandleExpired" }` with a
+`NextActionHint` pointing at the original collector.
 
-Esse contrato é o equivalente "split collector, unified drilldown"
-(documentado em [`AGENTS.md`](../AGENTS.md)) aplicado a *todos* os coletores
-— mesmo padrão de `inspect_heap(source="dump")`/`inspect_heap(source="live")` e
-`collect_thread_snapshot`, agora colapsado num único verbo de query.
+This contract is the "split collector, unified drilldown" pattern
+(documented in [`AGENTS.md`](../AGENTS.md)) applied to *all* collectors
+— the same pattern as `inspect_heap(source="dump")`/`inspect_heap(source="live")` and
+`collect_thread_snapshot`, now collapsed into a single query verb.
 
 ### Kernel-side signals (`inspect_process(view="container")`)
 
-Mata o blind-spot mais comum em K8s: "app está lento, mas EventCounters dizem
-que CPU/memória estão ok" — na maior parte das vezes é **CPU throttling no
-cgroup**, invisível pelo runtime. `inspect_process(view="container")` lê cgroup v2 +
-`/proc/<pid>/oom_score` e devolve:
+Kills the most common blind-spot in K8s: "the app is slow, but EventCounters
+say CPU/memory are ok" — most of the time it's **CPU throttling at the
+cgroup**, invisible to the runtime. `inspect_process(view="container")` reads cgroup v2 +
+`/proc/<pid>/oom_score` and returns:
 
 - `Cpu`: `usage_usec`, `nr_periods`, `nr_throttled`, `throttled_usec`,
-  `ThrottlePercent` (canonical signal) e `QuotaCores` (null = unlimited).
-- `Memory`: `current`, `max`, `high`, `UsageFraction`, contadores
-  `oom_kill` / `max-hit` extraídos de `memory.events`.
+  `ThrottlePercent` (canonical signal) and `QuotaCores` (null = unlimited).
+- `Memory`: `current`, `max`, `high`, `UsageFraction`, plus
+  `oom_kill` / `max-hit` counters extracted from `memory.events`.
 - `Pressure` (PSI): `cpu.some.avg10`, `memory.some/full.avg10`, `io.some/full.avg10`.
-- `Pids` e `oom_score`.
+- `Pids` and `oom_score`.
 
-Tudo best-effort: arquivos faltando (PSI em kernel antigo, sem limite de
-memória, container sem read em `memory.events`) viram entradas em `Notes`, não
-erro fatal. Em Windows / cgroup v1 / sem cgroup, devolve `InContainer=false`
-+ `CgroupVersion` correto e `Notes` explicativo (job-object metrics ainda não
-foram wired).
+All best-effort: missing files (PSI on an old kernel, no memory limit,
+a container without read access to `memory.events`) become entries in `Notes`, not
+a fatal error. On Windows / cgroup v1 / no cgroup, it returns `InContainer=false`
++ the correct `CgroupVersion` and an explanatory `Notes` (job-object metrics are not
+yet wired).
 
-O `inspect_process(view="capabilities")` ganhou as flags do kernel-side para você saber
-se vale a pena tentar a coleta antes: `InContainer`, `CgroupV2`,
-`CanSeeThrottle` (true sse há quota configurada → throttling é observável),
+`inspect_process(view="capabilities")` gained the kernel-side flags so you know
+whether it's worth attempting the collection first: `InContainer`, `CgroupV2`,
+`CanSeeThrottle` (true iff a quota is configured → throttling is observable),
 `PsiAvailable`, `PerfInstalled`, `HasCapPerfmon`, `PerfEventParanoid`,
-`HasCapSysPtrace`, `PtraceScope` e `EtwKernelOk`. Slice 2b também expõe
-**`CanSampleOffCpu`** — true quando o sidecar já cumpre os pré-requisitos do
-backend (Linux: perf + privilégio suficiente para `sched_switch`; Windows:
-processo elevado). Quando false, `Notes` traz a hint concreta do motivo antes
-da LLM tentar `collect_sample(kind="off_cpu")` num sidecar sem privilégio.
+`HasCapSysPtrace`, `PtraceScope` and `EtwKernelOk`. It also exposes
+**`CanSampleOffCpu`** — true when the sidecar already meets the backend's
+prerequisites (Linux: perf + sufficient privilege for `sched_switch`; Windows:
+elevated process). When false, `Notes` carries the concrete hint for the reason before
+the LLM attempts `collect_sample(kind="off_cpu")` on an unprivileged sidecar.
 
-NextActionHints: throttle > 5% sugere `collect_sample(kind="cpu")` direto; memória >
-85% do limite sugere `inspect_heap(source="live")` antes do OOM-kill.
+NextActionHints: throttle > 5% suggests `collect_sample(kind="cpu")` directly; memory >
+85% of the limit suggests `inspect_heap(source="live")` before the OOM-kill.
 
 ### Off-CPU sampling (`collect_sample(kind="off_cpu")` + `query_snapshot`)
 
-> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="off_cpu", …)`](#collect_sample) instead; the legacy `collect_sample(kind="off_cpu")` remains registered behind a deprecation banner during the window (RFC 0002 §4.2 / issue #210).
+> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="off_cpu", …)`](#collect_sample) instead; the legacy `collect_sample(kind="off_cpu")` remains registered behind a deprecation banner during the window (issue #210).
 
-Complementa o `collect_sample(kind="cpu")` (que mostra **on-CPU** — onde o app gasta
-tempo executando) com **off-CPU** — onde threads ficaram **bloqueadas**
-(I/O, locks, condvars, monitor wait). Resolve o blind-spot clássico "CPU baixa
-mas latência alta": sampling on-CPU não enxerga porque as threads não estão
-rodando.
+Complements `collect_sample(kind="cpu")` (which shows **on-CPU** — where the app
+spends time executing) with **off-CPU** — where threads were **blocked**
+(I/O, locks, condvars, monitor wait). It resolves the classic blind-spot "low CPU
+but high latency": on-CPU sampling can't see it because the threads aren't
+running.
 
-- **Linux:** usa `perf record -a -e sched:sched_switch --call-graph dwarf` em
-  todo o sistema (o tracepoint `sched_switch` só dispara na thread que sai de
-  CPU, então restringir por PID perde o evento de IN). Spans são filtrados
-  pós-coleta pelo `/proc/<pid>/task/*` do alvo. Requer `CAP_PERFMON` (kernel
-  ≥ 5.8) ou `perf_event_paranoid <= -1`, e `perf` instalado
-  (`linux-tools-common` / `linux-tools-$(uname -r)` no Debian/Ubuntu).
+- **Linux:** uses `perf record -a -e sched:sched_switch --call-graph dwarf`
+  system-wide (the `sched_switch` tracepoint only fires on the thread leaving
+  CPU, so restricting by PID misses the IN event). Spans are filtered
+  post-collection by the target's `/proc/<pid>/task/*`. Requires `CAP_PERFMON` (kernel
+  ≥ 5.8) or `perf_event_paranoid <= -1`, and `perf` installed
+  (`linux-tools-common` / `linux-tools-$(uname -r)` on Debian/Ubuntu).
   `SymbolSource: "perf-sched-dwarf"`.
-- **Windows:** usa a sessão NT Kernel Logger via `TraceEvent` com
-  `ContextSwitch + Dispatcher + ImageLoad/Process/Thread`, stack walk no
-  `ContextSwitch` (a stack capturada na hora do switch-out é exatamente a
-  chamada bloqueante). Wait reason do kernel
-  (`UserRequest` / `WrLpcReceive` / `WrQueue`...) vira o `PrevState` do span,
-  mirror direto do `S/D/I` do Linux. Spans pendentes ao fim da janela viram
-  censored (`IsCensored=true`) com duração lower-bound, igual ao Linux.
-  Requer **BUILTIN\\Administrators** ou `SeSystemProfilePrivilege`; sem isso
-  devolve `PermissionDenied` com hint apontando os dois caminhos suportados
-  (`Administrators` **ou** `Profile system performance`). Pra produção, ver
+- **Windows:** uses the NT Kernel Logger session via `TraceEvent` with
+  `ContextSwitch + Dispatcher + ImageLoad/Process/Thread`, with a stack walk on
+  `ContextSwitch` (the stack captured at switch-out time is exactly the
+  blocking call). The kernel wait reason
+  (`UserRequest` / `WrLpcReceive` / `WrQueue`...) becomes the span's `PrevState`,
+  a direct mirror of Linux's `S/D/I`. Spans still pending at the end of the window become
+  censored (`IsCensored=true`) with a lower-bound duration, same as Linux.
+  Requires **BUILTIN\\Administrators** or `SeSystemProfilePrivilege`; without it
+  it returns `PermissionDenied` with a hint pointing at the two supported paths
+  (`Administrators` **or** `Profile system performance`). For production, see
   [`windows-sidecar-service.md`](./windows-sidecar-service.md)
-  (Windows Service com `LocalSystem` ou conta dedicada + privilégio único).
-  `SymbolSource: "etw-cswitch-pdb"` (resolve PDBs locais + `_NT_SYMBOL_PATH`).
-- **Managed↔kernel stack merge:** ainda não — frames são puramente nativos /
-  kernel em ambas as plataformas. Sub-slice 2c.
+  (Windows Service with `LocalSystem` or a dedicated account + a single privilege).
+  `SymbolSource: "etw-cswitch-pdb"` (resolves local PDBs + `_NT_SYMBOL_PATH`).
+- **Managed↔kernel stack merge:** not yet — frames are purely native /
+  kernel on both platforms.
 
-`collect_sample(kind="off_cpu")(pid, durationSeconds=10, topN=10)` devolve `{handle,
-summary, top}` com os stacks que mais tempo passaram off-CPU.
-`query_snapshot(handle, view, ...)` segue o padrão **split collector,
-unified drilldown**: `view="topStacks"` (default), `view="byThread"`
-(agregado por TID com `TopBlockingLeaf` + estado dominante), ou
-`view="stack"` com `stackRank=N` (1-based) pra exportar o stack completo.
+`collect_sample(kind="off_cpu")(pid, durationSeconds=10, topN=10)` returns `{handle,
+summary, top}` with the stacks that spent the most time off-CPU.
+`query_snapshot(handle, view, ...)` follows the **split collector,
+unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
+(aggregated by TID with `TopBlockingLeaf` + dominant state), or
+`view="stack"` with `stackRank=N` (1-based) to export the full stack.
 
 
 ## Quick index
@@ -442,7 +433,7 @@ unified drilldown**: `view="topStacks"` (default), `view="byThread"`
 | [`capture_method_bytes`](#capture_method_bytes) | cheap | **yes** | ❌ (use `dotnet-native-mcp.disassemble`) | reads JIT code-heap |
 | `get_bytes(kind="module")` | cheap | **yes** (live module attach) | ❌ (materialize locally, then hand off) | streams PE / PDB bytes over MCP chunks |
 | `get_bytes(kind="dump")` | cheap | no | ❌ (materialize locally, then hand off) | streams dump bytes from `MCP_ARTIFACT_ROOT` |
-| `list_orchestrator(kind=pods\|investigations)` (orchestrator) | cheap | n/a | n/a | RFC 0002 §4.7 successor to `list_orchestrator(kind="pods")` + `list_orchestrator(kind="investigations")`. `kind=pods` → Kubernetes `pods.list` (scope `orchestrator-list`); `kind=investigations` → in-memory handle snapshot (scope `orchestrator-attach`). **Opt-in**, registered only when `Orchestrator:Enabled=true`. Legacy tool names remain accepted for one deprecation window (removed in 0.7.0). |
+| `list_orchestrator(kind=pods\|investigations)` (orchestrator) | cheap | n/a | n/a | Successor to `list_orchestrator(kind="pods")` + `list_orchestrator(kind="investigations")`. `kind=pods` → Kubernetes `pods.list` (scope `orchestrator-list`); `kind=investigations` → in-memory handle snapshot (scope `orchestrator-attach`). **Opt-in**, registered only when `Orchestrator:Enabled=true`. Legacy tool names remain accepted for one deprecation window (removed in 0.7.0). |
 
 "Window-bound" means the duration is the dominant cost; the tool will block for
 ~`durationSeconds`.
@@ -492,7 +483,7 @@ hint to the perf-replay fallback tracked in issue #92.
 
 ## `inspect_process`
 
-**Canonical bootstrap tool** ([RFC 0002 §4.6](./rfcs/0002-tool-surface-consolidation.md)).
+**Canonical bootstrap tool.**
 Consolidates the five legacy metadata tools — `inspect_process(view="list")`,
 `inspect_process(view="info")`, `inspect_process(view="capabilities")`, `inspect_process(view="container")`,
 `inspect_process(view="memory_trend")` — behind one `view` discriminator, and adds the
@@ -838,7 +829,7 @@ Short ASP.NET Core request snapshot for the "which requests are hanging right no
 
 ## `collect_events`
 
-**Canonical EventPipe collector** (RFC 0002 §4.5). A single tool that dispatches
+**Canonical EventPipe collector.** A single tool that dispatches
 by `kind` to the underlying counters / exceptions / gc / event_source /
 activities / logs / threadpool collector. New clients should call `collect_events` instead of the
 legacy entrypoints; the legacy tools remain registered and behaviorally
@@ -879,7 +870,7 @@ kind requires `eventpipe` (`event_source` additionally honors the existing
 
 ## `collect_sample`
 
-**Canonical bounded-time sampler** (RFC 0002 §4.2). A single tool that
+**Canonical bounded-time sampler.** A single tool that
 dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc sampler.
 New clients should call `collect_sample` instead of the three legacy entry
 points; the legacy tools remain registered and behaviorally identical, but
@@ -1012,7 +1003,7 @@ and also includes `http.server.request.duration` p95 when available.
 
 ## `collect_sample(kind="cpu")`
 
-> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="cpu", …)`](#collect_sample) instead. The legacy tool remains registered and behaviorally identical during the deprecation window (RFC 0002 §4.2 / issue #210).
+> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="cpu", …)`](#collect_sample) instead. The legacy tool remains registered and behaviorally identical during the deprecation window (issue #210).
 
 Captures a CPU sample via the `Microsoft-DotNETCore-SampleProfiler` provider,
 writes a temporary `.nettrace`, parses it with `TraceLog` and aggregates the
@@ -1133,7 +1124,7 @@ closed form.
 
 ## `collect_sample(kind="allocation")`
 
-> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="allocation", …)`](#collect_sample) instead. The legacy tool remains registered and behaviorally identical during the deprecation window (RFC 0002 §4.2 / issue #210).
+> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="allocation", …)`](#collect_sample) instead. The legacy tool remains registered and behaviorally identical during the deprecation window (issue #210).
 
 Captures allocation samples from the target process via `GCAllocationTick`
 events from `Microsoft-Windows-DotNETRuntime` (keyword `GCKeyword=0x1`, level
@@ -1735,7 +1726,7 @@ JIT split the method). Suspend window on live attach is typically < 100 ms.
 
 ## `get_bytes`
 
-**Successor (RFC 0002 §4.4) to `get_bytes(kind="module")` + `get_bytes(kind="dump")`.** Single
+**Successor to `get_bytes(kind="module")` + `get_bytes(kind="dump")`.** Single
 byte-fetch entrypoint that dispatches on a `kind` discriminator:
 
 - `kind: "module"` — same shape as the legacy `get_bytes(kind="module")`. Required
@@ -1838,7 +1829,7 @@ covers dump artifacts under `MCP_ARTIFACT_ROOT`.
 
 ## `list_orchestrator`
 
-RFC 0002 §4.7 consolidation of the orchestrator listing surface (issue #212). One
+Consolidation of the orchestrator listing surface (issue #212). One
 read-only tool that dispatches on `kind`:
 
 | `kind` | Replaces | Required scope | Returns |
