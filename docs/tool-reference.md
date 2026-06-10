@@ -1937,6 +1937,17 @@ matching `data.kind`. Errors (missing subscription id, unknown `kind`, Azure dis
 disabled, scope mismatch) surface as the standard `DiagnosticError` envelope with kinds
 `InvalidArgument`, `AzureDiscoveryDisabled`, or `PermissionDenied` respectively.
 
+**`readinessWarnings`.** Each candidate carries a best-effort `readinessWarnings[]` so the
+LLM can rank attach targets without an extra round-trip (empty does *not* prove attach-ready):
+- `webapps` — Windows sites are flagged (`Windows OS — sidecar not supported`); function apps
+  are excluded entirely.
+- `containerapps` — flags `No second container detected` (sidecar topology not deployed) and
+  `Scale=0` (may be scaled to zero and unreachable).
+
+**RBAC.** All kinds need **Reader** on the subscription (or a tighter resource-group scope).
+`aksclusters` with `includeKubeconfig=true` additionally needs the **Azure Kubernetes Service
+Cluster User Role** per cluster; missing it leaves `handoff` null on that row with a warning.
+
 **Registration.** Gated on the `AzureDiscovery:Enabled` configuration flag — a server
 with the master switch off looks identical to a pre-#232 build (the tool is not
 registered and the Azure SDK is never reached).
@@ -1946,8 +1957,7 @@ registered and the Azure SDK is never reached).
 - **#234** — AKS (`aksclusters`), including the kubeconfig-handle store.
 
 Until those PRs merge, calling the tool with `AzureDiscovery:Enabled=true` throws
-`NotImplementedException` through the backend stubs. See
-[`docs/azure-discovery.md`](./azure-discovery.md) for the full design.
+`NotImplementedException` through the backend stubs.
 
 ---
 

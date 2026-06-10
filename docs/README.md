@@ -42,7 +42,6 @@ you're using, then reach for the cross-cutting references.
 | File | What it covers |
 |---|---|
 | [`../src/DotnetDiagnostics.BenchmarkDotNet/README.md`](../src/DotnetDiagnostics.BenchmarkDotNet/README.md) | The in-process `[DiagnosticKind]` diagnoser — attach Core captures to a `[Benchmark]` |
-| [`benchmarkdotnet-diagnoser-design.md`](./benchmarkdotnet-diagnoser-design.md) | Design notes for the diagnoser integration |
 
 Planned but not yet written:
 

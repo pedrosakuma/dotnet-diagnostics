@@ -17,9 +17,7 @@ For Kubernetes on EKS (or any other cluster), use the generic recipes under
 
 > **AWS Lambda** is intentionally not covered. Lambda's freeze-between-
 > invocations execution model breaks long-running EventPipe sessions and
-> `ptrace` attach paths. See
-> [`../../docs/cloud-integrations-design.md`](../../docs/cloud-integrations-design.md)
-> for the rationale.
+> `ptrace` attach paths.
 
 ## What lives here
 
@@ -35,6 +33,3 @@ For Kubernetes on EKS (or any other cluster), use the generic recipes under
 - **CDK or Terraform alternate dialects** are deliberately deferred; the
   initial reference is CloudFormation YAML for parity with the Azure Bicep
   and Kubernetes YAML recipes already in this repo.
-
-See [`../../docs/cloud-recipes-design.md`](../../docs/cloud-recipes-design.md)
-for the design that drives these recipes.
