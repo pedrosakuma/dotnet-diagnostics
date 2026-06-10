@@ -105,7 +105,7 @@ var app = builder.Build();
 loggerFactoryHolder = app.Services.GetRequiredService<ILoggerFactory>();
 servicesHolder = app.Services;
 
-// B5.1 / docs/authorization.md#default-policy-by-transport + §7: scoped bearer auth replaces the previous single-bearer
+// B5.1 / docs/authorization.md#default-policy-by-transport: scoped bearer auth replaces the previous single-bearer
 // path. The registry is constructed before the app starts handling requests so any
 // validation error (duplicate token, empty scope set, missing legacy token on a
 // non-loopback bind) surfaces as a startup failure with a clear log line — never a
