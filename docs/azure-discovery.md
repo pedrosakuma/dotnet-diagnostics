@@ -249,7 +249,7 @@ problems were detected (it does NOT prove the site is attach-ready).
 
 ## Stateless server contract
 
-The MCP server stays stateless per RFC 0002. The kubeconfig handle store landing
+The MCP server stays stateless. The kubeconfig handle store landing
 in #234 is **process-local with a TTL**: handles do not survive a server
 restart, are not shared across replicas, and never get persisted to disk.
 Re-discovery is cheap and explicit.

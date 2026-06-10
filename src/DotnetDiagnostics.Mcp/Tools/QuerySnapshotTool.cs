@@ -16,7 +16,7 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// RFC 0002 §4.1 / issue #207 — single drilldown surface that subsumes the five
+/// #207 — single drilldown surface that subsumes the five
 /// handle-based query tools (<c>query_heap_snapshot</c>, <c>query_thread_snapshot</c>,
 /// <c>query_off_cpu_snapshot</c>, <c>query_collection</c>, <c>get_call_tree</c>) behind
 /// one <c>(handle, view)</c> contract. The dispatcher reads the artifact kind recorded
@@ -26,7 +26,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// registered through the deprecation window.
 /// </summary>
 /// <remarks>
-/// <para><b>Authorization (RFC §4.1).</b> The static gate accepts any drilldown-capable
+/// <para><b>Authorization.</b> The static gate accepts any drilldown-capable
 /// bearer (<c>RequireAnyScope</c> over the union of legacy scopes). After resolving the
 /// handle kind we re-apply the exact legacy scope at runtime so the
 /// <c>(handle family, origin, view)</c> boundary is preserved verbatim:</para>
@@ -90,7 +90,7 @@ public sealed class QuerySnapshotTool
         new ThreadPoolComparableProjector(),
     ];
 
-    // Scopes (mirrored from RFC §4.1 / the legacy [RequireScope] attributes).
+    // Scopes (mirrored from the legacy [RequireScope] attributes).
     private const string ScopeHeapRead = "heap-read";
     private const string ScopePtrace = "ptrace";
     private const string ScopeEventPipe = "eventpipe";
@@ -125,7 +125,7 @@ public sealed class QuerySnapshotTool
         "envelopes — never a 500. Authorization is preserved per kind: heap-read for heap, ptrace for thread, " +
         "eventpipe for off-CPU, investigation-export for call-tree, and read-counters|eventpipe for collection. " +
         "Supersedes the deprecated query_heap_snapshot, query_thread_snapshot, query_off_cpu_snapshot, " +
-        "query_collection and get_call_tree tools (RFC 0002 §4.1 / #207).")]
+        "query_collection and get_call_tree tools (#207).")]
     public static async Task<DiagnosticResult<object>> QuerySnapshot(
         IDiagnosticHandleStore handles,
         IDumpInspector inspector,

@@ -46,7 +46,7 @@ public sealed record DiagnosticResult<T>(
     /// True when the underlying collection was interrupted mid-window via the MCP request's
     /// <c>notifications/cancelled</c> path. The envelope is then a partial — <see cref="Data"/>
     /// reflects whatever was collected up to the cancellation point (often empty), and
-    /// <see cref="Error"/> is <c>null</c>. Stage A of RFC 0002 §7.3 item 7 / issue #211.
+    /// <see cref="Error"/> is <c>null</c>. Stage A of issue #211.
     /// </summary>
     public bool Cancelled { get; init; }
 }

@@ -23,7 +23,7 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// RFC 0002 §4.5 consolidation: single MCP entry-point for the EventPipe collector family
+/// Consolidation: single MCP entry-point for the EventPipe collector family
 /// (counters, exceptions, GC, EventSource, ActivitySource). Delegates to the legacy
 /// <see cref="DiagnosticTools"/> methods for true behavioral parity — this tool exists
 /// only to flatten the discriminator dispatch so the LLM picks one tool instead of five.
@@ -34,7 +34,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// re-checks the kind-specific scope inside the body so a caller holding only
 /// <c>read-counters</c> cannot exfiltrate GC/exception/EventSource data through the new entry
 /// point. This preserves docs/authorization.md#scopes boundaries verbatim.</para>
-/// <para>RFC 0002 §7.3 #9 / #213 — the legacy collectors have been deleted in the alias
+/// <para>#213 — the legacy collectors have been deleted in the alias
 /// removal wave; this is now the sole entry point for the EventPipe collector family.</para>
 /// </remarks>
 [McpServerToolType]
@@ -68,7 +68,7 @@ public sealed class CollectEventsTool
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(
-        "Unified EventPipe collector entry-point (RFC 0002 §4.5). Set 'kind' to choose what to " +
+        "Unified EventPipe collector entry-point. Set 'kind' to choose what to " +
         "capture: 'counters' (EventCounter snapshot — cheap first signal), 'exceptions' (managed " +
         "exception stream), 'gc' (GC start/stop pairs and pause durations), 'datas' (DATAS Server-GC " +
         "heap-count tuning: per-GC samples, heap-count decisions, gen2 backstop tuning), 'catalog' " +
@@ -173,7 +173,7 @@ public sealed class CollectEventsTool
             {
                 var message =
                     $"kind='{canonicalKind}' requires the '{requiredScope}' scope. " +
-                    "RFC 0002 §4.5: collect_events preserves the per-kind authorization boundary of its legacy collectors.";
+                    "collect_events preserves the per-kind authorization boundary of its legacy collectors.";
                 return DiagnosticResult.Fail<CollectEventsEnvelope>(
                     message,
                     new DiagnosticError("InsufficientScope", message, requiredScope));
@@ -184,7 +184,7 @@ public sealed class CollectEventsTool
         // the parameter see no behavioral change.
         var effectiveDuration = durationSeconds ?? (canonicalKind == "counters" ? 5 : canonicalKind == "datas" ? 15 : 10);
 
-        // Stage A of RFC 0002 §7.3 #7 / issue #211: emit MCP notifications/progress while the
+        // Stage A of issue #211: emit MCP notifications/progress while the
         // EventPipe session is open, and translate MCP notifications/cancelled into a partial
         // envelope so spec-compliant clients no longer need the legacy job-polling bridge.
         try

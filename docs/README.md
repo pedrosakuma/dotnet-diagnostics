@@ -44,12 +44,6 @@ you're using, then reach for the cross-cutting references.
 | [`../src/DotnetDiagnostics.BenchmarkDotNet/README.md`](../src/DotnetDiagnostics.BenchmarkDotNet/README.md) | The in-process `[DiagnosticKind]` diagnoser — attach Core captures to a `[Benchmark]` |
 | [`benchmarkdotnet-diagnoser-design.md`](./benchmarkdotnet-diagnoser-design.md) | Design notes for the diagnoser integration |
 
-### Design / RFCs
-
-| File | What it covers |
-|---|---|
-| [`rfcs/`](./rfcs/README.md) | Numbered design documents for cross-cutting changes |
-
 Planned but not yet written:
 
 - `architecture.md` — high-level component map (Core vs Server, EventPipe pipeline)

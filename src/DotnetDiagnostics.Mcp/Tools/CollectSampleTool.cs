@@ -15,14 +15,14 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// RFC 0002 §4.2 consolidation: single MCP entry-point for the bounded-time sampling
+/// Consolidation: single MCP entry-point for the bounded-time sampling
 /// family — <c>cpu</c>, <c>off_cpu</c>, <c>allocation</c>. Delegates to the legacy
 /// <see cref="DiagnosticTools"/> methods so per-kind behaviour (provider/keyword setup,
 /// SSRF guards, ClrMD enrichment) is preserved verbatim — asserted byte-for-byte by the
 /// dual-entrypoint compatibility tests.
 /// </summary>
 /// <remarks>
-/// <para>RFC 0002 §7.3 #9 / #213 — the legacy tools (<c>collect_cpu_sample</c>,
+/// <para>#213 — the legacy tools (<c>collect_cpu_sample</c>,
 /// <c>collect_off_cpu_sample</c>, <c>collect_allocation_sample</c>) have been deleted in
 /// the alias removal wave; this is now the sole entry-point for bounded-time sampling.</para>
 /// </remarks>
@@ -55,7 +55,7 @@ public sealed class CollectSampleTool
         UseStructuredContent = true,
         TaskSupport = ToolTaskSupport.Optional)]
     [Description(
-        "Unified sampling collector entry-point (RFC 0002 §4.2). Set 'kind' to choose the sampler: " +
+        "Unified sampling collector entry-point. Set 'kind' to choose the sampler: " +
         "'cpu' (on-CPU SampleProfiler / perf — top managed hotspots with MethodIdentity handoff), " +
         "'off_cpu' (where threads are blocked and for how long — Linux sched_switch via perf, Windows " +
         "ContextSwitch via NT Kernel Logger), 'allocation' (managed GCAllocationTick rolled up by type — " +
@@ -218,7 +218,7 @@ public sealed class CollectSampleTool
 /// Polymorphic payload returned by <see cref="CollectSampleTool.CollectSample"/>. Exactly one
 /// of the kind-specific fields (<see cref="Cpu"/>, <see cref="OffCpu"/>,
 /// <see cref="Allocation"/>) is populated, matched by <see cref="Kind"/>. Mirrors the
-/// discriminator-envelope convention used by other RFC 0002 consolidated tools
+/// discriminator-envelope convention used by other consolidated tools
 /// (<see cref="CollectEventsEnvelope"/>, <c>get_method_il</c>, …).
 /// </summary>
 public sealed record CollectSampleEnvelope(

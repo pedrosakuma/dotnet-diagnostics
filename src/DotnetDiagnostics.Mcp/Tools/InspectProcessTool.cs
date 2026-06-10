@@ -14,12 +14,12 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// RFC 0002 / §4.6 — single bootstrap entrypoint that subsumes the five read-only
+/// Single bootstrap entrypoint that subsumes the five read-only
 /// process inspection tools (<c>list_dotnet_processes</c>, <c>get_process_info</c>,
 /// <c>get_diagnostic_capabilities</c>, <c>get_container_signals</c>, <c>get_memory_trend</c>)
 /// behind one <c>view=</c> discriminator, plus the Phase 10.3 <c>view=resources</c>
 /// and Phase 10.4 <c>view=requests-now</c> extensions for FD / handle / socket inspection and
-/// in-flight ASP.NET Core request snapshots. RFC 0002 §7.3 #9 / #213 — the five
+/// in-flight ASP.NET Core request snapshots. #213 — the five
 /// legacy tools have been deleted in the alias removal wave; this is now the sole
 /// bootstrap entrypoint.
 /// </summary>
@@ -33,7 +33,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// <see cref="DiagnosticResult{T}.Error"/>) so the dual-entrypoint compatibility tests in
 /// <c>InspectProcessCompatibilityTests</c> compare equal under
 /// <c>CompatibilityEnvelopeAssert</c>.</para>
-/// <para>Auto-resolve guardrails (per RFC §4.6):
+/// <para>Auto-resolve guardrails:
 /// <list type="bullet">
 ///   <item><description><c>view=list</c> never touches the resolver — it just lists every
 ///   .NET process visible to the diagnostic IPC and ignores <c>processId</c>.</description></item>
@@ -105,7 +105,7 @@ public sealed class InspectProcessTool
         "workload (cpu-bound, gc-pressure, memory-pressure, threadpool-starvation, lock-contention, io-bound, healthy) and returns a " +
         "verdict plus actionable hints; just follow the first hint to the right collector. No processId needed when one " +
         ".NET process is visible. " +
-        "RFC 0002 §4.6 — single bootstrap entrypoint that subsumes list_dotnet_processes, " +
+        "Single bootstrap entrypoint that subsumes list_dotnet_processes, " +
         "get_process_info, get_diagnostic_capabilities, get_container_signals and get_memory_trend, " +
         "plus the Phase 11 runtime-config view, the Phase 10.3 resources view, the Phase 10.4 requests-now view, and the Phase 12 triage view. Pick the projection with view=list|info|capabilities|container|memory_trend|runtime-config|resources|requests-now|triage. " +
         "view=list returns every .NET process visible to the diagnostic IPC and ignores processId. " +

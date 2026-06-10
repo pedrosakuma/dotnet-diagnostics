@@ -6,7 +6,7 @@ using Xunit;
 namespace DotnetDiagnostics.Core.Tests;
 
 /// <summary>
-/// RFC 0002 / #204 — sanity coverage for the shared discriminator-validation helper. The
+/// #204 — sanity coverage for the shared discriminator-validation helper. The
 /// helper is consumed by sub-issues #205–#212 to validate <c>kind=</c> / <c>view=</c> /
 /// <c>source=</c> values without throwing.
 /// </summary>

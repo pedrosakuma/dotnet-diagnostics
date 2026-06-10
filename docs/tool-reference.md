@@ -1090,7 +1090,7 @@ yields a few thousand samples; bump `durationSeconds` for sparse workloads.
 "optional"`). Spec clients should use task-augmented `tools/call` + `tasks/get` /
 `tasks/result`; for clients that don't implement Tasks, use the in-request
 `notifications/progress` + `notifications/cancelled` flow described under
-[MCP-native progress and cancellation](#mcp-native-progress-and-cancellation-rfc-0002-73-7--issue-211).
+[MCP-native progress and cancellation](#mcp-native-progress-and-cancellation-issue-211).
 
 ## Symbol resolution
 
@@ -1870,9 +1870,9 @@ standard `DiagnosticError` envelope with kinds `InvalidArgument`,
 **Authorization.** The MCP scope filter accepts either of `orchestrator-list` /
 `orchestrator-attach`. The tool re-checks scopes per `kind` so a token holding
 only `orchestrator-list` cannot enumerate investigation handles by switching the
-discriminator (RFC §4.7).
+discriminator.
 
-**Why `attach_to_pod` / `detach_from_pod` are NOT folded in.** RFC §4.7 — those
+**Why `attach_to_pod` / `detach_from_pod` are NOT folded in.** Those
 verbs have side-effect boundaries (ephemeral-container injection, handle close,
 session unbind) that are distinct from read-only listing. They remain explicit.
 

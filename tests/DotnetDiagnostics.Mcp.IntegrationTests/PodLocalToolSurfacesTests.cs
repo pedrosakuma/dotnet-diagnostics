@@ -82,7 +82,7 @@ public sealed class PodLocalToolSurfacesTests
     }
 
     /// <summary>
-    /// Regression for the omission seen during the RFC 0002 fleet cascade — the orchestrator
+    /// Regression for the omission seen during the tool-surface fleet cascade — the orchestrator
     /// proxy allowlist used to hard-code a smaller subset and silently dropped any new
     /// pod-local tool surface (CollectEventsTool / InspectHeapTool went missing in Wave 2).
     /// Sourcing the allowlist from <see cref="PodLocalToolSurfaces.Proxyable"/> means the
