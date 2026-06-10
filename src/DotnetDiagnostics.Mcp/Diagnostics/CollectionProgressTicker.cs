@@ -6,8 +6,8 @@ namespace DotnetDiagnostics.Mcp.Diagnostics;
 
 /// <summary>
 /// Wraps a long-running diagnostic collection with periodic MCP <c>notifications/progress</c>
-/// emissions, anchored on the request's <c>_meta.progressToken</c>. RFC 0002 §7.3 item 7 /
-/// issue #211 — the MCP-native progress + cancel surface for bounded-time collectors.
+/// emissions, anchored on the request's <c>_meta.progressToken</c>. Issue #211 — the
+/// MCP-native progress + cancel surface for bounded-time collectors.
 /// </summary>
 /// <remarks>
 /// <para>

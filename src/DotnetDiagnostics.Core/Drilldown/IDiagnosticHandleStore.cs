@@ -63,7 +63,7 @@ public interface IDiagnosticHandleStore
 
 /// <summary>
 /// Logical provenance of a registered artifact. Consumed by the legacy-boundary
-/// authorization table (RFC 0002 / #207) to decide which scopes a drilldown view requires.
+/// authorization table (#207) to decide which scopes a drilldown view requires.
 /// </summary>
 public enum HandleOrigin
 {

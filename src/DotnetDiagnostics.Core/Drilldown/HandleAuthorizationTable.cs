@@ -3,7 +3,7 @@ using System.Collections.Immutable;
 namespace DotnetDiagnostics.Core.Drilldown;
 
 /// <summary>
-/// RFC 0002 / #207 — static map from <c>(HandleOrigin, viewName)</c> to the modifier scope
+/// #207 — static map from <c>(HandleOrigin, viewName)</c> to the modifier scope
 /// the unified <c>query_snapshot</c> tool must require when authorizing the drill-down.
 /// </summary>
 /// <remarks>

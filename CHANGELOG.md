@@ -58,12 +58,12 @@ No breaking changes.
   Local dev launch is unaffected — `launchSettings.json` profiles still set
   `applicationUrl` explicitly.
 - `inspect_process(view=list)` and the ClrMD `PermissionDenied` envelope no
-  longer emit `nextTool="get_diagnostic_capabilities"` (removed in RFC 0002
-  §7.3); they now correctly point at `inspect_process(view="capabilities")`.
+  longer emit `nextTool="get_diagnostic_capabilities"` (removed in the
+  tool-surface consolidation); they now correctly point at `inspect_process(view="capabilities")`.
 
 ## [0.4.0] — 2026-05-25
 
-Highlights: RFC 0002 tool surface consolidation (24 legacy tools → 15
+Highlights: tool surface consolidation (24 legacy tools → 15
 unified discriminator tools, breaking), central K8s orchestrator
 (`attach_to_pod` + server-side proxy), Azure discovery
 (`discover_azure` for App Service / Container Apps / AKS), AWS ECS &
@@ -75,13 +75,13 @@ GitHub's auto-generated release notes list every PR; the entries below
 group the work by theme.
 
 ### Breaking
-- **RFC 0002 §7.3 (#213)** — Removed 24 deprecated MCP tools that were superseded by 7 unified discriminator tools. The 15-tool consolidated surface is now the only entry point.
+- **Tool surface consolidation (#213)** — Removed 24 deprecated MCP tools that were superseded by 7 unified discriminator tools. The 15-tool consolidated surface is now the only entry point.
   - Removed: `list_dotnet_processes`, `get_process_info`, `get_diagnostic_capabilities`, `get_container_signals`, `get_memory_trend`, `snapshot_counters`, `collect_cpu_sample`, `collect_allocation_sample`, `get_call_tree`, `collect_off_cpu_sample`, `query_off_cpu_snapshot`, `query_collection`, `collect_exceptions`, `collect_gc_events`, `collect_activities`, `collect_event_source`, `inspect_dump`, `inspect_live_heap`, `query_heap_snapshot`, `query_thread_snapshot`, `list_pods`, `list_active_investigations`, `get_module_bytes`, `get_dump_bytes`.
   - Use the corresponding unified tool with the appropriate `kind`/`view`/`source` discriminator (see `docs/tool-reference.md`).
-- **RFC 0002 Stage B (#211)** — Removed `runAsJob` flag and retired `get_collection_status` / `cancel_collection` in favor of MCP-native progress + cancellation (#222).
+- **Async collection Stage B (#211)** — Removed `runAsJob` flag and retired `get_collection_status` / `cancel_collection` in favor of MCP-native progress + cancellation (#222).
 - **Container image (#111)** — `perf` now ships by default; the GHCR tag suffix is inverted to `-lean` for the perf-less variant.
 
-### Added — RFC 0002 unified tool surface
+### Added — unified tool surface
 - `inspect_process(view=...)` bootstrap consolidation (#209/#218).
 - `collect_events(kind=...)` unified EventPipe collectors (#208/#215).
 - `collect_sample(kind=cpu|off_cpu|allocation)` unified sample collectors (#210/#221).

@@ -50,7 +50,7 @@ public class MemoryDiagnosticHandleStoreTests
     [Fact]
     public void InvalidateForProcess_PreservesDumpOriginHandlesEvenWhenPidMatches()
     {
-        // Regression guard (RFC 0002 §4.3 / issue #206 review): handles registered with
+        // Regression guard (issue #206 review): handles registered with
         // `evictWhenProcessExits: false` represent offline artifacts (dump files) and must
         // outlive the PID-exit sweep even if a same-PID live handle exists alongside them.
         var store = new MemoryDiagnosticHandleStore();
@@ -61,7 +61,7 @@ public class MemoryDiagnosticHandleStoreTests
 
         store.TryGet<Payload>(liveHandle.Id).Should().BeNull();
         store.TryGet<Payload>(dumpHandle.Id).Should().NotBeNull(
-            "dump-origin handles must survive the originating PID's exit (RFC 0002 §4.3)");
+            "dump-origin handles must survive the originating PID's exit (#206)");
     }
 
     [Fact]

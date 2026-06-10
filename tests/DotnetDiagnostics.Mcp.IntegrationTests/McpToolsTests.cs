@@ -46,7 +46,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
 
         var toolNames = tools.Select(t => t.Name).ToList();
         
-        // RFC 0002 §7.3 #213: the unified-tool surface is now the only surface. The default
+        // #213: the unified-tool surface is now the only surface. The default
         // test factory does NOT enable orchestrator tools (no K8s configuration); those tools
         // are covered by dedicated orchestrator integration tests. We assert the 12 non-orchestrator
         // tools that any sidecar exposes.

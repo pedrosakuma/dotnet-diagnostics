@@ -5,7 +5,7 @@ using Xunit;
 namespace DotnetDiagnostics.Core.Tests;
 
 /// <summary>
-/// RFC 0002 / #204 — covers the <see cref="HandleOrigin"/> metadata addition on the handle
+/// #204 — covers the <see cref="HandleOrigin"/> metadata addition on the handle
 /// store plus the stub <see cref="HandleAuthorizationTable"/> that the unified
 /// <c>query_snapshot</c> tool (#207) will consume.
 /// </summary>

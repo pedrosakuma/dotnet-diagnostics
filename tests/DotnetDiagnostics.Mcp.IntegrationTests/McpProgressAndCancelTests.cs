@@ -9,7 +9,7 @@ using ModelContextProtocol.Client;
 namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
 /// <summary>
-/// RFC 0002 §7.3 #7 / issue #211 — end-to-end coverage for the MCP-native progress and
+/// Issue #211 — end-to-end coverage for the MCP-native progress and
 /// cancellation path on long-running collectors (<c>collect_cpu_sample</c> and the merged
 /// <c>collect_events</c> surface). This is the only surface for async collection now that
 /// Stage B removed the legacy <c>runAsJob</c> / <c>get_collection_status</c> /

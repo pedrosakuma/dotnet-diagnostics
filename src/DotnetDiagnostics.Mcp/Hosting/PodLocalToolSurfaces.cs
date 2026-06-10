@@ -14,7 +14,7 @@ namespace DotnetDiagnostics.Mcp.Hosting;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Until RFC 0002 Wave 2 each new tool surface required four parallel edits (the WithTools
+/// Until the Wave 2 consolidation each new tool surface required four parallel edits (the WithTools
 /// chain, two surfaceTypes arrays inside <c>DiagnosticServiceRegistration</c>, and the
 /// orchestrator proxy allowlist). Parallel PRs hit DIRTY conflicts on every cascade. This
 /// helper collapses all four sites into a single addition here.

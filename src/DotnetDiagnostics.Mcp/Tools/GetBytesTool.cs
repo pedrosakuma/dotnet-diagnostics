@@ -11,7 +11,7 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// RFC 0002 §4.4 successor for <c>get_module_bytes</c> and <c>get_dump_bytes</c>: a single
+/// Successor for <c>get_module_bytes</c> and <c>get_dump_bytes</c>: a single
 /// byte-fetch surface that dispatches on a <c>kind</c> discriminator. Both legacy tools
 /// share the same <see cref="ByteFetchEnvelope"/>, chunking contract, and downstream
 /// consumers (dotnet-assembly-mcp, dotnet-native-mcp, orchestrator proxy), so merging them
@@ -44,7 +44,7 @@ public sealed class GetBytesTool
         "Streams a managed module artifact (PE or PDB) or a dump file as repeated CallTool chunks so sibling MCPs can materialise pod-local binaries through the orchestrator proxy. " +
         "Dispatches on 'kind': 'module' (resolve by ModuleVersionId in a live process; asset defaults to 'pe'; optional processId — server auto-selects when omitted) or 'dump' (path under MCP_ARTIFACT_ROOT, re-validated every call). " +
         "maxBytes defaults to 4 MiB and is capped at 16 MiB per response; total artifact size is capped at 256 MiB. " +
-        "Successor to 'get_module_bytes' and 'get_dump_bytes' (RFC 0002 §4.4); both legacy tools remain available during the deprecation window and emit identical envelopes.")]
+        "Successor to 'get_module_bytes' and 'get_dump_bytes'; both legacy tools remain available during the deprecation window and emit identical envelopes.")]
     public static async Task<DiagnosticResult<ByteFetchEnvelope>> GetBytes(
         IModuleByteSource moduleByteSource,
         IDumpByteSource dumpByteSource,

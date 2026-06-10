@@ -229,7 +229,7 @@ internal static class DiagnosticServiceRegistration
                         BuildInvestigationProxyFilter(servicesAccessor, loggerFactoryAccessor));
                 }
 
-                // RFC 0002 / #213 — alias removal wave complete. Every legacy
+                // #213 — alias removal wave complete. Every legacy
                 // deprecated surrogate tool has been deleted; no deprecation filter
                 // is registered because there are no deprecated tools left to notify on.
 

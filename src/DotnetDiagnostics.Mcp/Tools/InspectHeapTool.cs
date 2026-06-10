@@ -11,7 +11,7 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// RFC 0002 / #206 — unified <c>inspect_heap</c> tool that merges the legacy
+/// #206 — unified <c>inspect_heap</c> tool that merges the legacy
 /// <c>inspect_dump</c> + <c>inspect_live_heap</c> pair behind a single
 /// <c>source=live|dump</c> discriminator. Both backends already produce the same
 /// <see cref="HeapSnapshotArtifact"/> consumed by <c>query_heap_snapshot</c> — this tool
@@ -24,7 +24,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// every security gate the underlying collectors enforce — symbol-server SSRF, ptrace error
 /// translation, scope-stamped audit emission.</para>
 /// <para>Lives in its own class with its own <c>[McpServerToolType]</c> attribute, by design
-/// of issue #206 — minimizes merge conflicts with parallel RFC 0002 sub-issues editing
+/// of issue #206 — minimizes merge conflicts with parallel sub-issues editing
 /// <c>DiagnosticTools.cs</c>.</para>
 /// </remarks>
 [McpServerToolType]
@@ -64,7 +64,7 @@ public sealed class InspectHeapTool
         "`query_heap_snapshot(handle, view, …)` for retention paths, static-field roots, GCHandle table aggregation, finalizer " +
         "queue and other drilldown views without re-walking. Live-origin handles are evicted when " +
         "the target PID exits; dump-origin handles are retained until their TTL elapses. Supersedes " +
-        "the deprecated `inspect_dump` and `inspect_live_heap` tools (RFC 0002 / #206).")]
+        "the deprecated `inspect_dump` and `inspect_live_heap` tools (#206).")]
     public static async Task<DiagnosticResult<object>> InspectHeap(
         IDumpInspector inspector,
         IDiagnosticHandleStore handles,

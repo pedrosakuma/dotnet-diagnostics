@@ -166,9 +166,9 @@ Two manual/nightly repro jobs un-quarantine those tests via `DOTNET_DBG_MCP_RUN_
 
 Findings so far are posted on dotnet/runtime#128525 (issuecomment-4672447353, -4672792762). Re-run a job until a dump appears, then hand the gzipped mmap log + dump + crashreport + blame sequence upstream.
 
-### 🎯 One MCP tool per concept (15 tools after RFC 0002 §7.3 alias removal)
+### 🎯 One MCP tool per concept (15 tools)
 
-Anthropic recommends ≤10 tools per LLM context. We have 15 tools after RFC 0002 §7.3 #213 consolidated
+Anthropic recommends ≤10 tools per LLM context. We have 15 tools after #213 consolidated
 24 legacy aliases into 7 unified discriminator tools: `inspect_process`, `collect_events`, `collect_sample`,
 `query_snapshot`, `inspect_heap`, `list_orchestrator`, `get_bytes` plus 8 non-aliased tools
 (`collect_process_dump`, `collect_thread_snapshot`, `capture_method_bytes`, `start_investigation`,
@@ -214,7 +214,7 @@ turn. Skip them when the task is genuinely trivial.
   several flake / race-condition regressions that the human + author-agent
   pair both missed.
 - **Decompose-then-parallelise.** Features here tend to land as several small,
-  independent PRs (RFC 0002 shipped as 13). When the work decomposes into ≥2
+  independent PRs (one recent consolidation shipped as 13). When the work decomposes into ≥2
   independent trails (different directories, different test surfaces, no
   shared schema migration), prefer dispatching one background sub-agent per
   trail over serialising them in the main loop (in Copilot CLI: `task` with
