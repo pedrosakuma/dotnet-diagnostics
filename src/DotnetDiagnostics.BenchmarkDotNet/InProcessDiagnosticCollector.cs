@@ -4,6 +4,7 @@ using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.EventSources;
@@ -40,6 +41,7 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
         "counters",
         "exceptions",
         "gc",
+        "cpu",
         "datas",
         "catalog",
         "activities",
@@ -49,6 +51,15 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
         "contention",
         "db",
     };
+
+    /// <summary>
+    /// Number of top hotspots the in-process CPU sampler retains. The full call tree is always
+    /// available behind the issued handle; this only bounds the inline hotspot list.
+    /// </summary>
+    private const int CpuTopHotspots = 25;
+
+    /// <summary>TTL for the CPU-sample drill-down handle registered in the in-process store.</summary>
+    private static readonly TimeSpan CpuSampleHandleTtl = TimeSpan.FromMinutes(10);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -84,6 +95,8 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
                 services.GetRequiredService<IExceptionCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
             "gc" => Materialize(kind, await EventCollectionUseCases.CollectGcEvents(
                 services.GetRequiredService<IGcCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
+            "cpu" => Materialize(kind, await CollectCpuAsync(
+                services.GetRequiredService<EventPipeCpuSampler>(), handles, processId, durationSeconds, cancellationToken).ConfigureAwait(false)),
             "datas" => Materialize(kind, await EventCollectionUseCases.CollectGcDatas(
                 services.GetRequiredService<IGcDatasCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
             "catalog" => Materialize(kind, await EventCollectionUseCases.CollectEventCatalog(
@@ -113,6 +126,136 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
             ? $"{result.Error!.Kind}: {result.Error.Message}"
             : result.Summary;
         return new KindCapture(kind, result.IsError, result.Summary, headline, json);
+    }
+
+    /// <summary>
+    /// CPU sampling has no <see cref="EventCollectionUseCases"/> facade (it lives in the MCP tool
+    /// layer), so the diagnoser drives <see cref="EventPipeCpuSampler"/> directly. Source-line and
+    /// generic-instantiation resolution are intentionally disabled: the former risks PDB/SourceLink
+    /// I/O (and network), the latter needs a ClrMD ptrace attach — neither is wanted inside a
+    /// benchmark run. The captured hotspots still carry per-frame exclusive/inclusive sample counts
+    /// (the "self vs subtree" cost) and the full caller→callee tree is retained behind the handle.
+    /// </summary>
+    private static async Task<DiagnosticResult<CpuSample>> CollectCpuAsync(
+        EventPipeCpuSampler sampler,
+        IDiagnosticHandleStore handles,
+        int processId,
+        int durationSeconds,
+        CancellationToken cancellationToken)
+    {
+        CpuSampleResult result;
+        try
+        {
+            result = await sampler.SampleAsync(
+                processId,
+                TimeSpan.FromSeconds(durationSeconds),
+                CpuTopHotspots,
+                sourceResolution: null,
+                methodInstantiationResolution: null,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex) when (
+            ex.Message.Contains("NativeAOT", StringComparison.OrdinalIgnoreCase) ||
+            ex.Message.Contains("SampleProfiler", StringComparison.OrdinalIgnoreCase))
+        {
+            // The SampleProfiler provider is CoreCLR-only; a NativeAOT benchmark child can't be
+            // CPU-sampled in-process. Surface as NotSupported rather than a hard failure.
+            return DiagnosticResult.Fail<CpuSample>(
+                ex.Message,
+                new DiagnosticError("NotSupported", ex.Message, ex.GetType().FullName));
+        }
+
+        var handle = handles.Register(processId, "cpu-sample", result.Artifact, CpuSampleHandleTtl);
+        var summary = BuildCpuSummary(result.Summary, result.Artifact.Root, durationSeconds);
+        return DiagnosticResult.OkWithHandle(
+            result.Summary,
+            summary,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint(
+                "query_snapshot",
+                "Walk the merged caller\u2192callee tree built from the same samples.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = 8, ["maxNodes"] = 200 }));
+    }
+
+    /// <summary>
+    /// Builds the one-line CPU headline used by the offenders report. Exposed (internal) so the
+    /// test project can assert the phrasing without a live sampler. Reports the hottest frame by
+    /// self-cost (exclusive samples) and its share of the window.
+    /// </summary>
+    /// <remarks>
+    /// The hottest self-cost frame is selected from the full caller→callee tree
+    /// (<paramref name="root"/>), not from <see cref="CpuSample.TopHotspots"/>: that list is
+    /// ranked by <em>inclusive</em> samples and truncated to the top-N, so a hot leaf can be
+    /// excluded before its (exact) exclusive count is ever considered. Tree exclusive samples are
+    /// leaf-attributed, so aggregating them per method across the tree is exact. The dedup'd
+    /// inclusive figure is preferred from <see cref="CpuSample.TopHotspots"/> when the chosen
+    /// method is present there, falling back to the tree-summed inclusive otherwise.
+    /// </remarks>
+    internal static string BuildCpuSummary(CpuSample sample, CallTreeNode? root, int durationSeconds)
+    {
+        (string Method, long Exclusive, long Inclusive)? hottest = FindHottestSelfCost(root);
+        if (hottest is null && sample.TopHotspots.Count > 0)
+        {
+            var top = sample.TopHotspots.MaxBy(h => h.ExclusiveSamples)!;
+            hottest = (top.Frame.Method, top.ExclusiveSamples, top.InclusiveSamples);
+        }
+
+        if (sample.TotalSamples <= 0 || hottest is null || hottest.Value.Exclusive <= 0)
+        {
+            return $"Captured {sample.TotalSamples} sample(s) over {durationSeconds}s but no method aggregation surfaced " +
+                "\u2014 increase durationSeconds or verify the benchmark is CPU-bound during the window.";
+        }
+
+        var (method, exclusive, treeInclusive) = hottest.Value;
+        var inclusive = sample.TopHotspots
+            .FirstOrDefault(h => string.Equals(h.Frame.Method, method, StringComparison.Ordinal))?.InclusiveSamples
+            ?? treeInclusive;
+        var exclusivePercent = 100.0 * exclusive / sample.TotalSamples;
+        return $"Captured {sample.TotalSamples} sample(s) over {durationSeconds}s across {sample.TopHotspots.Count} hotspot(s). " +
+            $"Hottest self-cost: {method} ({exclusivePercent:F1}% exclusive \u2014 {exclusive} self / {inclusive} inclusive sample(s)).";
+    }
+
+    /// <summary>
+    /// Aggregates exclusive (self) and inclusive samples per method across the full call tree and
+    /// returns the method with the greatest self-cost. Exclusive samples are leaf-attributed so
+    /// the per-method sum is exact; inclusive is summed best-effort (may over-count recursion).
+    /// Returns <c>null</c> when the tree is absent or carries no self-cost.
+    /// </summary>
+    internal static (string Method, long Exclusive, long Inclusive)? FindHottestSelfCost(CallTreeNode? root)
+    {
+        if (root is null)
+        {
+            return null;
+        }
+
+        var byMethod = new Dictionary<(string Module, string Method), (long Exclusive, long Inclusive)>();
+        var stack = new Stack<CallTreeNode>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var node = stack.Pop();
+            var key = (node.Frame.Module, node.Frame.Method);
+            var agg = byMethod.GetValueOrDefault(key);
+            byMethod[key] = (agg.Exclusive + node.ExclusiveSamples, agg.Inclusive + node.InclusiveSamples);
+            foreach (var child in node.Children)
+            {
+                stack.Push(child);
+            }
+        }
+
+        if (byMethod.Count == 0)
+        {
+            return null;
+        }
+
+        var best = byMethod.MaxBy(kv => kv.Value.Exclusive);
+        if (best.Value.Exclusive <= 0)
+        {
+            return null;
+        }
+
+        return (best.Key.Method, best.Value.Exclusive, best.Value.Inclusive);
     }
 
     private static ServiceProvider BuildProvider()

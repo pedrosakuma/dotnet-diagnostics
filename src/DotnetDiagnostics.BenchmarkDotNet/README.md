@@ -41,8 +41,16 @@ child PID; results land in `<artifacts>/diagnostics/*.json` and a consolidated
 
 ## Supported collect kinds
 
-`counters`, `exceptions`, `gc`, `datas`, `catalog`, `activities`, `logs`, `jit`, `threadpool`,
-`contention`, `db`. (`event_source` is intentionally excluded — it needs an explicit provider name.)
+`counters`, `exceptions`, `gc`, `cpu`, `datas`, `catalog`, `activities`, `logs`, `jit`,
+`threadpool`, `contention`, `db`. (`event_source` is intentionally excluded — it needs an explicit
+provider name.)
+
+The `cpu` kind runs the EventPipe **CPU sampler** (CoreCLR only) against the benchmark child and
+attributes cost **per stack frame**: each hotspot carries its *exclusive* (self) and *inclusive*
+(self + callees) sample counts, and the consolidated `*-dotnet-diagnostics-report.md` headlines the
+hottest self-cost frame (e.g. `Hottest self-cost: MyApp.Serialize (59.7% exclusive)`). The full
+caller→callee call tree is retained behind the envelope's drill-down handle. Source-line and
+generic-instantiation resolution are disabled in-process (no PDB/SourceLink I/O, no ClrMD attach).
 
 EventPipe collectors must not run concurrently against one PID, so multiple kinds on a single method
 are collected **sequentially** within the measurement window. Keep the count small (1–2) and the
