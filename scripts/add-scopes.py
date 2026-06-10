@@ -38,7 +38,7 @@ MAPPING = {
     # query_snapshot drills into both Counters and EventPipe handles (§2.12).
     "query_snapshot":             ("any", ["read-counters", "eventpipe"]),
     # investigation-export — task body explicitly groups status/cancel/call_tree
-    # under this scope (supersedes RFC §2.10/§2.11 for B5.2).
+    # under this scope (supersedes docs/authorization.md#scopes for B5.2).
     "start_investigation":          ("scope", ["investigation-export"]),
     "export_investigation_summary": ("scope", ["investigation-export"]),
     "compare_to_baseline":          ("scope", ["investigation-export"]),

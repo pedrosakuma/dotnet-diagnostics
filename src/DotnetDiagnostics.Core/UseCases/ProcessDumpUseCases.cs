@@ -41,7 +41,7 @@ public static class ProcessDumpUseCases
             // docs/authorization.md#per-call-confirmation: confirmation-required is a misuse signal, not an attack.
             // Log at Information level with the token name (never the bearer value), the
             // tool name and the reason as structured properties so audit consumers can
-            // filter on the RFC-mandated `tool` / `reason` fields.
+            // filter on the structured `tool` / `reason` audit fields.
             //
             // The confirmation gate runs BEFORE process-context resolution (#187 review):
             // ResolveContextAsync would otherwise open an EventPipe session via

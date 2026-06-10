@@ -9,7 +9,7 @@
 #   (b) new scoped list only            — `bearerTokens` set, `bearerToken` at defaults
 #   (c) both set (back-compat overlap)  — both shapes; chart renders both; server
 #                                         logs a runtime warning that the scoped
-#                                         registry wins (RFC §7.1)
+#                                         registry wins (docs/authorization.md#backward-compatibility)
 #
 # Plus a (d) defaults-only render that MUST fail loudly (H1 placeholder guard).
 #

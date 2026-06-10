@@ -158,7 +158,7 @@ public sealed class LegacyDiagnosticsFlagDeprecationTests
     {
         // unsafeProvider path while the principal lacks 'eventsource-any' →
         // the deprecating flag that unlocked the call is AllowSensitiveHeapValues,
-        // so the *sensitive-heap-read* warning is the one that fires (per RFC §7.3
+        // so the *sensitive-heap-read* warning is the one that fires (per docs/authorization.md#backward-compatibility
         // — that flag is the only one truly going away).
         var (provider, deprecation) = NewDeprecation();
         var collector = NewCollector();

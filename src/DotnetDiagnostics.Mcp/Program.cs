@@ -133,7 +133,7 @@ if (boundToNonLoopback && !hasScopedTokens && hasLegacyToken)
     // but operators are nudged toward Auth:BearerTokens before v2 removes the fallback.
     app.Logger.LogWarning(
         "MCP_BEARER_TOKEN is set without Auth:BearerTokens; the legacy variable resolves to root scope " +
-        "and is deprecated for non-loopback deployments. See docs/authorization.md#default-policy-by-transport.");
+        "and is deprecated for non-loopback deployments. See docs/authorization.md#default-policy-by-transport for migration guidance.");
 }
 
 BearerTokenRegistry registry;

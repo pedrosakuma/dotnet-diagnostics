@@ -14,11 +14,11 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// <para>The MCP SDK's <c>CallToolFilter</c> pipeline only sees the request by name; we
 /// need the attribute lookup to be O(1) per call. Building the index lazily inside the
 /// filter would also force every test scenario to re-scan, so we centralise it here.</para>
-/// <para>The constructor enforces the RFC §2.14 coverage rule: every static method that
+/// <para>The constructor enforces the docs/authorization.md#scopes coverage rule: every static method that
 /// carries a <c>[McpServerTool]</c> attribute on any scanned type <i>must</i> declare a
 /// scope. A missing scope is a startup error rather than a per-call surprise — silently
 /// allowing an undecorated tool would re-introduce the "single bearer == root"
-/// regression this RFC exists to close.</para>
+/// regression this scope model exists to close.</para>
 /// </remarks>
 internal sealed class ToolScopeRegistry
 {

@@ -121,7 +121,7 @@ for the port-forward stream that `KubernetesPortForwardManager` opens.
 > The legacy `bearerToken.value` / `bearerToken.existingSecret` path keeps working
 > unchanged for backward compatibility, but new deployments should bind one or
 > more scoped tokens via `bearerTokens`. Each token is restricted to a subset of
-> tools by its `scopes` list (see RFC §2 for the taxonomy: `read-counters`,
+> tools by its `scopes` list (see docs/authorization.md#scopes for the taxonomy: `read-counters`,
 > `eventpipe`, `heap-read`, `sensitive-heap-read`, `ptrace`, `dump-write`,
 > `orchestrator-list`, `orchestrator-attach`, `orchestrator-admin`,
 > `investigation-export`, `job-control`, `metrics-read`, or `*` for root).
@@ -165,7 +165,7 @@ env:
 These are the exact keys consumed by `BearerTokenRegistry` (server-side, B5.1
 #188 — parses `Auth:BearerTokens`).
 
-### Matching multi-key Secret (RFC §6.3)
+### Matching multi-key Secret
 
 Create the Secret out-of-band so the chart never sees the raw token values.
 A single multi-key Secret is the recommended layout:
@@ -190,7 +190,7 @@ kubectl -n diagnosticsmcp-system create secret generic dotnet-diag-tokens \
   --from-literal=admin="$(openssl rand -hex 32)"
 ```
 
-> Per RFC §6.3, the token **names** (`ops-viewer`, `ops-admin`) appear in audit
+> Per the bearer-token config (docs/authorization.md#bearer-tokens-config), the token **names** (`ops-viewer`, `ops-admin`) appear in audit
 > logs and are non-sensitive; only the values are. Use the N-single-key-Secrets
 > alternative only when different RBAC subjects must be able to rotate
 > different tokens independently.
@@ -201,7 +201,7 @@ kubectl -n diagnosticsmcp-system create secret generic dotnet-diag-tokens \
 |---|---|
 | `bearerToken` only (legacy single-bearer) | Unchanged — chart renders the legacy Secret and the `MCP_BEARER_TOKEN` env var. The token resolves to a synthetic root principal. |
 | `bearerTokens` only (recommended) | Chart skips the legacy Secret + env var entirely. Server loads scoped tokens from `Auth:BearerTokens`. |
-| Both set | Chart renders both. **The scoped registry wins at runtime; the legacy `MCP_BEARER_TOKEN` is ignored and the server logs a `Warning` at startup naming the ignored variable** (RFC §7.1, B5.1 #188). Useful only as a migration overlap window. |
+| Both set | Chart renders both. **The scoped registry wins at runtime; the legacy `MCP_BEARER_TOKEN` is ignored and the server logs a `Warning` at startup naming the ignored variable** (docs/authorization.md#backward-compatibility). Useful only as a migration overlap window. |
 | Neither set (defaults) | `helm template` / `helm install` aborts with the H1 placeholder guard. Migrate to `bearerTokens` or override `bearerToken.value`. |
 
 ### Cloud Run / non-Kubernetes wiring
