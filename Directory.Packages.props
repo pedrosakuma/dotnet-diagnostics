@@ -17,6 +17,7 @@
   </ItemGroup>
   <ItemGroup Label="Benchmarking">
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
+    <PackageVersion Include="dotnet-diagnostics-benchmarkdotnet" Version="0.11.0" />
   </ItemGroup>
   <ItemGroup Label="Logging">
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.5" />
