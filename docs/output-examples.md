@@ -257,9 +257,8 @@ allocation *origin*, new in v0.13.0):
 ## Other kinds — canonical shapes in `tool-reference.md`
 
 The remaining kinds are not reproduced live here (some need a domain workload; the snapshot
-families need `CAP_SYS_PTRACE`, which is blocked under the default `kernel.yama.ptrace_scope=1`
-on WSL2/Debian/Ubuntu — see [`tool-reference.md` → Linux runtime requirements](./tool-reference.md#linux-runtime-requirements)).
-Their canonical request/response shapes live in the tool reference:
+families are live-attach gated — see the ptrace note below). Their canonical request/response
+shapes live in the tool reference:
 
 | Kind | Reference |
 |---|---|
@@ -270,9 +269,43 @@ Their canonical request/response shapes live in the tool reference:
 | `db` (EF Core / SqlClient)                    | [`collect_events(kind="db")`](./tool-reference.md#collect_eventskinddb) |
 | `datas` (DATAS GC tuning, Server GC)          | [`collect_events`](./tool-reference.md#collect_events) |
 | `off_cpu` (where threads block)               | [`collect_sample(kind="off_cpu")`](./tool-reference.md#off-cpu-sampling-collect_samplekindoff_cpu--query_snapshot) |
-| Heap walk (`inspect_heap`)                    | [`tool-reference.md`](./tool-reference.md) — needs `CAP_SYS_PTRACE` for `source="live"` |
-| Thread snapshot (`collect_thread_snapshot`)   | [`tool-reference.md`](./tool-reference.md) — needs `CAP_SYS_PTRACE` |
+| Heap walk (`inspect_heap`)                    | [`tool-reference.md`](./tool-reference.md) — live-attach gated for `source="live"` ([ptrace note](#live-attach-ptrace-snapshots--same-gate-every-surface)) |
+| Thread snapshot (`collect_thread_snapshot`)   | [`tool-reference.md`](./tool-reference.md) — live-attach gated ([ptrace note](#live-attach-ptrace-snapshots--same-gate-every-surface)) |
 | Process dump (`collect_process_dump`)         | [`tool-reference.md` → `collect_process_dump`](./tool-reference.md#collect_process_dump) — requires `confirm=true` |
+
+---
+
+## Live-attach (ptrace) snapshots — same gate, every surface
+
+Only the **snapshot minority** of capabilities attach to the runtime via `ptrace(2)`:
+`inspect_heap(source="live")`, `collect_thread_snapshot`, `collect_process_dump`, and
+`capture_method_bytes`. **Every EventPipe collector above** (counters, gc, exceptions,
+threadpool, contention, cpu, allocation, …) needs **no ptrace at all** — so the entire
+CLI `collect` surface and the **whole BenchmarkDotNet diagnoser** are unaffected (the
+in-process diagnoser is EventPipe-only — observe-only, no ptrace, no code injection).
+
+The gate is handled identically across **MCP server and CLI** because the logic lives in
+one place — `DotnetDiagnostics.Core` (`AttachGuard` + `PtraceProbe`):
+
+- **Self-detect before you collect** — both surfaces expose the capability matrix
+  (`CanAttachClrMD` + a tailored `AttachClrMdReason`):
+  - MCP: `inspect_process(view="capabilities")`
+  - CLI: `dotnet-diagnostics-cli capabilities [--pid <id>]` (full booleans in `--json`)
+- **Tailored remediation on failure** — a denied attach returns a `PermissionDenied`
+  envelope whose message is the exact fix for the *detected* environment (read live from
+  `/proc/sys/kernel/yama/ptrace_scope` + the effective capability set), e.g. under the
+  WSL2/Debian/Ubuntu default `ptrace_scope=1`:
+  _"Grant the capability (`--cap-add SYS_PTRACE` / `cap_add: [SYS_PTRACE]` /
+  `capabilities.add: ['SYS_PTRACE']`) or relax the host (`sudo sysctl -w
+  kernel.yama.ptrace_scope=0`)."_
+- **No-ptrace fallback** — analyze a pre-existing dump **offline, zero privilege**:
+  `inspect_heap(source="dump")` (MCP) / `inspect-heap --source dump` (CLI). The shipped
+  deploy manifests (compose / k8s sidecar / Fargate / Helm) already default
+  `CAP_SYS_PTRACE`, so deployed sidecars never hit this gate.
+
+> A local bare-host / WSL run under `ptrace_scope=1` is the only place the gate is felt,
+> and it is a kernel boundary (Yama LSM) no userspace tool can bypass without privilege —
+> the tool detects it and hands you the one-liner instead.
 
 ---
 
