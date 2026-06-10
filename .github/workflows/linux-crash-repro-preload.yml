@@ -108,6 +108,12 @@ jobs:
         run: |
           set -x
           mkdir -p dumps
+          # --blame-hang-timeout already activates the blame data collector,
+          # which writes the per-testhost Sequence_*.xml naming the test(s)
+          # in-flight when the host died — the direct pointer to the triggering
+          # test topology (now uploaded below). We deliberately do NOT add
+          # --blame-crash: its crash dump collector would ptrace-attach and
+          # perturb the run / collide with DbgEnableMiniDump + the live tests.
           dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj \
             --no-build --configuration Release \
             --blame-hang-timeout 5m --blame-hang-dump-type none \
@@ -152,6 +158,7 @@ jobs:
           path: |
             mmaptrace.log.gz
             dumps/**
+            **/TestResults/**/Sequence_*.xml
             **/TestResults/*.trx
           if-no-files-found: warn
           retention-days: 14
