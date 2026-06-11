@@ -5,6 +5,7 @@ using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Collection;
+using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
@@ -1257,7 +1258,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         var baseline = await SampleCpuUnderLoadAsync(http, sampler, "/generics?iterations=20000", TimeSpan.FromSeconds(10));
         var current = await SampleCpuUnderLoadAsync(http, sampler, "/generics?iterations=200000", TimeSpan.FromSeconds(10));
 
-        var diff = SampleDiffer.Compare(baseline.Artifact, "baseline", current.Artifact, "current", minDeltaPct: 1, topN: 25);
+        var diff = ComparablePairwiseSampleDiff.Compare(baseline.Artifact, "baseline", current.Artifact, "current", minDeltaPct: 1, topN: 25);
 
         diff.Verdict.Should().BeOneOf("regression", "mixed");
         diff.Added.Concat(diff.Changed).Any(row =>
@@ -1300,7 +1301,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             new DumpInspectionOptions(TopTypes: 50),
             CancellationToken.None);
 
-        var diff = SampleDiffer.Compare(baseline, "baseline", current, "current", minDeltaPct: 5, topN: 25);
+        var diff = ComparablePairwiseSampleDiff.Compare(baseline, "baseline", current, "current", minDeltaPct: 5, topN: 25);
 
         diff.Verdict.Should().BeOneOf("regression", "mixed");
         diff.Changed.Should().Contain(row => row.Direction == "up" && row.Key.TypeFullName == "System.Byte[]");
@@ -1360,7 +1361,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             var baseline = await sampler.SampleAsync(Pid, TimeSpan.FromSeconds(4), topN: 25, cancellationToken: CancellationToken.None);
             var current = await sampler.SampleAsync(Pid, TimeSpan.FromSeconds(8), topN: 25, cancellationToken: CancellationToken.None);
 
-            var diff = SampleDiffer.Compare(baseline.Summary, "baseline", current.Summary, "current", minDeltaPct: 0, topN: 50);
+            var diff = ComparablePairwiseSampleDiff.Compare(baseline.Summary, "baseline", current.Summary, "current", minDeltaPct: 0, topN: 50);
             diff.Notes.Should().Contain(note => note.Contains("normalized totals to per-second rates", StringComparison.Ordinal));
 
             var typeName = baseline.Summary.TopByBytes[0].TypeName;
