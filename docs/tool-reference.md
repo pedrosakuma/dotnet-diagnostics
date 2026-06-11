@@ -81,6 +81,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="contention")` | The raw contention event list. Summary keeps headline wait totals + percentiles; drill in with `query_snapshot(handle, view=byCallSite|byOwner)`. |
 | `collect_events(kind="db")` | The long `ByCommand[]` / `NPlusOne[]` lists. Summary keeps the headline aggregates + pool slice. |
 | `collect_events(kind="kestrel")` | The `byOperation[]` list, queue-length timeline, and `configurationJson`. Summary keeps the headline connection/request/TLS aggregates + latency tail. |
+| `collect_events(kind="networking")` | The full `ByOperation[]` list. Summary keeps headline HTTP/DNS/TLS/socket counts + latency tails; drill in with `query_snapshot(handle, view=byOperation|queue|tls|dns)`. |
 | `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph|deadlocks|unique-stacks|async-stalls)`. |
 
 Explicit `topN` always wins over the depth default — if you pass
@@ -206,6 +207,7 @@ Views available per `kind`:
 | `contention-snapshot` | `collect_events(kind="contention")` | `summary` (default), `byCallSite`, `byOwner` |
 | `db-snapshot` | `collect_events(kind="db")` | `summary` (default), `byCommand`, `n+1`, `connectionPool` |
 | `kestrel-snapshot` | `collect_events(kind="kestrel")` | `summary` (default), `byOperation`, `queues`, `tls`, `config` |
+| `networking-snapshot` | `collect_events(kind="networking")` | `summary` (default), `byOperation`, `queue`, `tls`, `dns` |
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `object`, `gcroot`, `objsize`, `async`, `diff` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
@@ -1589,6 +1591,47 @@ session is enabled (TLS, limits, keep-alive, HTTP protocol versions).
   `configurationJson` reflects the server options at the moment of collection.
 - When no traffic flows during the window the collector returns a note and empty
   aggregates — start the session **before** the load you want to observe.
+
+---
+
+## `collect_events(kind="networking")`
+
+Collects a curated outbound-networking view by subscribing to the stable .NET
+networking EventSources: `System.Net.Http` (HttpClient request lifecycle,
+connection pool, time-in-queue), `System.Net.NameResolution` (DNS),
+`System.Net.Security` (TLS handshakes) and `System.Net.Sockets` (socket
+connects). Request / DNS / TLS Start and Stop events are paired by EventSource
+activity id to compute latency percentiles, time-in-queue is read directly from
+`RequestLeftQueue`, outbound HTTP is grouped by `scheme://host:port` + method,
+and each provider's EventCounters are snapshotted.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int?` | — | Target process id |
+| `durationSeconds` | `int` | `10` | Window length |
+| `intervalSeconds` | `int` | `1` | Refresh interval requested from the networking EventCounters |
+| `depth` | `SamplingDepth` | `Summary` | `Summary` keeps only the top by-operation slice inline; `Detail` / `Raw` keep the full by-operation list |
+
+**Returns:** `NetworkingSnapshot` with:
+
+- HTTP: `httpRequestsStarted`/`Stopped`/`Failed`, `httpConnectionsEstablished`/`Closed`,
+  `httpRequestsLeftQueue`, `httpRequestP50`/`P95`/`Max`, `timeInQueueP50`/`P95`/`Max`
+- DNS: `dnsLookupsStarted`/`Stopped`/`Failed`, `dnsP50`/`P95`/`Max`
+- TLS: `tlsHandshakesStarted`/`Stopped`/`Failed`, `tlsP50`/`P95`/`Max`, `tlsProtocols`
+- Sockets: `socketConnectsStarted`/`Stopped`/`Failed`
+- `counters` (`NetworkingCounterSample[]`), `byOperation` (`NetworkingHttpGroup[]`), `notes`
+
+**Drilldown:** `query_snapshot(handle, view="summary" | "byOperation" | "queue" | "tls" | "dns")`.
+
+**Notes:**
+
+- Latency percentiles are best-effort: when Start/Stop events cannot be
+  correlated by activity id in the window the counts are still reported and a
+  note explains the gap.
+- Rising `timeInQueue` (the `queue` view) is the #1 outbound-HTTP saturation
+  signal — it means requests are waiting for a free pooled connection.
 
 ---
 

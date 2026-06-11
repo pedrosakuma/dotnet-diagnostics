@@ -454,3 +454,60 @@ public sealed record KestrelTlsView(
 public sealed record KestrelConfigurationView(
     string? ConfigurationJson,
     IReadOnlyList<string> Notes);
+
+// --- Networking snapshot views -----------------------------------------------------------------
+
+/// <summary>Default networking view: HTTP / DNS / TLS / socket headline counts plus latency tails and the latest counters.</summary>
+public sealed record NetworkingSummaryView(
+    long HttpRequestsStarted,
+    long HttpRequestsStopped,
+    long HttpRequestsFailed,
+    long HttpConnectionsEstablished,
+    long HttpConnectionsClosed,
+    TimeSpan HttpRequestP95,
+    TimeSpan HttpRequestMax,
+    TimeSpan TimeInQueueP95,
+    long DnsLookupsStarted,
+    long DnsLookupsFailed,
+    long TlsHandshakesStarted,
+    long TlsHandshakesFailed,
+    long SocketConnectsStarted,
+    long SocketConnectsFailed,
+    IReadOnlyList<Networking.NetworkingCounterSample> Counters,
+    IReadOnlyList<string> Notes);
+
+/// <summary>Outbound HTTP request volume + latency grouped by host + path.</summary>
+public sealed record NetworkingByOperationView(
+    int TotalOperations,
+    int Returned,
+    IReadOnlyList<Networking.NetworkingHttpGroup> ByOperation);
+
+/// <summary>HttpClient connection-pool time-in-queue (the #1 outbound-HTTP failure signal) and connection churn.</summary>
+public sealed record NetworkingQueueView(
+    long RequestsLeftQueue,
+    TimeSpan TimeInQueueP50,
+    TimeSpan TimeInQueueP95,
+    TimeSpan TimeInQueueMax,
+    long ConnectionsEstablished,
+    long ConnectionsClosed,
+    IReadOnlyList<Networking.NetworkingCounterSample> HttpCounters,
+    IReadOnlyList<string> Notes);
+
+/// <summary>TLS handshake counts and latency percentiles plus the protocols observed.</summary>
+public sealed record NetworkingTlsView(
+    long Started,
+    long Stopped,
+    long Failed,
+    TimeSpan P50,
+    TimeSpan P95,
+    TimeSpan Max,
+    IReadOnlyList<string> Protocols);
+
+/// <summary>DNS resolution counts and latency percentiles.</summary>
+public sealed record NetworkingDnsView(
+    long Started,
+    long Stopped,
+    long Failed,
+    TimeSpan P50,
+    TimeSpan P95,
+    TimeSpan Max);

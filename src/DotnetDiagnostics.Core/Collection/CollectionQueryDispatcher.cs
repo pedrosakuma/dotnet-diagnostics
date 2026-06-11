@@ -2,6 +2,7 @@ using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.Db;
+using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
@@ -40,6 +41,7 @@ public static class CollectionQueryDispatcher
         CollectionHandleKinds.ContentionSnapshot => new[] { "summary", "byCallSite", "byOwner" },
         CollectionHandleKinds.DbSnapshot => new[] { "summary", "byCommand", "n+1", "connectionPool" },
         CollectionHandleKinds.KestrelSnapshot => new[] { "summary", "byOperation", "queues", "tls", "config" },
+        CollectionHandleKinds.NetworkingSnapshot => new[] { "summary", "byOperation", "queue", "tls", "dns" },
         _ => Array.Empty<string>(),
     };
 
@@ -109,6 +111,8 @@ public static class CollectionQueryDispatcher
                 => Ok(Render(db, effectiveView, topN)),
             CollectionHandleKinds.KestrelSnapshot when artifact is KestrelSnapshot kestrel
                 => Ok(Render(kestrel, effectiveView, topN)),
+            CollectionHandleKinds.NetworkingSnapshot when artifact is NetworkingSnapshot networking
+                => Ok(Render(networking, effectiveView, topN)),
             _ => new DispatchOutcome(null, kind, null, null, null),
         };
     }
@@ -666,5 +670,60 @@ public static class CollectionQueryDispatcher
 
         return new CollectionQueryResult(
             CollectionHandleKinds.KestrelSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
+    }
+
+    private static CollectionQueryResult Render(NetworkingSnapshot snapshot, string view, int topN)
+    {
+        object payload = view.ToLowerInvariant() switch
+        {
+            "byoperation" => new NetworkingByOperationView(
+                snapshot.ByOperation.Count,
+                Math.Min(topN, snapshot.ByOperation.Count),
+                snapshot.ByOperation.Take(topN).ToList()),
+            "queue" => new NetworkingQueueView(
+                snapshot.HttpRequestsLeftQueue,
+                snapshot.TimeInQueueP50,
+                snapshot.TimeInQueueP95,
+                snapshot.TimeInQueueMax,
+                snapshot.HttpConnectionsEstablished,
+                snapshot.HttpConnectionsClosed,
+                snapshot.Counters.Where(c => c.Provider == "System.Net.Http").ToList(),
+                snapshot.Notes),
+            "tls" => new NetworkingTlsView(
+                snapshot.TlsHandshakesStarted,
+                snapshot.TlsHandshakesStopped,
+                snapshot.TlsHandshakesFailed,
+                snapshot.TlsP50,
+                snapshot.TlsP95,
+                snapshot.TlsMax,
+                snapshot.TlsProtocols),
+            "dns" => new NetworkingDnsView(
+                snapshot.DnsLookupsStarted,
+                snapshot.DnsLookupsStopped,
+                snapshot.DnsLookupsFailed,
+                snapshot.DnsP50,
+                snapshot.DnsP95,
+                snapshot.DnsMax),
+            _ => new NetworkingSummaryView(
+                snapshot.HttpRequestsStarted,
+                snapshot.HttpRequestsStopped,
+                snapshot.HttpRequestsFailed,
+                snapshot.HttpConnectionsEstablished,
+                snapshot.HttpConnectionsClosed,
+                snapshot.HttpRequestP95,
+                snapshot.HttpRequestMax,
+                snapshot.TimeInQueueP95,
+                snapshot.DnsLookupsStarted,
+                snapshot.DnsLookupsFailed,
+                snapshot.TlsHandshakesStarted,
+                snapshot.TlsHandshakesFailed,
+                snapshot.SocketConnectsStarted,
+                snapshot.SocketConnectsFailed,
+                snapshot.Counters,
+                snapshot.Notes),
+        };
+
+        return new CollectionQueryResult(
+            CollectionHandleKinds.NetworkingSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
     }
 }

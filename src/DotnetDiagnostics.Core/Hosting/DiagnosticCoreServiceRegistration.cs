@@ -10,6 +10,7 @@ using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
+using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.ProcessDiscovery;
@@ -91,6 +92,7 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<IContentionCollector, EventPipeContentionCollector>();
         services.AddSingleton<IDbCollector, EventPipeDbCollector>();
         services.AddSingleton<IKestrelCollector, EventPipeKestrelCollector>();
+        services.AddSingleton<INetworkingCollector, EventPipeNetworkingCollector>();
         services.AddSingleton<IProcessDumper, DiagnosticsClientDumper>();
         services.AddSingleton<IModuleByteSource, ClrMdModuleByteSource>();
         services.AddSingleton<IDumpByteSource, FileSystemDumpByteSource>();
