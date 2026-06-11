@@ -22,7 +22,7 @@ public sealed class DiagnosticPrompts
 {
     private const string ProcessIdParamDescription =
         "Operating system process id of the target .NET process. Optional — when omitted, the " +
-        "server auto-selects the lone visible .NET process (bootstrap implícito, #42). Pass an " +
+        "server auto-selects the lone visible .NET process (implicit bootstrap, #42). Pass an " +
         "explicit pid when multiple processes are reachable.";
 
     [McpServerPrompt(Name = "diagnose-high-latency", Title = "Diagnose high latency / slow app")]
