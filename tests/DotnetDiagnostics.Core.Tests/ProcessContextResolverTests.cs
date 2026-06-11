@@ -5,7 +5,7 @@ using FluentAssertions;
 namespace DotnetDiagnostics.Core.Tests;
 
 /// <summary>
-/// Covers the bootstrap-implícito resolver (issue #42): auto-resolution semantics, error
+/// Covers the implicit-bootstrap resolver (issue #42): auto-resolution semantics, error
 /// surface, and the 60s per-pid capability digest cache.
 /// </summary>
 public sealed class ProcessContextResolverTests

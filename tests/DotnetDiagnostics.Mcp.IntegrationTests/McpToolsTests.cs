@@ -339,7 +339,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             .Select(b => b.Text));
 
         text.Should().Contain("collect_events(kind=\"counters\", durationSeconds=",
-            "when processId is omitted the body must drop the processId argument so bootstrap implícito kicks in");
+            "when processId is omitted the body must drop the processId argument so implicit bootstrap kicks in");
         text.Should().NotContain("processId=",
             "no processId placeholder must leak into the rendered playbook when none was supplied");
     }
