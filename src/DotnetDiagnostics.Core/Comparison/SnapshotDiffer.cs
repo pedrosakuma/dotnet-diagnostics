@@ -199,13 +199,14 @@ public static class SnapshotDiffer
             }
 
             var (key, name) = display[id];
-            rows.Add(new KeyMatrixRow(key, name, values, deltaAbs, deltaPct, direction));
+            var dispersion = mode == JourneyMode.Dispersion ? Dispersion(values) : null;
+            rows.Add(new KeyMatrixRow(key, name, values, deltaAbs, deltaPct, direction, dispersion));
         }
 
         var total = rows.Count;
         var sorted = mode == JourneyMode.Dispersion
             ? rows
-                .OrderByDescending(r => Dispersion(r.Values.ToArray())?.CoefficientOfVariation ?? -1)
+                .OrderByDescending(r => r.Dispersion?.CoefficientOfVariation ?? -1)
                 .ThenBy(r => r.DisplayName, StringComparer.Ordinal)
                 .Take(topN)
                 .ToArray()
@@ -413,7 +414,7 @@ public static class SnapshotDiffer
         {
             // Key-set kinds carry no scalar metrics; measure spread across each row's per-capture values.
             maxCv = keyMatrix
-                .Select(r => Dispersion(r.Values.ToArray())?.CoefficientOfVariation ?? 0)
+                .Select(r => r.Dispersion?.CoefficientOfVariation ?? 0)
                 .DefaultIfEmpty(0)
                 .Max();
         }

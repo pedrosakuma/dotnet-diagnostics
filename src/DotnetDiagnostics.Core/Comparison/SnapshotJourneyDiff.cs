@@ -59,14 +59,18 @@ public sealed record MetricSeries(
     MetricTrend Trend,
     DispersionStats? Dispersion);
 
-/// <summary>One key-set row tracked across captures (primary metric per capture).</summary>
+/// <summary>One key-set row tracked across captures (primary metric per capture).
+/// <see cref="Dispersion"/> is computed once over <see cref="Values"/> in
+/// <see cref="JourneyMode.Dispersion"/> (null in <see cref="JourneyMode.Trend"/>), mirroring
+/// <see cref="MetricSeries.Dispersion"/>.</summary>
 public sealed record KeyMatrixRow(
     ComparableKey Key,
     string DisplayName,
     IReadOnlyList<double?> Values,
     double? DeltaAbs,
     double? DeltaPct,
-    string Direction);
+    string Direction,
+    DispersionStats? Dispersion = null);
 
 /// <summary>A single first→last / first→each / adjacent comparison verdict.</summary>
 public sealed record PairwiseComparison(
