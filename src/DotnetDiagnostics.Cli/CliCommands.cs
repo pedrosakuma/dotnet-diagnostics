@@ -65,6 +65,7 @@ internal static class CliCommands
         "get-bytes",
         "compare",
         "session",
+        "completion",
     };
 
     /// <summary>Heap-snapshot sources accepted by the <c>inspect-heap</c> command (issue #288 PR3b).</summary>
@@ -146,6 +147,7 @@ internal static class CliCommands
             "query" => Query(),
             "get-bytes" => await GetBytesAsync(services, options, cancellationToken).ConfigureAwait(false),
             "compare" => await CompareAsync(options, cancellationToken).ConfigureAwait(false),
+            "completion" => Completion(options),
             _ => throw new ArgumentException($"Unknown command '{options.Command}'.", nameof(options)),
         };
     }
@@ -168,6 +170,7 @@ internal static class CliCommands
             "dump" => TryValidateDump(options, out error),
             "get-bytes" => TryValidateGetBytes(options, out error),
             "compare" => TryValidateCompare(options, out error),
+            "completion" => TryValidateCompletion(options, out error),
             _ => true,
         };
     }
@@ -441,6 +444,37 @@ internal static class CliCommands
         }
 
         return true;
+    }
+
+    public static bool TryValidateCompletion(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(options.CompletionShell))
+        {
+            error = $"The 'completion' command requires a shell argument. Valid shells: {string.Join(", ", CliCompletionScripts.Shells)}.";
+            return false;
+        }
+
+        if (!CliCompletionScripts.Shells.Contains(options.CompletionShell, StringComparer.Ordinal))
+        {
+            error = $"Unknown completion shell '{options.CompletionShell}'. Valid shells: {string.Join(", ", CliCompletionScripts.Shells)}.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static CliCommandResult Completion(CliOptions options)
+    {
+        if (!TryValidateCompletion(options, out var error))
+        {
+            throw new ArgumentException(error, nameof(options));
+        }
+
+        var script = CliCompletionScripts.ForShell(options.CompletionShell!);
+        return new CliCommandResult(false, false, new { shell = options.CompletionShell, script }, script);
     }
 
     private static CliCommandResult Processes(IServiceProvider services)

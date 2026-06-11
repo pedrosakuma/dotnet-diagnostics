@@ -33,6 +33,40 @@ Other distributions:
   `kubectl exec -it <pod> -c diagnostics-mcp -- dotnet-diagnostics-cli processes` works against the
   co-located workload.
 
+## Shell completion
+
+The CLI can emit static completion scripts for bash, zsh and PowerShell. The generated scripts include
+sub-commands, top-level flags and enum-valued options such as `collect --kind`, `inspect-heap --source`,
+`dump --dump-type` and `get-bytes --kind`.
+
+```bash
+# bash (system-wide)
+dotnet-diagnostics-cli completion bash | sudo tee /etc/bash_completion.d/dotnet-diagnostics >/dev/null
+
+# bash (current shell only)
+source <(dotnet-diagnostics-cli completion bash)
+```
+
+```zsh
+# zsh: write the generated function into a directory on fpath, then reload completions.
+mkdir -p ~/.zsh/completions
+dotnet-diagnostics-cli completion zsh > ~/.zsh/completions/_dotnet-diagnostics
+print -r 'fpath=(~/.zsh/completions $fpath)' >> ~/.zshrc
+autoload -Uz compinit && compinit
+```
+
+```powershell
+# PowerShell: source once for the current session.
+dotnet-diagnostics-cli completion pwsh | Out-String | Invoke-Expression
+
+# To load it every time, add the generated script to your profile.
+dotnet-diagnostics-cli completion pwsh > "$HOME/.dotnet-diagnostics-completion.ps1"
+Add-Content -Path $PROFILE -Value '. "$HOME/.dotnet-diagnostics-completion.ps1"'
+```
+
+If you run the self-contained executable directly, replace `dotnet-diagnostics-cli` above with
+`dotnet-diagnostics`. The generated scripts register both command names.
+
 ## Global options
 
 These apply to every command:

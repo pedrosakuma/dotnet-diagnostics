@@ -23,6 +23,9 @@ internal sealed record CliOptions
     /// <summary>Comparable snapshot JSON paths for the <c>compare</c> command.</summary>
     public IReadOnlyList<string> ComparePaths { get; init; } = Array.Empty<string>();
 
+    /// <summary>Shell name for the <c>completion</c> command (<c>bash</c>, <c>zsh</c>, or <c>pwsh</c>).</summary>
+    public string? CompletionShell { get; init; }
+
     /// <summary>Journey interpretation for the <c>compare</c> command (<c>--mode</c>): trend or dispersion.</summary>
     public string? Mode { get; init; }
 
@@ -184,6 +187,7 @@ internal sealed record CliOptions
         var help = false;
         string? savePath = null;
         var comparePaths = new List<string>();
+        string? completionShell = null;
         string? mode = null;
         string? kind = null;
         int? durationSeconds = null;
@@ -573,6 +577,13 @@ internal sealed record CliOptions
                             break;
                         }
 
+                        if (string.Equals(command, "completion", StringComparison.Ordinal)
+                            && completionShell is null)
+                        {
+                            completionShell = token;
+                            break;
+                        }
+
                         error = $"Unexpected argument '{token}'. Only one command is accepted.";
                         return null;
                     }
@@ -589,6 +600,7 @@ internal sealed record CliOptions
             Json = json,
             SavePath = savePath,
             ComparePaths = comparePaths,
+            CompletionShell = completionShell,
             Mode = mode,
             Help = help,
             Kind = kind,
