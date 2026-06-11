@@ -9,6 +9,7 @@ using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
+using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
@@ -738,6 +739,84 @@ public static class EventCollectionUseCases
                     ? "Correlate slow-query hotspots with CPU stacks from the same process."
                     : "If DB latency looks healthy, pivot to CPU sampling or logs for the same process.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 })),
+            resolved.Context);
+    }
+
+    /// <summary>Curates the Kestrel request pipeline (connections, requests, TLS, queue lengths, live config) into a snapshot.</summary>
+    public static async Task<DiagnosticResult<KestrelSnapshot>> CollectKestrel(
+        IKestrelCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        int? processId = null,
+        int durationSeconds = 10,
+        int intervalSeconds = 1,
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<KestrelSnapshot>(nameof(durationSeconds), "must be >= 1");
+        if (intervalSeconds < 1) return InvalidArg<KestrelSnapshot>(nameof(intervalSeconds), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<KestrelSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+
+        var snapshot = await collector.CollectAsync(
+            pid,
+            TimeSpan.FromSeconds(durationSeconds),
+            intervalSeconds,
+            cancellationToken).ConfigureAwait(false);
+
+        var inlineSnapshot = snapshot;
+        if (depth == SamplingDepth.Summary)
+        {
+            inlineSnapshot = snapshot with
+            {
+                ByOperation = snapshot.ByOperation.Take(5).ToList(),
+                QueuePoints = Array.Empty<KestrelQueuePoint>(),
+                ConfigurationJson = null,
+            };
+        }
+
+        var handle = handles.Register(pid, CollectionHandleKinds.KestrelSnapshot, snapshot, CollectionHandleTtl);
+        var hints = new List<NextActionHint>();
+
+        string summary;
+        if (snapshot.RequestsStarted == 0 && snapshot.ConnectionsStarted == 0 && snapshot.Counters.Count == 0)
+        {
+            summary = $"No Kestrel activity captured in {durationSeconds}s. Confirm the target hosts an ASP.NET Core app on Kestrel and that traffic flows during collection (start the session before the load).";
+        }
+        else
+        {
+            summary = $"Captured {snapshot.RequestsStarted} request(s) and {snapshot.ConnectionsStarted} connection(s) over {durationSeconds}s. " +
+                      $"Peak request-queue-length={snapshot.PeakRequestQueueLength}, connection-queue-length={snapshot.PeakConnectionQueueLength}. " +
+                      $"Request latency p95={snapshot.RequestP95.TotalMilliseconds:F1}ms, max={snapshot.RequestMax.TotalMilliseconds:F1}ms. " +
+                      $"TLS handshakes: {snapshot.TlsHandshakesStarted} started, {snapshot.TlsHandshakesFailed} failed.";
+
+            if (snapshot.PeakRequestQueueLength > 0 || snapshot.PeakConnectionQueueLength > 0)
+            {
+                hints.Add(new NextActionHint("query_snapshot",
+                    "Inspect the connection/request queue-length timeline to localize head-of-line blocking.",
+                    new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "queues", ["topN"] = 50 }));
+            }
+
+            hints.Add(new NextActionHint("query_snapshot",
+                "Group request latency by method + path without re-collecting.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byOperation", ["topN"] = 25 }));
+        }
+
+        if (snapshot.ConfigurationJson is not null)
+        {
+            hints.Add(new NextActionHint("query_snapshot",
+                "Read the live KestrelServerOptions JSON (TLS, limits, keep-alive, HTTP protocol versions) captured at session enable.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "config" }));
+        }
+
+        return WithContext(DiagnosticResult.OkWithHandle(
+            inlineSnapshot,
+            summary,
+            handle.Id,
+            handle.ExpiresAt,
+            hints.ToArray()),
             resolved.Context);
     }
 

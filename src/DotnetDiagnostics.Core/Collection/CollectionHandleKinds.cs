@@ -42,4 +42,7 @@ public static class CollectionHandleKinds
 
     /// <summary>Handle backing a <see cref="Db.DbSnapshot"/> emitted by <c>collect_events(kind="db")</c>.</summary>
     public const string DbSnapshot = "db-snapshot";
+
+    /// <summary>Handle backing a <see cref="Kestrel.KestrelSnapshot"/> emitted by <c>collect_events(kind="kestrel")</c>.</summary>
+    public const string KestrelSnapshot = "kestrel-snapshot";
 }

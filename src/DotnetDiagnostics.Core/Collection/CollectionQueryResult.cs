@@ -406,3 +406,51 @@ public sealed record DbConnectionPoolView(
     int PoolExhaustedCount,
     IReadOnlyList<Db.DbConnectionPoolStats> ConnectionPool,
     IReadOnlyList<string> Notes);
+
+// --- Kestrel snapshot views --------------------------------------------------------------------
+
+/// <summary>Default Kestrel view: connection / request / TLS totals, peak queue lengths, request latency tail and the latest counter values.</summary>
+public sealed record KestrelSummaryView(
+    long ConnectionsStarted,
+    long ConnectionsStopped,
+    long ConnectionsRejected,
+    long RequestsStarted,
+    long RequestsStopped,
+    long TlsHandshakesStarted,
+    long TlsHandshakesFailed,
+    long PeakConnectionQueueLength,
+    long PeakRequestQueueLength,
+    TimeSpan RequestP95,
+    TimeSpan RequestMax,
+    IReadOnlyList<Kestrel.KestrelCounterSample> Counters,
+    bool HasConfiguration,
+    IReadOnlyList<string> Notes);
+
+/// <summary>Request latency grouped by HTTP method + path.</summary>
+public sealed record KestrelByOperationView(
+    int TotalOperations,
+    int Returned,
+    IReadOnlyList<Kestrel.KestrelRequestGroup> ByOperation);
+
+/// <summary>Connection- and request-queue-length counter timeline (head-of-line blocking) with observed peaks.</summary>
+public sealed record KestrelQueuesView(
+    long PeakConnectionQueueLength,
+    long PeakRequestQueueLength,
+    int Returned,
+    IReadOnlyList<Kestrel.KestrelQueuePoint> Points,
+    IReadOnlyList<string> Notes);
+
+/// <summary>TLS handshake counts, latency percentiles and the protocols observed.</summary>
+public sealed record KestrelTlsView(
+    long Started,
+    long Stopped,
+    long Failed,
+    TimeSpan P50,
+    TimeSpan P95,
+    TimeSpan Max,
+    IReadOnlyList<string> Protocols);
+
+/// <summary>The live KestrelServerOptions JSON captured from the Configuration event at session enable.</summary>
+public sealed record KestrelConfigurationView(
+    string? ConfigurationJson,
+    IReadOnlyList<string> Notes);

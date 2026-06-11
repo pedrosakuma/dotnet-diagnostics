@@ -78,11 +78,11 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 
 | Option | Meaning |
 |---|---|
-| `--kind <kind>` | One of `counters`, `exceptions`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`. |
+| `--kind <kind>` | One of `counters`, `exceptions`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`. |
 | `-d, --duration <int>` | Window in seconds (default: `counters` 5, `datas` 15, others 10). |
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
 | `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |
-| `--interval <int>` | Refresh interval in seconds (`counters`, `db`). Default 1. |
+| `--interval <int>` | Refresh interval in seconds (`counters`, `db`, `kestrel`). Default 1. |
 | `--provider <name>` | `counters`: EventCounter provider (repeatable); `catalog`: EventPipe provider (repeatable; replaces broad defaults); `event_source`: required provider name. |
 | `--meter <name>` | `counters`: Meter name (repeatable). |
 | `--source <name>` | `activities`: ActivitySource filter (repeatable, `*` / `?` globs). |

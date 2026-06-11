@@ -80,6 +80,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="threadpool")` | The full worker/IOCP timelines and hill-climbing sequence. Summary keeps headline counts + top origins; drill in with `query_snapshot(handle, view=timeline|hillClimbing|workItemOrigins)`. |
 | `collect_events(kind="contention")` | The raw contention event list. Summary keeps headline wait totals + percentiles; drill in with `query_snapshot(handle, view=byCallSite|byOwner)`. |
 | `collect_events(kind="db")` | The long `ByCommand[]` / `NPlusOne[]` lists. Summary keeps the headline aggregates + pool slice. |
+| `collect_events(kind="kestrel")` | The `byOperation[]` list, queue-length timeline, and `configurationJson`. Summary keeps the headline connection/request/TLS aggregates + latency tail. |
 | `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph|deadlocks|unique-stacks|async-stalls)`. |
 
 Explicit `topN` always wins over the depth default — if you pass
@@ -168,7 +169,7 @@ The LLM may always ignore a prompt and drive ad-hoc.
 
 The windowed collectors — every `collect_events(kind=…)` variant (`counters`,
 `exceptions`, `gc`, `datas`, `catalog`, `activities`, `event_source`, `logs`,
-`jit`, `threadpool`, `contention`, `db`) — return, alongside the inline summary
+`jit`, `threadpool`, `contention`, `db`, `kestrel`) — return, alongside the inline summary
 + top-N, an opaque `handle` (Crockford-base32, TTL ~10 min) registered in an
 in-memory store. The LLM can then re-project the same artifact under a
 different view **without re-running EventPipe** by calling `query_snapshot`:
@@ -204,6 +205,7 @@ Views available per `kind`:
 | `threadpool-snapshot` | `collect_events(kind="threadpool")` | `summary` (default), `timeline`, `hillClimbing`, `workItemOrigins` |
 | `contention-snapshot` | `collect_events(kind="contention")` | `summary` (default), `byCallSite`, `byOwner` |
 | `db-snapshot` | `collect_events(kind="db")` | `summary` (default), `byCommand`, `n+1`, `connectionPool` |
+| `kestrel-snapshot` | `collect_events(kind="kestrel")` | `summary` (default), `byOperation`, `queues`, `tls`, `config` |
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `object`, `gcroot`, `objsize`, `async`, `diff` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
@@ -851,7 +853,7 @@ identical, but each carries a `DEPRECATED` notice and will be removed in
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `datas`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`. Case-sensitive. |
+| `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `datas`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`. Case-sensitive. |
 | `processId` | `int?` | auto | Target process id. |
 | `durationSeconds` | `int` | 5 (counters) / 15 (datas) / 10 (others) | Collection window. |
 | `providers` / `meters` / `intervalSeconds` / `maxInstrumentTimeSeries` | counters only | — | Same as [`collect_events(kind="counters")`](#collect_events(kind="counters")). |
@@ -861,12 +863,12 @@ identical, but each carries a `DEPRECATED` notice and will be removed in
 | `sources` / `maxActivities` | activities only | — | Same as [`collect_events(kind="activities")`](#collect_events(kind="activities")). |
 | `categories` / `minLevel` / `maxMessageBytes` / `depth` | logs only | — | Same as [`collect_events(kind="logs")`](#collect_events(kind="logs")). |
 | `depth` | jit / threadpool / contention only | `Summary` | Inline verbosity for the curated runtime views. |
-| `intervalSeconds` / `depth` | db only | `1` / `Summary` | SqlClient EventCounter refresh interval + inline verbosity for the curated DB view. |
+| `intervalSeconds` / `depth` | db / kestrel only | `1` / `Summary` | EventCounter refresh interval + inline verbosity for the curated DB / Kestrel views. |
 
 **Returns:** `CollectEventsEnvelope` — a polymorphic record that carries the
 `kind` discriminator plus exactly one populated payload field
 (`counters` / `exceptions` / `gc` / `datas` / `eventSource` / `activities` / `logs` /
-`jit` / `threadPool` / `contention` / `db`). The envelope's `summary`, `hints`,
+`jit` / `threadPool` / `contention` / `db` / `kestrel`). The envelope's `summary`, `hints`,
 `handle`, `handleExpiresAt`, and `resolvedProcess` are passed through from the
 underlying collector verbatim, so `query_snapshot` drilldowns continue to work
 unchanged.
@@ -1545,6 +1547,48 @@ per-tier counts, `reJitCount`, `osrCount`, and `hasIlMap`.
   literal values before the snapshot is retained.
 - SqlClient pool stats depend on provider support; when the target only emits EF
   activities the `connectionPool` slice may be empty.
+
+## `collect_events(kind="kestrel")`
+
+Collects a curated Kestrel HTTP-server view by subscribing to the
+`Microsoft-AspNetCore-Server-Kestrel` EventSource. The collector pairs
+connection / request / TLS-handshake start+stop events to compute request and
+TLS latency percentiles and connection durations, tracks the
+`connection-queue-length` and `request-queue-length` EventCounters over the
+window to localize head-of-line blocking, and captures the live
+`KestrelServerOptions` JSON emitted by the `Configuration` event when the
+session is enabled (TLS, limits, keep-alive, HTTP protocol versions).
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int?` | — | Target process id |
+| `durationSeconds` | `int` | `10` | Window length |
+| `intervalSeconds` | `int` | `1` | Refresh interval requested from Kestrel EventCounters |
+| `depth` | `SamplingDepth` | `Summary` | `Summary` trims the by-operation list and drops the queue timeline + config JSON inline; `Detail` / `Raw` keep the full capture |
+
+**Returns:** `KestrelSnapshot` with:
+
+- `connectionsStarted` / `connectionsStopped` / `connectionsRejected`
+- `requestsStarted` / `requestsStopped`
+- `tlsHandshakesStarted` / `tlsHandshakesStopped` / `tlsHandshakesFailed`
+- `peakConnectionQueueLength` / `peakRequestQueueLength`
+- request latency `requestP50` / `requestP95` / `requestMax`
+- TLS latency `tlsHandshakeP50` / `tlsHandshakeP95` / `tlsHandshakeMax`
+- connection duration `connectionDurationP50` / `connectionDurationP95` / `connectionDurationMax`
+- `counters` (`KestrelCounterSample[]`), `queuePoints` (`KestrelQueuePoint[]`)
+- `byOperation` (`KestrelRequestGroup[]` keyed by HTTP method + path + version)
+- `tlsProtocols`, `configurationJson`, `notes`
+
+**Drilldown:** `query_snapshot(handle, view="summary" | "byOperation" | "queues" | "tls" | "config")`.
+
+**Notes:**
+
+- The `Configuration` event fires once when the EventPipe session is enabled, so
+  `configurationJson` reflects the server options at the moment of collection.
+- When no traffic flows during the window the collector returns a note and empty
+  aggregates — start the session **before** the load you want to observe.
 
 ---
 
