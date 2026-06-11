@@ -1,3 +1,4 @@
+using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
@@ -14,7 +15,7 @@ public sealed class SampleDifferTests
         var baseline = HeapSnapshot(("System.Byte[]", 100, 1));
         var current = HeapSnapshot(("System.Byte[]", 105, 1));
 
-        var diff = SampleDiffer.Compare(baseline, "b", current, "c", minDeltaPct: 5, topN: 10);
+        var diff = ComparablePairwiseSampleDiff.Compare(baseline, "b", current, "c", minDeltaPct: 5, topN: 10);
 
         diff.Verdict.Should().Be("regression");
         diff.Changed.Should().ContainSingle();
@@ -28,7 +29,7 @@ public sealed class SampleDifferTests
         var baseline = HeapSnapshot(("System.Byte[]", 100, 1));
         var current = HeapSnapshot(("System.Byte[]", 95, 1));
 
-        var diff = SampleDiffer.Compare(baseline, "b", current, "c", minDeltaPct: 5, topN: 10);
+        var diff = ComparablePairwiseSampleDiff.Compare(baseline, "b", current, "c", minDeltaPct: 5, topN: 10);
 
         diff.Verdict.Should().Be("improvement");
         diff.Changed.Should().ContainSingle();
@@ -46,7 +47,7 @@ public sealed class SampleDifferTests
             ("System.Byte[]", 130, 1),
             ("System.String", 70, 1));
 
-        var diff = SampleDiffer.Compare(baseline, "b", current, "c", minDeltaPct: 5, topN: 10);
+        var diff = ComparablePairwiseSampleDiff.Compare(baseline, "b", current, "c", minDeltaPct: 5, topN: 10);
 
         diff.Verdict.Should().Be("mixed");
         diff.Changed.Should().HaveCount(2);
@@ -58,7 +59,7 @@ public sealed class SampleDifferTests
         var baseline = HeapSnapshot(("System.Byte[]", 100, 1));
         var current = HeapSnapshot(("System.String", 500, 3));
 
-        var diff = SampleDiffer.Compare(baseline, "b", current, "c", minDeltaPct: 5, topN: 10);
+        var diff = ComparablePairwiseSampleDiff.Compare(baseline, "b", current, "c", minDeltaPct: 5, topN: 10);
 
         diff.Verdict.Should().Be("no_change");
         diff.Notes.Should().Contain(note => note.Contains("No overlapping symbols/types", StringComparison.Ordinal));
@@ -78,7 +79,7 @@ public sealed class SampleDifferTests
         var baseline = CpuArtifact(new SymbolRef("MyApp.dll", "MyApp.Worker.DoWork"), identity, exclusive: 10);
         var current = CpuArtifact(new SymbolRef("DifferentDisplay.dll", "Completely.Different.Name"), identity, exclusive: 20);
 
-        var diff = SampleDiffer.Compare(baseline, "b", current, "c", minDeltaPct: 5, topN: 10);
+        var diff = ComparablePairwiseSampleDiff.Compare(baseline, "b", current, "c", minDeltaPct: 5, topN: 10);
 
         diff.Verdict.Should().Be("regression");
         diff.Notes.Should().BeNull();

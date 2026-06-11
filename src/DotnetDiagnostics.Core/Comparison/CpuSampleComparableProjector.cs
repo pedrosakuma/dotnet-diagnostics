@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Memory;
 
 namespace DotnetDiagnostics.Core.Comparison;
@@ -52,6 +53,51 @@ internal static class CpuSampleComparableProjection
 
     private static ComparableRow[] ProjectRows(CpuSampleTraceArtifact artifact, string kind)
     {
+        var aggregates = BuildAggregates(artifact, kind);
+        var totalSamples = artifact.TotalSamples == 0 ? 1 : artifact.TotalSamples;
+        return aggregates.Values
+            .OrderByDescending(row => row.ExclusiveSamples)
+            .ThenBy(row => row.DisplayName, StringComparer.Ordinal)
+            .Select(row =>
+            {
+                var exclusivePercent = 100.0 * row.ExclusiveSamples / totalSamples;
+                return new ComparableRow(
+                    row.Key,
+                    row.DisplayName,
+                    new[]
+                    {
+                        Metric("exclusivePercent", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Percent, MetricNormalization.SampleCount, "%", exclusivePercent),
+                        Metric("exclusiveSamples", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "samples", row.ExclusiveSamples),
+                        Metric("inclusiveSamples", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, MetricNormalization.None, "samples", row.InclusiveSamples),
+                    });
+            })
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Typed pairwise projection shared with <see cref="ComparablePairwiseSampleDiff"/>: the same
+    /// aggregation as <see cref="ProjectRows"/>, surfaced as the legacy
+    /// <see cref="CpuDiffMetric"/> dictionary keyed by <see cref="MethodDiffKey"/>.
+    /// </summary>
+    public static Dictionary<MethodDiffKey, CpuDiffMetric> ProjectTyped(CpuSampleTraceArtifact artifact, string kind)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        var aggregates = BuildAggregates(artifact, kind);
+        var totalSamples = artifact.TotalSamples == 0 ? 1 : artifact.TotalSamples;
+        var result = new Dictionary<MethodDiffKey, CpuDiffMetric>(ComparablePairwiseSampleDiff.MethodDiffKeyComparer.Instance);
+        foreach (var row in aggregates.Values)
+        {
+            result[new MethodDiffKey(row.Symbol, row.Identity)] = new CpuDiffMetric(
+                ExclusiveSamples: row.ExclusiveSamples,
+                InclusiveSamples: row.InclusiveSamples,
+                ExclusivePercent: Math.Round(100.0 * row.ExclusiveSamples / totalSamples, 2));
+        }
+
+        return result;
+    }
+
+    private static Dictionary<string, CpuAggregate> BuildAggregates(CpuSampleTraceArtifact artifact, string kind)
+    {
         var aggregates = new Dictionary<string, CpuAggregate>(StringComparer.Ordinal);
         foreach (var node in Flatten(artifact.Root))
         {
@@ -75,27 +121,10 @@ internal static class CpuSampleComparableProjection
                 continue;
             }
 
-            aggregates[matchId] = new CpuAggregate(key, symbol.MethodFullName, node.ExclusiveSamples, node.InclusiveSamples);
+            aggregates[matchId] = new CpuAggregate(key, symbol.MethodFullName, symbol, identity, node.ExclusiveSamples, node.InclusiveSamples);
         }
 
-        var totalSamples = artifact.TotalSamples == 0 ? 1 : artifact.TotalSamples;
-        return aggregates.Values
-            .OrderByDescending(row => row.ExclusiveSamples)
-            .ThenBy(row => row.DisplayName, StringComparer.Ordinal)
-            .Select(row =>
-            {
-                var exclusivePercent = 100.0 * row.ExclusiveSamples / totalSamples;
-                return new ComparableRow(
-                    row.Key,
-                    row.DisplayName,
-                    new[]
-                    {
-                        Metric("exclusivePercent", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Percent, MetricNormalization.SampleCount, "%", exclusivePercent),
-                        Metric("exclusiveSamples", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "samples", row.ExclusiveSamples),
-                        Metric("inclusiveSamples", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, MetricNormalization.None, "samples", row.InclusiveSamples),
-                    });
-            })
-            .ToArray();
+        return aggregates;
     }
 
     private static IEnumerable<CallTreeNode> Flatten(CallTreeNode root)
@@ -123,5 +152,5 @@ internal static class CpuSampleComparableProjection
         double value)
         => new(new MetricDefinition(name, role, direction, aggregation, normalizedBy, unit), Math.Round(value, 4));
 
-    private sealed record CpuAggregate(ComparableKey Key, string DisplayName, long ExclusiveSamples, long InclusiveSamples);
+    private sealed record CpuAggregate(ComparableKey Key, string DisplayName, SymbolRef Symbol, MethodIdentity? Identity, long ExclusiveSamples, long InclusiveSamples);
 }

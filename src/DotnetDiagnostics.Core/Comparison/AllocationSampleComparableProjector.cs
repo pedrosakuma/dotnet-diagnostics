@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 
 namespace DotnetDiagnostics.Core.Comparison;
@@ -34,6 +35,49 @@ public sealed class AllocationSampleComparableProjector : IComparableProjector
 
     private static ComparableRow[] ProjectRows(AllocationSample sample, string kind)
     {
+        var aggregates = BuildAggregates(sample, kind);
+        return aggregates.Values
+            .OrderByDescending(row => row.BytesPerSecond)
+            .ThenBy(row => row.DisplayName, StringComparer.Ordinal)
+            .Select(row => new ComparableRow(
+                row.Key,
+                row.DisplayName,
+                new[]
+                {
+                    Metric("bytesPerSecond", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Rate, MetricNormalization.DurationSeconds, "bytes/s", row.BytesPerSecond),
+                    Metric("allocCountPerSecond", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Rate, MetricNormalization.DurationSeconds, "allocations/s", row.AllocCountPerSecond),
+                    Metric("totalBytes", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "bytes", row.TotalBytes),
+                    Metric("allocCount", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "count", row.AllocCount),
+                    Metric("durationSeconds", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Duration, MetricNormalization.None, "s", row.DurationSeconds),
+                }))
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Typed pairwise projection shared with <see cref="ComparablePairwiseSampleDiff"/>: the same
+    /// aggregation as <see cref="ProjectRows"/>, surfaced as the legacy
+    /// <see cref="AllocationDiffMetric"/> dictionary keyed by <see cref="TypeIdentity"/>.
+    /// </summary>
+    public static Dictionary<TypeIdentity, AllocationDiffMetric> ProjectTyped(AllocationSample sample)
+    {
+        ArgumentNullException.ThrowIfNull(sample);
+        var aggregates = BuildAggregates(sample, "allocation-sample");
+        var result = new Dictionary<TypeIdentity, AllocationDiffMetric>(ComparablePairwiseSampleDiff.TypeIdentityComparer.Instance);
+        foreach (var row in aggregates.Values)
+        {
+            result[row.Identity] = new AllocationDiffMetric(
+                TotalBytes: row.TotalBytes,
+                AllocCount: row.AllocCount,
+                BytesPerSecond: row.BytesPerSecond,
+                AllocCountPerSecond: row.AllocCountPerSecond,
+                DurationSeconds: row.DurationSeconds);
+        }
+
+        return result;
+    }
+
+    private static Dictionary<string, AllocationAggregate> BuildAggregates(AllocationSample sample, string kind)
+    {
         var aggregates = new Dictionary<string, AllocationAggregate>(StringComparer.Ordinal);
         foreach (var stat in sample.TopByBytes.Concat(sample.TopByCount))
         {
@@ -42,6 +86,7 @@ public sealed class AllocationSampleComparableProjector : IComparableProjector
             var metric = new AllocationAggregate(
                 key,
                 stat.TypeName,
+                identity,
                 TotalBytes: stat.TotalBytes,
                 AllocCount: stat.EventCount,
                 BytesPerSecond: PerSecond(stat.TotalBytes, sample.Duration),
@@ -65,21 +110,7 @@ public sealed class AllocationSampleComparableProjector : IComparableProjector
             aggregates[matchId] = metric;
         }
 
-        return aggregates.Values
-            .OrderByDescending(row => row.BytesPerSecond)
-            .ThenBy(row => row.DisplayName, StringComparer.Ordinal)
-            .Select(row => new ComparableRow(
-                row.Key,
-                row.DisplayName,
-                new[]
-                {
-                    Metric("bytesPerSecond", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Rate, MetricNormalization.DurationSeconds, "bytes/s", row.BytesPerSecond),
-                    Metric("allocCountPerSecond", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Rate, MetricNormalization.DurationSeconds, "allocations/s", row.AllocCountPerSecond),
-                    Metric("totalBytes", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "bytes", row.TotalBytes),
-                    Metric("allocCount", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "count", row.AllocCount),
-                    Metric("durationSeconds", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Duration, MetricNormalization.None, "s", row.DurationSeconds),
-                }))
-            .ToArray();
+        return aggregates;
     }
 
     private static double PerSecond(long value, TimeSpan duration)
@@ -98,6 +129,7 @@ public sealed class AllocationSampleComparableProjector : IComparableProjector
     private sealed record AllocationAggregate(
         ComparableKey Key,
         string DisplayName,
+        TypeIdentity Identity,
         long TotalBytes,
         long AllocCount,
         double BytesPerSecond,

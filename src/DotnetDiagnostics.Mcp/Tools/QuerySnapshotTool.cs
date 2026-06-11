@@ -431,7 +431,7 @@ public sealed class QuerySnapshotTool
     private static bool IsDiffView(string? view)
         => string.Equals(view, DiffView, StringComparison.Ordinal);
 
-    // Legacy typed pairwise (N=2 baselineHandle) kinds handled by SampleDiffer in their own
+    // Legacy typed pairwise (N=2 baselineHandle) kinds handled by ComparablePairwiseSampleDiff in their own
     // case blocks. They also gain N-ary comparable projectors over time; this list backs the
     // registry-driven diffable-kind reporting so the InvalidKindPair message stays accurate as
     // projectors are added.
@@ -604,16 +604,16 @@ public sealed class QuerySnapshotTool
         return currentLookup.Kind switch
         {
             DiagnosticTools.HeapSnapshotKind when currentLookup.Artifact is HeapSnapshotArtifact current && baselineLookup.Value.Artifact is HeapSnapshotArtifact baseline
-                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, SampleDiffer.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
+                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
 
             "cpu-sample" when currentLookup.Artifact is CpuSampleTraceArtifact current && baselineLookup.Value.Artifact is CpuSampleTraceArtifact baseline
-                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, SampleDiffer.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
+                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
 
             DiagnosticTools.NativeAllocHandleKind when currentLookup.Artifact is CpuSampleTraceArtifact current && baselineLookup.Value.Artifact is CpuSampleTraceArtifact baseline
-                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, SampleDiffer.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
+                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
 
             "allocation-sample" when currentLookup.Artifact is AllocationSampleArtifact current && baselineLookup.Value.Artifact is AllocationSampleArtifact baseline
-                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, SampleDiffer.Compare(baseline.Summary, baselineHandle!, current.Summary, handle, minDeltaPct, effectiveTopN)),
+                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline.Summary, baselineHandle!, current.Summary, handle, minDeltaPct, effectiveTopN)),
 
             _ => TryBuildComparableJourneyDiff(handles, handle, currentLookup, new[] { baselineHandle! }, minDeltaPct, effectiveTopN, journeyDepth, mode)
         };

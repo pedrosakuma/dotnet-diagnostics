@@ -1,52 +1,19 @@
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Memory;
 
-namespace DotnetDiagnostics.Core.Drilldown;
+namespace DotnetDiagnostics.Core.Comparison;
 
-public sealed record MethodDiffKey(SymbolRef Symbol, MethodIdentity? Identity = null);
-
-public sealed record CpuDiffMetric(
-    long ExclusiveSamples,
-    long InclusiveSamples,
-    double ExclusivePercent);
-
-public sealed record HeapDiffMetric(
-    long TotalBytes,
-    long InstanceCount);
-
-public sealed record AllocationDiffMetric(
-    long TotalBytes,
-    long AllocCount,
-    double BytesPerSecond,
-    double AllocCountPerSecond,
-    double DurationSeconds);
-
-public sealed record DiffRow<TKey, TMetric>(
-    TKey Key,
-    TMetric? Baseline,
-    TMetric? Current,
-    double DeltaAbs,
-    double DeltaPct,
-    string Direction);
-
-public sealed record SampleDiff<TKey, TMetric>(
-    string Kind,
-    string BaselineHandle,
-    string CurrentHandle,
-    double MinDeltaPct,
-    int TotalAdded,
-    int TotalRemoved,
-    int TotalChanged,
-    IReadOnlyList<DiffRow<TKey, TMetric>> Added,
-    IReadOnlyList<DiffRow<TKey, TMetric>> Removed,
-    IReadOnlyList<DiffRow<TKey, TMetric>> Changed,
-    string Verdict)
-{
-    public IReadOnlyList<string>? Notes { get; init; }
-}
-
-public static class SampleDiffer
+/// <summary>
+/// Backward-compatible typed pairwise (N=2 <c>baselineHandle</c>) diff over the comparable
+/// projectors. Replaces the retired <c>SampleDiffer</c>: the artifact→row projection now lives in
+/// the comparable projector classes (single owner, shared with the N-ary journey path), and this
+/// adapter keeps the legacy <see cref="SampleDiff{TKey, TMetric}"/> envelope shape — same verdict
+/// vocabulary, added/removed/changed bucketing, and per-row typed metrics — for clients that rely
+/// on the typed pairwise output.
+/// </summary>
+public static class ComparablePairwiseSampleDiff
 {
     public static SampleDiff<MethodDiffKey, CpuDiffMetric> Compare(
         CpuSampleTraceArtifact baseline,
@@ -66,18 +33,16 @@ public static class SampleDiffer
             notes.Add($"Comparison spans different runs/processes: baseline pid {baseline.ProcessId}, current pid {current.ProcessId}.");
         }
 
-        var diff = BuildDiff(
+        return BuildDiff(
             kind: "cpu-sample",
             baselineHandle,
             currentHandle,
             minDeltaPct,
             topN,
-            baseline: ProjectCpu(baseline),
-            current: ProjectCpu(current),
+            baseline: CpuSampleComparableProjection.ProjectTyped(baseline, "cpu-sample"),
+            current: CpuSampleComparableProjection.ProjectTyped(current, "cpu-sample"),
             primaryMetric: static metric => metric.ExclusivePercent,
             notes);
-
-        return diff;
     }
 
     public static SampleDiff<TypeIdentity, HeapDiffMetric> Compare(
@@ -104,8 +69,8 @@ public static class SampleDiffer
             currentHandle,
             minDeltaPct,
             topN,
-            baseline: ProjectHeap(baseline),
-            current: ProjectHeap(current),
+            baseline: HeapSnapshotComparableProjector.ProjectTyped(baseline),
+            current: HeapSnapshotComparableProjector.ProjectTyped(current),
             primaryMetric: static metric => metric.TotalBytes,
             notes);
     }
@@ -138,13 +103,13 @@ public static class SampleDiffer
             currentHandle,
             minDeltaPct,
             topN,
-            baseline: ProjectAllocation(baseline),
-            current: ProjectAllocation(current),
+            baseline: AllocationSampleComparableProjector.ProjectTyped(baseline),
+            current: AllocationSampleComparableProjector.ProjectTyped(current),
             primaryMetric: static metric => metric.BytesPerSecond,
             notes);
     }
 
-    private static SampleDiff<TKey, TMetric> BuildDiff<TKey, TMetric>(
+    internal static SampleDiff<TKey, TMetric> BuildDiff<TKey, TMetric>(
         string kind,
         string baselineHandle,
         string currentHandle,
@@ -244,111 +209,9 @@ public static class SampleDiffer
         };
     }
 
-    private static Dictionary<MethodDiffKey, CpuDiffMetric> ProjectCpu(CpuSampleTraceArtifact artifact)
-    {
-        var totals = new Dictionary<MethodDiffKey, (long Exclusive, long Inclusive)>(MethodDiffKeyComparer.Instance);
-        foreach (var node in Flatten(artifact.Root))
-        {
-            if (string.Equals(node.Frame.Method, "<root>", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (node.ExclusiveSamples <= 0 && node.InclusiveSamples <= 0)
-            {
-                continue;
-            }
-
-            var symbol = new SymbolRef(node.Frame.Module, node.Frame.Method);
-            artifact.MethodIdentities.TryGetValue(symbol, out var identity);
-            var key = new MethodDiffKey(symbol, identity);
-            totals.TryGetValue(key, out var aggregate);
-            aggregate.Exclusive += node.ExclusiveSamples;
-            aggregate.Inclusive = Math.Max(aggregate.Inclusive, node.InclusiveSamples);
-            totals[key] = aggregate;
-        }
-
-        var totalSamples = artifact.TotalSamples == 0 ? 1 : artifact.TotalSamples;
-        return totals.ToDictionary(
-            kv => kv.Key,
-            kv => new CpuDiffMetric(
-                ExclusiveSamples: kv.Value.Exclusive,
-                InclusiveSamples: kv.Value.Inclusive,
-                ExclusivePercent: Math.Round(100.0 * kv.Value.Exclusive / totalSamples, 2)),
-            MethodDiffKeyComparer.Instance);
-    }
-
-    private static Dictionary<TypeIdentity, HeapDiffMetric> ProjectHeap(HeapSnapshotArtifact artifact)
-    {
-        var result = new Dictionary<TypeIdentity, HeapDiffMetric>(TypeIdentityComparer.Instance);
-        foreach (var stat in artifact.TopTypesByBytes.Concat(artifact.TopTypesByInstances))
-        {
-            var key = stat.Identity ?? new TypeIdentity(stat.TypeFullName) { ModuleName = stat.ModuleName };
-            if (result.TryGetValue(key, out var existing))
-            {
-                result[key] = new HeapDiffMetric(
-                    TotalBytes: Math.Max(existing.TotalBytes, stat.TotalBytes),
-                    InstanceCount: Math.Max(existing.InstanceCount, stat.InstanceCount));
-                continue;
-            }
-
-            result[key] = new HeapDiffMetric(stat.TotalBytes, stat.InstanceCount);
-        }
-
-        return result;
-    }
-
-    private static Dictionary<TypeIdentity, AllocationDiffMetric> ProjectAllocation(AllocationSample sample)
-    {
-        var result = new Dictionary<TypeIdentity, AllocationDiffMetric>(TypeIdentityComparer.Instance);
-        foreach (var stat in sample.TopByBytes.Concat(sample.TopByCount))
-        {
-            var key = stat.Identity ?? new TypeIdentity(stat.TypeName);
-            var metric = new AllocationDiffMetric(
-                TotalBytes: stat.TotalBytes,
-                AllocCount: stat.EventCount,
-                BytesPerSecond: PerSecond(stat.TotalBytes, sample.Duration),
-                AllocCountPerSecond: PerSecond(stat.EventCount, sample.Duration),
-                DurationSeconds: Math.Round(sample.Duration.TotalSeconds, 2));
-
-            if (result.TryGetValue(key, out var existing))
-            {
-                result[key] = new AllocationDiffMetric(
-                    TotalBytes: Math.Max(existing.TotalBytes, metric.TotalBytes),
-                    AllocCount: Math.Max(existing.AllocCount, metric.AllocCount),
-                    BytesPerSecond: Math.Max(existing.BytesPerSecond, metric.BytesPerSecond),
-                    AllocCountPerSecond: Math.Max(existing.AllocCountPerSecond, metric.AllocCountPerSecond),
-                    DurationSeconds: metric.DurationSeconds);
-                continue;
-            }
-
-            result[key] = metric;
-        }
-
-        return result;
-    }
-
-    private static IEnumerable<CallTreeNode> Flatten(CallTreeNode root)
-    {
-        var stack = new Stack<CallTreeNode>();
-        stack.Push(root);
-        while (stack.Count > 0)
-        {
-            var current = stack.Pop();
-            yield return current;
-            foreach (var child in current.Children)
-            {
-                stack.Push(child);
-            }
-        }
-    }
-
     private static double MetricForSort<TMetric>(TMetric? metric, Func<TMetric, double> primaryMetric)
         where TMetric : class
         => metric is null ? 0 : primaryMetric(metric);
-
-    private static double PerSecond(long value, TimeSpan duration)
-        => Math.Round(duration.TotalSeconds <= 0 ? 0 : value / duration.TotalSeconds, 2);
 
     private static double Median(IEnumerable<double> values)
     {
@@ -380,7 +243,7 @@ public static class SampleDiffer
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(topN);
     }
 
-    private sealed class MethodDiffKeyComparer : IEqualityComparer<MethodDiffKey>
+    internal sealed class MethodDiffKeyComparer : IEqualityComparer<MethodDiffKey>
     {
         public static MethodDiffKeyComparer Instance { get; } = new();
 
@@ -411,7 +274,7 @@ public static class SampleDiffer
                 : obj.Symbol.GetHashCode();
     }
 
-    private sealed class TypeIdentityComparer : IEqualityComparer<TypeIdentity>
+    internal sealed class TypeIdentityComparer : IEqualityComparer<TypeIdentity>
     {
         public static TypeIdentityComparer Instance { get; } = new();
 
