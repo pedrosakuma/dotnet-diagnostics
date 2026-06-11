@@ -31,6 +31,20 @@ public sealed class CliHintProjectionTests
     }
 
     [Theory]
+    [InlineData("collect")]
+    [InlineData("session")]
+    [InlineData("query")]
+    public void TryProjectHint_KeepsCliAuthoredVerbs(string cliVerb)
+    {
+        // Hints authored on the CLI side (e.g. the query→session redirect, #387) already use CLI
+        // verbs verbatim and must survive projection rather than being dropped as "no CLI equivalent".
+        var ok = CliHintProjection.TryProjectHint(new NextActionHint(cliVerb, "Redirect."), out var projected);
+
+        ok.Should().BeTrue();
+        projected.NextTool.Should().Be(cliVerb);
+    }
+
+    [Theory]
     [InlineData("collect_sample")]
     [InlineData("collect_thread_snapshot")]
     [InlineData("collect_off_cpu_sample")]

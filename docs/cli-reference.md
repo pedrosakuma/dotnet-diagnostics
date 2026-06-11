@@ -46,6 +46,11 @@ These apply to every command:
 Exit codes: `0` success (a `dump` preview is also a success), `1` a structured failure envelope
 (e.g. `NotSupported`, `PermissionDenied`), `2` a usage / validation error.
 
+> **Progress.** Long one-shot collections (`collect`, `inspect-heap`, `dump`) print an elapsed-time
+> spinner to stderr while they run, on an interactive terminal only. It is suppressed under `--json`
+> and whenever stderr is redirected/piped, so machine-readable output (stdout) and captured logs stay
+> clean.
+
 ## Commands
 
 ### `processes`
@@ -136,6 +141,9 @@ dotnet-diagnostics-cli dump --pid 1234 --dump-type WithHeap --out ./dumps --conf
 
 > **Scripting.** Parse `--json` to tell a preview apart from a written dump:
 > `data.kind == "confirmation_required"` (preview) vs `data.kind == "dump_written"`.
+>
+> The preview discloses the resolved artifact directory the dump *would* be written to
+> (`would write to : <dir>`) so you can confirm the destination before re-running with `--confirm`.
 
 ### `get-bytes`
 
@@ -179,7 +187,9 @@ Re-render a previously-collected handle under a different view **without re-coll
 
 This is **only meaningful inside a `session`** — drill-down handles live for the lifetime of the host, and
 the one-shot CLI builds a fresh host per command and exits. Run one-shot, `query` returns a `NotSupported`
-envelope (exit 1); the one-shot path instead emits its full result inline (use `--depth detail` / `--json`).
+envelope (exit 1) that redirects you to `dotnet-diagnostics session`, where a `collect` (or `inspect-heap` /
+`dump`) issues a handle you can drill into in the same session; for a one-shot answer instead, re-run the
+originating command with `--depth detail` / `--json` to get the full result inline.
 Inside `session`, `query --handle <id> --view <view>` works against the live handle store (see below).
 
 ### `session`

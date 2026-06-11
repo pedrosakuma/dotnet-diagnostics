@@ -636,7 +636,13 @@ internal static class CliCommands
         // confirm=true in its summary/message; rewrite it to CLI vocabulary before rendering (#301).
         result = CliHintProjection.RewriteDumpPreview(result);
 
-        return BuildResult<DumpToolResult>(result, static (sb, data) =>
+        // #387: disclose the resolved artifact directory the dump WOULD be written to *before* it is
+        // written, so the operator sees the destination on the --confirm preview (not only in the
+        // success envelope). The root is the CLI's sandbox (dump --out, or the temp / MCP_ARTIFACT_ROOT
+        // default).
+        var artifactRoot = services.GetRequiredService<DotnetDiagnostics.Core.Artifacts.IArtifactRootProvider>().Root;
+
+        return BuildResult<DumpToolResult>(result, (sb, data) =>
         {
             if (data.Dump is { } dump)
             {
@@ -644,27 +650,37 @@ internal static class CliCommands
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  file  : {dump.FilePath}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  size  : {dump.FileSizeBytes:N0} bytes");
             }
+            else if (string.Equals(data.Kind, DumpToolResultKinds.ConfirmationRequired, StringComparison.Ordinal))
+            {
+                sb.AppendLine();
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  would write to : {artifactRoot}");
+                sb.AppendLine("  re-run with --confirm to write the dump.");
+            }
         });
     }
 
     /// <summary>
-    /// The <c>query</c> drill-down command. Drill-down handles are MCP-session scoped and the
-    /// standalone CLI is a stateless one-shot (per the #286 persistence decision: cheap inline
-    /// summaries only, no server-side handle store survives the process), so there is nothing to
-    /// query in a follow-up invocation. Returns a structured <c>NotSupported</c> envelope (exit 1)
-    /// that explains the limitation rather than pretending to honour <c>--handle</c>/<c>--view</c>.
+    /// The <c>query</c> drill-down command in the one-shot CLI. Drill-down handles are MCP-session
+    /// scoped and the one-shot CLI is stateless (per the #286 persistence decision: cheap inline
+    /// summaries only, no handle store survives the process), so there is nothing to query in a
+    /// follow-up invocation. Returns a structured <c>NotSupported</c> envelope (exit 1) that redirects
+    /// the operator to the <c>session</c> REPL — the one place where a collected handle lives long
+    /// enough to <c>query --handle &lt;id&gt; --view &lt;view&gt;</c>.
     /// </summary>
     private static CliCommandResult Query()
     {
         var result = DiagnosticResult.Fail<object>(
-            "The 'query' drill-down command is not supported by the one-shot CLI.",
+            "The 'query' drill-down command needs a live session. Start one with 'dotnet-diagnostics session'.",
             new DiagnosticError(
                 "NotSupported",
-                "Drill-down handles are scoped to a live MCP session; the standalone CLI is a stateless one-shot "
-                + "and emits its full result inline on the originating command (use --json / --depth detail). "
-                + "Run the MCP server if you need handle-based drill-down.",
+                "Drill-down handles are scoped to a live session. The one-shot CLI is stateless, so a handle "
+                + "from a previous command no longer exists. Start the interactive REPL with 'dotnet-diagnostics "
+                + "session': there, a 'collect' (or 'inspect-heap' / 'dump') issues a handle you can drill into "
+                + "with 'query --handle <id> --view <view>' in the same session. For a one-shot answer instead, "
+                + "re-run the originating command with --depth detail (or --json) to get the full result inline.",
                 "one-shot-cli"),
-            new NextActionHint("collect", "Re-run the originating command with --depth detail (or --json) to get the full result inline."));
+            new NextActionHint("session", "Start the interactive session REPL, then collect and query --handle <id> --view <view> there."),
+            new NextActionHint("collect", "Or re-run the originating command with --depth detail (or --json) to get the full result inline."));
 
         return BuildResult<object>(result, static (_, _) => { });
     }

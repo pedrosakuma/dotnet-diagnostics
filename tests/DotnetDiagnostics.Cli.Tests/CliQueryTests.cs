@@ -7,9 +7,10 @@ namespace DotnetDiagnostics.Cli.Tests;
 
 /// <summary>
 /// Coverage for the <c>query</c> drill-down command (issue #288 PR4). The one-shot CLI cannot honour
-/// MCP-session-scoped drill-down handles (per the #286 persistence decision), so <c>query</c> always
-/// returns a structured <c>NotSupported</c> envelope and exit code 1 — even when <c>--handle</c> /
-/// <c>--view</c> are supplied (they are parsed only so they don't trip "Unknown option").
+/// session-scoped drill-down handles (per the #286 persistence decision), so <c>query</c> always
+/// returns a structured <c>NotSupported</c> envelope and exit code 1 that redirects the operator to
+/// the <c>session</c> REPL (issue #387) — even when <c>--handle</c> / <c>--view</c> are supplied (they
+/// are parsed only so they don't trip "Unknown option").
 /// </summary>
 public sealed class CliQueryTests
 {
@@ -19,8 +20,8 @@ public sealed class CliQueryTests
         var (exit, stdout, stderr) = await RunAsync("query");
 
         exit.Should().Be(1);
-        stdout.Should().Contain("not supported");
         stdout.Should().Contain("NotSupported");
+        stdout.Should().Contain("session");
         stderr.Should().BeEmpty();
     }
 
@@ -40,6 +41,8 @@ public sealed class CliQueryTests
 
         exit.Should().Be(1);
         stdout.Should().Contain("\"kind\"").And.Contain("NotSupported");
+        // #387: the primary redirect hint must survive CliHintProjection (session is a CLI command).
+        stdout.Should().Contain("session");
     }
 
     [Fact]
