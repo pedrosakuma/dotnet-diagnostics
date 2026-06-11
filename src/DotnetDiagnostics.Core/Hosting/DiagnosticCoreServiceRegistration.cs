@@ -15,6 +15,7 @@ using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.Symbols;
 using DotnetDiagnostics.Core.ThreadPool;
 using Microsoft.Extensions.DependencyInjection;
@@ -93,6 +94,7 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<IDbCollector, EventPipeDbCollector>();
         services.AddSingleton<IKestrelCollector, EventPipeKestrelCollector>();
         services.AddSingleton<INetworkingCollector, EventPipeNetworkingCollector>();
+        services.AddSingleton<IStartupCollector, EventPipeStartupCollector>();
         services.AddSingleton<IProcessDumper, DiagnosticsClientDumper>();
         services.AddSingleton<IModuleByteSource, ClrMdModuleByteSource>();
         services.AddSingleton<IDumpByteSource, FileSystemDumpByteSource>();

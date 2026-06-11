@@ -82,6 +82,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="db")` | The long `ByCommand[]` / `NPlusOne[]` lists. Summary keeps the headline aggregates + pool slice. |
 | `collect_events(kind="kestrel")` | The `byOperation[]` list, queue-length timeline, and `configurationJson`. Summary keeps the headline connection/request/TLS aggregates + latency tail. |
 | `collect_events(kind="networking")` | The full `ByOperation[]` list. Summary keeps headline HTTP/DNS/TLS/socket counts + latency tails; drill in with `query_snapshot(handle, view=byOperation|queue|tls|dns)`. |
+| `collect_events(kind="startup")` | The loader/DI event lists and full timeline. Summary keeps headline counts, top assembly/module aggregates, and notes. |
 | `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph|deadlocks|unique-stacks|async-stalls)`. |
 
 Explicit `topN` always wins over the depth default — if you pass
@@ -119,7 +120,7 @@ same `tools/call` request — no second round-trip, no polling. This is the
 Tools wired up:
 
 - `collect_sample(kind="cpu")`
-- `collect_events` (every `kind` — counters, exceptions, gc, event_source, activities)
+- `collect_events` (every `kind` — counters, exceptions, gc, datas, catalog, event_source, activities, logs, jit, threadpool, contention, db, startup)
 
 How it works:
 
@@ -171,6 +172,7 @@ The LLM may always ignore a prompt and drive ad-hoc.
 The windowed collectors — every `collect_events(kind=…)` variant (`counters`,
 `exceptions`, `gc`, `datas`, `catalog`, `activities`, `event_source`, `logs`,
 `jit`, `threadpool`, `contention`, `db`, `kestrel`) — return, alongside the inline summary
+`jit`, `threadpool`, `contention`, `db`, `startup`) — return, alongside the inline summary
 + top-N, an opaque `handle` (Crockford-base32, TTL ~10 min) registered in an
 in-memory store. The LLM can then re-project the same artifact under a
 different view **without re-running EventPipe** by calling `query_snapshot`:
@@ -208,6 +210,7 @@ Views available per `kind`:
 | `db-snapshot` | `collect_events(kind="db")` | `summary` (default), `byCommand`, `n+1`, `connectionPool` |
 | `kestrel-snapshot` | `collect_events(kind="kestrel")` | `summary` (default), `byOperation`, `queues`, `tls`, `config` |
 | `networking-snapshot` | `collect_events(kind="networking")` | `summary` (default), `byOperation`, `queue`, `tls`, `dns` |
+| `startup-snapshot` | `collect_events(kind="startup")` | `summary` (default), `assemblies`, `modules`, `di`, `timeline` |
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `object`, `gcroot`, `objsize`, `async`, `diff` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
@@ -433,7 +436,7 @@ unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
 | [`inspect_process(view="triage")`](#inspect_process(view="triage")) | ~5 s | no | ✅ | **Phase 12 IoT-style triage.** Collects counters (5s), classifies workload (cpu-bound/gc-pressure/memory-pressure/threadpool-starvation/lock-contention/io-bound/healthy), returns actionable hints. The LLM just follows the first hint — no interpretation needed. |
 | `collect_sample(kind="off_cpu")` (Linux/Windows) | window-bound | no | ✅ (Linux) | **Deprecated — use `collect_sample(kind="off_cpu")`.** system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
 | `query_snapshot` | cheap | no | ✅ | drilldown on handle from `collect_sample(kind="off_cpu")` |
-| [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/gc/event_source/activities/logs. |
+| [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/startup. |
 | [`collect_sample`](#collect_sample) | window-bound | depends on kind | ✅ (mostly — see kind) | **Canonical bounded-time sampler.** Dispatches by `kind` to cpu/off_cpu/allocation/native-alloc. |
 | [`collect_events(kind="counters")`](#collect_events(kind="counters")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="counters")`.** opens an EventPipe session |
 | [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")) | window-bound | no | ✅ (perf/ETW, native frames) | **Deprecated — use `collect_sample(kind="cpu")`.** EventPipe + temp `.nettrace` on disk |
@@ -846,7 +849,7 @@ Short ASP.NET Core request snapshot for the "which requests are hanging right no
 
 **Canonical EventPipe collector.** A single tool that dispatches
 by `kind` to the underlying counters / exceptions / gc / event_source /
-activities / logs / threadpool collector. New clients should call `collect_events` instead of the
+activities / logs / threadpool / startup collector. New clients should call `collect_events` instead of the
 legacy entrypoints; the legacy tools remain registered and behaviorally
 identical, but each carries a `DEPRECATED` notice and will be removed in
 `0.7.0`.
@@ -856,11 +859,12 @@ identical, but each carries a `DEPRECATED` notice and will be removed in
 | Name | Type | Default | Description |
 |---|---|---|---|
 | `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `datas`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`. Case-sensitive. |
+| `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `startup`. Case-sensitive. |
 | `processId` | `int?` | auto | Target process id. |
 | `durationSeconds` | `int` | 5 (counters) / 15 (datas) / 10 (others) | Collection window. |
 | `providers` / `meters` / `intervalSeconds` / `maxInstrumentTimeSeries` | counters only | — | Same as [`collect_events(kind="counters")`](#collect_events(kind="counters")). |
 | `maxRecent` | exceptions only | 100 | Same as [`collect_events(kind="exceptions")`](#collect_events(kind="exceptions")). |
-| `maxEvents` | gc / datas / event_source / logs only | 200 (`gc`, `event_source`) / 1000 (`datas`) / 500 (`logs`) | Same as the underlying tool. |
+| `maxEvents` | gc / datas / catalog / event_source / logs only | 200 (`gc`, `event_source`) / 1000 (`datas`) / 500 (`logs`) | Same as the underlying tool. |
 | `providerName` / `keywords` / `eventLevel` / `depth` / `unsafeProvider` | event_source only | — | Same as [`collect_events(kind="event_source")`](#collect_events(kind="event_source")). |
 | `sources` / `maxActivities` | activities only | — | Same as [`collect_events(kind="activities")`](#collect_events(kind="activities")). |
 | `categories` / `minLevel` / `maxMessageBytes` / `depth` | logs only | — | Same as [`collect_events(kind="logs")`](#collect_events(kind="logs")). |
@@ -871,6 +875,13 @@ identical, but each carries a `DEPRECATED` notice and will be removed in
 `kind` discriminator plus exactly one populated payload field
 (`counters` / `exceptions` / `gc` / `datas` / `eventSource` / `activities` / `logs` /
 `jit` / `threadPool` / `contention` / `db` / `kestrel`). The envelope's `summary`, `hints`,
+| `depth` | jit / threadpool / contention / startup only | `Summary` | Inline verbosity for the curated runtime views. |
+| `intervalSeconds` / `depth` | db only | `1` / `Summary` | SqlClient EventCounter refresh interval + inline verbosity for the curated DB view. |
+
+**Returns:** `CollectEventsEnvelope` — a polymorphic record that carries the
+`kind` discriminator plus exactly one populated payload field
+(`counters` / `exceptions` / `gc` / `datas` / `catalog` / `eventSource` / `activities` / `logs` /
+`jit` / `threadPool` / `contention` / `db` / `startup`). The envelope's `summary`, `hints`,
 `handle`, `handleExpiresAt`, and `resolvedProcess` are passed through from the
 underlying collector verbatim, so `query_snapshot` drilldowns continue to work
 unchanged.
@@ -1473,6 +1484,48 @@ and groups the captured waits by contended call site and owner thread.
 
 - `byCallSite` is best-effort and depends on EventPipe call stacks being available in the session.
 - On current Linux runtimes, `ContentionStart` / `ContentionStop` may not be emitted over EventPipe even when `monitor-lock-contention-count` rises; the collector surfaces that caveat in `notes` when the window is empty.
+
+
+## `collect_events(kind="startup")`
+
+Collects startup and cold-start contributors that are visible during an EventPipe
+window: runtime loader events from `Microsoft-Windows-DotNETRuntime`
+`LoaderKeyword` (`0x8`) and DependencyInjection events from
+`Microsoft-Extensions-DependencyInjection`. Loader events include
+`AssemblyLoad` / `AssemblyLoad_V1`, `ModuleLoad` / `ModuleLoad_V2`, and any
+DC/load variants the runtime emits during the session. DI events are based on the
+provider's current source (`ServiceProviderBuilt`, `ServiceProviderDescriptors`, `CallSiteBuilt`,
+`ServiceResolved`, `ExpressionTreeGenerated`, `DynamicMethodBuilt`, and
+`ServiceRealizationFailed`; older/newer runtimes may vary).
+
+**Critical timing caveat:** attaching to an already-running process captures only
+loader/DI events emitted **during the collection window**. Events before attach —
+usually the most important part of initial cold-start — are missed. True
+cold-start capture requires enabling EventPipe before or at process start via a
+suspended/reverse-connect startup diagnostic port (for example `DOTNET_DiagnosticPorts`
+with the `suspend` modifier). Attaching after launch — including the CLI `--launch`
+child mode, which waits for the diagnostic endpoint to come up before collecting —
+does **not** recover pre-attach events. The collector always includes this
+caveat in `notes`; it does not pretend to recover pre-attach events.
+
+JIT-at-startup is not duplicated here; use `collect_events(kind="jit")` for JIT
+and tiered-compilation startup work. Static-constructor duration is not exposed
+as a clean EventPipe signal in this collector, so it is documented in `notes`
+rather than inferred.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int?` | auto | Target process id |
+| `durationSeconds` | `int` | `10` | Window length |
+| `depth` | `SamplingDepth` | `Summary` | `Summary` keeps headline counts and short loader/DI slices inline; `Detail` / `Raw` keep the captured lists inline |
+
+**Returns:** `StartupSnapshot` with assembly/module load counts, DI event counts,
+observed DI activity span, loader event lists, DI event list, merged timeline,
+and explanatory notes.
+
+**Drilldown:** `query_snapshot(handle, view="summary" | "assemblies" | "modules" | "di" | "timeline")`.
 
 ## `collect_events(kind="db")`
 

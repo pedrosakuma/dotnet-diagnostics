@@ -48,4 +48,7 @@ public static class CollectionHandleKinds
 
     /// <summary>Handle backing a <see cref="Networking.NetworkingSnapshot"/> emitted by <c>collect_events(kind="networking")</c>.</summary>
     public const string NetworkingSnapshot = "networking-snapshot";
+
+    /// <summary>Handle backing a <see cref="Startup.StartupSnapshot"/> emitted by <c>collect_events(kind="startup")</c>.</summary>
+    public const string StartupSnapshot = "startup-snapshot";
 }

@@ -35,7 +35,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 ///   <item><description>thread-snapshot → <c>ptrace</c></description></item>
 ///   <item><description>off-cpu-snapshot → <c>eventpipe</c></description></item>
 ///   <item><description>cpu-sample / allocation-sample / native-alloc-sample (call-tree view) → <c>investigation-export</c></description></item>
-///   <item><description>counters / exception-snapshot / gc-events / event-source / activities / log-snapshot / jit-snapshot / threadpool-snapshot / contention-snapshot / db-snapshot / kestrel-snapshot → any of <c>read-counters</c> or <c>eventpipe</c> (matches <c>query_collection</c>)</description></item>
+///   <item><description>counters / exception-snapshot / gc-events / event-source / activities / log-snapshot / jit-snapshot / threadpool-snapshot / contention-snapshot / db-snapshot / kestrel-snapshot / startup-snapshot → any of <c>read-counters</c> or <c>eventpipe</c> (matches <c>query_collection</c>)</description></item>
 /// </list>
 /// <para>Unknown handle kinds, unknown views and parameter shape violations all return
 /// the structured <c>InvalidArgument</c> / <c>UnsupportedHandleKind</c> envelopes the
@@ -381,6 +381,7 @@ public sealed class QuerySnapshotTool
                 case CollectionHandleKinds.DbSnapshot:
                 case CollectionHandleKinds.KestrelSnapshot:
                 case CollectionHandleKinds.NetworkingSnapshot:
+                case CollectionHandleKinds.StartupSnapshot:
                 {
                     if (!RequireScope(principal, ScopeEventPipe, out var forbidden))
                     {
@@ -727,6 +728,7 @@ public sealed class QuerySnapshotTool
         CollectionHandleKinds.DbSnapshot,
         CollectionHandleKinds.KestrelSnapshot,
         CollectionHandleKinds.NetworkingSnapshot,
+        CollectionHandleKinds.StartupSnapshot,
     };
 
     /// <summary>

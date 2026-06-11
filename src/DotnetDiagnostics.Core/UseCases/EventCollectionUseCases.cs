@@ -14,6 +14,7 @@ using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 using Microsoft.Extensions.Logging;
 using static DotnetDiagnostics.Core.UseCases.ProcessResolutionHelpers;
@@ -889,6 +890,55 @@ public static class EventCollectionUseCases
             handle.Id,
             handle.ExpiresAt,
             hints.ToArray()),
+            resolved.Context);
+    }
+
+    /// <summary>Captures startup-related assembly/module loader and DependencyInjection EventPipe activity.</summary>
+    public static async Task<DiagnosticResult<StartupSnapshot>> CollectStartup(
+        IStartupCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        int? processId = null,
+        int durationSeconds = 10,
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<StartupSnapshot>(nameof(durationSeconds), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<StartupSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+
+        var snapshot = await collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), cancellationToken).ConfigureAwait(false);
+
+        var inlineSnapshot = snapshot;
+        if (depth == SamplingDepth.Summary)
+        {
+            inlineSnapshot = snapshot with
+            {
+                AssemblyLoads = snapshot.AssemblyLoads.Take(5).ToList(),
+                ModuleLoads = snapshot.ModuleLoads.Take(5).ToList(),
+                DiEvents = snapshot.DiEvents.Take(5).ToList(),
+                Timeline = snapshot.Timeline.Take(20).ToList(),
+            };
+        }
+
+        var summary = snapshot.TotalAssemblyLoads == 0 && snapshot.TotalModuleLoads == 0 && snapshot.TotalDiEvents == 0
+            ? $"No startup loader/DI events captured in {durationSeconds}s. Attaching to an already-running process misses events emitted before attach; true cold-start capture requires starting EventPipe before or at process launch."
+            : $"Captured startup activity over {durationSeconds}s: assemblies={snapshot.TotalAssemblyLoads}, modules={snapshot.TotalModuleLoads}, DI events={snapshot.TotalDiEvents}, service providers built={snapshot.DiServiceProviderBuiltCount}, observed DI span={snapshot.ObservedDiActivityDuration.TotalMilliseconds:F1}ms.";
+
+        var handle = handles.Register(pid, CollectionHandleKinds.StartupSnapshot, snapshot, CollectionHandleTtl);
+        return WithContext(DiagnosticResult.OkWithHandle(
+            inlineSnapshot,
+            summary,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint("query_snapshot",
+                "Drill into the startup timeline without re-collecting (views: summary, assemblies, modules, di, timeline).",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "timeline", ["topN"] = 50 }),
+            new NextActionHint("collect_events",
+                "Use kind='jit' separately if JIT-at-startup is suspected; startup does not duplicate JIT events.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "jit", ["durationSeconds"] = durationSeconds })),
             resolved.Context);
     }
 

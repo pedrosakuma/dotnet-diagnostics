@@ -20,12 +20,17 @@ public class InProcessDiagnosticCollectorTests
     public void SupportedKinds_ExcludesEventSource()
         => InProcessDiagnosticCollector.IsSupported("event_source").Should().BeFalse();
 
+    [Fact]
+    public void SupportedKinds_ExcludesStartup()
+        => InProcessDiagnosticCollector.IsSupported("startup").Should().BeFalse();
+
     [Theory]
     [InlineData("gc", true)]
     [InlineData("cpu", true)]
     [InlineData("allocation", true)]
     [InlineData("contention", true)]
     [InlineData("event_source", false)]
+    [InlineData("startup", false)]
     [InlineData("nonsense", false)]
     public void IsSupported_ReflectsTheSet(string kind, bool expected)
         => InProcessDiagnosticCollector.IsSupported(kind).Should().Be(expected);

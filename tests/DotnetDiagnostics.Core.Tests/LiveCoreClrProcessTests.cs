@@ -19,6 +19,7 @@ using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Mcp.Security;
@@ -1600,6 +1601,56 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         byCallSite.CallSites.Should().NotBeEmpty();
     }
 
+
+    [Fact(Timeout = 60_000)]
+    public async Task Startup_HandleEnablesDrilldownViews_WithDataOrColdStartNote()
+    {
+        await using var sample = await StartPublishedSampleAsync("CoreClrSample");
+        var collector = new EventPipeStartupCollector();
+        var handles = new MemoryDiagnosticHandleStore();
+        var resolver = new FixedProcessContextResolver(sample.ProcessId);
+
+        var collected = await DiagnosticTools.CollectStartup(
+            collector,
+            resolver,
+            handles,
+            processId: sample.ProcessId,
+            durationSeconds: 3,
+            depth: SamplingDepth.Detail,
+            cancellationToken: CancellationToken.None);
+
+        collected.Error.Should().BeNull();
+        collected.Handle.Should().NotBeNullOrWhiteSpace();
+        collected.Data.Should().NotBeNull();
+
+        var snapshot = collected.Data!;
+        var capturedData = snapshot.TotalAssemblyLoads > 0 || snapshot.TotalModuleLoads > 0 || snapshot.TotalDiEvents > 0;
+        var documentedColdStartCaveat = snapshot.Notes.Any(note =>
+            note.Contains("already-running process", StringComparison.OrdinalIgnoreCase)
+            && note.Contains("before attach", StringComparison.OrdinalIgnoreCase));
+        (capturedData || documentedColdStartCaveat).Should().BeTrue(
+            $"startup capture is best effort after attach; notes: {string.Join(" | ", snapshot.Notes)}");
+
+        var drilled = await QuerySnapshotTool.QuerySnapshot(
+            handles,
+            new ClrMdDumpInspector(),
+            new SensitiveDataRedactor(),
+            new SensitiveValueGate(null),
+            new RootPrincipalAccessor(),
+            new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            collected.Handle!,
+            view: "timeline",
+            topN: 20,
+            cancellationToken: CancellationToken.None);
+
+        drilled.Error.Should().BeNull();
+        var query = drilled.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        query.Kind.Should().Be(CollectionHandleKinds.StartupSnapshot);
+        query.View.Should().Be("timeline");
+        var timeline = query.Payload.Should().BeOfType<StartupTimelineView>().Subject;
+        timeline.TotalEvents.Should().Be(snapshot.Timeline.Count);
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task Kestrel_HandleEnablesDrilldownViews()
     {
@@ -2216,7 +2267,10 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
 
         await WaitForDiagnosticEndpointAsync(process.Id, TimeSpan.FromSeconds(30));
         var baseUrl = await listeningUrlTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        await WaitForHttpReadyAsync(baseUrl, TimeSpan.FromSeconds(30), "/");
+        var readinessPath = string.Equals(sampleName, "CoreClrSample", StringComparison.Ordinal)
+            ? "/weatherforecast"
+            : "/";
+        await WaitForHttpReadyAsync(baseUrl, TimeSpan.FromSeconds(30), readinessPath);
         return new RunningSample(process, baseUrl);
     }
 

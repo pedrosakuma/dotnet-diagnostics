@@ -28,6 +28,7 @@ using DotnetDiagnostics.Core.NativeAlloc;
 using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.Triage;
@@ -1391,7 +1392,7 @@ public sealed class DiagnosticTools
                 $"Handle '{handle}' is of kind '{outcome.UnknownKind}' which query_collection does not support.",
                 new DiagnosticError(
                     "UnsupportedHandleKind",
-                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventCatalog, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot, CollectionHandleKinds.DbSnapshot, CollectionHandleKinds.KestrelSnapshot, CollectionHandleKinds.NetworkingSnapshot })}.",
+                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventCatalog, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot, CollectionHandleKinds.ContentionSnapshot, CollectionHandleKinds.DbSnapshot, CollectionHandleKinds.KestrelSnapshot, CollectionHandleKinds.NetworkingSnapshot, CollectionHandleKinds.StartupSnapshot })}.",
                     outcome.UnknownKind),
                 new NextActionHint("query_snapshot", "Use the kind-specific drill-down tool for heap/thread/cpu handles.", null));
         }
@@ -1490,6 +1491,29 @@ public sealed class DiagnosticTools
         return await EventCollectionUseCases.CollectGcDatas(
             collector, resolver, handles,
             processId, durationSeconds, maxEvents,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+
+
+    [RequireScope("eventpipe")]
+    [Description(
+        "Collects startup/cold-start signals from runtime LoaderKeyword assembly/module load events plus the Microsoft-Extensions-DependencyInjection EventSource. " +
+        "Only events emitted during the collection window are captured when attaching to an already-running process; pre-attach cold-start events are missed. " +
+        "JIT-at-startup is covered separately by collect_events(kind=\"jit\"). Drill in with query_snapshot(handle, view=summary|assemblies|modules|di|timeline).")]
+    public static async Task<DiagnosticResult<StartupSnapshot>> CollectStartup(
+        IStartupCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
+        [Description("Verbosity (summary|detail|raw). Default 'summary' keeps headline aggregates and short loader/DI slices inline; the handle retains the full startup timeline.")]
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        return await EventCollectionUseCases.CollectStartup(
+            collector, resolver, handles,
+            processId, durationSeconds, depth,
             cancellationToken).ConfigureAwait(false);
     }
 
