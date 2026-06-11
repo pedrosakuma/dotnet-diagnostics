@@ -30,7 +30,7 @@ public static class CollectionQueryDispatcher
     {
         CollectionHandleKinds.Counters => new[] { "summary", "byProvider" },
         CollectionHandleKinds.ExceptionSnapshot => new[] { "summary", "byType", "recent" },
-        CollectionHandleKinds.GcEvents => new[] { "summary", "events", "pauseHistogram", "timeline", "longestPauses", "byGeneration" },
+        CollectionHandleKinds.GcEvents => new[] { "summary", "events", "pauseHistogram", "timeline", "longestPauses", "byGeneration", "heap-stats" },
         CollectionHandleKinds.EventSource => new[] { "summary", "byEventName", "events" },
         CollectionHandleKinds.Activities => new[] { "summary", "bySource", "byOperation", "activities", "gc-overlay" },
         CollectionHandleKinds.LogSnapshot => new[] { "summary", "byCategory", "byLevel", "recent", "errors" },
@@ -157,6 +157,7 @@ public static class CollectionQueryDispatcher
             "timeline" => BuildTimeline(g, topN),
             "longestpauses" => BuildLongestPauses(g, topN),
             "bygeneration" => BuildByGeneration(g),
+            "heap-stats" or "heapstats" => BuildHeapStats(g, topN),
             _ /* summary */ => new GcSummaryView(g.TotalCollections, g.TotalPauseTime, g.MaxPauseTime, g.Generations),
         };
 
@@ -269,6 +270,32 @@ public static class CollectionQueryDispatcher
             .ToList();
 
         return new GcByGenerationView(g.TotalCollections, stats);
+    }
+
+    private static GcHeapStatsView BuildHeapStats(GcSummary g, int topN)
+    {
+        var ordered = (g.HeapStats ?? Array.Empty<GcHeapStatsSample>())
+            .OrderBy(s => s.Timestamp)
+            .ToList();
+
+        GcHeapStatsTrend? trend = null;
+        if (ordered.Count >= 2)
+        {
+            var first = ordered[0];
+            var last = ordered[^1];
+            trend = new GcHeapStatsTrend(
+                FirstAt: first.Timestamp,
+                LastAt: last.Timestamp,
+                Gen2DeltaBytes: last.Gen2SizeBytes - first.Gen2SizeBytes,
+                LohDeltaBytes: last.LohSizeBytes - first.LohSizeBytes,
+                PohDeltaBytes: last.PohSizeBytes - first.PohSizeBytes,
+                TotalHeapDeltaBytes: last.TotalHeapSizeBytes - first.TotalHeapSizeBytes,
+                PinnedObjectCountDelta: last.PinnedObjectCount - first.PinnedObjectCount,
+                GcHandleCountDelta: last.GcHandleCount - first.GcHandleCount);
+        }
+
+        var slice = ordered.Take(topN).ToList();
+        return new GcHeapStatsView(ordered.Count, slice.Count, trend, slice);
     }
 
     private static CollectionQueryResult Render(EventSourceCapture es, string view, int topN)

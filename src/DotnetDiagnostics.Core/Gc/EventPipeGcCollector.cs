@@ -54,6 +54,7 @@ public sealed class EventPipeGcCollector : IGcCollector
 
         var startedAt = DateTimeOffset.UtcNow;
         var events = new ConcurrentQueue<GcEvent>();
+        var heapStats = new ConcurrentQueue<GcHeapStatsSample>();
         var pending = new ConcurrentDictionary<long, GCStartTraceData>();
 
         var processingTask = Task.Run(() =>
@@ -86,6 +87,30 @@ public sealed class EventPipeGcCollector : IGcCollector
                         Reason: start.Reason.ToString(),
                         Type: start.Type.ToString(),
                         PauseDuration: pause < TimeSpan.Zero ? TimeSpan.Zero : pause));
+                };
+
+                source.Clr.GCHeapStats += traceEvent =>
+                {
+                    if (heapStats.Count >= maxEvents)
+                    {
+                        return;
+                    }
+
+                    heapStats.Enqueue(new GcHeapStatsSample(
+                        Timestamp: new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
+                        Gen0SizeBytes: traceEvent.GenerationSize0,
+                        Gen1SizeBytes: traceEvent.GenerationSize1,
+                        Gen2SizeBytes: traceEvent.GenerationSize2,
+                        LohSizeBytes: traceEvent.GenerationSize3,
+                        PohSizeBytes: traceEvent.GenerationSize4,
+                        TotalHeapSizeBytes: traceEvent.TotalHeapSize,
+                        TotalPromotedBytes: traceEvent.TotalPromoted,
+                        Gen2PromotedBytes: traceEvent.TotalPromotedSize2,
+                        PohPromotedBytes: traceEvent.TotalPromotedSize4,
+                        FinalizationPromotedBytes: traceEvent.FinalizationPromotedSize,
+                        FinalizationPromotedCount: (long)traceEvent.FinalizationPromotedCount,
+                        PinnedObjectCount: traceEvent.PinnedObjectCount,
+                        GcHandleCount: traceEvent.GCHandleCount));
                 };
 
                 source.Process();
@@ -124,6 +149,7 @@ public sealed class EventPipeGcCollector : IGcCollector
             TotalPauseTime: totalPause,
             MaxPauseTime: maxPause,
             Generations: perGen,
-            Events: collected);
+            Events: collected,
+            HeapStats: heapStats.OrderBy(s => s.Timestamp).ToList());
     }
 }

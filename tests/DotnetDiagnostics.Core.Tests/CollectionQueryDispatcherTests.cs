@@ -220,13 +220,66 @@ public class CollectionQueryDispatcherTests
             .Result!.Payload.Should().BeOfType<GcLongestPausesView>().Subject.Pauses.Should().BeEmpty();
         CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "byGeneration", empty, 50)
             .Result!.Payload.Should().BeOfType<GcByGenerationView>().Subject.Generations.Should().BeEmpty();
+
+        var heapStats = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "heap-stats", empty, 50)
+            .Result!.Payload.Should().BeOfType<GcHeapStatsView>().Subject;
+        heapStats.Samples.Should().BeEmpty();
+        heapStats.SampleCount.Should().Be(0);
+        heapStats.Trend.Should().BeNull("a trend needs at least two samples");
+    }
+
+    [Fact]
+    public void Gc_HeapStats_ReturnsChronologicalSamplesAndFirstToLastTrend()
+    {
+        // Samples deliberately out of chronological order to exercise the sort + first/last selection.
+        var samples = new List<GcHeapStatsSample>
+        {
+            new(At.AddMilliseconds(200), 0, 0, 30_000, 5_000, 1_000, 36_000, 0, 0, 0, 0, 0, 40, 120),
+            new(At.AddMilliseconds(0), 0, 0, 10_000, 2_000, 500, 12_500, 0, 0, 0, 0, 0, 10, 100),
+            new(At.AddMilliseconds(100), 0, 0, 20_000, 3_000, 800, 23_800, 0, 0, 0, 0, 0, 25, 110),
+        };
+        var g = new GcSummary(42, At, TimeSpan.FromSeconds(5), 0, TimeSpan.Zero, TimeSpan.Zero,
+            new List<GenerationStats>(), new List<GcEvent>(), samples);
+
+        var payload = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "heap-stats", g, 50)
+            .Result!.Payload.Should().BeOfType<GcHeapStatsView>().Subject;
+
+        payload.SampleCount.Should().Be(3);
+        payload.Returned.Should().Be(3);
+        payload.Samples.Select(s => s.Gen2SizeBytes).Should().Equal(10_000, 20_000, 30_000);
+
+        payload.Trend.Should().NotBeNull();
+        payload.Trend!.Gen2DeltaBytes.Should().Be(20_000);
+        payload.Trend.LohDeltaBytes.Should().Be(3_000);
+        payload.Trend.PohDeltaBytes.Should().Be(500);
+        payload.Trend.TotalHeapDeltaBytes.Should().Be(23_500);
+        payload.Trend.PinnedObjectCountDelta.Should().Be(30);
+        payload.Trend.GcHandleCountDelta.Should().Be(20);
+    }
+
+    [Fact]
+    public void Gc_HeapStats_CapsSamplesToTopN()
+    {
+        var samples = Enumerable.Range(0, 5)
+            .Select(i => new GcHeapStatsSample(At.AddMilliseconds(i * 10), 0, 0, i * 1_000, 0, 0, i * 1_000, 0, 0, 0, 0, 0, i, i))
+            .ToList();
+        var g = new GcSummary(42, At, TimeSpan.FromSeconds(5), 0, TimeSpan.Zero, TimeSpan.Zero,
+            new List<GenerationStats>(), new List<GcEvent>(), samples);
+
+        var payload = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.GcEvents, "heap-stats", g, 2)
+            .Result!.Payload.Should().BeOfType<GcHeapStatsView>().Subject;
+
+        payload.SampleCount.Should().Be(5);
+        payload.Returned.Should().Be(2);
+        payload.Trend.Should().NotBeNull("the trend spans all retained samples, not just the returned slice");
+        payload.Trend!.Gen2DeltaBytes.Should().Be(4_000);
     }
 
     [Fact]
     public void Gc_ViewsFor_IncludesNewDrilldownViews()
     {
         CollectionQueryDispatcher.ViewsFor(CollectionHandleKinds.GcEvents)
-            .Should().Contain(new[] { "timeline", "longestPauses", "byGeneration" });
+            .Should().Contain(new[] { "timeline", "longestPauses", "byGeneration", "heap-stats" });
     }
 
     [Fact]

@@ -925,6 +925,64 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task QueryCollection_DrillsIntoGcHeapStatsView()
+    {
+        await using var client = await ConnectAsync();
+
+        // GCHeapStats fires once per GC, so keep forcing gen2 collections across the whole
+        // collection window (EventPipe takes ~500ms-1s to start, so a single GC up front is missed).
+        using var pumpDone = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+        var gcPump = Task.Run(() =>
+        {
+            while (!pumpDone.IsCancellationRequested)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+                Thread.Sleep(150);
+            }
+        });
+
+        var collectResult = await client.CallToolAsync(
+            "collect_events",
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "gc",
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 3,
+                ["maxEvents"] = 50,
+            },
+            cancellationToken: CancellationToken.None);
+
+        await pumpDone.CancelAsync();
+        await gcPump.ConfigureAwait(false);
+
+        collectResult.IsError.Should().NotBe(true);
+        var collectEnvelope = DeserializeEnvelope(collectResult);
+        collectEnvelope!.Handle.Should().NotBeNullOrWhiteSpace();
+
+        var queryResult = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = collectEnvelope.Handle!,
+                ["view"] = "heap-stats",
+                ["topN"] = 25,
+            },
+            cancellationToken: CancellationToken.None);
+
+        queryResult.IsError.Should().NotBe(true);
+        var queried = DeserializeStructured<CollectionQueryResult>(queryResult);
+        queried.Should().NotBeNull();
+        queried!.Kind.Should().Be(CollectionHandleKinds.GcEvents);
+        queried.View.Should().Be("heap-stats");
+        queried.ProcessId.Should().Be(Environment.ProcessId);
+
+        // Best-effort: GCHeapStats samples should have landed given the forced-GC pump.
+        var payload = ((JsonElement)queried.Payload!);
+        payload.GetProperty("sampleCount").GetInt32().Should().BeGreaterThan(0,
+            "forced gen2 GCs during the window must produce at least one GCHeapStats sample (#384)");
+    }
+
+    [Fact]
     public async Task GetCallTree_ReturnsHandleExpiredErrorForUnknownHandle()
     {
         await using var client = await ConnectAsync();

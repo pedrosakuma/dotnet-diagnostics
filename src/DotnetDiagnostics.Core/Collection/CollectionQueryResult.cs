@@ -135,6 +135,40 @@ public sealed record GcGenerationPauseStats(
     TimeSpan MeanPause,
     TimeSpan MaxPause);
 
+/// <summary>
+/// Per-generation heap-size and pinned-object trend over the collection window, derived from the
+/// <c>GCHeapStats</c> samples retained behind a <c>gc-events</c> handle (issue #384). The classic
+/// signal for a slow managed leak or pinning pressure that pause data alone misses.
+/// </summary>
+/// <param name="SampleCount">Total <c>GCHeapStats</c> samples retained on the artifact.</param>
+/// <param name="Returned">Number of samples actually returned (earliest by timestamp, capped by <c>topN</c>).</param>
+/// <param name="Trend">First→last deltas across the window (null when fewer than two samples exist).</param>
+/// <param name="Samples">The chronological per-GC heap-size samples.</param>
+public sealed record GcHeapStatsView(
+    int SampleCount,
+    int Returned,
+    GcHeapStatsTrend? Trend,
+    IReadOnlyList<Gc.GcHeapStatsSample> Samples);
+
+/// <summary>First→last deltas of the key heap-size and leak-pressure signals across the window.</summary>
+/// <param name="FirstAt">Timestamp of the first retained sample.</param>
+/// <param name="LastAt">Timestamp of the last retained sample.</param>
+/// <param name="Gen2DeltaBytes">Change in gen2 size (the classic managed-leak signal).</param>
+/// <param name="LohDeltaBytes">Change in large-object-heap size.</param>
+/// <param name="PohDeltaBytes">Change in pinned-object-heap size (V2 only; 0 on V1 runtimes).</param>
+/// <param name="TotalHeapDeltaBytes">Change in total managed heap size.</param>
+/// <param name="PinnedObjectCountDelta">Change in pinned-object count (pinning-pressure signal).</param>
+/// <param name="GcHandleCountDelta">Change in GC-handle count (handle-leak signal).</param>
+public sealed record GcHeapStatsTrend(
+    DateTimeOffset FirstAt,
+    DateTimeOffset LastAt,
+    long Gen2DeltaBytes,
+    long LohDeltaBytes,
+    long PohDeltaBytes,
+    long TotalHeapDeltaBytes,
+    long PinnedObjectCountDelta,
+    long GcHandleCountDelta);
+
 // --- EventSource views ------------------------------------------------------------------------
 
 /// <summary>Counts grouped by EventName.</summary>
