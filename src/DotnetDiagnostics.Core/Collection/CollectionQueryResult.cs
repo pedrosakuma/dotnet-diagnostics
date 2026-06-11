@@ -511,3 +511,36 @@ public sealed record NetworkingDnsView(
     TimeSpan P50,
     TimeSpan P95,
     TimeSpan Max);
+
+// --- Startup snapshot views --------------------------------------------------------------------
+
+public sealed record StartupSummaryView(
+    int TotalAssemblyLoads,
+    int TotalModuleLoads,
+    Startup.StartupDiAggregate Di,
+    IReadOnlyList<Startup.StartupLoadAggregate> TopAssemblies,
+    IReadOnlyList<Startup.StartupLoadAggregate> TopModules,
+    IReadOnlyList<string> Notes);
+
+public sealed record StartupAssembliesView(
+    int TotalAssemblyLoads,
+    int Returned,
+    IReadOnlyList<Startup.StartupAssemblyLoad> Loads,
+    IReadOnlyList<Startup.StartupLoadAggregate> ByAssembly);
+
+public sealed record StartupModulesView(
+    int TotalModuleLoads,
+    int Returned,
+    IReadOnlyList<Startup.StartupModuleLoad> Loads,
+    IReadOnlyList<Startup.StartupLoadAggregate> ByModule);
+
+public sealed record StartupDiView(
+    Startup.StartupDiAggregate Aggregate,
+    int Returned,
+    IReadOnlyList<Startup.StartupDiEvent> Events,
+    IReadOnlyList<string> Notes);
+
+public sealed record StartupTimelineView(
+    int TotalEvents,
+    int Returned,
+    IReadOnlyList<Startup.StartupTimelineEvent> Events);

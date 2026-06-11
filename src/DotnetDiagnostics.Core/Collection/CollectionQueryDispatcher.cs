@@ -9,6 +9,7 @@ using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
+using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 
 namespace DotnetDiagnostics.Core.Collection;
@@ -42,6 +43,7 @@ public static class CollectionQueryDispatcher
         CollectionHandleKinds.DbSnapshot => new[] { "summary", "byCommand", "n+1", "connectionPool" },
         CollectionHandleKinds.KestrelSnapshot => new[] { "summary", "byOperation", "queues", "tls", "config" },
         CollectionHandleKinds.NetworkingSnapshot => new[] { "summary", "byOperation", "queue", "tls", "dns" },
+        CollectionHandleKinds.StartupSnapshot => new[] { "summary", "assemblies", "modules", "di", "timeline" },
         _ => Array.Empty<string>(),
     };
 
@@ -113,6 +115,8 @@ public static class CollectionQueryDispatcher
                 => Ok(Render(kestrel, effectiveView, topN)),
             CollectionHandleKinds.NetworkingSnapshot when artifact is NetworkingSnapshot networking
                 => Ok(Render(networking, effectiveView, topN)),
+            CollectionHandleKinds.StartupSnapshot when artifact is StartupSnapshot startup
+                => Ok(Render(startup, effectiveView, topN)),
             _ => new DispatchOutcome(null, kind, null, null, null),
         };
     }
@@ -725,5 +729,81 @@ public static class CollectionQueryDispatcher
 
         return new CollectionQueryResult(
             CollectionHandleKinds.NetworkingSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
+    }
+
+    private static CollectionQueryResult Render(StartupSnapshot snapshot, string view, int topN)
+    {
+        var topAssemblies = BuildLoadAggregates(
+            snapshot.AssemblyLoads,
+            static item => item.AssemblyName,
+            static item => item.Timestamp,
+            topN);
+        var topModules = BuildLoadAggregates(
+            snapshot.ModuleLoads,
+            static item => item.ModuleName,
+            static item => item.Timestamp,
+            topN);
+        var diAggregate = new StartupDiAggregate(
+            snapshot.TotalDiEvents,
+            snapshot.DiServiceProviderBuiltCount,
+            snapshot.DiServiceProviderDescriptorsCount,
+            snapshot.DiCallSiteBuiltCount,
+            snapshot.DiServiceResolvedCount,
+            snapshot.DiExpressionTreeGeneratedCount,
+            snapshot.DiDynamicMethodBuiltCount,
+            snapshot.DiServiceRealizationFailedCount,
+            snapshot.ObservedDiActivityDuration);
+
+        object payload = view.ToLowerInvariant() switch
+        {
+            "assemblies" => new StartupAssembliesView(
+                snapshot.TotalAssemblyLoads,
+                Math.Min(topN, snapshot.AssemblyLoads.Count),
+                snapshot.AssemblyLoads.Take(topN).ToList(),
+                topAssemblies),
+            "modules" => new StartupModulesView(
+                snapshot.TotalModuleLoads,
+                Math.Min(topN, snapshot.ModuleLoads.Count),
+                snapshot.ModuleLoads.Take(topN).ToList(),
+                topModules),
+            "di" => new StartupDiView(
+                diAggregate,
+                Math.Min(topN, snapshot.DiEvents.Count),
+                snapshot.DiEvents.Take(topN).ToList(),
+                snapshot.Notes),
+            "timeline" => new StartupTimelineView(
+                snapshot.Timeline.Count,
+                Math.Min(topN, snapshot.Timeline.Count),
+                snapshot.Timeline.Take(topN).ToList()),
+            _ => new StartupSummaryView(
+                snapshot.TotalAssemblyLoads,
+                snapshot.TotalModuleLoads,
+                diAggregate,
+                topAssemblies,
+                topModules,
+                snapshot.Notes),
+        };
+
+        return new CollectionQueryResult(
+            CollectionHandleKinds.StartupSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
+    }
+
+    private static List<StartupLoadAggregate> BuildLoadAggregates<T>(
+        IReadOnlyList<T> items,
+        Func<T, string> nameSelector,
+        Func<T, DateTimeOffset> timestampSelector,
+        int topN)
+    {
+        return items
+            .GroupBy(nameSelector)
+            .Select(group => new StartupLoadAggregate(
+                group.Key,
+                group.Count(),
+                group.Min(timestampSelector),
+                group.Max(timestampSelector)))
+            .OrderByDescending(static group => group.Count)
+            .ThenBy(static group => group.Name, StringComparer.Ordinal)
+            .Take(topN)
+            .ToList();
     }
 }

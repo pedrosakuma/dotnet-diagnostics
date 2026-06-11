@@ -23,6 +23,7 @@ using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.UseCases;
@@ -118,6 +119,7 @@ internal static class CliCommands
         "db",
         "kestrel",
         "networking",
+        "startup",
     };
 
     private static readonly IComparableProjector[] ComparableProjectors =
@@ -596,6 +598,9 @@ internal static class CliCommands
             "kestrel" => Wrap(options, await EventCollectionUseCases.CollectKestrel(
                 services.GetRequiredService<IKestrelCollector>(), resolver, handles,
                 pid, duration, options.IntervalSeconds ?? 1, depth, cancellationToken).ConfigureAwait(false)),
+            "startup" => Wrap(options, await EventCollectionUseCases.CollectStartup(
+                services.GetRequiredService<IStartupCollector>(), resolver, handles,
+                pid, duration, depth, cancellationToken).ConfigureAwait(false)),
 
             "networking" => Wrap(options, await EventCollectionUseCases.CollectNetworking(
                 services.GetRequiredService<INetworkingCollector>(), resolver, handles,

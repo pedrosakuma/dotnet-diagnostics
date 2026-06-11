@@ -33,8 +33,9 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
 {
     /// <summary>
     /// The <c>collect</c> kinds the diagnoser can dispatch in-process. Mirrors the CLI's
-    /// <c>CollectKinds</c> minus <c>event_source</c>, which needs an explicit provider name and is
-    /// not benchmark-relevant.
+    /// <c>CollectKinds</c> minus <c>event_source</c> (needs an explicit provider name and is
+    /// not benchmark-relevant) and <c>startup</c> (the diagnoser attaches after the benchmark
+    /// host is already running, so it cannot observe cold-start loader/DI events).
     /// </summary>
     public static readonly IReadOnlySet<string> SupportedKinds = new HashSet<string>(StringComparer.Ordinal)
     {
