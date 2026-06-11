@@ -60,6 +60,31 @@ public sealed class CliDumpValidationTests
         CliCommands.DumpTypes.Should().BeEquivalentTo(new[] { "Mini", "Triage", "WithHeap", "Full" });
     }
 
+    [Fact]
+    public async Task RunAsync_DumpPreview_DisclosesArtifactDirectory()
+    {
+        // No --confirm => confirmation_required preview. #387: the resolved artifact directory the
+        // dump would land in must be disclosed before writing. --pid self keeps the preview offline
+        // (no actual dump is written on the preview path), and --out pins a known directory.
+        var outDir = Path.Combine(Path.GetTempPath(), $"dotnet-diag-dump-preview-{Guid.NewGuid():N}");
+        try
+        {
+            var (exit, stdout, _) = await RunAsync("dump", "--pid", Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture), "--out", outDir);
+
+            exit.Should().Be(0, "the confirmation-required preview is the scripting-friendly exit-0 signal");
+            stdout.Should().Contain("would write to");
+            stdout.Should().Contain(Path.GetFullPath(outDir));
+            stdout.Should().Contain("--confirm");
+        }
+        finally
+        {
+            if (Directory.Exists(outDir))
+            {
+                Directory.Delete(outDir, recursive: true);
+            }
+        }
+    }
+
     private static async Task<(int Exit, string Stdout, string Stderr)> RunAsync(params string[] args)
     {
         var stdout = new StringWriter(new StringBuilder());

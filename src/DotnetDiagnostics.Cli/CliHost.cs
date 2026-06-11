@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using DotnetDiagnostics.Core.Artifacts;
@@ -216,7 +217,22 @@ internal static class CliHost
 
         try
         {
-            var result = await CliCommands.RunAsync(host.Services, options, cancellationToken).ConfigureAwait(false);
+            // #387: long collections (collect / inspect-heap / dump) run for several seconds with no
+            // output. Show an elapsed-time spinner on stderr while the command runs — but ONLY on a
+            // real interactive console (not --json, not when stderr is redirected/piped, and never in
+            // tests, which pass a StringWriter rather than Console.Error). This keeps stdout clean and
+            // leaves every existing test's captured stderr empty.
+            var showProgress = !options.Json
+                && ProgressCommands.Contains(options.Command, StringComparer.Ordinal)
+                && ReferenceEquals(stderr, Console.Error)
+                && !Console.IsErrorRedirected;
+
+            var result = await WithProgressAsync(
+                stderr,
+                showProgress,
+                options.Command,
+                () => CliCommands.RunAsync(host.Services, options, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
 
             if (options.Json)
             {
@@ -244,6 +260,75 @@ internal static class CliHost
             await stderr.WriteLineAsync($"dotnet-diagnostics-cli {options.Command}: cancelled — diagnostic session stopped and temp files cleaned up.")
                 .ConfigureAwait(false);
             return 130;
+        }
+    }
+
+    /// <summary>
+    /// One-shot commands long enough to warrant a live progress spinner (they open an EventPipe /
+    /// ptrace session or write a dump over several seconds). Discovery commands (<c>processes</c>,
+    /// <c>capabilities</c>) return immediately and need none.
+    /// </summary>
+    private static readonly string[] ProgressCommands = ["collect", "inspect-heap", "dump"];
+
+    /// <summary>
+    /// Runs <paramref name="run"/> while, when <paramref name="enabled"/>, ticking an elapsed-time
+    /// spinner to <paramref name="stderr"/> every ~500 ms. The spinner line is cleared before this
+    /// method returns so it never bleeds into the command's stdout/stderr output. When disabled this
+    /// is a transparent pass-through (used by tests and piped/--json invocations).
+    /// </summary>
+    private static async Task<T> WithProgressAsync<T>(
+        TextWriter stderr,
+        bool enabled,
+        string command,
+        Func<Task<T>> run,
+        CancellationToken cancellationToken)
+    {
+        if (!enabled)
+        {
+            return await run().ConfigureAwait(false);
+        }
+
+        using var tickerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var ticker = RunSpinnerAsync(stderr, command, tickerCts.Token);
+        try
+        {
+            return await run().ConfigureAwait(false);
+        }
+        finally
+        {
+            await tickerCts.CancelAsync().ConfigureAwait(false);
+            try
+            {
+                await ticker.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+
+            // Erase the spinner line so the result starts on a clean line.
+            await stderr.WriteAsync($"\r{new string(' ', 48)}\r").ConfigureAwait(false);
+            await stderr.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task RunSpinnerAsync(TextWriter stderr, string command, CancellationToken cancellationToken)
+    {
+        var frames = new[] { '|', '/', '-', '\\' };
+        var stopwatch = Stopwatch.StartNew();
+        var i = 0;
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await stderr.WriteAsync(
+                    string.Create(CultureInfo.InvariantCulture, $"\r{frames[i++ % frames.Length]} {command}… {stopwatch.Elapsed.TotalSeconds:F0}s (Ctrl-C to cancel)"))
+                    .ConfigureAwait(false);
+                await stderr.FlushAsync(cancellationToken).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
         }
     }
 
