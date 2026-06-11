@@ -51,7 +51,16 @@ public sealed record NativeAddressLocation(
     string? BuildId,
     bool? Readable,
     MethodIdentity? ManagedMethod,
-    string Display);
+    string Display)
+{
+    /// <summary>
+    /// Runtime image base of the containing module (issue #375). Equal to
+    /// <c>Address - Rva</c>; lets a consumer rebase the absolute <see cref="Address"/> for
+    /// position-independent (PIE / NativeAOT) images whose on-disk base is 0. Null when the
+    /// address falls outside every loaded module.
+    /// </summary>
+    public ulong? LoadBase { get; init; }
+}
 
 /// <summary>
 /// Immutable, sorted module map supporting overlap-aware containment lookup. Built once per
@@ -178,7 +187,10 @@ public static class NativeAddressClassifier
                     module.BuildId,
                     Readable: true,
                     ManagedMethod: managed,
-                    Display: ManagedDisplay(managed, moduleName, rva));
+                    Display: ManagedDisplay(managed, moduleName, rva))
+                {
+                    LoadBase = module.ImageBase,
+                };
             }
 
             return new NativeAddressLocation(
@@ -190,7 +202,10 @@ public static class NativeAddressClassifier
                 module.BuildId,
                 Readable: true,
                 ManagedMethod: null,
-                Display: $"{moduleName}+0x{rva:x}");
+                Display: $"{moduleName}+0x{rva:x}")
+            {
+                LoadBase = module.ImageBase,
+            };
         }
 
         // No module. A managed method with no module image is still a useful answer.

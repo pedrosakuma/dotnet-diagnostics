@@ -27,7 +27,7 @@ public sealed class QuerySnapshotResolveAddressToolTests
             new NativeAddressLocation(0x7f18cc41edc0, NativeAddressKind.UnmappedOrNotCaptured, null, null, null, null, false, null,
                 "<unmapped-or-not-captured 0x7f18cc41edc0>"),
             new NativeAddressLocation(0x7f18cca1edc0, NativeAddressKind.Module, "libcrypto.so.3", "/usr/lib/libcrypto.so.3", 0x1edc0, "c0dbcda5", true, null,
-                "libcrypto.so.3+0x1edc0"),
+                "libcrypto.so.3+0x1edc0") { LoadBase = 0x7f18cca00000 },
         });
 
         var result = await Invoke(store, resolver, handle.Id, "0x7f18cc41edc0,0x7f18cca1edc0");
@@ -42,11 +42,13 @@ public sealed class QuerySnapshotResolveAddressToolTests
         unmapped.Kind.Should().Be("unmapped-or-not-captured");
         unmapped.Readable.Should().BeFalse();
         unmapped.Rva.Should().BeNull();
+        unmapped.LoadBase.Should().BeNull();
 
         var mapped = query.ResolvedAddresses![1];
         mapped.Kind.Should().Be("module");
         mapped.Module.Should().Be("libcrypto.so.3");
         mapped.Rva.Should().Be("0x1edc0");
+        mapped.LoadBase.Should().Be("0x7f18cca00000");
         mapped.BuildId.Should().Be("c0dbcda5");
     }
 

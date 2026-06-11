@@ -76,6 +76,8 @@ public sealed class NativeAddressResolverTests
         loc.Module.Should().Be("libcrypto.so.3");
         loc.ModulePath.Should().Be("/app/libcrypto.so.3");
         loc.Rva.Should().Be(0x1234);
+        loc.LoadBase.Should().Be(0x400000);
+        loc.LoadBase!.Value.Should().Be(loc.Address - loc.Rva!.Value);
         loc.BuildId.Should().Be("deadbeef");
         loc.Readable.Should().BeTrue();
         loc.Display.Should().Be("libcrypto.so.3+0x1234");
@@ -95,6 +97,7 @@ public sealed class NativeAddressResolverTests
         loc.Kind.Should().Be(NativeAddressKind.UnmappedOrNotCaptured);
         loc.Module.Should().BeNull();
         loc.Rva.Should().BeNull();
+        loc.LoadBase.Should().BeNull();
         loc.Readable.Should().BeFalse();
         loc.Display.Should().Be("<unmapped-or-not-captured 0x7f18cc41edc0>");
     }
@@ -133,6 +136,7 @@ public sealed class NativeAddressResolverTests
         loc.Kind.Should().Be(NativeAddressKind.Managed);
         loc.ManagedMethod.Should().Be(method);
         loc.Rva.Should().Be(0x5000);
+        loc.LoadBase.Should().Be(0x400000);
         loc.BuildId.Should().Be("r2rbuild");
         loc.Display.Should().Contain("MyApp.Handler.Handle");
         loc.Display.Should().Contain("MyApp.dll+0x5000");
@@ -172,6 +176,34 @@ public sealed class NativeAddressResolverTests
         map.TryResolve(0x100000, out var module, out var rva).Should().BeTrue();
         module.FileName.Should().Be("big.so");
         rva.Should().Be(0xff000);
+    }
+
+    [Fact]
+    public void Resolve_AslrBasedPieModule_LoadBaseRebasesAbsoluteAddress()
+    {
+        // PIE / NativeAOT: on-disk image base is 0; the loader places it at a random ASLR base.
+        // The consumer must rebase the absolute IP, so LoadBase has to be the runtime base.
+        const ulong aslrBase = 0x55a3c0d00000;
+        var map = NativeModuleMap.Build(new[] { Mod(aslrBase, 0x80000, "/app/MyAotApp", "gnubuildid") });
+
+        var loc = NativeAddressClassifier.Resolve(aslrBase + 0x2a3f0, map);
+
+        loc.Kind.Should().Be(NativeAddressKind.Module);
+        loc.Rva.Should().Be(0x2a3f0);
+        loc.LoadBase.Should().Be(aslrBase);
+        // Consumer contract: Address - LoadBase == Rva, so rebasing recovers the module-relative offset.
+        (loc.Address - loc.LoadBase!.Value).Should().Be(loc.Rva!.Value);
+    }
+
+    [Fact]
+    public void Resolve_MappedNonModule_HasNoLoadBase()
+    {
+        var map = NativeModuleMap.Build(new[] { Mod(0x400000, 0x1000, "a.so") });
+
+        var loc = NativeAddressClassifier.Resolve(0x9000000, map, probeReadable: _ => true);
+
+        loc.Kind.Should().Be(NativeAddressKind.MappedNonModule);
+        loc.LoadBase.Should().BeNull();
     }
 
     [Theory]

@@ -241,6 +241,7 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
 
             string? addressKind = null;
             ulong? rva = null;
+            ulong? loadBase = null;
             string? buildId = null;
 
             // For native/unresolved frames, classify the raw IP into (module, rva, build-id) or an
@@ -254,6 +255,7 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
                     probeReadable: addr => ProbeReadable(reader, addr));
                 addressKind = ToAddressKind(location.Kind);
                 rva = location.Rva;
+                loadBase = location.LoadBase;
                 buildId = location.BuildId;
                 if (location.Module is not null)
                 {
@@ -279,6 +281,7 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
             {
                 AddressKind = addressKind,
                 Rva = rva,
+                LoadBase = loadBase,
                 BuildId = buildId,
             });
 

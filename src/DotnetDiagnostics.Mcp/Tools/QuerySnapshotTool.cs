@@ -520,6 +520,7 @@ public sealed class QuerySnapshotTool
             Display: l.Display)
         {
             ManagedMethod = l.ManagedMethod,
+            LoadBase = l.LoadBase is { } b ? $"0x{b:x}" : null,
         }).ToArray();
 
         var origin = snapshot.Origin.ToString().ToLowerInvariant();
