@@ -3,7 +3,7 @@ namespace DotnetDiagnostics.Core.Counters;
 /// <summary>
 /// Filters a <see cref="CounterSnapshot"/> down to the "headline" counters the LLM needs to
 /// triage cheaply at <see cref="DotnetDiagnostics.Core.Collection.SamplingDepth.Summary"/>:
-/// CPU, working set, GC heap, gen-2 collections, thread-pool depth, exceptions/sec,
+/// CPU, working set, GC heap, gen-2 collections, thread-pool depth, active timers, exceptions/sec,
 /// monitor lock contention, plus ASP.NET Core request rate / failures and Meter p95 request
 /// duration. Everything else stays reachable via the handle store.
 /// </summary>
@@ -24,6 +24,7 @@ public static class HeadlineCounters
         ("System.Runtime", "alloc-rate"),
         ("System.Runtime", "threadpool-thread-count"),
         ("System.Runtime", "threadpool-queue-length"),
+        ("System.Runtime", "active-timer-count"),
         ("System.Runtime", "exception-count"),
         ("System.Runtime", "monitor-lock-contention-count"),
         ("Microsoft.AspNetCore.Hosting", "requests-per-second"),

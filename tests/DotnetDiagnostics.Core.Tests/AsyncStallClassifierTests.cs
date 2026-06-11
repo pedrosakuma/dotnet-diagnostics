@@ -74,6 +74,56 @@ public sealed class AsyncStallClassifierTests
         view.TopBlockedAsync.Should().BeEmpty();
     }
 
+    [Fact]
+    public void AsyncStallClassifier_ClassifiesChannelWriteBackpressure()
+    {
+        var snapshot = CreateSnapshot(
+            CreateThread(42, true,
+                CreateFrame("System.Threading.Channels.BoundedChannel`1+BoundedChannelWriter[[System.Int32]].WriteAsync(System.Int32, System.Threading.CancellationToken)")));
+
+        var view = AsyncStallClassifier.Classify(snapshot, topN: 5);
+
+        view.ClassifiedThreads.Should().Be(1);
+        view.ByBucket.Should().ContainSingle(bucket => bucket.Bucket == "ChannelWriteBackpressure" && bucket.Count == 1);
+        view.TopBlockedAsync.Should().ContainSingle().Which.Bucket.Should().Be("ChannelWriteBackpressure");
+    }
+
+    [Fact]
+    public void AsyncStallClassifier_DistinguishesChannelReadFromWrite()
+    {
+        var snapshot = CreateSnapshot(
+            CreateThread(1, true,
+                CreateFrame("System.Threading.Channels.Channel`1+UnboundedChannelReader[[System.Int32]].WaitToReadAsync(System.Threading.CancellationToken)")),
+            CreateThread(2, true,
+                CreateFrame("System.Threading.Channels.BoundedChannel`1+BoundedChannelWriter[[System.Int32]].WaitToWriteAsync(System.Threading.CancellationToken)")));
+
+        var view = AsyncStallClassifier.Classify(snapshot, topN: 5);
+
+        view.ByBucket.Should().BeEquivalentTo(
+            new[]
+            {
+                new { Bucket = "ChannelAwait", Count = 1 },
+                new { Bucket = "ChannelWriteBackpressure", Count = 1 },
+            },
+            options => options.ExcludingMissingMembers());
+    }
+
+    [Fact]
+    public void AsyncStallClassifier_ChannelReader_NotMisclassifiedAsWriter()
+    {
+        // A user frame whose method is named WriteAsync but which takes a ChannelReader parameter
+        // must NOT be classified as writer backpressure — only an actual channel-writer type does.
+        var snapshot = CreateSnapshot(
+            CreateThread(7, true,
+                CreateFrame("System.Threading.Channels.Channel`1+UnboundedChannelReader[[System.Int32]].WaitToReadAsync(System.Threading.CancellationToken)"),
+                CreateFrame("MyApp.Consumer.WriteAsync(System.Threading.Channels.ChannelReader`1[[System.Int32]])")));
+
+        var view = AsyncStallClassifier.Classify(snapshot, topN: 5);
+
+        view.ByBucket.Should().ContainSingle(bucket => bucket.Bucket == "ChannelAwait" && bucket.Count == 1);
+        view.ByBucket.Should().NotContain(bucket => bucket.Bucket == "ChannelWriteBackpressure");
+    }
+
     private static ThreadSnapshotArtifact CreateSnapshot(params ManagedThread[] threads)
         => new(
             Origin: ThreadSnapshotOrigin.Live,
