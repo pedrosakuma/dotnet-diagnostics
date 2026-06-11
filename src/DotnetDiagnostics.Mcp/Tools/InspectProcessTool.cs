@@ -99,22 +99,8 @@ public sealed class InspectProcessTool
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(
-        "START HERE for a slow or struggling .NET app. When the user says things like 'my app is slow', " +
-        "'high latency', 'high CPU', 'memory is growing / leaking', 'performance problem', 'requests are timing out', " +
-        "or 'where do I start' — call this first with view=triage. It collects EventCounters for ~5s, classifies the " +
-        "workload (cpu-bound, gc-pressure, memory-pressure, threadpool-starvation, lock-contention, io-bound, healthy) and returns a " +
-        "verdict plus actionable hints; just follow the first hint to the right collector. No processId needed when one " +
-        ".NET process is visible. " +
-        "Single bootstrap entrypoint that subsumes list_dotnet_processes, " +
-        "get_process_info, get_diagnostic_capabilities, get_container_signals and get_memory_trend, " +
-        "plus the Phase 11 runtime-config view, the Phase 10.3 resources view, the Phase 10.4 requests-now view, and the Phase 12 triage view. Pick the projection with view=list|info|capabilities|container|memory_trend|runtime-config|resources|requests-now|triage. " +
-        "view=list returns every .NET process visible to the diagnostic IPC and ignores processId. " +
-        "All other views auto-resolve the lone visible .NET process when processId is omitted; " +
-        "view=memory_trend and view=resources additionally accept any OS pid (NativeAOT / non-.NET) when processId is explicit, " +
-        "and use durationSeconds + sampleEverySeconds to shape their observation windows. " +
-        "view=runtime-config reads filtered runtime env vars plus best-effort ClrMD GC / ThreadPool settings without adding a new auth scope. " +
-        "view=requests-now opens a short EventPipe session on Microsoft.AspNetCore.Hosting and then captures a live thread snapshot, so it requires the ptrace scope. " +
-        "view=triage collects counters (5s), classifies the workload (cpu-bound, gc-pressure, memory-pressure, threadpool-starvation, lock-contention, io-bound, healthy), and returns actionable hints — the LLM just follows the first hint.")]
+        "START HERE for a slow/struggling .NET app or 'where do I start?' — triages and inspects a " +
+        "process. Choose the projection via the 'view' parameter.")]
     public static async Task<DiagnosticResult<InspectProcessReport>> InspectProcess(
         IProcessDiscovery discovery,
         IProcessContextResolver resolver,
@@ -126,7 +112,14 @@ public sealed class InspectProcessTool
         IRequestsNowCollector requestsNowCollector,
         ICounterCollector counterCollector,
         IPrincipalAccessor principalAccessor,
-        [Description("Projection to compute. Allowed: list|info|capabilities|container|memory_trend|runtime-config|resources|requests-now|triage. Defaults to 'list'.")]
+        [Description("Projection to compute. Defaults to 'list'. Values: " +
+            "'triage' (collect counters ~5s, classify workload cpu-bound/gc-pressure/memory-pressure/threadpool-starvation/lock-contention/io-bound/healthy, return a verdict + actionable hints); " +
+            "'list' (every .NET process visible to the diagnostic IPC; ignores processId); " +
+            "'info' (process metadata); 'capabilities' (CoreCLR vs NativeAOT, supported collectors); " +
+            "'container' (cgroup limits + signals); 'memory_trend' (working-set trend over durationSeconds/sampleEverySeconds); " +
+            "'resources' (single sample or trend); 'runtime-config' (filtered runtime env vars + best-effort ClrMD GC/ThreadPool settings); " +
+            "'requests-now' (opens a short EventPipe session + captures a live thread snapshot — requires the ptrace scope). " +
+            "All views except 'list' auto-resolve the lone visible .NET process when processId is omitted.")]
         string? view = ListView,
         [Description("Operating system process id of the target. Required by no view: list ignores it, every other view auto-resolves the lone visible .NET process when omitted.")]
         int? processId = null,

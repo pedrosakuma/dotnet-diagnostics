@@ -55,20 +55,8 @@ public sealed class CollectSampleTool
         UseStructuredContent = true,
         TaskSupport = ToolTaskSupport.Optional)]
     [Description(
-        "Unified sampling collector entry-point. Set 'kind' to choose the sampler: " +
-        "'cpu' (on-CPU SampleProfiler / perf — top managed hotspots with MethodIdentity handoff), " +
-        "'off_cpu' (where threads are blocked and for how long — Linux sched_switch via perf, Windows " +
-        "ContextSwitch via NT Kernel Logger), 'allocation' (managed GCAllocationTick rolled up by type — " +
-        "TypeName is empty on NativeAOT, surfaced as a caveat in the envelope summary), or " +
-        "'native-alloc' (NATIVE/unmanaged allocations — uprobes libc malloc/calloc/realloc via perf to " +
-        "attribute off-GC-heap allocations to a call site; Linux only, needs CAP_SYS_ADMIN; hotspot-only, " +
-        "counts are sampled calls not bytes). " +
-        "Each kind preserves the parameters and behaviour of its legacy collector tool, including " +
-        "the SSRF-guarded `symbolPath` precedence chain and ClrMD generic-instantiation enrichment " +
-        "for CPU samples. Long-running collections expose MCP-native notifications/progress + " +
-        "notifications/cancelled on the same tools/call request, or can be promoted to an MCP Task. " +
-        "Returns a polymorphic envelope with exactly one of {cpu, offCpu, allocation, nativeAlloc} populated " +
-        "alongside the chosen kind, the issued handle, and standard NextActionHints.")]
+        "Unified bounded-time sampler. Choose the sampler via the 'kind' parameter " +
+        "(cpu, off_cpu, allocation, native-alloc). Returns a drilldown handle.")]
     public static async Task<DiagnosticResult<CollectSampleEnvelope>> CollectSample(
         ICpuSampler cpuSampler,
         IOffCpuSampler offCpuSampler,
@@ -79,8 +67,12 @@ public sealed class CollectSampleTool
         SymbolServerAllowlist symbolServerAllowlist,
         IPrincipalAccessor principalAccessor,
         [Description(
-            "Which sampler to run. One of: 'cpu', 'off_cpu', 'allocation', 'native-alloc'. Each kind preserves " +
-            "the options of its legacy collector tool; irrelevant options are ignored.")]
+            "Which sampler to run (default 'cpu'): " +
+            "'cpu' (on-CPU SampleProfiler / perf — top managed hotspots with MethodIdentity handoff), " +
+            "'off_cpu' (where threads are blocked and for how long — Linux sched_switch via perf, Windows ContextSwitch via NT Kernel Logger), " +
+            "'allocation' (managed GCAllocationTick rolled up by type — TypeName is empty on NativeAOT), " +
+            "'native-alloc' (unmanaged malloc/calloc/realloc via perf uprobes — Linux only, needs CAP_SYS_ADMIN; sampled call counts, not bytes). " +
+            "Long-running collections expose MCP-native progress/cancellation or can be promoted to an MCP Task.")]
         string kind = KindCpu,
         // Shared options.
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")]

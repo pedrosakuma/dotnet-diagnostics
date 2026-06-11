@@ -111,21 +111,8 @@ public sealed class QuerySnapshotTool
         Idempotent = true,
         UseStructuredContent = true)]
     [Description(
-        "Single drilldown verb that dispatches on the handle's recorded artifact kind: " +
-        "`heap-snapshot` → heap views (top-types | retention-paths | roots-by-kind | finalizer-queue | " +
-        "fragmentation | static-fields | delegate-targets | duplicate-strings | gchandles | object | gcroot | objsize | async); " +
-        "`thread-snapshot` → thread views (threads-summary | stack | lock-graph | deadlocks | top-blocked | " +
-        "unique-stacks | async-stalls | threadpool); " +
-        "`off-cpu-snapshot` → off-CPU views (topStacks | byThread | stack); " +
-        "`counters` / `exception-snapshot` / `gc-events` / `gc-datas` / `event-catalog` / `event-source` / `activities` / `log-snapshot` / `threadpool-snapshot` / `contention-snapshot` / `db-snapshot` → collection views " +
-        "(summary | byProvider | byType | recent | events | catalog | pauseHistogram | longestPauses | byGeneration | byEventName | bySource | byOperation | activities | byCategory | byLevel | errors | timeline | hillClimbing | workItemOrigins | byCallSite | byOwner | byCommand | n+1 | connectionPool); " +
-        "`cpu-sample` / `allocation-sample` / `native-alloc-sample` → `call-tree` | `top-methods` | `by-module` | `by-namespace` | `hot-path` | `caller-callee` | `diff`; `heap-snapshot` → `diff` in addition to heap views; `gc-datas` / `counters` / `gc-events` / `contention-snapshot` / `threadpool-snapshot` → `diff` via comparable journey projection. `diff` compares the current handle against `baselineHandle` or appends it after ordered `comparisonHandles`; `call-tree` preserves get_call_tree behaviour with " +
-        "rootMethodFilter, maxDepth, maxNodes. " +
-        "Unknown handle kinds, unknown views and parameter-shape violations return structured InvalidArgument " +
-        "envelopes — never a 500. Authorization is preserved per kind: heap-read for heap, ptrace for thread, " +
-        "eventpipe for off-CPU, investigation-export for call-tree, and read-counters|eventpipe for collection. " +
-        "Supersedes the deprecated query_heap_snapshot, query_thread_snapshot, query_off_cpu_snapshot, " +
-        "query_collection and get_call_tree tools (#207).")]
+        "Drill into a prior collector's snapshot/sample by handle. The available views depend on the " +
+        "handle's kind — choose one via the 'view' parameter.")]
     public static async Task<DiagnosticResult<object>> QuerySnapshot(
         IDiagnosticHandleStore handles,
         IDumpInspector inspector,
