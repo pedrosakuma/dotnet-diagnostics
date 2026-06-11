@@ -5,6 +5,7 @@ using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.Db;
+using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Exceptions;
@@ -59,12 +60,13 @@ public sealed class CollectEventsTool
         "contention",
         "db",
         "kestrel",
+        "networking",
     };
 
     [RequireAnyScope("read-counters", "eventpipe")]
     [McpServerTool(
         Name = "collect_events",
-        Title = "Collect EventPipe events (counters | exceptions | gc | datas | catalog | event_source | activities | logs | jit | threadpool | contention | db | kestrel)",
+        Title = "Collect EventPipe events (counters | exceptions | gc | datas | catalog | event_source | activities | logs | jit | threadpool | contention | db | kestrel | networking)",
         Destructive = false,
         ReadOnly = true,
         Idempotent = false,
@@ -88,6 +90,7 @@ public sealed class CollectEventsTool
         IContentionCollector contentionCollector,
         IDbCollector dbCollector,
         IKestrelCollector kestrelCollector,
+        INetworkingCollector networkingCollector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
         EventSourceAllowlist allowlist,
@@ -102,7 +105,8 @@ public sealed class CollectEventsTool
             "'logs' (curated ILogger view), 'jit' (tiered compilation / ReadyToRun activity), " +
             "'threadpool' (ThreadPool starvation: worker/IOCP timelines, hill-climbing, work-item origins), " +
             "'contention' (lock contention by call site + owner thread), 'db' (curated EF Core / SqlClient view), " +
-            "'kestrel' (Kestrel HTTP server: connection/request/TLS latency, queue lengths, live KestrelServerOptions config). " +
+            "'kestrel' (Kestrel HTTP server: connection/request/TLS latency, queue lengths, live KestrelServerOptions config), " +
+            "'networking' (curated outbound HTTP / DNS / TLS / socket view: latency percentiles + HttpClient time-in-queue). " +
             "All kinds except 'counters' use the 'eventpipe' scope. " +
             "IMPORTANT: for 'exceptions' and 'gc', start collection BEFORE the workload — EventPipe sessions " +
             "take ~500 ms–1 s to fully start and earlier events are missed.")]
@@ -302,6 +306,14 @@ public sealed class CollectEventsTool
                             ct).ConfigureAwait(false),
                         "kestrel",
                         (env, data) => env with { Kestrel = data }),
+
+                    "networking" => Project(
+                        await DiagnosticTools.CollectNetworking(
+                            networkingCollector, resolver, handles,
+                            processId, effectiveDuration, intervalSeconds, depth,
+                            ct).ConfigureAwait(false),
+                        "networking",
+                        (env, data) => env with { Networking = data }),
  
                     // Unreachable — TryValidate narrowed canonicalKind to the AllowedKinds set above.
                     _ => DiagnosticResult.Fail<CollectEventsEnvelope>(
@@ -371,4 +383,5 @@ public sealed record CollectEventsEnvelope(
     ThreadPoolEventSnapshot? ThreadPool = null,
     ContentionSnapshot? Contention = null,
     DbSnapshot? Db = null,
-    KestrelSnapshot? Kestrel = null);
+    KestrelSnapshot? Kestrel = null,
+    NetworkingSnapshot? Networking = null);

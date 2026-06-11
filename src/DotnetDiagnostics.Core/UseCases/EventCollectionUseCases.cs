@@ -4,6 +4,7 @@ using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.Db;
+using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Exceptions;
@@ -809,6 +810,77 @@ public static class EventCollectionUseCases
             hints.Add(new NextActionHint("query_snapshot",
                 "Read the live KestrelServerOptions JSON (TLS, limits, keep-alive, HTTP protocol versions) captured at session enable.",
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "config" }));
+        }
+
+        return WithContext(DiagnosticResult.OkWithHandle(
+            inlineSnapshot,
+            summary,
+            handle.Id,
+            handle.ExpiresAt,
+            hints.ToArray()),
+            resolved.Context);
+    }
+
+    /// <summary>Curates the stable .NET networking EventSources (HTTP / DNS / TLS / sockets) into a snapshot.</summary>
+    public static async Task<DiagnosticResult<NetworkingSnapshot>> CollectNetworking(
+        INetworkingCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        int? processId = null,
+        int durationSeconds = 10,
+        int intervalSeconds = 1,
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<NetworkingSnapshot>(nameof(durationSeconds), "must be >= 1");
+        if (intervalSeconds < 1) return InvalidArg<NetworkingSnapshot>(nameof(intervalSeconds), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<NetworkingSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+
+        var snapshot = await collector.CollectAsync(
+            pid,
+            TimeSpan.FromSeconds(durationSeconds),
+            intervalSeconds,
+            cancellationToken).ConfigureAwait(false);
+
+        var inlineSnapshot = snapshot;
+        if (depth == SamplingDepth.Summary)
+        {
+            inlineSnapshot = snapshot with
+            {
+                ByOperation = snapshot.ByOperation.Take(5).ToList(),
+            };
+        }
+
+        var handle = handles.Register(pid, CollectionHandleKinds.NetworkingSnapshot, snapshot, CollectionHandleTtl);
+        var hints = new List<NextActionHint>();
+
+        string summary;
+        if (snapshot.HttpRequestsStarted == 0 && snapshot.DnsLookupsStarted == 0
+            && snapshot.SocketConnectsStarted == 0 && snapshot.Counters.Count == 0)
+        {
+            summary = $"No networking activity captured in {durationSeconds}s. Confirm the target makes outbound HTTP / DNS / socket calls during collection (start the session before the load).";
+        }
+        else
+        {
+            summary = $"Captured {snapshot.HttpRequestsStarted} HTTP request(s) ({snapshot.HttpRequestsFailed} failed) over {durationSeconds}s. " +
+                      $"Request p95={snapshot.HttpRequestP95.TotalMilliseconds:F1}ms, time-in-queue p95={snapshot.TimeInQueueP95.TotalMilliseconds:F1}ms. " +
+                      $"DNS: {snapshot.DnsLookupsStarted} lookup(s), {snapshot.DnsLookupsFailed} failed. " +
+                      $"TLS: {snapshot.TlsHandshakesStarted} handshake(s), {snapshot.TlsHandshakesFailed} failed. " +
+                      $"Sockets: {snapshot.SocketConnectsStarted} connect(s), {snapshot.SocketConnectsFailed} failed.";
+
+            if (snapshot.TimeInQueueP95 > TimeSpan.Zero || snapshot.HttpRequestsLeftQueue > 0)
+            {
+                hints.Add(new NextActionHint("query_snapshot",
+                    "Inspect HttpClient connection-pool time-in-queue — rising queue time is the #1 outbound-HTTP saturation signal.",
+                    new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "queue" }));
+            }
+
+            hints.Add(new NextActionHint("query_snapshot",
+                "Group outbound HTTP latency by host without re-collecting.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byOperation", ["topN"] = 25 }));
         }
 
         return WithContext(DiagnosticResult.OkWithHandle(

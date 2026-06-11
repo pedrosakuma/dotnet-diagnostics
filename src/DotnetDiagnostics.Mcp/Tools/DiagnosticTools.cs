@@ -12,6 +12,7 @@ using DotnetDiagnostics.Core.Container;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Db;
+using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Exceptions;
@@ -1390,7 +1391,7 @@ public sealed class DiagnosticTools
                 $"Handle '{handle}' is of kind '{outcome.UnknownKind}' which query_collection does not support.",
                 new DiagnosticError(
                     "UnsupportedHandleKind",
-                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventCatalog, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot, CollectionHandleKinds.DbSnapshot, CollectionHandleKinds.KestrelSnapshot })}.",
+                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventCatalog, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot, CollectionHandleKinds.DbSnapshot, CollectionHandleKinds.KestrelSnapshot, CollectionHandleKinds.NetworkingSnapshot })}.",
                     outcome.UnknownKind),
                 new NextActionHint("query_snapshot", "Use the kind-specific drill-down tool for heap/thread/cpu handles.", null));
         }
@@ -1639,6 +1640,30 @@ public sealed class DiagnosticTools
         CancellationToken cancellationToken = default)
     {
         return await EventCollectionUseCases.CollectKestrel(
+            collector, resolver, handles,
+            processId, durationSeconds, intervalSeconds, depth,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    [RequireScope("eventpipe")]
+    [Description(
+        "Collects a curated outbound-networking view by subscribing to the stable .NET networking EventSources " +
+        "(System.Net.Http, System.Net.NameResolution, System.Net.Security, System.Net.Sockets). " +
+        "Pairs request/lookup/handshake start+stop events to compute latency percentiles, reads HttpClient connection-pool time-in-queue, " +
+        "counts socket connects, groups outbound HTTP by host + path, and snapshots the per-provider EventCounters. " +
+        "The full artifact is always retained behind the issued handle — drill in with query_snapshot(handle, view=summary|byOperation|queue|tls|dns).")]
+    public static async Task<DiagnosticResult<NetworkingSnapshot>> CollectNetworking(
+        INetworkingCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
+        [Description("Refresh interval (in seconds) requested from the networking EventCounters. Defaults to 1.")] int intervalSeconds = 1,
+        [Description("Verbosity (summary|detail|raw). Default 'summary' keeps only the top by-operation slice inline; 'detail' and 'raw' return the full by-operation list captured in the window.")]
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        return await EventCollectionUseCases.CollectNetworking(
             collector, resolver, handles,
             processId, durationSeconds, intervalSeconds, depth,
             cancellationToken).ConfigureAwait(false);

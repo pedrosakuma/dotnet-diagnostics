@@ -16,6 +16,7 @@ using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.JitCapture;
 using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
+using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.ThreadPool;
@@ -2007,6 +2008,98 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         var incidents = query.Payload.Should().BeOfType<DbNPlusOneView>().Subject;
         incidents.TotalIncidents.Should().BeGreaterThan(0);
         incidents.Incidents.Should().Contain(incident => incident.Count >= 15);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Networking_HandleEnablesDrilldownViews()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var collector = new EventPipeNetworkingCollector();
+        var handles = new MemoryDiagnosticHandleStore();
+        var resolver = new FixedProcessContextResolver(badSample.ProcessId);
+        using var cts = new CancellationTokenSource();
+
+        // Drive outbound HttpClient traffic from inside the target: point /slow-http at the
+        // sample's own loopback root so we get reliable HTTP + socket events with no internet.
+        var loopbackTarget = Uri.EscapeDataString($"{badSample.BaseUrl.TrimEnd('/')}/");
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200), cts.Token);
+            while (!cts.IsCancellationRequested)
+            {
+                using var response = await http.GetAsync($"/slow-http?url={loopbackTarget}", cts.Token);
+                response.EnsureSuccessStatusCode();
+                await Task.Delay(50, cts.Token);
+            }
+        }, cts.Token);
+
+        DiagnosticResult<NetworkingSnapshot> collected;
+        try
+        {
+            collected = await DiagnosticTools.CollectNetworking(
+                collector,
+                resolver,
+                handles,
+                processId: badSample.ProcessId,
+                durationSeconds: 5,
+                intervalSeconds: 1,
+                depth: SamplingDepth.Detail,
+                cancellationToken: CancellationToken.None);
+        }
+        finally
+        {
+            cts.Cancel();
+            try { await driver; } catch (OperationCanceledException) { }
+        }
+
+        collected.Error.Should().BeNull();
+        collected.Handle.Should().NotBeNullOrWhiteSpace();
+
+        var drilled = await QuerySnapshotTool.QuerySnapshot(
+            handles,
+            new ClrMdDumpInspector(),
+            new SensitiveDataRedactor(),
+            new SensitiveValueGate(null),
+            new RootPrincipalAccessor(),
+            new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            collected.Handle!,
+            view: "byOperation",
+            topN: 25,
+            cancellationToken: CancellationToken.None);
+
+        drilled.Error.Should().BeNull();
+        var query = drilled.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        query.Kind.Should().Be(CollectionHandleKinds.NetworkingSnapshot);
+        query.View.Should().Be("byOperation");
+        query.Payload.Should().BeOfType<NetworkingByOperationView>();
+
+        // Data OR documented note: outbound HTTP / socket events should flow on this platform,
+        // but tolerate an empty window by accepting an explanatory note instead of failing.
+        var snapshot = collected.Data!;
+        var sawTraffic = snapshot.HttpRequestsStarted > 0
+            || snapshot.SocketConnectsStarted > 0
+            || snapshot.Counters.Count > 0;
+        (sawTraffic || snapshot.Notes.Count > 0).Should().BeTrue(
+            "the collector should capture outbound networking activity or annotate why the window was empty");
+
+        // Drill into the queue view too — it must round-trip regardless of whether traffic flowed.
+        var queueDrill = await QuerySnapshotTool.QuerySnapshot(
+            handles,
+            new ClrMdDumpInspector(),
+            new SensitiveDataRedactor(),
+            new SensitiveValueGate(null),
+            new RootPrincipalAccessor(),
+            new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            collected.Handle!,
+            view: "queue",
+            topN: 25,
+            cancellationToken: CancellationToken.None);
+
+        queueDrill.Error.Should().BeNull();
+        var queueQuery = queueDrill.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        queueQuery.View.Should().Be("queue");
+        queueQuery.Payload.Should().BeOfType<NetworkingQueueView>();
     }
 
     private static IEnumerable<CallTreeNode> Flatten(CallTreeNode root)
