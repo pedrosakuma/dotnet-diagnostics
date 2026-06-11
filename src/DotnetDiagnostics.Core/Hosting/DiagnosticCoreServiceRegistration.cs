@@ -8,6 +8,7 @@ using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Jit;
+using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
@@ -89,6 +90,7 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<IThreadPoolCollector, EventPipeThreadPoolCollector>();
         services.AddSingleton<IContentionCollector, EventPipeContentionCollector>();
         services.AddSingleton<IDbCollector, EventPipeDbCollector>();
+        services.AddSingleton<IKestrelCollector, EventPipeKestrelCollector>();
         services.AddSingleton<IProcessDumper, DiagnosticsClientDumper>();
         services.AddSingleton<IModuleByteSource, ClrMdModuleByteSource>();
         services.AddSingleton<IDumpByteSource, FileSystemDumpByteSource>();

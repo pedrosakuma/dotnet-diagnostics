@@ -21,6 +21,7 @@ using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Investigation;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.JitCapture;
+using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.NativeAlloc;
 using DotnetDiagnostics.Core.OffCpu;
@@ -1389,7 +1390,7 @@ public sealed class DiagnosticTools
                 $"Handle '{handle}' is of kind '{outcome.UnknownKind}' which query_collection does not support.",
                 new DiagnosticError(
                     "UnsupportedHandleKind",
-                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventCatalog, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot, CollectionHandleKinds.DbSnapshot })}.",
+                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventCatalog, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot, CollectionHandleKinds.DbSnapshot, CollectionHandleKinds.KestrelSnapshot })}.",
                     outcome.UnknownKind),
                 new NextActionHint("query_snapshot", "Use the kind-specific drill-down tool for heap/thread/cpu handles.", null));
         }
@@ -1614,6 +1615,30 @@ public sealed class DiagnosticTools
         CancellationToken cancellationToken = default)
     {
         return await EventCollectionUseCases.CollectDb(
+            collector, resolver, handles,
+            processId, durationSeconds, intervalSeconds, depth,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    [RequireScope("eventpipe")]
+    [Description(
+        "Curates the Kestrel HTTP server pipeline by subscribing to the Microsoft-AspNetCore-Server-Kestrel EventSource. " +
+        "Pairs connection/request/TLS start+stop events to compute request and TLS-handshake latency percentiles, tracks the " +
+        "connection- and request-queue-length counters over time to localize head-of-line blocking, and captures the live " +
+        "KestrelServerOptions JSON emitted by the Configuration event at session enable. " +
+        "The full artifact is retained behind the issued handle — drill in with query_snapshot(handle, view=summary|byOperation|queues|tls|config).")]
+    public static async Task<DiagnosticResult<KestrelSnapshot>> CollectKestrel(
+        IKestrelCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
+        [Description("Refresh interval (in seconds) requested from Kestrel EventCounters. Defaults to 1.")] int intervalSeconds = 1,
+        [Description("Verbosity (summary|detail|raw). Default 'summary' trims the by-operation list and drops the queue timeline + config JSON inline; 'detail' and 'raw' return the full window.")]
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        return await EventCollectionUseCases.CollectKestrel(
             collector, resolver, handles,
             processId, durationSeconds, intervalSeconds, depth,
             cancellationToken).ConfigureAwait(false);

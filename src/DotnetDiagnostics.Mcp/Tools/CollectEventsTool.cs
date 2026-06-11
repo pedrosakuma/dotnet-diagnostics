@@ -10,6 +10,7 @@ using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
+using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
@@ -57,12 +58,13 @@ public sealed class CollectEventsTool
         "threadpool",
         "contention",
         "db",
+        "kestrel",
     };
 
     [RequireAnyScope("read-counters", "eventpipe")]
     [McpServerTool(
         Name = "collect_events",
-        Title = "Collect EventPipe events (counters | exceptions | gc | datas | catalog | event_source | activities | logs | jit | threadpool | contention | db)",
+        Title = "Collect EventPipe events (counters | exceptions | gc | datas | catalog | event_source | activities | logs | jit | threadpool | contention | db | kestrel)",
         Destructive = false,
         ReadOnly = true,
         Idempotent = false,
@@ -85,6 +87,7 @@ public sealed class CollectEventsTool
         IThreadPoolCollector threadPoolCollector,
         IContentionCollector contentionCollector,
         IDbCollector dbCollector,
+        IKestrelCollector kestrelCollector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
         EventSourceAllowlist allowlist,
@@ -98,7 +101,8 @@ public sealed class CollectEventsTool
             "'event_source' (generic provider passthrough — requires providerName), 'activities' (ActivitySource spans), " +
             "'logs' (curated ILogger view), 'jit' (tiered compilation / ReadyToRun activity), " +
             "'threadpool' (ThreadPool starvation: worker/IOCP timelines, hill-climbing, work-item origins), " +
-            "'contention' (lock contention by call site + owner thread), 'db' (curated EF Core / SqlClient view). " +
+            "'contention' (lock contention by call site + owner thread), 'db' (curated EF Core / SqlClient view), " +
+            "'kestrel' (Kestrel HTTP server: connection/request/TLS latency, queue lengths, live KestrelServerOptions config). " +
             "All kinds except 'counters' use the 'eventpipe' scope. " +
             "IMPORTANT: for 'exceptions' and 'gc', start collection BEFORE the workload — EventPipe sessions " +
             "take ~500 ms–1 s to fully start and earlier events are missed.")]
@@ -290,6 +294,14 @@ public sealed class CollectEventsTool
                             ct).ConfigureAwait(false),
                         "db",
                         (env, data) => env with { Db = data }),
+
+                    "kestrel" => Project(
+                        await DiagnosticTools.CollectKestrel(
+                            kestrelCollector, resolver, handles,
+                            processId, effectiveDuration, intervalSeconds, depth,
+                            ct).ConfigureAwait(false),
+                        "kestrel",
+                        (env, data) => env with { Kestrel = data }),
  
                     // Unreachable — TryValidate narrowed canonicalKind to the AllowedKinds set above.
                     _ => DiagnosticResult.Fail<CollectEventsEnvelope>(
@@ -341,7 +353,7 @@ public sealed class CollectEventsTool
 /// <summary>
 /// Polymorphic payload returned by <see cref="CollectEventsTool.CollectEvents"/>. Exactly one
 /// of the kind-specific fields (<see cref="Counters"/>, <see cref="Exceptions"/>,
-/// <see cref="Gc"/>, <see cref="Datas"/>, <see cref="Catalog"/>, <see cref="EventSource"/>, <see cref="Activities"/>, <see cref="Logs"/>, <see cref="Jit"/>, <see cref="ThreadPool"/>, <see cref="Contention"/>, <see cref="Db"/>) is populated, matched
+/// <see cref="Gc"/>, <see cref="Datas"/>, <see cref="Catalog"/>, <see cref="EventSource"/>, <see cref="Activities"/>, <see cref="Logs"/>, <see cref="Jit"/>, <see cref="ThreadPool"/>, <see cref="Contention"/>, <see cref="Db"/>, <see cref="Kestrel"/>) is populated, matched
 /// by <see cref="Kind"/>. Mirrors the discriminator-envelope convention used by other
 /// consolidated tools (e.g. <c>get_method_il</c>).
 /// </summary>
@@ -358,4 +370,5 @@ public sealed record CollectEventsEnvelope(
     JitSnapshot? Jit = null,
     ThreadPoolEventSnapshot? ThreadPool = null,
     ContentionSnapshot? Contention = null,
-    DbSnapshot? Db = null);
+    DbSnapshot? Db = null,
+    KestrelSnapshot? Kestrel = null);

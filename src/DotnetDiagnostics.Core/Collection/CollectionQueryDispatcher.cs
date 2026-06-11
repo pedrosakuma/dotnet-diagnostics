@@ -6,6 +6,7 @@ using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
+using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ThreadPool;
 
@@ -38,6 +39,7 @@ public static class CollectionQueryDispatcher
         CollectionHandleKinds.ThreadPoolSnapshot => new[] { "summary", "timeline", "hillClimbing", "workItemOrigins" },
         CollectionHandleKinds.ContentionSnapshot => new[] { "summary", "byCallSite", "byOwner" },
         CollectionHandleKinds.DbSnapshot => new[] { "summary", "byCommand", "n+1", "connectionPool" },
+        CollectionHandleKinds.KestrelSnapshot => new[] { "summary", "byOperation", "queues", "tls", "config" },
         _ => Array.Empty<string>(),
     };
 
@@ -105,6 +107,8 @@ public static class CollectionQueryDispatcher
                 => Ok(Render(contention, effectiveView, topN)),
             CollectionHandleKinds.DbSnapshot when artifact is DbSnapshot db
                 => Ok(Render(db, effectiveView, topN)),
+            CollectionHandleKinds.KestrelSnapshot when artifact is KestrelSnapshot kestrel
+                => Ok(Render(kestrel, effectiveView, topN)),
             _ => new DispatchOutcome(null, kind, null, null, null),
         };
     }
@@ -616,5 +620,51 @@ public static class CollectionQueryDispatcher
 
         return new CollectionQueryResult(
             CollectionHandleKinds.DbSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
+    }
+
+    private static CollectionQueryResult Render(KestrelSnapshot snapshot, string view, int topN)
+    {
+        object payload = view.ToLowerInvariant() switch
+        {
+            "byoperation" => new KestrelByOperationView(
+                snapshot.ByOperation.Count,
+                Math.Min(topN, snapshot.ByOperation.Count),
+                snapshot.ByOperation.Take(topN).ToList()),
+            "queues" => new KestrelQueuesView(
+                snapshot.PeakConnectionQueueLength,
+                snapshot.PeakRequestQueueLength,
+                Math.Min(topN, snapshot.QueuePoints.Count),
+                snapshot.QueuePoints.Take(topN).ToList(),
+                snapshot.Notes),
+            "tls" => new KestrelTlsView(
+                snapshot.TlsHandshakesStarted,
+                snapshot.TlsHandshakesStopped,
+                snapshot.TlsHandshakesFailed,
+                snapshot.TlsHandshakeP50,
+                snapshot.TlsHandshakeP95,
+                snapshot.TlsHandshakeMax,
+                snapshot.TlsProtocols),
+            "config" => new KestrelConfigurationView(
+                snapshot.ConfigurationJson,
+                snapshot.Notes),
+            _ => new KestrelSummaryView(
+                snapshot.ConnectionsStarted,
+                snapshot.ConnectionsStopped,
+                snapshot.ConnectionsRejected,
+                snapshot.RequestsStarted,
+                snapshot.RequestsStopped,
+                snapshot.TlsHandshakesStarted,
+                snapshot.TlsHandshakesFailed,
+                snapshot.PeakConnectionQueueLength,
+                snapshot.PeakRequestQueueLength,
+                snapshot.RequestP95,
+                snapshot.RequestMax,
+                snapshot.Counters,
+                snapshot.ConfigurationJson is not null,
+                snapshot.Notes),
+        };
+
+        return new CollectionQueryResult(
+            CollectionHandleKinds.KestrelSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
     }
 }

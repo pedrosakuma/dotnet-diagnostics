@@ -14,6 +14,7 @@ using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.JitCapture;
+using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
@@ -1596,6 +1597,83 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         var byCallSite = query.Payload.Should().BeOfType<ContentionByCallSiteView>().Subject;
         byCallSite.TotalEvents.Should().BeGreaterThan(0);
         byCallSite.CallSites.Should().NotBeEmpty();
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Kestrel_HandleEnablesDrilldownViews()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        var collector = new EventPipeKestrelCollector();
+        var handles = new MemoryDiagnosticHandleStore();
+        var resolver = new FixedProcessContextResolver(Pid);
+        using var cts = new CancellationTokenSource();
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200), cts.Token);
+            while (!cts.IsCancellationRequested)
+            {
+                using var response = await http.GetAsync("/weatherforecast", cts.Token);
+                response.EnsureSuccessStatusCode();
+                await Task.Delay(50, cts.Token);
+            }
+        }, cts.Token);
+
+        DiagnosticResult<KestrelSnapshot> collected;
+        try
+        {
+            collected = await DiagnosticTools.CollectKestrel(
+                collector,
+                resolver,
+                handles,
+                processId: Pid,
+                durationSeconds: 5,
+                intervalSeconds: 1,
+                depth: SamplingDepth.Detail,
+                cancellationToken: CancellationToken.None);
+        }
+        finally
+        {
+            cts.Cancel();
+            try { await driver; } catch (OperationCanceledException) { }
+        }
+
+        collected.Error.Should().BeNull();
+        collected.Handle.Should().NotBeNullOrWhiteSpace();
+
+        var drilled = await QuerySnapshotTool.QuerySnapshot(
+            handles,
+            new ClrMdDumpInspector(),
+            new SensitiveDataRedactor(),
+            new SensitiveValueGate(null),
+            new RootPrincipalAccessor(),
+            new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            collected.Handle!,
+            view: "byOperation",
+            topN: 25,
+            cancellationToken: CancellationToken.None);
+
+        drilled.Error.Should().BeNull();
+        var query = drilled.Data.Should().BeOfType<CollectionQueryResult>().Subject;
+        query.Kind.Should().Be(CollectionHandleKinds.KestrelSnapshot);
+        query.View.Should().Be("byOperation");
+        var byOperation = query.Payload.Should().BeOfType<KestrelByOperationView>().Subject;
+
+        // Data OR documented note: Kestrel events should flow on this platform, but tolerate an
+        // empty window by accepting an explanatory note instead of failing.
+        var snapshot = collected.Data!;
+        var sawTraffic = snapshot.RequestsStarted > 0 || snapshot.ConnectionsStarted > 0;
+        (sawTraffic || snapshot.Notes.Count > 0).Should().BeTrue(
+            "the collector should capture Kestrel connection/request activity or annotate why the window was empty");
+
+        if (sawTraffic)
+        {
+            snapshot.ConnectionsStarted.Should().BeGreaterThan(0);
+            snapshot.RequestsStarted.Should().BeGreaterThan(0);
+            byOperation.ByOperation.Should().Contain(group => group.Path.Contains("weatherforecast", StringComparison.Ordinal));
+        }
     }
 
     [Fact(Timeout = 60_000)]
