@@ -319,6 +319,28 @@ dotnet-assembly-mcp.find_callers(moduleVersionId="...", metadataToken="0x0600002
 No string parsing, no fuzzy matching — and the IL token is the same whether the LLM
 arrived here from a CPU sample, an exception stack, or a future GC artifact.
 
+## NativeFrame (native / unresolved stack frames)
+
+`collect_thread_snapshot` → `query_snapshot(view="stack")` emits a `ManagedStackFrame` per
+frame; for frames with no managed `Identity` (pure native, JIT stubs, R2R bodies) it carries the
+native-handoff fields below. `query_snapshot(view="resolve-address")` emits the same shape as
+`ResolvedAddressEntry`. Both feed `dotnet-native-mcp` (`resolve_symbols`, `disassemble`,
+`load_native_binary`).
+
+| Field                | Type      | Handoff role | Description                                                                                   |
+|----------------------|-----------|--------------|-----------------------------------------------------------------------------------------------|
+| `instructionPointer` / `address` | `ulong` / hex | absolute VA | The raw runtime instruction pointer. **Not** directly resolvable for PIE images (see below).  |
+| `rva`                | `ulong?` / hex | ✅ **preferred** | Offset from the containing module's image base. Already rebased by the producer, so it sidesteps ASLR entirely — hand this to `resolve_symbols` whenever it is present. |
+| `loadBase`           | `ulong?` / hex | absolute-VA rebasing | Runtime image base of the containing module = `instructionPointer − rva` (issue #375). Lets a consumer rebase the absolute address itself when only the IP is forwarded. `null` outside any module. |
+| `buildId`            | `string?` | identity     | Lower-case hex GNU build-id / PE CodeView GUID+Age of the containing module — the content-addressable trust anchor for the native binary. |
+| `addressKind`        | `string?` | classification | `module` / `managed` / `mapped-non-module` / `unmapped-or-not-captured` (issue #275).        |
+
+> **Why `loadBase` matters.** NativeAOT binaries are position-independent (PIE): their on-disk
+> image base is **0**, while the loader places them at a random ASLR base. An absolute
+> `instructionPointer` copied straight into `resolve_symbols` would be rebased against on-disk base
+> 0 and land outside every section. Prefer `rva` (resolves regardless of ASLR); fall back to
+> `address` + `loadBase` when only the absolute IP is available.
+
 ## Error kinds
 
 | Situation                                          | Producer behaviour                                  | Consumer guidance                                   |
@@ -327,12 +349,14 @@ arrived here from a CPU sample, an exception stack, or a future GC artifact.
 | Native-only frame                                  | Skip from `MethodIdentities`                        | n/a (no entry, no handoff)                          |
 | Token reported as `0`                              | `MetadataToken = null`                              | Cannot handoff — display label only                 |
 | MVID mismatch on consumer side                     | n/a                                                 | Return `module_not_loaded`; ask for explicit `load_assembly` |
+| PIE / NativeAOT frame, only absolute IP forwarded  | `rva` + `loadBase` + `buildId` emitted              | Rebase via `address − loadBase`, or prefer `rva` directly |
 
 ## Versioning
 
 The schema is part of the diagnostic summary (`schemaVersion` field on the exported
-investigation summary). Additive fields on `MethodIdentity` are non-breaking; field
-removals or semantic changes require a `schemaVersion` bump.
+investigation summary). Additive fields on `MethodIdentity` and `NativeFrame` are non-breaking;
+field removals or semantic changes require a `schemaVersion` bump. `loadBase` (issue #375) is such
+an additive field — consumers that predate it simply ignore it and use `rva`.
 
 ## TypeIdentity (dump inspection)
 

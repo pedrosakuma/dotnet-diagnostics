@@ -210,6 +210,14 @@ public sealed record ManagedStackFrame(
     /// <summary>Offset of <see cref="InstructionPointer"/> from the containing module's image base, when mapped.</summary>
     public ulong? Rva { get; init; }
 
+    /// <summary>
+    /// Runtime image base of the containing module (issue #375), i.e. <see cref="InstructionPointer"/>
+    /// minus <see cref="Rva"/>. Lets a consumer rebase the absolute IP for position-independent
+    /// (PIE / NativeAOT) images whose on-disk base is 0. Null for non-module frames. Prefer handing
+    /// off <see cref="Rva"/> directly to <c>dotnet-native-mcp</c> — it sidesteps ASLR entirely.
+    /// </summary>
+    public ulong? LoadBase { get; init; }
+
     /// <summary>Lower-case hex build-id of the containing module, when available — advisory handoff to <c>dotnet-native-mcp</c>.</summary>
     public string? BuildId { get; init; }
 }

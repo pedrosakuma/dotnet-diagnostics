@@ -52,6 +52,13 @@ public sealed record ResolvedAddressEntry(
 {
     /// <summary>Managed method identity when the address resolves to JIT/R2R code; null otherwise.</summary>
     public DotnetDiagnostics.Core.Memory.MethodIdentity? ManagedMethod { get; init; }
+
+    /// <summary>
+    /// Runtime image base of the containing module as hex (issue #375), i.e. <see cref="Address"/>
+    /// minus <see cref="Rva"/>. Lets a consumer rebase the absolute address for position-independent
+    /// (PIE / NativeAOT) images. Null outside any module. Prefer handing off <see cref="Rva"/>.
+    /// </summary>
+    public string? LoadBase { get; init; }
 }
 
 public sealed record ThreadDeadlockCycle(
