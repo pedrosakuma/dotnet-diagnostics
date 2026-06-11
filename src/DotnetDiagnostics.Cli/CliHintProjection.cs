@@ -52,6 +52,7 @@ internal static class CliHintProjection
         ["capabilities"] = "capabilities",
         ["get-bytes"] = "get-bytes",
         ["query"] = "query",
+        ["session"] = "session",
     };
 
     /// <summary>

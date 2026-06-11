@@ -41,6 +41,8 @@ public sealed class CliQueryTests
 
         exit.Should().Be(1);
         stdout.Should().Contain("\"kind\"").And.Contain("NotSupported");
+        // #387: the primary redirect hint must survive CliHintProjection (session is a CLI command).
+        stdout.Should().Contain("session");
     }
 
     [Fact]
