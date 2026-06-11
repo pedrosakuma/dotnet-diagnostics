@@ -68,21 +68,8 @@ public sealed class CollectEventsTool
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(
-        "Unified EventPipe collector entry-point. Set 'kind' to choose what to " +
-        "capture: 'counters' (EventCounter snapshot — cheap first signal), 'exceptions' (managed " +
-        "exception stream), 'gc' (GC start/stop pairs and pause durations), 'datas' (DATAS Server-GC " +
-        "heap-count tuning: per-GC samples, heap-count decisions, gen2 backstop tuning), 'catalog' " +
-        "(metadata-only provider/event-name catalog across a broad curated provider set), 'event_source' " +
-        "(generic provider passthrough — requires providerName), 'activities' (ActivitySource " +
-        "spans), 'logs' (curated ILogger view from Microsoft-Extensions-Logging), 'jit' " +
-        "(tiered compilation / ReadyToRun activity), 'threadpool' (runtime ThreadPool starvation view: worker/IOCP timelines, hill-climbing transitions, and work-item origins), 'contention' (runtime lock-contention aggregation by call site and owner thread), or 'db' (curated EF Core / SqlClient command and pool view). Each kind preserves the full behavior of its legacy collector tool, including " +
-        "the original authorization scope: 'counters' uses 'read-counters'; all other kinds use " +
-        "'eventpipe'. Returns a polymorphic envelope with exactly one of " +
-        "{counters, exceptions, gc, datas, catalog, eventSource, activities, logs, jit, threadPool, contention, db} populated alongside the chosen " +
-        "kind, the issued handle, and standard NextActionHints. " +
-        "IMPORTANT: for 'exceptions' and 'gc', start collection BEFORE the workload you want to " +
-        "observe — EventPipe sessions take ~500 ms–1 s to fully start and events before then are " +
-        "missed.")]
+        "Unified EventPipe collector. Choose what to capture via the 'kind' parameter " +
+        "(counters, gc, exceptions, logs, …). Returns a drilldown handle.")]
     public static async Task<DiagnosticResult<CollectEventsEnvelope>> CollectEvents(
         // DI services (union of every kind's dependencies). The MCP SDK injects these per call;
         // tools that don't need a given collector simply ignore the unused parameter.
@@ -104,9 +91,17 @@ public sealed class CollectEventsTool
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
         [Description(
-            "Which EventPipe family to collect. One of: 'counters', 'exceptions', 'gc', 'datas', " +
-            "'catalog', 'event_source', 'activities', 'logs', 'jit', 'threadpool', 'contention', 'db'. Each kind preserves the options of its legacy " +
-            "collector tool; irrelevant options are ignored.")]
+            "Which EventPipe family to collect (default 'counters'): " +
+            "'counters' (EventCounter snapshot — cheap first signal; uses the 'read-counters' scope), " +
+            "'exceptions' (managed exception stream), 'gc' (GC start/stop pairs + pause durations), " +
+            "'datas' (DATAS Server-GC heap-count tuning), 'catalog' (metadata-only provider/event-name catalog), " +
+            "'event_source' (generic provider passthrough — requires providerName), 'activities' (ActivitySource spans), " +
+            "'logs' (curated ILogger view), 'jit' (tiered compilation / ReadyToRun activity), " +
+            "'threadpool' (ThreadPool starvation: worker/IOCP timelines, hill-climbing, work-item origins), " +
+            "'contention' (lock contention by call site + owner thread), 'db' (curated EF Core / SqlClient view). " +
+            "All kinds except 'counters' use the 'eventpipe' scope. " +
+            "IMPORTANT: for 'exceptions' and 'gc', start collection BEFORE the workload — EventPipe sessions " +
+            "take ~500 ms–1 s to fully start and earlier events are missed.")]
         string kind = "counters",
         // Shared options.
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")]
