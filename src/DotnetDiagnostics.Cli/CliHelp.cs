@@ -168,6 +168,18 @@ session notes:
 
   dotnet-diagnostics-cli session --launch -- dotnet App.dll   # binds the launched child for the session
 """),
+        new CommandHelp(
+            "completion",
+            "Emit a shell-completion script for bash, zsh or PowerShell.",
+"""
+completion options:
+  No flags. Pass the target shell as a positional argument: bash, zsh or pwsh.
+""",
+"""
+  dotnet-diagnostics-cli completion bash
+  dotnet-diagnostics-cli completion zsh
+  dotnet-diagnostics-cli completion pwsh
+"""),
     };
 
     /// <summary>The full usage screen (every command, options and examples).</summary>

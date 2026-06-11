@@ -163,6 +163,18 @@ internal static class CliHost
             return 2;
         }
 
+        if (options.Command == "completion")
+        {
+            if (!CliCommands.TryValidateCompletion(options, out var completionError))
+            {
+                await stderr.WriteLineAsync(completionError).ConfigureAwait(false);
+                return 2;
+            }
+
+            await stdout.WriteLineAsync(CliCompletionScripts.ForShell(options.CompletionShell!)).ConfigureAwait(false);
+            return 0;
+        }
+
         // The stateful session REPL builds the host ONCE (shared singletons — the handle store that
         // makes drill-down possible must outlive every command) and reads commands from stdin until
         // exit/EOF. It owns a per-command artifact root via a MutableArtifactRootProvider.
