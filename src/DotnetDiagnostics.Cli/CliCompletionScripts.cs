@@ -16,6 +16,16 @@ internal static class CliCompletionScripts
         "--help",
     };
 
+    private static readonly IReadOnlyList<string> ValueFlags = new[]
+    {
+        "-p", "--pid", "--kind", "-d", "--duration", "--depth", "--max-events", "--interval",
+        "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
+        "--top-types", "--retention-path-limit", "--symbol-path", "--dump-type", "--out", "--mvid",
+        "--asset", "--handle", "--view", "--provider-filter", "--root-method-filter", "--rank-by",
+        "--type-filter", "--max-depth", "--max-nodes", "--thread-id", "--stack-rank",
+        "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode",
+    };
+
     private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> CommandOptions =
         new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
         {
@@ -97,6 +107,7 @@ internal static class CliCompletionScripts
         var byteAssets = BashWords(CliCommands.ByteAssets);
         var dumpTypes = BashWords(CliCommands.DumpTypes);
         var shells = BashWords(Shells);
+        var valueFlags = BashWords(ValueFlags);
 
         return $$"""
         # bash completion for dotnet-diagnostics.
@@ -107,7 +118,7 @@ internal static class CliCompletionScripts
             cur="${COMP_WORDS[COMP_CWORD]}"
             prev="${COMP_WORDS[COMP_CWORD-1]}"
             command=""
-            local value_flags="-p --pid --kind -d --duration --depth --max-events --interval --provider --meter --source --category --min-level --save --dump-file --top-types --retention-path-limit --symbol-path --dump-type --out --mvid --asset --handle --view --provider-filter --root-method-filter --rank-by --type-filter --max-depth --max-nodes --thread-id --stack-rank --frames-to-hash --min-count --top --threshold --mode"
+            local value_flags="{{valueFlags}}"
             local skip_next=0
             for ((i = 1; i < COMP_CWORD; i++)); do
                 local word="${COMP_WORDS[i]}"
@@ -158,6 +169,17 @@ internal static class CliCompletionScripts
                     ;;
             esac
 
+            # A value-taking flag with no enum candidates was matched above; do not fall
+            # through to option completion (that would offer flags as the flag's value).
+            if [[ " $value_flags " == *" $prev "* ]]; then
+                case "$prev" in
+                    --save|--dump-file|--out|--symbol-path)
+                        COMPREPLY=( $(compgen -f -- "$cur") )
+                        ;;
+                esac
+                return 0
+            fi
+
             if [[ -z "$command" ]]; then
                 COMPREPLY=( $(compgen -W "{{commands}} {{globalOptions}}" -- "$cur") )
                 return 0
@@ -188,7 +210,7 @@ internal static class CliCompletionScripts
         # zsh completion for dotnet-diagnostics.
         _dotnet_diagnostics()
         {
-            local -a cli_commands global_options collect_kinds heap_sources byte_kinds byte_assets dump_types shells
+            local -a cli_commands global_options collect_kinds heap_sources byte_kinds byte_assets dump_types shells value_flags
             cli_commands=({{ZshWords(CliCommands.Commands)}})
             global_options=({{ZshWords(GlobalOptions)}})
             collect_kinds=({{ZshWords(CliCommands.CollectKinds)}})
@@ -197,6 +219,7 @@ internal static class CliCompletionScripts
             byte_assets=({{ZshWords(CliCommands.ByteAssets)}})
             dump_types=({{ZshWords(CliCommands.DumpTypes)}})
             shells=({{ZshWords(Shells)}})
+            value_flags=({{ZshWords(ValueFlags)}})
 
             case ${words[CURRENT-1]} in
                 --kind)
@@ -230,6 +253,15 @@ internal static class CliCompletionScripts
                     return
                     ;;
             esac
+
+            # A value-taking flag with no enum candidates was matched above; do not fall
+            # through to option completion (that would offer flags as the flag's value).
+            if (( ${value_flags[(Ie)${words[CURRENT-1]}]} )); then
+                case ${words[CURRENT-1]} in
+                    --save|--dump-file|--out|--symbol-path) _files ;;
+                esac
+                return
+            fi
 
             local command=""
             for word in ${words[2,CURRENT-1]}; do
@@ -277,7 +309,7 @@ internal static class CliCompletionScripts
             $byteAssets = {{PwshArray(CliCommands.ByteAssets)}}
             $dumpTypes = {{PwshArray(CliCommands.DumpTypes)}}
             $shells = {{PwshArray(Shells)}}
-            $valueFlags = @('-p', '--pid', '--kind', '-d', '--duration', '--depth', '--max-events', '--interval', '--provider', '--meter', '--source', '--category', '--min-level', '--save', '--dump-file', '--top-types', '--retention-path-limit', '--symbol-path', '--dump-type', '--out', '--mvid', '--asset', '--handle', '--view', '--provider-filter', '--root-method-filter', '--rank-by', '--type-filter', '--max-depth', '--max-nodes', '--thread-id', '--stack-rank', '--frames-to-hash', '--min-count', '--top', '--threshold', '--mode')
+            $valueFlags = {{PwshArray(ValueFlags)}}
             $tokens = @($commandAst.CommandElements | ForEach-Object { $_.Extent.Text })
             $command = $null
             $skipNext = $false
@@ -311,7 +343,13 @@ internal static class CliCompletionScripts
                 '--depth' { @('summary', 'detail', 'raw'); break }
                 '--mode' { @('trend', 'dispersion'); break }
                 default {
-                    if ($null -eq $command) {
+                    if ($valueFlags -contains $previous) {
+                        # A value-taking flag with no enum candidates; offer file paths for
+                        # path-like flags and nothing otherwise, never option flags.
+                        if ($previous -in @('--save', '--dump-file', '--out', '--symbol-path')) {
+                            Get-ChildItem -Name -ErrorAction SilentlyContinue
+                        }
+                    } elseif ($null -eq $command) {
                         $commands + $globalOptions
                     } elseif ($command -eq 'completion') {
                         $shells
