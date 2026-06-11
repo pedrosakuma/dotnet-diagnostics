@@ -225,7 +225,7 @@ internal static class CliHintProjection
     /// can attach — so it can never leak MCP vocabulary. The full structured capability matrix
     /// (off-CPU / perf / ptrace booleans) is still emitted verbatim in the <c>--json</c> envelope.
     /// </summary>
-    public static DiagnosticResult<DiagnosticCapabilities> ProjectCapabilities(DiagnosticResult<DiagnosticCapabilities> result)
+    public static DiagnosticResult<DiagnosticCapabilities> ProjectCapabilities(DiagnosticResult<DiagnosticCapabilities> result, bool launchedByCli = false)
     {
         ArgumentNullException.ThrowIfNull(result);
         if (result.Data is not { } caps)
@@ -233,7 +233,7 @@ internal static class CliHintProjection
             return result;
         }
 
-        var cliNotes = BuildCliCapabilityNotes(caps);
+        var cliNotes = BuildCliCapabilityNotes(caps, launchedByCli);
 
         // Core's capability summary embeds the original MCP-vocabulary Notes verbatim
         // (ProcessInspectionUseCases: "Runtime: … gcdump: …. {Notes}"). Swap that same substring for
@@ -247,7 +247,7 @@ internal static class CliHintProjection
         return result with { Summary = summary, Data = caps with { Notes = cliNotes } };
     }
 
-    internal static string BuildCliCapabilityNotes(DiagnosticCapabilities caps)
+    internal static string BuildCliCapabilityNotes(DiagnosticCapabilities caps, bool launchedByCli = false)
     {
         ArgumentNullException.ThrowIfNull(caps);
 
@@ -257,9 +257,23 @@ internal static class CliHintProjection
             parts.Add("Runtime flavor could not be classified (the EventPipe probe may have failed); inspect the capability flags in --json.");
         }
 
+        // Issue #365: when the CLI launched the target, this process is the target's ptrace parent, so
+        // descendant attach is permitted under ptrace_scope=1 even though the host-wide probe (which is
+        // ancestry-unaware) reports CanAttachClrMD=false. Report attach as available and never re-suggest
+        // --launch (we are already running under it).
+        var probe = new PtraceProbeResult(caps.CanAttachClrMD, Reason: string.Empty)
+        {
+            HasCapSysPtrace = caps.HasCapSysPtrace,
+            PtraceScope = caps.PtraceScope,
+        };
+
         if (caps.CanAttachClrMD)
         {
             parts.Add("Live attach for `inspect-heap --source live` and `dump` is available.");
+        }
+        else if (launchedByCli && PtraceProbe.ChildLaunchWouldUnblockAttach(probe))
+        {
+            parts.Add("Live attach for `inspect-heap --source live` and `dump` is available here: the CLI launched the target as a child, so this process is its ptrace parent (descendant attach is permitted under ptrace_scope=1).");
         }
         else
         {
@@ -270,6 +284,14 @@ internal static class CliHintProjection
             parts.Add(!string.IsNullOrWhiteSpace(reason) && !ContainsLeak(reason)
                 ? $"Live attach for `inspect-heap --source live` and `dump` is unavailable: {reason}"
                 : "Live attach for `inspect-heap --source live` and `dump` is unavailable.");
+
+            // Under Yama ptrace_scope=1 without CAP_SYS_PTRACE, re-launching the target as a child of the
+            // CLI unblocks attach with zero privilege. Only advertise it when the detected environment is
+            // exactly that case (and we are not already running under --launch).
+            if (PtraceProbe.ChildLaunchWouldUnblockAttach(probe))
+            {
+                parts.Add("Tip: re-launch the target under the CLI to make this process its ptrace parent — `--launch -- <app> [args]` (e.g. `inspect-heap --launch -- dotnet App.dll` or `session --launch -- dotnet App.dll`) — which permits live attach here without privilege or a host sysctl change.");
+            }
         }
 
         return string.Join(" ", parts);

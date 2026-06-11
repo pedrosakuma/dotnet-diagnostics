@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Hosting;
+using DotnetDiagnostics.Core.Launch;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Symbols;
 using Microsoft.Extensions.Configuration;
@@ -154,21 +155,61 @@ internal static class CliHost
             return 2;
         }
 
+        if (!CliCommands.TryValidateLaunch(options, out var launchValidationError))
+        {
+            await stderr.WriteLineAsync(launchValidationError).ConfigureAwait(false);
+            await stderr.WriteLineAsync().ConfigureAwait(false);
+            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+            return 2;
+        }
+
         // The stateful session REPL builds the host ONCE (shared singletons — the handle store that
         // makes drill-down possible must outlive every command) and reads commands from stdin until
         // exit/EOF. It owns a per-command artifact root via a MutableArtifactRootProvider.
         if (options.Command == "session")
         {
+            LaunchedTarget? sessionTarget = null;
+            int? initialTargetPid = null;
+            if (options.Launch)
+            {
+                var (target, pid, launchError, cancelled) = await LaunchAndWaitAsync(options, stdout, stderr, cancellationToken).ConfigureAwait(false);
+                if (cancelled)
+                {
+                    await stderr.WriteLineAsync($"dotnet-diagnostics-cli {options.Command}: cancelled before the launched target was ready — child terminated.")
+                        .ConfigureAwait(false);
+                    return 130;
+                }
+
+                if (launchError is not null)
+                {
+                    if (target is not null)
+                    {
+                        await target.DisposeAsync().ConfigureAwait(false);
+                    }
+
+                    await stderr.WriteLineAsync(launchError).ConfigureAwait(false);
+                    return 1;
+                }
+
+                sessionTarget = target;
+                initialTargetPid = pid;
+            }
+
             var sessionRoot = Path.Combine(Path.GetTempPath(), $"dotnet-diagnostics-session-{Guid.NewGuid():N}");
             var artifactProvider = new MutableArtifactRootProvider(sessionRoot);
             using var sessionHost = BuildHost(artifactProvider);
             try
             {
                 return await SessionRepl.RunAsync(
-                    sessionHost.Services, artifactProvider, stdin, stdout, stderr, cancellationToken).ConfigureAwait(false);
+                    sessionHost.Services, artifactProvider, stdin, stdout, stderr, initialTargetPid, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
+                if (sessionTarget is not null)
+                {
+                    await sessionTarget.DisposeAsync().ConfigureAwait(false);
+                }
+
                 TryDeleteDirectory(sessionRoot);
             }
         }
@@ -211,6 +252,36 @@ internal static class CliHost
             await stderr.WriteLineAsync().ConfigureAwait(false);
             await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
             return 2;
+        }
+
+        // Opt-in `--launch` dev mode (issue #365): spawn the target as a child of this process so the
+        // ClrMD live-attach commands are permitted under Yama ptrace_scope=1 without privilege. The
+        // launched pid becomes the effective --pid for this one-shot command; the child is terminated
+        // when the command returns.
+        LaunchedTarget? launchedTarget = null;
+        if (options.Launch)
+        {
+            var (target, pid, launchError, cancelled) = await LaunchAndWaitAsync(options, stdout, stderr, cancellationToken).ConfigureAwait(false);
+            if (cancelled)
+            {
+                await stderr.WriteLineAsync($"dotnet-diagnostics-cli {options.Command}: cancelled before the launched target was ready — child terminated.")
+                    .ConfigureAwait(false);
+                return 130;
+            }
+
+            if (launchError is not null)
+            {
+                if (target is not null)
+                {
+                    await target.DisposeAsync().ConfigureAwait(false);
+                }
+
+                await stderr.WriteLineAsync(launchError).ConfigureAwait(false);
+                return 1;
+            }
+
+            launchedTarget = target;
+            options = options with { Pid = pid, Launch = false, LaunchedByCli = true };
         }
 
         using var host = BuildHost(options);
@@ -261,6 +332,106 @@ internal static class CliHost
                 .ConfigureAwait(false);
             return 130;
         }
+        finally
+        {
+            if (launchedTarget is not null)
+            {
+                await launchedTarget.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>Maximum time to wait for a launched child's diagnostic endpoint to come up.</summary>
+    private static readonly TimeSpan LaunchReadinessTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Launches the target named in <see cref="CliOptions.LaunchArgs"/> as a child of this process and
+    /// waits for its diagnostic endpoint. Returns the owned <see cref="LaunchedTarget"/> (so the caller
+    /// can dispose it even on the error paths) plus the child pid, or a non-null error string. The
+    /// launch banner is written to <paramref name="stdout"/> so it never contaminates a <c>--json</c>
+    /// payload (which goes to the result, written later).
+    /// </summary>
+    private static async Task<(LaunchedTarget? Target, int Pid, string? Error, bool Cancelled)> LaunchAndWaitAsync(
+        CliOptions options,
+        TextWriter stdout,
+        TextWriter stderr,
+        CancellationToken cancellationToken)
+    {
+        var program = options.LaunchArgs[0];
+        var argv = new string[options.LaunchArgs.Count - 1];
+        for (var i = 1; i < options.LaunchArgs.Count; i++)
+        {
+            argv[i - 1] = options.LaunchArgs[i];
+        }
+
+        LaunchedTarget target;
+        try
+        {
+            // In --json mode pump the child's console to stderr so stdout carries only the envelope;
+            // otherwise let the child inherit the console for real-time, interactive output.
+            var consoleSink = options.Json ? stderr : null;
+            target = ChildProcessLauncher.Launch(program, argv, consoleSink);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return (null, 0, ex.Message, false);
+        }
+
+        await stderr.WriteLineAsync(string.Create(
+            CultureInfo.InvariantCulture,
+            $"Launched '{program}' as child pid {target.ProcessId}; waiting up to {LaunchReadinessTimeout.TotalSeconds:N0}s for its diagnostic endpoint…"))
+            .ConfigureAwait(false);
+
+        // The session path passes CancellationToken.None (the REPL only owns Ctrl-C AFTER startup), so
+        // the launch-wait would otherwise be uninterruptible — a Ctrl-C here would hard-terminate the
+        // CLI and orphan the freshly-launched child (AppDomain.ProcessExit does NOT run on SIGINT for a
+        // plain console app). Install a temporary cooperative Ctrl-C handler scoped to the wait so
+        // cancellation always disposes the child. Only hook the real console (tests inject writers).
+        using var launchCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var ownsConsole = ReferenceEquals(stdout, Console.Out) || ReferenceEquals(stderr, Console.Error);
+        ConsoleCancelEventHandler? cancelHandler = null;
+        if (ownsConsole)
+        {
+            cancelHandler = (_, e) =>
+            {
+                e.Cancel = true;
+                // ReSharper disable once AccessToDisposedClosure — removed in the finally below, before launchCts is disposed.
+                launchCts.Cancel();
+            };
+            Console.CancelKeyPress += cancelHandler;
+        }
+
+        bool ready;
+        try
+        {
+            ready = await ChildProcessLauncher
+                .WaitForDiagnosticEndpointAsync(target.ProcessId, LaunchReadinessTimeout, launchCts.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Ctrl-C (or a cancelled caller token) while waiting for the child to come up: terminate the
+            // freshly-launched child so it never outlives the cancelled invocation.
+            await target.DisposeAsync().ConfigureAwait(false);
+            return (null, 0, null, true);
+        }
+        finally
+        {
+            if (cancelHandler is not null)
+            {
+                Console.CancelKeyPress -= cancelHandler;
+            }
+        }
+
+        if (!ready)
+        {
+            var reason = target.HasExited
+                ? $"Launched target (pid {target.ProcessId}) exited before exposing a diagnostic endpoint. Launch the app directly (e.g. 'dotnet App.dll' or a published apphost), not via 'dotnet run'."
+                : string.Create(CultureInfo.InvariantCulture, $"Launched target (pid {target.ProcessId}) did not expose a diagnostic endpoint within {LaunchReadinessTimeout.TotalSeconds:N0}s.");
+            return (target, target.ProcessId, reason, false);
+        }
+
+        return (target, target.ProcessId, null, false);
     }
 
     /// <summary>

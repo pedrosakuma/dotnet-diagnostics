@@ -6,7 +6,7 @@ namespace DotnetDiagnostics.Cli;
 /// only ships the read-only <c>processes</c> and <c>capabilities</c> commands; the collection /
 /// heap / dump / drilldown flags arrive as those commands are wired in later PRs.
 /// </summary>
-internal sealed class CliOptions
+internal sealed record CliOptions
 {
     /// <summary>The sub-command (e.g. <c>processes</c>), or null when none was supplied.</summary>
     public string? Command { get; init; }
@@ -147,6 +147,29 @@ internal sealed class CliOptions
     public int? Threshold { get; init; }
 
     /// <summary>
+    /// Opt-in <c>--launch</c> dev mode (issue #365): re-launch the target as a child of the CLI so
+    /// ClrMD live attach is permitted under Yama <c>ptrace_scope=1</c> with zero privilege. The program
+    /// and its arguments are everything after the <c>--</c> separator (see <see cref="LaunchArgs"/>).
+    /// </summary>
+    public bool Launch { get; init; }
+
+    /// <summary>
+    /// The launch argv captured after <c>--</c> (<see cref="Launch"/> mode). The first element is the
+    /// program to spawn (e.g. <c>dotnet</c>); the rest are its arguments (e.g. <c>App.dll</c>). Empty
+    /// when <c>--launch</c> was not supplied.
+    /// </summary>
+    public IReadOnlyList<string> LaunchArgs { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Set by the CLI (not by argument parsing) once it has launched the target as a child and rebound
+    /// <see cref="Pid"/> to it. Signals downstream projection (e.g. the capability note) that this
+    /// process is the target's ptrace parent, so descendant attach is available under
+    /// <c>ptrace_scope=1</c> — preventing a misleading "live attach unavailable" note that re-suggests
+    /// <c>--launch</c> while already running under it (issue #365).
+    /// </summary>
+    public bool LaunchedByCli { get; init; }
+
+    /// <summary>
     /// Parses <paramref name="args"/>. Returns a populated <see cref="CliOptions"/> on success, or
     /// <c>null</c> with a non-null <paramref name="error"/> describing the first usage problem.
     /// </summary>
@@ -201,10 +224,25 @@ internal sealed class CliOptions
         int? minCount = null;
         int? top = null;
         int? threshold = null;
+        var launch = false;
+        List<string>? launchArgs = null;
 
         for (var i = 0; i < args.Count; i++)
         {
             var token = args[i];
+
+            // Everything after a bare `--` is the launch argv (program + its args); stop option parsing.
+            if (token == "--")
+            {
+                launchArgs = new List<string>(args.Count - i - 1);
+                for (var j = i + 1; j < args.Count; j++)
+                {
+                    launchArgs.Add(args[j]);
+                }
+
+                break;
+            }
+
             switch (token)
             {
                 case "--help":
@@ -242,6 +280,9 @@ internal sealed class CliOptions
                     break;
                 case "--changes-only":
                     changesOnly = true;
+                    break;
+                case "--launch":
+                    launch = true;
                     break;
                 case "--pid":
                 case "-p":
@@ -589,6 +630,8 @@ internal sealed class CliOptions
             MinCount = minCount,
             Top = top,
             Threshold = threshold,
+            Launch = launch,
+            LaunchArgs = launchArgs ?? (IReadOnlyList<string>)Array.Empty<string>(),
         };
     }
 

@@ -159,6 +159,30 @@ public static class PtraceProbe
         };
     }
 
+    /// <summary>
+    /// Decides whether re-launching the target as a <b>child</b> of the diagnostics process would
+    /// unblock the ClrMD-backed live-attach tools in the environment <paramref name="result"/>
+    /// describes. This is the precise gate the standalone CLI's opt-in <c>--launch</c> dev mode keys
+    /// off (issue #365) — and the gate that decides whether to <i>advertise</i> the mode.
+    /// </summary>
+    /// <remarks>
+    /// <para>Child-launch only helps on Linux, and only under Yama <c>ptrace_scope=1</c> with
+    /// <c>CAP_SYS_PTRACE</c> absent: scope=1 is the one level that permits an unprivileged tracer to
+    /// <c>PTRACE_ATTACH</c> to its own descendants. Under scope=2 (admin-only) <c>PTRACE_ATTACH</c>
+    /// still requires the capability regardless of ancestry — the only unprivileged path there is
+    /// <c>PR_SET_PTRACER</c>/<c>PTRACE_TRACEME</c>, which ClrMD does not use — and scope=3 forbids
+    /// attach entirely. When the probe already reports <see cref="PtraceProbeResult.CanAttach"/> there
+    /// is nothing to unblock.</para>
+    /// </remarks>
+    public static bool ChildLaunchWouldUnblockAttach(PtraceProbeResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        return OperatingSystem.IsLinux()
+            && !result.CanAttach
+            && !result.HasCapSysPtrace
+            && result.PtraceScope == 1;
+    }
+
     private static bool TryReadCapSysPtrace(Func<string, string> readAllText)
     {
         try

@@ -79,6 +79,23 @@ internal static class CliCommands
     public static readonly IReadOnlyList<string> DumpTypes = new[] { "Mini", "Triage", "WithHeap", "Full" };
 
     /// <summary>
+    /// Commands the opt-in <c>--launch</c> dev mode (issue #365) supports: the live-target commands
+    /// whose attach is unblocked by the CLI becoming the target's ptrace parent, plus <c>session</c>
+    /// (which launches once and binds the child for the whole REPL). <c>inspect-heap --source dump</c>,
+    /// <c>get-bytes --kind dump</c>, <c>processes</c>, <c>query</c> and <c>compare</c> are offline /
+    /// pid-less and reject <c>--launch</c>.
+    /// </summary>
+    public static readonly IReadOnlyList<string> LaunchableCommands = new[]
+    {
+        "session",
+        "capabilities",
+        "collect",
+        "dump",
+        "inspect-heap",
+        "get-bytes",
+    };
+
+    /// <summary>
     /// EventPipe collection kinds accepted by the <c>collect</c> command (issue #288 PR2). Mirrors
     /// the MCP <c>collect_events</c> discriminator set so both front-ends accept the same kinds.
     /// </summary>
@@ -247,6 +264,63 @@ internal static class CliCommands
     }
 
     /// <summary>
+    /// Validates the opt-in <c>--launch</c> dev mode (issue #365), independent of the per-command
+    /// option checks. Enforces that the <c>--</c> launch argv and the <c>--launch</c> flag are used
+    /// together, that <c>--launch</c> is mutually exclusive with <c>--pid</c> (the CLI supplies the
+    /// child's pid), and that the command actually targets a live process the child relationship can
+    /// unblock. Commands that pass no <c>--launch</c> and no <c>--</c> argv are accepted unchanged.
+    /// </summary>
+    public static bool TryValidateLaunch(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+
+        if (!options.Launch)
+        {
+            if (options.LaunchArgs.Count > 0)
+            {
+                error = "Launch arguments after '--' require --launch (e.g. --launch -- dotnet App.dll).";
+                return false;
+            }
+
+            return true;
+        }
+
+        if (options.LaunchArgs.Count == 0)
+        {
+            error = "--launch requires a program after '--', e.g. --launch -- dotnet App.dll.";
+            return false;
+        }
+
+        if (options.Pid is not null)
+        {
+            error = "--launch cannot be combined with --pid: the CLI launches the target and binds its pid.";
+            return false;
+        }
+
+        if (!LaunchableCommands.Contains(options.Command, StringComparer.Ordinal))
+        {
+            error = $"--launch is not supported by '{options.Command}'. Supported: {string.Join(", ", LaunchableCommands)}.";
+            return false;
+        }
+
+        if (options.Command == "inspect-heap"
+            && (options.DumpFile is not null || options.Sources.Contains("dump", StringComparer.Ordinal)))
+        {
+            error = "--launch applies to a live target; it cannot be combined with inspect-heap --source dump.";
+            return false;
+        }
+
+        if (options.Command == "get-bytes" && string.Equals(options.Kind, "dump", StringComparison.Ordinal))
+        {
+            error = "--launch applies to a live target; it cannot be combined with get-bytes --kind dump.";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// Validates the <c>inspect-heap</c>-specific options before the host is built. Returns
     /// <c>true</c> when well-formed; otherwise sets <paramref name="error"/>.
     /// </summary>
@@ -402,7 +476,7 @@ internal static class CliCommands
 
         // Swap Core's MCP-audience capability narrative for a CLI-authored note before rendering, so
         // neither the human table nor the --json envelope leaks MCP tool names (#302).
-        result = CliHintProjection.ProjectCapabilities(result);
+        result = CliHintProjection.ProjectCapabilities(result, options.LaunchedByCli);
 
         return BuildResult(result, static (sb, caps) =>
         {

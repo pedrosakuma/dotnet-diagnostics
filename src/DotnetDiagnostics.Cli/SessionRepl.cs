@@ -50,8 +50,16 @@ internal sealed class SessionRepl
     // --pid inherit it so the user supplies the pid once per session instead of per command.
     private int? _targetPid;
 
-    private SessionRepl(CancellationToken externalToken)
-        => _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
+    // Set when the session itself launched the target (issue #365, `session --launch -- <app>`), so
+    // the opening banner can explain the bound pid came from the launched child.
+    private readonly bool _launchedTarget;
+
+    private SessionRepl(int? initialTargetPid, CancellationToken externalToken)
+    {
+        _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
+        _targetPid = initialTargetPid;
+        _launchedTarget = initialTargetPid is not null;
+    }
 
     public static Task<int> RunAsync(
         IServiceProvider services,
@@ -59,6 +67,7 @@ internal sealed class SessionRepl
         TextReader stdin,
         TextWriter stdout,
         TextWriter stderr,
+        int? initialTargetPid,
         CancellationToken externalToken)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -67,7 +76,7 @@ internal sealed class SessionRepl
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(stderr);
 
-        var repl = new SessionRepl(externalToken);
+        var repl = new SessionRepl(initialTargetPid, externalToken);
         return repl.LoopAsync(services, artifactProvider, stdin, stdout, stderr);
     }
 
@@ -99,6 +108,12 @@ internal sealed class SessionRepl
         try
         {
             await stdout.WriteLineAsync(Banner).ConfigureAwait(false);
+            if (_launchedTarget && _targetPid is { } launchedPid)
+            {
+                await stdout.WriteLineAsync(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Launched target bound to pid {launchedPid} (this process is its ptrace parent, so live attach works without privilege). 'target clear' to unbind.")).ConfigureAwait(false);
+            }
 
             while (!_sessionCts.IsCancellationRequested)
             {
@@ -214,6 +229,12 @@ internal sealed class SessionRepl
             return;
         }
 
+        if (options.Launch || options.LaunchArgs.Count > 0)
+        {
+            await stderr.WriteLineAsync("--launch is only available at session startup ('session --launch -- <app>'); inside a session the target is already live — use 'target <pid>' to switch.").ConfigureAwait(false);
+            return;
+        }
+
         // Apply the session-bound target pid to live-target commands that omitted --pid (strand C).
         // We append the flag to the token list and re-parse rather than clone CliOptions (a class with
         // ~30 init-only properties). Validation then runs against the effective options.
@@ -237,6 +258,14 @@ internal sealed class SessionRepl
         {
             await stderr.WriteLineAsync(validationError).ConfigureAwait(false);
             return;
+        }
+
+        // Issue #365: when the session launched the target and this command resolves to that pid, mark
+        // the options so the capability note reports descendant-attach availability instead of
+        // re-suggesting --launch.
+        if (_launchedTarget && options.Pid is { } resolvedPid && resolvedPid == _targetPid)
+        {
+            options = options with { LaunchedByCli = true };
         }
 
         if (inheritedTarget && !options.Json)
