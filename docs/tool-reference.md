@@ -238,9 +238,11 @@ in each row.
 comparison ignores journey mode because it still returns the older two-summary `SummaryDiff`.
 
 For compact dispersion summaries, metric series are ranked by their dispersion coefficient of
-variation. Key-set rows are likewise ranked by coefficient of variation computed from row values
-at presentation time. `KeyMatrixRow` does not persist per-row dispersion statistics yet; richer
-row-level stats are a future enhancement.
+variation. Key-set rows are likewise ranked by coefficient of variation. In `dispersion` mode each
+`KeyMatrixRow` persists a per-row `Dispersion` (`min`/`max`/`median`/`mean`/`stdDev`/
+`coefficientOfVariation`/`outlierIndex`) computed once over the row's per-capture values, mirroring
+`MetricSeries.Dispersion`; it is `null` in `trend` mode. Ranking and verdict reuse this persisted
+value rather than recomputing it.
 
 For an end-to-end comparative workflow (before/after and N-way trend journeys, verdict and
 trend interpretation, and the two doors) see

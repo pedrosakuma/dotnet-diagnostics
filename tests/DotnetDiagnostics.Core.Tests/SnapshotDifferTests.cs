@@ -228,6 +228,36 @@ public sealed class SnapshotDifferTests
     }
 
     [Fact]
+    public void KeySet_Dispersion_PersistsPerRowDispersionStats()
+    {
+        var diff = SnapshotDiffer.Compare(new[]
+        {
+            KeySnap("pod0", ("A", 10)),
+            KeySnap("pod1", ("A", 10)),
+            KeySnap("pod2", ("A", 50)),
+        }, JourneyMode.Dispersion);
+
+        var row = diff.KeyMatrix.Single();
+        row.Dispersion.Should().NotBeNull();
+        row.Dispersion!.Min.Should().Be(10);
+        row.Dispersion.Max.Should().Be(50);
+        row.Dispersion.CoefficientOfVariation.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public void KeySet_Trend_LeavesPerRowDispersionNull()
+    {
+        var diff = SnapshotDiffer.Compare(new[]
+        {
+            KeySnap("base", ("A", 10), ("B", 5)),
+            KeySnap("after", ("A", 5), ("B", 5)),
+        });
+
+        diff.KeyMatrix.Should().NotBeEmpty();
+        diff.KeyMatrix.Should().OnlyContain(r => r.Dispersion == null);
+    }
+
+    [Fact]
     public void KeySet_Dispersion_OutlierRowAcrossReplicas_IsDispersed()
     {
         var diff = SnapshotDiffer.Compare(new[]

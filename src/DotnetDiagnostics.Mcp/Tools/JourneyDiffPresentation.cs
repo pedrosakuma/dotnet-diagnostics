@@ -197,7 +197,7 @@ internal static class JourneyDiffPresentation
         if (mode == JourneyMode.Dispersion)
         {
             return rows
-                .OrderByDescending(r => CoefficientOfVariation(r.Values))
+                .OrderByDescending(r => r.Dispersion?.CoefficientOfVariation ?? -1)
                 .ThenBy(r => r.DisplayName, StringComparer.Ordinal)
                 .Take(topN)
                 .ToArray();
@@ -212,27 +212,4 @@ internal static class JourneyDiffPresentation
     }
 
     private static double AbsOrMinusOne(double? value) => value.HasValue ? Math.Abs(value.Value) : -1;
-
-    private static double CoefficientOfVariation(IReadOnlyList<double?> values)
-    {
-        var observed = values
-            .Where(static v => v.HasValue)
-            .Select(static v => v!.Value)
-            .ToArray();
-        if (observed.Length < 2)
-        {
-            return -1;
-        }
-
-        var mean = observed.Average();
-        var variance = observed.Select(v => Math.Pow(v - mean, 2)).Average();
-        var stdDev = Math.Sqrt(variance);
-        var denominator = Math.Abs(mean);
-        if (denominator > 0)
-        {
-            return stdDev / denominator;
-        }
-
-        return stdDev == 0 ? 0 : double.PositiveInfinity;
-    }
 }
