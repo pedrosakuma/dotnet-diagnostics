@@ -11,6 +11,28 @@ public sealed record GcEvent(
     string Type,
     TimeSpan PauseDuration);
 
+/// <summary>
+/// A per-collection <c>GCHeapStats</c> sample: per-generation heap sizes, promoted bytes,
+/// pinned-object and GC-handle counts, and finalization survivors. Emitted once per GC on
+/// CoreCLR / R2R / NativeAOT. <see cref="PohSizeBytes"/> / <see cref="PohPromotedBytes"/> are
+/// populated only by the V2 event (pinned object heap) and are 0 on runtimes that emit V1.
+/// </summary>
+public sealed record GcHeapStatsSample(
+    DateTimeOffset Timestamp,
+    long Gen0SizeBytes,
+    long Gen1SizeBytes,
+    long Gen2SizeBytes,
+    long LohSizeBytes,
+    long PohSizeBytes,
+    long TotalHeapSizeBytes,
+    long TotalPromotedBytes,
+    long Gen2PromotedBytes,
+    long PohPromotedBytes,
+    long FinalizationPromotedBytes,
+    long FinalizationPromotedCount,
+    long PinnedObjectCount,
+    long GcHandleCount);
+
 /// <summary>Aggregated GC activity over a window.</summary>
 public sealed record GcSummary(
     int ProcessId,
@@ -20,4 +42,5 @@ public sealed record GcSummary(
     TimeSpan TotalPauseTime,
     TimeSpan MaxPauseTime,
     IReadOnlyList<GenerationStats> Generations,
-    IReadOnlyList<GcEvent> Events);
+    IReadOnlyList<GcEvent> Events,
+    IReadOnlyList<GcHeapStatsSample>? HeapStats = null);

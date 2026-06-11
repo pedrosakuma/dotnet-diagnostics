@@ -194,7 +194,7 @@ Views available per `kind`:
 |---|---|---|
 | `counters` | `collect_events(kind="counters")` | `summary` (default), `byProvider` |
 | `exception-snapshot` | `collect_events(kind="exceptions")` | `summary` (default = `byType.Take(topN)`), `byType`, `recent` |
-| `gc-events` | `collect_events(kind="gc")` | `summary` (default), `events`, `pauseHistogram`, `timeline`, `longestPauses`, `byGeneration` |
+| `gc-events` | `collect_events(kind="gc")` | `summary` (default), `events`, `pauseHistogram`, `timeline`, `longestPauses`, `byGeneration`, `heap-stats` |
 | `gc-datas` | `collect_events(kind="datas")` | `overview` (default), `tuning` (honours `changesOnly`), `samples`, `gen2` |
 | `event-catalog` | `collect_events(kind="catalog")` | `catalog` (default), `byProvider`, `events` |
 | `activities` | `collect_events(kind="activities")` | `summary` (default), `bySource`, `byOperation`, `activities` |
@@ -274,6 +274,15 @@ cross-reference). `byGeneration` reports `Count` + total/mean/max pause per gene
 (`gen0`/`gen1`/`gen2`/`background`); background GCs form their own mutually-exclusive bucket, so
 `gen2` counts non-background gen2 collections only. Note these views describe only the events
 retained on the artifact (the collector caps at `maxEvents`).
+
+The `heap-stats` view (issue #384) re-projects the per-collection `GCHeapStats` samples retained
+behind the same `gc-events` handle — no new collection. Each sample carries the per-generation heap
+sizes (`Gen0`/`Gen1`/`Gen2`/`Loh`/`Poh`), total heap and promoted bytes, finalization survivors, and
+the `PinnedObjectCount` / `GcHandleCount`. The view returns the chronological samples (earliest
+`topN`) plus a `Trend` block with the first→last deltas for gen2, LOH, POH, total heap, pinned-object
+count, and GC-handle count — the classic signal for a slow managed leak or pinning pressure that pause
+data alone misses. `Poh*` fields are populated only by the V2 event (pinned object heap) and are 0 on
+runtimes that emit the V1 event.
 
 The event-catalog views (`catalog`, `byProvider`, `events`) answer "what events does this app
 emit?" without exposing EventSource payload values. `collect_events(kind="catalog")` enables a
