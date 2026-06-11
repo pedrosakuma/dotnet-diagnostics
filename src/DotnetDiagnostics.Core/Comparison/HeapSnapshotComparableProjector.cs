@@ -60,9 +60,16 @@ public sealed class HeapSnapshotComparableProjector : IComparableProjector
         var result = new Dictionary<TypeIdentity, HeapDiffMetric>(ComparablePairwiseSampleDiff.TypeIdentityComparer.Instance);
         foreach (var row in aggregates.Values)
         {
-            result[row.Identity] = new HeapDiffMetric(
-                TotalBytes: row.TotalBytes,
-                InstanceCount: row.InstanceCount);
+            // BuildAggregates groups by module-bearing matchId, but the legacy typed diff keyed
+            // on TypeIdentityComparer (name-only fallback). Merge with Math.Max on collision so
+            // same-named types from different modules collapse identically to the old SampleDiffer.
+            result[row.Identity] = result.TryGetValue(row.Identity, out var existing)
+                ? new HeapDiffMetric(
+                    TotalBytes: Math.Max(existing.TotalBytes, row.TotalBytes),
+                    InstanceCount: Math.Max(existing.InstanceCount, row.InstanceCount))
+                : new HeapDiffMetric(
+                    TotalBytes: row.TotalBytes,
+                    InstanceCount: row.InstanceCount);
         }
 
         return result;

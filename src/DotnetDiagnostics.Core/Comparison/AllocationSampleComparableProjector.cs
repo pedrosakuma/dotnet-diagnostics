@@ -65,12 +65,21 @@ public sealed class AllocationSampleComparableProjector : IComparableProjector
         var result = new Dictionary<TypeIdentity, AllocationDiffMetric>(ComparablePairwiseSampleDiff.TypeIdentityComparer.Instance);
         foreach (var row in aggregates.Values)
         {
-            result[row.Identity] = new AllocationDiffMetric(
-                TotalBytes: row.TotalBytes,
-                AllocCount: row.AllocCount,
-                BytesPerSecond: row.BytesPerSecond,
-                AllocCountPerSecond: row.AllocCountPerSecond,
-                DurationSeconds: row.DurationSeconds);
+            // See HeapSnapshotComparableProjector.ProjectTyped: collapse comparer-equal (same name,
+            // different module, no exact identity) rows with Math.Max to match the old SampleDiffer.
+            result[row.Identity] = result.TryGetValue(row.Identity, out var existing)
+                ? new AllocationDiffMetric(
+                    TotalBytes: Math.Max(existing.TotalBytes, row.TotalBytes),
+                    AllocCount: Math.Max(existing.AllocCount, row.AllocCount),
+                    BytesPerSecond: Math.Max(existing.BytesPerSecond, row.BytesPerSecond),
+                    AllocCountPerSecond: Math.Max(existing.AllocCountPerSecond, row.AllocCountPerSecond),
+                    DurationSeconds: row.DurationSeconds)
+                : new AllocationDiffMetric(
+                    TotalBytes: row.TotalBytes,
+                    AllocCount: row.AllocCount,
+                    BytesPerSecond: row.BytesPerSecond,
+                    AllocCountPerSecond: row.AllocCountPerSecond,
+                    DurationSeconds: row.DurationSeconds);
         }
 
         return result;
