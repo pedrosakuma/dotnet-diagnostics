@@ -2,8 +2,28 @@
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-06-11
+
+Highlights: **Phase 12 Wave A (ergonomics/quick-wins) + Wave B (collectors)**. Five
+new application-semantics collectors and CLI/MCP ergonomics improvements, all additive
+(no new tools, no breaking changes) — every item extends an existing `kind`/`view`/hint.
+
 ### Added
-- **Phase 12 Wave 1: Smart Auto-Hints** — `collect_events(kind="counters")` now surfaces
+- **Phase 12 Wave B — `collect_events(kind="networking")`**: curated outbound-network view over the
+  stable `System.Net.Http` / `System.Net.NameResolution` / `System.Net.Security` / `System.Net.Sockets`
+  EventSources — HTTP request/connection counts + latency tails, HttpClient connection-pool
+  **time-in-queue** (the #1 outbound-HTTP saturation signal), DNS, TLS handshake, and socket-connect
+  stats. Drill in with `query_snapshot(handle, view="byOperation|queue|tls|dns")` (HTTP grouped by host + path).
+- **Phase 12 Wave B — `collect_events(kind="startup")`**: cold-start/loader profiler capturing
+  assembly + module loader events and `Microsoft-Extensions-DependencyInjection` build activity.
+  Drill in with `query_snapshot(handle, view="assemblies|modules|di|timeline")`. Note: attaching to an
+  already-running process misses pre-attach cold-start; true cold-start needs EventPipe enabled at launch.
+- **Phase 12 Wave B — `collect_events(kind="kestrel")`**: Kestrel request-pipeline collector with
+  connection/request/TLS latency, queue-length timeline, and the live `KestrelServerOptions` config.
+  Drill in with `query_snapshot(handle, view="byOperation|queues|tls|config")`.
+- **Phase 12 Wave B — CLI shell completion**: `dotnet-diagnostics completion bash|zsh|pwsh` emits
+  shell-completion scripts for sub-commands, kinds, and options.
+- **Phase 12 Wave A — Smart Auto-Hints** — `collect_events(kind="counters")` now surfaces
   automatic `NextActionHints` based on counter thresholds, reducing triage steps from 6+ to 2-3:
   - `cpu-usage > 70%` → `collect_sample` (CPU hotspot)
   - `threadpool-queue-length > 50` → hints for `kind="threadpool"` (starvation likely)
@@ -12,13 +32,16 @@
   - `monitor-lock-contention-count > 10` → hints for `kind="contention"` (lock storms)
   - Low CPU (< 30%) + queue buildup (> 10) → `collect_thread_snapshot` + `kind="activities"` (I/O bound)
   - Headlines now include `time-in-gc` and `alloc-rate` counters (was 12, now 14).
-- **Phase 12 Wave 2: Triage View** — `inspect_process(view="triage")` is a single IoT-style
+- **Phase 12 Wave A — Triage View** — `inspect_process(view="triage")` is a single
   call that collects counters (5s), classifies the workload, and returns actionable hints:
   - Verdicts: `cpu-bound`, `gc-pressure`, `threadpool-starvation`, `lock-contention`, `io-bound`, `healthy`
   - Severity: `Critical`, `Degraded`, `Healthy`
   - Evidence: key counters that drove the classification
   - SecondaryVerdicts: additional issues detected (e.g., gc-pressure + contention)
   - The LLM just follows the first hint — no interpretation needed.
+- **Phase 12 Wave A** — `query_snapshot(view="gc-events")` adds a per-generation GCHeapStats +
+  pinned-object trend view; CLI ergonomics (progress spinner, one-shot `query` redirect, artifact-path
+  disclosure); trimmed unified-tool `[Description]` bloat for token economy.
 - `inspect_process(view="runtime-config")` now reports best-effort GC / ThreadPool startup settings, tiered-compilation env overrides, filtered runtime environment variables, and a forward-compatible `appContextSwitches` field. **Security boundary:** `envVars[]` is strictly filtered to `DOTNET_`, `COMPlus_`, `ASPNETCORE_`, and `DOTNET_SYSTEM_` prefixes so secrets like `*_TOKEN` / `*_KEY` outside those prefixes are never exposed.
 - `collect_events(kind="contention")` adds a curated CLR lock-contention view over `Microsoft-Windows-DotNETRuntime` with wait-duration percentiles, `query_snapshot(handle, view="summary|byCallSite|byOwner")` drilldown, and a new `/lock-storm?seconds=N&blockers=M` `BadCodeSample` fixture for reproducing monitor storms.
 - `query_snapshot(handle, view="async-stalls")` now classifies async-looking thread stacks into `SyncOverAsync`, `ChannelAwait`, `TcsPending`, `SemaphoreAwait`, `Delay`, and `Unknown`, and `samples/BadCodeSample` exposes `/async-stall?bucket=tcs|channel|sync-over-async|semaphore&seconds=N` for live repros.
