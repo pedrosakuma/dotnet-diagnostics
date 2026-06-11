@@ -1241,11 +1241,11 @@ internal static class CliCommands
     {
         var top = mode == JourneyMode.Dispersion
             ? rows
-                .Select(r => (Row: r, Stats: DispersionStatsFor(r.Values)))
-                .Where(r => r.Stats.Cv >= 0)
-                .OrderByDescending(r => r.Stats.Cv)
-                .ThenBy(r => r.Row.DisplayName, StringComparer.Ordinal)
+                .Where(r => r.Dispersion is not null)
+                .OrderByDescending(r => r.Dispersion!.CoefficientOfVariation)
+                .ThenBy(r => r.DisplayName, StringComparer.Ordinal)
                 .Take(5)
+                .Select(r => (Row: r, Stats: (Cv: r.Dispersion!.CoefficientOfVariation, r.Dispersion.OutlierIndex)))
                 .ToArray()
             : rows
                 .Where(r => r.DeltaAbs.HasValue || r.DeltaPct.HasValue)
@@ -1273,51 +1273,6 @@ internal static class CliCommands
             sb.AppendLine(CultureInfo.InvariantCulture,
                 $"    - {row.DisplayName}: {FormatNumber(FirstValue(row.Values))} → {FormatNumber(LastValue(row.Values))} (Δ {FormatSigned(row.DeltaAbs)}, {FormatSignedPercent(row.DeltaPct)}, {row.Direction})");
         }
-    }
-
-    private static (double Cv, int OutlierIndex) DispersionStatsFor(IReadOnlyList<double?> values)
-    {
-        var observed = values
-            .Select((value, index) => (Value: value, Index: index))
-            .Where(static item => item.Value.HasValue)
-            .Select(static item => (Value: item.Value!.Value, item.Index))
-            .ToArray();
-        if (observed.Length < 2)
-        {
-            return (-1, -1);
-        }
-
-        var nums = observed.Select(static item => item.Value).ToArray();
-        var min = nums.Min();
-        var max = nums.Max();
-        var mean = nums.Average();
-        var median = Median(nums);
-        var variance = nums.Select(value => (value - mean) * (value - mean)).Average();
-        var stdDev = Math.Sqrt(variance);
-        var denominator = Math.Abs(mean);
-        var cv = denominator > 0 ? stdDev / denominator : stdDev == 0 ? 0 : double.PositiveInfinity;
-        var outlierIndex = -1;
-        var tol = Math.Max(1e-9, 1e-6 * Math.Max(Math.Abs(max), Math.Abs(min)));
-        if (stdDev > tol)
-        {
-            var furthest = observed
-                .OrderByDescending(item => Math.Abs(item.Value - median))
-                .ThenBy(static item => item.Index)
-                .First();
-            if (Math.Abs(furthest.Value - median) > 2 * stdDev)
-            {
-                outlierIndex = furthest.Index;
-            }
-        }
-
-        return (cv, outlierIndex);
-    }
-
-    private static double Median(double[] values)
-    {
-        var ordered = values.OrderBy(static value => value).ToArray();
-        var mid = ordered.Length / 2;
-        return ordered.Length % 2 == 0 ? (ordered[mid - 1] + ordered[mid]) / 2 : ordered[mid];
     }
 
     private static string FormatValues(IReadOnlyList<double?> values)
