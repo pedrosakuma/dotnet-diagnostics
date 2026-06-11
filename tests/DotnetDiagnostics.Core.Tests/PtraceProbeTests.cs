@@ -169,4 +169,37 @@ public sealed class PtraceProbeTests
         Assert.Equal(42, result.PtraceScope);
         Assert.Contains("unknown value", result.Reason);
     }
+
+    [Fact]
+    public void ChildLaunch_unblocks_only_scope1_without_cap()
+    {
+        // The one environment child-launch actually helps: scope=1, no CAP_SYS_PTRACE, attach blocked.
+        var blocked = new PtraceProbeResult(CanAttach: false, Reason: "blocked")
+        {
+            HasCapSysPtrace = false,
+            PtraceScope = 1,
+        };
+
+        // The predicate is gated on the real host OS — only Linux permits descendant attach.
+        Assert.Equal(OperatingSystem.IsLinux(), PtraceProbe.ChildLaunchWouldUnblockAttach(blocked));
+    }
+
+    [Theory]
+    // (canAttach, hasCap, scope) — none of these benefit from child-launch on any OS.
+    [InlineData(true, false, 1)]  // already attachable
+    [InlineData(false, true, 1)]  // cap held → attach already works elsewhere; nothing to unblock
+    [InlineData(false, false, 0)] // scope 0 already allows attach
+    [InlineData(false, false, 2)] // scope 2 still needs CAP regardless of ancestry
+    [InlineData(false, false, 3)] // scope 3 forbids attach entirely
+    [InlineData(false, false, null)] // Yama absent → classic attach already allowed
+    public void ChildLaunch_does_not_advertise_outside_scope1(bool canAttach, bool hasCap, int? scope)
+    {
+        var result = new PtraceProbeResult(canAttach, Reason: "x")
+        {
+            HasCapSysPtrace = hasCap,
+            PtraceScope = scope,
+        };
+
+        Assert.False(PtraceProbe.ChildLaunchWouldUnblockAttach(result));
+    }
 }

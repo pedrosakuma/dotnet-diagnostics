@@ -21,6 +21,11 @@ internal static class CliHelp
 Options:
   -p, --pid <int>               Target OS process id (auto-resolved when only one is visible).
       --json                    Emit the raw DiagnosticResult envelope as JSON.
+      --launch -- <app> [args]  Dev mode: launch <app> as a child of the CLI so live attach
+                                (inspect-heap --source live, dump) works under ptrace_scope=1 with
+                                no privilege. Supported by capabilities/collect/dump/inspect-heap/
+                                get-bytes and 'session'. The child is terminated on exit. Launch the
+                                app directly ('dotnet App.dll'), not via 'dotnet run'.
   -h, --help                    Show this help.
 """;
 
@@ -85,6 +90,7 @@ inspect-heap options:
 """
   dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
   dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
+  dotnet-diagnostics-cli inspect-heap --launch -- dotnet App.dll   # ptrace_scope=1, no privilege
 """),
         new CommandHelp(
             "dump",
@@ -151,12 +157,16 @@ session notes:
   published by 'collect' stay alive (until they expire or the target exits), so you can drill in with
   'query --handle <id> --view <view>' without re-collecting. Ctrl-C cancels the running command and
   keeps the session alive; press it again to force-quit. An idle Ctrl-C leaves the session.
+  Start with '--launch -- <app> [args]' to spawn the target as a child and bind it for the whole
+  session (so live attach works under ptrace_scope=1 with no privilege); the child is killed on exit.
 """,
 """
   dotnet-diagnostics-cli session
   diag> collect --kind gc --pid 1234
   diag> query --handle <id> --view pauseHistogram
   diag> exit
+
+  dotnet-diagnostics-cli session --launch -- dotnet App.dll   # binds the launched child for the session
 """),
     };
 

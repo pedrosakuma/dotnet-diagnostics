@@ -41,6 +41,7 @@ These apply to every command:
 |---|---|
 | `-p, --pid <int>` | Target OS process id. **Auto-resolved** when exactly one .NET process is visible. |
 | `--json` | Emit the raw `DiagnosticResult<T>` envelope as JSON instead of the human table. |
+| `--launch -- <app> [args]` | **Dev mode.** Launch `<app>` as a child of the CLI so live attach works under `kernel.yama.ptrace_scope=1` with no privilege — see the [Linux note](#linux-ptrace-note). Supported by `capabilities`, `collect`, `dump`, `inspect-heap` (live), `get-bytes` (module) and `session`. Mutually exclusive with `--pid`; the child is terminated on exit. |
 | `-h, --help` | Show the global usage screen, or a focused screen for `<command> --help`. |
 
 Exit codes: `0` success (a `dump` preview is also a success), `1` a structured failure envelope
@@ -115,9 +116,11 @@ Walk the managed heap of a live process or a `.dmp`.
 ```bash
 dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
 dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
+dotnet-diagnostics-cli inspect-heap --launch -- dotnet App.dll   # ptrace_scope=1, no privilege
 ```
 
-`--source live` attaches via `ptrace(2)` — see the [Linux note](#linux-ptrace-note).
+`--source live` attaches via `ptrace(2)` — see the [Linux note](#linux-ptrace-note), which also
+documents the `--launch` zero-privilege dev mode.
 
 ### `dump`
 
@@ -184,7 +187,9 @@ Inside `session`, `query --handle <id> --view <view>` works against the live han
 
 ### `session`
 
-Start the stateful REPL — covered in the next section.
+Start the stateful REPL — covered in the next section. Accepts `--launch -- <app> [args]` at startup
+to spawn the target as a child and bind it for the whole session (zero-privilege live attach under
+`ptrace_scope=1`; see the [Linux note](#linux-ptrace-note)). The child is killed when the session ends.
 
 ## The `session` REPL
 
@@ -208,6 +213,11 @@ diag(pid 1234)> collect --kind datas --duration 15 --save after.json
 diag(pid 1234)> compare before.json after.json
 diag(pid 1234)> exit
 ```
+
+Starting with `session --launch -- dotnet App.dll` spawns the target as a child, binds its pid for the
+whole session (so live attach works under `ptrace_scope=1` with no privilege), and kills it on exit.
+`--launch` is a startup-only flag; inside the REPL the target is already live — use `target <pid>` to
+switch.
 
 ### Target binding
 
@@ -309,6 +319,20 @@ Debian/Ubuntu/WSL the default `kernel.yama.ptrace_scope=1` blocks same-UID peer 
 
 - **Bare host:** `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope`
 - **Container:** add `CAP_SYS_PTRACE` (Docker `--cap-add SYS_PTRACE`; K8s `securityContext.capabilities.add`).
+- **Zero privilege (dev):** `--launch -- <app> [args]` makes the CLI the target's parent. Under
+  `ptrace_scope=1` a tracer may attach to its own descendants, so live attach works with no sysctl
+  change and no capability:
+
+  ```bash
+  dotnet-diagnostics-cli inspect-heap --launch -- dotnet App.dll
+  dotnet-diagnostics-cli session --launch -- dotnet App.dll   # binds the child for the whole session
+  ```
+
+  Launch the app **directly** (`dotnet App.dll` or a published apphost), not via `dotnet run` (which
+  spawns a separate runtime child whose PID won't match). The child is killed when the command /
+  session exits. This only helps under `ptrace_scope=1`; `scope=2` still needs `CAP_SYS_PTRACE` and
+  `scope=3` forbids attach entirely — use the dump-based workflow there. When `capabilities` detects
+  this exact environment it advertises the `--launch` tip.
 
 The MCP sidecar must also run as the **same UID** as the target so it can open
 `/tmp/dotnet-diagnostic-<pid>`. EventPipe-based commands (`collect`, counters, GC, exceptions) need neither

@@ -276,6 +276,80 @@ public sealed class CliHintProjectionTests
     }
 
     [Fact]
+    public void BuildCliCapabilityNotes_AttachBlockedUnderScope1_AdvertisesLaunchOnLinux()
+    {
+        // Exactly the child-launch-unblockable environment: blocked attach, no CAP, ptrace_scope=1.
+        var caps = Caps(RuntimeFlavor.CoreClr, canAttach: false,
+            attachReason: "Use the dump-based workflow (collect_process_dump + inspect_dump).") with
+        {
+            HasCapSysPtrace = false,
+            PtraceScope = 1,
+        };
+
+        var notes = CliHintProjection.BuildCliCapabilityNotes(caps);
+
+        // The advice is OS-gated — descendant attach only helps on Linux.
+        if (OperatingSystem.IsLinux())
+        {
+            notes.Should().Contain("--launch").And.Contain("ptrace parent");
+        }
+        else
+        {
+            notes.Should().NotContain("--launch");
+        }
+
+        AssertNoLeak(notes);
+    }
+
+    [Fact]
+    public void BuildCliCapabilityNotes_LaunchedByCliUnderScope1_ReportsAttachAvailable_OmitsTip()
+    {
+        // Same blocked-but-unblockable environment, but the CLI launched the target: the probe is
+        // ancestry-unaware (CanAttachClrMD=false), yet descendant attach is permitted. The note must
+        // report attach as available and never re-suggest --launch (we are already under it).
+        var caps = Caps(RuntimeFlavor.CoreClr, canAttach: false,
+            attachReason: "Use the dump-based workflow (collect_process_dump + inspect_dump).") with
+        {
+            HasCapSysPtrace = false,
+            PtraceScope = 1,
+        };
+
+        var notes = CliHintProjection.BuildCliCapabilityNotes(caps, launchedByCli: true);
+
+        if (OperatingSystem.IsLinux())
+        {
+            notes.Should().Contain("available").And.Contain("ptrace parent");
+            notes.Should().NotContain("--launch");
+            notes.Should().NotContain("unavailable");
+        }
+        else
+        {
+            // Off Linux child-launch doesn't help, so it falls through to the unavailable message.
+            notes.Should().Contain("unavailable");
+            notes.Should().NotContain("--launch");
+        }
+
+        AssertNoLeak(notes);
+    }
+
+    [Fact]
+    public void BuildCliCapabilityNotes_AttachBlockedUnderScope2_DoesNotAdvertiseLaunch()
+    {
+        // scope=2 needs CAP regardless of ancestry, so child-launch must not be advertised.
+        var caps = Caps(RuntimeFlavor.CoreClr, canAttach: false,
+            attachReason: "Use the dump-based workflow (collect_process_dump + inspect_dump).") with
+        {
+            HasCapSysPtrace = false,
+            PtraceScope = 2,
+        };
+
+        var notes = CliHintProjection.BuildCliCapabilityNotes(caps);
+
+        notes.Should().NotContain("--launch");
+        AssertNoLeak(notes);
+    }
+
+    [Fact]
     public void ProjectCapabilities_ReplacesCoreNotes_WithCliAuthoredText()
     {
         const string coreProse = "Run collect_off_cpu_sample and inspect_process(view=resources) for more.";

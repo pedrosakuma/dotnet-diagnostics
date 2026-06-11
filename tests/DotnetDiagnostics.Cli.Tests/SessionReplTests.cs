@@ -760,6 +760,15 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Launch_InsideSession_IsRejectedWithGuidance()
+    {
+        var (exit, _, stderr) = await RunReplAsync("capabilities --launch -- dotnet App.dll\nexit\n");
+
+        exit.Should().Be(0);
+        stderr.Should().Contain("--launch is only available at session startup");
+    }
+
+    [Fact]
     public async Task BoundTarget_IsInheritedByLiveTargetCommand_WhenPidOmitted()
     {
         var (services, resolver) = BuildCapabilityServices();
@@ -1057,7 +1066,7 @@ public sealed class SessionReplTests
         var stderr = new StringWriter(new StringBuilder());
         try
         {
-            var exit = await SessionRepl.RunAsync(services, provider, stdin, stdout, stderr, ct);
+            var exit = await SessionRepl.RunAsync(services, provider, stdin, stdout, stderr, null, ct);
             return (exit, stdout.ToString(), stderr.ToString());
         }
         finally
