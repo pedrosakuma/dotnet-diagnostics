@@ -69,12 +69,14 @@ public static class AsyncStallClassifier
 
         // Writer-side backpressure: a thread parked in ChannelWriter.WriteAsync / WaitToWriteAsync
         // can only block on a *bounded* channel that is full — unbounded writes complete
-        // synchronously. Checked before the reader bucket because both share the "Channels" token.
+        // synchronously. Require an explicit channel-writer type token (not just the method name
+        // "WriteAsync", which a user frame taking a ChannelReader parameter could otherwise carry)
+        // so a reader wait is never mislabeled. Checked before the reader bucket.
         if (HasFrame(thread, frame =>
                 Contains(frame, "System.Threading.Channels")
                 && (Contains(frame, "BoundedChannelWriter")
-                    || Contains(frame, "WaitToWriteAsync")
-                    || Contains(frame, "WriteAsync"))))
+                    || (Contains(frame, "ChannelWriter")
+                        && (Contains(frame, "WriteAsync") || Contains(frame, "WaitToWriteAsync"))))))
         {
             return ChannelWriteBackpressure;
         }

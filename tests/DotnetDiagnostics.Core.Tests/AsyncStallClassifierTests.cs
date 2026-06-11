@@ -108,6 +108,22 @@ public sealed class AsyncStallClassifierTests
             options => options.ExcludingMissingMembers());
     }
 
+    [Fact]
+    public void AsyncStallClassifier_ChannelReader_NotMisclassifiedAsWriter()
+    {
+        // A user frame whose method is named WriteAsync but which takes a ChannelReader parameter
+        // must NOT be classified as writer backpressure — only an actual channel-writer type does.
+        var snapshot = CreateSnapshot(
+            CreateThread(7, true,
+                CreateFrame("System.Threading.Channels.Channel`1+UnboundedChannelReader[[System.Int32]].WaitToReadAsync(System.Threading.CancellationToken)"),
+                CreateFrame("MyApp.Consumer.WriteAsync(System.Threading.Channels.ChannelReader`1[[System.Int32]])")));
+
+        var view = AsyncStallClassifier.Classify(snapshot, topN: 5);
+
+        view.ByBucket.Should().ContainSingle(bucket => bucket.Bucket == "ChannelAwait" && bucket.Count == 1);
+        view.ByBucket.Should().NotContain(bucket => bucket.Bucket == "ChannelWriteBackpressure");
+    }
+
     private static ThreadSnapshotArtifact CreateSnapshot(params ManagedThread[] threads)
         => new(
             Origin: ThreadSnapshotOrigin.Live,

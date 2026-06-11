@@ -38,6 +38,25 @@ public sealed class RegexBacktrackingHintTests
         DiagnosticTools.TryBuildRegexBacktrackingHint(sample, "h").Should().BeNull();
     }
 
+    [Fact]
+    public void TryBuildRegexBacktrackingHint_ReturnsNull_WhenRegexFrameIsColdInTopN()
+    {
+        // A low-share incidental regex frame (e.g. 5 of 1000 inclusive samples) must NOT fire the
+        // catastrophic-backtracking hint — only a genuinely hot regex profile should.
+        var sample = new CpuSample(
+            ProcessId: 4242,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(10),
+            TotalSamples: 1000,
+            TopHotspots: new[]
+            {
+                new Hotspot(new SampledFrame("MyApp.dll", "MyApp.Services.OrderService.Process()"), 900, 900),
+                new Hotspot(new SampledFrame("System.Private.CoreLib.dll", "System.Text.RegularExpressions.RegexRunner.Scan()"), 5, 5),
+            });
+
+        DiagnosticTools.TryBuildRegexBacktrackingHint(sample, "h").Should().BeNull();
+    }
+
     private static CpuSample SampleWithTopFrame(string method)
         => new(
             ProcessId: 4242,

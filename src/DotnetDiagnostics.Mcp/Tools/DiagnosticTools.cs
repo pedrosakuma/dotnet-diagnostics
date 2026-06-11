@@ -881,9 +881,19 @@ public sealed class DiagnosticTools
     /// </summary>
     internal static NextActionHint? TryBuildRegexBacktrackingHint(CpuSample sample, string handleId)
     {
+        // Only fire when the regex engine is genuinely *hot*, not merely present somewhere in the
+        // returned topN: require a regex frame to carry a meaningful inclusive-sample share. A
+        // low-ranked incidental regex call (common in any app) must not trigger the warning.
+        if (sample.TotalSamples <= 0)
+        {
+            return null;
+        }
+
+        var minInclusive = sample.TotalSamples * 0.20;
         var hot = sample.TopHotspots.Any(h =>
-            h.Frame.Method.Contains("System.Text.RegularExpressions.RegexRunner", StringComparison.Ordinal)
-            || h.Frame.Method.Contains("System.Text.RegularExpressions.RegexInterpreter", StringComparison.Ordinal));
+            h.InclusiveSamples >= minInclusive
+            && (h.Frame.Method.Contains("System.Text.RegularExpressions.RegexRunner", StringComparison.Ordinal)
+                || h.Frame.Method.Contains("System.Text.RegularExpressions.RegexInterpreter", StringComparison.Ordinal)));
         if (!hot)
         {
             return null;
