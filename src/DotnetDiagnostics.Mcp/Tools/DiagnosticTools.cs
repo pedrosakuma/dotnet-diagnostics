@@ -850,17 +850,51 @@ public sealed class DiagnosticTools
 
         var handle = handles.Register(pid, "cpu-sample", result.Artifact, CpuSampleHandleTtl);
 
+        var hints = new List<NextActionHint>();
+        if (TryBuildRegexBacktrackingHint(result.Summary, handle.Id) is { } regexHint)
+        {
+            hints.Add(regexHint);
+        }
+
+        hints.Add(new NextActionHint("query_snapshot", "Walk the merged caller→callee tree built from the same samples.",
+            new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 }));
+        hints.Add(new NextActionHint("collect_events", "Confirm hot path isn't driven by exception-heavy control flow.",
+            new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 }));
+
         var ok = BuildCpuSampleResult(
             result.Summary,
             durationSeconds,
             handle.Id,
             handle.ExpiresAt,
             depth,
-            new NextActionHint("query_snapshot", "Walk the merged caller→callee tree built from the same samples.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 }),
-            new NextActionHint("collect_events", "Confirm hot path isn't driven by exception-heavy control flow.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 }));
+            hints.ToArray());
         return WithContext(ok, ctx);
+    }
+
+    /// <summary>
+    /// Auto-hint (#388): when the hottest CPU frames sit inside the regex engine
+    /// (<c>System.Text.RegularExpressions.RegexRunner</c> / <c>RegexInterpreter</c>), the most
+    /// likely cause is catastrophic backtracking on attacker- or user-controlled input. Surface a
+    /// targeted hint pointing at the call tree (to locate the calling pattern) and the standard
+    /// mitigations: a <c>[GeneratedRegex]</c> source-generated pattern, a match timeout, and bounding
+    /// the input length. Returns <c>null</c> when no regex frame is hot so the hint stays high-signal.
+    /// </summary>
+    internal static NextActionHint? TryBuildRegexBacktrackingHint(CpuSample sample, string handleId)
+    {
+        var hot = sample.TopHotspots.Any(h =>
+            h.Frame.Method.Contains("System.Text.RegularExpressions.RegexRunner", StringComparison.Ordinal)
+            || h.Frame.Method.Contains("System.Text.RegularExpressions.RegexInterpreter", StringComparison.Ordinal));
+        if (!hot)
+        {
+            return null;
+        }
+
+        return new NextActionHint(
+            "query_snapshot",
+            "Hot frames are inside the regex engine (RegexRunner / RegexInterpreter) — a classic sign of " +
+            "catastrophic backtracking on user-controlled input. Walk the call tree to find the calling pattern, " +
+            "then mitigate with a [GeneratedRegex] source-generated regex, a match timeout, and an input-length bound.",
+            new Dictionary<string, object?> { ["handle"] = handleId, ["view"] = "call-tree", ["maxDepth"] = 12, ["maxNodes"] = 200 });
     }
 
     [RequireScope("eventpipe")]

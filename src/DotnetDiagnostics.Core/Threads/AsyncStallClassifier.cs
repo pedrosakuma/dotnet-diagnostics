@@ -10,12 +10,13 @@ public static class AsyncStallClassifier
 {
     private const string SyncOverAsync = "SyncOverAsync";
     private const string ChannelAwait = "ChannelAwait";
+    private const string ChannelWriteBackpressure = "ChannelWriteBackpressure";
     private const string TcsPending = "TcsPending";
     private const string SemaphoreAwait = "SemaphoreAwait";
     private const string Delay = "Delay";
     private const string Unknown = "Unknown";
 
-    private static readonly string[] BucketOrder = [SyncOverAsync, ChannelAwait, TcsPending, SemaphoreAwait, Delay, Unknown];
+    private static readonly string[] BucketOrder = [SyncOverAsync, ChannelAwait, ChannelWriteBackpressure, TcsPending, SemaphoreAwait, Delay, Unknown];
 
     public static AsyncStallsView Classify(ThreadSnapshotArtifact snapshot, int topN)
     {
@@ -65,6 +66,19 @@ public static class AsyncStallClassifier
         ArgumentNullException.ThrowIfNull(thread);
 
         var top = thread.TopFrameMethod ?? (thread.Frames.Count > 0 ? thread.Frames[0].DisplayName : null) ?? string.Empty;
+
+        // Writer-side backpressure: a thread parked in ChannelWriter.WriteAsync / WaitToWriteAsync
+        // can only block on a *bounded* channel that is full — unbounded writes complete
+        // synchronously. Checked before the reader bucket because both share the "Channels" token.
+        if (HasFrame(thread, frame =>
+                Contains(frame, "System.Threading.Channels")
+                && (Contains(frame, "BoundedChannelWriter")
+                    || Contains(frame, "WaitToWriteAsync")
+                    || Contains(frame, "WriteAsync"))))
+        {
+            return ChannelWriteBackpressure;
+        }
+
         if (HasFrame(thread, frame =>
                 Contains(frame, "System.Threading.Channels")
                 && (Contains(frame, "UnboundedChannelReader")
