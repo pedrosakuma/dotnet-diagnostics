@@ -276,6 +276,60 @@ public static class NativeAotSymbolDemangler
             || s.Contains("__", StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Best-effort split of a demangled NativeAOT display name (the output of <see cref="Demangle"/>)
+    /// into a declaring-type FQN and a bare method name, for populating a name-based
+    /// <see cref="DotnetDiagnostics.Core.Memory.MethodIdentity"/> on AOT frames (issue #395). The
+    /// boundary is the last top-level <c>.</c> separator; generic <c>&lt;...&gt;</c> groups are skipped
+    /// so a type argument's own dots never split the name. Demangler decorations the consumer cannot
+    /// use as a method name (a trailing <c>" [overload]"</c> / <c>" (boxed)"</c> / <c>" (unbox)"</c>)
+    /// are dropped from the method portion. Returns <c>(null, display)</c> when there is no
+    /// type/method boundary (e.g. a bare C symbol).
+    /// </summary>
+    public static (string? TypeFullName, string MethodName) SplitTypeAndMethod(string? display)
+    {
+        if (string.IsNullOrEmpty(display))
+        {
+            return (null, display ?? string.Empty);
+        }
+
+        var core = StripDecorations(display);
+        var depth = 0;
+        var lastDot = -1;
+        for (var i = 0; i < core.Length; i++)
+        {
+            var c = core[i];
+            if (c == '<') depth++;
+            else if (c == '>') { if (depth > 0) depth--; }
+            else if (c == '.' && depth == 0) lastDot = i;
+        }
+
+        if (lastDot <= 0 || lastDot >= core.Length - 1)
+        {
+            return (null, core);
+        }
+
+        return (core[..lastDot], core[(lastDot + 1)..]);
+    }
+
+    /// <summary>Trims the human-only decorations <see cref="Demangle"/> appends so they don't leak
+    /// into a structured method name. Conservative: only strips a single recognised trailing tag.</summary>
+    private static string StripDecorations(string display)
+    {
+        var s = display;
+        if (s.EndsWith(" (boxed)", StringComparison.Ordinal)) s = s[..^" (boxed)".Length];
+        else if (s.EndsWith(" (unbox)", StringComparison.Ordinal)) s = s[..^" (unbox)".Length];
+
+        // "Type.Method [trailing]" — the bracketed canon/overload suffix is not part of the name.
+        var bracket = s.IndexOf(" [", StringComparison.Ordinal);
+        if (bracket > 0 && s.EndsWith(']'))
+        {
+            s = s[..bracket];
+        }
+
+        return s.Trim();
+    }
+
     /// <summary>Provenance of a frame's display name. Threaded into <c>CpuSampleTraceArtifact</c>
     /// so the LLM knows whether to trust the name as-is or treat it as a heuristic guess.</summary>
     [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<SymbolSource>))]

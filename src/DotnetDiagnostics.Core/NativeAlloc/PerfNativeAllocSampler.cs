@@ -201,7 +201,7 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
             var script = await RunScriptAsync(perfDataPath, cancellationToken).ConfigureAwait(false);
             // processId: 0 — trust perf record -p <pid> for scoping (mirrors the CPU sampler:
             // avoids dropping samples from worker threads that exited before parsing).
-            var (total, hotspots, root, symbolSource) = PerfNativeAotCpuSampler.Aggregate(script, processId: 0, topN);
+            var (total, hotspots, root, symbolSource, _) = PerfNativeAotCpuSampler.Aggregate(script, processId: 0, topN);
 
             if (total == 0)
             {

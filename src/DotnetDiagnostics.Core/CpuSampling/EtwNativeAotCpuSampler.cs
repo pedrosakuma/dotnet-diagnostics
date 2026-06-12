@@ -74,6 +74,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         int topN = 25,
         SourceResolutionOptions? sourceResolution = null,
         MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         CancellationToken cancellationToken = default)
     {
         if (duration <= TimeSpan.Zero || duration > TimeSpan.FromMinutes(5))

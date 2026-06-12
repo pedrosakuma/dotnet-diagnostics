@@ -204,4 +204,42 @@ public class NativeAotSymbolDemanglerTests
             NativeAotSymbolDemangler.SymbolSource.ElfDemangled)
             .Should().Be(NativeAotSymbolDemangler.SymbolSource.ElfDemangled);
     }
+
+    [Theory]
+    // Demangled display => (TypeFullName, MethodName). Splits on the last top-level '.'.
+    [InlineData("NativeAotSample.WeatherForecast.ToString", "NativeAotSample.WeatherForecast", "ToString")]
+    [InlineData("System.Net.Primitives.System.Net.Cookie.SetDomainAndKey", "System.Net.Primitives.System.Net.Cookie", "SetDomainAndKey")]
+    [InlineData("NativeAotSample.WeatherForecast.get_TemperatureF", "NativeAotSample.WeatherForecast", "get_TemperatureF")]
+    public void SplitTypeAndMethod_SplitsOnLastTopLevelDot(string display, string expectedType, string expectedMethod)
+    {
+        var (type, method) = NativeAotSymbolDemangler.SplitTypeAndMethod(display);
+        type.Should().Be(expectedType);
+        method.Should().Be(expectedMethod);
+    }
+
+    [Fact]
+    public void SplitTypeAndMethod_IgnoresDotsInsideGenericArguments()
+    {
+        var (type, method) = NativeAotSymbolDemangler.SplitTypeAndMethod(
+            "MyApp.Handler`1<System.Collections.Generic.List`1<System.Int32>>.Handle");
+        type.Should().Be("MyApp.Handler`1<System.Collections.Generic.List`1<System.Int32>>");
+        method.Should().Be("Handle");
+    }
+
+    [Fact]
+    public void SplitTypeAndMethod_StripsDemanglerDecorations()
+    {
+        // The demangler appends human-only suffixes; they must not leak into the method name.
+        NativeAotSymbolDemangler.SplitTypeAndMethod("My.Type.Method [canon]").Should().Be(("My.Type", "Method"));
+        NativeAotSymbolDemangler.SplitTypeAndMethod("My.Type.Method (boxed)").Should().Be(("My.Type", "Method"));
+        NativeAotSymbolDemangler.SplitTypeAndMethod("My.Type.Method (unbox)").Should().Be(("My.Type", "Method"));
+    }
+
+    [Fact]
+    public void SplitTypeAndMethod_NoBoundary_ReturnsNullType()
+    {
+        var (type, method) = NativeAotSymbolDemangler.SplitTypeAndMethod("__libc_start_main");
+        type.Should().BeNull();
+        method.Should().Be("__libc_start_main");
+    }
 }

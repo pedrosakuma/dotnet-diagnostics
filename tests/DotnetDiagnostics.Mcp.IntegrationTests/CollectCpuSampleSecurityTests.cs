@@ -72,7 +72,7 @@ public sealed class CollectCpuSampleSecurityTests
     {
         public int Invocations { get; private set; }
 
-        public Task<CpuSampleResult> SampleAsync(int processId, TimeSpan duration, int topN = 25, SourceResolutionOptions? sourceResolution = null, MethodInstantiationResolutionOptions? methodInstantiationResolution = null, CancellationToken cancellationToken = default)
+        public Task<CpuSampleResult> SampleAsync(int processId, TimeSpan duration, int topN = 25, SourceResolutionOptions? sourceResolution = null, MethodInstantiationResolutionOptions? methodInstantiationResolution = null, NativeAotSymbolResolutionOptions? nativeAotSymbols = null, CancellationToken cancellationToken = default)
         {
             Invocations++;
             var summary = new CpuSample(processId, DateTimeOffset.UtcNow, duration, 0, Array.Empty<Hotspot>());
@@ -86,7 +86,7 @@ public sealed class CollectCpuSampleSecurityTests
     {
         public int Invocations { get; private set; }
 
-        public Task<CpuSampleResult> SampleAsync(int processId, TimeSpan duration, int topN = 25, SourceResolutionOptions? sourceResolution = null, MethodInstantiationResolutionOptions? methodInstantiationResolution = null, CancellationToken cancellationToken = default)
+        public Task<CpuSampleResult> SampleAsync(int processId, TimeSpan duration, int topN = 25, SourceResolutionOptions? sourceResolution = null, MethodInstantiationResolutionOptions? methodInstantiationResolution = null, NativeAotSymbolResolutionOptions? nativeAotSymbols = null, CancellationToken cancellationToken = default)
         {
             Invocations++;
             throw new InvalidOperationException("should not be reached when symbol path is rejected");

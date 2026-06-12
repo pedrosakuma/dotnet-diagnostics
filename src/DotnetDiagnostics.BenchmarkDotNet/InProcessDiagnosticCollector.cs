@@ -159,6 +159,7 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
                 CpuTopHotspots,
                 sourceResolution: null,
                 methodInstantiationResolution: null,
+                nativeAotSymbols: null,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (InvalidOperationException ex) when (

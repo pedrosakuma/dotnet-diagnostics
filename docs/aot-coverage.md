@@ -57,7 +57,7 @@ Legend: `✅` works · `⚠️` works with caveats (footnote) · `❌` unavailab
 | `collect_events(kind="gc")` | ✅ | ✅ | ✅ | ✅ |
 | `collect_events(kind="exceptions")` | ✅ | ✅ | ✅ | ✅ |
 | `collect_events(kind="event_source")` | ✅ | ✅ | ⚠️ [^aot-eventsource] | ⚠️ [^aot-eventsource] |
-| `collect_sample(kind="cpu")` | ✅ EventPipe | ✅ EventPipe | ✅ `perf` (`symbols.map`) | ✅ ETW (`pdb-export`) [^win-etw-elev] |
+| `collect_sample(kind="cpu")` | ✅ EventPipe | ✅ EventPipe | ✅ `perf` (`symbols.map`) [^aot-mapfile] | ✅ ETW (`pdb-export`) [^win-etw-elev] |
 | `collect_sample(kind="off_cpu")` | ✅ `perf` | ⚠️ ETW kernel logger, elevated [^win-etw-elev] | ✅ `perf` [^perf-install] | ⚠️ ETW kernel logger, elevated [^win-etw-elev] |
 | `collect_sample(kind="allocation")` | ✅ TypeName populated | ✅ TypeName populated | ⚠️ TypeName empty [^aot-typename] | ⚠️ TypeName empty [^aot-typename] |
 | `collect_thread_snapshot` | ✅ `clrmd-thread-walk` | ✅ `clrmd-thread-walk` | ✅ `linux-native-stack` ([#92](https://github.com/pedrosakuma/dotnet-diagnostics/issues/92)) | ✅ `etw-native-stack` ([#93](https://github.com/pedrosakuma/dotnet-diagnostics/issues/93)) |
@@ -76,6 +76,7 @@ Legend: `✅` works · `⚠️` works with caveats (footnote) · `❌` unavailab
 [^lock-graph]: There is no native equivalent to a managed `SyncBlock`. Thread states and stacks are accurate; ownership/waiter edges between managed objects are not recoverable without runtime cooperation. Pure-native locks (futex, srwlock) still show up as off-CPU stacks via `collect_sample(kind="off_cpu")`.
 [^heap]: ClrMD's DAC has no NativeAOT implementation; there is no public design for one upstream. See **Honest non-goals** below.
 [^jit-only]: `capture_method_bytes` reads the JIT code-heap of a live process. On NativeAOT and pure ReadyToRun there is no code-heap — the code is in the on-disk binary. Use the `dotnet-native-mcp.disassemble` companion server against the published ELF/PE.
+[^aot-mapfile]: On NativeAOT, `perf` resolves hot frames to demangled managed names but cannot produce the `(moduleVersionId, metadataToken)` handoff (no IL metadata exists at runtime). Publish with `<IlcGenerateMapFile>true</IlcGenerateMapFile>` and pass `collect_sample(kind="cpu", nativeAotMapFile="…/<app>.map.xml")` to emit a **name-based** `MethodIdentity` (`TypeFullName` + `MethodName`; MVID/token `null`) for genuine managed method frames — unblocking the `dotnet-native-mcp` "disassemble this hot AOT function" handoff ([#395](https://github.com/pedrosakuma/dotnet-diagnostics/issues/395)). The map lands in `obj/<cfg>/<rid>/native/<app>.map.xml` (not the publish output), so copy/mount it next to the sidecar. See [`handoff-contract.md`](./handoff-contract.md#nativeaot-identity--name-based-issue-395).
 
 ## Honest non-goals
 

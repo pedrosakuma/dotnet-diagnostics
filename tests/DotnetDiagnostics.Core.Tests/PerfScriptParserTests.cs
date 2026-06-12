@@ -50,7 +50,7 @@ public class PerfScriptParserTests
     [Fact]
     public void Aggregate_RanksHotspots_AndProducesCallTree()
     {
-        var (total, hotspots, root, _) = PerfNativeAotCpuSampler.Aggregate(
+        var (total, hotspots, root, _, _) = PerfNativeAotCpuSampler.Aggregate(
             CreateTwoSamplesFromPid1("\r\n", "      "),
             processId: 1,
             topN: 5);
@@ -147,10 +147,106 @@ public class PerfScriptParserTests
 
             """;
 
-        var (_, _, _, symbolSource) = PerfNativeAotCpuSampler.Aggregate(mangledSample, processId: 0, topN: 5);
+        var (_, _, _, symbolSource, _) = PerfNativeAotCpuSampler.Aggregate(mangledSample, processId: 0, topN: 5);
 
         symbolSource.Should().NotBe(NativeAotSymbolDemangler.SymbolSource.Unknown,
             "the aggregator must surface a concrete provenance so CpuSample.SymbolSource is informative");
+    }
+
+    // ---- #395: NativeAOT MethodIdentity via the ILC map file ----
+
+    private const string AotMapSample = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <ObjectNodes>
+          <MethodCode Name="NativeAotSample_WeatherForecast__ToString" Length="167" Hash="bb" />
+          <MethodCode Name="NativeAotSample_Program___Main__" Length="399" Hash="cc" />
+        </ObjectNodes>
+        """;
+
+    private const string AotPerfSample = """
+        sample-target  1 [000] 1.0: cpu-clock:
+                        ffffabcd11110000 NativeAotSample_WeatherForecast__ToString+0x42 (/app/NativeAotSample)
+                        ffffabcd11110100 NativeAotSample_Program___Main__+0x10 (/app/NativeAotSample)
+                        7f1234560000 __libc_start_main+0x80 (/lib/libc.so.6)
+
+        sample-target  1 [001] 1.1: cpu-clock:
+                        ffffabcd11110000 NativeAotSample_WeatherForecast__ToString+0x10 (/app/NativeAotSample)
+                        ffffabcd11110100 NativeAotSample_Program___Main__+0x10 (/app/NativeAotSample)
+                        7f1234560000 __libc_start_main+0x80 (/lib/libc.so.6)
+
+        """;
+
+    private static NativeAotMethodMap LoadAotMap()
+        => NativeAotMethodMap.Load(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(AotMapSample)));
+
+    [Fact]
+    public void Aggregate_WithoutMap_EmitsNoMethodIdentities()
+    {
+        var (_, hotspots, _, _, identities) = PerfNativeAotCpuSampler.Aggregate(AotPerfSample, processId: 0, topN: 10);
+
+        identities.Should().BeEmpty();
+        hotspots.Should().OnlyContain(h => h.Identity == null);
+    }
+
+    [Fact]
+    public void Aggregate_WithMap_EmitsNameBasedIdentityForManagedFramesOnly()
+    {
+        var (_, hotspots, _, _, identities) = PerfNativeAotCpuSampler.Aggregate(
+            AotPerfSample, processId: 0, topN: 10,
+            LoadAotMap(), moduleName: "NativeAotSample", modulePath: "/app/NativeAotSample");
+
+        // Exactly the two MethodCode frames get an identity; __libc_start_main does not.
+        identities.Should().HaveCount(2);
+
+        var toString = hotspots.Single(h => h.Frame.Method.Contains("ToString", StringComparison.Ordinal));
+        toString.Identity.Should().NotBeNull();
+        toString.Identity!.TypeFullName.Should().Be("NativeAotSample.WeatherForecast");
+        toString.Identity.MethodName.Should().Be("ToString");
+        toString.Identity.ModuleName.Should().Be("NativeAotSample");
+        toString.Identity.ModulePath.Should().Be("/app/NativeAotSample");
+
+        // The AOT handoff is name-based only — no IL metadata token / MVID exists at runtime.
+        toString.Identity.MetadataToken.Should().BeNull();
+        toString.Identity.ModuleVersionId.Should().BeNull();
+
+        var libc = hotspots.Single(h => h.Frame.Method.Contains("libc_start_main", StringComparison.Ordinal));
+        libc.Identity.Should().BeNull("native frames are not managed method bodies");
+    }
+
+    [Fact]
+    public void Aggregate_WithMap_IdentitiesAreKeyedSoTheCallTreeCanBeStamped()
+    {
+        var (_, _, root, _, identities) = PerfNativeAotCpuSampler.Aggregate(
+            AotPerfSample, processId: 0, topN: 10,
+            LoadAotMap(), moduleName: "NativeAotSample", modulePath: "/app/NativeAotSample");
+
+        var stamped = CallTreeIdentityProjector.Stamp(root, identities);
+
+        // Walk the tree and confirm the managed nodes carry their identity while libc does not.
+        var stack = new Stack<CallTreeNode>();
+        stack.Push(stamped);
+        var stampedManaged = 0;
+        while (stack.Count > 0)
+        {
+            var node = stack.Pop();
+            if (node.Frame.Method.Contains("ToString", StringComparison.Ordinal) ||
+                node.Frame.Method.Contains("Main", StringComparison.Ordinal))
+            {
+                node.Identity.Should().NotBeNull();
+                stampedManaged++;
+            }
+            else if (node.Frame.Method.Contains("libc_start_main", StringComparison.Ordinal))
+            {
+                node.Identity.Should().BeNull();
+            }
+
+            foreach (var child in node.Children)
+            {
+                stack.Push(child);
+            }
+        }
+
+        stampedManaged.Should().Be(2);
     }
 
     private static string CreateTwoSamplesFromPid1(string lineEnding, string pidSpacing)

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using DotnetDiagnostics.Core.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -86,6 +87,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         int topN = 25,
         SourceResolutionOptions? sourceResolution = null,
         MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         CancellationToken cancellationToken = default)
     {
         if (duration <= TimeSpan.Zero || duration > TimeSpan.FromMinutes(5))
@@ -105,6 +107,19 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
                 "container has CAP_PERFMON (or CAP_SYS_ADMIN) and perf_event_paranoid <= 2.");
         }
 
+        // #395: optional NativeAOT identity resolution. The ILC *.map.xml is the authoritative set
+        // of managed MethodCode symbols; loading it lets us emit a (TypeFullName, MethodName)
+        // MethodIdentity for genuine managed frames and skip runtime helpers / native code.
+        var methodMap = NativeAotMethodMap.TryLoad(nativeAotSymbols?.MapFilePath, _logger);
+        if (methodMap is not null)
+        {
+            _logger.LogInformation(
+                "Loaded NativeAOT map file with {Count} managed method symbols for pid {Pid}; MethodIdentity handoff enabled.",
+                methodMap.Count, processId);
+        }
+
+        var (moduleName, modulePath) = TryResolveTargetModule(processId);
+
         var perfDataPath = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-perf-{processId}-{Guid.NewGuid():N}.data");
         var startedAt = DateTimeOffset.UtcNow;
 
@@ -115,14 +130,48 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             // Trust perf record -p <pid> for process scoping. Passing processId=0 here avoids
             // a /proc/<pid>/task post-hoc race that would discard samples from threadpool /
             // GC workers that exited between recording and parsing.
-            var (total, hotspots, root, symbolSource) = Aggregate(script, processId: 0, topN);
+            var (total, hotspots, root, symbolSource, identities) = Aggregate(
+                script, processId: 0, topN, methodMap, moduleName, modulePath);
             var summary = new CpuSample(processId, startedAt, duration, total, hotspots) { SymbolSource = symbolSource };
-            var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, null, null, symbolSource);
+            var stampedRoot = CallTreeIdentityProjector.Stamp(root, identities);
+            var artifact = new CpuSampleTraceArtifact(
+                processId, startedAt, duration, total, stampedRoot, null, identities, symbolSource);
             return new CpuSampleResult(summary, artifact);
         }
         finally
         {
             TryDelete(perfDataPath);
+        }
+    }
+
+    /// <summary>
+    /// Resolves the target's on-disk native image (<c>/proc/&lt;pid&gt;/exe</c>) so the emitted
+    /// <see cref="MethodIdentity"/> carries a module name + path hint for the consumer. Best-effort:
+    /// returns <c>(null, null)</c> when the link is unreadable (the identity then omits the hint, and
+    /// the <c>(TypeFullName, MethodName)</c> half still drives the handoff). The path is a hint only —
+    /// see <c>docs/handoff-contract.md</c> on untrusted path hints.
+    /// </summary>
+    private static (string? ModuleName, string? ModulePath) TryResolveTargetModule(int processId)
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            return (null, null);
+        }
+
+        try
+        {
+            var exeLink = $"/proc/{processId}/exe";
+            var target = File.ResolveLinkTarget(exeLink, returnFinalTarget: true)?.FullName;
+            if (string.IsNullOrEmpty(target))
+            {
+                return (null, null);
+            }
+
+            return (Path.GetFileName(target), target);
+        }
+        catch (Exception)
+        {
+            return (null, null);
         }
     }
 
@@ -208,14 +257,16 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         return stdout;
     }
 
-    internal static (long Total, IReadOnlyList<Hotspot> Hotspots, CallTreeNode Root, NativeAotSymbolDemangler.SymbolSource SymbolSource) Aggregate(
-        string perfScriptOutput, int processId, int topN)
+    internal static (long Total, IReadOnlyList<Hotspot> Hotspots, CallTreeNode Root, NativeAotSymbolDemangler.SymbolSource SymbolSource, IReadOnlyDictionary<SymbolRef, MethodIdentity> Identities) Aggregate(
+        string perfScriptOutput, int processId, int topN,
+        NativeAotMethodMap? methodMap = null, string? moduleName = null, string? modulePath = null)
     {
         var samples = PerfScriptParser.Parse(perfScriptOutput, processId);
         var inclusive = new Dictionary<string, long>(StringComparer.Ordinal);
         var exclusive = new Dictionary<string, long>(StringComparer.Ordinal);
         var modules = new Dictionary<string, string>(StringComparer.Ordinal);
         var displayCache = new Dictionary<string, string>(StringComparer.Ordinal);
+        var identities = new Dictionary<SymbolRef, MethodIdentity>();
         var builder = new CallTreeBuilder();
         long total = 0;
         var aggregatedSource = NativeAotSymbolDemangler.SymbolSource.Unknown;
@@ -248,6 +299,18 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
                 var key = string.IsNullOrEmpty(f.Module) ? demangled : f.Module + "!" + demangled;
                 rootToLeaf.Add((key, f.Module, demangled));
                 modules.TryAdd(key, f.Module);
+
+                // #395: gate MethodIdentity emission on the map. The raw perf symbol (f.Symbol,
+                // mangled, offset already stripped) matches the map's MethodCode Name byte-for-byte;
+                // only genuine managed method bodies get a name-based handoff identity.
+                if (methodMap is not null && methodMap.ContainsMethod(f.Symbol))
+                {
+                    var symbolRef = new SymbolRef(f.Module, demangled);
+                    if (!identities.ContainsKey(symbolRef))
+                    {
+                        identities[symbolRef] = BuildAotIdentity(f.Symbol, demangled, moduleName, modulePath);
+                    }
+                }
             }
 
             var leafKey = rootToLeaf[^1].Key;
@@ -277,11 +340,12 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
                 var display = !string.IsNullOrEmpty(module) && kv.Key.StartsWith(module + "!", StringComparison.Ordinal)
                     ? kv.Key[(module.Length + 1)..]
                     : kv.Key;
+                identities.TryGetValue(new SymbolRef(module, display), out var identity);
                 return new Hotspot(
                     Frame: new SampledFrame(Module: module, Method: display),
                     InclusiveSamples: kv.Value,
                     ExclusiveSamples: exclusive.GetValueOrDefault(kv.Key),
-                    Identity: null);
+                    Identity: identity);
             })
             .ToList();
 
@@ -295,7 +359,29 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
                 NativeAotSymbolDemangler.SymbolSource.ElfDemangled);
         }
 
-        return (total, hotspots, builder.Build(), aggregatedSource);
+        IReadOnlyDictionary<SymbolRef, MethodIdentity> identityView = identities;
+        return (total, hotspots, builder.Build(), aggregatedSource, identityView);
+    }
+
+    /// <summary>
+    /// Builds a name-based <see cref="MethodIdentity"/> for a NativeAOT frame confirmed (via the ILC
+    /// map file) to be a managed method body (issue #395). The canonical CoreCLR
+    /// <c>(ModuleVersionId, MetadataToken)</c> handoff does not apply to AOT — there is no IL metadata
+    /// token at runtime — so those stay <c>null</c> and the consumer resolves by
+    /// <c>(TypeFullName, MethodName)</c> against the same map / symbol table. <c>GenericArity</c> is
+    /// reported as 0 because it cannot be recovered reliably from the mangled name alone.
+    /// </summary>
+    internal static MethodIdentity BuildAotIdentity(string mangledSymbol, string demangledDisplay, string? moduleName, string? modulePath)
+    {
+        var (typeFullName, methodName) = NativeAotSymbolDemangler.SplitTypeAndMethod(demangledDisplay);
+        return new MethodIdentity(
+            MethodName: string.IsNullOrEmpty(methodName) ? mangledSymbol : methodName,
+            GenericArity: 0,
+            ModuleName: moduleName,
+            ModulePath: modulePath,
+            ModuleVersionId: null,
+            MetadataToken: null,
+            TypeFullName: typeFullName);
     }
 
     private static void TryDelete(string path)

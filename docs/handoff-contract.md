@@ -245,6 +245,43 @@ The `(mvid, token)` pair is the only field required by the consumer. Everything 
 sanity-check label so a human (or the LLM) can confirm "this is the right method" without
 loading the assembly first.
 
+### NativeAOT identity — name-based (issue #395)
+
+NativeAOT has **no IL metadata token and no MVID at runtime**: the IL is compiled away and
+there is no PE method table to point at. The canonical `(moduleVersionId, metadataToken)` pair
+therefore **cannot** be produced for an AOT frame. To still unblock the `dotnet-native-mcp`
+"disassemble this hot AOT function" handoff, `collect_sample(kind="cpu")` emits a **name-based**
+`MethodIdentity` for AOT hotspots when the caller supplies the ILC map file:
+
+- Publish the target with `<IlcGenerateMapFile>true</IlcGenerateMapFile>` (this passes
+  `ilc --map:<app>.map.xml`). The map is written to the native intermediate output
+  (`obj/<cfg>/<rid>/native/<app>.map.xml`); it is **not** copied to the publish output, so copy
+  or mount it next to the diagnostics sidecar yourself.
+- Pass its path as `collect_sample(kind="cpu", nativeAotMapFile="…/<app>.map.xml")`.
+
+The producer streams the map (it can be tens of MB), indexes every `MethodCode` node's mangled
+`Name` — which is byte-for-byte the ELF symbol `perf` reports — and emits an identity **only**
+for frames that match a managed method body (runtime helpers, P/Invoke shims, libc, and kernel
+frames are excluded). The map carries `Length` and a content `Hash` but **no addresses**, so the
+match is by symbol name, not an address-range lookup.
+
+| Field             | AOT value                                                                 |
+|-------------------|---------------------------------------------------------------------------|
+| `ModuleVersionId` | `null` — no managed PE metadata exists at runtime                         |
+| `MetadataToken`   | `null` — there is no IL `MethodDef` token                                 |
+| `TypeFullName`    | Best-effort demangled declaring-type FQN (may retain the assembly prefix) |
+| `MethodName`      | Best-effort demangled bare method name                                    |
+| `GenericArity`    | `0` — not recoverable from the mangled name alone                         |
+| `ModuleName` / `ModulePath` | The target's native image (`/proc/<pid>/exe`) — a **hint** only |
+
+Consumer guidance: resolve an AOT identity by `(TypeFullName, MethodName)` against the same map /
+the binary's symbol table (the mangled symbol is the join key). Treat `ModulePath` as an untrusted
+hint and verify the image's build-id before loading it (see "Path hints are untrusted" above). The
+`TypeFullName`/`MethodName` strings are best-effort: NativeAOT name mangling is lossy and not all
+compiler-synthesized names round-trip. Without `nativeAotMapFile`, AOT hotspots still resolve to
+demangled display names but carry no `MethodIdentity` (so the handoff is skipped rather than
+emitting a low-confidence guess for non-managed frames).
+
 ## Producer responsibilities (`dotnet-diagnostics-mcp`)
 
 1. During the event walk, capture `TraceCodeAddress` per method-frame key.
