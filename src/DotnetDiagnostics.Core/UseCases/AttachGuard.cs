@@ -83,11 +83,13 @@ public static class AttachGuard
                     "use Docker '--pid=container:target' or K8s 'shareProcessNamespace: true'.",
                     processId is int pidForCap && pidForCap > 0
                         ? new Dictionary<string, object?> { ["view"] = "capabilities", ["processId"] = pidForCap }
-                        : new Dictionary<string, object?> { ["view"] = "capabilities" }),
+                        : new Dictionary<string, object?> { ["view"] = "capabilities" })
+                { Priority = NextActionHintPriority.High },
                 new("collect_process_dump",
                     "Fall back to dump-based workflow (collect_process_dump then inspect_heap/inspect_dump). " +
                     "Dumps use the diagnostic IPC socket (no ptrace) and work across PID namespaces.",
-                    processId is int pp && pp > 0 ? new Dictionary<string, object?> { ["processId"] = pp } : null),
+                    processId is int pp && pp > 0 ? new Dictionary<string, object?> { ["processId"] = pp } : null)
+                { Priority = NextActionHintPriority.Low },
             };
 
             if (string.Equals(tool, "collect_thread_snapshot", StringComparison.Ordinal))
@@ -114,13 +116,15 @@ public static class AttachGuard
                     "containers may be in separate PID namespaces — use Docker '--pid=container:target' or K8s 'shareProcessNamespace: true'.",
                     processId is int pid && pid > 0
                         ? new Dictionary<string, object?> { ["view"] = "capabilities", ["processId"] = pid }
-                        : new Dictionary<string, object?> { ["view"] = "capabilities" }),
+                        : new Dictionary<string, object?> { ["view"] = "capabilities" })
+                { Priority = NextActionHintPriority.High },
                 new("collect_process_dump",
                     "Fall back to dump-based workflow: collect_process_dump then inspect_heap(source=\"dump\"). " +
                     "Dumps use the diagnostic IPC socket (no ptrace) and work across PID namespaces.",
                     processId is int pidForDump && pidForDump > 0
                         ? new Dictionary<string, object?> { ["processId"] = pidForDump }
-                        : null),
+                        : null)
+                { Priority = NextActionHintPriority.Low },
             };
 
             if (string.Equals(tool, "collect_thread_snapshot", StringComparison.Ordinal))

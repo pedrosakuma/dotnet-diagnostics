@@ -864,7 +864,8 @@ public sealed class DiagnosticTools
         }
 
         hints.Add(new NextActionHint("query_snapshot", "Walk the merged caller→callee tree built from the same samples.",
-            new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 }));
+            new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
+        { Priority = NextActionHintPriority.High });
         hints.Add(new NextActionHint("collect_events", "Confirm hot path isn't driven by exception-heavy control flow.",
             new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 }));
 
@@ -978,7 +979,8 @@ public sealed class DiagnosticTools
             handle.Id,
             handle.ExpiresAt,
             new NextActionHint("query_snapshot", "Walk the merged allocation call-site tree to find which code paths are allocating the most.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 }),
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
+            { Priority = NextActionHintPriority.High },
             new NextActionHint("collect_sample", "Cross-reference: identify hot CPU paths that correlate with the top allocating types.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
             new NextActionHint("collect_events", "Observe GC pause frequency and generation distribution caused by this allocation load.",

@@ -15,6 +15,26 @@ Scope names are kebab-case and **stable — never renamed**. Each is a distinct 
 boundary. A tool declares its requirement with `[RequireScope]` / `[RequireAnyScope]`;
 startup fails fast if any `[McpServerTool]` is missing one.
 
+`tools/list` surfaces the same static requirement in each tool's native MCP
+`_meta` object, under `_meta.dotnetDiagnostics.auth`:
+
+```json
+{
+  "requiredScopes": ["dump-write", "ptrace"],
+  "semantics": "all",
+  "authorized": false
+}
+```
+
+- `requiredScopes` mirrors the attribute values.
+- `semantics` is `all` for `[RequireScope]` and `any` for `[RequireAnyScope]`.
+- `authorized` is evaluated for the current bearer token, so clients can hide or
+  gray out tools the caller cannot invoke before attempting `tools/call`.
+
+This is advisory discovery metadata, not a bypass: `tools/call` still enforces
+the same scopes, and dispatcher tools can apply narrower per-parameter or
+per-handle checks at runtime.
+
 ### Primary scopes
 
 | Scope | Grants | Representative tools |

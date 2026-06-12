@@ -9,6 +9,20 @@ delivered over Streamable HTTP at `POST /mcp` and require an
 > [`src/DotnetDiagnostics.Core`](../src/DotnetDiagnostics.Core), which are the source of
 > truth for field names and types.
 
+### Common response envelope
+
+Every structured tool response is a `DiagnosticResult<T>` envelope with:
+
+- `summary`: short human-readable outcome.
+- `hints`: ordered `NextActionHint[]`; each hint carries `nextTool`, `reason`,
+  optional `suggestedArguments`, and `priority` (`high`, `normal`, or `low`;
+  default `normal`).
+- `data`: the tool-specific payload on success.
+- `error`: `DiagnosticError` on classified failures.
+- `handle` / `handleExpiresAt` / `handleExpiresInSeconds`: present when the
+  tool minted a drilldown handle. `handleExpiresInSeconds` is computed when the
+  response is serialized and is floored at `0` after expiry.
+
 ### Implicit bootstrap (`processId` is optional)
 
 Since issue #42 every tool that targets a live .NET process accepts `processId`
@@ -102,6 +116,22 @@ and marks these tools with `execution.taskSupport: "optional"` in `tools/list`:
 - `collect_sample(kind="cpu")`
 - `collect_events(kind="exceptions")`
 - `collect_events(kind="gc")`
+
+`tools/list` also annotates every tool with authorization metadata under
+`_meta.dotnetDiagnostics.auth`:
+
+```json
+{
+  "requiredScopes": ["eventpipe"],
+  "semantics": "all",
+  "authorized": true
+}
+```
+
+`semantics` is `all` for `[RequireScope]` and `any` for `[RequireAnyScope]`;
+`authorized` is evaluated for the current bearer token (or the synthetic root
+principal in stdio / legacy-root mode). Runtime branches may still tighten
+access based on parameters or handle kind; see [authorization](./authorization.md).
 
 **Spec-compliant clients should use MCP Tasks** for long windows:
 
@@ -336,7 +366,9 @@ same way at capture time (`AddressKind` / `Rva` / `BuildId` on each frame, `Disp
 Handles are invalidated when: the TTL expires, the target process dies
 (automatic eviction), or a server restart clears the store. Accessing an
 unknown handle returns `DiagnosticError { Kind: "HandleExpired" }` with a
-`NextActionHint` pointing at the original collector.
+`NextActionHint` pointing at the original collector. Responses with handles
+include both absolute `handleExpiresAt` and relative `handleExpiresInSeconds`
+so clients can refresh without parsing timestamps.
 
 This contract is the "split collector, unified drilldown" pattern
 (documented in [`AGENTS.md`](../AGENTS.md)) applied to *all* collectors

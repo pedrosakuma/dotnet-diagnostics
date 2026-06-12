@@ -207,6 +207,12 @@ internal static class DiagnosticServiceRegistration
                     ToolErrorSurfaceFilter.Create(
                         () => loggerFactoryAccessor()?.CreateLogger(typeof(ToolErrorSurfaceFilter).FullName!)));
 
+                options.Filters.Request.ListToolsFilters.Add(
+                    BuildScopeListToolsFilter(
+                        servicesAccessor,
+                        enableOrchestratorTools,
+                        enableAzureDiscoveryTools));
+
                 // B5.2 / docs/authorization.md#scopes — per-tool authorization. Sits AFTER ToolErrorSurfaceFilter
                 // in the registration order, which means it runs BEFORE it in the dispatch
                 // pipeline (filters wrap last-in-first-out), so a forbidden envelope short-
@@ -282,6 +288,38 @@ internal static class DiagnosticServiceRegistration
         }
 
         return builder;
+    }
+
+    private static ModelContextProtocol.Server.McpRequestFilter<ListToolsRequestParams, ListToolsResult> BuildScopeListToolsFilter(
+        Func<IServiceProvider?>? servicesAccessor,
+        bool enableOrchestratorTools,
+        bool enableAzureDiscoveryTools)
+    {
+        Security.ToolScopeRegistry? cachedRegistry = null;
+        ModelContextProtocol.Server.McpRequestFilter<ListToolsRequestParams, ListToolsResult>? cachedFilter = null;
+        var gate = new object();
+
+        return next =>
+        {
+            if (cachedFilter is null)
+            {
+                lock (gate)
+                {
+                    if (cachedFilter is null)
+                    {
+                        var surfaceTypes = PodLocalToolSurfaces.GetSurfaceTypes(
+                            enableOrchestratorTools,
+                            enableAzureDiscoveryTools);
+                        cachedRegistry = Security.ToolScopeRegistry.Build(surfaceTypes);
+                        cachedFilter = Security.ToolScopeListToolsFilter.Create(
+                            cachedRegistry,
+                            () => servicesAccessor?.Invoke()?.GetService<Security.IPrincipalAccessor>());
+                    }
+                }
+            }
+
+            return cachedFilter(next);
+        };
     }
 
     private static ModelContextProtocol.Server.McpRequestFilter<CallToolRequestParams, CallToolResult> BuildScopeAuthorizationFilter(

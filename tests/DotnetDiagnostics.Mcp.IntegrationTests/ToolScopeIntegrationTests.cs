@@ -131,6 +131,26 @@ public sealed class ToolScopeIntegrationTests
     }
 
     [Fact]
+    public async Task ListTools_SurfaceScopeMetadata_For_Current_Bearer()
+    {
+        await using var factory = CreateFactory(
+            ("counters-only", "counters-secret-list", new[] { "read-counters" }));
+        await using var client = await ConnectWithTokenAsync(factory, "counters-secret-list");
+
+        var tools = await client.ListToolsAsync(cancellationToken: CancellationToken.None);
+
+        var collectSampleAuth = tools.Single(t => t.Name == "collect_sample").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
+        collectSampleAuth["authorized"]!.GetValue<bool>().Should().BeFalse();
+        collectSampleAuth["semantics"]!.GetValue<string>().Should().Be("all");
+        collectSampleAuth["requiredScopes"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Equal("eventpipe");
+
+        var inspectProcessAuth = tools.Single(t => t.Name == "inspect_process").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
+        inspectProcessAuth["authorized"]!.GetValue<bool>().Should().BeTrue();
+        inspectProcessAuth["semantics"]!.GetValue<string>().Should().Be("any");
+        inspectProcessAuth["requiredScopes"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Contain("read-counters");
+    }
+
+    [Fact]
     public async Task InspectProcess_RequestsNow_Denies_When_Ptrace_Is_Missing()
     {
         await using var factory = CreateFactory(

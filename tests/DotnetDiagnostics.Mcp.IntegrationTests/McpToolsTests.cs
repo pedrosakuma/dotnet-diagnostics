@@ -121,6 +121,11 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             tool.ReturnJsonSchema.Should().NotBeNull(
                 $"tool {tool.Name} must declare an outputSchema (UseStructuredContent = true)");
             tool.ReturnJsonSchema!.Value.ValueKind.Should().Be(JsonValueKind.Object);
+            var authMeta = tool.ProtocolTool.Meta?["dotnetDiagnostics"]?["auth"]?.AsObject();
+            authMeta.Should().NotBeNull($"tool {tool.Name} must advertise authorization metadata in tools/list _meta");
+            authMeta!["authorized"]!.GetValue<bool>().Should().BeTrue("the legacy root token should satisfy every scope");
+            authMeta["requiredScopes"]!.AsArray().Should().NotBeEmpty($"tool {tool.Name} must list required scopes");
+            authMeta["semantics"]!.GetValue<string>().Should().BeOneOf("all", "any");
 
             var required = tool.JsonSchema.TryGetProperty("required", out var req) && req.ValueKind == JsonValueKind.Array
                 ? req.EnumerateArray().Select(e => e.GetString()!).ToArray()
@@ -143,6 +148,14 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
                 var properties = tool.JsonSchema.GetProperty("properties");
                 properties.TryGetProperty("symbolPath", out _).Should().BeTrue($"tool {tool.Name} must expose the symbolPath override");
             }
+
+            var dumpAuth = tools.Single(t => t.Name == "collect_process_dump").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
+            dumpAuth["semantics"]!.GetValue<string>().Should().Be("all");
+            dumpAuth["requiredScopes"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Equal("dump-write", "ptrace");
+
+            var queryAuth = tools.Single(t => t.Name == "query_snapshot").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
+            queryAuth["semantics"]!.GetValue<string>().Should().Be("any");
+            queryAuth["requiredScopes"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Contain("read-counters");
         }
     }
 
@@ -193,6 +206,45 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             tool.ProtocolTool.Execution.Should().NotBeNull($"{toolName} must advertise execution metadata for MCP Tasks");
             tool.ProtocolTool.Execution!.TaskSupport.Should().Be(ModelContextProtocol.Protocol.ToolTaskSupport.Optional);
         }
+    }
+
+    [Fact]
+    public async Task ErrorHints_DefaultPriority_IsSerializedAsNormal()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "query_snapshot",
+            arguments: new Dictionary<string, object?> { ["handle"] = "not-a-real-handle" },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Error.Should().NotBeNull();
+        envelope.Hints.Should().ContainSingle();
+        envelope.Hints[0].Priority.Should().Be(NextActionHintPriority.Normal);
+
+        result.StructuredContent.Should().NotBeNull();
+        var hint = result.StructuredContent!.Value.GetProperty("hints").EnumerateArray().Single();
+        hint.GetProperty("priority").GetString().Should().Be("normal");
+    }
+
+    [Fact]
+    public void HandleExpiresInSeconds_IsSerializedAsRelativeTtl()
+    {
+        var result = DiagnosticResult.OkWithHandle(
+            "payload",
+            "summary",
+            "handle-123",
+            DateTimeOffset.UtcNow.AddSeconds(5));
+
+        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        root.TryGetProperty("handleExpiresInSeconds", out var ttl).Should().BeTrue();
+        ttl.ValueKind.Should().Be(JsonValueKind.Number);
+        ttl.GetInt64().Should().BeInRange(0, 5);
     }
 
     [Fact]
