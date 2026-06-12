@@ -95,6 +95,8 @@ public sealed class CollectSampleTool
         bool resolveMethodInstantiations = false,
         [Description("kind='cpu' only. Cap on how many top hotspots get ClrMD generic-instantiation enrichment. Must be >= 1. Defaults to the requested topN.")]
         int? maxResolvedMethodInstantiations = null,
+        [Description("kind='cpu' on NativeAOT only. Filesystem path to the ILC '*.map.xml' map file (publish with <IlcGenerateMapFile>true</IlcGenerateMapFile>). Enables a name-based MethodIdentity (TypeFullName + MethodName; MVID/token null) for hot managed AOT methods so the dotnet-native-mcp disassembly handoff works. Ignored on CoreCLR and by other kinds. Path is a hint only.")]
+        string? nativeAotMapFile = null,
         [Description("kind='native-alloc' only. perf sample period — record one callchain per this many allocator hits. Must be >= 1. Defaults to 1000. Higher reduces overhead and resolution; throttles recorded samples but not the per-call uprobe trap cost.")]
         long nativeAllocSamplePeriod = 1000,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
@@ -124,6 +126,7 @@ public sealed class CollectSampleTool
                     maxResolvedSources,
                     resolveMethodInstantiations,
                     maxResolvedMethodInstantiations,
+                    nativeAotMapFile,
                     depth,
                     deprecation,
                     requestContext,

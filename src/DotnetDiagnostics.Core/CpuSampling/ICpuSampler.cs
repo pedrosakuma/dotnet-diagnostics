@@ -18,8 +18,19 @@ public interface ICpuSampler
         int topN = 25,
         SourceResolutionOptions? sourceResolution = null,
         MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Optional NativeAOT identity resolution (issue #395). When <see cref="MapFilePath"/> points at the
+/// ILC <c>*.map.xml</c> map file (produced by publishing with <c>&lt;IlcGenerateMapFile&gt;true&lt;/IlcGenerateMapFile&gt;</c>),
+/// the perf-based AOT sampler emits a name-based <c>MethodIdentity</c> (TypeFullName + MethodName;
+/// MVID / metadata token stay <c>null</c>) for frames that match a managed <c>MethodCode</c> node —
+/// unblocking the <c>dotnet-native-mcp</c> "disassemble this hot AOT function" handoff. Ignored by the
+/// CoreCLR EventPipe path (managed metadata is already resolved there) and on Windows ETW.
+/// </summary>
+public sealed record NativeAotSymbolResolutionOptions(string? MapFilePath = null);
 
 /// <summary>
 /// Optional source-level resolution. <see cref="MaxResolved"/> caps how many top hotspots are

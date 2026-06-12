@@ -915,6 +915,7 @@ each carries a `DEPRECATED` notice and will be removed in `0.9.0`.
 | `resolveSourceLines` | `bool` | `true` | `cpu` only. Same as [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")). |
 | `maxResolvedSources` | `int?` | `topN` | `cpu` only. |
 | `resolveMethodInstantiations` / `maxResolvedMethodInstantiations` | — | — | `cpu` only. Same as `collect_sample(kind="cpu")`. |
+| `nativeAotMapFile` | `string?` | `null` | `cpu` on NativeAOT only. Path to the ILC `*.map.xml` (`<IlcGenerateMapFile>true</IlcGenerateMapFile>`). Emits a name-based `MethodIdentity` (TypeFullName + MethodName; MVID/token `null`) for hot managed AOT methods so the `dotnet-native-mcp` disassembly handoff works. Ignored on CoreCLR. See [`aot-coverage.md`](./aot-coverage.md) and [`handoff-contract.md`](./handoff-contract.md#nativeaot-identity--name-based-issue-395). |
 | `nativeAllocSamplePeriod` | `long` | `1000` | `native-alloc` only. Record one callchain per N allocator hits (throttles recorded samples, not the per-call uprobe trap cost). |
 
 **Returns:** `CollectSampleEnvelope` — a polymorphic record carrying the
