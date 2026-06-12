@@ -1,7 +1,7 @@
 # Azure deployment recipes
 
 On-demand diagnostics for .NET applications running on Azure-managed container
-hosts. Both recipes deploy `dotnet-diagnostics-mcp` as a **sidecar container**
+hosts. These recipes deploy `dotnet-diagnostics-mcp` as a **sidecar container**
 alongside your application; the sidecar attaches to the app via the .NET
 runtime's diagnostic IPC socket (created in `/tmp`), so the target app needs
 **no code changes**.
@@ -9,6 +9,8 @@ runtime's diagnostic IPC socket (created in `/tmp`), so the target app needs
 | Recipe | Target host | Multi-container model | External MCP ingress? |
 |---|---|---|---|
 | [`container-apps/`](container-apps/) | Azure Container Apps | Single revision, two containers, shared `EmptyDir` over `/tmp` | Optional (toggle `ingressTarget=diag` + `externalIngress=true`) |
+| [`container-instances/`](container-instances/) | Azure Container Instances | One container group, two containers, shared `EmptyDir` over `/tmp` | Optional (private IP recommended) — **EventPipe-only, no `ptrace`** |
+| [`functions-aca/`](functions-aca/) | Azure Functions on Container Apps | Functions image + diag sidecar, shared `EmptyDir` over `/tmp` | Optional (toggle `ingressTarget=diag`) — target the **isolated worker** |
 | [`app-service/`](app-service/)       | Azure App Service (Linux) | `siteContainers` sidecar (GA, 2024) | No — reach via `az webapp ssh` only |
 
 For Kubernetes (AKS or any cluster), use the generic recipes under
@@ -37,7 +39,7 @@ For Kubernetes (AKS or any cluster), use the generic recipes under
    ```
 3. **Container images reachable by Azure**:
    - The diagnostic sidecar image: published as
-     `ghcr.io/pedrosakuma/dotnet-diagnostics:0.3.1` (or build your own via
+     `ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0` (or build your own via
      `docker build -f deploy/Dockerfile .` and push to your registry).
    - Your application image, built however you build today.
    - If either lives in a private registry (ACR, GHCR, etc.) you'll need to
@@ -75,6 +77,8 @@ touching the subscription:
 ```bash
 # Compile to ARM JSON (errors out on schema issues).
 az bicep build --file deploy/azure/container-apps/main.bicep
+az bicep build --file deploy/azure/container-instances/main.bicep
+az bicep build --file deploy/azure/functions-aca/main.bicep
 az bicep build --file deploy/azure/app-service/main.bicep
 ```
 
@@ -112,7 +116,7 @@ az deployment group create \
       name=diag-demo \
       environmentId=$ENV_ID \
       appImage=$APP_IMAGE \
-      diagImage=ghcr.io/pedrosakuma/dotnet-diagnostics:0.3.1 \
+      diagImage=ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0 \
       diagBearerToken=$DIAG_TOKEN
 ```
 
@@ -155,6 +159,52 @@ connect from a peered VNet.
 
 ---
 
+## Recipe: Azure Container Instances
+
+The Bicep deploys one ACI container group with two containers (`app` and
+`diag`) sharing an `EmptyDir` volume at `/tmp`. **ACI is EventPipe-only**: it
+grants no `CAP_SYS_PTRACE` and no shared PID namespace, so `ptrace`-backed
+tools (thread snapshot, live heap, dump) are unavailable — counters, CPU
+sampling, GC/exception/allocation collection still work. Full details and the
+delegated-subnet prerequisite are in
+[`container-instances/README.md`](container-instances/).
+
+```bash
+az deployment group create \
+  --resource-group diag-rg \
+  --template-file deploy/azure/container-instances/main.bicep \
+  --parameters \
+      name=diag-demo \
+      appImage=$APP_IMAGE \
+      diagImage=ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0 \
+      diagBearerToken=$DIAG_TOKEN \
+      subnetId=$SUBNET_ID
+```
+
+---
+
+## Recipe: Azure Functions on Container Apps
+
+The Bicep deploys your **Functions container image** as a Container App with a
+diag sidecar (the GA 2025 hosting path). It mirrors the Container Apps recipe;
+the key nuance is that the **.NET isolated** model runs two processes (the
+Functions host and the isolated worker) — target the **worker** when
+collecting. Full details in [`functions-aca/README.md`](functions-aca/).
+
+```bash
+az deployment group create \
+  --resource-group diag-rg \
+  --template-file deploy/azure/functions-aca/main.bicep \
+  --parameters \
+      name=fn-diag \
+      environmentId=$ENV_ID \
+      appImage=$FUNCTIONS_IMAGE \
+      diagBearerToken=$DIAG_TOKEN \
+      azureWebJobsStorage="$STORAGE_CONN"
+```
+
+---
+
 ## Recipe: Azure App Service (Linux)
 
 The Bicep provisions a Linux App Service Plan + a Web App with two
@@ -169,7 +219,7 @@ az deployment group create \
   --parameters \
       siteName=diag-demo-app \
       appImage=$APP_IMAGE \
-      diagImage=ghcr.io/pedrosakuma/dotnet-diagnostics:0.3.1 \
+      diagImage=ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0 \
       diagBearerToken=$DIAG_TOKEN
 ```
 
@@ -199,15 +249,14 @@ az group delete -n diag-rg -y
 
 ## Roadmap
 
-- AWS ECS / Fargate sidecar recipe — [tracking issue #22](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22).
-- GCP Cloud Run multi-container recipe — [tracking issue #22](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22).
+- GCP Cloud Run multi-container recipe — [tracking issue #394](https://github.com/pedrosakuma/dotnet-diagnostics/issues/394).
 - Optional managed-identity-based auth for the MCP HTTP transport (today the
   bearer token is the only mechanism).
 
 ## Production: pin to a digest
 
 The defaults above use a released version tag
-(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.3.1`) rather than `:latest`, so a
+(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0`) rather than `:latest`, so a
 new upstream push cannot silently re-deploy under your stack. For production
 workloads go one step further and pin to a **content-addressable digest** so the
 exact image bytes are immutable across replicas, rollbacks, and pull retries:
@@ -215,7 +264,7 @@ exact image bytes are immutable across replicas, rollbacks, and pull retries:
 ```bash
 # Resolve the current digest for the version tag you trust:
 docker buildx imagetools inspect \
-  ghcr.io/pedrosakuma/dotnet-diagnostics:0.3.1 \
+  ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0 \
   --format '{{json .Manifest}}' | jq -r .digest
 # -> sha256:...
 

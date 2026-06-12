@@ -1,20 +1,14 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  dotnet-diagnostics-mcp — AWS ECS / Fargate recipe.
-  Deploys an ECS service with two co-located containers (app + diag) sharing
-  /tmp via a task-scoped volume, so the diag container can attach to the .NET
-  diagnostic IPC socket created by the app. Fargate platform 1.4.0+ is
-  required for LinuxParameters.Capabilities to take effect.
-
-  Validate without deploying:
-    cfn-lint deploy/aws/ecs-fargate/main.yaml
-    aws cloudformation validate-template --template-body file://deploy/aws/ecs-fargate/main.yaml
-
-  Smoke after a real deploy (from any host with kubectl-style ECS Exec enabled):
-    aws ecs execute-command --cluster <cluster> --task <task-id> \
-      --container diag --interactive --command "/bin/sh"
-    # inside diag:
-    ls /tmp/dotnet-diagnostic-*   # should show the app's socket
+  dotnet-diagnostics-mcp — AWS ECS on EC2 (Linux) recipe. Deploys an ECS service
+  with two co-located containers (app + diag) sharing /tmp via a task-scoped
+  volume, so the diag container attaches to the .NET diagnostic IPC socket.
+  Unlike Fargate, the EC2 launch type lets you control the host kernel, so
+  host-side off-CPU sampling works once kernel.perf_event_paranoid is set to -1
+  on the instances (ECS does not accept CAP_PERFMON; the host sysctl is the
+  gate). Requires an ECS cluster backed by EC2 capacity (this template does NOT
+  provision the instances). See the README for validation, the host tuning, and
+  the smoke test.
 
 Parameters:
   ServiceName:
@@ -24,13 +18,17 @@ Parameters:
 
   ClusterArn:
     Type: String
-    Description: ARN of an existing ECS cluster that supports Fargate launches.
+    Description: >
+      ARN of an existing ECS cluster that has EC2 container instances registered
+      (or a default capacity-provider strategy that launches them). Fargate-only
+      clusters will not schedule this EC2 task.
 
   Subnets:
     Type: List<AWS::EC2::Subnet::Id>
     Description: >
-      Subnets in which to place the task ENIs. Prefer private subnets with a NAT
-      gateway for image pulls. Public subnets require AssignPublicIp=ENABLED.
+      Subnets in which to place the task ENIs (awsvpc mode). Must match subnets
+      where the cluster's EC2 instances live. Prefer private subnets with a NAT
+      gateway for image pulls.
 
   SecurityGroupIds:
     Type: List<AWS::EC2::SecurityGroup::Id>
@@ -90,19 +88,17 @@ Parameters:
   TaskCpu:
     Type: String
     Default: "1024"
-    AllowedValues: ["256", "512", "1024", "2048", "4096"]
-    Description: CPU units for the whole task (app + diag combined).
+    Description: >
+      CPU units reserved for the whole task (app + diag combined). On EC2 this
+      is a soft reservation bounded by the instance size, not the fixed Fargate
+      sizing matrix — any positive value the instance can satisfy is accepted.
 
   TaskMemory:
     Type: String
     Default: "2048"
-    Description: Memory (MiB) for the whole task. Must be a valid Fargate combination with TaskCpu.
-
-  AssignPublicIp:
-    Type: String
-    Default: DISABLED
-    AllowedValues: [ENABLED, DISABLED]
-    Description: Set ENABLED only when deploying into public subnets without a NAT gateway.
+    Description: >
+      Hard memory limit (MiB) for the whole task. Must fit within a single
+      registered EC2 container instance.
 
   LogRetentionDays:
     Type: Number
@@ -124,16 +120,28 @@ Parameters:
       Enable ECS Exec so operators can shell into the diag container with
       `aws ecs execute-command`. The task role grants the matching permissions.
 
+  CapacityProviderName:
+    Type: String
+    Default: ""
+    Description: >
+      Optional ECS capacity provider (e.g. an Auto Scaling group capacity
+      provider with managed scaling). When set, the service uses a
+      capacity-provider strategy and omits LaunchType, so managed scaling can
+      launch EC2 capacity on demand. When empty, the service uses
+      LaunchType: EC2 and requires container instances that are already
+      registered to the cluster.
+
 Conditions:
   HasAppCommand: !Not [!Equals [!Join ["", !Ref AppCommand], ""]]
   EcsExecEnabled: !Equals [!Ref EnableEcsExec, "true"]
   HasSecretJsonKey: !Not [!Equals [!Ref BearerTokenSecretJsonKey, ""]]
+  UseCapacityProvider: !Not [!Equals [!Ref CapacityProviderName, ""]]
 
 Resources:
   LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub /ecs/${ServiceName}
+      LogGroupName: !Sub /ecs/${ServiceName}-ec2
       RetentionInDays: !Ref LogRetentionDays
 
   ExecutionRole:
@@ -185,8 +193,8 @@ Resources:
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: !Ref ServiceName
-      RequiresCompatibilities: [FARGATE]
+      Family: !Sub ${ServiceName}-ec2
+      RequiresCompatibilities: [EC2]
       NetworkMode: awsvpc
       PidMode: task
       Cpu: !Ref TaskCpu
@@ -253,8 +261,12 @@ Resources:
     Properties:
       ServiceName: !Ref ServiceName
       Cluster: !Ref ClusterArn
-      LaunchType: FARGATE
-      PlatformVersion: "1.4.0"
+      LaunchType: !If [UseCapacityProvider, !Ref "AWS::NoValue", EC2]
+      CapacityProviderStrategy: !If
+        - UseCapacityProvider
+        - - CapacityProvider: !Ref CapacityProviderName
+            Weight: 1
+        - !Ref "AWS::NoValue"
       DesiredCount: !Ref DesiredCount
       TaskDefinition: !Ref TaskDefinition
       EnableExecuteCommand: !If [EcsExecEnabled, true, false]
@@ -263,7 +275,6 @@ Resources:
         MaximumPercent: 100
       NetworkConfiguration:
         AwsvpcConfiguration:
-          AssignPublicIp: !Ref AssignPublicIp
           Subnets: !Ref Subnets
           SecurityGroups: !Ref SecurityGroupIds
 
