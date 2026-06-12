@@ -4,6 +4,7 @@ using System.Text.Json;
 using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Hosting;
 using DotnetDiagnostics.Core.Launch;
+using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Symbols;
 using Microsoft.Extensions.Configuration;
@@ -53,6 +54,14 @@ internal static class CliHost
         var peek = CliOptions.Parse(args, out var peekError);
         if (peekError is null && peek!.Command == "session" && !peek.Help)
         {
+            if (!CliCommands.TryValidateWatch(peek, out var watchError))
+            {
+                await Console.Error.WriteLineAsync(watchError).ConfigureAwait(false);
+                await Console.Error.WriteLineAsync().ConfigureAwait(false);
+                await Console.Error.WriteLineAsync(Usage).ConfigureAwait(false);
+                return 2;
+            }
+
             return await RunAsync(args, Console.In, Console.Out, Console.Error, CancellationToken.None).ConfigureAwait(false);
         }
 
@@ -90,8 +99,9 @@ internal static class CliHost
         string[] args,
         TextWriter stdout,
         TextWriter stderr,
-        CancellationToken cancellationToken)
-        => RunAsync(args, TextReader.Null, stdout, stderr, cancellationToken);
+        CancellationToken cancellationToken,
+        CliRuntimeOptions? runtimeOptions = null)
+        => RunAsync(args, TextReader.Null, stdout, stderr, cancellationToken, runtimeOptions);
 
     /// <summary>
     /// Testable core: parses <paramref name="args"/>, builds the Core host, dispatches the command and
@@ -104,12 +114,14 @@ internal static class CliHost
         TextReader stdin,
         TextWriter stdout,
         TextWriter stderr,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CliRuntimeOptions? runtimeOptions = null)
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(stdin);
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(stderr);
+        runtimeOptions ??= new CliRuntimeOptions();
 
         // Human summaries/hints are built in Core with `{x:F1}`/`{x:N0}` interpolation, which honours
         // the ambient culture (e.g. pt-BR renders `cpu-usage=0,0%`). Pin the invariant culture so the
@@ -158,6 +170,14 @@ internal static class CliHost
         if (!CliCommands.TryValidateLaunch(options, out var launchValidationError))
         {
             await stderr.WriteLineAsync(launchValidationError).ConfigureAwait(false);
+            await stderr.WriteLineAsync().ConfigureAwait(false);
+            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+            return 2;
+        }
+
+        if (options.WatchIntervalSeconds is not null && !CliCommands.TryValidateWatch(options, out var watchError))
+        {
+            await stderr.WriteLineAsync(watchError).ConfigureAwait(false);
             await stderr.WriteLineAsync().ConfigureAwait(false);
             await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
             return 2;
@@ -293,13 +313,21 @@ internal static class CliHost
             }
 
             launchedTarget = target;
-            options = options with { Pid = pid, Launch = false, LaunchedByCli = true };
+            options = options with { Pid = pid, PidName = null, Launch = false, LaunchedByCli = true };
         }
 
         using var host = BuildHost(options);
 
         try
         {
+            if (!TryResolveNamedPid(host.Services, options, out var resolvedOptions, out var pidResolutionError))
+            {
+                await stderr.WriteLineAsync(pidResolutionError).ConfigureAwait(false);
+                return 2;
+            }
+
+            options = resolvedOptions;
+
             // #387: long collections (collect / inspect-heap / dump) run for several seconds with no
             // output. Show an elapsed-time spinner on stderr while the command runs — but ONLY on a
             // real interactive console (not --json, not when stderr is redirected/piped, and never in
@@ -310,33 +338,24 @@ internal static class CliHost
                 && ReferenceEquals(stderr, Console.Error)
                 && !Console.IsErrorRedirected;
 
-            var result = await WithProgressAsync(
-                stderr,
-                showProgress,
-                options.Command,
-                () => CliCommands.RunAsync(host.Services, options, cancellationToken),
-                cancellationToken).ConfigureAwait(false);
-
-            if (options.Json)
+            var ansiEnabled = !options.Json && CliAnsi.IsEnabled(stdout, runtimeOptions.ForceAnsi);
+            if (options.WatchIntervalSeconds is not null)
             {
-                await stdout.WriteLineAsync(JsonSerializer.Serialize(result.Envelope, result.Envelope.GetType(), JsonOptions))
-                    .ConfigureAwait(false);
-            }
-            else
-            {
-                await stdout.WriteLineAsync(result.Human).ConfigureAwait(false);
+                return await RunWatchAsync(
+                    host.Services,
+                    options,
+                    stdout,
+                    stderr,
+                    showProgress,
+                    ansiEnabled,
+                    runtimeOptions,
+                    cancellationToken).ConfigureAwait(false);
             }
 
-            // A use case that swallows OperationCanceledException returns a partial envelope flagged
-            // Cancelled (no Error) — surface it as the cancelled exit code, not success.
-            if (result.Cancelled)
-            {
-                await stderr.WriteLineAsync($"dotnet-diagnostics-cli {options.Command}: cancelled mid-window — diagnostic session stopped and temp files cleaned up. Payload is partial.")
-                    .ConfigureAwait(false);
-                return 130;
-            }
+            var result = await RunCommandAsync(host.Services, options, stderr, showProgress, cancellationToken).ConfigureAwait(false);
+            await RenderAsync(result, options.Json, ansiEnabled, stdout).ConfigureAwait(false);
 
-            return result.IsError ? 1 : 0;
+            return await ToExitCodeAsync(result, options.Command, stderr).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -351,6 +370,127 @@ internal static class CliHost
                 await launchedTarget.DisposeAsync().ConfigureAwait(false);
             }
         }
+    }
+
+    private static async Task<CliCommandResult> RunCommandAsync(
+        IServiceProvider services,
+        CliOptions options,
+        TextWriter stderr,
+        bool showProgress,
+        CancellationToken cancellationToken)
+        => await WithProgressAsync(
+            stderr,
+            showProgress,
+            options.Command!,
+            () => CliCommands.RunAsync(services, options, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+
+    private static async Task RenderAsync(CliCommandResult result, bool json, bool ansiEnabled, TextWriter stdout)
+    {
+        if (json)
+        {
+            await stdout.WriteLineAsync(JsonSerializer.Serialize(result.Envelope, result.Envelope.GetType(), JsonOptions))
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            await stdout.WriteLineAsync(CliAnsi.ColorizeHuman(result.Human, ansiEnabled)).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<int> ToExitCodeAsync(CliCommandResult result, string? command, TextWriter stderr)
+    {
+        // A use case that swallows OperationCanceledException returns a partial envelope flagged
+        // Cancelled (no Error) — surface it as the cancelled exit code, not success.
+        if (result.Cancelled)
+        {
+            await stderr.WriteLineAsync($"dotnet-diagnostics-cli {command}: cancelled mid-window — diagnostic session stopped and temp files cleaned up. Payload is partial.")
+                .ConfigureAwait(false);
+            return 130;
+        }
+
+        return result.IsError ? 1 : 0;
+    }
+
+    private static async Task<int> RunWatchAsync(
+        IServiceProvider services,
+        CliOptions options,
+        TextWriter stdout,
+        TextWriter stderr,
+        bool showProgress,
+        bool ansiEnabled,
+        CliRuntimeOptions runtimeOptions,
+        CancellationToken cancellationToken)
+    {
+        var maxIterations = runtimeOptions.MaxWatchIterations;
+        var delay = runtimeOptions.WatchDelay ?? TimeSpan.FromSeconds(options.WatchIntervalSeconds!.Value);
+        var iteration = 0;
+        var lastExitCode = 0;
+
+        while (!cancellationToken.IsCancellationRequested
+               && (maxIterations is null || iteration < maxIterations.Value))
+        {
+            if (iteration > 0)
+            {
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                var clear = CliAnsi.ClearScreen(ansiEnabled);
+                if (clear.Length > 0)
+                {
+                    await stdout.WriteAsync(clear).ConfigureAwait(false);
+                }
+            }
+
+            var result = await RunCommandAsync(services, options, stderr, showProgress, cancellationToken).ConfigureAwait(false);
+            await RenderAsync(result, json: false, ansiEnabled, stdout).ConfigureAwait(false);
+            lastExitCode = await ToExitCodeAsync(result, options.Command, stderr).ConfigureAwait(false);
+            if (lastExitCode == 130)
+            {
+                return lastExitCode;
+            }
+
+            iteration++;
+        }
+
+        return cancellationToken.IsCancellationRequested ? 130 : lastExitCode;
+    }
+
+    internal static bool TryResolveNamedPid(
+        IServiceProvider services,
+        CliOptions options,
+        out CliOptions resolvedOptions,
+        out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+
+        resolvedOptions = options;
+        error = null;
+
+        if (options.PidName is null || !ShouldResolvePidName(options))
+        {
+            return true;
+        }
+
+        var discovery = services.GetRequiredService<IProcessDiscovery>();
+        if (!CliProcessSelector.TryResolveName(options.PidName, discovery.ListProcesses(), out var pid, out error))
+        {
+            return false;
+        }
+
+        resolvedOptions = options with { Pid = pid, PidName = null };
+        return true;
+    }
+
+    internal static bool ShouldResolvePidName(CliOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return options.Command switch
+        {
+            "capabilities" or "collect" or "dump" => true,
+            "inspect-heap" => options.DumpFile is null && !options.Sources.Contains("dump", StringComparer.Ordinal),
+            "get-bytes" => string.Equals(options.Kind, "module", StringComparison.Ordinal),
+            _ => false,
+        };
     }
 
     /// <summary>Maximum time to wait for a launched child's diagnostic endpoint to come up.</summary>

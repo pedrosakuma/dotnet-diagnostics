@@ -94,6 +94,24 @@ public sealed class CliCollectValidationTests
     }
 
     [Fact]
+    public void TryValidateCommand_WatchRejectsNonPositiveInterval()
+    {
+        var options = CliOptions.Parse(new[] { "collect", "--kind", "counters", "--watch", "0" }, out _)!;
+
+        CliCommands.TryValidateCommand(options, out var error).Should().BeFalse();
+        error.Should().Contain("positive interval");
+    }
+
+    [Fact]
+    public void TryValidateCommand_WatchRejectsJson()
+    {
+        var options = CliOptions.Parse(new[] { "collect", "--kind", "counters", "--watch", "1", "--json" }, out _)!;
+
+        CliCommands.TryValidateCommand(options, out var error).Should().BeFalse();
+        error.Should().Contain("cannot be combined with --json");
+    }
+
+    [Fact]
     public void CollectKinds_MatchMcpDiscriminatorSet()
     {
         // Keep the CLI's accepted kinds aligned with the MCP collect_events discriminator family.

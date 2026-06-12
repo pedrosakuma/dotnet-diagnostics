@@ -73,8 +73,8 @@ These apply to every command:
 
 | Option | Meaning |
 |---|---|
-| `-p, --pid <int>` | Target OS process id. **Auto-resolved** when exactly one .NET process is visible. |
-| `--json` | Emit the raw `DiagnosticResult<T>` envelope as JSON instead of the human table. |
+| `-p, --pid <pid\|name>` | Target OS process id, or a case-insensitive prefix of the visible .NET process entrypoint/name. Purely numeric values are always treated as literal PIDs. **Auto-resolved** when exactly one .NET process is visible and `--pid` is omitted. |
+| `--json` | Emit the raw `DiagnosticResult<T>` envelope as JSON instead of the human table. JSON is never colorized. |
 | `--launch -- <app> [args]` | **Dev mode.** Launch `<app>` as a child of the CLI so live attach works under `kernel.yama.ptrace_scope=1` with no privilege — see the [Linux note](#linux-ptrace-note). Supported by `capabilities`, `collect`, `dump`, `inspect-heap` (live), `get-bytes` (module) and `session`. Mutually exclusive with `--pid`; the child is terminated on exit. |
 | `-h, --help` | Show the global usage screen, or a focused screen for `<command> --help`. |
 
@@ -85,6 +85,10 @@ Exit codes: `0` success (a `dump` preview is also a success), `1` a structured f
 > spinner to stderr while they run, on an interactive terminal only. It is suppressed under `--json`
 > and whenever stderr is redirected/piped, so machine-readable output (stdout) and captured logs stay
 > clean.
+>
+> **Color.** Human output uses ANSI color for headlines, section headers, severities and verdicts only
+> when stdout is an interactive terminal. Color is disabled automatically for redirected stdout,
+> whenever `--json` is used, or when `NO_COLOR` is set to any value.
 
 ## Commands
 
@@ -117,6 +121,7 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
 | `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |
 | `--interval <int>` | Refresh interval in seconds (`counters`, `db`, `kestrel`, `networking`). Default 1. |
+| `--watch <seconds>` | Re-run the command every N seconds, clear/redraw the human output, and stop cleanly on Ctrl-C. Not compatible with `--json`. |
 | `--provider <name>` | `counters`: EventCounter provider (repeatable); `catalog`: EventPipe provider (repeatable; replaces broad defaults); `event_source`: required provider name. |
 | `--meter <name>` | `counters`: Meter name (repeatable). |
 | `--source <name>` | `activities`: ActivitySource filter (repeatable, `*` / `?` globs). |
@@ -127,6 +132,7 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 
 ```bash
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
+dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --watch 2
 dotnet-diagnostics-cli collect --kind datas --pid 1234 --duration 30 --save ./before.json
 dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
 dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
@@ -265,11 +271,13 @@ switch.
 
 ### Target binding
 
-Bind a target pid once instead of repeating `--pid` on every command:
+Bind a target pid once instead of repeating `--pid` on every command. The binding accepts either a
+literal pid or a visible .NET process name/prefix using the same matching rules as `--pid <name>`:
 
 | Input | Effect |
 |---|---|
-| `target <pid>` (or `target --pid <pid>`) | Bind a default pid. The prompt becomes `diag(pid <id>)>`. |
+| `target <pid>` / `target --pid <pid>` | Bind a default pid. The prompt becomes `diag(pid <id>)>`. |
+| `target <name-prefix>` / `target --pid <name-prefix>` | Resolve exactly one visible .NET process by entrypoint/name prefix and bind its pid. Ambiguous matches list pid + name. |
 | `target` | Show the current binding. |
 | `target clear` (or `none` / `off` / `unset`) | Unbind. |
 

@@ -61,12 +61,33 @@ public sealed class CliOptionsTests
     }
 
     [Fact]
-    public void Parse_PidNonInteger_ReturnsError()
+    public void Parse_PidEmptyValue_ReturnsError()
+    {
+        var options = CliOptions.Parse(new[] { "capabilities", "--pid", "" }, out var error);
+
+        options.Should().BeNull();
+        error.Should().Contain("requires a non-empty pid or process name");
+    }
+
+    [Fact]
+    public void Parse_PidName_IsCapturedAsSelector()
     {
         var options = CliOptions.Parse(new[] { "capabilities", "--pid", "abc" }, out var error);
 
-        options.Should().BeNull();
-        error.Should().Contain("expects an integer");
+        error.Should().BeNull();
+        options.Should().NotBeNull();
+        options!.Pid.Should().BeNull();
+        options.PidName.Should().Be("abc");
+        options.HasPid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Parse_Watch_IsCaptured()
+    {
+        var options = CliOptions.Parse(new[] { "collect", "--kind", "counters", "--watch", "2" }, out var error);
+
+        error.Should().BeNull();
+        options!.WatchIntervalSeconds.Should().Be(2);
     }
 
     [Fact]

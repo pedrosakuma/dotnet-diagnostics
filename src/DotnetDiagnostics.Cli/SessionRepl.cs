@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.ProcessDiscovery;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace DotnetDiagnostics.Cli;
@@ -152,7 +153,7 @@ internal sealed class SessionRepl
                     && (string.Equals(lineTokens[0], "target", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(lineTokens[0], "use", StringComparison.OrdinalIgnoreCase)))
                 {
-                    await HandleTargetAsync(lineTokens, stdout, stderr).ConfigureAwait(false);
+                    await HandleTargetAsync(services, lineTokens, stdout, stderr).ConfigureAwait(false);
                     continue;
                 }
 
@@ -235,11 +236,17 @@ internal sealed class SessionRepl
             return;
         }
 
+        if (options.WatchIntervalSeconds is not null)
+        {
+            await stderr.WriteLineAsync("--watch is only available for one-shot commands outside a session. Re-run the command manually, or leave the session and use --watch there.").ConfigureAwait(false);
+            return;
+        }
+
         // Apply the session-bound target pid to live-target commands that omitted --pid (strand C).
         // We append the flag to the token list and re-parse rather than clone CliOptions (a class with
         // ~30 init-only properties). Validation then runs against the effective options.
         var inheritedTarget = false;
-        if (_targetPid is { } boundPid && options.Pid is null && ShouldInheritTarget(options))
+        if (_targetPid is { } boundPid && !options.HasPid && ShouldInheritTarget(options))
         {
             tokens.Add("--pid");
             tokens.Add(boundPid.ToString(CultureInfo.InvariantCulture));
@@ -259,6 +266,14 @@ internal sealed class SessionRepl
             await stderr.WriteLineAsync(validationError).ConfigureAwait(false);
             return;
         }
+
+        if (!CliHost.TryResolveNamedPid(services, options, out var resolvedOptions, out var pidResolutionError))
+        {
+            await stderr.WriteLineAsync(pidResolutionError).ConfigureAwait(false);
+            return;
+        }
+
+        options = resolvedOptions;
 
         // Issue #365: when the session launched the target and this command resolves to that pid, mark
         // the options so the capability note reports descendant-attach availability instead of
@@ -322,8 +337,10 @@ internal sealed class SessionRepl
     /// default pid for live-target commands; <c>target clear|none|off|unset</c> unbinds it. Binding is
     /// lazy — the pid is not validated here; the next command surfaces the authoritative attach failure.
     /// </summary>
-    private async Task HandleTargetAsync(List<string> tokens, TextWriter stdout, TextWriter stderr)
+    private async Task HandleTargetAsync(IServiceProvider services, List<string> tokens, TextWriter stdout, TextWriter stderr)
     {
+        ArgumentNullException.ThrowIfNull(services);
+
         var args = tokens.Skip(1).ToList();
         var pidFlagForm = args.Count >= 1
             && (string.Equals(args[0], "--pid", StringComparison.OrdinalIgnoreCase)
@@ -362,18 +379,62 @@ internal sealed class SessionRepl
         }
 
         if (args.Count == 1
-            && int.TryParse(args[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var pid)
-            && pid > 0)
+            && int.TryParse(args[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var pid))
         {
-            _targetPid = pid;
-            await stdout.WriteLineAsync(string.Create(
-                CultureInfo.InvariantCulture,
-                $"Target bound to pid {pid}. capabilities/collect/inspect-heap/dump/get-bytes now use it unless you pass --pid.")).ConfigureAwait(false);
+            if (pid > 0)
+            {
+                _targetPid = pid;
+                await stdout.WriteLineAsync(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Target bound to pid {pid}. capabilities/collect/inspect-heap/dump/get-bytes now use it unless you pass --pid.")).ConfigureAwait(false);
+            }
+            else
+            {
+                await WriteTargetUsageAsync(stderr).ConfigureAwait(false);
+            }
+
             return;
         }
 
-        await stderr.WriteLineAsync("Usage: target <pid> | target clear. Example: 'target 1234'.").ConfigureAwait(false);
+        if (args.Count == 1)
+        {
+            if (string.IsNullOrWhiteSpace(args[0]))
+            {
+                await WriteTargetUsageAsync(stderr).ConfigureAwait(false);
+                return;
+            }
+
+            if (args[0].StartsWith('-'))
+            {
+                await WriteTargetUsageAsync(stderr).ConfigureAwait(false);
+                return;
+            }
+
+            var discovery = services.GetService<IProcessDiscovery>();
+            if (discovery is null)
+            {
+                await WriteTargetUsageAsync(stderr).ConfigureAwait(false);
+                return;
+            }
+
+            if (CliProcessSelector.TryResolveName(args[0], discovery.ListProcesses(), out var resolvedPid, out var error))
+            {
+                _targetPid = resolvedPid;
+                await stdout.WriteLineAsync(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Target bound to pid {resolvedPid}. capabilities/collect/inspect-heap/dump/get-bytes now use it unless you pass --pid.")).ConfigureAwait(false);
+                return;
+            }
+
+            await stderr.WriteLineAsync(error).ConfigureAwait(false);
+            return;
+        }
+
+        await WriteTargetUsageAsync(stderr).ConfigureAwait(false);
     }
+
+    private static Task WriteTargetUsageAsync(TextWriter stderr)
+        => stderr.WriteLineAsync("Usage: target <pid> | target <name-prefix> | target clear. Example: 'target 1234' or 'target MyApp'.");
 
     /// <summary>
     /// Decides whether a command should inherit the session-bound target pid when it omitted <c>--pid</c>.
@@ -411,7 +472,7 @@ internal sealed class SessionRepl
         }
         else
         {
-            await stdout.WriteLineAsync(result.Human).ConfigureAwait(false);
+            await stdout.WriteLineAsync(CliAnsi.ColorizeHuman(result.Human, CliAnsi.IsEnabled(stdout, forceAnsi: null))).ConfigureAwait(false);
         }
 
         if (result.Cancelled)

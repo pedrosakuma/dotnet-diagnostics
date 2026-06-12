@@ -167,6 +167,11 @@ internal static class CliCommands
     {
         ArgumentNullException.ThrowIfNull(options);
         error = null;
+        if (!TryValidateWatch(options, out error))
+        {
+            return false;
+        }
+
         return options.Command switch
         {
             "collect" => TryValidateCollect(options, out error),
@@ -177,6 +182,37 @@ internal static class CliCommands
             "completion" => TryValidateCompletion(options, out error),
             _ => true,
         };
+    }
+
+    public static bool TryValidateWatch(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+        if (options.WatchIntervalSeconds is not { } interval)
+        {
+            return true;
+        }
+
+        if (interval <= 0)
+        {
+            error = "--watch expects a positive interval in seconds.";
+            return false;
+        }
+
+        if (options.Json)
+        {
+            error = "--watch cannot be combined with --json because watch redraws human output.";
+            return false;
+        }
+
+        if (string.Equals(options.Command, "session", StringComparison.Ordinal)
+            || string.Equals(options.Command, "completion", StringComparison.Ordinal))
+        {
+            error = $"--watch is not supported by '{options.Command}'.";
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -257,7 +293,7 @@ internal static class CliCommands
                 return false;
             }
 
-            if (options.Pid is not null)
+            if (options.HasPid)
             {
                 error = "inspect-heap --source dump does not accept --pid (the dump is offline).";
                 return false;
@@ -301,7 +337,7 @@ internal static class CliCommands
             return false;
         }
 
-        if (options.Pid is not null)
+        if (options.HasPid)
         {
             error = "--launch cannot be combined with --pid: the CLI launches the target and binds its pid.";
             return false;
@@ -420,7 +456,7 @@ internal static class CliCommands
                 return false;
             }
 
-            if (options.Pid is not null)
+            if (options.HasPid)
             {
                 error = "get-bytes --kind dump does not accept --pid (the dump is offline).";
                 return false;

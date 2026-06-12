@@ -19,7 +19,8 @@ internal static class CliHelp
     private const string GlobalOptions =
 """
 Options:
-  -p, --pid <int>               Target OS process id (auto-resolved when only one is visible).
+  -p, --pid <pid|name>          Target OS process id, or visible .NET process name/prefix
+                                (auto-resolved when only one is visible).
       --json                    Emit the raw DiagnosticResult envelope as JSON.
       --launch -- <app> [args]  Dev mode: launch <app> as a child of the CLI so live attach
                                 (inspect-heap --source live, dump) works under ptrace_scope=1 with
@@ -57,6 +58,7 @@ collect options:
       --depth <level>           Verbosity: summary, detail (default), raw.
       --max-events <int>        Per-kind cap (events / exceptions / activities).
       --interval <int>          Refresh interval in seconds (counters, db). Default 1.
+      --watch <seconds>         Re-run and redraw every N seconds until Ctrl-C.
       --provider <name>         counters: EventCounter provider (repeatable);
                                 catalog: EventPipe provider (repeatable; replaces broad defaults);
                                 event_source: required provider name.
@@ -69,6 +71,7 @@ collect options:
 """,
 """
   dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
+  dotnet-diagnostics-cli collect --kind counters --pid MyApp --watch 2
   dotnet-diagnostics-cli collect --kind datas --pid 1234 --save ./before.json
   dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
 """),
