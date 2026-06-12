@@ -34,6 +34,24 @@ public sealed record DiagnosticResult<T>(
     public DateTimeOffset? HandleExpiresAt { get; init; }
 
     /// <summary>
+    /// Relative number of seconds until <see cref="Handle"/> expires. Computed at serialization time
+    /// so clients can make retry/refresh decisions without parsing wall-clock timestamps.
+    /// </summary>
+    public long? HandleExpiresInSeconds
+    {
+        get
+        {
+            if (HandleExpiresAt is not { } expiresAt)
+            {
+                return null;
+            }
+
+            var remaining = expiresAt - DateTimeOffset.UtcNow;
+            return Math.Max(0, (long)Math.Floor(remaining.TotalSeconds));
+        }
+    }
+
+    /// <summary>
     /// Per-process digest produced by <see cref="DotnetDiagnostics.Core.ProcessDiscovery.IProcessContextResolver"/>.
     /// Carried for free on every tool that targets a live process so the LLM never has to
     /// re-run <c>list_dotnet_processes</c>/<c>get_diagnostic_capabilities</c> just to know
@@ -81,7 +99,25 @@ public static class DiagnosticResult
 public sealed record NextActionHint(
     string NextTool,
     string Reason,
-    IReadOnlyDictionary<string, object?>? SuggestedArguments = null);
+    IReadOnlyDictionary<string, object?>? SuggestedArguments = null)
+{
+    /// <summary>Ordered importance of this hint relative to the other hints in the envelope.</summary>
+    public NextActionHintPriority Priority { get; init; } = NextActionHintPriority.Normal;
+}
+
+/// <summary>Ordered importance of a <see cref="NextActionHint"/>.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<NextActionHintPriority>))]
+public enum NextActionHintPriority
+{
+    [System.Text.Json.Serialization.JsonStringEnumMemberName("high")]
+    High,
+
+    [System.Text.Json.Serialization.JsonStringEnumMemberName("normal")]
+    Normal,
+
+    [System.Text.Json.Serialization.JsonStringEnumMemberName("low")]
+    Low,
+}
 
 /// <summary>
 /// Structured representation of a tool failure. Always carries a <see cref="Kind"/> (machine
