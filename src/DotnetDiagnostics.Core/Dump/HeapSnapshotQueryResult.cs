@@ -46,4 +46,6 @@ public sealed record HeapSnapshotQueryResult(
     public IReadOnlyList<AsyncOperationStat>? AsyncOperations { get; init; }
     /// <summary>Echoes the ranking used for <c>async</c> queries: <c>"heap-order"</c> or <c>"direct-size"</c>.</summary>
     public string? SortedBy { get; init; }
+    /// <summary>Populated when <see cref="View"/> is <c>"timers"</c>.</summary>
+    public TaskTimerLeakView? Timers { get; init; }
 }

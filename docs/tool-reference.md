@@ -243,7 +243,7 @@ Views available per `kind`:
 | `kestrel-snapshot` | `collect_events(kind="kestrel")` | `summary` (default), `byOperation`, `queues`, `tls`, `config` |
 | `networking-snapshot` | `collect_events(kind="networking")` | `summary` (default), `byOperation`, `queue`, `tls`, `dns` |
 | `startup-snapshot` | `collect_events(kind="startup")` | `summary` (default), `assemblies`, `modules`, `di`, `timeline` |
-| `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `object`, `gcroot`, `objsize`, `async`, `diff` |
+| `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `object`, `gcroot`, `objsize`, `async`, `diff` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
 | `cpu-sample` / `allocation-sample` / `native-alloc-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `diff` |
@@ -269,6 +269,12 @@ larger matrices are retained in memory and the inline payload includes `journey:
 so the assistant can pull the full matrix as an MCP Resource. Pairwise sample diffs remain
 inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap-snapshot` and
 `allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second rates
+
+`heap-snapshot` `view="timers"` projects the already-walked heap into a task/timer leak
+drilldown: total live `System.Threading.Timer` / `TimerQueueTimer` objects, total live
+`Task` and `TaskCompletionSource` objects, timers grouped by callback target/method, and
+top task/TCS concrete runtime types. Use it after `collect_events(kind="counters")` shows
+`active-timer-count` growth to identify the callback or async state-machine type being leaked. Allocation diffs normalize totals to per-second rates
 when the two capture windows use different durations and surface both raw + normalized metrics
 in each row.
 
@@ -465,7 +471,7 @@ unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
 | [`inspect_process(view="container")`](#inspect_process(view="container")) *(deprecated — use `inspect_process(view="container")`)* | cheap | no | ✅ (Linux) | reads `/sys/fs/cgroup` + `/proc` files |
 | [`inspect_process(view="memory_trend")`](#inspect_process(view="memory_trend")) *(deprecated — use `inspect_process(view="memory_trend")`)* | window-bound | no | ✅ | reads `/proc/<pid>/smaps_rollup` + `/proc/<pid>/stat` (Linux) or `GetProcessMemoryInfo` (Windows) |
 | [`inspect_process(view="runtime-config")`](#inspect_process(view="runtime-config")) | cheap | no | ✅ (Windows env partial) | ClrMD GC / ThreadPool probe + filtered `/proc/<pid>/environ` (Linux) |
-| [`inspect_process(view="resources")`](#inspect_process(view="resources")) | cheap / window-bound | no | ✅ (Linux/Windows partial) | reads `/proc/<pid>/fd`, `/proc/<pid>/net/tcp{,6}`, `/proc/<pid>/limits` (Linux) or `GetProcessHandleCount` (Windows) |
+| [`inspect_process(view="resources")`](#inspect_process(view="resources")) | cheap / window-bound | no | ✅ (Linux/Windows partial) | reads `/proc/<pid>/fd`, `/proc/<pid>/net/tcp{,6}`, `/proc/<pid>/limits`, `VmRSS` + a short `gc-heap-size` counter probe (Linux) or `GetProcessHandleCount` / `WorkingSet64` (Windows) |
 | [`inspect_process(view="requests-now")`](#inspect_process(view="requests-now")) | ~2 s | no | ✅ (ptrace required) | short EventPipe request window + live thread snapshot |
 | [`inspect_process(view="triage")`](#inspect_process(view="triage")) | ~5 s | no | ✅ | **Phase 12 IoT-style triage.** Collects counters (5s), classifies workload (cpu-bound/gc-pressure/memory-pressure/threadpool-starvation/lock-contention/io-bound/healthy), returns actionable hints. The LLM just follows the first hint — no interpretation needed. |
 | `collect_sample(kind="off_cpu")` (Linux/Windows) | window-bound | no | ✅ (Linux) | **Deprecated — use `collect_sample(kind="off_cpu")`.** system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
@@ -809,6 +815,10 @@ Cheap OS-level resource inspector for the classic "RSS grows but `gc-heap-size` 
 
 - **Linux**: counts `/proc/<pid>/fd`, classifies symlink targets (`socket:[...]`, `/...`, `pipe:[...]`, `anon_inode:[eventfd]`), aggregates TCP states from `/proc/<pid>/net/tcp{,6}`, and parses `Max open files` from `/proc/<pid>/limits`.
 - **Windows**: calls `GetProcessHandleCount`; FD/socket breakdowns stay `null` with a note.
+- **Managed/native split**: reads RSS (`VmRSS` on Linux, `WorkingSet64` on Windows) and
+  samples the `System.Runtime/gc-heap-size` EventCounter to populate `managedVsNative`.
+  If RSS is far larger than the GC heap, the response adds a note/hint to investigate
+  native allocations, fragmentation, pinned LOH/POH, mmap/file caches, or unmanaged libraries.
 
 **Parameters:**
 
@@ -829,17 +839,26 @@ Cheap OS-level resource inspector for the classic "RSS grows but `gc-heap-size` 
   "fd": { "sockets": 42, "regular": 96, "pipes": 16, "eventfds": 2, "other": 30 },
   "sockets": { "established": 12, "timeWait": 51, "closeWait": 0, "listen": 2, "other": 1 },
   "limits": { "noFileSoft": 1024, "noFileHard": 1024, "noFileUsageFraction": 0.1816 },
+  "managedVsNative": {
+    "rssBytes": 536870912,
+    "gcHeapBytes": 67108864,
+    "rssMinusGcHeapBytes": 469762048,
+    "gcHeapToRssRatio": 0.125,
+    "rssDominated": true,
+    "interpretation": "RSS is much larger than the managed GC heap; investigate native allocations, fragmentation, pinned LOH/POH, mmap/file caches, or unmanaged libraries."
+  },
   "notes": [],
   "trend": null
 }
 ```
 
-`trend.samples[]` repeats the same headline fields (`fdCount`, `handleCount`, `fd`, `sockets`, `limits`) per sample, with the top-level properties set to the latest sample.
+`trend.samples[]` repeats the same OS headline fields (`fdCount`, `handleCount`, `fd`, `sockets`, `limits`) per sample, with the top-level properties set to the latest sample. `managedVsNative` is populated on the top-level/latest sample from a best-effort GC heap probe near the end of the window; if the target is not a reachable .NET process, `managedVsNative.gcHeapBytes` is `null` and `notes[]` explains why.
 
 **Next-action hints:**
 - `closeWait > 100` and rising → `collect_events(kind="event_source", providerName="System.Net.Http")` to confirm undisposed responses / client misuse.
 - `noFileUsageFraction > 0.85` → consider `collect_process_dump` before the process hits `EMFILE` / "Too many open files".
 - huge `timeWait` with flat `fdCount` → connection churn / pooling issue, again best cross-checked with `System.Net.Http` events.
+- `managedVsNative.rssDominated = true` → `inspect_heap(source="live")` to rule out pinned/fragmented managed heap; if the GC heap remains flat, pivot to native allocation or mmap investigation.
 
 ---
 

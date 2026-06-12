@@ -13,7 +13,10 @@ public sealed record ProcessResources(
     SocketBreakdown? Sockets,
     RLimits? Limits,
     IReadOnlyList<string> Notes,
-    ProcessResourcesTrend? Trend);
+    ProcessResourcesTrend? Trend)
+{
+    public ManagedVsNativeMemory? ManagedVsNative { get; init; }
+}
 
 public sealed record FdBreakdown(
     int Sockets,
@@ -34,6 +37,16 @@ public sealed record RLimits(
     long? NoFileHard,
     double? NoFileUsageFraction);
 
+public sealed record ManagedVsNativeMemory(
+    long? RssBytes,
+    long? GcHeapBytes,
+    long? RssMinusGcHeapBytes,
+    double? GcHeapToRssRatio,
+    bool? RssDominated)
+{
+    public string? Interpretation { get; init; }
+}
+
 public sealed record ProcessResourcesTrend(
     IReadOnlyList<ProcessResourcesSample> Samples);
 
@@ -43,4 +56,7 @@ public sealed record ProcessResourcesSample(
     int? HandleCount,
     FdBreakdown? Fd,
     SocketBreakdown? Sockets,
-    RLimits? Limits);
+    RLimits? Limits)
+{
+    public ManagedVsNativeMemory? ManagedVsNative { get; init; }
+}

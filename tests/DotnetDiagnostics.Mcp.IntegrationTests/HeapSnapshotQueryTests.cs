@@ -110,6 +110,59 @@ public sealed class HeapSnapshotQueryTests
         result.Data.AsyncOperations![0].Stack.Should().HaveCount(2);
     }
 
+    [Fact]
+    public async Task QueryHeapSnapshot_TimersView_ReturnsTaskTimerLeakCandidates()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = new HeapSnapshotArtifact(
+            Origin: HeapSnapshotOrigin.Live,
+            ProcessId: 1234,
+            CapturedAt: DateTimeOffset.UtcNow,
+            WalkDuration: TimeSpan.FromMilliseconds(150),
+            Runtime: new DumpRuntimeInfo("CoreCLR", "10.0.0", "x64", IsServerGC: false, HeapCount: 1),
+            Heap: new DumpHeapSummary(1024, 128, 128, 512, 0, 0, 1024),
+            TopTypesByBytes: Array.Empty<TypeStat>(),
+            TopTypesByInstances: Array.Empty<TypeStat>())
+        {
+            Timers = new TaskTimerLeakView(
+                TotalTimers: 5,
+                TotalTasks: 7,
+                TotalTaskCompletionSources: 2,
+                TimersByCallback:
+                [
+                    new TimerCallbackStat(
+                        TimerTypeFullName: "System.Threading.TimerQueueTimer",
+                        CallbackTargetTypeFullName: "MyApp.LeakyTimer",
+                        DeclaringTypeFullName: "MyApp.LeakyTimer",
+                        MethodName: "OnTick",
+                        MethodSignature: "void OnTick(object)",
+                        Count: 5),
+                ],
+                TasksByType:
+                [
+                    new TaskTypeStat("System.Threading.Tasks.Task", "System.Private.CoreLib.dll", 7, 448),
+                ],
+                TaskCompletionSourcesByType:
+                [
+                    new TaskTypeStat("System.Threading.Tasks.TaskCompletionSource`1", "System.Private.CoreLib.dll", 2, 128),
+                ],
+                Notes: []),
+        };
+
+        var handle = store.Register(snapshot.ProcessId, "heap-snapshot", snapshot, TimeSpan.FromMinutes(10));
+
+        var result = await DiagnosticTools.QueryHeapSnapshot(store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null), TestPrincipalAccessors.Root, handle.Id, view: "timers", topN: 10);
+
+        result.IsError.Should().BeFalse();
+        result.Data.Should().NotBeNull();
+        result.Data!.View.Should().Be("timers");
+        result.Data.Timers.Should().NotBeNull();
+        result.Data.Timers!.TotalTimers.Should().Be(5);
+        result.Data.Timers.TimersByCallback.Should().ContainSingle(row => row.MethodName == "OnTick" && row.Count == 5);
+        result.Data.Timers.TasksByType.Should().ContainSingle(row => row.Count == 7);
+        result.Summary.Should().Contain("task/timer leak candidates");
+    }
+
     private sealed class StubDumpInspector : IDumpInspector
     {
         public Task<HeapSnapshotArtifact> InspectAsync(string dumpFilePath, DumpInspectionOptions? options = null, CancellationToken cancellationToken = default)
