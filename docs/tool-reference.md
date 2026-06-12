@@ -71,6 +71,7 @@ Per-tool `Summary` semantics:
 | `collect_sample(kind="cpu")` | `TopHotspots` truncated to the top 3 (handle keeps `topN`, default 25). |
 | `collect_sample(kind="off_cpu")` | `TopBlockingStacks` truncated to the top 3 (handle keeps `topN`). |
 | `collect_events(kind="exceptions")` | The `Recent[]` list. `Total` and `ByType` remain exact (counts at every depth). |
+| `collect_events(kind="crash-guard")` | The retained `Exceptions[]` list. Final exception, exit status, by-type counts, and notes remain inline. |
 | `collect_events(kind="gc")` | The `Events[]` list. Totals, max pause, per-gen counts remain exact. |
 | `collect_events(kind="datas")` | The full `Samples[]`, `TuningEvents[]` and `FullGcTuningEvents[]` lists. Drill in with `query_snapshot(handle, view=overview\|tuning\|samples\|gen2)`. |
 | `collect_events(kind="catalog")` | The metadata-only `Sample[]` occurrence list. The ranked `Catalog[]` remains inline; payload values are never captured. |
@@ -120,7 +121,7 @@ same `tools/call` request — no second round-trip, no polling. This is the
 Tools wired up:
 
 - `collect_sample(kind="cpu")`
-- `collect_events` (every `kind` — counters, exceptions, gc, datas, catalog, event_source, activities, logs, jit, threadpool, contention, db, startup)
+- `collect_events` (every `kind` — counters, exceptions, crash-guard, gc, datas, catalog, event_source, activities, logs, jit, threadpool, contention, db, kestrel, networking, startup)
 
 How it works:
 
@@ -170,9 +171,9 @@ The LLM may always ignore a prompt and drive ad-hoc.
 ### Handle chaining in the collectors (`query_snapshot`)
 
 The windowed collectors — every `collect_events(kind=…)` variant (`counters`,
-`exceptions`, `gc`, `datas`, `catalog`, `activities`, `event_source`, `logs`,
-`jit`, `threadpool`, `contention`, `db`, `kestrel`) — return, alongside the inline summary
-`jit`, `threadpool`, `contention`, `db`, `startup`) — return, alongside the inline summary
+`exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `activities`,
+`event_source`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`,
+`networking`, `startup`) — return, alongside the inline summary
 + top-N, an opaque `handle` (Crockford-base32, TTL ~10 min) registered in an
 in-memory store. The LLM can then re-project the same artifact under a
 different view **without re-running EventPipe** by calling `query_snapshot`:
@@ -198,6 +199,7 @@ Views available per `kind`:
 |---|---|---|
 | `counters` | `collect_events(kind="counters")` | `summary` (default), `byProvider` |
 | `exception-snapshot` | `collect_events(kind="exceptions")` | `summary` (default = `byType.Take(topN)`), `byType`, `recent` |
+| `crash-guard-snapshot` | `collect_events(kind="crash-guard")` | `summary` (default), `exceptions`, `stack` |
 | `gc-events` | `collect_events(kind="gc")` | `summary` (default), `events`, `pauseHistogram`, `timeline`, `longestPauses`, `byGeneration`, `heap-stats` |
 | `gc-datas` | `collect_events(kind="datas")` | `overview` (default), `tuning` (honours `changesOnly`), `samples`, `gen2` |
 | `event-catalog` | `collect_events(kind="catalog")` | `catalog` (default), `byProvider`, `events` |
@@ -436,12 +438,13 @@ unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
 | [`inspect_process(view="triage")`](#inspect_process(view="triage")) | ~5 s | no | ✅ | **Phase 12 IoT-style triage.** Collects counters (5s), classifies workload (cpu-bound/gc-pressure/memory-pressure/threadpool-starvation/lock-contention/io-bound/healthy), returns actionable hints. The LLM just follows the first hint — no interpretation needed. |
 | `collect_sample(kind="off_cpu")` (Linux/Windows) | window-bound | no | ✅ (Linux) | **Deprecated — use `collect_sample(kind="off_cpu")`.** system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
 | `query_snapshot` | cheap | no | ✅ | drilldown on handle from `collect_sample(kind="off_cpu")` |
-| [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/startup. |
+| [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/crash-guard/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/kestrel/networking/startup. |
 | [`collect_sample`](#collect_sample) | window-bound | depends on kind | ✅ (mostly — see kind) | **Canonical bounded-time sampler.** Dispatches by `kind` to cpu/off_cpu/allocation/native-alloc. |
 | [`collect_events(kind="counters")`](#collect_events(kind="counters")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="counters")`.** opens an EventPipe session |
 | [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")) | window-bound | no | ✅ (perf/ETW, native frames) | **Deprecated — use `collect_sample(kind="cpu")`.** EventPipe + temp `.nettrace` on disk |
 | [`collect_sample(kind="allocation")`](#collect_sample(kind="allocation")) | window-bound | no | ⚠️ TypeName empty | **Deprecated — use `collect_sample(kind="allocation")`.** EventPipe session |
 | [`collect_events(kind="exceptions")`](#collect_events(kind="exceptions")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="exceptions")`.** EventPipe session |
+| [`collect_events(kind="crash-guard")`](#collect_events(kind="crash-guard")) | window-bound (returns on exit) | no | ✅ | Runtime exception/crash guard; emits dump hint on unhandled exception |
 | [`collect_events(kind="gc")`](#collect_events(kind="gc")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="gc")`.** EventPipe session |
 | [`collect_events(kind="activities")`](#collect_events(kind="activities")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="activities")`.** EventPipe session |
 | [`collect_events(kind="event_source")`](#collect_events(kind="event_source")) | window-bound | no | ⚠️ provider must be embedded at publish | **Deprecated — use `collect_events(kind="event_source")`.** EventPipe session |
@@ -847,41 +850,35 @@ Short ASP.NET Core request snapshot for the "which requests are hanging right no
 
 ## `collect_events`
 
-**Canonical EventPipe collector.** A single tool that dispatches
-by `kind` to the underlying counters / exceptions / gc / event_source /
-activities / logs / threadpool / startup collector. New clients should call `collect_events` instead of the
-legacy entrypoints; the legacy tools remain registered and behaviorally
-identical, but each carries a `DEPRECATED` notice and will be removed in
-`0.7.0`.
+**Canonical EventPipe collector.** A single tool that dispatches by `kind` to
+the underlying counters / exceptions / crash-guard / gc / datas / catalog /
+event_source / activities / logs / jit / threadpool / contention / db /
+kestrel / networking / startup collectors. New clients should call
+`collect_events` instead of the legacy entrypoints; the legacy tools remain
+registered and behaviorally identical, but each carries a `DEPRECATED` notice
+and will be removed in `0.7.0`.
 
 **Parameters:**
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `datas`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`. Case-sensitive. |
-| `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `startup`. Case-sensitive. |
+| `kind` | `string` | — | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `startup`. Case-sensitive. |
 | `processId` | `int?` | auto | Target process id. |
 | `durationSeconds` | `int` | 5 (counters) / 15 (datas) / 10 (others) | Collection window. |
 | `providers` / `meters` / `intervalSeconds` / `maxInstrumentTimeSeries` | counters only | — | Same as [`collect_events(kind="counters")`](#collect_events(kind="counters")). |
-| `maxRecent` | exceptions only | 100 | Same as [`collect_events(kind="exceptions")`](#collect_events(kind="exceptions")). |
+| `maxRecent` | exceptions / crash-guard only | 100 | Maximum retained exception records. |
 | `maxEvents` | gc / datas / catalog / event_source / logs only | 200 (`gc`, `event_source`) / 1000 (`datas`) / 500 (`logs`) | Same as the underlying tool. |
 | `providerName` / `keywords` / `eventLevel` / `depth` / `unsafeProvider` | event_source only | — | Same as [`collect_events(kind="event_source")`](#collect_events(kind="event_source")). |
 | `sources` / `maxActivities` | activities only | — | Same as [`collect_events(kind="activities")`](#collect_events(kind="activities")). |
 | `categories` / `minLevel` / `maxMessageBytes` / `depth` | logs only | — | Same as [`collect_events(kind="logs")`](#collect_events(kind="logs")). |
-| `depth` | jit / threadpool / contention only | `Summary` | Inline verbosity for the curated runtime views. |
-| `intervalSeconds` / `depth` | db / kestrel only | `1` / `Summary` | EventCounter refresh interval + inline verbosity for the curated DB / Kestrel views. |
+| `depth` | exceptions / crash-guard / jit / threadpool / contention / startup only | `Summary` | Inline verbosity for the curated runtime views. |
+| `intervalSeconds` / `depth` | db / kestrel / networking only | `1` / `Summary` | EventCounter refresh interval + inline verbosity for curated views. |
 
 **Returns:** `CollectEventsEnvelope` — a polymorphic record that carries the
 `kind` discriminator plus exactly one populated payload field
-(`counters` / `exceptions` / `gc` / `datas` / `eventSource` / `activities` / `logs` /
-`jit` / `threadPool` / `contention` / `db` / `kestrel`). The envelope's `summary`, `hints`,
-| `depth` | jit / threadpool / contention / startup only | `Summary` | Inline verbosity for the curated runtime views. |
-| `intervalSeconds` / `depth` | db only | `1` / `Summary` | SqlClient EventCounter refresh interval + inline verbosity for the curated DB view. |
-
-**Returns:** `CollectEventsEnvelope` — a polymorphic record that carries the
-`kind` discriminator plus exactly one populated payload field
-(`counters` / `exceptions` / `gc` / `datas` / `catalog` / `eventSource` / `activities` / `logs` /
-`jit` / `threadPool` / `contention` / `db` / `startup`). The envelope's `summary`, `hints`,
+(`counters` / `exceptions` / `crashGuard` / `gc` / `datas` / `catalog` /
+`eventSource` / `activities` / `logs` / `jit` / `threadPool` / `contention` /
+`db` / `kestrel` / `networking` / `startup`). The envelope's `summary`, `hints`,
 `handle`, `handleExpiresAt`, and `resolvedProcess` are passed through from the
 underlying collector verbatim, so `query_snapshot` drilldowns continue to work
 unchanged.
@@ -1218,8 +1215,7 @@ returned handle to find which allocation sites are responsible.
 > **Deprecated — call [`collect_events`](#collect_events) with `kind="exceptions"`.**
 > Behaviorally identical; will be removed in `0.7.0`.
 
-
-exception thrown by the process during the window.
+Collects every exception thrown by the process during the window.
 
 **Parameters:**
 
@@ -1267,6 +1263,48 @@ matters; lower it when you only want a quick signal.
 "optional"`). Spec clients should use task-augmented `tools/call` + `tasks/get` /
 `tasks/result`. Clients that don't implement Tasks should use the in-request
 `notifications/progress` + `notifications/cancelled` flow.
+
+---
+
+## `collect_events(kind="crash-guard")`
+
+Starts a crash/unhandled-exception guard window. It subscribes to the runtime
+exception keyword (including `ExceptionThrown_V1`) plus crash-adjacent runtime
+events and returns early when the target process exits. Use it before triggering
+a suspected fatal path, or during an incident where the process is about to die.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int?` | auto | Target process id |
+| `durationSeconds` | `int` | `10` | Guard window; returns earlier if the process exits |
+| `maxRecent` | `int` | `100` | Maximum exception events to retain |
+| `depth` | `summary\|detail\|raw` | `Summary` | Summary keeps the final exception/headline inline; detail/raw include retained exceptions |
+
+**Returns:** `CrashGuardSnapshot` with `processExited`, `exitCode`,
+`unhandledExceptionObserved`, `finalException`, exact `byType` counts, retained
+`exceptions[]`, and `notes[]`. The handle accepts:
+
+- `query_snapshot(handle, view="summary")` — final exception + by-type counts.
+- `query_snapshot(handle, view="exceptions")` — retained exception stream.
+- `query_snapshot(handle, view="stack")` — managed stack for the final exception
+  when the runtime/event payload exposed one.
+
+When an unhandled exception is observed, the result emits a next-action hint
+toward `collect_process_dump(dumpType="Mini")` so the LLM can correlate
+exception type/message/stack with dump state. The dump tool still requires its
+normal explicit confirmation before writing a dump file.
+
+**Pairing with runtime-written crash dumps.** If the target is configured with
+`DOTNET_DbgEnableMiniDump=1` (and companion `DOTNET_DbgMiniDumpType` /
+`DOTNET_DbgMiniDumpName` when needed), the runtime may write a crash dump as the
+process terminates. Use `collect_events(kind="crash-guard")` to capture the
+exception stream and final managed stack, then correlate its `startedAt`,
+`finalException.timestamp`, `processId`, and `exitCode` with the dump file name
+or crash-report metadata. In that mode, `collect_process_dump` is optional: use
+the runtime-written dump if it already exists, or follow the hint when the
+process is still alive long enough for an explicit dump.
 
 ---
 

@@ -53,8 +53,10 @@ public sealed class CliCollectValidationTests
     [Theory]
     [InlineData("counters")]
     [InlineData("exceptions")]
+    [InlineData("crash-guard")]
     [InlineData("gc")]
     [InlineData("datas")]
+    [InlineData("catalog")]
     [InlineData("activities")]
     [InlineData("logs")]
     [InlineData("jit")]
@@ -99,7 +101,7 @@ public sealed class CliCollectValidationTests
         // Keep the CLI's accepted kinds aligned with the MCP collect_events discriminator family.
         CliCommands.CollectKinds.Should().BeEquivalentTo(new[]
         {
-            "counters", "exceptions", "gc", "datas", "catalog", "event_source", "activities",
+            "counters", "exceptions", "crash-guard", "gc", "datas", "catalog", "event_source", "activities",
             "logs", "jit", "threadpool", "contention", "db", "kestrel", "networking", "startup",
         });
     }

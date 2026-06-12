@@ -32,7 +32,7 @@ internal sealed record CliOptions
     /// <summary>True when <c>--help</c>/<c>-h</c> was supplied.</summary>
     public bool Help { get; init; }
 
-    /// <summary>EventPipe collection kind for the <c>collect</c> command (<c>--kind</c>): counters, exceptions, gc, catalog, event_source, activities, logs, jit, threadpool, contention, db.</summary>
+    /// <summary>EventPipe collection kind for the <c>collect</c> command (<c>--kind</c>): counters, exceptions, crash-guard, gc, catalog, event_source, activities, logs, jit, threadpool, contention, db.</summary>
     public string? Kind { get; init; }
 
     /// <summary>Collection window in seconds (<c>--duration</c>/<c>-d</c>). Null applies the per-kind default (counters: 5; others: 10).</summary>

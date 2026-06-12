@@ -50,6 +50,7 @@ public sealed class CollectEventsTool
     {
         "counters",
         "exceptions",
+        "crash-guard",
         "gc",
         "datas",
         "catalog",
@@ -68,7 +69,7 @@ public sealed class CollectEventsTool
     [RequireAnyScope("read-counters", "eventpipe")]
     [McpServerTool(
         Name = "collect_events",
-        Title = "Collect EventPipe events (counters | exceptions | gc | datas | catalog | event_source | activities | logs | jit | threadpool | contention | db | kestrel | networking | startup)",
+        Title = "Collect EventPipe events (counters | exceptions | crash-guard | gc | datas | catalog | event_source | activities | logs | jit | threadpool | contention | db | kestrel | networking | startup)",
         Destructive = false,
         ReadOnly = true,
         Idempotent = false,
@@ -81,6 +82,7 @@ public sealed class CollectEventsTool
         // tools that don't need a given collector simply ignore the unused parameter.
         ICounterCollector counterCollector,
         IExceptionCollector exceptionCollector,
+        ICrashGuardCollector crashGuardCollector,
         IGcCollector gcCollector,
         IGcDatasCollector gcDatasCollector,
         IActivityCollector activityCollector,
@@ -102,7 +104,7 @@ public sealed class CollectEventsTool
         [Description(
             "Which EventPipe family to collect (default 'counters'): " +
             "'counters' (EventCounter snapshot — cheap first signal; uses the 'read-counters' scope), " +
-            "'exceptions' (managed exception stream), 'gc' (GC start/stop pairs + pause durations), " +
+            "'exceptions' (managed exception stream), 'crash-guard' (fatal/unhandled-exception postmortem guard), 'gc' (GC start/stop pairs + pause durations), " +
             "'datas' (DATAS Server-GC heap-count tuning), 'catalog' (metadata-only provider/event-name catalog), " +
             "'event_source' (generic provider passthrough — requires providerName), 'activities' (ActivitySource spans), " +
             "'logs' (curated ILogger view), 'jit' (tiered compilation / ReadyToRun activity), " +
@@ -112,7 +114,7 @@ public sealed class CollectEventsTool
             "'networking' (curated outbound HTTP / DNS / TLS / socket view: latency percentiles + HttpClient time-in-queue), " +
             "'startup' (loader + DependencyInjection events emitted during the window; pre-attach cold-start events are missed). " +
             "All kinds except 'counters' use the 'eventpipe' scope. " +
-            "IMPORTANT: for 'exceptions' and 'gc', start collection BEFORE the workload — EventPipe sessions " +
+            "IMPORTANT: for 'exceptions', 'crash-guard', and 'gc', start collection BEFORE the workload — EventPipe sessions " +
             "take ~500 ms–1 s to fully start and earlier events are missed. For 'startup', attaching to an already-running process misses the initial cold-start; true cold-start capture requires enabling EventPipe before/at process launch (reverse-connect or CLI --launch/DOTNET_ startup session).")]
         string kind = "counters",
         // Shared options.
@@ -131,8 +133,8 @@ public sealed class CollectEventsTool
         int intervalSeconds = 1,
         [Description("kind=counters only. Maximum Meter time series (and histograms) retained before the collector caps results. Defaults to 1000.")]
         int maxInstrumentTimeSeries = 1000,
-        // kind=exceptions
-        [Description("kind=exceptions only. Maximum number of individual exception details to return. Must be >= 1. Defaults to 100.")]
+        // kind=exceptions / kind=crash-guard
+        [Description("kind=exceptions or kind=crash-guard only. Maximum number of individual exception details to return. Must be >= 1. Defaults to 100.")]
         int maxRecent = 100,
         // kind=gc / kind=catalog / kind=event_source / kind=logs
         [Description("kind=gc, kind=catalog, kind=event_source, or kind=logs. Maximum number of events to return. Must be >= 1. Defaults to 200 for gc/catalog/event_source and 500 for logs when omitted through the kind-specific path. Catalog samples are metadata-only; payload values are never captured.")]
@@ -218,6 +220,14 @@ public sealed class CollectEventsTool
                             ct).ConfigureAwait(false),
                         "exceptions",
                         (env, data) => env with { Exceptions = data }),
+
+                    "crash-guard" => Project(
+                        await DiagnosticTools.CollectCrashGuard(
+                            crashGuardCollector, resolver, handles,
+                            processId, effectiveDuration, maxRecent, depth,
+                            ct).ConfigureAwait(false),
+                        "crash-guard",
+                        (env, data) => env with { CrashGuard = data }),
 
                     "gc" => Project(
                         await DiagnosticTools.CollectGcEvents(
@@ -376,8 +386,8 @@ public sealed class CollectEventsTool
 
 /// <summary>
 /// Polymorphic payload returned by <see cref="CollectEventsTool.CollectEvents"/>. Exactly one
-/// of the kind-specific fields (<see cref="Counters"/>, <see cref="Exceptions"/>,
-/// <see cref="Gc"/>, <see cref="Datas"/>, <see cref="Catalog"/>, <see cref="EventSource"/>, <see cref="Activities"/>, <see cref="Logs"/>, <see cref="Jit"/>, <see cref="ThreadPool"/>, <see cref="Contention"/>, <see cref="Db"/>, <see cref="Kestrel"/>, <see cref="Startup"/>) is populated, matched
+/// of the kind-specific fields (<see cref="Counters"/>, <see cref="Exceptions"/>, <see cref="CrashGuard"/>,
+/// <see cref="Gc"/>, <see cref="Datas"/>, <see cref="Catalog"/>, <see cref="EventSource"/>, <see cref="Activities"/>, <see cref="Logs"/>, <see cref="Jit"/>, <see cref="ThreadPool"/>, <see cref="Contention"/>, <see cref="Db"/>, <see cref="Kestrel"/>, <see cref="Networking"/>, <see cref="Startup"/>) is populated, matched
 /// by <see cref="Kind"/>. Mirrors the discriminator-envelope convention used by other
 /// consolidated tools (e.g. <c>get_method_il</c>).
 /// </summary>
@@ -385,6 +395,7 @@ public sealed record CollectEventsEnvelope(
     string Kind,
     CounterSnapshot? Counters = null,
     ExceptionSnapshot? Exceptions = null,
+    CrashGuardSnapshot? CrashGuard = null,
     GcSummary? Gc = null,
     GcDatasSnapshot? Datas = null,
     EventCatalogSnapshot? Catalog = null,

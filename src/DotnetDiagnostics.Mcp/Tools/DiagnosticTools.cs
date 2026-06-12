@@ -1293,18 +1293,18 @@ public sealed class DiagnosticTools
 
     [RequireAnyScope("read-counters", "eventpipe")]
     [Description(
-        "Re-projects a previously-collected counter/exception/GC/event-catalog/EventSource/Activity/log/JIT/ThreadPool/db artifact under a " +
+        "Re-projects a previously-collected counter/exception/crash-guard/GC/event-catalog/EventSource/Activity/log/JIT/ThreadPool/contention/db/kestrel/networking/startup artifact under a " +
         "named view, without re-running the underlying EventPipe session. Use the `handle` " +
-        "returned by snapshot_counters / collect_exceptions / collect_gc_events / collect_events(kind=\"catalog\") / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\") / collect_events(kind=\"db\"). " +
+        "returned by collect_events with kind one of counters/exceptions/crash-guard/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/kestrel/networking/startup. " +
         "Supported views per kind: counters → summary|byProvider; exception-snapshot → " +
-        "summary|byType|recent; gc-events → summary|events|pauseHistogram|timeline|longestPauses|byGeneration; event-catalog → catalog|byProvider|events; event-source → " +
+        "summary|byType|recent; crash-guard-snapshot → summary|exceptions|stack; gc-events → summary|events|pauseHistogram|timeline|longestPauses|byGeneration; event-catalog → catalog|byProvider|events; event-source → " +
         "summary|byEventName|events; activities → summary|bySource|byOperation|activities|gc-overlay; " +
-        "log-snapshot → summary|byCategory|byLevel|recent|errors; jit-snapshot → summary|topMethods|tierDistribution|reJIT; threadpool-snapshot → summary|timeline|hillClimbing|workItemOrigins; db-snapshot → summary|byCommand|n+1|connectionPool. " +
+        "log-snapshot → summary|byCategory|byLevel|recent|errors; jit-snapshot → summary|topMethods|tierDistribution|reJIT; threadpool-snapshot → summary|timeline|hillClimbing|workItemOrigins; contention-snapshot → summary|byCallSite|byOwner; db-snapshot → summary|byCommand|n+1|connectionPool; kestrel-snapshot → summary|byOperation|queues|tls|config; networking-snapshot → summary|byOperation|queue|tls|dns; startup-snapshot → summary|assemblies|modules|di|timeline. " +
         "Handles expire ~10 minutes after collection.")]
     public static DiagnosticResult<CollectionQueryResult> QueryCollection(
         IDiagnosticHandleStore handles,
         IPrincipalAccessor principalAccessor,
-        [Description("Handle returned by a prior collection tool (snapshot_counters / collect_exceptions / collect_gc_events / collect_events(kind=\"catalog\") / collect_event_source / collect_activities / collect_events(kind=\"logs\") / collect_events(kind=\"jit\") / collect_events(kind=\"threadpool\") / collect_events(kind=\"db\")). ")] string handle,
+        [Description("Handle returned by a prior collection tool, especially collect_events with kind one of counters/exceptions/crash-guard/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/kestrel/networking/startup. ")] string handle,
         [Description("View name (kind-dependent). Defaults to 'summary', except event-catalog defaults to 'catalog'.")] string? view = null,
         [Description("Cap on inline items for paginated views (recent / events / byType / byEventName / bySource / byOperation / activities / byCategory / byLevel / errors / topMethods / reJIT / hillClimbing / workItemOrigins / byCommand / n+1 / connectionPool). Must be >= 1. Defaults to 50.")] int topN = 50,
         [Description("Handle to a gc-events artifact for correlation views (required for activities view='gc-overlay').")] string? gcHandle = null)
@@ -1396,7 +1396,7 @@ public sealed class DiagnosticTools
                 $"Handle '{handle}' is of kind '{outcome.UnknownKind}' which query_collection does not support.",
                 new DiagnosticError(
                     "UnsupportedHandleKind",
-                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventCatalog, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot, CollectionHandleKinds.ContentionSnapshot, CollectionHandleKinds.DbSnapshot, CollectionHandleKinds.KestrelSnapshot, CollectionHandleKinds.NetworkingSnapshot, CollectionHandleKinds.StartupSnapshot })}.",
+                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.CrashGuardSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventCatalog, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot, CollectionHandleKinds.ContentionSnapshot, CollectionHandleKinds.DbSnapshot, CollectionHandleKinds.KestrelSnapshot, CollectionHandleKinds.NetworkingSnapshot, CollectionHandleKinds.StartupSnapshot })}.",
                     outcome.UnknownKind),
                 new NextActionHint("query_snapshot", "Use the kind-specific drill-down tool for heap/thread/cpu handles.", null));
         }
@@ -1450,6 +1450,27 @@ public sealed class DiagnosticTools
         CancellationToken cancellationToken = default)
     {
         return await EventCollectionUseCases.CollectExceptions(
+            collector, resolver, handles,
+            processId, durationSeconds, maxRecent, depth,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    [RequireScope("eventpipe")]
+    [Description(
+        "Subscribes to runtime exception/crash events and returns early if the target process exits. " +
+        "Use before triggering a suspected fatal path; drill in with query_snapshot(handle, view=summary|exceptions|stack).")]
+    public static async Task<DiagnosticResult<CrashGuardSnapshot>> CollectCrashGuard(
+        ICrashGuardCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Guard window in seconds. Must be >= 1. Defaults to 10. The collector returns earlier when the process exits.")] int durationSeconds = 10,
+        [Description("Maximum number of exception events to retain. Must be >= 1. Defaults to 100.")] int maxRecent = 100,
+        [Description("Verbosity (summary|detail|raw). Default 'summary' keeps headline/final-exception data inline and retains the exception stream behind the handle.")]
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        return await EventCollectionUseCases.CollectCrashGuard(
             collector, resolver, handles,
             processId, durationSeconds, maxRecent, depth,
             cancellationToken).ConfigureAwait(false);

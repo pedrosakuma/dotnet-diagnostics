@@ -4,6 +4,8 @@ using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -73,6 +75,7 @@ var badCodeEndpoints = new[]
     "/threadpool-starve?blockers=50",
     "/lock-storm?seconds=5&blockers=8",
     "/db-n+1?count=15",
+    "/crash?mode=unhandled|stackoverflow|oom",
 };
 var lockObject = new object();
 var lockStormGate = new object();
@@ -471,6 +474,26 @@ app.MapGet("/db-n+1", async (IDbContextFactory<BadCodeDbContext> dbContextFactor
     return Results.Ok(new { count = n, rows = rows.Count, sample = rows[0] });
 });
 
+// 17. Fatal crash fixture — detect with collect_events(kind="crash-guard")
+app.MapGet("/crash", (string? mode) =>
+{
+    var normalizedMode = mode?.Trim().ToLowerInvariant() switch
+    {
+        null or "" or "unhandled" => "unhandled",
+        "stackoverflow" => "stackoverflow",
+        "oom" => "oom",
+        _ => null,
+    };
+
+    if (normalizedMode is null)
+    {
+        return Results.BadRequest(new { error = "mode must be one of: unhandled, stackoverflow, oom" });
+    }
+
+    StartCrashThread(normalizedMode);
+    return Results.Accepted($"/crash?mode={normalizedMode}", new { mode = normalizedMode, delayMs = 500 });
+});
+
 app.Run();
 
 static GCHandleType ParseHandleKind(string? type) => type?.Trim().ToLowerInvariant() switch
@@ -498,6 +521,51 @@ static int CreateAndInvokeJitPressureMethod(int seed)
 
     var handler = method.CreateDelegate<Func<int, int>>();
     return handler(seed);
+}
+
+static void StartCrashThread(string mode)
+{
+    var thread = new Thread(() =>
+    {
+        Thread.Sleep(500);
+        switch (mode)
+        {
+            case "stackoverflow":
+                _ = CauseStackOverflow(0);
+                break;
+            case "oom":
+                ThrowAfterFlushWindow(new InvalidOperationException(CrashFixtureMessage("BadCodeSample crash fixture simulated an unhandled OOM termination.")));
+                break;
+            default:
+                ThrowAfterFlushWindow(new InvalidOperationException(CrashFixtureMessage("BadCodeSample crash fixture threw an unhandled exception.")));
+                break;
+        }
+    })
+    {
+        IsBackground = false,
+        Name = $"BadCodeSample crash fixture ({mode})",
+    };
+    thread.Start();
+}
+
+[MethodImpl(MethodImplOptions.NoInlining)]
+static int CauseStackOverflow(int depth)
+    => depth + CauseStackOverflow(depth + 1);
+
+static string CrashFixtureMessage(string headline)
+    => headline + Environment.NewLine + Environment.StackTrace;
+
+static void ThrowAfterFlushWindow(Exception exception)
+{
+    try
+    {
+        throw exception;
+    }
+    catch (Exception captured)
+    {
+        Thread.Sleep(1000);
+        ExceptionDispatchInfo.Capture(captured).Throw();
+    }
 }
 
 static async Task<LeakedSocketConnection> LeakLoopbackSocketAsync(int port)

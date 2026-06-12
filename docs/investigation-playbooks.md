@@ -320,6 +320,35 @@ thread stacks and locals.
 
 ---
 
+## 3b. "The process crashes with an unhandled exception"
+
+### Step 1
+Start `collect_events(kind="crash-guard", durationSeconds=30)` **before**
+triggering the suspect path. EventPipe sessions are not retroactive; events
+thrown before the session opens are missed.
+
+### Step 2
+If the guard returns `unhandledExceptionObserved=true`, inspect
+`query_snapshot(handle, view="stack")` for the final exception type, message,
+and managed stack. Use `query_snapshot(handle, view="exceptions")` when the
+process threw multiple exceptions before the crash.
+
+### Step 3
+Correlate with dumps. If the environment has `DOTNET_DbgEnableMiniDump=1`, match
+the runtime-written crash dump by PID/timestamp with `finalException.timestamp`.
+If no runtime dump exists and the process is still alive, follow the
+`collect_process_dump(dumpType="Mini")` hint emitted by the guard; the dump tool
+will still require the normal explicit confirmation before writing the file.
+
+### Step 4
+For destructive fixtures such as stack overflow or OOM, prefer reproducing in an
+isolated sample/replica. The `BadCodeSample` `/crash?mode=unhandled` fixture is
+used in CI for the reliable unhandled-exception path; `stackoverflow` and `oom`
+are available for manual validation but are intentionally not asserted in the
+live test because they terminate the sample process more abruptly.
+
+---
+
 ## 4. "Slow outbound HTTP calls"
 
 ### Step 1

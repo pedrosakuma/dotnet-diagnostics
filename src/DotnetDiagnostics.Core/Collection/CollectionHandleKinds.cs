@@ -13,6 +13,9 @@ public static class CollectionHandleKinds
     /// <summary>Handle backing a <see cref="Exceptions.ExceptionSnapshot"/> emitted by <c>collect_exceptions</c>.</summary>
     public const string ExceptionSnapshot = "exception-snapshot";
 
+    /// <summary>Handle backing a <see cref="Exceptions.CrashGuardSnapshot"/> emitted by <c>collect_events(kind="crash-guard")</c>.</summary>
+    public const string CrashGuardSnapshot = "crash-guard-snapshot";
+
     /// <summary>Handle backing a <see cref="Gc.GcSummary"/> emitted by <c>collect_gc_events</c>.</summary>
     public const string GcEvents = "gc-events";
 

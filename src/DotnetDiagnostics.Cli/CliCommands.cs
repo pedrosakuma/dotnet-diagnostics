@@ -107,6 +107,7 @@ internal static class CliCommands
     {
         "counters",
         "exceptions",
+        "crash-guard",
         "gc",
         "datas",
         "catalog",
@@ -560,6 +561,10 @@ internal static class CliCommands
 
             "exceptions" => Wrap(options, await EventCollectionUseCases.CollectExceptions(
                 services.GetRequiredService<IExceptionCollector>(), resolver, handles,
+                pid, duration, options.MaxEvents ?? 100, depth, cancellationToken).ConfigureAwait(false)),
+
+            "crash-guard" => Wrap(options, await EventCollectionUseCases.CollectCrashGuard(
+                services.GetRequiredService<ICrashGuardCollector>(), resolver, handles,
                 pid, duration, options.MaxEvents ?? 100, depth, cancellationToken).ConfigureAwait(false)),
 
             "gc" => Wrap(options, await EventCollectionUseCases.CollectGcEvents(

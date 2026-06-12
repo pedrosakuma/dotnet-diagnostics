@@ -96,6 +96,40 @@ public class CollectionQueryDispatcherTests
     }
 
     [Fact]
+    public void CrashGuard_StackView_ReturnsFinalExceptionStack()
+    {
+        var final = new CrashGuardExceptionEvent(
+            At,
+            "System.InvalidOperationException",
+            "fatal",
+            "0x80131509",
+            7,
+            "ExceptionThrown_V1",
+            IsUnhandled: true,
+            new[] { "at BadCodeSample.Program.Crash()" });
+        var snap = new CrashGuardSnapshot(
+            42,
+            At,
+            TimeSpan.FromSeconds(2),
+            ProcessExited: true,
+            ExitCode: 134,
+            UnhandledExceptionObserved: true,
+            TotalExceptions: 1,
+            ByType: new List<ExceptionCount> { new("System.InvalidOperationException", 1) },
+            Exceptions: new List<CrashGuardExceptionEvent> { final },
+            FinalException: final,
+            Notes: Array.Empty<string>())
+        { RecentCap = 100 };
+
+        var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.CrashGuardSnapshot, "stack", snap, 5);
+
+        outcome.Result.Should().NotBeNull();
+        var payload = outcome.Result!.Payload.Should().BeOfType<CrashGuardStackView>().Subject;
+        payload.FinalException.Should().Be(final);
+        payload.ManagedStack.Should().ContainSingle().Which.Should().Contain("BadCodeSample");
+    }
+
+    [Fact]
     public void Gc_PauseHistogram_BucketsBoundariesCorrectly()
     {
         // One event per intended bucket: 0.5ms, 5ms, 50ms, 500ms, 1500ms.

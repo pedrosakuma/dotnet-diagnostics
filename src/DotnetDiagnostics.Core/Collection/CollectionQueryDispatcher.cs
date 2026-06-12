@@ -33,6 +33,7 @@ public static class CollectionQueryDispatcher
     {
         CollectionHandleKinds.Counters => new[] { "summary", "byProvider" },
         CollectionHandleKinds.ExceptionSnapshot => new[] { "summary", "byType", "recent" },
+        CollectionHandleKinds.CrashGuardSnapshot => new[] { "summary", "exceptions", "stack" },
         CollectionHandleKinds.GcEvents => new[] { "summary", "events", "pauseHistogram", "timeline", "longestPauses", "byGeneration", "heap-stats" },
         CollectionHandleKinds.EventSource => new[] { "summary", "byEventName", "events" },
         CollectionHandleKinds.Activities => new[] { "summary", "bySource", "byOperation", "activities", "gc-overlay" },
@@ -95,6 +96,8 @@ public static class CollectionQueryDispatcher
                 => Ok(Render(c, effectiveView)),
             CollectionHandleKinds.ExceptionSnapshot when artifact is ExceptionSnapshot e
                 => Ok(Render(e, effectiveView, topN)),
+            CollectionHandleKinds.CrashGuardSnapshot when artifact is CrashGuardSnapshot crash
+                => Ok(Render(crash, effectiveView, topN)),
             CollectionHandleKinds.GcEvents when artifact is GcSummary g
                 => Ok(Render(g, effectiveView, topN)),
             CollectionHandleKinds.EventSource when artifact is EventSourceCapture es
@@ -158,6 +161,33 @@ public static class CollectionQueryDispatcher
     {
         var sliced = e.Recent.Take(topN).ToList();
         return new ExceptionRecentView(e.TotalExceptions, e.RecentCap, sliced.Count, sliced);
+    }
+
+    private static CollectionQueryResult Render(CrashGuardSnapshot snapshot, string view, int topN)
+    {
+        object payload = view.ToLowerInvariant() switch
+        {
+            "exceptions" => new CrashGuardExceptionsView(
+                snapshot.TotalExceptions,
+                snapshot.RecentCap,
+                Math.Min(topN, snapshot.Exceptions.Count),
+                snapshot.Exceptions.Take(topN).ToList()),
+            "stack" => new CrashGuardStackView(
+                snapshot.FinalException,
+                snapshot.FinalException?.ManagedStack ?? Array.Empty<string>(),
+                snapshot.Notes),
+            _ => new CrashGuardSummaryView(
+                snapshot.TotalExceptions,
+                snapshot.ProcessExited,
+                snapshot.ExitCode,
+                snapshot.UnhandledExceptionObserved,
+                snapshot.FinalException,
+                snapshot.ByType.Take(topN).ToList(),
+                snapshot.Notes),
+        };
+
+        return new CollectionQueryResult(
+            CollectionHandleKinds.CrashGuardSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
     }
 
     private static CollectionQueryResult Render(GcSummary g, string view, int topN)

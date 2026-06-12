@@ -43,7 +43,7 @@ sidecar (`http://127.0.0.1:18887`).
 
 The sample PID inside the shared namespace is `1` (it owns the container).
 
-## The 7 scenarios
+## The scenarios
 
 Each row lists: the symptom the user/LLM would report, the endpoint that
 reproduces it, the MCP tools that would identify it, and what to look for in
@@ -58,6 +58,12 @@ the output.
 | 5 | "Throughput drops as concurrency grows" | `GET /lock-contention?threads=64&ms=4000` | `collect_events(kind="counters")`, `collect_sample(kind="cpu")` | `monitor-lock-contention-count` jumps to thousands/sec; stacks dominated by `Monitor.Enter` / `SpinWait` |
 | 6 | "GC pauses are frequent in production" | repeated `GET /loh-alloc?count=200` | `collect_events(kind="counters")`, `collect_events(kind="gc")` | `loh-size` and `gen2-gc-count` rise; collector reports gen-2 collections with `LowMemory` / `Induced` reasons (or just frequent gen-2) |
 | 7 | "Outbound HTTP calls are slow" | `GET /slow-http?url=https://httpbin.org/delay/3` | `collect_events(kind="event_source")` `name=System.Net.Http`, `collect_events(kind="counters")` with `System.Net.Http` | EventSource emits `Request*/Response*` events with latency between them; `requests-started-rate` and `current-requests` visible in counters |
+| 8 | "The process dies from an unhandled exception" | `GET /crash?mode=unhandled` | `collect_events(kind="crash-guard")` started before the request | `unhandledExceptionObserved=true`; `finalException` has the fatal type/message and `query_snapshot(view="stack")` returns the managed stack when available |
+
+`/crash?mode=stackoverflow` is intentionally abrupt and may terminate before
+all EventPipe buffers flush. `/crash?mode=oom` simulates an OOM-class fatal
+termination with an unhandled exception rather than forcing the host into real
+memory exhaustion.
 
 ## How an LLM should drive this
 
@@ -74,6 +80,7 @@ A useful system message for the LLM (already encoded in
    - Memory growing → `collect_events(kind="gc")`, then `collect_process_dump` if a
      dump is justified
    - Exception count spiking → `collect_events(kind="exceptions")`
+   - Process crash / unhandled exception → start `collect_events(kind="crash-guard")` before reproducing
    - Latency on outbound HTTP → `collect_events(kind="event_source")` `System.Net.Http`
 5. **Report**: aggregate the captured artifacts into a root cause + fix.
 
