@@ -12,6 +12,7 @@ using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.JitCapture;
 using DotnetDiagnostics.Core.Kestrel;
@@ -482,6 +483,50 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
 
         snapshot.Meters.Count.Should().BeLessOrEqualTo(5);
         snapshot.Notes.Should().Contain(note => note.Contains("TimeSeriesLimitReached", StringComparison.Ordinal));
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task CrashGuard_CapturesUnhandledException_FromBadCodeSample()
+    {
+        await using var sample = await LiveHttpSample.StartAsync("BadCodeSample", "/");
+        using var http = new HttpClient
+        {
+            BaseAddress = new Uri(sample.BaseUrl),
+            Timeout = TimeSpan.FromSeconds(5),
+        };
+        var collector = new EventPipeCrashGuardCollector();
+
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1500));
+            try
+            {
+                using var storm = await http.GetAsync("/exceptions?count=30", CancellationToken.None);
+                storm.EnsureSuccessStatusCode();
+                using var _ = await http.GetAsync("/crash?mode=unhandled", CancellationToken.None);
+            }
+            catch (HttpRequestException)
+            {
+                // The fixture deliberately kills the process; the collector assertions below are
+                // the contract, not whether Kestrel completed the 202 response first.
+            }
+        });
+
+        var snapshot = await collector.CollectAsync(
+            sample.ProcessId,
+            TimeSpan.FromSeconds(8),
+            maxRecent: 5,
+            cancellationToken: CancellationToken.None);
+
+        await driver;
+
+        snapshot.ProcessExited.Should().BeTrue();
+        snapshot.UnhandledExceptionObserved.Should().BeTrue();
+        snapshot.TotalExceptions.Should().BeGreaterThan(5);
+        snapshot.FinalException.Should().NotBeNull();
+        snapshot.FinalException!.ExceptionType.Should().Contain("InvalidOperationException");
+        snapshot.FinalException.ExceptionMessage.Should().Contain("crash fixture");
+        snapshot.FinalException.ManagedStack.Should().NotBeEmpty();
     }
 
     [Fact]

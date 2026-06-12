@@ -30,3 +30,32 @@ public sealed record ExceptionSnapshot(
     /// </summary>
     public int RecentCap { get; init; }
 }
+
+/// <summary>A managed exception observed while guarding a process that may crash.</summary>
+public sealed record CrashGuardExceptionEvent(
+    DateTimeOffset Timestamp,
+    string ExceptionType,
+    string ExceptionMessage,
+    string ExceptionHResult,
+    int ThreadId,
+    string EventName,
+    bool IsUnhandled,
+    IReadOnlyList<string> ManagedStack);
+
+/// <summary>Postmortem-oriented exception stream captured around a process crash.</summary>
+public sealed record CrashGuardSnapshot(
+    int ProcessId,
+    DateTimeOffset StartedAt,
+    TimeSpan Duration,
+    bool ProcessExited,
+    int? ExitCode,
+    bool UnhandledExceptionObserved,
+    int TotalExceptions,
+    IReadOnlyList<ExceptionCount> ByType,
+    IReadOnlyList<CrashGuardExceptionEvent> Exceptions,
+    CrashGuardExceptionEvent? FinalException,
+    IReadOnlyList<string> Notes)
+{
+    /// <summary>Cap applied to <see cref="Exceptions"/> during collection.</summary>
+    public int RecentCap { get; init; }
+}

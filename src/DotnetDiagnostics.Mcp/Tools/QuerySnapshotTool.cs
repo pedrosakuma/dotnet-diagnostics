@@ -35,7 +35,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 ///   <item><description>thread-snapshot → <c>ptrace</c></description></item>
 ///   <item><description>off-cpu-snapshot → <c>eventpipe</c></description></item>
 ///   <item><description>cpu-sample / allocation-sample / native-alloc-sample (call-tree view) → <c>investigation-export</c></description></item>
-///   <item><description>counters / exception-snapshot / gc-events / event-source / activities / log-snapshot / jit-snapshot / threadpool-snapshot / contention-snapshot / db-snapshot / kestrel-snapshot / startup-snapshot → any of <c>read-counters</c> or <c>eventpipe</c> (matches <c>query_collection</c>)</description></item>
+///   <item><description>counters / exception-snapshot / crash-guard-snapshot / gc-events / event-source / activities / log-snapshot / jit-snapshot / threadpool-snapshot / contention-snapshot / db-snapshot / kestrel-snapshot / networking-snapshot / startup-snapshot → any of <c>read-counters</c> or <c>eventpipe</c> (matches <c>query_collection</c>)</description></item>
 /// </list>
 /// <para>Unknown handle kinds, unknown views and parameter shape violations all return
 /// the structured <c>InvalidArgument</c> / <c>UnsupportedHandleKind</c> envelopes the
@@ -120,8 +120,8 @@ public sealed class QuerySnapshotTool
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
-        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, snapshot_counters, collect_exceptions, collect_gc_events, collect_events(kind=\"datas\"), collect_events(kind=\"catalog\"), collect_event_source, collect_activities, collect_events(kind=\"logs\"), collect_events(kind=\"threadpool\"), collect_events(kind=\"contention\"), collect_events(kind=\"db\")).")] string handle,
-        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
+        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, collect_events(kind=\"counters\"), collect_events(kind=\"exceptions\"), collect_events(kind=\"crash-guard\"), collect_events(kind=\"gc\"), collect_events(kind=\"datas\"), collect_events(kind=\"catalog\"), collect_events(kind=\"event_source\"), collect_events(kind=\"activities\"), collect_events(kind=\"logs\"), collect_events(kind=\"jit\"), collect_events(kind=\"threadpool\"), collect_events(kind=\"contention\"), collect_events(kind=\"db\"), collect_events(kind=\"kestrel\"), collect_events(kind=\"networking\"), collect_events(kind=\"startup\")).")] string handle,
+        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|exceptions|stack|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
         [Description("Maximum entries returned by any ranked-list view. Omit to use the per-kind legacy default: 50 for heap / thread / collection, 25 for off-CPU. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
         [Description("Heap view='top-types' only: ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
@@ -371,6 +371,7 @@ public sealed class QuerySnapshotTool
                 }
 
                 case CollectionHandleKinds.ExceptionSnapshot:
+                case CollectionHandleKinds.CrashGuardSnapshot:
                 case CollectionHandleKinds.GcEvents:
                 case CollectionHandleKinds.EventSource:
                 case CollectionHandleKinds.Activities:
@@ -716,6 +717,7 @@ public sealed class QuerySnapshotTool
         DiagnosticTools.NativeAllocHandleKind,
         CollectionHandleKinds.Counters,
         CollectionHandleKinds.ExceptionSnapshot,
+        CollectionHandleKinds.CrashGuardSnapshot,
         CollectionHandleKinds.GcEvents,
         CollectionHandleKinds.GcDatas,
         CollectionHandleKinds.EventCatalog,

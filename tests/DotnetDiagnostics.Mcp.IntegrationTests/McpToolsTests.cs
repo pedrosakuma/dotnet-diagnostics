@@ -586,6 +586,30 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task CollectCrashGuard_RunsAgainstSelfHost()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_events",
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "crash-guard",
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 1,
+                ["maxRecent"] = 10,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var envelope = DeserializeStructured<CollectEventsEnvelope>(result);
+        envelope.Should().NotBeNull();
+        envelope!.CrashGuard.Should().NotBeNull();
+        envelope.CrashGuard!.ProcessId.Should().Be(Environment.ProcessId);
+        envelope.CrashGuard.TotalExceptions.Should().BeGreaterThanOrEqualTo(0);
+    }
+
+    [Fact]
     public async Task CollectGcEvents_RunsAgainstSelfHost()
     {
         await using var client = await ConnectAsync();

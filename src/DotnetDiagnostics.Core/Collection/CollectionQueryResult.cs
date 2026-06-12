@@ -56,6 +56,29 @@ public sealed record ExceptionRecentView(
     int Returned,
     IReadOnlyList<Exceptions.ManagedExceptionEvent> Recent);
 
+/// <summary>Crash-guard headline, including the final unhandled exception when observed.</summary>
+public sealed record CrashGuardSummaryView(
+    int TotalExceptions,
+    bool ProcessExited,
+    int? ExitCode,
+    bool UnhandledExceptionObserved,
+    Exceptions.CrashGuardExceptionEvent? FinalException,
+    IReadOnlyList<Exceptions.ExceptionCount> ByType,
+    IReadOnlyList<string> Notes);
+
+/// <summary>Crash-guard exception stream capped by <c>topN</c>.</summary>
+public sealed record CrashGuardExceptionsView(
+    int TotalExceptions,
+    int RecentCap,
+    int Returned,
+    IReadOnlyList<Exceptions.CrashGuardExceptionEvent> Exceptions);
+
+/// <summary>Managed stack projection for the final unhandled exception.</summary>
+public sealed record CrashGuardStackView(
+    Exceptions.CrashGuardExceptionEvent? FinalException,
+    IReadOnlyList<string> ManagedStack,
+    IReadOnlyList<string> Notes);
+
 // --- GC events views --------------------------------------------------------------------------
 
 /// <summary>Aggregated GC pause headline.</summary>

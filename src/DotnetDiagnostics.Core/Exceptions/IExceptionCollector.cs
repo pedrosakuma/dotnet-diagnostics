@@ -12,3 +12,16 @@ public interface IExceptionCollector
         int maxRecent = 100,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Captures the runtime exception stream and crash-adjacent signals for a process that may terminate
+/// during the collection window.
+/// </summary>
+public interface ICrashGuardCollector
+{
+    Task<CrashGuardSnapshot> CollectAsync(
+        int processId,
+        TimeSpan duration,
+        int maxRecent = 100,
+        CancellationToken cancellationToken = default);
+}

@@ -249,6 +249,61 @@ public static class EventCollectionUseCases
             resolved.Context);
     }
 
+    /// <summary>Captures exception/crash signals and returns early if the target exits.</summary>
+    public static async Task<DiagnosticResult<CrashGuardSnapshot>> CollectCrashGuard(
+        ICrashGuardCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        int? processId = null,
+        int durationSeconds = 10,
+        int maxRecent = 100,
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<CrashGuardSnapshot>(nameof(durationSeconds), "must be >= 1");
+        if (maxRecent < 1) return InvalidArg<CrashGuardSnapshot>(nameof(maxRecent), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<CrashGuardSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+
+        var snap = await collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxRecent, cancellationToken).ConfigureAwait(false);
+        var inlineSnap = snap;
+        if (depth == SamplingDepth.Summary)
+        {
+            inlineSnap = snap with { Exceptions = Array.Empty<CrashGuardExceptionEvent>() };
+        }
+
+        var handle = handles.Register(pid, CollectionHandleKinds.CrashGuardSnapshot, snap, CollectionHandleTtl, evictWhenProcessExits: false, origin: HandleOrigin.Live);
+        var hints = new List<NextActionHint>
+        {
+            new("query_snapshot",
+                "Drill into this crash-guard snapshot without re-collecting (views: summary, exceptions, stack).",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = snap.FinalException is not null ? "stack" : "exceptions", ["topN"] = 25 }),
+        };
+
+        if (snap.UnhandledExceptionObserved)
+        {
+            hints.Insert(0, new NextActionHint("collect_process_dump",
+                "An unhandled exception was observed; collect or inspect the crash dump for heap/native context while correlating with this exception stream.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["dumpType"] = "Mini" }));
+        }
+
+        var summary = snap.UnhandledExceptionObserved && snap.FinalException is { } final
+            ? $"Crash guard observed an unhandled {final.ExceptionType} after {snap.Duration.TotalSeconds:F1}s: {final.ExceptionMessage}"
+            : snap.ProcessExited
+                ? $"Crash guard observed process exit after {snap.Duration.TotalSeconds:F1}s (exitCode={snap.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}) and {snap.TotalExceptions} exception(s)."
+                : $"Crash guard captured {snap.TotalExceptions} exception(s) over {durationSeconds}s; no unhandled exception or process exit observed.";
+
+        return WithContext(DiagnosticResult.OkWithHandle(
+            inlineSnap,
+            summary,
+            handle.Id,
+            handle.ExpiresAt,
+            hints.ToArray()),
+            resolved.Context);
+    }
+
     /// <summary>Pairs GCStart/GCStop events into pause durations and per-generation counts.</summary>
     public static async Task<DiagnosticResult<GcSummary>> CollectGcEvents(
         IGcCollector collector,
