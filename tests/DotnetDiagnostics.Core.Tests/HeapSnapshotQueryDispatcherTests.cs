@@ -24,6 +24,7 @@ public class HeapSnapshotQueryDispatcherTests
     [InlineData("delegate-targets")]
     [InlineData("gchandles")]
     [InlineData("async")]
+    [InlineData("timers")]
     public void ProjectionViews_RenderResult(string view)
     {
         var outcome = HeapSnapshotQueryDispatcher.Dispatch(Snapshot(), Handle, view, topN: 10, rankBy: "bytes", typeFullName: null);
@@ -116,9 +117,9 @@ public class HeapSnapshotQueryDispatcherTests
     }
 
     [Fact]
-    public void ProjectionViews_ExposesNineViews_WithoutServerOnly()
+    public void ProjectionViews_ExposesTenViews_WithoutServerOnly()
     {
-        HeapSnapshotQueryDispatcher.ProjectionViews.Should().HaveCount(9);
+        HeapSnapshotQueryDispatcher.ProjectionViews.Should().HaveCount(10);
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().NotContain("object");
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().NotContain("duplicate-strings");
     }
@@ -141,5 +142,6 @@ public class HeapSnapshotQueryDispatcherTests
         DelegateTargets = new[] { new DelegateTargetStat("Subscriber", "Publisher", "OnChanged", null, null, 7) },
         GcHandles = new GcHandlesView(2, ImmutableArray.Create(new GcHandleBucket("Strong", 2, 4096, ImmutableArray<GcHandleTypeStat>.Empty)), ImmutableArray<string>.Empty),
         AsyncOperations = new[] { new AsyncOperationStat("MyAsyncStateMachine", 0, "TaskAwaiter", 128) },
+        Timers = new TaskTimerLeakView(1, 2, 1, [new TimerCallbackStat("System.Threading.TimerQueueTimer", null, "MyTimer", "Tick", null, 1)], [new TaskTypeStat("System.Threading.Tasks.Task", "System.Private.CoreLib", 2, 128)], [new TaskTypeStat("System.Threading.Tasks.TaskCompletionSource", "System.Private.CoreLib", 1, 64)], []),
     };
 }

@@ -55,6 +55,8 @@ var leakedBuffers = new List<byte[]>();
 var leakedFiles = new List<FileStream>();
 var leakedSockets = new List<LeakedSocketConnection>();
 var leakedHandleWindows = new List<(nint[] HandlePointers, byte[][] Payloads)>();
+var leakedTimers = new List<Timer>();
+var leakedNativeAllocations = new List<nint>();
 var badCodeEndpoints = new[]
 {
     "/cpu-burn?ms=2000",
@@ -67,6 +69,8 @@ var badCodeEndpoints = new[]
     "/fd-leak?count=64",
     "/socket-leak?count=32&host=loopback",
     "/handle-leak?type=pinned|normal|weak&count=200&seconds=10",
+    "/timer-leak?count=50",
+    "/native-bloat?mb=128",
     "/meter-spam?count=5&kind=counter",
     "/log-spam?count=200&level=warning",
     "/jit-pressure?count=200",
@@ -344,7 +348,43 @@ app.MapGet("/handle-leak", async (string? type, int? count, int? seconds) =>
     }
 });
 
-// 12. ILogger warning/error storm — detect with collect_events(kind="logs")
+// 12. Timer leak — detect with collect_events(kind="counters") active-timer-count
+//     + inspect_heap/query_snapshot(view="timers")
+app.MapGet("/timer-leak", (int? count) =>
+{
+    var n = Math.Clamp(count ?? 50, 1, 5_000);
+    lock (leakedTimers)
+    {
+        for (var i = 0; i < n; i++)
+        {
+            leakedTimers.Add(new Timer(static _ => { }, null, TimeSpan.FromHours(1), TimeSpan.FromHours(1)));
+        }
+
+        return Results.Ok(new { added = n, totalLeaked = leakedTimers.Count });
+    }
+});
+
+// 13. Native/unmanaged RSS growth with a flat managed heap — detect with inspect_process(view="resources")
+app.MapGet("/native-bloat", (int? mb) =>
+{
+    var size = Math.Clamp(mb ?? 128, 1, 512) * 1024 * 1024;
+    var pointer = Marshal.AllocHGlobal(size);
+    for (var offset = 0; offset < size; offset += Environment.SystemPageSize)
+    {
+        Marshal.WriteByte(IntPtr.Add(pointer, offset), 0x5A);
+    }
+
+    Marshal.WriteByte(IntPtr.Add(pointer, size - 1), 0x5A);
+
+    lock (leakedNativeAllocations)
+    {
+        leakedNativeAllocations.Add(pointer);
+    }
+
+    return Results.Ok(new { addedMb = size / (1024 * 1024), allocations = leakedNativeAllocations.Count });
+});
+
+// 14. ILogger warning/error storm — detect with collect_events(kind="logs")
 app.MapGet("/log-spam", (ILoggerFactory loggerFactory, int? count, string? level) =>
 {
     var n = Math.Clamp(count ?? 200, 1, 5_000);

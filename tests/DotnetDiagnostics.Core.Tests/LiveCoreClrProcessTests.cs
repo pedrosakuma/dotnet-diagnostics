@@ -231,6 +231,29 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         resources.Limits.NoFileUsageFraction.Should().BeLessThan(1);
     }
 
+    [LinuxOnlyFact]
+    public async Task Resources_ReportsManagedVsNativeSplit_AndNativeBloat()
+    {
+        await using var sample = await LiveHttpSample.StartAsync("BadCodeSample", "/");
+        var collector = new ProcessResourcesCollector();
+        var before = await collector.CollectAsync(sample.ProcessId, durationSeconds: 0, sampleEverySeconds: 2, CancellationToken.None);
+
+        before.ManagedVsNative.Should().NotBeNull();
+        before.ManagedVsNative!.RssBytes.Should().BeGreaterThan(0);
+        before.ManagedVsNative.GcHeapBytes.Should().BeGreaterThan(0);
+
+        using var http = new HttpClient { BaseAddress = new Uri(sample.BaseUrl) };
+        using var response = await http.GetAsync("/native-bloat?mb=96", CancellationToken.None);
+        response.EnsureSuccessStatusCode();
+
+        var after = await collector.CollectAsync(sample.ProcessId, durationSeconds: 0, sampleEverySeconds: 2, CancellationToken.None);
+        after.ManagedVsNative.Should().NotBeNull();
+        after.ManagedVsNative!.RssBytes.Should().BeGreaterThan((before.ManagedVsNative.RssBytes ?? 0) + 64L * 1024 * 1024);
+        after.ManagedVsNative.RssMinusGcHeapBytes.Should().BeGreaterThan(64L * 1024 * 1024);
+        after.ManagedVsNative.RssDominated.Should().BeTrue();
+        after.Notes.Should().Contain(note => note.Contains("RSS is much larger", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task Resources_TrendModeReturnsSamples()
     {
@@ -805,6 +828,39 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
 
         using var response = await leakTask;
         response.EnsureSuccessStatusCode();
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task DumpInspector_QueryTimersView_FindsLeakedTimers_FromBadCodeSample()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        using var response = await http.GetAsync("/timer-leak?count=32", CancellationToken.None);
+        response.EnsureSuccessStatusCode();
+        await Task.Delay(500, CancellationToken.None);
+
+        HeapSnapshotArtifact snapshot;
+        try
+        {
+            snapshot = await new ClrMdDumpInspector().InspectLiveAsync(
+                badSample.ProcessId,
+                new DumpInspectionOptions(TopTypes: 25),
+                CancellationToken.None);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            throw SkipException.ForReason($"ptrace/ClrMD attach unavailable in this environment: {ex.Message}");
+        }
+
+        var projection = HeapSnapshotQueryDispatcher.Dispatch(snapshot, "timer-test", "timers", topN: 10, rankBy: "bytes", typeFullName: null);
+
+        projection.Result.Should().NotBeNull();
+        projection.Result!.IsError.Should().BeFalse();
+        projection.Result.Data.Should().NotBeNull();
+        projection.Result.Data!.Timers.Should().NotBeNull();
+        projection.Result.Data.Timers!.TotalTimers.Should().BeGreaterThanOrEqualTo(32);
+        projection.Result.Data.Timers.TimersByCallback.Should().NotBeEmpty();
+        projection.Result.Summary.Should().Contain("task/timer leak candidates");
     }
 
     [Fact(Timeout = 60_000)]

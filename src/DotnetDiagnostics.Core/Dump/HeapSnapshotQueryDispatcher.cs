@@ -23,7 +23,7 @@ public static class HeapSnapshotQueryDispatcher
     private static readonly string[] Projection =
     {
         "top-types", "retention-paths", "roots-by-kind", "finalizer-queue", "fragmentation",
-        "static-fields", "delegate-targets", "gchandles", "async",
+        "static-fields", "delegate-targets", "gchandles", "async", "timers",
     };
 
     private static readonly HashSet<string> ProjectionSet = new(Projection, StringComparer.Ordinal);
@@ -81,7 +81,8 @@ public static class HeapSnapshotQueryDispatcher
             "static-fields" => QueryStaticFields(snapshot, handle, topN),
             "delegate-targets" => QueryDelegateTargets(snapshot, handle, topN),
             "gchandles" => QueryGcHandles(snapshot, handle),
-            _ => QueryAsync(snapshot, handle, topN),
+            "async" => QueryAsync(snapshot, handle, topN),
+            _ => QueryTimers(snapshot, handle, topN),
         };
 
         return new HeapDispatchOutcome(result, false, false);
@@ -295,6 +296,43 @@ public static class HeapSnapshotQueryDispatcher
             SortedBy = ordered.Any(op => op.ObservedOrder.HasValue) ? "heap-order" : "direct-size",
         };
         return DiagnosticResult.Ok(result, summary);
+    }
+
+    private static DiagnosticResult<HeapSnapshotQueryResult> QueryTimers(
+        HeapSnapshotArtifact snapshot, string handle, int topN)
+    {
+        var origin = snapshot.Origin.ToString();
+        var timers = snapshot.Timers ?? new TaskTimerLeakView(0, 0, 0, [], [], [], []);
+        var sliced = timers with
+        {
+            TimersByCallback = timers.TimersByCallback.Take(topN).ToArray(),
+            TasksByType = timers.TasksByType.Take(topN).ToArray(),
+            TaskCompletionSourcesByType = timers.TaskCompletionSourcesByType.Take(topN).ToArray(),
+        };
+
+        var summary = sliced.TotalTimers == 0 && sliced.TotalTasks == 0 && sliced.TotalTaskCompletionSources == 0
+            ? $"Snapshot '{handle}' has no live System.Threading.Timer, Task, or TaskCompletionSource objects."
+            : $"Returning task/timer leak candidates from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) — timers={sliced.TotalTimers:N0}, tasks={sliced.TotalTasks:N0}, taskCompletionSources={sliced.TotalTaskCompletionSources:N0}. Top timer callback: {FormatTimerCallback(sliced.TimersByCallback.Count > 0 ? sliced.TimersByCallback[0] : null)}.";
+
+        var result = new HeapSnapshotQueryResult(handle, "timers", origin, snapshot.ProcessId, snapshot.CapturedAt)
+        {
+            Timers = sliced,
+        };
+
+        return DiagnosticResult.Ok(result, summary);
+    }
+
+    private static string FormatTimerCallback(TimerCallbackStat? stat)
+    {
+        if (stat is null)
+        {
+            return "<none>";
+        }
+
+        var method = stat.MethodName is null
+            ? "<unknown>"
+            : $"{stat.DeclaringTypeFullName ?? "<unknown>"}.{stat.MethodName}";
+        return $"`{method}` ({stat.Count:N0})";
     }
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)

@@ -1,6 +1,8 @@
 using System.Globalization;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using DotnetDiagnostics.Core.Counters;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -17,19 +19,26 @@ public sealed partial class ProcessResourcesCollector : IProcessResourcesCollect
 {
     private const int MaxClassifiedFdEntries = 10_000;
     private const uint ProcessQueryLimitedInformation = 0x1000;
+    private const long RssDominatedMinimumGapBytes = 128L * 1024 * 1024;
+    private static readonly TimeSpan ManagedHeapProbeDuration = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ManagedHeapProbeTimeout = TimeSpan.FromSeconds(6);
+    private static readonly string[] SystemRuntimeProvider = ["System.Runtime"];
 
     private readonly string _procRoot;
     private readonly ILogger<ProcessResourcesCollector> _logger;
     private readonly TimeProvider _clock;
+    private readonly ICounterCollector _counterCollector;
 
     public ProcessResourcesCollector(
         ILogger<ProcessResourcesCollector>? logger = null,
         TimeProvider? clock = null,
-        string procRoot = "/proc")
+        string procRoot = "/proc",
+        ICounterCollector? counterCollector = null)
     {
         _logger = logger ?? NullLogger<ProcessResourcesCollector>.Instance;
         _clock = clock ?? TimeProvider.System;
         _procRoot = procRoot;
+        _counterCollector = counterCollector ?? new EventPipeCounterCollector();
     }
 
     /// <inheritdoc />
@@ -45,6 +54,9 @@ public sealed partial class ProcessResourcesCollector : IProcessResourcesCollect
         if (durationSeconds == 0)
         {
             var snapshot = TakeSample(processId, notes);
+            var managedHeap = await ProbeManagedGcHeapBytesAsync(processId, cancellationToken).ConfigureAwait(false);
+            AddProbeNotes(notes, managedHeap.Notes);
+            snapshot = snapshot with { ManagedVsNative = BuildManagedVsNative(snapshot.RssBytes, managedHeap.GcHeapBytes, notes) };
             return snapshot.ToReport(processId, notes, trend: null);
         }
 
@@ -75,8 +87,13 @@ public sealed partial class ProcessResourcesCollector : IProcessResourcesCollect
 
         if (samples.Count == 0)
         {
-            samples.Add(new CollectedSnapshot(_clock.GetUtcNow(), null, null, null, null, null));
+            samples.Add(new CollectedSnapshot(_clock.GetUtcNow(), null, null, null, null, null, null, null));
         }
+
+        var managed = await ProbeManagedGcHeapBytesAsync(processId, cancellationToken).ConfigureAwait(false);
+        AddProbeNotes(notes, managed.Notes);
+        var final = samples[^1];
+        samples[^1] = final with { ManagedVsNative = BuildManagedVsNative(final.RssBytes, managed.GcHeapBytes, notes) };
 
         var trend = new ProcessResourcesTrend(samples.Select(static sample => sample.ToSample()).ToArray());
         return samples[^1].ToReport(processId, notes, trend);
@@ -98,13 +115,13 @@ public sealed partial class ProcessResourcesCollector : IProcessResourcesCollect
             }
 
             AddNoteOnce(notes, $"Process resource collection is not supported on {RuntimeInformation.OSDescription}. Only Linux and Windows are implemented.");
-            return new CollectedSnapshot(timestamp, null, null, null, null, null);
+            return new CollectedSnapshot(timestamp, null, null, null, null, null, null, null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to collect process resources for pid {ProcessId}", processId);
             AddNoteOnce(notes, $"Resource snapshot failed: {ex.GetType().Name}: {ex.Message}");
-            return new CollectedSnapshot(timestamp, null, null, null, null, null);
+            return new CollectedSnapshot(timestamp, null, null, null, null, null, null, null);
         }
     }
 
@@ -121,7 +138,8 @@ public sealed partial class ProcessResourcesCollector : IProcessResourcesCollect
         var sockets = ReadSocketBreakdown(processId, socketInodes, Path.Combine(procDir, "net", "tcp"), Path.Combine(procDir, "net", "tcp6"), notes);
         var limits = ReadLimits(processId, Path.Combine(procDir, "limits"), fd.FdCount, notes);
 
-        return new CollectedSnapshot(timestamp, fd.FdCount, null, fd.Breakdown, sockets, limits);
+        var rssBytes = ReadLinuxRssBytes(Path.Combine(procDir, "status"), notes);
+        return new CollectedSnapshot(timestamp, fd.FdCount, null, fd.Breakdown, sockets, limits, rssBytes, null);
     }
 
     [SupportedOSPlatform("windows")]
@@ -151,7 +169,8 @@ public sealed partial class ProcessResourcesCollector : IProcessResourcesCollect
         }
 
         AddNoteOnce(notes, "Windows handle breakdown is not yet supported.");
-        return new CollectedSnapshot(timestamp, null, handleCount == 0 && processHandle == IntPtr.Zero ? null : (int?)handleCount, null, null, null);
+        var rssBytes = ReadWindowsWorkingSetBytes(processId, notes);
+        return new CollectedSnapshot(timestamp, null, handleCount == 0 && processHandle == IntPtr.Zero ? null : (int?)handleCount, null, null, null, rssBytes, null);
     }
 
     private static FdCollectionResult ReadFdBreakdown(string fdDirectory, List<string> notes)
@@ -366,6 +385,168 @@ public sealed partial class ProcessResourcesCollector : IProcessResourcesCollect
         }
     }
 
+    internal static long? ReadLinuxRssBytes(string statusPath, List<string> notes)
+    {
+        try
+        {
+            if (!File.Exists(statusPath))
+            {
+                AddNoteOnce(notes, $"Could not read {statusPath}: file not found.");
+                return null;
+            }
+
+            foreach (var line in File.ReadLines(statusPath))
+            {
+                if (!line.StartsWith("VmRSS:", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var rest = line.AsSpan("VmRSS:".Length).TrimStart();
+                var digitCount = 0;
+                while (digitCount < rest.Length && char.IsDigit(rest[digitCount]))
+                {
+                    digitCount++;
+                }
+
+                if (digitCount > 0 && long.TryParse(rest[..digitCount], NumberStyles.Integer, CultureInfo.InvariantCulture, out var kib))
+                {
+                    return kib * 1024;
+                }
+
+                AddNoteOnce(notes, $"Could not parse VmRSS from {statusPath}.");
+                return null;
+            }
+
+            AddNoteOnce(notes, $"Could not find VmRSS in {statusPath}.");
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AddNoteOnce(notes, $"Could not read RSS from {statusPath}: {ex.GetType().Name}.");
+            return null;
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static long? ReadWindowsWorkingSetBytes(int processId, List<string> notes)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return process.WorkingSet64;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception)
+        {
+            AddNoteOnce(notes, $"Could not read WorkingSet64 for pid {processId}: {ex.GetType().Name}.");
+            return null;
+        }
+    }
+
+    private async Task<ManagedHeapProbeResult> ProbeManagedGcHeapBytesAsync(int processId, CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(ManagedHeapProbeTimeout);
+
+        try
+        {
+            var snapshot = await _counterCollector.CollectAsync(
+                    processId,
+                    ManagedHeapProbeDuration,
+                    providers: SystemRuntimeProvider,
+                    meters: Array.Empty<string>(),
+                    intervalSeconds: 1,
+                    maxInstrumentTimeSeries: 64,
+                    cancellationToken: timeout.Token)
+                .ConfigureAwait(false);
+
+            var counter = snapshot.Counters.FirstOrDefault(c =>
+                c.Provider == "System.Runtime" &&
+                c.Name == "gc-heap-size");
+
+            if (counter is null)
+            {
+                return new ManagedHeapProbeResult(null, ["System.Runtime gc-heap-size counter was not observed during the resources probe."]);
+            }
+
+            return new ManagedHeapProbeResult(ConvertGcHeapCounterToBytes(counter), snapshot.Notes);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new ManagedHeapProbeResult(null, [$"Managed GC heap probe timed out after {ManagedHeapProbeTimeout.TotalSeconds:F0}s."]);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to collect managed GC heap size for pid {ProcessId}.", processId);
+            return new ManagedHeapProbeResult(null, [$"Managed GC heap size unavailable: {ex.GetType().Name}: {ex.Message}"]);
+        }
+    }
+
+    private static long ConvertGcHeapCounterToBytes(CounterValue counter)
+    {
+        var value = counter.Value;
+        if (counter.Unit is { } unit)
+        {
+            if (unit.Equals("MB", StringComparison.OrdinalIgnoreCase))
+            {
+                return (long)Math.Round(value * 1024 * 1024);
+            }
+
+            if (unit.Equals("KB", StringComparison.OrdinalIgnoreCase))
+            {
+                return (long)Math.Round(value * 1024);
+            }
+        }
+
+        return (long)Math.Round(value);
+    }
+
+    private static ManagedVsNativeMemory? BuildManagedVsNative(long? rssBytes, long? gcHeapBytes, List<string> notes)
+    {
+        if (rssBytes is null && gcHeapBytes is null)
+        {
+            return null;
+        }
+
+        long? rssMinusGc = rssBytes.HasValue && gcHeapBytes.HasValue
+            ? Math.Max(0, rssBytes.Value - gcHeapBytes.Value)
+            : null;
+        double? ratio = rssBytes is > 0 && gcHeapBytes.HasValue
+            ? Math.Round(gcHeapBytes.Value / (double)rssBytes.Value, 4)
+            : null;
+        bool? rssDominated = rssBytes.HasValue && gcHeapBytes.HasValue
+            ? rssBytes.Value >= gcHeapBytes.Value * 2 && rssMinusGc >= RssDominatedMinimumGapBytes
+            : null;
+
+        var interpretation = rssDominated == true
+            ? "RSS is much larger than the managed GC heap; investigate native allocations, fragmentation, pinned LOH/POH, mmap/file caches, or unmanaged libraries."
+            : rssBytes.HasValue && gcHeapBytes.HasValue
+                ? "RSS and managed GC heap are in the same order of magnitude."
+                : null;
+
+        if (rssDominated == true)
+        {
+            AddNoteOnce(notes, interpretation!);
+        }
+
+        return new ManagedVsNativeMemory(rssBytes, gcHeapBytes, rssMinusGc, ratio, rssDominated)
+        {
+            Interpretation = interpretation,
+        };
+    }
+
+    private static void AddProbeNotes(List<string> notes, IReadOnlyList<string> probeNotes)
+    {
+        foreach (var note in probeNotes)
+        {
+            AddNoteOnce(notes, note);
+        }
+    }
+
     private static long? ParseLimitValue(string token)
         => token.Equals("unlimited", StringComparison.OrdinalIgnoreCase)
             ? null
@@ -394,18 +575,28 @@ public sealed partial class ProcessResourcesCollector : IProcessResourcesCollect
 
     private readonly record struct FdCollectionResult(int? FdCount, FdBreakdown? Breakdown, IReadOnlySet<string>? SocketInodes, bool Success);
 
+    private sealed record ManagedHeapProbeResult(long? GcHeapBytes, IReadOnlyList<string> Notes);
+
     private sealed record CollectedSnapshot(
         DateTimeOffset Timestamp,
         int? FdCount,
         int? HandleCount,
         FdBreakdown? Fd,
         SocketBreakdown? Sockets,
-        RLimits? Limits)
+        RLimits? Limits,
+        long? RssBytes,
+        ManagedVsNativeMemory? ManagedVsNative)
     {
-        public ProcessResourcesSample ToSample() => new(Timestamp, FdCount, HandleCount, Fd, Sockets, Limits);
+        public ProcessResourcesSample ToSample() => new(Timestamp, FdCount, HandleCount, Fd, Sockets, Limits)
+        {
+            ManagedVsNative = ManagedVsNative,
+        };
 
         public ProcessResources ToReport(int processId, IReadOnlyList<string> notes, ProcessResourcesTrend? trend)
-            => new(processId, Timestamp, FdCount, HandleCount, Fd, Sockets, Limits, notes.ToArray(), trend);
+            => new(processId, Timestamp, FdCount, HandleCount, Fd, Sockets, Limits, notes.ToArray(), trend)
+            {
+                ManagedVsNative = ManagedVsNative,
+            };
     }
 
     [SupportedOSPlatform("windows")]

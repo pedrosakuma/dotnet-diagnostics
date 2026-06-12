@@ -145,6 +145,8 @@ public sealed record HeapSnapshotArtifact(
     public GcHandlesView? GcHandles { get; init; }
     /// <summary>Pending async state machines reconstructed from the heap (SOS DumpAsync-style view).</summary>
     public IReadOnlyList<AsyncOperationStat>? AsyncOperations { get; init; }
+    /// <summary>Task / Timer leak candidates aggregated from live heap objects.</summary>
+    public TaskTimerLeakView? Timers { get; init; }
     /// <summary>Diagnostic warnings emitted during the walk (degraded data, ClrMD limitations, …).</summary>
     public IReadOnlyList<string>? Warnings { get; init; }
 }
@@ -275,6 +277,39 @@ public sealed record AsyncChainFrame(
     public int? TaskId { get; init; }
     /// <summary>Type name of the continuation object that links this frame to the next async state machine, when detected.</summary>
     public string? ContinuationObjectTypeFullName { get; init; }
+}
+
+/// <summary>Aggregated task and timer objects surfaced by <c>query_snapshot(view="timers")</c>.</summary>
+public sealed record TaskTimerLeakView(
+    long TotalTimers,
+    long TotalTasks,
+    long TotalTaskCompletionSources,
+    IReadOnlyList<TimerCallbackStat> TimersByCallback,
+    IReadOnlyList<TaskTypeStat> TasksByType,
+    IReadOnlyList<TaskTypeStat> TaskCompletionSourcesByType,
+    IReadOnlyList<string> Notes);
+
+/// <summary>Timers grouped by callback target / method when ClrMD can decode the delegate.</summary>
+public sealed record TimerCallbackStat(
+    string TimerTypeFullName,
+    string? CallbackTargetTypeFullName,
+    string? DeclaringTypeFullName,
+    string? MethodName,
+    string? MethodSignature,
+    long Count)
+{
+    public bool? IsCanceled { get; init; }
+    public Memory.MethodIdentity? Method { get; init; }
+}
+
+/// <summary>Tasks / TaskCompletionSources grouped by concrete runtime type.</summary>
+public sealed record TaskTypeStat(
+    string TypeFullName,
+    string? ModuleName,
+    long Count,
+    long TotalBytes)
+{
+    public TypeIdentity? Identity { get; init; }
 }
 
 /// <summary>Output of <see cref="IDumpInspector.InspectAsync"/> projected for inline tool consumption.</summary>

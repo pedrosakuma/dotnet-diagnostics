@@ -589,6 +589,13 @@ public sealed class DiagnosticTools
             parts.Add(limitText);
         }
 
+        if (resources.ManagedVsNative is { } memory)
+        {
+            var rss = FormatBytes(memory.RssBytes);
+            var gcHeap = FormatBytes(memory.GcHeapBytes);
+            parts.Add($"rss={rss}, gc_heap={gcHeap}");
+        }
+
         if (parts.Count == 0)
         {
             return resources.Notes.Count > 0
@@ -706,6 +713,18 @@ public sealed class DiagnosticTools
                 }));
         }
 
+        if (resources.ManagedVsNative?.RssDominated == true)
+        {
+            hints.Add(new NextActionHint(
+                "inspect_heap",
+                "RSS is much larger than the managed GC heap. Capture a heap snapshot to check pinned LOH/POH and managed roots; if flat, pivot to native allocation or fragmentation investigation.",
+                new Dictionary<string, object?>
+                {
+                    ["source"] = "live",
+                    ["processId"] = resources.ProcessId,
+                }));
+        }
+
         if (hints.Count == 0)
         {
             hints.Add(new NextActionHint(
@@ -724,6 +743,18 @@ public sealed class DiagnosticTools
 
     private static int GetSocketMetric(SocketBreakdown? sockets, Func<SocketBreakdown, int> selector)
         => sockets is null ? 0 : selector(sockets);
+
+    private static string FormatBytes(long? bytes)
+    {
+        if (bytes is null)
+        {
+            return "?";
+        }
+
+        return bytes.Value >= 1024 * 1024
+            ? $"{bytes.Value / (1024.0 * 1024.0):F1} MiB"
+            : $"{bytes.Value:N0} B";
+    }
 
     [RequireScope("read-counters")]
     [Description(
@@ -1920,6 +1951,7 @@ public sealed class DiagnosticTools
         "`delegate-targets` (delegate / event-handler subscribers grouped by (target type, method) — requires includeDelegateTargets=true), " +
         "`duplicate-strings` (duplicate System.String contents ranked by aggregate retained bytes — requires includeDuplicateStrings=true), " +
         "`gchandles` (GCHandle table aggregated by public GCHandleType-compatible buckets with top target types), " +
+        "`timers` (live System.Threading.Timer / Task / TaskCompletionSource objects grouped by timer callback and task type), " +
         "`object` (dump one managed object by address — SOS !do equivalent), " +
         "`gcroot` (find a shortest GC-root chain for one object address — SOS !gcroot equivalent), " +
         "`objsize` (compute the transitive retained size rooted at one object address — SOS !objsize equivalent), " +
@@ -1933,8 +1965,8 @@ public sealed class DiagnosticTools
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
         [Description("Snapshot handle returned by inspect_dump or inspect_live_heap.")] string handle,
-        [Description("Which slice of the snapshot to return: 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'object', 'gcroot', 'objsize' or 'async'.")] string view = "top-types",
-        [Description("Maximum entries to return for any ranked view ('top-types', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'async'). Ignored by 'roots-by-kind', 'gchandles', 'retention-paths', 'object', 'gcroot' and 'objsize'.")] int topN = 50,
+        [Description("Which slice of the snapshot to return: 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'timers', 'object', 'gcroot', 'objsize' or 'async'.")] string view = "top-types",
+        [Description("Maximum entries to return for any ranked view ('top-types', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'async', 'timers'). Ignored by 'roots-by-kind', 'gchandles', 'retention-paths', 'object', 'gcroot' and 'objsize'.")] int topN = 50,
         [Description("For view='top-types': ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
         [Description("For view='retention-paths': case-insensitive substring matched against TypeFullName to narrow the returned chains.")] string? typeFullName = null,
         [Description("For view='object', 'gcroot' and 'objsize': managed object address (decimal or 0x-prefixed hex).")] string? address = null,
@@ -2004,7 +2036,7 @@ public sealed class DiagnosticTools
                     },
                     cancellationToken).ConfigureAwait(false);
             default:
-                return InvalidArg<HeapSnapshotQueryResult>(nameof(view), $"must be 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'object', 'gcroot', 'objsize' or 'async' (got '{view}')");
+                return InvalidArg<HeapSnapshotQueryResult>(nameof(view), $"must be 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'timers', 'object', 'gcroot', 'objsize' or 'async' (got '{view}')");
         }
     }
 
