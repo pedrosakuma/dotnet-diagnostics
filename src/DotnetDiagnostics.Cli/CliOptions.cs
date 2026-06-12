@@ -14,6 +14,12 @@ internal sealed record CliOptions
     /// <summary>Target OS process id (<c>--pid</c>). Optional — collectors auto-resolve the lone visible .NET process.</summary>
     public int? Pid { get; init; }
 
+    /// <summary>Target process name/prefix selector from <c>--pid &lt;name&gt;</c>. Resolved by the CLI before dispatch.</summary>
+    public string? PidName { get; init; }
+
+    /// <summary>True when the caller supplied either a numeric pid or a name/prefix selector.</summary>
+    public bool HasPid => Pid is not null || PidName is not null;
+
     /// <summary>Emit the raw <see cref="DotnetDiagnostics.Core.DiagnosticResult{T}"/> envelope as JSON (<c>--json</c>).</summary>
     public bool Json { get; init; }
 
@@ -52,6 +58,9 @@ internal sealed record CliOptions
 
     /// <summary>Refresh interval in seconds (<c>--interval</c>) for <c>kind=counters</c>/<c>kind=db</c>. Null applies the default (1).</summary>
     public int? IntervalSeconds { get; init; }
+
+    /// <summary>Re-run the one-shot command every N seconds (<c>--watch</c>). Null runs once.</summary>
+    public int? WatchIntervalSeconds { get; init; }
 
     /// <summary>Maximum events/records (<c>--max-events</c>) — maps to the per-kind cap (maxEvents/maxRecent/maxActivities). Null applies the per-kind default.</summary>
     public int? MaxEvents { get; init; }
@@ -183,6 +192,7 @@ internal sealed record CliOptions
 
         string? command = null;
         int? pid = null;
+        string? pidName = null;
         var json = false;
         var help = false;
         string? savePath = null;
@@ -197,6 +207,7 @@ internal sealed record CliOptions
         var categories = new List<string>();
         int? intervalSeconds = null;
         int? maxEvents = null;
+        int? watchIntervalSeconds = null;
         string? minLevel = null;
         string? depth = null;
         var unsafeProvider = false;
@@ -290,12 +301,28 @@ internal sealed record CliOptions
                     break;
                 case "--pid":
                 case "-p":
-                    if (!TryTakeInt(args, ref i, token, out var pidValue, out error))
+                    if (!TryTakeString(args, ref i, token, out var pidValue, out error))
                     {
                         return null;
                     }
 
-                    pid = pidValue;
+                    if (string.IsNullOrWhiteSpace(pidValue))
+                    {
+                        error = $"Option '{token}' requires a non-empty pid or process name.";
+                        return null;
+                    }
+
+                    if (int.TryParse(pidValue, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var numericPid))
+                    {
+                        pid = numericPid;
+                        pidName = null;
+                    }
+                    else
+                    {
+                        pid = null;
+                        pidName = pidValue;
+                    }
+
                     break;
                 case "--kind":
                     if (!TryTakeString(args, ref i, token, out var kindValue, out error))
@@ -329,6 +356,14 @@ internal sealed record CliOptions
                     }
 
                     maxEvents = maxEventsValue;
+                    break;
+                case "--watch":
+                    if (!TryTakeInt(args, ref i, token, out var watchValue, out error))
+                    {
+                        return null;
+                    }
+
+                    watchIntervalSeconds = watchValue;
                     break;
                 case "--top-types":
                     if (!TryTakeInt(args, ref i, token, out var topTypesValue, out error))
@@ -597,6 +632,7 @@ internal sealed record CliOptions
         {
             Command = command,
             Pid = pid,
+            PidName = pidName,
             Json = json,
             SavePath = savePath,
             ComparePaths = comparePaths,
@@ -610,6 +646,7 @@ internal sealed record CliOptions
             Sources = sources,
             Categories = categories,
             IntervalSeconds = intervalSeconds,
+            WatchIntervalSeconds = watchIntervalSeconds,
             MaxEvents = maxEvents,
             MinLevel = minLevel,
             Depth = depth,

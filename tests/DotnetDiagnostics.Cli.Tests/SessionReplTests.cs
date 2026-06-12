@@ -100,6 +100,15 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Watch_InsideSession_IsRejected()
+    {
+        var (exit, _, stderr) = await RunReplAsync("processes --watch 1\nexit\n");
+
+        exit.Should().Be(0);
+        stderr.Should().Contain("--watch is only available for one-shot commands outside a session");
+    }
+
+    [Fact]
     public async Task CommandHelp_InsideSession_ShowsFocusedHelp()
     {
         var (exit, stdout, _) = await RunReplAsync("dump --help\nexit\n");
@@ -737,6 +746,7 @@ public sealed class SessionReplTests
     [Theory]
     [InlineData("target 0")]
     [InlineData("target -1")]
+    [InlineData("target \"\"")]
     [InlineData("target abc")]
     [InlineData("target 1234 5678")]
     [InlineData("target --pid abc")]

@@ -74,12 +74,12 @@ public sealed class CliHostTests
     }
 
     [Fact]
-    public async Task RunAsync_ParseError_ReturnsTwo()
+    public async Task RunAsync_PidNameWithoutMatch_ReturnsTwo()
     {
         var (exit, _, stderr) = await RunAsync("capabilities", "--pid", "not-a-number");
 
         exit.Should().Be(2);
-        stderr.Should().Contain("expects an integer");
+        stderr.Should().Contain("No .NET process name starts with 'not-a-number'");
     }
 
     [Fact]
@@ -108,6 +108,79 @@ public sealed class CliHostTests
     }
 
     [Fact]
+    public async Task RunAsync_HumanOutput_UsesAnsiWhenTty()
+    {
+        var (exit, stdout, stderr) = await RunAsync(
+            new CliRuntimeOptions(ForceAnsi: true),
+            "processes");
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("\u001b[");
+        stderr.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RunAsync_HumanOutput_DisablesAnsiWhenNotTty()
+    {
+        var (exit, stdout, stderr) = await RunAsync(
+            new CliRuntimeOptions(ForceAnsi: false),
+            "processes");
+
+        exit.Should().Be(0);
+        stdout.Should().NotContain("\u001b[");
+        stderr.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RunAsync_HumanOutput_DisablesAnsiWhenNoColorIsSet()
+    {
+        var previous = Environment.GetEnvironmentVariable("NO_COLOR");
+        Environment.SetEnvironmentVariable("NO_COLOR", "1");
+        try
+        {
+            var (exit, stdout, stderr) = await RunAsync(
+                new CliRuntimeOptions(ForceAnsi: true),
+                "processes");
+
+            exit.Should().Be(0);
+            stdout.Should().NotContain("\u001b[");
+            stderr.Should().BeEmpty();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NO_COLOR", previous);
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_JsonOutput_NeverUsesAnsi()
+    {
+        var (exit, stdout, stderr) = await RunAsync(
+            new CliRuntimeOptions(ForceAnsi: true),
+            "processes",
+            "--json");
+
+        exit.Should().Be(0);
+        stdout.Should().NotContain("\u001b[");
+        stderr.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RunAsync_Watch_RepeatsUntilBoundedIterationLimit()
+    {
+        var (exit, stdout, stderr) = await RunAsync(
+            new CliRuntimeOptions(ForceAnsi: false, MaxWatchIterations: 2, WatchDelay: TimeSpan.Zero),
+            "processes",
+            "--watch",
+            "1");
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("Found");
+        stdout.Split("Found", StringSplitOptions.None).Should().HaveCountGreaterOrEqualTo(3);
+        stderr.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task RunAsync_Help_ListsSessionCommand()
     {
         var (exit, stdout, _) = await RunAsync("--help");
@@ -133,11 +206,41 @@ public sealed class CliHostTests
         stdout.ToString().Should().Contain("Session commands:");
     }
 
+    [Fact]
+    public async Task RunAsync_SessionWithWatch_ReturnsUsageError()
+    {
+        var stdin = new StringReader("exit\n");
+        var stdout = new StringWriter(new StringBuilder());
+        var stderr = new StringWriter(new StringBuilder());
+
+        var exit = await CliHost.RunAsync(
+            new[] { "session", "--watch", "1" }, stdin, stdout, stderr, CancellationToken.None);
+
+        exit.Should().Be(2);
+        stdout.ToString().Should().BeEmpty();
+        stderr.ToString().Should().Contain("--watch is not supported by 'session'");
+    }
+
+    [Fact]
+    public async Task RunAsync_CompletionWithWatch_ReturnsUsageError()
+    {
+        var (exit, stdout, stderr) = await RunAsync("completion", "bash", "--watch", "1");
+
+        exit.Should().Be(2);
+        stdout.Should().BeEmpty();
+        stderr.Should().Contain("--watch is not supported by 'completion'");
+    }
+
     private static async Task<(int Exit, string Stdout, string Stderr)> RunAsync(params string[] args)
+        => await RunAsync(null, args).ConfigureAwait(false);
+
+    private static async Task<(int Exit, string Stdout, string Stderr)> RunAsync(
+        CliRuntimeOptions? runtimeOptions,
+        params string[] args)
     {
         var stdout = new StringWriter(new StringBuilder());
         var stderr = new StringWriter(new StringBuilder());
-        var exit = await CliHost.RunAsync(args, stdout, stderr, CancellationToken.None);
+        var exit = await CliHost.RunAsync(args, stdout, stderr, CancellationToken.None, runtimeOptions);
         return (exit, stdout.ToString().Trim(), stderr.ToString().Trim());
     }
 }
