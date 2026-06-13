@@ -5,7 +5,9 @@ using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Tools.Dispatch;
+using DotnetDiagnostics.Mcp.Diagnostics;
 using DotnetDiagnostics.Mcp.Security;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 namespace DotnetDiagnostics.Mcp.Tools;
@@ -49,7 +51,11 @@ public sealed class InspectHeapTool
         Destructive = false,
         ReadOnly = true,
         Idempotent = false,
-        UseStructuredContent = true)]
+        UseStructuredContent = true,
+        // Issue #425 — a ClrMD heap walk can be long (large heaps) and suspends a live target;
+        // promote to an MCP Task so the client owns progress + cancellation uniformly with
+        // collect_sample / collect_events. Optional: synchronous walks still work for older clients.
+        TaskSupport = ToolTaskSupport.Optional)]
     [Description(
         "Walks the managed heap and returns aggregated runtime/heap totals plus top types by " +
         "retained bytes and instance count. Each TypeStat carries a TypeIdentity (ModuleVersionId + " +
@@ -82,6 +88,7 @@ public sealed class InspectHeapTool
         [Description("When true, hash every System.String during the heap walk and rank by aggregate retained bytes — surfaces missing string-interning. Cheap (folded into the existing heap pass) but allocates one hash per unique string.")] bool includeDuplicateStrings = false,
         [Description("Optional NT_SYMBOL_PATH-style search path reserved for symbol-resolving heap drilldowns. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
+        RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
     {
         if (!DiscriminatorDispatch.TryValidate<object>(
@@ -121,54 +128,83 @@ public sealed class InspectHeapTool
                             ["source"] = SourceDump,
                         }));
             }
+        }
+        else
+        {
+            // source = "dump"
+            if (hasExplicitPid)
+            {
+                return InvalidArgument(nameof(processId),
+                    "source='dump' forbids processId. Drop processId or set source='live'.");
+            }
+            if (!hasDumpPath)
+            {
+                return InvalidArgument(nameof(dumpFilePath),
+                    "source='dump' requires dumpFilePath.");
+            }
+        }
 
-            var live = await DiagnosticTools.InspectLiveHeap(
-                inspector,
-                handles,
-                resolver,
-                symbolServerAllowlist,
-                principalAccessor,
-                processId,
-                topTypes,
-                includeRetentionPaths,
-                retentionPathLimit,
-                includeStaticFields,
-                includeDelegateTargets,
-                includeDuplicateStrings,
-                symbolPath,
-                deprecation,
+        // Issue #425 — a heap walk has no a-priori duration, so emit an indeterminate progress
+        // heartbeat and honour MCP-native cancellation (notifications/cancelled) uniformly with the
+        // other long-running collectors. The walk can be promoted to an MCP Task (TaskSupport=Optional).
+        try
+        {
+            return await CollectionProgressTicker.RunIndeterminateAsync(
+                requestContext,
+                $"inspect_heap:{canonical}",
+                TimeSpan.FromSeconds(1),
+                async ct =>
+                {
+                    if (canonical == SourceLive)
+                    {
+                        var live = await DiagnosticTools.InspectLiveHeap(
+                            inspector,
+                            handles,
+                            resolver,
+                            symbolServerAllowlist,
+                            principalAccessor,
+                            processId,
+                            topTypes,
+                            includeRetentionPaths,
+                            retentionPathLimit,
+                            includeStaticFields,
+                            includeDelegateTargets,
+                            includeDuplicateStrings,
+                            symbolPath,
+                            deprecation,
+                            ct).ConfigureAwait(false);
+                        return AsObjectEnvelope(live);
+                    }
+
+                    var dump = await DiagnosticTools.InspectDump(
+                        inspector,
+                        handles,
+                        symbolServerAllowlist,
+                        principalAccessor,
+                        dumpFilePath!,
+                        topTypes,
+                        includeRetentionPaths,
+                        retentionPathLimit,
+                        includeStaticFields,
+                        includeDelegateTargets,
+                        includeDuplicateStrings,
+                        symbolPath,
+                        deprecation,
+                        ct).ConfigureAwait(false);
+                    return AsObjectEnvelope(dump);
+                },
                 cancellationToken).ConfigureAwait(false);
-            return AsObjectEnvelope(live);
         }
-
-        // source = "dump"
-        if (hasExplicitPid)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return InvalidArgument(nameof(processId),
-                "source='dump' forbids processId. Drop processId or set source='live'.");
+            return new DiagnosticResult<object>(
+                $"inspect_heap(source='{canonical}') cancelled by the client before the heap walk completed. " +
+                "No snapshot was retained — restart the inspection to capture data.",
+                Array.Empty<NextActionHint>())
+            {
+                Cancelled = true,
+            };
         }
-        if (!hasDumpPath)
-        {
-            return InvalidArgument(nameof(dumpFilePath),
-                "source='dump' requires dumpFilePath.");
-        }
-
-        var dump = await DiagnosticTools.InspectDump(
-            inspector,
-            handles,
-            symbolServerAllowlist,
-            principalAccessor,
-            dumpFilePath!,
-            topTypes,
-            includeRetentionPaths,
-            retentionPathLimit,
-            includeStaticFields,
-            includeDelegateTargets,
-            includeDuplicateStrings,
-            symbolPath,
-            deprecation,
-            cancellationToken).ConfigureAwait(false);
-        return AsObjectEnvelope(dump);
     }
 
     /// <summary>

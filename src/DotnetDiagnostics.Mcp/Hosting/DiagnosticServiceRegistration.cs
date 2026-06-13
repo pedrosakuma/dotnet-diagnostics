@@ -446,9 +446,10 @@ internal static class DiagnosticServiceRegistration
         to keep responses small. Tools are read-only except `collect_process_dump`,
         which writes a dump file to disk and is marked Destructive.
 
-        This server never requests Elicitation: every tool ships with sensible
-        defaults for every parameter. `processId` is optional — omit it to auto-select
-        the lone reachable .NET process, or pass an explicit pid from
+        This server requests Elicitation only for the destructive `collect_process_dump`
+        approval gate (a human approves writing the dump). Every other tool ships with
+        sensible defaults for every parameter and never elicits. `processId` is optional —
+        omit it to auto-select the lone reachable .NET process, or pass an explicit pid from
         `inspect_process(view="list")` when several are visible. Pick a default and re-run
         with refined arguments if the first attempt is too noisy or too sparse — the
         response `hints` will tell you how.

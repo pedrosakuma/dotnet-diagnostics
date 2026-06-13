@@ -200,7 +200,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         client.ServerCapabilities.Tasks.Requests.Tools!.Call.Should().NotBeNull();
 
         var tools = await client.ListToolsAsync(cancellationToken: CancellationToken.None);
-        foreach (var toolName in new[] { "collect_sample", "collect_events" })
+        foreach (var toolName in new[] { "collect_sample", "collect_events", "inspect_heap" })
         {
             var tool = tools.Single(t => t.Name == toolName);
             tool.ProtocolTool.Execution.Should().NotBeNull($"{toolName} must advertise execution metadata for MCP Tasks");

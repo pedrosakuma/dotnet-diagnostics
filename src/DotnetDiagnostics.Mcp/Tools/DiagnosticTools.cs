@@ -1818,12 +1818,15 @@ public sealed class DiagnosticTools
         "server's filesystem (path returned) so it can be analyzed offline with dotnet-dump or WinDbg. " +
         "Dump types in increasing size/cost: Mini < Triage < WithHeap < Full. " +
         "Heavyweight — use only when live collectors are insufficient. " +
-        "**Requires `confirm=true` (defense in depth — docs/authorization.md#per-call-confirmation).** Without it the tool " +
-        "returns a `confirmation_required` envelope describing what would have been written and " +
-        "writes nothing to disk; the operator-facing client should surface this preview to a human " +
-        "and only retry with `confirm=true` after explicit approval. The `dump-write` + `ptrace` " +
-        "scopes are still required on top of `confirm=true`.")]
-    public static Task<DiagnosticResult<DumpToolResult>> CollectProcessDump(
+        "**Human approval is required (defense in depth — docs/authorization.md#per-call-confirmation).** " +
+        "When the client advertises the MCP **elicitation** capability the server requests a native " +
+        "approve/deny decision in-call; if the human declines, nothing is written. For clients without " +
+        "elicitation, approval falls back to the `confirm=true` parameter: without it the tool returns a " +
+        "`confirmation_required` envelope describing what would have been written and writes nothing to " +
+        "disk; the operator-facing client should surface this preview to a human and only retry with " +
+        "`confirm=true` after explicit approval. The `dump-write` + `ptrace` scopes are still required " +
+        "on top of approval.")]
+    public static async Task<DiagnosticResult<DumpToolResult>> CollectProcessDump(
         IProcessDumper dumper,
         IProcessContextResolver resolver,
         IPrincipalAccessor principalAccessor,
@@ -1831,12 +1834,60 @@ public sealed class DiagnosticTools
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
         [Description("Dump type: 'Mini', 'Triage', 'WithHeap' or 'Full'. Defaults to Mini.")] ProcessDumpType dumpType = ProcessDumpType.Mini,
         [Description("Optional sub-path under the artifact root (MCP_ARTIFACT_ROOT, default <temp>/dotnet-diagnostics-mcp). MUST be relative — absolute paths and '..' traversal are rejected (InvalidArtifactPath). Dump files are written with POSIX mode 0600.")] string? outputDirectory = null,
-        [Description("Defense-in-depth confirmation flag. Must be true to actually write a dump file; without it the tool returns a `confirmation_required` envelope describing what would have been written. See docs/authorization.md#per-call-confirmation")] bool confirm = false,
+        [Description("Defense-in-depth confirmation flag — fallback for clients WITHOUT the MCP elicitation capability. Must be true to write a dump file when elicitation is unavailable; without it the tool returns a `confirmation_required` envelope describing what would have been written. Elicitation-capable clients are ALWAYS prompted natively and this flag is ignored for them (a human decline cannot be bypassed with confirm=true). See docs/authorization.md#per-call-confirmation")] bool confirm = false,
+        RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
+    {
+        // Issue #425 — native MCP elicitation is the human-approval gate for any client that
+        // advertises the capability. We always elicit when the client is capable (regardless of the
+        // confirm flag) so a human decline cannot be bypassed by retrying with confirm=true; the
+        // confirm flag is honoured ONLY as a fallback for clients that cannot be elicited. The
+        // round-trip is stateless and lives entirely within this call.
+        var outcome = await DumpApprovalElicitation.RequestAsync(
+            requestContext, processId, dumpType, outputDirectory, cancellationToken).ConfigureAwait(false);
+        switch (outcome)
+        {
+            case DumpApprovalOutcome.Approved:
+                // An explicit human approval is equivalent to confirm=true.
+                confirm = true;
+                break;
+            case DumpApprovalOutcome.Declined:
+                loggerFactory?.CreateLogger("DotnetDiagnostics.Mcp.Tools.CollectProcessDump")?.LogInformation(
+                    "collect_process_dump declined via elicitation. tokenName={TokenName} tool={Tool} reason={Reason} requestedPid={RequestedPid} dumpType={DumpType}",
+                    principalAccessor.Current?.Name ?? "(none)",
+                    "collect_process_dump",
+                    "ApprovalDeclined",
+                    processId,
+                    dumpType);
+                return DumpApprovalDeclinedEnvelope(processId, dumpType, outputDirectory);
+            case DumpApprovalOutcome.Failed:
+                // Capable client, but the elicitation round-trip errored. Fail closed: surface a
+                // structured error and write nothing — confirm=true must NOT rescue a failed gate.
+                loggerFactory?.CreateLogger("DotnetDiagnostics.Mcp.Tools.CollectProcessDump")?.LogWarning(
+                    "collect_process_dump elicitation failed. tokenName={TokenName} tool={Tool} reason={Reason} requestedPid={RequestedPid} dumpType={DumpType}",
+                    principalAccessor.Current?.Name ?? "(none)",
+                    "collect_process_dump",
+                    "ElicitationFailed",
+                    processId,
+                    dumpType);
+                return DiagnosticResult.Fail<DumpToolResult>(
+                    "collect_process_dump: the human-approval elicitation request failed (client error or timeout). " +
+                    "No dump was written. Retry once the elicitation channel is healthy.",
+                    new DiagnosticError(
+                        "ElicitationFailed",
+                        "The dump-approval elicitation round-trip failed; the dump was not written.",
+                        nameof(requestContext)));
+            case DumpApprovalOutcome.NotSupported:
+            default:
+                // Client cannot be elicited — fall through to the confirm=true preview/retry contract
+                // (confirm=false returns the confirmation_required preview and writes nothing).
+                break;
+        }
+
         // Orchestration lives in Core (UseCases/ProcessDumpUseCases) since #288 PR3b. This thin
         // forward creates the logger with the existing audit category and hoists the audit principal
         // name so the confirmation-required envelope + audit log stay byte-identical.
-        => ProcessDumpUseCases.CollectProcessDump(
+        return await ProcessDumpUseCases.CollectProcessDump(
             dumper,
             resolver,
             loggerFactory?.CreateLogger("DotnetDiagnostics.Mcp.Tools.CollectProcessDump"),
@@ -1845,7 +1896,38 @@ public sealed class DiagnosticTools
             dumpType,
             outputDirectory,
             confirm,
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Builds the envelope returned when a human explicitly declines a dump via MCP elicitation.
+    /// Reuses the <c>confirmation_required</c> discriminator so the structured shape stays stable for
+    /// clients, but the message + hint deliberately do NOT invite a <c>confirm=true</c> retry — the
+    /// human said no, and the LLM must not escalate around that decision.
+    /// </summary>
+    private static DiagnosticResult<DumpToolResult> DumpApprovalDeclinedEnvelope(
+        int? processId,
+        ProcessDumpType dumpType,
+        string? outputDirectory)
+    {
+        var preview = new DumpToolResult
+        {
+            Kind = DumpToolResultKinds.ConfirmationRequired,
+            Message = "A human declined the dump-approval request (MCP elicitation). No dump was written. " +
+                      "Do not retry this dump — pursue a non-destructive collector instead.",
+            TargetPid = processId,
+            DumpType = dumpType,
+            OutputDirectory = outputDirectory,
+        };
+        var hint = new NextActionHint(
+            "inspect_process",
+            "Dump approval was declined by a human. Continue with non-destructive live collectors (counters, cpu sample, gc, exceptions) instead of re-requesting a dump.",
+            null);
+        var summary = processId is null
+            ? $"approval_declined: a human declined writing a {dumpType} dump for the auto-selected .NET process. Nothing was written."
+            : $"approval_declined: a human declined writing a {dumpType} dump for pid {processId}. Nothing was written.";
+        return DiagnosticResult.Ok(preview, summary, hint);
+    }
 
     [RequireScope("heap-read")]
     [Description(
