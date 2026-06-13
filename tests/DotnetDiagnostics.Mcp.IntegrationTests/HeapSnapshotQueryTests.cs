@@ -163,6 +163,69 @@ public sealed class HeapSnapshotQueryTests
         result.Summary.Should().Contain("task/timer leak candidates");
     }
 
+    [Fact]
+    public async Task QueryHeapSnapshot_AlcView_ReturnsCollectibleLeakCandidates()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = new HeapSnapshotArtifact(
+            Origin: HeapSnapshotOrigin.Live,
+            ProcessId: 1234,
+            CapturedAt: DateTimeOffset.UtcNow,
+            WalkDuration: TimeSpan.FromMilliseconds(150),
+            Runtime: new DumpRuntimeInfo("CoreCLR", "10.0.0", "x64", IsServerGC: false, HeapCount: 1),
+            Heap: new DumpHeapSummary(1024, 128, 128, 512, 0, 0, 1024),
+            TopTypesByBytes: Array.Empty<TypeStat>(),
+            TopTypesByInstances: Array.Empty<TypeStat>())
+        {
+            AssemblyLoadContexts = new AssemblyLoadContextLeakView(
+                TotalContexts: 2,
+                CollectibleContexts: 1,
+                SuspectedLeakedCollectibleContexts: 1,
+                Contexts:
+                [
+                    new AssemblyLoadContextStat(
+                        Address: 0x5000,
+                        TypeFullName: "System.Runtime.Loader.AssemblyLoadContext",
+                        Name: "Plugin",
+                        IsCollectible: true,
+                        IsDefault: false,
+                        AssemblyCount: 1,
+                        Assemblies:
+                        [
+                            new AssemblyLoadContextAssemblyStat("Plugin", "Plugin.dll", "/app/Plugin.dll", 4, 512),
+                        ])
+                    {
+                        SuspectedLeak = true,
+                        LoaderAllocatorHandle = 0x7000,
+                        RetentionTargetKind = "sample-object-from-alc",
+                        RetentionTargetAddress = 0x6000,
+                        RetentionTargetTypeFullName = "Plugin.Leaked",
+                        RetentionPath = new RetentionPath(
+                            "Plugin.Leaked",
+                            0x6000,
+                            [new RetentionFrame("<root>", 0) { RootKind = "StaticVar" }, new RetentionFrame("Plugin.Leaked", 0x6000)],
+                            Truncated: false),
+                    },
+                ],
+                Notes: ["Retention hints are capped."]),
+        };
+
+        var handle = store.Register(snapshot.ProcessId, "heap-snapshot", snapshot, TimeSpan.FromMinutes(10));
+
+        var result = await DiagnosticTools.QueryHeapSnapshot(store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null), TestPrincipalAccessors.Root, handle.Id, view: "alc", topN: 10);
+
+        result.IsError.Should().BeFalse();
+        result.Data.Should().NotBeNull();
+        result.Data!.View.Should().Be("alc");
+        result.Data.AssemblyLoadContexts.Should().NotBeNull();
+        result.Data.AssemblyLoadContexts!.CollectibleContexts.Should().Be(1);
+        result.Data.AssemblyLoadContexts.Contexts.Should().ContainSingle(row =>
+            row.SuspectedLeak &&
+            row.RetentionPath != null &&
+            row.Assemblies.Any(assembly => assembly.AssemblyName == "Plugin"));
+        result.Summary.Should().Contain("AssemblyLoadContext leak candidates");
+    }
+
     private sealed class StubDumpInspector : IDumpInspector
     {
         public Task<HeapSnapshotArtifact> InspectAsync(string dumpFilePath, DumpInspectionOptions? options = null, CancellationToken cancellationToken = default)

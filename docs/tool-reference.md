@@ -243,7 +243,7 @@ Views available per `kind`:
 | `kestrel-snapshot` | `collect_events(kind="kestrel")` | `summary` (default), `byOperation`, `queues`, `tls`, `config` |
 | `networking-snapshot` | `collect_events(kind="networking")` | `summary` (default), `byOperation`, `queue`, `tls`, `dns` |
 | `startup-snapshot` | `collect_events(kind="startup")` | `summary` (default), `assemblies`, `modules`, `di`, `timeline` |
-| `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `object`, `gcroot`, `objsize`, `async`, `diff` |
+| `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `object`, `gcroot`, `objsize`, `async`, `diff` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
 | `cpu-sample` / `allocation-sample` / `native-alloc-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `diff` |
@@ -277,6 +277,14 @@ top task/TCS concrete runtime types. Use it after `collect_events(kind="counters
 `active-timer-count` growth to identify the callback or async state-machine type being leaked. Allocation diffs normalize totals to per-second rates
 when the two capture windows use different durations and surface both raw + normalized metrics
 in each row.
+
+`heap-snapshot` `view="alc"` projects the already-walked CoreCLR heap into an
+AssemblyLoadContext leak drilldown: live ALC instances, collectible/default state,
+assemblies observed under each context, and bounded GC-root retention hints for suspected
+collectible leaks. Retention hints are computed during the heap walk for at most 16
+collectible ALCs per snapshot, using the same bounded root-search machinery as `gcroot`
+(64 frames / 250,000 visited objects); additional contexts are still listed without a
+path. NativeAOT has no DAC/ClrMD heap walk, so this view is CoreCLR-only.
 
 `compare_to_baseline(snapshotsJson=[...])` accepts the same comparable journey knobs:
 `topN`, `depth`, and `mode="trend"|"dispersion"`. Legacy `InvestigationSummary` JSON

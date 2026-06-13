@@ -48,4 +48,6 @@ public sealed record HeapSnapshotQueryResult(
     public string? SortedBy { get; init; }
     /// <summary>Populated when <see cref="View"/> is <c>"timers"</c>.</summary>
     public TaskTimerLeakView? Timers { get; init; }
+    /// <summary>Populated when <see cref="View"/> is <c>"alc"</c>.</summary>
+    public AssemblyLoadContextLeakView? AssemblyLoadContexts { get; init; }
 }

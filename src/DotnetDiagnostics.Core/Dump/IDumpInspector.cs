@@ -147,6 +147,8 @@ public sealed record HeapSnapshotArtifact(
     public IReadOnlyList<AsyncOperationStat>? AsyncOperations { get; init; }
     /// <summary>Task / Timer leak candidates aggregated from live heap objects.</summary>
     public TaskTimerLeakView? Timers { get; init; }
+    /// <summary>AssemblyLoadContext / collectible-assembly leak candidates aggregated from live heap objects.</summary>
+    public AssemblyLoadContextLeakView? AssemblyLoadContexts { get; init; }
     /// <summary>Diagnostic warnings emitted during the walk (degraded data, ClrMD limitations, …).</summary>
     public IReadOnlyList<string>? Warnings { get; init; }
 }
@@ -311,6 +313,43 @@ public sealed record TaskTypeStat(
 {
     public TypeIdentity? Identity { get; init; }
 }
+
+/// <summary>Collectible AssemblyLoadContext instances surfaced by <c>query_snapshot(view="alc")</c>.</summary>
+public sealed record AssemblyLoadContextLeakView(
+    long TotalContexts,
+    long CollectibleContexts,
+    long SuspectedLeakedCollectibleContexts,
+    IReadOnlyList<AssemblyLoadContextStat> Contexts,
+    IReadOnlyList<string> Notes);
+
+/// <summary>One live <c>System.Runtime.Loader.AssemblyLoadContext</c> and its loaded assembly hints.</summary>
+public sealed record AssemblyLoadContextStat(
+    ulong Address,
+    string TypeFullName,
+    string? Name,
+    bool? IsCollectible,
+    bool IsDefault,
+    int AssemblyCount,
+    IReadOnlyList<AssemblyLoadContextAssemblyStat> Assemblies)
+{
+    public ulong? LoaderAllocatorHandle { get; init; }
+    public long LiveObjectCount { get; init; }
+    public long LiveBytes { get; init; }
+    public bool SuspectedLeak { get; init; }
+    public string? RetentionTargetKind { get; init; }
+    public ulong? RetentionTargetAddress { get; init; }
+    public string? RetentionTargetTypeFullName { get; init; }
+    public RetentionPath? RetentionPath { get; init; }
+    public IReadOnlyList<string>? Notes { get; init; }
+}
+
+/// <summary>Assembly/module observed under an <c>AssemblyLoadContext</c>.</summary>
+public sealed record AssemblyLoadContextAssemblyStat(
+    string AssemblyName,
+    string? ModuleName,
+    string? ModulePath,
+    long LiveObjectCount,
+    long LiveBytes);
 
 /// <summary>Output of <see cref="IDumpInspector.InspectAsync"/> projected for inline tool consumption.</summary>
 public sealed record DumpInspection(

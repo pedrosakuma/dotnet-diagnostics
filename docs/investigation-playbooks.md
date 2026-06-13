@@ -268,6 +268,15 @@ A growing `Pinned` / `Normal` bucket is the classic forgotten-`GCHandle.Alloc(..
 shape; `Dependent` often points at `ConditionalWeakTable`-style leaks.
 
 ### Step 5
+For plugin hosts, scripting workloads, or "metadata / Loader heap keeps growing"
+reports, run `query_snapshot(handle, view="alc")` on the same `inspect_heap` handle.
+Collectible ALC rows with `suspectedLeak=true` are still rooted; inspect the
+`retentionPath` to find the static cache/event-handler/object graph keeping a type from
+that ALC alive. The view is CoreCLR-only (NativeAOT has no ClrMD heap walk) and computes
+retention hints for at most 16 collectible ALCs per snapshot with the bounded
+64-frame / 250,000-object root search to avoid an O(contexts × heap) walk.
+
+### Step 6
 `collect_process_dump` with `dumpType = "WithHeap"`. **Defense in depth
 ([per-call confirmation](./authorization.md#per-call-confirmation)):** call it once
 first *without* `confirm` to preview the dump that would be

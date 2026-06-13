@@ -23,7 +23,7 @@ public static class HeapSnapshotQueryDispatcher
     private static readonly string[] Projection =
     {
         "top-types", "retention-paths", "roots-by-kind", "finalizer-queue", "fragmentation",
-        "static-fields", "delegate-targets", "gchandles", "async", "timers",
+        "static-fields", "delegate-targets", "gchandles", "async", "timers", "alc",
     };
 
     private static readonly HashSet<string> ProjectionSet = new(Projection, StringComparer.Ordinal);
@@ -82,7 +82,8 @@ public static class HeapSnapshotQueryDispatcher
             "delegate-targets" => QueryDelegateTargets(snapshot, handle, topN),
             "gchandles" => QueryGcHandles(snapshot, handle),
             "async" => QueryAsync(snapshot, handle, topN),
-            _ => QueryTimers(snapshot, handle, topN),
+            "timers" => QueryTimers(snapshot, handle, topN),
+            _ => QueryAssemblyLoadContexts(snapshot, handle, topN),
         };
 
         return new HeapDispatchOutcome(result, false, false);
@@ -333,6 +334,51 @@ public static class HeapSnapshotQueryDispatcher
             ? "<unknown>"
             : $"{stat.DeclaringTypeFullName ?? "<unknown>"}.{stat.MethodName}";
         return $"`{method}` ({stat.Count:N0})";
+    }
+
+    private static DiagnosticResult<HeapSnapshotQueryResult> QueryAssemblyLoadContexts(
+        HeapSnapshotArtifact snapshot, string handle, int topN)
+    {
+        var origin = snapshot.Origin.ToString();
+        var alc = snapshot.AssemblyLoadContexts ?? new AssemblyLoadContextLeakView(0, 0, 0, [], []);
+        var sliced = alc with
+        {
+            Contexts = alc.Contexts
+                .Take(topN)
+                .Select(context => context with
+                {
+                    Assemblies = context.Assemblies.Take(topN).ToArray(),
+                })
+                .ToArray(),
+        };
+
+        var firstLeak = sliced.Contexts.FirstOrDefault(context => context.SuspectedLeak);
+        var summary = sliced.TotalContexts == 0
+            ? $"Snapshot '{handle}' has no live System.Runtime.Loader.AssemblyLoadContext objects."
+            : $"Returning AssemblyLoadContext leak candidates from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) — contexts={sliced.TotalContexts:N0}, collectible={sliced.CollectibleContexts:N0}, suspectedLeaks={sliced.SuspectedLeakedCollectibleContexts:N0}. First suspected leak: {FormatAssemblyLoadContext(firstLeak)}.";
+
+        if (sliced.Notes.Count > 0)
+        {
+            summary += $" Notes: {sliced.Notes[0]}";
+        }
+
+        var result = new HeapSnapshotQueryResult(handle, "alc", origin, snapshot.ProcessId, snapshot.CapturedAt)
+        {
+            AssemblyLoadContexts = sliced,
+        };
+
+        return DiagnosticResult.Ok(result, summary);
+    }
+
+    private static string FormatAssemblyLoadContext(AssemblyLoadContextStat? stat)
+    {
+        if (stat is null)
+        {
+            return "<none>";
+        }
+
+        var name = string.IsNullOrWhiteSpace(stat.Name) ? "<unnamed>" : stat.Name;
+        return $"`{name}` @ 0x{stat.Address:x} ({stat.AssemblyCount:N0} assembl{(stat.AssemblyCount == 1 ? "y" : "ies")})";
     }
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)
