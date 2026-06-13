@@ -86,6 +86,12 @@ internal static class OrchestratorObservabilityRegistration
                 tracing.AddSource(OrchestratorObservability.ActivitySourceName);
             }
 
+            // #426 — investigation summaries are emitted as spans on this source when the
+            // opt-in flag is set. Registering the source unconditionally is cheap (no spans
+            // are produced unless the emitter is enabled) and keeps export working without
+            // the orchestrator.
+            tracing.AddSource(InvestigationTelemetry.ActivitySourceName);
+
             if (hasOtlpEndpoint)
             {
                 tracing.AddOtlpExporter();

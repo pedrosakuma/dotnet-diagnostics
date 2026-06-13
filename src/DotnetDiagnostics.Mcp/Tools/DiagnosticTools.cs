@@ -2707,10 +2707,13 @@ public sealed class DiagnosticTools
         "module+methodFullName symbol refs (survive rebuilds where line numbers shift), and " +
         "optional lineage to a previous investigation. Set `format=markdown` for a human-readable " +
         "version. The server is stateless: the LLM owns persistence — paste the JSON into a doc " +
-        "and feed it back via `compare_to_baseline` on the next deploy.")]
+        "and feed it back via `compare_to_baseline` on the next deploy. When the operator opts in " +
+        "(MCP_INVESTIGATION_OTEL=1) the summary is also emitted as an OpenTelemetry span for " +
+        "durable, queryable investigation history; off by default.")]
     public static DiagnosticResult<ExportedInvestigationSummary> ExportInvestigationSummary(
         IInvestigationSummaryExporter exporter,
         IDiagnosticHandleStore handles,
+        DotnetDiagnostics.Mcp.Observability.IInvestigationTelemetryEmitter telemetry,
         [Description("Handle returned by a prior collect_cpu_sample call.")] string handle,
         [Description("Output format: 'json' (default — portable, machine-readable) or 'markdown' (human-readable for PRs).")] SummaryFormat format = SummaryFormat.Json,
         [Description("Max hotspots to include in the summary. Defaults to 10.")] int topHotspots = 10,
@@ -2747,6 +2750,10 @@ public sealed class DiagnosticTools
             TargetsFix: fix,
             Notes: notes,
             Format: format));
+
+        // #426 — opt-in: mirror the summary to OpenTelemetry as a span (no-op unless
+        // MCP_INVESTIGATION_OTEL / Observability:InvestigationTelemetry:Enabled is set).
+        telemetry.Emit(exported.Summary, handle);
 
         var bytes = exported.Rendered.Length;
         return DiagnosticResult.Ok(
