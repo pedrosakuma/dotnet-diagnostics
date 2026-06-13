@@ -16,6 +16,7 @@ using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Exceptions;
+using DotnetDiagnostics.Core.GatedCapture;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
@@ -200,6 +201,13 @@ internal static class CliCommands
             return false;
         }
 
+        // In threshold-gated capture mode --watch is the metric sample interval (a single bounded
+        // run), not the human redraw loop — so the redraw-specific restrictions don't apply.
+        if (options.CaptureWhen is not null)
+        {
+            return true;
+        }
+
         if (options.Json)
         {
             error = "--watch cannot be combined with --json because watch redraws human output.";
@@ -248,6 +256,37 @@ internal static class CliCommands
         {
             error = $"Unknown --depth '{options.Depth}'. Valid values: summary, detail, raw.";
             return false;
+        }
+
+        // Threshold-gated capture (#419): --capture-when / --capture / --window form one bounded
+        // watch and must be supplied together with kind=counters. Deep validation (predicate parse,
+        // ranges) happens in the use case so the error surfaces with recovery hints.
+        var gated = options.CaptureWhen is not null || options.CaptureKind is not null || options.WindowSeconds is not null;
+        if (gated)
+        {
+            if (options.Kind != "counters")
+            {
+                error = "Threshold-gated capture (--capture-when) requires --kind counters.";
+                return false;
+            }
+
+            if (options.CaptureWhen is null)
+            {
+                error = "--capture requires --capture-when <predicate> (e.g. --capture-when 'cpu>85').";
+                return false;
+            }
+
+            if (options.CaptureKind is null)
+            {
+                error = "--capture-when requires --capture <dump|cpu-sample|heap|thread-snapshot>.";
+                return false;
+            }
+
+            if (options.WindowSeconds is null)
+            {
+                error = "Threshold-gated capture requires --window <seconds> (the watch is bounded).";
+                return false;
+            }
         }
 
         return true;
@@ -590,6 +629,16 @@ internal static class CliCommands
 
         return options.Kind switch
         {
+            "counters" when options.CaptureWhen is not null => Wrap(options, await GatedCaptureUseCases.WatchAndCapture(
+                services.GetRequiredService<IThresholdGatedCaptureCollector>(), resolver, handles,
+                services.GetRequiredService<ICpuSampler>(),
+                services.GetRequiredService<IThreadSnapshotInspector>(),
+                services.GetRequiredService<IDumpInspector>(),
+                services.GetRequiredService<IProcessDumper>(),
+                options.CaptureWhen, options.CaptureKind, options.WindowSeconds ?? 0,
+                options.MaxCaptures ?? 1, options.WatchIntervalSeconds ?? 2, options.Confirm, pid,
+                dumpOutputDirectory: null, cancellationToken).ConfigureAwait(false)),
+
             "counters" => Wrap(options, await EventCollectionUseCases.SnapshotCounters(
                 services.GetRequiredService<ICounterCollector>(), resolver, handles,
                 pid, duration, NullIfEmptyArray(options.Providers), NullIfEmptyArray(options.Meters),

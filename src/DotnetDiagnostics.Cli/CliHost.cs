@@ -339,7 +339,9 @@ internal static class CliHost
                 && !Console.IsErrorRedirected;
 
             var ansiEnabled = !options.Json && CliAnsi.IsEnabled(stdout, runtimeOptions.ForceAnsi);
-            if (options.WatchIntervalSeconds is not null)
+            // In threshold-gated capture mode (--capture-when) the watch is a single bounded run, not
+            // the human redraw loop — fall through to a normal one-shot RunCommandAsync.
+            if (options.WatchIntervalSeconds is not null && options.CaptureWhen is null)
             {
                 return await RunWatchAsync(
                     host.Services,

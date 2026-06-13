@@ -404,6 +404,24 @@ client-induced.
    providerName="System.Net.Http")` or `collect_sample(kind="cpu")` — the latency
    may be downstream or CPU-bound rather than database-bound.
 
+## 4e. "The spike is intermittent — I can't catch it manually"
+
+When the symptom (CPU spike, heap balloon, thread explosion) only appears for a few seconds at
+unpredictable times, a one-shot `collect_sample` / `inspect_heap` almost always misses it. Arm a
+**bounded threshold-gated capture** so the heavy artifact is taken the instant the metric trips:
+
+1. Pick the metric + threshold from the symptom: `cpu>85`, `gcHeapMb>=1500`, `rssMb>2000`,
+   `threadCount>400`, or `activeTimerCount>1000`.
+2. Arm `collect_events(kind="counters", triggerWhen="cpu>85", captureKind="cpu-sample", windowSeconds=120)`.
+   The call polls the counter and returns the moment it captures (or when the window elapses). Use
+   `captureKind="heap"` for memory spikes, `"thread-snapshot"` for thread/lock explosions, `"dump"`
+   (with `confirmDump=true`) for a full post-mortem.
+3. On a trip, follow the high-priority `query_snapshot(handle, …)` hint to drill into the captured
+   cpu-sample / heap / thread-snapshot without re-collecting.
+4. If `tripped=false`, re-arm with a longer `windowSeconds`, a lower threshold, or while you drive
+   the workload. Raise `maxCaptures` (≤10) to catch several breaches in one window.
+5. From the CLI / CI: `dotnet-diagnostics-cli collect --kind counters --pid <id> --capture-when 'cpu>85' --capture cpu-sample --window 120`.
+
 ---
 
 ## 5. "Is this a NativeAOT app?"

@@ -158,6 +158,18 @@ internal sealed record CliOptions
     /// <summary>Hot-path threshold percent for the CPU <c>hot-path</c> view (<c>--threshold</c>, default 50): a child must carry at least this % of its parent's inclusive samples to extend the chain. Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public int? Threshold { get; init; }
 
+    /// <summary>Threshold-gated capture predicate (<c>--capture-when</c>) for <c>collect --kind counters</c>: <c>&lt;metric&gt;&lt;op&gt;&lt;value&gt;</c> e.g. <c>cpu&gt;85</c>. Arms a bounded watch (#419).</summary>
+    public string? CaptureWhen { get; init; }
+
+    /// <summary>What to capture when <see cref="CaptureWhen"/> trips (<c>--capture</c>): <c>dump</c>, <c>cpu-sample</c>, <c>heap</c>, or <c>thread-snapshot</c>.</summary>
+    public string? CaptureKind { get; init; }
+
+    /// <summary>Hard cap on fired captures (<c>--max-captures</c>) for threshold-gated capture. Null applies the default (1).</summary>
+    public int? MaxCaptures { get; init; }
+
+    /// <summary>Hard upper bound (seconds) on how long the threshold-gated watch is armed (<c>--window</c>). Required in gated mode.</summary>
+    public int? WindowSeconds { get; init; }
+
     /// <summary>
     /// Opt-in <c>--launch</c> dev mode (issue #365): re-launch the target as a child of the CLI so
     /// ClrMD live attach is permitted under Yama <c>ptrace_scope=1</c> with zero privilege. The program
@@ -239,6 +251,10 @@ internal sealed record CliOptions
         int? minCount = null;
         int? top = null;
         int? threshold = null;
+        string? captureWhen = null;
+        string? captureKind = null;
+        int? maxCaptures = null;
+        int? windowSeconds = null;
         var launch = false;
         List<string>? launchArgs = null;
 
@@ -364,6 +380,38 @@ internal sealed record CliOptions
                     }
 
                     watchIntervalSeconds = watchValue;
+                    break;
+                case "--capture-when":
+                    if (!TryTakeString(args, ref i, token, out var captureWhenValue, out error))
+                    {
+                        return null;
+                    }
+
+                    captureWhen = captureWhenValue;
+                    break;
+                case "--capture":
+                    if (!TryTakeString(args, ref i, token, out var captureKindValue, out error))
+                    {
+                        return null;
+                    }
+
+                    captureKind = captureKindValue;
+                    break;
+                case "--max-captures":
+                    if (!TryTakeInt(args, ref i, token, out var maxCapturesValue, out error))
+                    {
+                        return null;
+                    }
+
+                    maxCaptures = maxCapturesValue;
+                    break;
+                case "--window":
+                    if (!TryTakeInt(args, ref i, token, out var windowValue, out error))
+                    {
+                        return null;
+                    }
+
+                    windowSeconds = windowValue;
                     break;
                 case "--top-types":
                     if (!TryTakeInt(args, ref i, token, out var topTypesValue, out error))
@@ -679,6 +727,10 @@ internal sealed record CliOptions
             MinCount = minCount,
             Top = top,
             Threshold = threshold,
+            CaptureWhen = captureWhen,
+            CaptureKind = captureKind,
+            MaxCaptures = maxCaptures,
+            WindowSeconds = windowSeconds,
             Launch = launch,
             LaunchArgs = launchArgs ?? (IReadOnlyList<string>)Array.Empty<string>(),
         };
