@@ -126,6 +126,59 @@ The chart expands each entry to the `Auth__BearerTokens__<i>__*` env shape above
 same env shape via `--set-secrets` / `--set-env-vars`. See
 [`deploy/helm/README.md`](../deploy/helm/README.md) for the chart specifics.
 
+## OIDC / JWT issuers (claims → scopes)
+
+Instead of (or alongside) static opaque bearers, the HTTP transport can validate **OIDC
+JWTs** so callers authenticate with a platform/workload identity and no shared secret. The
+JWT path and the opaque path coexist: a JWT-shaped bearer is routed to OIDC validation, any
+other bearer to the opaque `BearerTokenRegistry`.
+
+A validated JWT maps onto the **same scope model** above:
+
+- **Scopes** come from the token's scope claim — `scp` or `scope` by default, overridable
+  with `MCP_OIDC_SCOPE_CLAIM`. Space-delimited values are split; each becomes a scope and is
+  checked exactly like an opaque token's scopes (so a JWT must carry e.g. `eventpipe` to call
+  `collect_events`). There is no implicit `*` for JWTs — grant scopes explicitly.
+- **Granted scopes** (`MCP_OIDC_GRANTED_SCOPES`, or per-provider `grantedScopes`) let the
+  operator assign MCP scopes server-side to any token that passes that issuer's
+  audience + required-claim checks. Use it for trusted identities whose tokens carry **no**
+  scope claim — e.g. a Kubernetes projected ServiceAccount token. Granted scopes are unioned
+  with any scope-claim values; pin the identity with `requiredClaims` and keep the grant
+  least-privilege.
+- **Identity gating** uses `MCP_OIDC_REQUIRED_CLAIMS_JSON` — a JSON object mapping a claim to
+  `null` (claim must be present), a string, or an array of allowed strings. Use it to pin the
+  caller (`azp`/`client_id`/`sub`) so only your workload identity is accepted.
+- **Principal name** (for audit logs) resolves from the first of `preferred_username`,
+  `client_id`, `azp`, `appid`, `sub`.
+
+Single issuer:
+
+```bash
+export MCP_OIDC_ISSUER="https://login.microsoftonline.com/<tenant-id>/v2.0"
+export MCP_OIDC_AUDIENCE="api://dotnet-diagnostics-mcp"
+export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"azp":"<workload-identity-client-id>"}'
+```
+
+Multiple trusted issuers (e.g. a cloud workload identity **and** an in-cluster projected SA
+token) — keep `MCP_OIDC_ISSUER`/`MCP_OIDC_AUDIENCE` for the first and add the rest via
+`MCP_OIDC_PROVIDERS_JSON` (array of `{ issuer, audience, scopeClaim?, requiredClaims? }`):
+
+```bash
+export MCP_OIDC_PROVIDERS_JSON='[
+  {
+    "issuer": "https://kubernetes.default.svc.cluster.local",
+    "audience": "dotnet-diagnostics-mcp",
+    "requiredClaims": { "sub": "system:serviceaccount:diag:investigator" }
+  }
+]'
+```
+
+Each JWT is validated against every configured issuer in turn (standard OIDC metadata
+discovery + signing-key validation); the first match wins, and a token matching no issuer is
+rejected with the `401 {"kind":"unauthenticated"}` envelope. Provider-by-provider managed /
+workload-identity recipes (Azure Workload Identity, AWS IRSA, GCP WIF, Kubernetes projected
+SA) live in [`docs/client-setup.md`](./client-setup.md#managed--workload-identity-recipes-http-transport).
+
 ## Per-call confirmation
 
 `collect_process_dump` requires an explicit **`confirm=true`** parameter on top of its

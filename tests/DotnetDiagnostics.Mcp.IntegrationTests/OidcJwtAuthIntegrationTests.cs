@@ -158,4 +158,110 @@ public sealed class OidcJwtAuthIntegrationTests
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         (await response.Content.ReadAsStringAsync().ConfigureAwait(false)).Should().Contain("\"kind\":\"unauthenticated\"");
     }
+
+    [Fact]
+    public async Task OidcJwt_MultiIssuer_Accepts_Tokens_From_Each_Trusted_Issuer()
+    {
+        await using var entra = await TestOidcAuthority.StartAsync(audience: "api://dotnet-diagnostics-mcp").ConfigureAwait(false);
+        await using var k8s = await TestOidcAuthority.StartAsync(audience: "dotnet-diagnostics-mcp").ConfigureAwait(false);
+
+        var entraToken = entra.CreateToken(
+            scopes: new[] { "read-counters" },
+            subject: "entra-workload-identity",
+            claims: new Dictionary<string, string> { ["azp"] = "diag-client" });
+        var k8sToken = k8s.CreateToken(
+            scopes: new[] { "read-counters" },
+            subject: "system:serviceaccount:diag:investigator");
+
+        var providersJson =
+            "[{\"issuer\":\"" + k8s.Issuer + "\"," +
+            "\"audience\":\"" + k8s.Audience + "\"," +
+            "\"requiredClaims\":{\"sub\":\"system:serviceaccount:diag:investigator\"}}]";
+
+        await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("MCP_OIDC_ISSUER", entra.Issuer);
+            builder.UseSetting("MCP_OIDC_AUDIENCE", entra.Audience);
+            builder.UseSetting("MCP_OIDC_REQUIRED_CLAIMS_JSON", "{\"azp\":\"diag-client\"}");
+            builder.UseSetting("MCP_OIDC_PROVIDERS_JSON", providersJson);
+        });
+
+        await using var entraClient = await ConnectWithTokenAsync(factory, entraToken).ConfigureAwait(false);
+        var entraResult = await entraClient.CallToolAsync(
+            "inspect_process",
+            arguments: new Dictionary<string, object?> { ["view"] = "list" },
+            cancellationToken: CancellationToken.None).ConfigureAwait(false);
+        (entraResult.Content.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty)
+            .Should().NotContain("\"kind\":\"forbidden\"");
+
+        await using var k8sClient = await ConnectWithTokenAsync(factory, k8sToken).ConfigureAwait(false);
+        var k8sResult = await k8sClient.CallToolAsync(
+            "inspect_process",
+            arguments: new Dictionary<string, object?> { ["view"] = "list" },
+            cancellationToken: CancellationToken.None).ConfigureAwait(false);
+        (k8sResult.Content.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty)
+            .Should().NotContain("\"kind\":\"forbidden\"");
+    }
+
+    [Fact]
+    public async Task OidcJwt_MultiIssuer_Rejects_Token_From_Untrusted_Issuer_With401()
+    {
+        await using var trusted = await TestOidcAuthority.StartAsync(audience: "api://dotnet-diagnostics-mcp").ConfigureAwait(false);
+        await using var untrusted = await TestOidcAuthority.StartAsync(audience: "dotnet-diagnostics-mcp").ConfigureAwait(false);
+
+        var rogueToken = untrusted.CreateToken(scopes: new[] { "read-counters" }, subject: "rogue");
+
+        await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("MCP_OIDC_ISSUER", trusted.Issuer);
+            builder.UseSetting("MCP_OIDC_AUDIENCE", trusted.Audience);
+        });
+
+        using var httpClient = factory.CreateClient();
+        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", rogueToken);
+
+        var response = await httpClient.GetAsync("/mcp").ConfigureAwait(false);
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        (await response.Content.ReadAsStringAsync().ConfigureAwait(false)).Should().Contain("\"kind\":\"unauthenticated\"");
+    }
+
+    [Fact]
+    public async Task OidcJwt_GrantedScopes_Authorize_Token_Without_Scope_Claim()
+    {
+        await using var k8s = await TestOidcAuthority.StartAsync(audience: "dotnet-diagnostics-mcp").ConfigureAwait(false);
+
+        // A raw Kubernetes projected ServiceAccount token carries no scp/scope claim.
+        var projectedToken = k8s.CreateToken(
+            scopes: Array.Empty<string>(),
+            subject: "system:serviceaccount:diag:investigator");
+
+        var providersJson =
+            "[{\"issuer\":\"" + k8s.Issuer + "\"," +
+            "\"audience\":\"" + k8s.Audience + "\"," +
+            "\"grantedScopes\":[\"read-counters\"]," +
+            "\"requiredClaims\":{\"sub\":\"system:serviceaccount:diag:investigator\"}}]";
+
+        await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("MCP_OIDC_PROVIDERS_JSON", providersJson);
+        });
+
+        await using var client = await ConnectWithTokenAsync(factory, projectedToken).ConfigureAwait(false);
+        var listResult = await client.CallToolAsync(
+            "inspect_process",
+            arguments: new Dictionary<string, object?> { ["view"] = "list" },
+            cancellationToken: CancellationToken.None).ConfigureAwait(false);
+        (listResult.Content.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty)
+            .Should().NotContain("\"kind\":\"forbidden\"");
+
+        // The granted scope is read-counters only, so an eventpipe tool is still forbidden.
+        var sampleResult = await client.CallToolAsync(
+            "collect_sample",
+            arguments: new Dictionary<string, object?> { ["kind"] = "cpu", ["durationSeconds"] = 1 },
+            cancellationToken: CancellationToken.None).ConfigureAwait(false);
+        var envelope = ParseForbiddenEnvelope(sampleResult);
+        envelope.GetProperty("kind").GetString().Should().Be("forbidden");
+        envelope.GetProperty("principal_scopes").EnumerateArray().Select(x => x.GetString())
+            .Should().ContainSingle().Which.Should().Be("read-counters");
+    }
 }

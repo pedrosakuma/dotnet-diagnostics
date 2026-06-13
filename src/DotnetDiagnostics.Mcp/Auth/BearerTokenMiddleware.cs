@@ -69,32 +69,38 @@ internal sealed class BearerTokenMiddleware
         if (_oidcJwtAuthOptions.IsEnabled && LooksLikeJwt(presented))
         {
             var authenticationService = context.RequestServices.GetRequiredService<IAuthenticationService>();
-            var authResult = await authenticationService
-                .AuthenticateAsync(context, OidcJwtAuthExtensions.JwtScheme)
-                .ConfigureAwait(false);
 
-            if (!authResult.Succeeded || authResult.Principal is null)
+            foreach (var provider in _oidcJwtAuthOptions.Providers)
             {
-                _logger.LogWarning(
-                    "Bearer auth denied: JWT validation failed. remoteIp={RemoteIp} missingHeader=false",
-                    context.Connection.RemoteIpAddress?.ToString() ?? "unknown");
-                await WriteUnauthorizedAsync(context).ConfigureAwait(false);
+                var authResult = await authenticationService
+                    .AuthenticateAsync(context, provider.SchemeName)
+                    .ConfigureAwait(false);
+
+                if (!authResult.Succeeded || authResult.Principal is null)
+                {
+                    continue;
+                }
+
+                context.User = authResult.Principal;
+                var jwtPrincipal = context.GetBearerPrincipal();
+                if (jwtPrincipal is null)
+                {
+                    _logger.LogWarning(
+                        "Bearer auth denied: JWT validated but principal mapping was unavailable. remoteIp={RemoteIp} missingHeader=false",
+                        context.Connection.RemoteIpAddress?.ToString() ?? "unknown");
+                    await WriteUnauthorizedAsync(context).ConfigureAwait(false);
+                    return;
+                }
+
+                _logger.LogInformation("Bearer auth allowed for principal {TokenName}.", jwtPrincipal.Name);
+                await _next(context).ConfigureAwait(false);
                 return;
             }
 
-            context.User = authResult.Principal;
-            var jwtPrincipal = context.GetBearerPrincipal();
-            if (jwtPrincipal is null)
-            {
-                _logger.LogWarning(
-                    "Bearer auth denied: JWT validated but principal mapping was unavailable. remoteIp={RemoteIp} missingHeader=false",
-                    context.Connection.RemoteIpAddress?.ToString() ?? "unknown");
-                await WriteUnauthorizedAsync(context).ConfigureAwait(false);
-                return;
-            }
-
-            _logger.LogInformation("Bearer auth allowed for principal {TokenName}.", jwtPrincipal.Name);
-            await _next(context).ConfigureAwait(false);
+            _logger.LogWarning(
+                "Bearer auth denied: JWT validation failed against all configured issuers. remoteIp={RemoteIp} missingHeader=false",
+                context.Connection.RemoteIpAddress?.ToString() ?? "unknown");
+            await WriteUnauthorizedAsync(context).ConfigureAwait(false);
             return;
         }
 

@@ -1,0 +1,211 @@
+# Example: authenticate an in-cluster MCP client to the dotnet-diagnostics-mcp sidecar
+# using a Kubernetes projected ServiceAccount token (no shared static secret).
+#
+# How it works:
+#   * The sidecar enables OIDC/JWT validation against the cluster's own OIDC issuer
+#     (the kube-apiserver), via standard `/.well-known/openid-configuration` discovery.
+#   * The client mounts a *projected* ServiceAccount token bound to the audience
+#     `dotnet-diagnostics-mcp` and sends its contents as `Authorization: Bearer <token>`.
+#   * The sidecar pins the caller with MCP_OIDC_REQUIRED_CLAIMS_JSON (the `sub` claim is
+#     `system:serviceaccount:<namespace>:<sa-name>`) and reads MCP scopes from `scope`/`scp`.
+#
+# This is the additive, secret-less alternative to the static MCP_BEARER_TOKEN in
+# sample-sidecar.yaml. The static bearer still works as a break-glass credential, and you
+# can trust additional issuers (e.g. a cloud workload identity) via MCP_OIDC_PROVIDERS_JSON.
+# See docs/client-setup.md and docs/authorization.md.
+#
+# Prerequisites:
+#   * The cluster exposes a discoverable OIDC issuer. Confirm with:
+#       kubectl get --raw /.well-known/openid-configuration | jq -r .issuer
+#     and set MCP_OIDC_ISSUER below to that value (managed clusters often use a public
+#     HTTPS issuer URL rather than https://kubernetes.default.svc.cluster.local).
+#   * ServiceAccountIssuerDiscovery is enabled (default on most managed clusters); the
+#     discovery endpoints may require RBAC (system:service-account-issuer-discovery).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: diag
+---
+# The ServiceAccount whose projected token authenticates to the sidecar.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: investigator
+  namespace: diag
+---
+# Allow unauthenticated/SA access to the OIDC discovery + JWKS endpoints so the sidecar
+# can fetch the cluster's signing keys. Most managed clusters bind this already.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: diag-oidc-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:service-account-issuer-discovery
+subjects:
+  - kind: ServiceAccount
+    name: investigator
+    namespace: diag
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-api
+  namespace: diag
+  labels:
+    app: sample-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-api
+  template:
+    metadata:
+      labels:
+        app: sample-api
+    spec:
+      serviceAccountName: investigator
+      shareProcessNamespace: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      volumes:
+        - name: diag-tmp
+          emptyDir: {}
+        # Projected SA token scoped to the MCP audience. The client container reads this
+        # file and presents it as the bearer; kubelet rotates it before expiry.
+        - name: mcp-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: dotnet-diagnostics-mcp
+                  expirationSeconds: 3600
+                  path: token
+      containers:
+        # ----- 1. Target application (replace with your own image) -----
+        - name: app
+          image: ghcr.io/example/sample-api:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: ASPNETCORE_URLS
+              value: http://0.0.0.0:8080
+            - name: DOTNET_EnableDiagnostics
+              value: "1"
+          volumeMounts:
+            - name: diag-tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+
+        # ----- 2. dotnet-diagnostics-mcp sidecar (OIDC/JWT enabled) -----
+        - name: diagnosticsmcp
+          image: ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add:
+                - SYS_PTRACE
+          ports:
+            # Distinct from the app's 8080 — all containers in a Pod share one
+            # network namespace, so the sidecar must listen on its own port.
+            - containerPort: 8787
+              name: mcp
+          env:
+            - name: ASPNETCORE_URLS
+              value: http://0.0.0.0:8787
+            # The cluster's OIDC issuer. Replace with the value reported by
+            #   kubectl get --raw /.well-known/openid-configuration | jq -r .issuer
+            - name: MCP_OIDC_ISSUER
+              value: https://kubernetes.default.svc.cluster.local
+            - name: MCP_OIDC_AUDIENCE
+              value: dotnet-diagnostics-mcp
+            # Pin the caller to exactly this ServiceAccount.
+            - name: MCP_OIDC_REQUIRED_CLAIMS_JSON
+              value: '{"sub":"system:serviceaccount:diag:investigator"}'
+            # A raw Kubernetes projected SA token carries no scp/scope claim, so grant the
+            # MCP scopes this pinned identity is authorized to use server-side. Keep it
+            # least-privilege; widen only as the investigation flow requires.
+            - name: MCP_OIDC_GRANTED_SCOPES
+              value: read-counters eventpipe heap-read investigation-export
+            # Optional break-glass: also trust a second issuer (e.g. a cloud workload
+            # identity tenant) without disabling the projected-token path:
+            # - name: MCP_OIDC_PROVIDERS_JSON
+            #   value: >-
+            #     [{"issuer":"https://login.microsoftonline.com/<tenant-id>/v2.0",
+            #       "audience":"api://dotnet-diagnostics-mcp",
+            #       "requiredClaims":{"azp":"<workload-identity-client-id>"}}]
+          volumeMounts:
+            - name: diag-tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8787
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8787
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+        # ----- 3. (illustrative) in-cluster MCP client -----
+        # Mount the projected token and present its contents as the bearer. Any MCP
+        # client works; this shows the wiring. The MCP scopes the caller may use come
+        # from the token's `scope`/`scp` claim — issue the token through a flow that
+        # stamps them, or front this with your own token-minting step.
+        - name: mcp-client
+          image: ghcr.io/example/your-mcp-client:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            # The client reads the bearer from this file (rotated by kubelet).
+            - name: MCP_BEARER_TOKEN_FILE
+              value: /var/run/secrets/mcp/token
+            - name: MCP_ENDPOINT
+              value: http://127.0.0.1:8787/mcp
+          volumeMounts:
+            - name: mcp-token
+              mountPath: /var/run/secrets/mcp
+              readOnly: true
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-api-diagnosticsmcp
+  namespace: diag
+  labels:
+    app: sample-api
+spec:
+  type: ClusterIP
+  selector:
+    app: sample-api
+  ports:
+    - name: mcp
+      port: 8787
+      targetPort: mcp
