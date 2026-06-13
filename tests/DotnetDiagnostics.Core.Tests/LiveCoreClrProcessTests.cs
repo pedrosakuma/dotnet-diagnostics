@@ -864,6 +864,47 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task DumpInspector_QueryAlcView_FlagsHardRootedCollectibleContexts_FromBadCodeSample()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        using var response = await http.GetAsync("/alc-leak?count=3", CancellationToken.None);
+        response.EnsureSuccessStatusCode();
+        await Task.Delay(500, CancellationToken.None);
+
+        HeapSnapshotArtifact snapshot;
+        try
+        {
+            snapshot = await new ClrMdDumpInspector().InspectLiveAsync(
+                badSample.ProcessId,
+                new DumpInspectionOptions(TopTypes: 25),
+                CancellationToken.None);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            throw SkipException.ForReason($"ptrace/ClrMD attach unavailable in this environment: {ex.Message}");
+        }
+
+        var projection = HeapSnapshotQueryDispatcher.Dispatch(snapshot, "alc-test", "alc", topN: 20, rankBy: "bytes", typeFullName: null);
+
+        projection.Result.Should().NotBeNull();
+        projection.Result!.IsError.Should().BeFalse();
+        projection.Result.Data.Should().NotBeNull();
+        projection.Result.Data!.AssemblyLoadContexts.Should().NotBeNull();
+
+        var leaked = projection.Result.Data.AssemblyLoadContexts!.Contexts
+            .Where(context => context.Name?.StartsWith("BadCodeSample.AlcLeak.", StringComparison.Ordinal) == true)
+            .ToArray();
+
+        leaked.Should().HaveCountGreaterThanOrEqualTo(3);
+        leaked.Should().OnlyContain(context => context.IsCollectible == true);
+        leaked.Should().OnlyContain(context => context.SuspectedLeak);
+        leaked.Should().OnlyContain(context => context.RetentionPath != null);
+        leaked.Should().OnlyContain(context => context.Assemblies.Any(assembly => assembly.AssemblyName.Contains("BadCodeSample", StringComparison.Ordinal)));
+        projection.Result.Summary.Should().Contain("AssemblyLoadContext leak candidates");
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task ThreadSnapshot_InspectLive_EnumeratesManagedThreads()
     {
         EnsureSampleRunning();

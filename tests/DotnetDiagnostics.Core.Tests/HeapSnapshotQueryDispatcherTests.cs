@@ -25,6 +25,7 @@ public class HeapSnapshotQueryDispatcherTests
     [InlineData("gchandles")]
     [InlineData("async")]
     [InlineData("timers")]
+    [InlineData("alc")]
     public void ProjectionViews_RenderResult(string view)
     {
         var outcome = HeapSnapshotQueryDispatcher.Dispatch(Snapshot(), Handle, view, topN: 10, rankBy: "bytes", typeFullName: null);
@@ -117,9 +118,9 @@ public class HeapSnapshotQueryDispatcherTests
     }
 
     [Fact]
-    public void ProjectionViews_ExposesTenViews_WithoutServerOnly()
+    public void ProjectionViews_ExposesElevenViews_WithoutServerOnly()
     {
-        HeapSnapshotQueryDispatcher.ProjectionViews.Should().HaveCount(10);
+        HeapSnapshotQueryDispatcher.ProjectionViews.Should().HaveCount(11);
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().NotContain("object");
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().NotContain("duplicate-strings");
     }
@@ -143,5 +144,28 @@ public class HeapSnapshotQueryDispatcherTests
         GcHandles = new GcHandlesView(2, ImmutableArray.Create(new GcHandleBucket("Strong", 2, 4096, ImmutableArray<GcHandleTypeStat>.Empty)), ImmutableArray<string>.Empty),
         AsyncOperations = new[] { new AsyncOperationStat("MyAsyncStateMachine", 0, "TaskAwaiter", 128) },
         Timers = new TaskTimerLeakView(1, 2, 1, [new TimerCallbackStat("System.Threading.TimerQueueTimer", null, "MyTimer", "Tick", null, 1)], [new TaskTypeStat("System.Threading.Tasks.Task", "System.Private.CoreLib", 2, 128)], [new TaskTypeStat("System.Threading.Tasks.TaskCompletionSource", "System.Private.CoreLib", 1, 64)], []),
+        AssemblyLoadContexts = new AssemblyLoadContextLeakView(
+            TotalContexts: 1,
+            CollectibleContexts: 1,
+            SuspectedLeakedCollectibleContexts: 1,
+            Contexts:
+            [
+                new AssemblyLoadContextStat(
+                    Address: 0x5000,
+                    TypeFullName: "System.Runtime.Loader.AssemblyLoadContext",
+                    Name: "Plugin",
+                    IsCollectible: true,
+                    IsDefault: false,
+                    AssemblyCount: 1,
+                    Assemblies: [new AssemblyLoadContextAssemblyStat("Plugin", "Plugin.dll", "/app/Plugin.dll", 3, 256)])
+                {
+                    SuspectedLeak = true,
+                    RetentionTargetKind = "sample-object-from-alc",
+                    RetentionTargetAddress = 0x6000,
+                    RetentionTargetTypeFullName = "Plugin.Leaked",
+                    RetentionPath = new RetentionPath("Plugin.Leaked", 0x6000, [new RetentionFrame("<root>", 0) { RootKind = "StaticVar" }, new RetentionFrame("Plugin.Leaked", 0x6000)], Truncated: false),
+                },
+            ],
+            Notes: ["Retention hints are capped."]),
     };
 }

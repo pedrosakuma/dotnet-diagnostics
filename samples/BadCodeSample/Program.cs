@@ -3,10 +3,12 @@ using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Loader;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
@@ -56,6 +58,7 @@ var leakedFiles = new List<FileStream>();
 var leakedSockets = new List<LeakedSocketConnection>();
 var leakedHandleWindows = new List<(nint[] HandlePointers, byte[][] Payloads)>();
 var leakedTimers = new List<Timer>();
+var leakedAssemblyLoadContexts = new List<AlcLeakRoot>();
 var leakedNativeAllocations = new List<nint>();
 var badCodeEndpoints = new[]
 {
@@ -70,6 +73,7 @@ var badCodeEndpoints = new[]
     "/socket-leak?count=32&host=loopback",
     "/handle-leak?type=pinned|normal|weak&count=200&seconds=10",
     "/timer-leak?count=50",
+    "/alc-leak?count=4",
     "/native-bloat?mb=128",
     "/meter-spam?count=5&kind=counter",
     "/log-spam?count=200&level=warning",
@@ -364,7 +368,28 @@ app.MapGet("/timer-leak", (int? count) =>
     }
 });
 
-// 13. Native/unmanaged RSS growth with a flat managed heap — detect with inspect_process(view="resources")
+// 13. Collectible AssemblyLoadContext leak — detect with inspect_heap + query_snapshot(view="alc")
+app.MapGet("/alc-leak", (int? count) =>
+{
+    var n = Math.Clamp(count ?? 4, 1, 256);
+    var assemblyPath = Assembly.GetExecutingAssembly().Location;
+    lock (leakedAssemblyLoadContexts)
+    {
+        for (var i = 0; i < n; i++)
+        {
+            var context = new LeakyAssemblyLoadContext($"BadCodeSample.AlcLeak.{Guid.NewGuid():N}", assemblyPath);
+            var assembly = context.LoadFromAssemblyPath(assemblyPath);
+            var type = assembly.GetType(nameof(LoopbackCloseServer), throwOnError: true)!;
+            var instance = Activator.CreateInstance(type, nonPublic: true)!;
+            var handler = AlcLeakFixture.Subscribe(instance);
+            leakedAssemblyLoadContexts.Add(new AlcLeakRoot(context, assembly, instance, handler));
+        }
+
+        return Results.Ok(new { added = n, totalLeaked = leakedAssemblyLoadContexts.Count });
+    }
+});
+
+// 14. Native/unmanaged RSS growth with a flat managed heap — detect with inspect_process(view="resources")
 app.MapGet("/native-bloat", (int? mb) =>
 {
     var size = Math.Clamp(mb ?? 128, 1, 512) * 1024 * 1024;
@@ -662,6 +687,35 @@ sealed class LeakedSocketConnection(TcpClient client, NetworkStream stream)
 {
     public TcpClient Client { get; } = client;
     public NetworkStream Stream { get; } = stream;
+}
+
+sealed record AlcLeakRoot(
+    AssemblyLoadContext Context,
+    Assembly Assembly,
+    object Instance,
+    EventHandler Handler);
+
+sealed class LeakyAssemblyLoadContext(string name, string assemblyPath) : AssemblyLoadContext(name, isCollectible: true)
+{
+    private readonly AssemblyDependencyResolver _resolver = new(assemblyPath);
+
+    protected override Assembly? Load(AssemblyName assemblyName)
+    {
+        var path = _resolver.ResolveAssemblyToPath(assemblyName);
+        return path is null ? null : LoadFromAssemblyPath(path);
+    }
+}
+
+static class AlcLeakFixture
+{
+    private static readonly List<EventHandler> LeakedHandlers = new();
+
+    public static EventHandler Subscribe(object alcInstance)
+    {
+        EventHandler handler = (_, _) => GC.KeepAlive(alcInstance);
+        LeakedHandlers.Add(handler);
+        return handler;
+    }
 }
 
 static class AsyncStallFixture

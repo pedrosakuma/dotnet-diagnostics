@@ -61,7 +61,7 @@ public sealed class InspectHeapTool
         "`source=\"dump\"` walks a previously-captured WithHeap/Full dump offline (read-only, no " +
         "ptrace) and requires `dumpFilePath`. Mini and Triage dumps return runtime metadata only. " +
         "Live and dump invocations both produce the same `HeapSnapshotArtifact`, addressable via " +
-        "`query_heap_snapshot(handle, view, …)` for retention paths, static-field roots, task/timer leak candidates, GCHandle table aggregation, finalizer " +
+        "`query_heap_snapshot(handle, view, …)` for retention paths, static-field roots, task/timer leak candidates, AssemblyLoadContext leak candidates, GCHandle table aggregation, finalizer " +
         "queue and other drilldown views without re-walking. Live-origin handles are evicted when " +
         "the target PID exits; dump-origin handles are retained until their TTL elapses. Supersedes " +
         "the deprecated `inspect_dump` and `inspect_live_heap` tools (#206).")]

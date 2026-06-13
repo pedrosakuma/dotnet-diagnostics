@@ -1952,6 +1952,7 @@ public sealed class DiagnosticTools
         "`duplicate-strings` (duplicate System.String contents ranked by aggregate retained bytes — requires includeDuplicateStrings=true), " +
         "`gchandles` (GCHandle table aggregated by public GCHandleType-compatible buckets with top target types), " +
         "`timers` (live System.Threading.Timer / Task / TaskCompletionSource objects grouped by timer callback and task type), " +
+        "`alc` (live AssemblyLoadContext instances, collectible contexts, loaded assemblies, and bounded retention hints for suspected collectible leaks), " +
         "`object` (dump one managed object by address — SOS !do equivalent), " +
         "`gcroot` (find a shortest GC-root chain for one object address — SOS !gcroot equivalent), " +
         "`objsize` (compute the transitive retained size rooted at one object address — SOS !objsize equivalent), " +
@@ -1965,8 +1966,8 @@ public sealed class DiagnosticTools
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
         [Description("Snapshot handle returned by inspect_dump or inspect_live_heap.")] string handle,
-        [Description("Which slice of the snapshot to return: 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'timers', 'object', 'gcroot', 'objsize' or 'async'.")] string view = "top-types",
-        [Description("Maximum entries to return for any ranked view ('top-types', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'async', 'timers'). Ignored by 'roots-by-kind', 'gchandles', 'retention-paths', 'object', 'gcroot' and 'objsize'.")] int topN = 50,
+        [Description("Which slice of the snapshot to return: 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'timers', 'alc', 'object', 'gcroot', 'objsize' or 'async'.")] string view = "top-types",
+        [Description("Maximum entries to return for any ranked view ('top-types', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'async', 'timers', 'alc'). Ignored by 'roots-by-kind', 'gchandles', 'retention-paths', 'object', 'gcroot' and 'objsize'.")] int topN = 50,
         [Description("For view='top-types': ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
         [Description("For view='retention-paths': case-insensitive substring matched against TypeFullName to narrow the returned chains.")] string? typeFullName = null,
         [Description("For view='object', 'gcroot' and 'objsize': managed object address (decimal or 0x-prefixed hex).")] string? address = null,
@@ -2036,7 +2037,7 @@ public sealed class DiagnosticTools
                     },
                     cancellationToken).ConfigureAwait(false);
             default:
-                return InvalidArg<HeapSnapshotQueryResult>(nameof(view), $"must be 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'timers', 'object', 'gcroot', 'objsize' or 'async' (got '{view}')");
+                return InvalidArg<HeapSnapshotQueryResult>(nameof(view), $"must be 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'timers', 'alc', 'object', 'gcroot', 'objsize' or 'async' (got '{view}')");
         }
     }
 
