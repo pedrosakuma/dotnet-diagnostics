@@ -13,6 +13,7 @@ using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Exceptions;
+using DotnetDiagnostics.Core.GatedCapture;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.JitCapture;
 using DotnetDiagnostics.Core.Kestrel;
@@ -613,6 +614,80 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         result.Summary.TotalSamples.Should().BeGreaterThan(0);
         result.Summary.TopHotspots.Should().NotBeEmpty();
         result.Artifact.Root.Children.Should().NotBeEmpty("the call-tree artifact must capture at least one stack");
+    }
+
+    [SkipOnLinuxCiFact("Quarantined on Linux CI: the gated cpu-sample capture uses the EventPipe SampleProfiler crash path. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
+    public async Task GatedCapture_FiresCpuSample_WhenCpuThresholdTrips()
+    {
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+
+        // Drive sustained CPU so the System.Runtime/cpu-usage counter rises above the (deliberately
+        // low) threshold within the watch window, then arm a real bounded gated capture.
+        using var loadCts = new CancellationTokenSource();
+        var load = DriveCpuLoadAsync(baseUrl, loadCts.Token);
+
+        try
+        {
+            var store = new MemoryDiagnosticHandleStore();
+            var collector = new ThresholdGatedCaptureCollector();
+            var sampler = new EventPipeCpuSampler();
+            var predicate = new TriggerPredicate(GatedCaptureMetric.Cpu, TriggerOperator.GreaterThan, 1);
+
+            DiagnosticHandle? registered = null;
+            var result = await collector.WatchAndCaptureAsync(
+                Pid,
+                predicate,
+                GatedCaptureKind.CpuSample,
+                window: TimeSpan.FromSeconds(25),
+                maxCaptures: 1,
+                sampleInterval: TimeSpan.FromSeconds(1),
+                captureCallback: async (trigger, ct) =>
+                {
+                    var sample = await sampler.SampleAsync(trigger.ProcessId, TimeSpan.FromSeconds(3), topN: 10, cancellationToken: ct);
+                    registered = store.Register(trigger.ProcessId, "cpu-sample", sample.Artifact, TimeSpan.FromMinutes(5));
+                    return new GatedCaptureOutcome($"captured {sample.Summary.TotalSamples} samples", registered.Id);
+                },
+                cancellationToken: CancellationToken.None);
+
+            result.Tripped.Should().BeTrue("sustained CPU load must push cpu-usage past the threshold");
+            result.Captures.Should().ContainSingle();
+            result.Captures[0].Handle.Should().NotBeNullOrEmpty();
+            result.Captures[0].Error.Should().BeNull();
+
+            // Acceptance: the captured artifact must be reachable via its handle (the same store the
+            // query_snapshot drilldown reads from).
+            registered.Should().NotBeNull();
+            var artifact = store.TryGet<CpuSampleTraceArtifact>(registered!.Id);
+            artifact.Should().NotBeNull("the gated cpu-sample capture must be reachable through its handle");
+            artifact!.Root.Children.Should().NotBeEmpty();
+        }
+        finally
+        {
+            await loadCts.CancelAsync();
+            try { await load; } catch (Exception) { }
+        }
+    }
+
+    private static async Task DriveCpuLoadAsync(string baseUrl, CancellationToken cancellationToken)
+    {
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl), Timeout = TimeSpan.FromSeconds(15) };
+        var workers = Enumerable.Range(0, Math.Max(2, Environment.ProcessorCount / 2)).Select(async _ =>
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    using var response = await http.GetAsync("/cpu-burn?ms=500", cancellationToken);
+                }
+                catch (Exception)
+                {
+                    // Best-effort load generation; ignore transient cancellation / request errors.
+                }
+            }
+        });
+
+        await Task.WhenAll(workers);
     }
 
     [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
