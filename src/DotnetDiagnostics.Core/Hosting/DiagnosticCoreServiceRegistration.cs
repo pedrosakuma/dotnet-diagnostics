@@ -96,6 +96,7 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<IKestrelCollector, EventPipeKestrelCollector>();
         services.AddSingleton<INetworkingCollector, EventPipeNetworkingCollector>();
         services.AddSingleton<IStartupCollector, EventPipeStartupCollector>();
+        services.AddSingleton<DotnetDiagnostics.Core.GatedCapture.IThresholdGatedCaptureCollector, DotnetDiagnostics.Core.GatedCapture.ThresholdGatedCaptureCollector>();
         services.AddSingleton<IProcessDumper, DiagnosticsClientDumper>();
         services.AddSingleton<IModuleByteSource, ClrMdModuleByteSource>();
         services.AddSingleton<IDumpByteSource, FileSystemDumpByteSource>();

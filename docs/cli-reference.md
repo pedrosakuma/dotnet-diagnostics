@@ -121,7 +121,11 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
 | `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |
 | `--interval <int>` | Refresh interval in seconds (`counters`, `db`, `kestrel`, `networking`). Default 1. |
-| `--watch <seconds>` | Re-run the command every N seconds, clear/redraw the human output, and stop cleanly on Ctrl-C. Not compatible with `--json`. |
+| `--watch <seconds>` | Re-run the command every N seconds, clear/redraw the human output, and stop cleanly on Ctrl-C. Not compatible with `--json`. With `--capture-when` it is reinterpreted as the metric **sample interval** for the bounded gated watch (no redraw loop). |
+| `--capture-when <pred>` | Threshold-gated capture (`--kind counters`). Arm a **bounded** watch and capture when a single metric predicate `<metric><op><value>` trips — e.g. `cpu>85`, `gcHeapMb>=1500`, `rssMb>2000`, `threadCount>400`, `activeTimerCount>1000`. Operators: `>` `>=` `<` `<=`. |
+| `--capture <kind>` | What to capture on trip: `dump`, `cpu-sample`, `heap`, `thread-snapshot`. Required with `--capture-when`. |
+| `--window <seconds>` | Required with `--capture-when`. Hard upper bound on how long the watch is armed (1–300). |
+| `--max-captures <int>` | Stop after N captures (default 1, max 10). |
 | `--provider <name>` | `counters`: EventCounter provider (repeatable); `catalog`: EventPipe provider (repeatable; replaces broad defaults); `event_source`: required provider name. |
 | `--meter <name>` | `counters`: Meter name (repeatable). |
 | `--source <name>` | `activities`: ActivitySource filter (repeatable, `*` / `?` globs). |
@@ -133,6 +137,8 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 ```bash
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
 dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --watch 2
+dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-when 'cpu>85' --capture cpu-sample --window 60
+dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-when 'rssMb>2000' --capture dump --window 120 --confirm
 dotnet-diagnostics-cli collect --kind datas --pid 1234 --duration 30 --save ./before.json
 dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
 dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
@@ -141,6 +147,16 @@ dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --
 > **Timing.** EventPipe sessions take ~500 ms–1 s to start, and `counters` payloads arrive on
 > `--interval` boundaries — give `counters` at least ~6 s. For `exceptions` / `gc`, the collection window
 > must overlap the load that generates the events.
+
+> **Threshold-gated capture (`--capture-when`).** A bounded, one-shot watch (the human/CI equivalent
+> of DebugDiag `collect`) — **not** a daemon. It polls one `System.Runtime` EventCounter (`rssMb`=`working-set`,
+> `threadCount`=`threadpool-thread-count`) every `--watch` seconds (default 2) for at most `--window`
+> seconds and captures `--capture` up to `--max-captures` times the moment the predicate trips, then
+> returns. `--capture dump` requires `--confirm` and writes the dump to disk (the path is in the
+> result). For `cpu-sample` / `heap` / `thread-snapshot`, the result records carry headline capture
+> stats plus a drilldown handle. That handle is only reachable by a later `query` **within the same
+> `session`** (the in-memory handle store is disposed when a one-shot command exits) — run gated
+> capture inside the `session` REPL when you need to drill into the captured artifact afterward.
 
 ### `inspect-heap`
 

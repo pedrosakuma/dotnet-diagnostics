@@ -108,6 +108,34 @@ it asked for).
 retained `Activities[]` inline (bounded by `maxActivities`) and relies on
 `query_snapshot(handle, view=...)` for narrower drilldown views.
 
+### Threshold-gated capture (`collect_events` + `triggerWhen`)
+
+`collect_events(kind="counters")` can arm a **bounded** watch that captures a heavier artifact the
+moment a single metric threshold trips — the threshold-gated, LLM/human-driven equivalent of
+DebugDiag `collect`. It is **not** a daemon: the call polls one `System.Runtime` EventCounter for at
+most `windowSeconds`, fires `captureKind` up to `maxCaptures` times, then returns synchronously.
+Nothing persists server-side.
+
+| Parameter | Meaning |
+| --- | --- |
+| `triggerWhen` | Single predicate `<metric><op><value>` — e.g. `cpu>85`, `gcHeapMb>=1500`, `rssMb>2000`, `threadCount>400`, `activeTimerCount>1000`. Operators: `>` `>=` `<` `<=`. Metrics map to `System.Runtime` EventCounters (`rssMb`=`working-set`, `threadCount`=`threadpool-thread-count`). |
+| `captureKind` | What to capture on trip: `dump`, `cpu-sample`, `heap`, `thread-snapshot`. |
+| `windowSeconds` | Required. Hard upper bound on how long the watch is armed (1–300). |
+| `maxCaptures` | Stop after N captures (default 1, max 10). |
+| `sampleIntervalSeconds` | Metric poll interval (1–`windowSeconds`, default 2). |
+| `confirmDump` | Required `true` when `captureKind=dump` (writes a dump to disk; mirrors `collect_process_dump`). |
+
+The captured artifact registers under the existing drilldown handle kinds (`cpu-sample` /
+`heap-snapshot` / `thread-snapshot`) so the high-priority `query_snapshot(handle, …)` hint reaches
+it without re-collecting; `dump` writes to disk and returns the path. Per-`captureKind` scopes are
+re-checked on top of `read-counters`/`eventpipe`: `cpu-sample`=`eventpipe`; `heap`=`heap-read`+`ptrace`;
+`thread-snapshot`=`ptrace`; `dump`=`dump-write`+`ptrace`. The result envelope carries a `GatedCapture`
+block (samples observed, peak value, whether the predicate tripped, and one record per capture).
+
+```text
+collect_events(kind="counters")(processId=4242, triggerWhen="cpu>85", captureKind="cpu-sample", windowSeconds=60)
+```
+
 ### Long-running collects: MCP Tasks
 
 As of the `2025-11-25` protocol bump, the server registers an

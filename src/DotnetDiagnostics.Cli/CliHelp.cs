@@ -60,6 +60,14 @@ collect options:
       --max-events <int>        Per-kind cap (events / exceptions / activities).
       --interval <int>          Refresh interval in seconds (counters, db). Default 1.
       --watch <seconds>         Re-run and redraw every N seconds until Ctrl-C.
+                                With --capture-when: metric sample interval (default 2) for the
+                                bounded gated-capture watch (no redraw loop).
+      --capture-when <pred>     Threshold-gated capture: arm a bounded watch and capture when the
+                                metric trips, e.g. 'cpu>85', 'gcHeapMb>=500', 'rssMb>1024',
+                                'threadCount>200', 'activeTimerCount>1000'. Requires --kind counters.
+      --capture <kind>          What to capture on trip: dump, cpu-sample, heap, thread-snapshot.
+      --window <seconds>        Required with --capture-when. Bounds the watch (max 300s).
+      --max-captures <int>      Stop after N captures (default 1, max 10).
       --provider <name>         counters: EventCounter provider (repeatable);
                                 catalog: EventPipe provider (repeatable; replaces broad defaults);
                                 event_source: required provider name.
@@ -73,6 +81,7 @@ collect options:
 """
   dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
   dotnet-diagnostics-cli collect --kind counters --pid MyApp --watch 2
+  dotnet-diagnostics-cli collect --kind counters --pid MyApp --capture-when 'cpu>85' --capture cpu-sample --window 60
   dotnet-diagnostics-cli collect --kind datas --pid 1234 --save ./before.json
   dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
 """),

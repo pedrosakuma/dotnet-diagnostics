@@ -4,11 +4,14 @@ using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Exceptions;
+using DotnetDiagnostics.Core.GatedCapture;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
@@ -17,7 +20,9 @@ using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
+using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.Tools.Dispatch;
+using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Diagnostics;
 using DotnetDiagnostics.Mcp.Security;
 using ModelContextProtocol.Protocol;
@@ -71,7 +76,10 @@ public sealed class CollectEventsTool
         Name = "collect_events",
         Title = "Collect EventPipe events (counters | exceptions | crash-guard | gc | datas | catalog | event_source | activities | logs | jit | threadpool | contention | db | kestrel | networking | startup)",
         Destructive = false,
-        ReadOnly = true,
+        // Not read-only: the threshold-gated capture path (triggerWhen + captureKind="dump") can write
+        // a process dump to disk. That path is doubly gated (confirmDump=true + the dump-write scope),
+        // but the static hint must still reflect that the tool can modify its environment.
+        ReadOnly = false,
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(
@@ -96,6 +104,11 @@ public sealed class CollectEventsTool
         IKestrelCollector kestrelCollector,
         INetworkingCollector networkingCollector,
         IStartupCollector startupCollector,
+        IThresholdGatedCaptureCollector gatedCaptureCollector,
+        ICpuSampler cpuSampler,
+        IThreadSnapshotInspector threadSnapshotInspector,
+        IDumpInspector dumpInspector,
+        IProcessDumper processDumper,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
         EventSourceAllowlist allowlist,
@@ -160,6 +173,19 @@ public sealed class CollectEventsTool
         string minLevel = "Information",
         [Description("kind=logs only. Maximum UTF-8 bytes retained per message/scope/exception string before truncation. Defaults to 4096.")]
         int maxMessageBytes = 4096,
+        // Bounded threshold-gated capture (issue #419). Requires kind=counters.
+        [Description("Threshold-gated capture (kind=counters). Single metric predicate that arms a BOUNDED watch: <metric><op><value>, e.g. 'cpu>85', 'gcHeapMb>=1500', 'rssMb>2000', 'threadCount>400', 'activeTimerCount>1000'. Operators: > >= < <=. When set together with captureKind, collect_events polls the metric for at most windowSeconds and fires captureKind the moment the predicate trips (NOT a daemon — one synchronous call). Metrics map to System.Runtime EventCounters (rssMb=working-set, threadCount=threadpool-thread-count).")]
+        string? triggerWhen = null,
+        [Description("Threshold-gated capture (kind=counters). What to capture when triggerWhen trips: 'dump' | 'cpu-sample' | 'heap' | 'thread-snapshot'. The artifact registers under a drilldown handle (cpu-sample/heap/thread-snapshot) or writes to disk (dump). Required scopes by kind: cpu-sample=eventpipe; heap=heap-read+ptrace; thread-snapshot=ptrace; dump=dump-write+ptrace.")]
+        string? captureKind = null,
+        [Description("Threshold-gated capture only. Hard upper bound (seconds) on how long the watch is armed. Required when triggerWhen/captureKind are set. Must be 1..300 (the watch is bounded — no indefinite arming).")]
+        int windowSeconds = 0,
+        [Description("Threshold-gated capture only. Hard cap on how many captures fire before the call returns. Must be 1..10. Defaults to 1.")]
+        int maxCaptures = 1,
+        [Description("Threshold-gated capture only. How often (seconds) the metric is polled within the window. Must be 1..windowSeconds. Defaults to 2.")]
+        int sampleIntervalSeconds = 2,
+        [Description("Threshold-gated capture only. captureKind='dump' confirmation gate — writing a heap dump to disk requires confirmDump=true (defense-in-depth, mirrors collect_process_dump). Ignored for other capture kinds.")]
+        bool confirmDump = false,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
@@ -187,6 +213,18 @@ public sealed class CollectEventsTool
                     message,
                     new DiagnosticError("InsufficientScope", message, requiredScope));
             }
+        }
+
+        // Bounded threshold-gated capture (#419): when triggerWhen + captureKind are supplied, the
+        // call arms a bounded watch instead of a fixed-window collection. Requires kind=counters
+        // (the metric source) and re-checks the per-captureKind scope on top of read-counters.
+        var gatingRequested = !string.IsNullOrWhiteSpace(triggerWhen) || !string.IsNullOrWhiteSpace(captureKind);
+        if (gatingRequested)
+        {
+            return await RunGatedCaptureAsync(
+                gatedCaptureCollector, resolver, handles, cpuSampler, threadSnapshotInspector, dumpInspector, processDumper,
+                principal, canonicalKind, triggerWhen, captureKind, windowSeconds, maxCaptures, sampleIntervalSeconds,
+                confirmDump, processId, cancellationToken).ConfigureAwait(false);
         }
 
         // Default durationSeconds per kind matches the legacy tool defaults so callers omitting
@@ -382,6 +420,67 @@ public sealed class CollectEventsTool
             ResolvedProcess = inner.ResolvedProcess,
         };
     }
+
+    /// <summary>
+    /// Bounded threshold-gated capture path (#419). Re-checks the captureKind-specific scope on top
+    /// of the read-counters gate, then arms a single bounded watch via <see cref="GatedCaptureUseCases"/>.
+    /// </summary>
+    private static async Task<DiagnosticResult<CollectEventsEnvelope>> RunGatedCaptureAsync(
+        IThresholdGatedCaptureCollector gatedCaptureCollector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        ICpuSampler cpuSampler,
+        IThreadSnapshotInspector threadSnapshotInspector,
+        IDumpInspector dumpInspector,
+        IProcessDumper processDumper,
+        BearerPrincipal? principal,
+        string canonicalKind,
+        string? triggerWhen,
+        string? captureKind,
+        int windowSeconds,
+        int maxCaptures,
+        int sampleIntervalSeconds,
+        bool confirmDump,
+        int? processId,
+        CancellationToken cancellationToken)
+    {
+        if (canonicalKind != "counters")
+        {
+            var message = $"Threshold-gated capture (triggerWhen/captureKind) is only supported with kind='counters' (the metric source). Got kind='{canonicalKind}'.";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message, new DiagnosticError("InvalidArgument", message, "kind"));
+        }
+
+        // captureKind-specific scope re-check (the dispatch gate only proved read-counters/eventpipe).
+        if (principal is not null && GatedCaptureKinds.TryParse(captureKind, out var parsedKind))
+        {
+            foreach (var scope in RequiredCaptureScopes(parsedKind.Value))
+            {
+                if (!principal.HasScope(scope))
+                {
+                    var message = $"captureKind='{GatedCaptureKinds.Token(parsedKind.Value)}' requires the '{scope}' scope.";
+                    return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                        message, new DiagnosticError("InsufficientScope", message, scope));
+                }
+            }
+        }
+
+        var result = await GatedCaptureUseCases.WatchAndCapture(
+            gatedCaptureCollector, resolver, handles, cpuSampler, threadSnapshotInspector, dumpInspector, processDumper,
+            triggerWhen, captureKind, windowSeconds, maxCaptures, sampleIntervalSeconds, confirmDump, processId,
+            dumpOutputDirectory: null, cancellationToken).ConfigureAwait(false);
+
+        return Project(result, "counters", (env, data) => env with { GatedCapture = data });
+    }
+
+    private static string[] RequiredCaptureScopes(GatedCaptureKind kind) => kind switch
+    {
+        GatedCaptureKind.CpuSample => new[] { "eventpipe" },
+        GatedCaptureKind.Heap => new[] { "heap-read", "ptrace" },
+        GatedCaptureKind.ThreadSnapshot => new[] { "ptrace" },
+        GatedCaptureKind.Dump => new[] { "dump-write", "ptrace" },
+        _ => Array.Empty<string>(),
+    };
 }
 
 /// <summary>
@@ -408,4 +507,5 @@ public sealed record CollectEventsEnvelope(
     DbSnapshot? Db = null,
     KestrelSnapshot? Kestrel = null,
     NetworkingSnapshot? Networking = null,
-    StartupSnapshot? Startup = null);
+    StartupSnapshot? Startup = null,
+    GatedCaptureResult? GatedCapture = null);
