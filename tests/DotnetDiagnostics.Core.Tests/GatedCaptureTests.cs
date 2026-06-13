@@ -179,8 +179,38 @@ public sealed class GatedCaptureTests
         result.Tripped.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task WatchAndCapture_ThrowsWhenMetricSessionFailsWithoutSamples()
+    {
+        var collector = new ThresholdGatedCaptureCollector(new ThrowingSampler(), NeverExits);
+        var predicate = new TriggerPredicate(GatedCaptureMetric.Cpu, TriggerOperator.GreaterThan, 85);
+
+        var act = async () => await collector.WatchAndCaptureAsync(
+            1234, predicate, GatedCaptureKind.CpuSample,
+            window: TimeSpan.FromSeconds(30),
+            maxCaptures: 1,
+            sampleInterval: TimeSpan.FromMilliseconds(5),
+            captureCallback: (_, _) => Task.FromResult(new GatedCaptureOutcome("nope")));
+
+        var ex = await act.Should().ThrowAsync<GatedCaptureSamplerException>();
+        ex.Which.ProcessId.Should().Be(1234);
+        ex.Which.Metric.Should().Be(GatedCaptureMetric.Cpu);
+    }
+
     private static Task NeverExits(int processId, CancellationToken cancellationToken)
         => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+
+    /// <summary>Fails immediately, as if the EventPipe session could not be started.</summary>
+    private sealed class ThrowingSampler : IGatedMetricSampler
+    {
+        public Task SampleAsync(
+            int processId,
+            GatedCaptureMetric metric,
+            TimeSpan interval,
+            Action<double> onSample,
+            CancellationToken cancellationToken)
+            => throw new InvalidOperationException("diagnostic socket unavailable");
+    }
 
     /// <summary>Emits a fixed script of values at the requested interval, then idles until cancelled.</summary>
     private sealed class ScriptedSampler : IGatedMetricSampler

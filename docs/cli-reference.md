@@ -152,9 +152,11 @@ dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --
 > of DebugDiag `collect`) — **not** a daemon. It polls one `System.Runtime` EventCounter (`rssMb`=`working-set`,
 > `threadCount`=`threadpool-thread-count`) every `--watch` seconds (default 2) for at most `--window`
 > seconds and captures `--capture` up to `--max-captures` times the moment the predicate trips, then
-> returns. `--capture dump` requires `--confirm` (it writes a dump to disk). Because the CLI is a
-> stateless one-shot, captured cpu-sample/heap/thread-snapshot artifacts are summarised inline (and in
-> `--json`) rather than left behind a queryable handle.
+> returns. `--capture dump` requires `--confirm` and writes the dump to disk (the path is in the
+> result). For `cpu-sample` / `heap` / `thread-snapshot`, the result records carry headline capture
+> stats plus a drilldown handle. That handle is only reachable by a later `query` **within the same
+> `session`** (the in-memory handle store is disposed when a one-shot command exits) — run gated
+> capture inside the `session` REPL when you need to drill into the captured artifact afterward.
 
 ### `inspect-heap`
 

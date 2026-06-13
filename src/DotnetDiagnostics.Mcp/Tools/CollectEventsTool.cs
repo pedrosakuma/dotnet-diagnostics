@@ -76,7 +76,10 @@ public sealed class CollectEventsTool
         Name = "collect_events",
         Title = "Collect EventPipe events (counters | exceptions | crash-guard | gc | datas | catalog | event_source | activities | logs | jit | threadpool | contention | db | kestrel | networking | startup)",
         Destructive = false,
-        ReadOnly = true,
+        // Not read-only: the threshold-gated capture path (triggerWhen + captureKind="dump") can write
+        // a process dump to disk. That path is doubly gated (confirmDump=true + the dump-write scope),
+        // but the static hint must still reflect that the tool can modify its environment.
+        ReadOnly = false,
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(

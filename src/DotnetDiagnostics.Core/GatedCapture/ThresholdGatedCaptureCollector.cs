@@ -165,13 +165,29 @@ public sealed class ThresholdGatedCaptureCollector : IThresholdGatedCaptureColle
         var exitTask = ExitWatchAsync();
         var windowTask = Task.Delay(window, CancellationToken.None);
 
-        await Task.WhenAny(windowTask, pumpTask, exitTask).ConfigureAwait(false);
+        // samplerTask is included so an immediate metric-source failure (e.g. the EventPipe session
+        // cannot start — diagnostic socket unavailable, permission denied, target already gone) ends
+        // the watch promptly instead of idling until the window elapses and reporting a false
+        // "no samples" success.
+        await Task.WhenAny(windowTask, pumpTask, exitTask, samplerTask).ConfigureAwait(false);
         await armedCts.CancelAsync().ConfigureAwait(false);
 
         try { await pumpTask.ConfigureAwait(false); } catch (Exception) { }
         var processExited = false;
         try { processExited = await exitTask.ConfigureAwait(false); } catch (Exception) { }
-        try { await samplerTask.ConfigureAwait(false); } catch (Exception) { }
+        Exception? samplerFault = null;
+        try { await samplerTask.ConfigureAwait(false); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { samplerFault = ex; }
+
+        // A sampler fault that produced no samples and fired no capture — and is not explained by the
+        // target exiting or the caller cancelling — means the watch never observed the metric at all.
+        // Surface it as a real error rather than a misleading empty success.
+        if (samplerFault is not null && samplesObserved == 0 && captures.Count == 0 &&
+            !processExited && !cancellationToken.IsCancellationRequested)
+        {
+            throw new GatedCaptureSamplerException(processId, predicate.Metric, samplerFault);
+        }
 
         var (provider, counterName) = GatedCaptureMetrics.Counter(predicate.Metric);
         var endedByMaxCaptures = captures.Count >= maxCaptures;

@@ -149,15 +149,28 @@ public static class GatedCaptureUseCases
             }
         }
 
-        var watch = await collector.WatchAndCaptureAsync(
-            pid,
-            predicate,
-            kind.Value,
-            TimeSpan.FromSeconds(windowSeconds),
-            maxCaptures,
-            TimeSpan.FromSeconds(sampleIntervalSeconds),
-            Capture,
-            cancellationToken).ConfigureAwait(false);
+        GatedCaptureResult watch;
+        try
+        {
+            watch = await collector.WatchAndCaptureAsync(
+                pid,
+                predicate,
+                kind.Value,
+                TimeSpan.FromSeconds(windowSeconds),
+                maxCaptures,
+                TimeSpan.FromSeconds(sampleIntervalSeconds),
+                Capture,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (GatedCaptureSamplerException ex)
+        {
+            return DiagnosticResult.Fail<GatedCaptureResult>(
+                ex.Message,
+                new DiagnosticError("MetricSessionFailed", ex.Message, ex.InnerException?.Message),
+                new NextActionHint("inspect_process",
+                    "Confirm the target is a reachable .NET process and the sidecar shares its UID (and CAP_SYS_PTRACE where required), then re-arm the watch.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
+        }
 
         return WithContext(BuildResult(watch), resolved.Context);
     }
