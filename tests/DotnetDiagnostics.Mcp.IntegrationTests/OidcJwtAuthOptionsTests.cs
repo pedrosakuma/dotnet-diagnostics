@@ -61,4 +61,88 @@ public sealed class OidcJwtAuthOptionsTests
         bearerPrincipal!.Name.Should().Be("entra-client");
         bearerPrincipal.Scopes.Should().BeEquivalentTo(new[] { "read-counters", "eventpipe", "heap-read" });
     }
+
+    [Fact]
+    public void FromConfiguration_ParsesMultipleProviders_FromProvidersJson()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["MCP_OIDC_ISSUER"] = "https://entra.example.test/tenant/v2.0",
+            ["MCP_OIDC_AUDIENCE"] = "api://dotnet-diagnostics-mcp",
+            ["MCP_OIDC_PROVIDERS_JSON"] =
+                "[{\"issuer\":\"https://kubernetes.default.svc.cluster.local\"," +
+                "\"audience\":\"dotnet-diagnostics-mcp\"," +
+                "\"scopeClaim\":\"scope\"," +
+                "\"requiredClaims\":{\"sub\":\"system:serviceaccount:diag:investigator\"}}]",
+        }).Build();
+
+        var options = OidcJwtAuthOptions.FromConfiguration(configuration);
+
+        options.IsEnabled.Should().BeTrue();
+        options.Providers.Should().HaveCount(2);
+
+        var entra = options.Providers[0];
+        entra.SchemeName.Should().Be(OidcJwtAuthOptions.DefaultSchemeName);
+        entra.Issuer.Should().Be("https://entra.example.test/tenant/v2.0");
+        entra.Audience.Should().Be("api://dotnet-diagnostics-mcp");
+
+        var k8s = options.Providers[1];
+        k8s.SchemeName.Should().Be($"{OidcJwtAuthOptions.DefaultSchemeName}-1");
+        k8s.Issuer.Should().Be("https://kubernetes.default.svc.cluster.local");
+        k8s.MetadataAddress.AbsoluteUri.Should()
+            .Be("https://kubernetes.default.svc.cluster.local/.well-known/openid-configuration");
+        k8s.ScopeClaimNames.Should().Equal("scope");
+        k8s.RequiredClaims.Should().ContainSingle().Which.ClaimType.Should().Be("sub");
+    }
+
+    [Fact]
+    public void FromConfiguration_ProvidersJsonOnly_DefaultsFirstSchemeName()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["MCP_OIDC_PROVIDERS_JSON"] =
+                "[{\"issuer\":\"https://issuer.example.test\",\"audience\":\"dotnet-diagnostics-mcp\"}]",
+        }).Build();
+
+        var options = OidcJwtAuthOptions.FromConfiguration(configuration);
+
+        options.IsEnabled.Should().BeTrue();
+        options.Providers.Should().ContainSingle()
+            .Which.SchemeName.Should().Be(OidcJwtAuthOptions.DefaultSchemeName);
+    }
+
+    [Fact]
+    public void FromConfiguration_ProvidersJsonMissingAudience_Throws()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["MCP_OIDC_PROVIDERS_JSON"] = "[{\"issuer\":\"https://issuer.example.test\"}]",
+        }).Build();
+
+        var act = () => OidcJwtAuthOptions.FromConfiguration(configuration);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*issuer*audience*");
+    }
+
+    [Fact]
+    public void FromConfiguration_ParsesGrantedScopes_FromProvidersJsonAndEnv()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["MCP_OIDC_ISSUER"] = "https://issuer.example.test",
+            ["MCP_OIDC_AUDIENCE"] = "dotnet-diagnostics-mcp",
+            ["MCP_OIDC_GRANTED_SCOPES"] = "read-counters eventpipe",
+            ["MCP_OIDC_PROVIDERS_JSON"] =
+                "[{\"issuer\":\"https://kubernetes.default.svc.cluster.local\"," +
+                "\"audience\":\"dotnet-diagnostics-mcp\"," +
+                "\"grantedScopes\":[\"read-counters\"]}]",
+        }).Build();
+
+        var options = OidcJwtAuthOptions.FromConfiguration(configuration);
+
+        options.Providers.Should().HaveCount(2);
+        options.Providers[0].GrantedScopes.Should().Equal("read-counters", "eventpipe");
+        options.Providers[1].GrantedScopes.Should().Equal("read-counters");
+    }
 }

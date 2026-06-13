@@ -112,6 +112,110 @@ export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"azp":"dotnet-diagnostics-mcp-client"}'
 
 Create a confidential client or service account, add the MCP scopes to its client scope mapping, and pass the resulting access token in the `Authorization` header.
 
+## Managed / workload-identity recipes (HTTP transport)
+
+The same OIDC/JWT path validates tokens minted from a **cloud platform identity** — no
+static secret to distribute. The caller mints a short-lived OIDC token from its workload
+identity; the sidecar validates it via standard OIDC metadata discovery and maps its
+claims onto MCP scopes. Set the issuer/audience the platform stamps, then map the
+caller's identity claim with `MCP_OIDC_REQUIRED_CLAIMS_JSON` (see
+[`docs/authorization.md`](./authorization.md) for the claim→scope model).
+
+> **Static bearer stays the loopback/local default.** Managed identity is additive and
+> opt-in; the opaque bearer path keeps working alongside it (a "break-glass" token).
+
+### Azure — Entra Workload Identity (AKS)
+
+The federated pod identity mints a token for the sidecar's app-registration audience.
+
+```bash
+export MCP_OIDC_ISSUER="https://login.microsoftonline.com/<tenant-id>/v2.0"
+export MCP_OIDC_AUDIENCE="api://dotnet-diagnostics-mcp"
+# Pin the calling workload identity's app/client id.
+export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"azp":"<workload-identity-client-id>"}'
+```
+
+Client side: the AKS workload-identity webhook projects an `AZURE_FEDERATED_TOKEN_FILE`;
+use `DefaultAzureCredential`/`WorkloadIdentityCredential` to acquire a token for
+`api://dotnet-diagnostics-mcp/.default`, and put MCP scopes in the app role / `scp` claim.
+
+### AWS — IRSA (IAM Roles for Service Accounts)
+
+The EKS OIDC provider issues a projected token; validate it audience-scoped.
+
+```bash
+export MCP_OIDC_ISSUER="https://oidc.eks.<region>.amazonaws.com/id/<cluster-id>"
+export MCP_OIDC_AUDIENCE="dotnet-diagnostics-mcp"
+# Pin the calling ServiceAccount.
+export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"sub":"system:serviceaccount:<namespace>:<sa-name>"}'
+# IRSA tokens carry no MCP scope claim — grant the scopes this identity may use.
+export MCP_OIDC_GRANTED_SCOPES="read-counters eventpipe"
+```
+
+Client side: project a token with `audience: dotnet-diagnostics-mcp` (a
+`serviceAccountToken` projected volume or `aws eks get-token`-style flow) and send it as
+the bearer. If your issuing flow can stamp MCP scopes in a `scope`/`scp` claim, use
+`MCP_OIDC_SCOPE_CLAIM` instead of (or alongside) `MCP_OIDC_GRANTED_SCOPES`.
+
+### GCP — Workload Identity Federation
+
+```bash
+export MCP_OIDC_ISSUER="https://accounts.google.com"
+export MCP_OIDC_AUDIENCE="dotnet-diagnostics-mcp"
+# Pin the calling service account's unique id (sub) or email.
+export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"email":"<gsa>@<project>.iam.gserviceaccount.com"}'
+```
+
+Client side: mint a Google-signed ID token whose `aud` is `dotnet-diagnostics-mcp` from
+the workload's service account and send it as the bearer.
+
+### Kubernetes — projected ServiceAccount token (in-cluster client → sidecar)
+
+For a same-cluster client authenticating to the sidecar with no cloud provider, use a
+projected `ServiceAccount` token bound to an explicit audience. The cluster's OIDC issuer
+serves the discovery document.
+
+```bash
+# Your cluster's issuer — kubectl get --raw /.well-known/openid-configuration | jq -r .issuer
+export MCP_OIDC_ISSUER="https://kubernetes.default.svc.cluster.local"
+export MCP_OIDC_AUDIENCE="dotnet-diagnostics-mcp"
+export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"sub":"system:serviceaccount:<namespace>:<sa-name>"}'
+# A raw projected SA token carries no scp/scope claim, so grant the MCP scopes this pinned
+# identity may use server-side (least-privilege; widen as the flow requires).
+export MCP_OIDC_GRANTED_SCOPES="read-counters eventpipe heap-read investigation-export"
+```
+
+The client mounts a projected token volume (`audience: dotnet-diagnostics-mcp`,
+`expirationSeconds: 3600`) and sends the file contents as the bearer. A ready-to-apply
+example is [`deploy/k8s/projected-token-auth.yaml`](../deploy/k8s/projected-token-auth.yaml).
+
+### Trusting more than one issuer at once
+
+A single sidecar can accept tokens from **multiple** issuers — e.g. a cloud
+workload-identity tenant *and* an in-cluster projected SA token issuer (handy for
+break-glass or mixed clients). The legacy `MCP_OIDC_ISSUER`/`MCP_OIDC_AUDIENCE` define the
+first issuer; add more via `MCP_OIDC_PROVIDERS_JSON` (a JSON array; each entry takes
+`issuer`, `audience`, optional `scopeClaim`, optional `requiredClaims`):
+
+```bash
+export MCP_OIDC_ISSUER="https://login.microsoftonline.com/<tenant-id>/v2.0"
+export MCP_OIDC_AUDIENCE="api://dotnet-diagnostics-mcp"
+export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"azp":"<workload-identity-client-id>"}'
+
+export MCP_OIDC_PROVIDERS_JSON='[
+  {
+    "issuer": "https://kubernetes.default.svc.cluster.local",
+    "audience": "dotnet-diagnostics-mcp",
+    "requiredClaims": { "sub": "system:serviceaccount:diag:investigator" }
+  }
+]'
+```
+
+Each presented JWT is validated against every configured issuer in turn; the first issuer
+whose signature, audience, and required claims all match wins. Tokens that match no
+trusted issuer get the same `401 {"kind":"unauthenticated"}` envelope as a bad opaque
+bearer.
+
 ## 2. Connect from the C# MCP SDK
 
 The pattern used by our integration tests:

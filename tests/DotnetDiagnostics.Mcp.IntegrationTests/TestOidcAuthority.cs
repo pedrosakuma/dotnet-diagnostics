@@ -77,8 +77,13 @@ internal sealed class TestOidcAuthority : IAsyncDisposable
         var tokenClaims = new List<Claim>
         {
             new(JwtRegisteredClaimNames.Sub, subject),
-            new("scp", string.Join(' ', scopes)),
         };
+
+        var scopeValue = string.Join(' ', scopes);
+        if (scopeValue.Length > 0)
+        {
+            tokenClaims.Add(new Claim("scp", scopeValue));
+        }
 
         if (claims is not null)
         {

@@ -23,23 +23,27 @@ internal static class OidcJwtAuthExtensions
             return authOptions;
         }
 
-        authentication.AddJwtBearer(JwtScheme, options => ConfigureJwtBearer(options, authOptions));
+        foreach (var provider in authOptions.Providers)
+        {
+            authentication.AddJwtBearer(provider.SchemeName, options => ConfigureJwtBearer(options, provider));
+        }
+
         return authOptions;
     }
 
-    private static void ConfigureJwtBearer(JwtBearerOptions options, OidcJwtAuthOptions authOptions)
+    private static void ConfigureJwtBearer(JwtBearerOptions options, OidcJwtProvider provider)
     {
         options.MapInboundClaims = false;
-        options.RequireHttpsMetadata = !authOptions.MetadataAddress!.IsLoopback;
+        options.RequireHttpsMetadata = !provider.MetadataAddress.IsLoopback;
         options.SaveToken = false;
         options.RefreshOnIssuerKeyNotFound = true;
-        options.MetadataAddress = authOptions.MetadataAddress.AbsoluteUri;
+        options.MetadataAddress = provider.MetadataAddress.AbsoluteUri;
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
-            ValidIssuer = authOptions.Issuer,
+            ValidIssuer = provider.Issuer,
             ValidateAudience = true,
-            ValidAudience = authOptions.Audience,
+            ValidAudience = provider.Audience,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
         };
@@ -62,7 +66,7 @@ internal static class OidcJwtAuthExtensions
             {
                 string? failureMessage = null;
                 if (context.Principal is null ||
-                    !authOptions.TryCreatePrincipal(context.Principal, out var bearerPrincipal, out failureMessage))
+                    !provider.TryCreatePrincipal(context.Principal, out var bearerPrincipal, out failureMessage))
                 {
                     context.Fail(failureMessage ?? "OIDC/JWT principal mapping failed.");
                     return Task.CompletedTask;
