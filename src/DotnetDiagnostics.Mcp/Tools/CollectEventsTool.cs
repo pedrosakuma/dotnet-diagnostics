@@ -81,7 +81,11 @@ public sealed class CollectEventsTool
         // but the static hint must still reflect that the tool can modify its environment.
         ReadOnly = false,
         Idempotent = false,
-        UseStructuredContent = true)]
+        UseStructuredContent = true,
+        // Issue #425 — long EventPipe windows can be promoted to an MCP Task so the client owns
+        // progress + cancellation uniformly with collect_sample. Optional: synchronous collection
+        // (with notifications/progress via CollectionProgressTicker) still works for older clients.
+        TaskSupport = ToolTaskSupport.Optional)]
     [Description(
         "Unified EventPipe collector. Choose what to capture via the 'kind' parameter " +
         "(counters, gc, exceptions, logs, …). Returns a drilldown handle.")]

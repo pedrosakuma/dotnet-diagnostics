@@ -335,8 +335,8 @@ out. `ServerInstructions` still describes the same hierarchy for clients that do
 ## Long-running collectors: cutover to MCP-native progress and cancellation
 
 Stage A of [issue #211](https://github.com/pedrosakuma/dotnet-diagnostics/issues/211)
-adds MCP-native progress and cancellation to `collect_sample(kind="cpu")` and
-`collect_events`. Clients should stop using the legacy polling bridge as soon
+adds MCP-native progress and cancellation to `collect_sample`, `collect_events`
+and `inspect_heap`. Clients should stop using the legacy polling bridge as soon
 as their MCP runtime supports `notifications/progress` + `notifications/cancelled`
 on `tools/call`:
 
@@ -369,3 +369,44 @@ Cutover plan:
 > `cancel_collection` polling bridge has been removed. The tool surface
 > dropped by two: clients that still depend on the polling path must adopt
 > one of the two paths above before upgrading.
+
+## MCP Tasks for long-running collectors
+
+`collect_sample`, `collect_events` and `inspect_heap` advertise
+`execution.taskSupport: "optional"` in `tools/list`, and the server advertises
+`capabilities.tasks.{list,cancel,requests.tools.call}`. Clients that implement the
+full MCP **Tasks** lifecycle can promote any of these calls to a detached task:
+
+- **C# MCP SDK** (≥ `1.3.0`): `client.CallToolAsTaskAsync(...)`, then poll
+  `tasks/get` and fetch the terminal result with `tasks/result`; cancel via
+  `tasks/cancel`.
+- **Generic clients**: send `tools/call` with `params.task` set.
+
+Tasks are **optional** — synchronous `tools/call` (with the in-request
+progress/cancel notifications above) keeps working for clients that don't
+implement the Tasks lifecycle.
+
+## Human approval for `collect_process_dump` (MCP Elicitation)
+
+`collect_process_dump` is the only destructive tool and requires explicit human
+approval ([issue #425](https://github.com/pedrosakuma/dotnet-diagnostics/issues/425)).
+How approval is requested depends on the capabilities your client negotiates at
+`initialize`:
+
+- **Elicitation-capable clients (preferred).** Advertise the `elicitation`
+  capability and register an elicitation handler. The server **always** issues an
+  `elicitation/create` request previewing the dump (PID, dump type, output path,
+  disk-cost + heap-contents warning) with a single boolean `approve` field; the
+  dump is written only when a human approves. A decline writes nothing — and
+  `confirm=true` cannot bypass it.
+  - **C# MCP SDK**: set `Capabilities.Elicitation = new ElicitationCapability()`
+    and `Handlers.ElicitationHandler = (request, ct) => …` on `McpClientOptions`,
+    returning an `ElicitResult { Action = "accept", Content = { ["approve"] = true } }`
+    (or `Action = "decline"`) after surfacing the request to a human.
+- **Clients without elicitation.** Fall back to the two-call `confirm=true`
+  contract: the first call returns a `confirmation_required` preview (nothing
+  written); after human approval, re-issue with `confirm=true`.
+
+This is capability-gated and degrades gracefully — a client that advertises
+neither elicitation nor sends `confirm=true` simply receives the
+`confirmation_required` preview and writes nothing.

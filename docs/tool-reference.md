@@ -142,9 +142,9 @@ As of the `2025-11-25` protocol bump, the server registers an
 `IMcpTaskStore`, advertises `capabilities.tasks.{list,cancel,requests.tools.call}`
 and marks these tools with `execution.taskSupport: "optional"` in `tools/list`:
 
-- `collect_sample(kind="cpu")`
-- `collect_events(kind="exceptions")`
-- `collect_events(kind="gc")`
+- `collect_sample` (every `kind` — cpu, off_cpu, allocation, native-alloc)
+- `collect_events` (every `kind` — counters, exceptions, crash-guard, gc, …)
+- `inspect_heap` (both `source="live"` and `source="dump"`)
 
 `tools/list` also annotates every tool with authorization metadata under
 `_meta.dotnetDiagnostics.auth`:
@@ -178,8 +178,9 @@ same `tools/call` request — no second round-trip, no polling. This is the
 
 Tools wired up:
 
-- `collect_sample(kind="cpu")`
+- `collect_sample` (every `kind` — cpu, off_cpu, allocation, native-alloc)
 - `collect_events` (every `kind` — counters, exceptions, crash-guard, gc, datas, catalog, event_source, activities, logs, jit, threadpool, contention, db, kestrel, networking, startup)
+- `inspect_heap` (both `source="live"` and `source="dump"` — emits an **indeterminate** heartbeat, since a ClrMD heap walk has no a-priori duration, plus a terminal `progress=100` on success)
 
 How it works:
 
@@ -1870,12 +1871,25 @@ name and captures the events it emits in the window. Use for HTTP activity
 
 Writes a process dump to disk via the diagnostic IPC channel.
 
-> **Defense in depth — `confirm=true` required ([authorization](./authorization.md#per-call-confirmation)).** Without
-> `confirm=true` the tool returns a `{ "kind": "confirmation_required", ... }`
-> envelope describing the dump that *would* have been written (`targetPid`,
-> `dumpType`, `outputDirectory`) and writes nothing to disk. The
-> `dump-write` + `ptrace` scopes are still required on top of `confirm=true`.
-> Two-call pattern from an LLM:
+> **Human approval is required (defense in depth — [authorization](./authorization.md#per-call-confirmation)).**
+> Approval is obtained one of two ways, depending on the client's negotiated capabilities:
+>
+> 1. **Native MCP Elicitation (preferred).** When the client advertised the
+>    `elicitation` capability at initialize, the server **always** issues an
+>    `elicitation/create` request describing the dump that *would* be written
+>    (PID, dump type, output path, disk-cost / heap-contents warning) and a single
+>    boolean `approve` field. The dump is written only on an explicit approve —
+>    even if the caller also passed `confirm=true`; a decline writes nothing and
+>    returns an `approval_declined` envelope that does **not** invite a retry.
+>    `confirm=true` cannot bypass a human decline on a capable client.
+> 2. **`confirm=true` fallback.** Clients that did **not** negotiate elicitation
+>    keep the legacy two-call contract: without `confirm=true` the tool returns a
+>    `{ "kind": "confirmation_required", ... }` envelope (`targetPid`, `dumpType`,
+>    `outputDirectory`) and writes nothing; surface the preview to a human and
+>    re-issue with `confirm=true` after approval.
+>
+> The `dump-write` + `ptrace` scopes are still required on top of approval. Fallback
+> two-call pattern (non-elicitation client):
 >
 > ```text
 > # 1. Preview — no dump written.
@@ -1901,7 +1915,7 @@ Writes a process dump to disk via the diagnostic IPC channel.
 | `processId` | `int` | — | Target process id |
 | `dumpType` | `string` | `"Mini"` | `Mini` / `Triage` / `WithHeap` / `Full` |
 | `outputDirectory` | `string?` | artifact root | **Relative** sub-path under `MCP_ARTIFACT_ROOT`. Must not be absolute. |
-| `confirm` | `bool` | `false` | **Required `true` to actually write the dump.** Without it, the tool returns a `confirmation_required` preview and writes nothing. See [authorization](./authorization.md#per-call-confirmation). |
+| `confirm` | `bool` | `false` | Approval fallback for clients **without** the MCP elicitation capability. **Required `true` to write the dump when elicitation is unavailable.** Elicitation-capable clients are **always** prompted natively and this flag is ignored for them (it cannot bypass a human decline). See [authorization](./authorization.md#per-call-confirmation). |
 
 **Returns:** `DumpToolResult` — a discriminated envelope:
 

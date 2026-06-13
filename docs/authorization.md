@@ -181,12 +181,25 @@ SA) live in [`docs/client-setup.md`](./client-setup.md#managed--workload-identit
 
 ## Per-call confirmation
 
-`collect_process_dump` requires an explicit **`confirm=true`** parameter on top of its
+`collect_process_dump` requires explicit **human approval** on top of its
 `dump-write` + `ptrace` scopes (defense in depth — a dump is irreversible and unbounded).
-Without it the tool returns a structured `{ "kind": "confirmation_required", targetPid,
-dumpType, outputDirectory }` envelope and writes nothing — no attach, no `createdump`.
-No other tool takes `confirm`: adding it to read-only tools would train callers to set it
-reflexively and destroy its signal.
+Approval is obtained one of two ways, capability-gated per client:
+
+- **Native MCP Elicitation (preferred, issue #425).** When the client advertised the
+  `elicitation` capability, the server **always** issues an `elicitation/create` request
+  previewing the dump (PID / dump type / output path / disk-cost + heap-contents warning) with a
+  single boolean `approve` field, and writes the dump only on an explicit approve — even if the
+  caller also passed `confirm=true`. A decline writes nothing and returns an `approval_declined`
+  envelope that deliberately does **not** invite a `confirm=true` retry; `confirm=true` cannot
+  bypass a human decline on a capable client. The round-trip is stateless (no server-side
+  pending-approval store).
+- **`confirm=true` fallback.** Clients that did not negotiate elicitation keep the legacy
+  contract: without `confirm=true` the tool returns a structured
+  `{ "kind": "confirmation_required", targetPid, dumpType, outputDirectory }` envelope and
+  writes nothing — no attach, no `createdump`.
+
+No other tool takes `confirm` or elicits approval: adding it to read-only tools would train
+callers to set it reflexively and destroy its signal.
 
 ## Drilldown over handles
 
