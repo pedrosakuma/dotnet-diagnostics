@@ -74,7 +74,25 @@ internal static class DiagnosticServiceRegistration
                 maxTasksPerSession: 32));
         services.AddHostedService<HandleEvictionBackgroundService>();
 
+        // #426 — opt-in OpenTelemetry emission of exported investigation summaries.
+        // Disabled by default; gated by the `Observability:InvestigationTelemetry:Enabled`
+        // config flag or the `MCP_INVESTIGATION_OTEL` environment flag. Registered here so
+        // the export tool always resolves the emitter; the ActivitySource is wired into the
+        // OTel tracing pipeline by AddOrchestratorObservability.
+        var telemetryOptions = new Observability.InvestigationTelemetryOptions();
+        configuration?.GetSection(Observability.InvestigationTelemetryOptions.SectionName).Bind(telemetryOptions);
+        telemetryOptions.Enabled = telemetryOptions.Enabled || IsEnabledEnvironmentFlag("MCP_INVESTIGATION_OTEL");
+        services.TryAddSingleton(telemetryOptions);
+        services.TryAddSingleton<Observability.IInvestigationTelemetryEmitter, Observability.InvestigationTelemetry>();
+
         return services;
+    }
+
+    private static bool IsEnabledEnvironmentFlag(string variableName)
+    {
+        var raw = Environment.GetEnvironmentVariable(variableName);
+        return string.Equals(raw, "1", StringComparison.Ordinal) ||
+               string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

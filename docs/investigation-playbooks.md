@@ -217,6 +217,29 @@ See [tool-reference.md](./tool-reference.md) (`query_snapshot(view="diff")` /
 `compare_to_baseline`) and [cli-reference.md](./cli-reference.md) (`collect --save`, `compare`)
 for the full parameter and output contracts.
 
+### Streaming summaries to OpenTelemetry / Application Insights (opt-in)
+
+When the operator sets `MCP_INVESTIGATION_OTEL=1` (or
+`Observability:InvestigationTelemetry:Enabled=true`), every
+`export_investigation_summary` call additionally emits an `investigation.summary`
+OpenTelemetry span on the `DotnetDiagnostics.Mcp.Investigations` activity source —
+so a diagnostic run leaves a durable, queryable trail without changing the portable
+JSON the LLM owns (the server stays stateless: emit-and-forget). The span carries the
+investigation id, pid, build/container provenance, total samples, duration, and the
+top-N hotspots (`investigation.hotspot.{i}.method|module|exclusive_percent|inclusive_percent`,
+capped by `Observability:InvestigationTelemetry:MaxHotspotAttributes`, default 5).
+
+- **Off by default**; zero behavior change when unset (no span is produced).
+- Rides the **existing** OTLP tracing exporter — set `OTEL_EXPORTER_OTLP_ENDPOINT`
+  to ship spans to any OTLP backend (Grafana/Tempo, Honeycomb, …).
+- **Azure Application Insights**: no bespoke SDK needed — point
+  `OTEL_EXPORTER_OTLP_ENDPOINT` at the Application Insights OTLP ingestion endpoint
+  (or run the OpenTelemetry Collector with the Azure Monitor exporter). Query the
+  spans under `dependencies` / `traces` by `investigation.id`.
+
+This makes "show me every investigation against pod X over the last week" answerable
+in your telemetry backend, while `compare_to_baseline` remains the in-context diff path.
+
 ---
 
 ## 2. "Memory keeps growing"
