@@ -23,10 +23,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\DotnetDiagnostics.Mcp\DotnetDiagnostics.Mcp.csproj" />
+    <ProjectReference Include="..\DotnetDiagnostics.TestSupport\DotnetDiagnostics.TestSupport.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Using Include="DotnetDiagnostics.TestSupport" />
   </ItemGroup>
 
 </Project>
