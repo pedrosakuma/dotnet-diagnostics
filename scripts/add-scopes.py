@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """B5.2 — insert [RequireScope]/[RequireAnyScope] before each [McpServerTool(
 Name = "...") block in the tool surface files. Idempotent: skips lines that
-already carry a scope attribute. Mapping comes from RFC 0001 §2 / task body."""
+already carry a scope attribute. Mapping comes from docs/authorization.md#scopes / task body."""
 
 import re
 import sys
@@ -38,7 +38,7 @@ MAPPING = {
     # query_snapshot drills into both Counters and EventPipe handles (§2.12).
     "query_snapshot":             ("any", ["read-counters", "eventpipe"]),
     # investigation-export — task body explicitly groups status/cancel/call_tree
-    # under this scope (supersedes RFC §2.10/§2.11 for B5.2).
+    # under this scope (supersedes docs/authorization.md#scopes for B5.2).
     "start_investigation":          ("scope", ["investigation-export"]),
     "export_investigation_summary": ("scope", ["investigation-export"]),
     "compare_to_baseline":          ("scope", ["investigation-export"]),
@@ -100,8 +100,8 @@ def process(path: Path):
 
 root = Path(sys.argv[1] if len(sys.argv) > 1 else ".")
 files = [
-    root / "src/DotnetDiagnosticsMcp.Server/Tools/DiagnosticTools.cs",
-    root / "src/DotnetDiagnosticsMcp.Server/Tools/OrchestratorTools.cs",
+    root / "src/DotnetDiagnostics.Mcp/Tools/DiagnosticTools.cs",
+    root / "src/DotnetDiagnostics.Mcp/Tools/OrchestratorTools.cs",
 ]
 all_seen = set()
 for f in files:

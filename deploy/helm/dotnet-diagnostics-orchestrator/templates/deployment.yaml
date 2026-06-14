@@ -60,7 +60,7 @@ spec:
 
             When BOTH legacy and scoped are configured at the same time the
             scoped registry wins at runtime; the server emits a startup
-            warning naming the ignored MCP_BEARER_TOKEN (RFC 0001 §7.1).
+            warning naming the ignored MCP_BEARER_TOKEN (docs/authorization.md#backward-compatibility).
             */ -}}
             {{- $hasLegacyBearer := or (ne .Values.bearerToken.existingSecret "") (and (ne .Values.bearerToken.value "") (ne .Values.bearerToken.value "replace-me-with-a-strong-random-token")) }}
             {{- if $hasLegacyBearer }}
@@ -71,7 +71,7 @@ spec:
                   key: token
             {{- end }}
             {{- /*
-            Scoped bearer tokens per RFC 0001 §6. Each entry expands to one
+            Scoped bearer tokens per docs/authorization.md#bearer-tokens-config Each entry expands to one
             `__Name`, one `__Token` (valueFrom: secretKeyRef), and one
             `__Scopes__{j}` env var per scope. `BearerTokenRegistry` (B5.1
             #188) parses `Auth:BearerTokens` from this exact shape.
@@ -97,7 +97,7 @@ spec:
             {{- end }}
             {{- range $j, $scope := $entry.scopes }}
             {{- if eq (toString (default "" $scope) | trim) "" }}
-            {{- fail (printf "bearerTokens[%d] (%s) scopes[%d] is empty; every scope must be a non-empty string (see RFC 0001 §2 for the taxonomy)" $i $entry.name $j) }}
+            {{- fail (printf "bearerTokens[%d] (%s) scopes[%d] is empty; every scope must be a non-empty string (see docs/authorization.md#scopes for the taxonomy)" $i $entry.name $j) }}
             {{- end }}
             {{- end }}
             - name: {{ printf "Auth__BearerTokens__%d__Name" $i }}

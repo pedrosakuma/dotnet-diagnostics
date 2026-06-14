@@ -12,9 +12,20 @@
     <Company>dotnet-diagnostics-mcp</Company>
     <Product>dotnet-diagnostics-mcp</Product>
     <Authors>dotnet-diagnostics-mcp contributors</Authors>
-    <RepositoryUrl>https://github.com/pedrosakuma/dotnet-diagnostics-mcp</RepositoryUrl>
+    <RepositoryUrl>https://github.com/pedrosakuma/dotnet-diagnostics</RepositoryUrl>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <!-- Symbols + Source Link for every packable project. The .NET 8+ SDK references
+       Microsoft.SourceLink.GitHub implicitly once PublishRepositoryUrl is set (above),
+       so no extra PackageReference is needed; these props just turn on snupkg symbol
+       packages and embed untracked sources. They are inert for non-packable projects. -->
+  <PropertyGroup>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <Deterministic>true</Deterministic>
   </PropertyGroup>
 </Project>

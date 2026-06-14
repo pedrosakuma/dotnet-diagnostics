@@ -1,7 +1,10 @@
 name: Publish container image
 
-# Builds the MCP server container and publishes it to GitHub Container Registry
-# (ghcr.io/${owner}/${repo}). Two variants are published per tag:
+# Builds the diagnostics container and publishes it to GitHub Container Registry
+# (ghcr.io/${owner}/${repo}). The image is a bundle: the MCP server is the
+# ENTRYPOINT and the standalone CLI (dotnet-diagnostics-cli) is on PATH, so the
+# neutral image name (tracking the repo) describes its contents better than -mcp.
+# Two variants are published per tag:
 #   - <tag>         — full image (includes Linux perf for off-CPU sampling / NativeAOT fallback)
 #   - <tag>-lean    — same image WITHOUT perf (~80 MB smaller; disables collect_off_cpu_sample
 #                     and the perf-replay thread-snapshot fallback on Linux)
@@ -162,8 +165,8 @@ jobs:
             type=sha,format=short,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
           labels: |
-            org.opencontainers.image.title=dotnet-diagnostics-mcp
-            org.opencontainers.image.description=MCP server for on-demand .NET diagnostics over the runtime IPC socket (${{ matrix.variant }} variant)
+            org.opencontainers.image.title=dotnet-diagnostics
+            org.opencontainers.image.description=On-demand .NET diagnostics over the runtime IPC socket — MCP server (entrypoint) + bundled CLI (${{ matrix.variant }} variant)
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.licenses=MIT
 

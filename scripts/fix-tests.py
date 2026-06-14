@@ -80,9 +80,9 @@ def process(text, method, pos):
 
 # Revert prior partial changes first by running git checkout, then re-apply.
 import subprocess
-subprocess.run(["git", "checkout", "--", "tests/DotnetDiagnosticsMcp.Server.IntegrationTests/"], check=True)
+subprocess.run(["git", "checkout", "--", "tests/DotnetDiagnostics.Mcp.IntegrationTests/"], check=True)
 
-root = Path("tests/DotnetDiagnosticsMcp.Server.IntegrationTests")
+root = Path("tests/DotnetDiagnostics.Mcp.IntegrationTests")
 total = 0
 for path in root.rglob("*.cs"):
     text = path.read_text()

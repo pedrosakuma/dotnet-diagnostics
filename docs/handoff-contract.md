@@ -100,7 +100,7 @@ module / image index keyed by MVID / build-id. The path is consulted only when
 the identity is not yet known to the consumer **and** the path survives the
 four checks above. This pattern naturally protects every handoff endpoint —
 including the shipped cross-MCP byte-fetch tools (`get_bytes(kind="module")` /
-`get_bytes(kind="dump")`, [#144](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/144)) — without
+`get_bytes(kind="dump")`, [#144](https://github.com/pedrosakuma/dotnet-diagnostics/issues/144)) — without
 spreading validation logic across every tool entry-point.
 
 ### Worked example
@@ -245,6 +245,43 @@ The `(mvid, token)` pair is the only field required by the consumer. Everything 
 sanity-check label so a human (or the LLM) can confirm "this is the right method" without
 loading the assembly first.
 
+### NativeAOT identity — name-based (issue #395)
+
+NativeAOT has **no IL metadata token and no MVID at runtime**: the IL is compiled away and
+there is no PE method table to point at. The canonical `(moduleVersionId, metadataToken)` pair
+therefore **cannot** be produced for an AOT frame. To still unblock the `dotnet-native-mcp`
+"disassemble this hot AOT function" handoff, `collect_sample(kind="cpu")` emits a **name-based**
+`MethodIdentity` for AOT hotspots when the caller supplies the ILC map file:
+
+- Publish the target with `<IlcGenerateMapFile>true</IlcGenerateMapFile>` (this passes
+  `ilc --map:<app>.map.xml`). The map is written to the native intermediate output
+  (`obj/<cfg>/<rid>/native/<app>.map.xml`); it is **not** copied to the publish output, so copy
+  or mount it next to the diagnostics sidecar yourself.
+- Pass its path as `collect_sample(kind="cpu", nativeAotMapFile="…/<app>.map.xml")`.
+
+The producer streams the map (it can be tens of MB), indexes every `MethodCode` node's mangled
+`Name` — which is byte-for-byte the ELF symbol `perf` reports — and emits an identity **only**
+for frames that match a managed method body (runtime helpers, P/Invoke shims, libc, and kernel
+frames are excluded). The map carries `Length` and a content `Hash` but **no addresses**, so the
+match is by symbol name, not an address-range lookup.
+
+| Field             | AOT value                                                                 |
+|-------------------|---------------------------------------------------------------------------|
+| `ModuleVersionId` | `null` — no managed PE metadata exists at runtime                         |
+| `MetadataToken`   | `null` — there is no IL `MethodDef` token                                 |
+| `TypeFullName`    | Best-effort demangled declaring-type FQN (may retain the assembly prefix) |
+| `MethodName`      | Best-effort demangled bare method name                                    |
+| `GenericArity`    | `0` — not recoverable from the mangled name alone                         |
+| `ModuleName` / `ModulePath` | The target's native image (`/proc/<pid>/exe`) — a **hint** only |
+
+Consumer guidance: resolve an AOT identity by `(TypeFullName, MethodName)` against the same map /
+the binary's symbol table (the mangled symbol is the join key). Treat `ModulePath` as an untrusted
+hint and verify the image's build-id before loading it (see "Path hints are untrusted" above). The
+`TypeFullName`/`MethodName` strings are best-effort: NativeAOT name mangling is lossy and not all
+compiler-synthesized names round-trip. Without `nativeAotMapFile`, AOT hotspots still resolve to
+demangled display names but carry no `MethodIdentity` (so the handoff is skipped rather than
+emitting a low-confidence guess for non-managed frames).
+
 ## Producer responsibilities (`dotnet-diagnostics-mcp`)
 
 1. During the event walk, capture `TraceCodeAddress` per method-frame key.
@@ -319,6 +356,28 @@ dotnet-assembly-mcp.find_callers(moduleVersionId="...", metadataToken="0x0600002
 No string parsing, no fuzzy matching — and the IL token is the same whether the LLM
 arrived here from a CPU sample, an exception stack, or a future GC artifact.
 
+## NativeFrame (native / unresolved stack frames)
+
+`collect_thread_snapshot` → `query_snapshot(view="stack")` emits a `ManagedStackFrame` per
+frame; for frames with no managed `Identity` (pure native, JIT stubs, R2R bodies) it carries the
+native-handoff fields below. `query_snapshot(view="resolve-address")` emits the same shape as
+`ResolvedAddressEntry`. Both feed `dotnet-native-mcp` (`resolve_symbols`, `disassemble`,
+`load_native_binary`).
+
+| Field                | Type      | Handoff role | Description                                                                                   |
+|----------------------|-----------|--------------|-----------------------------------------------------------------------------------------------|
+| `instructionPointer` / `address` | `ulong` / hex | absolute VA | The raw runtime instruction pointer. **Not** directly resolvable for PIE images (see below).  |
+| `rva`                | `ulong?` / hex | ✅ **preferred** | Offset from the containing module's image base. Already rebased by the producer, so it sidesteps ASLR entirely — hand this to `resolve_symbols` whenever it is present. |
+| `loadBase`           | `ulong?` / hex | absolute-VA rebasing | Runtime image base of the containing module = `instructionPointer − rva` (issue #375). Lets a consumer rebase the absolute address itself when only the IP is forwarded. `null` outside any module. |
+| `buildId`            | `string?` | identity     | Lower-case hex GNU build-id / PE CodeView GUID+Age of the containing module — the content-addressable trust anchor for the native binary. |
+| `addressKind`        | `string?` | classification | `module` / `managed` / `mapped-non-module` / `unmapped-or-not-captured` (issue #275).        |
+
+> **Why `loadBase` matters.** NativeAOT binaries are position-independent (PIE): their on-disk
+> image base is **0**, while the loader places them at a random ASLR base. An absolute
+> `instructionPointer` copied straight into `resolve_symbols` would be rebased against on-disk base
+> 0 and land outside every section. Prefer `rva` (resolves regardless of ASLR); fall back to
+> `address` + `loadBase` when only the absolute IP is available.
+
 ## Error kinds
 
 | Situation                                          | Producer behaviour                                  | Consumer guidance                                   |
@@ -327,12 +386,14 @@ arrived here from a CPU sample, an exception stack, or a future GC artifact.
 | Native-only frame                                  | Skip from `MethodIdentities`                        | n/a (no entry, no handoff)                          |
 | Token reported as `0`                              | `MetadataToken = null`                              | Cannot handoff — display label only                 |
 | MVID mismatch on consumer side                     | n/a                                                 | Return `module_not_loaded`; ask for explicit `load_assembly` |
+| PIE / NativeAOT frame, only absolute IP forwarded  | `rva` + `loadBase` + `buildId` emitted              | Rebase via `address − loadBase`, or prefer `rva` directly |
 
 ## Versioning
 
 The schema is part of the diagnostic summary (`schemaVersion` field on the exported
-investigation summary). Additive fields on `MethodIdentity` are non-breaking; field
-removals or semantic changes require a `schemaVersion` bump.
+investigation summary). Additive fields on `MethodIdentity` and `NativeFrame` are non-breaking;
+field removals or semantic changes require a `schemaVersion` bump. `loadBase` (issue #375) is such
+an additive field — consumers that predate it simply ignore it and use `rva`.
 
 ## TypeIdentity (dump inspection)
 

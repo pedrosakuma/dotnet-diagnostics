@@ -27,11 +27,45 @@ dotnet-diagnostics-cli --help
 Other distributions:
 
 - **Self-contained binary** (no SDK): per-OS archives are attached to every
-  [Release](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/releases) as
+  [Release](https://github.com/pedrosakuma/dotnet-diagnostics/releases) as
   `dotnet-diagnostics-cli-<version>-<rid>` (`linux-x64`, `linux-arm64`, `osx-arm64`, `win-x64`, `win-arm64`).
 - **In the sidecar container**: the diagnostics sidecar image bundles the CLI on `PATH`, so
   `kubectl exec -it <pod> -c diagnostics-mcp -- dotnet-diagnostics-cli processes` works against the
   co-located workload.
+
+## Shell completion
+
+The CLI can emit static completion scripts for bash, zsh and PowerShell. The generated scripts include
+sub-commands, top-level flags and enum-valued options such as `collect --kind`, `inspect-heap --source`,
+`dump --dump-type` and `get-bytes --kind`.
+
+```bash
+# bash (system-wide)
+dotnet-diagnostics-cli completion bash | sudo tee /etc/bash_completion.d/dotnet-diagnostics >/dev/null
+
+# bash (current shell only)
+source <(dotnet-diagnostics-cli completion bash)
+```
+
+```zsh
+# zsh: write the generated function into a directory on fpath, then reload completions.
+mkdir -p ~/.zsh/completions
+dotnet-diagnostics-cli completion zsh > ~/.zsh/completions/_dotnet-diagnostics
+print -r 'fpath=(~/.zsh/completions $fpath)' >> ~/.zshrc
+autoload -Uz compinit && compinit
+```
+
+```powershell
+# PowerShell: source once for the current session.
+dotnet-diagnostics-cli completion pwsh | Out-String | Invoke-Expression
+
+# To load it every time, add the generated script to your profile.
+dotnet-diagnostics-cli completion pwsh > "$HOME/.dotnet-diagnostics-completion.ps1"
+Add-Content -Path $PROFILE -Value '. "$HOME/.dotnet-diagnostics-completion.ps1"'
+```
+
+If you run the self-contained executable directly, replace `dotnet-diagnostics-cli` above with
+`dotnet-diagnostics`. The generated scripts register both command names.
 
 ## Global options
 
@@ -39,12 +73,22 @@ These apply to every command:
 
 | Option | Meaning |
 |---|---|
-| `-p, --pid <int>` | Target OS process id. **Auto-resolved** when exactly one .NET process is visible. |
-| `--json` | Emit the raw `DiagnosticResult<T>` envelope as JSON instead of the human table. |
+| `-p, --pid <pid\|name>` | Target OS process id, or a case-insensitive prefix of the visible .NET process entrypoint/name. Purely numeric values are always treated as literal PIDs. **Auto-resolved** when exactly one .NET process is visible and `--pid` is omitted. |
+| `--json` | Emit the raw `DiagnosticResult<T>` envelope as JSON instead of the human table. JSON is never colorized. |
+| `--launch -- <app> [args]` | **Dev mode.** Launch `<app>` as a child of the CLI so live attach works under `kernel.yama.ptrace_scope=1` with no privilege — see the [Linux note](#linux-ptrace-note). Supported by `capabilities`, `collect`, `dump`, `inspect-heap` (live), `get-bytes` (module) and `session`. Mutually exclusive with `--pid`; the child is terminated on exit. |
 | `-h, --help` | Show the global usage screen, or a focused screen for `<command> --help`. |
 
 Exit codes: `0` success (a `dump` preview is also a success), `1` a structured failure envelope
 (e.g. `NotSupported`, `PermissionDenied`), `2` a usage / validation error.
+
+> **Progress.** Long one-shot collections (`collect`, `inspect-heap`, `dump`) print an elapsed-time
+> spinner to stderr while they run, on an interactive terminal only. It is suppressed under `--json`
+> and whenever stderr is redirected/piped, so machine-readable output (stdout) and captured logs stay
+> clean.
+>
+> **Color.** Human output uses ANSI color for headlines, section headers, severities and verdicts only
+> when stdout is an interactive terminal. Color is disabled automatically for redirected stdout,
+> whenever `--json` is used, or when `NO_COLOR` is set to any value.
 
 ## Commands
 
@@ -72,28 +116,47 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 
 | Option | Meaning |
 |---|---|
-| `--kind <kind>` | One of `counters`, `exceptions`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`. |
+| `--kind <kind>` | One of `counters`, `exceptions`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`. |
 | `-d, --duration <int>` | Window in seconds (default: `counters` 5, `datas` 15, others 10). |
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
 | `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |
-| `--interval <int>` | Refresh interval in seconds (`counters`, `db`). Default 1. |
+| `--interval <int>` | Refresh interval in seconds (`counters`, `db`, `kestrel`, `networking`). Default 1. |
+| `--watch <seconds>` | Re-run the command every N seconds, clear/redraw the human output, and stop cleanly on Ctrl-C. Not compatible with `--json`. With `--capture-when` it is reinterpreted as the metric **sample interval** for the bounded gated watch (no redraw loop). |
+| `--capture-when <pred>` | Threshold-gated capture (`--kind counters`). Arm a **bounded** watch and capture when a single metric predicate `<metric><op><value>` trips — e.g. `cpu>85`, `gcHeapMb>=1500`, `rssMb>2000`, `threadCount>400`, `activeTimerCount>1000`. Operators: `>` `>=` `<` `<=`. |
+| `--capture <kind>` | What to capture on trip: `dump`, `cpu-sample`, `heap`, `thread-snapshot`. Required with `--capture-when`. |
+| `--window <seconds>` | Required with `--capture-when`. Hard upper bound on how long the watch is armed (1–300). |
+| `--max-captures <int>` | Stop after N captures (default 1, max 10). |
 | `--provider <name>` | `counters`: EventCounter provider (repeatable); `catalog`: EventPipe provider (repeatable; replaces broad defaults); `event_source`: required provider name. |
 | `--meter <name>` | `counters`: Meter name (repeatable). |
 | `--source <name>` | `activities`: ActivitySource filter (repeatable, `*` / `?` globs). |
 | `--category <glob>` | `logs`: ILogger category filter (repeatable). |
 | `--min-level <level>` | `logs`: minimum level (default `Information`). |
 | `--unsafe-provider` | `event_source`: opt in to a non-allowlisted provider. |
+| `--save <file>` | Save a comparable snapshot JSON. Supported collect kinds: `counters`, `datas` (`gc-datas`), `gc` (`gc-events`), `contention`, `threadpool`. |
 
 ```bash
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
+dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --watch 2
+dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-when 'cpu>85' --capture cpu-sample --window 60
+dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-when 'rssMb>2000' --capture dump --window 120 --confirm
+dotnet-diagnostics-cli collect --kind datas --pid 1234 --duration 30 --save ./before.json
 dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
-dotnet-diagnostics-cli collect --kind datas --pid 1234 --duration 30
 dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
 ```
 
 > **Timing.** EventPipe sessions take ~500 ms–1 s to start, and `counters` payloads arrive on
 > `--interval` boundaries — give `counters` at least ~6 s. For `exceptions` / `gc`, the collection window
 > must overlap the load that generates the events.
+
+> **Threshold-gated capture (`--capture-when`).** A bounded, one-shot watch (the human/CI equivalent
+> of DebugDiag `collect`) — **not** a daemon. It polls one `System.Runtime` EventCounter (`rssMb`=`working-set`,
+> `threadCount`=`threadpool-thread-count`) every `--watch` seconds (default 2) for at most `--window`
+> seconds and captures `--capture` up to `--max-captures` times the moment the predicate trips, then
+> returns. `--capture dump` requires `--confirm` and writes the dump to disk (the path is in the
+> result). For `cpu-sample` / `heap` / `thread-snapshot`, the result records carry headline capture
+> stats plus a drilldown handle. That handle is only reachable by a later `query` **within the same
+> `session`** (the in-memory handle store is disposed when a one-shot command exits) — run gated
+> capture inside the `session` REPL when you need to drill into the captured artifact afterward.
 
 ### `inspect-heap`
 
@@ -114,9 +177,11 @@ Walk the managed heap of a live process or a `.dmp`.
 ```bash
 dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
 dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
+dotnet-diagnostics-cli inspect-heap --launch -- dotnet App.dll   # ptrace_scope=1, no privilege
 ```
 
-`--source live` attaches via `ptrace(2)` — see the [Linux note](#linux-ptrace-note).
+`--source live` attaches via `ptrace(2)` — see the [Linux note](#linux-ptrace-note), which also
+documents the `--launch` zero-privilege dev mode.
 
 ### `dump`
 
@@ -135,6 +200,9 @@ dotnet-diagnostics-cli dump --pid 1234 --dump-type WithHeap --out ./dumps --conf
 
 > **Scripting.** Parse `--json` to tell a preview apart from a written dump:
 > `data.kind == "confirmation_required"` (preview) vs `data.kind == "dump_written"`.
+>
+> The preview discloses the resolved artifact directory the dump *would* be written to
+> (`would write to : <dir>`) so you can confirm the destination before re-running with `--confirm`.
 
 ### `get-bytes`
 
@@ -153,18 +221,41 @@ dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./
 dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
 ```
 
+### `compare`
+
+Compare two or more saved comparable snapshots from `collect --save`. Human output keeps the compact verdict, first→last headline, and top metric/key deltas in the terminal; `--json` emits the full `SnapshotJourneyDiff`, and `--save` writes that full matrix to a file. The MCP `compare_to_baseline` / `query_snapshot(view="diff")` path follows the same contract but uses a `journey://diff/{handle}` Resource link instead of a file when the matrix is large.
+
+| Option | Meaning |
+|---|---|
+| `--json` | Emit the full journey diff JSON. |
+| `--save <file>` | Write the full journey diff JSON to disk. |
+| `--mode trend\|dispersion` | Interpret captures as an ordered trend (default) or unordered replicas for dispersion/outlier detection. |
+
+```bash
+dotnet-diagnostics-cli compare ./before.json ./after.json
+dotnet-diagnostics-cli compare ./pod-a.json ./pod-b.json ./pod-c.json --mode dispersion
+dotnet-diagnostics-cli compare ./before.json ./mid.json ./after.json --save ./matrix.json
+```
+
+For how to read the verdict / trend and when to reach for a journey, see
+[investigation-playbooks.md §1d](./investigation-playbooks.md#1d-did-my-fix-actually-help--comparative--n-way-trend-journeys).
+
 ### `query`
 
 Re-render a previously-collected handle under a different view **without re-collecting**.
 
 This is **only meaningful inside a `session`** — drill-down handles live for the lifetime of the host, and
 the one-shot CLI builds a fresh host per command and exits. Run one-shot, `query` returns a `NotSupported`
-envelope (exit 1); the one-shot path instead emits its full result inline (use `--depth detail` / `--json`).
+envelope (exit 1) that redirects you to `dotnet-diagnostics session`, where a `collect` (or `inspect-heap` /
+`dump`) issues a handle you can drill into in the same session; for a one-shot answer instead, re-run the
+originating command with `--depth detail` / `--json` to get the full result inline.
 Inside `session`, `query --handle <id> --view <view>` works against the live handle store (see below).
 
 ### `session`
 
-Start the stateful REPL — covered in the next section.
+Start the stateful REPL — covered in the next section. Accepts `--launch -- <app> [args]` at startup
+to spawn the target as a child and bind it for the whole session (zero-privilege live attach under
+`ptrace_scope=1`; see the [Linux note](#linux-ptrace-note)). The child is killed when the session ends.
 
 ## The `session` REPL
 
@@ -183,16 +274,26 @@ diag(pid 1234)> collect --kind gc --duration 10
   → handle 1TA2BA7KT9PYT60WTWE0 (expires 23:10:18Z) — query --handle 1TA2BA7KT9PYT60WTWE0 --view <pauseHistogram|...>
 diag(pid 1234)> query --handle 1TA2BA7KT9PYT60WTWE0 --view pauseHistogram
 ... re-rendered view, no re-collection ...
+diag(pid 1234)> collect --kind datas --duration 15 --save before.json
+diag(pid 1234)> collect --kind datas --duration 15 --save after.json
+diag(pid 1234)> compare before.json after.json
 diag(pid 1234)> exit
 ```
 
+Starting with `session --launch -- dotnet App.dll` spawns the target as a child, binds its pid for the
+whole session (so live attach works under `ptrace_scope=1` with no privilege), and kills it on exit.
+`--launch` is a startup-only flag; inside the REPL the target is already live — use `target <pid>` to
+switch.
+
 ### Target binding
 
-Bind a target pid once instead of repeating `--pid` on every command:
+Bind a target pid once instead of repeating `--pid` on every command. The binding accepts either a
+literal pid or a visible .NET process name/prefix using the same matching rules as `--pid <name>`:
 
 | Input | Effect |
 |---|---|
-| `target <pid>` (or `target --pid <pid>`) | Bind a default pid. The prompt becomes `diag(pid <id>)>`. |
+| `target <pid>` / `target --pid <pid>` | Bind a default pid. The prompt becomes `diag(pid <id>)>`. |
+| `target <name-prefix>` / `target --pid <name-prefix>` | Resolve exactly one visible .NET process by entrypoint/name prefix and bind its pid. Ambiguous matches list pid + name. |
 | `target` | Show the current binding. |
 | `target clear` (or `none` / `off` / `unset`) | Unbind. |
 
@@ -286,6 +387,20 @@ Debian/Ubuntu/WSL the default `kernel.yama.ptrace_scope=1` blocks same-UID peer 
 
 - **Bare host:** `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope`
 - **Container:** add `CAP_SYS_PTRACE` (Docker `--cap-add SYS_PTRACE`; K8s `securityContext.capabilities.add`).
+- **Zero privilege (dev):** `--launch -- <app> [args]` makes the CLI the target's parent. Under
+  `ptrace_scope=1` a tracer may attach to its own descendants, so live attach works with no sysctl
+  change and no capability:
+
+  ```bash
+  dotnet-diagnostics-cli inspect-heap --launch -- dotnet App.dll
+  dotnet-diagnostics-cli session --launch -- dotnet App.dll   # binds the child for the whole session
+  ```
+
+  Launch the app **directly** (`dotnet App.dll` or a published apphost), not via `dotnet run` (which
+  spawns a separate runtime child whose PID won't match). The child is killed when the command /
+  session exits. This only helps under `ptrace_scope=1`; `scope=2` still needs `CAP_SYS_PTRACE` and
+  `scope=3` forbids attach entirely — use the dump-based workflow there. When `capabilities` detects
+  this exact environment it advertises the `--launch` tip.
 
 The MCP sidecar must also run as the **same UID** as the target so it can open
 `/tmp/dotnet-diagnostic-<pid>`. EventPipe-based commands (`collect`, counters, GC, exceptions) need neither

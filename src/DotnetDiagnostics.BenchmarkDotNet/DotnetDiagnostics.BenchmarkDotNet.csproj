@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <Description>A BenchmarkDotNet IDiagnoser that attaches the dotnet-diagnostics engine in-process to a benchmark's child process and captures EventPipe perf indicators (GC, contention, thread pool, exceptions, JIT, counters, …) as JSON artifacts plus a per-run "biggest offenders" report. Tag benchmark methods with [DiagnosticKind] and add [DotnetDiagnosticsDiagnoser] to the benchmark class.</Description>
+  </PropertyGroup>
+
+  <!-- Packaging (issue #346 / PR 3). A referenceable LIBRARY built on the shared
+       dotnet-diagnostics-core engine: the diagnoser runs the Core EventPipe collectors
+       in-process against the benchmark's child PID (no JSON round-trip, no shell-out).
+       While the package is 0.x the public API carries no SemVer stability guarantee. -->
+  <PropertyGroup>
+    <PackageId>dotnet-diagnostics-benchmarkdotnet</PackageId>
+    <Authors>pedrosakuma</Authors>
+    <Company>pedrosakuma</Company>
+    <PackageProjectUrl>https://github.com/pedrosakuma/dotnet-diagnostics</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/pedrosakuma/dotnet-diagnostics</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>benchmarkdotnet;diagnostics;dotnet;performance;profiling;gc;eventpipe;diagnoser</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DotnetDiagnostics.Core\DotnetDiagnostics.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="DotnetDiagnostics.BenchmarkDotNet.Tests" />
+  </ItemGroup>
+
+</Project>

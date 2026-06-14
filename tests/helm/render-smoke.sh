@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Helm render smoke test for B5.5 — scoped bearer-token wiring (issue #186,
-# RFC docs/rfcs/0001-per-tool-authorization-scopes.md §6).
+# bearer-token config per docs/authorization.md#bearer-tokens-config).
 #
 # Confirms `helm template` renders cleanly for the three supported auth shapes
 # and that each shape produces the expected env wiring:
@@ -9,7 +9,7 @@
 #   (b) new scoped list only            — `bearerTokens` set, `bearerToken` at defaults
 #   (c) both set (back-compat overlap)  — both shapes; chart renders both; server
 #                                         logs a runtime warning that the scoped
-#                                         registry wins (RFC §7.1)
+#                                         registry wins (docs/authorization.md#backward-compatibility)
 #
 # Plus a (d) defaults-only render that MUST fail loudly (H1 placeholder guard).
 #

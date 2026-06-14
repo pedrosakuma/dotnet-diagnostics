@@ -1,6 +1,6 @@
 # dotnet-diagnostics-mcp
 
-[![CI](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/pedrosakuma/dotnet-diagnostics/actions/workflows/ci.yml/badge.svg)](https://github.com/pedrosakuma/dotnet-diagnostics/actions/workflows/ci.yml)
 
 An **MCP server** for LLM-driven performance diagnostics on **.NET 10** applications — zero instrumentation required.
 
@@ -30,7 +30,6 @@ Most of this README is about the **MCP server**. If you want to run diagnostics 
 - [Documentation](#documentation)
 - [Goals](#goals)
 - [Build & Test](#build--test)
-- [Roadmap](#roadmap)
 
 ---
 
@@ -75,7 +74,7 @@ dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 # Container (no SDK needed)
 docker run -d -p 127.0.0.1:8787:8080 \
   -e MCP_BEARER_TOKEN=$(openssl rand -hex 32) \
-  ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:latest
+  ghcr.io/pedrosakuma/dotnet-diagnostics:latest
 
 # Self-contained binary — see Releases page
 ```
@@ -140,12 +139,17 @@ diag(pid 1234)> query --handle <id> --view pauseHistogram
 diag(pid 1234)> exit
 ```
 
-Self-contained per-OS binaries are attached to each [Release](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/releases)
+Self-contained per-OS binaries are attached to each [Release](https://github.com/pedrosakuma/dotnet-diagnostics/releases)
 as `dotnet-diagnostics-cli-<version>-<rid>`. **Full reference:** [`docs/cli-reference.md`](./docs/cli-reference.md).
 
 ---
 
 ## Tools Overview
+
+**15 unified tools.** Full schemas and return shapes: [`docs/tool-reference.md`](./docs/tool-reference.md).
+
+<details>
+<summary><strong>The 15 tools at a glance</strong></summary>
 
 | Tool | Purpose |
 |---|---|
@@ -167,44 +171,15 @@ as `dotnet-diagnostics-cli-<version>-<rid>`. **Full reference:** [`docs/cli-refe
 | `start_investigation` | Structured plan (cold / warm / hypothesis) before any collector runs |
 | `export_investigation_summary` / `compare_to_baseline` | Portable JSON memory; LLM persists, diffs across deploys |
 
+</details>
+
 ---
 
 ## Documentation
 
-| Doc | Contents |
-|-----|----------|
-| [`docs/cli-reference.md`](./docs/cli-reference.md) | **Standalone CLI** — commands, flags, and the `session` REPL |
-| [`docs/tool-reference.md`](./docs/tool-reference.md) | Full MCP tool schemas and return shapes |
-| [`docs/investigation-playbooks.md`](./docs/investigation-playbooks.md) | Common investigation recipes |
-| [`docs/aot-coverage.md`](./docs/aot-coverage.md) | NativeAOT coverage matrix |
-| [`docs/client-setup.md`](./docs/client-setup.md) | MCP client configuration |
-| [`docs/consumer-install.md`](./docs/consumer-install.md) | Full install walkthrough |
-
-**Deployment guides:**
-
-| Platform | Guide |
-|----------|-------|
-| Kubernetes sidecar | [`deploy/k8s/README.md`](./deploy/k8s/README.md) |
-| Helm chart | [`deploy/helm/README.md`](./deploy/helm/README.md) |
-| Azure | [`deploy/azure/README.md`](./deploy/azure/README.md) |
-| AWS | [`deploy/aws/README.md`](./deploy/aws/README.md) |
-| GCP | [`deploy/gcp/README.md`](./deploy/gcp/README.md) |
-
-<details>
-<summary><strong>MCP Prompts (curated playbooks)</strong></summary>
-
-6 built-in prompts: `diagnose-high-latency`, `diagnose-memory-growth`, `diagnose-5xx-errors`, `diagnose-slow-outbound-http`, `triage-nativeaot`, `diagnose-safely-in-prod`. See [Prompts section](./docs/tool-reference.md#prompts-curated-playbooks).
-
-</details>
-
-<details>
-<summary><strong>Security notes</strong></summary>
-
-- TLS required for non-loopback binds
-- Bearer token required (set `MCP_BEARER_TOKEN`)
-- Helm chart includes optional Ingress and NetworkPolicy
-
-</details>
+**📖 [`docs/`](./docs) is the documentation hub** — start there. It indexes the tool reference,
+CLI reference, investigation playbooks, output examples, authorization/scopes, client setup, and
+all deployment guides (Kubernetes, Helm, Azure, AWS, GCP).
 
 ---
 
@@ -255,6 +230,9 @@ Add to `~/.copilot/mcp-config.json`:
 
 ## Roadmap
 
+<details>
+<summary><strong>Phase status</strong></summary>
+
 | Phase | Status | Description |
 |-------|--------|-------------|
 | 1-3 | ✅ | Foundation + Core diagnostics + MCP server |
@@ -266,6 +244,8 @@ Add to `~/.copilot/mcp-config.json`:
 | **12** | ✅ | **Diagnostic Journey UX** — auto-hints + IoT triage |
 | **13** | ✅ | **GC overlay** — correlate GC pauses with activity spans |
 | Next | ⏳ | Flame graph export, NativeAOT publish |
+
+</details>
 
 ---
 

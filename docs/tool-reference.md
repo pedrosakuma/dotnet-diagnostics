@@ -6,10 +6,24 @@ delivered over Streamable HTTP at `POST /mcp` and require an
 `Authorization: Bearer <token>` header (see [client-setup.md](./client-setup.md)).
 
 > Return shapes link back to the C# record definitions in
-> [`src/DotnetDiagnosticsMcp.Core`](../src/DotnetDiagnosticsMcp.Core), which are the source of
+> [`src/DotnetDiagnostics.Core`](../src/DotnetDiagnostics.Core), which are the source of
 > truth for field names and types.
 
-### Bootstrap implícito (`processId` is optional)
+### Common response envelope
+
+Every structured tool response is a `DiagnosticResult<T>` envelope with:
+
+- `summary`: short human-readable outcome.
+- `hints`: ordered `NextActionHint[]`; each hint carries `nextTool`, `reason`,
+  optional `suggestedArguments`, and `priority` (`high`, `normal`, or `low`;
+  default `normal`).
+- `data`: the tool-specific payload on success.
+- `error`: `DiagnosticError` on classified failures.
+- `handle` / `handleExpiresAt` / `handleExpiresInSeconds`: present when the
+  tool minted a drilldown handle. `handleExpiresInSeconds` is computed when the
+  response is serialized and is floored at `0` after expiry.
+
+### Implicit bootstrap (`processId` is optional)
 
 Since issue #42 every tool that targets a live .NET process accepts `processId`
 as optional. When the caller omits it the server lists the visible .NET
@@ -43,9 +57,9 @@ a single `<tool>` call when there is only one .NET process visible to the
 sidecar. The capability digest is cached per pid for 60 seconds so back-to-back
 tool calls within an investigation pay the probe cost once.
 
-### Verbosidade (`depth`)
+### Verbosity (`depth`)
 
-Issue [#41 slice 2c](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/41)
+Issue [#41 slice 2c](https://github.com/pedrosakuma/dotnet-diagnostics/issues/41)
 adds a uniform `depth` parameter to every windowed collector. Values:
 `Summary` (default), `Detail`, `Raw`. Contract:
 
@@ -59,11 +73,8 @@ adds a uniform `depth` parameter to every windowed collector. Values:
 **Key invariant — the handle store always carries the FULL artifact**, regardless
 of `depth`. The depth knob only filters the *inline* response. Drilldown is now
 unified behind a single verb — **[`query_snapshot(handle, view, …)`](#query_snapshot)**
-(RFC 0002 §4.1 / #207) — which dispatches on the handle's recorded artifact kind
-and re-projects everything the original collection captured. The five legacy
-drilldown tools (`query_snapshot`, `query_snapshot`,
-`query_snapshot`, `query_snapshot`, `query_snapshot(view="call-tree")`) remain registered
-through the 0.9.0 deprecation window as byte-equal aliases of the unified verb.
+— which dispatches on the handle's recorded artifact kind
+and re-projects everything the original collection captured.
 
 Per-tool `Summary` semantics:
 
@@ -74,6 +85,7 @@ Per-tool `Summary` semantics:
 | `collect_sample(kind="cpu")` | `TopHotspots` truncated to the top 3 (handle keeps `topN`, default 25). |
 | `collect_sample(kind="off_cpu")` | `TopBlockingStacks` truncated to the top 3 (handle keeps `topN`). |
 | `collect_events(kind="exceptions")` | The `Recent[]` list. `Total` and `ByType` remain exact (counts at every depth). |
+| `collect_events(kind="crash-guard")` | The retained `Exceptions[]` list. Final exception, exit status, by-type counts, and notes remain inline. |
 | `collect_events(kind="gc")` | The `Events[]` list. Totals, max pause, per-gen counts remain exact. |
 | `collect_events(kind="datas")` | The full `Samples[]`, `TuningEvents[]` and `FullGcTuningEvents[]` lists. Drill in with `query_snapshot(handle, view=overview\|tuning\|samples\|gen2)`. |
 | `collect_events(kind="catalog")` | The metadata-only `Sample[]` occurrence list. The ranked `Catalog[]` remains inline; payload values are never captured. |
@@ -83,6 +95,9 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="threadpool")` | The full worker/IOCP timelines and hill-climbing sequence. Summary keeps headline counts + top origins; drill in with `query_snapshot(handle, view=timeline|hillClimbing|workItemOrigins)`. |
 | `collect_events(kind="contention")` | The raw contention event list. Summary keeps headline wait totals + percentiles; drill in with `query_snapshot(handle, view=byCallSite|byOwner)`. |
 | `collect_events(kind="db")` | The long `ByCommand[]` / `NPlusOne[]` lists. Summary keeps the headline aggregates + pool slice. |
+| `collect_events(kind="kestrel")` | The `byOperation[]` list, queue-length timeline, and `configurationJson`. Summary keeps the headline connection/request/TLS aggregates + latency tail. |
+| `collect_events(kind="networking")` | The full `ByOperation[]` list. Summary keeps headline HTTP/DNS/TLS/socket counts + latency tails; drill in with `query_snapshot(handle, view=byOperation|queue|tls|dns)`. |
+| `collect_events(kind="startup")` | The loader/DI event lists and full timeline. Summary keeps headline counts, top assembly/module aggregates, and notes. |
 | `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph|deadlocks|unique-stacks|async-stalls)`. |
 
 Explicit `topN` always wins over the depth default — if you pass
@@ -93,15 +108,59 @@ it asked for).
 retained `Activities[]` inline (bounded by `maxActivities`) and relies on
 `query_snapshot(handle, view=...)` for narrower drilldown views.
 
+### Threshold-gated capture (`collect_events` + `triggerWhen`)
+
+`collect_events(kind="counters")` can arm a **bounded** watch that captures a heavier artifact the
+moment a single metric threshold trips — the threshold-gated, LLM/human-driven equivalent of
+DebugDiag `collect`. It is **not** a daemon: the call polls one `System.Runtime` EventCounter for at
+most `windowSeconds`, fires `captureKind` up to `maxCaptures` times, then returns synchronously.
+Nothing persists server-side.
+
+| Parameter | Meaning |
+| --- | --- |
+| `triggerWhen` | Single predicate `<metric><op><value>` — e.g. `cpu>85`, `gcHeapMb>=1500`, `rssMb>2000`, `threadCount>400`, `activeTimerCount>1000`. Operators: `>` `>=` `<` `<=`. Metrics map to `System.Runtime` EventCounters (`rssMb`=`working-set`, `threadCount`=`threadpool-thread-count`). |
+| `captureKind` | What to capture on trip: `dump`, `cpu-sample`, `heap`, `thread-snapshot`. |
+| `windowSeconds` | Required. Hard upper bound on how long the watch is armed (1–300). |
+| `maxCaptures` | Stop after N captures (default 1, max 10). |
+| `sampleIntervalSeconds` | Metric poll interval (1–`windowSeconds`, default 2). |
+| `confirmDump` | Required `true` when `captureKind=dump` (writes a dump to disk; mirrors `collect_process_dump`). |
+
+The captured artifact registers under the existing drilldown handle kinds (`cpu-sample` /
+`heap-snapshot` / `thread-snapshot`) so the high-priority `query_snapshot(handle, …)` hint reaches
+it without re-collecting; `dump` writes to disk and returns the path. Per-`captureKind` scopes are
+re-checked on top of `read-counters`/`eventpipe`: `cpu-sample`=`eventpipe`; `heap`=`heap-read`+`ptrace`;
+`thread-snapshot`=`ptrace`; `dump`=`dump-write`+`ptrace`. The result envelope carries a `GatedCapture`
+block (samples observed, peak value, whether the predicate tripped, and one record per capture).
+
+```text
+collect_events(kind="counters")(processId=4242, triggerWhen="cpu>85", captureKind="cpu-sample", windowSeconds=60)
+```
+
 ### Long-running collects: MCP Tasks
 
 As of the `2025-11-25` protocol bump, the server registers an
 `IMcpTaskStore`, advertises `capabilities.tasks.{list,cancel,requests.tools.call}`
 and marks these tools with `execution.taskSupport: "optional"` in `tools/list`:
 
-- `collect_sample(kind="cpu")`
-- `collect_events(kind="exceptions")`
-- `collect_events(kind="gc")`
+- `collect_sample` (every `kind` — cpu, off_cpu, allocation, native-alloc)
+- `collect_events` (every `kind` — counters, exceptions, crash-guard, gc, …)
+- `inspect_heap` (both `source="live"` and `source="dump"`)
+
+`tools/list` also annotates every tool with authorization metadata under
+`_meta.dotnetDiagnostics.auth`:
+
+```json
+{
+  "requiredScopes": ["eventpipe"],
+  "semantics": "all",
+  "authorized": true
+}
+```
+
+`semantics` is `all` for `[RequireScope]` and `any` for `[RequireAnyScope]`;
+`authorized` is evaluated for the current bearer token (or the synthetic root
+principal in stdio / legacy-root mode). Runtime branches may still tighten
+access based on parameters or handle kind; see [authorization](./authorization.md).
 
 **Spec-compliant clients should use MCP Tasks** for long windows:
 
@@ -110,7 +169,7 @@ and marks these tools with `execution.taskSupport: "optional"` in `tools/list`:
 3. fetch the terminal `CallToolResult` via `tasks/result`
 4. cancel via `tasks/cancel`
 
-### MCP-native progress and cancellation (RFC 0002 §7.3 #7 / issue #211)
+### MCP-native progress and cancellation (issue #211)
 
 In addition to MCP Tasks, long-running collectors emit standard MCP
 `notifications/progress` messages and honor `notifications/cancelled` on the
@@ -119,8 +178,9 @@ same `tools/call` request — no second round-trip, no polling. This is the
 
 Tools wired up:
 
-- `collect_sample(kind="cpu")`
-- `collect_events` (every `kind` — counters, exceptions, gc, event_source, activities)
+- `collect_sample` (every `kind` — cpu, off_cpu, allocation, native-alloc)
+- `collect_events` (every `kind` — counters, exceptions, crash-guard, gc, datas, catalog, event_source, activities, logs, jit, threadpool, contention, db, kestrel, networking, startup)
+- `inspect_heap` (both `source="live"` and `source="dump"` — emits an **indeterminate** heartbeat, since a ClrMD heap walk has no a-priori duration, plus a terminal `progress=100` on success)
 
 How it works:
 
@@ -138,7 +198,7 @@ How it works:
   the cancellation as an `OperationCanceledException` instead of returning
   the envelope — both shapes are spec-conformant.
 
-> **Removed in Stage B (RFC 0002 §7.3 #7 / issue #211).** The legacy polling
+> **Removed in Stage B (issue #211).** The legacy polling
 > bridge — `collect_sample(kind="cpu")(runAsJob=true)`, `get_collection_status(handle)`,
 > `cancel_collection(handle)` — has been removed. Clients must use MCP Tasks or
 > the in-request progress/cancel notifications described above.
@@ -164,47 +224,42 @@ Every prompt returns a single `user`-role message whose content is annotated
 with `audience: ["assistant"]` so MCP clients that distinguish user-facing
 templates from assistant-facing context route them directly into the LLM's
 context window. Each prompt embeds the hypothesis tree from the playbook plus
-exact tool-call examples (with placeholder args reflecting bootstrap implícito).
+exact tool-call examples (with placeholder args reflecting the implicit bootstrap).
 The LLM may always ignore a prompt and drive ad-hoc.
 
-### Handle chaining nos coletores (`query_snapshot`)
+### Handle chaining in the collectors (`query_snapshot`)
 
-Os 7 coletores windowed — `collect_events(kind="counters")`, `collect_events(kind="exceptions")`,
-`collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`, `collect_events(kind="logs")`, `collect_events(kind="jit")` — devolvem, junto do summary +
-Os 6 coletores windowed — `collect_events(kind="counters")`, `collect_events(kind="exceptions")`,
-`collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`, `collect_events(kind="logs")`, `collect_events(kind="threadpool")` — devolvem, junto do summary +
-`collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`, `collect_events(kind="logs")`, `collect_events(kind="db")` — devolvem, junto do summary +
-`collect_events(kind="contention")` — devolve o summary + handle do snapshot de contenção para drilldown por call-site/owner sem repetir a janela.
-top-N inline, um `handle` opaco (Crockford-base32, TTL ~10 min) registrado num
-store em memória. A LLM pode então re-projetar o mesmo artefato sob outra
-visão **sem rodar o EventPipe de novo** chamando `query_snapshot`:
+The windowed collectors — every `collect_events(kind=…)` variant (`counters`,
+`exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `activities`,
+`event_source`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`,
+`networking`, `startup`) — return, alongside the inline summary
++ top-N, an opaque `handle` (Crockford-base32, TTL ~10 min) registered in an
+in-memory store. The LLM can then re-project the same artifact under a
+different view **without re-running EventPipe** by calling `query_snapshot`:
 
 ```jsonc
-// 1. coleta uma vez
+// 1. collect once
 collect_events(kind="exceptions")(processId=4242, durationSeconds=10)
   → { summary: "30 exceptions (3 types)", handle: "01H...XY", data: { … top-N } }
 
-// 2. drilldown N vezes dentro da janela TTL
+// 2. drill down N times within the TTL window
 query_snapshot(handle="01H...XY", view="recent", topN=20)
 query_snapshot(handle="01H...XY", view="byType")
 ```
 
-`query_snapshot` (RFC 0002 §4.1 / #207) é o verbo único de drilldown — ele
-faz dispatch pelo `kind` que o handle carrega e cobre os 11 kinds emitidos
-pelos coletores acima + heap (`heap-snapshot`), thread (`thread-snapshot`),
-off-CPU (`off-cpu-snapshot`) e call-tree (`cpu-sample` / `allocation-sample`).
-Os 5 verbos legados (`query_snapshot`, `query_snapshot`,
-`query_snapshot`, `query_snapshot`, `query_snapshot(view="call-tree")`) seguem
-registrados como aliases byte-equal durante a janela de depreciação 0.9.0
-(asserted por `QuerySnapshotCompatibilityTests`).
+`query_snapshot` is the single drilldown verb — it dispatches on the `kind` the
+handle carries and covers every kind emitted by the collectors above plus heap
+(`heap-snapshot`), thread (`thread-snapshot`), off-CPU (`off-cpu-snapshot`) and
+call-tree (`cpu-sample` / `allocation-sample` / `native-alloc-sample`).
 
-Visões disponíveis por `kind`:
+Views available per `kind`:
 
-| Kind | Emitido por | Views aceitas |
+| Kind | Emitted by | Accepted views |
 |---|---|---|
 | `counters` | `collect_events(kind="counters")` | `summary` (default), `byProvider` |
 | `exception-snapshot` | `collect_events(kind="exceptions")` | `summary` (default = `byType.Take(topN)`), `byType`, `recent` |
-| `gc-events` | `collect_events(kind="gc")` | `summary` (default), `events`, `pauseHistogram`, `timeline`, `longestPauses`, `byGeneration` |
+| `crash-guard-snapshot` | `collect_events(kind="crash-guard")` | `summary` (default), `exceptions`, `stack` |
+| `gc-events` | `collect_events(kind="gc")` | `summary` (default), `events`, `pauseHistogram`, `timeline`, `longestPauses`, `byGeneration`, `heap-stats` |
 | `gc-datas` | `collect_events(kind="datas")` | `overview` (default), `tuning` (honours `changesOnly`), `samples`, `gen2` |
 | `event-catalog` | `collect_events(kind="catalog")` | `catalog` (default), `byProvider`, `events` |
 | `activities` | `collect_events(kind="activities")` | `summary` (default), `bySource`, `byOperation`, `activities` |
@@ -214,22 +269,66 @@ Visões disponíveis por `kind`:
 | `threadpool-snapshot` | `collect_events(kind="threadpool")` | `summary` (default), `timeline`, `hillClimbing`, `workItemOrigins` |
 | `contention-snapshot` | `collect_events(kind="contention")` | `summary` (default), `byCallSite`, `byOwner` |
 | `db-snapshot` | `collect_events(kind="db")` | `summary` (default), `byCommand`, `n+1`, `connectionPool` |
-| `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `object`, `gcroot`, `objsize`, `async`, `diff` |
+| `kestrel-snapshot` | `collect_events(kind="kestrel")` | `summary` (default), `byOperation`, `queues`, `tls`, `config` |
+| `networking-snapshot` | `collect_events(kind="networking")` | `summary` (default), `byOperation`, `queue`, `tls`, `dns` |
+| `startup-snapshot` | `collect_events(kind="startup")` | `summary` (default), `assemblies`, `modules`, `di`, `timeline` |
+| `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `object`, `gcroot`, `objsize`, `async`, `diff` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
 | `cpu-sample` / `allocation-sample` / `native-alloc-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `diff` |
 
-Autorização é aplicada por kind no dispatcher (`heap-read` para heap,
-`ptrace` para thread, `eventpipe` para off-CPU, `investigation-export` para
-cpu/allocation call-tree + diff, `heap-read` para heap diff, `read-counters`|`eventpipe` para collection) — o gate estático aceita
-qualquer um dos 5 escopos para o tool surface; o boundary por kind preserva o
-contrato de cada legado verbatim (RFC 0002 §4.1).
+Authorization is applied per kind at the dispatcher (`heap-read` for heap,
+`ptrace` for thread, `eventpipe` for off-CPU, `investigation-export` for
+cpu/allocation call-tree + diff, `heap-read` for heap diff,
+`read-counters`|`eventpipe` for collection) — the static gate accepts any of
+those scopes for the tool surface, and the per-kind boundary preserves each
+former verb's contract verbatim.
 
-`view="diff"` accepts `baselineHandle` (required), `minDeltaPct` (default `5.0`) and `topN`
-(default `25`). Accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap-snapshot`
-and `allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second
-rates when the two capture windows use different durations and surface both raw + normalized
-metrics in each row.
+`view="diff"` accepts `baselineHandle` or ordered `comparisonHandles`, `minDeltaPct`
+(default `5.0`), `topN` (default `25`), `depth` (`"full"` default, or `"compact"`),
+and `mode` (`"trend"` default, or `"dispersion"`). Trend treats captures as ordered over
+time. Dispersion treats captures as unordered replicas and reports `uniform`, `dispersed`,
+`no_overlap`, or `incomparable`; it requires N-way comparable captures via `comparisonHandles`
+and is rejected for the legacy pairwise `baselineHandle` sample diffs.
+For comparable journey diffs (`gc-datas`, `counters`, `gc-events`, `contention-snapshot`,
+`threadpool-snapshot`), `depth="compact"` returns verdict + headline + counts + notes +
+top-N metric/key deltas. `depth="full"`
+returns the full `SnapshotJourneyDiff` only while it stays below the 32 KiB inline threshold;
+larger matrices are retained in memory and the inline payload includes `journey://diff/{handle}`
+so the assistant can pull the full matrix as an MCP Resource. Pairwise sample diffs remain
+inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap-snapshot` and
+`allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second rates
+
+`heap-snapshot` `view="timers"` projects the already-walked heap into a task/timer leak
+drilldown: total live `System.Threading.Timer` / `TimerQueueTimer` objects, total live
+`Task` and `TaskCompletionSource` objects, timers grouped by callback target/method, and
+top task/TCS concrete runtime types. Use it after `collect_events(kind="counters")` shows
+`active-timer-count` growth to identify the callback or async state-machine type being leaked. Allocation diffs normalize totals to per-second rates
+when the two capture windows use different durations and surface both raw + normalized metrics
+in each row.
+
+`heap-snapshot` `view="alc"` projects the already-walked CoreCLR heap into an
+AssemblyLoadContext leak drilldown: live ALC instances, collectible/default state,
+assemblies observed under each context, and bounded GC-root retention hints for suspected
+collectible leaks. Retention hints are computed during the heap walk for at most 16
+collectible ALCs per snapshot, using the same bounded root-search machinery as `gcroot`
+(64 frames / 250,000 visited objects); additional contexts are still listed without a
+path. NativeAOT has no DAC/ClrMD heap walk, so this view is CoreCLR-only.
+
+`compare_to_baseline(snapshotsJson=[...])` accepts the same comparable journey knobs:
+`topN`, `depth`, and `mode="trend"|"dispersion"`. Legacy `InvestigationSummary` JSON
+comparison ignores journey mode because it still returns the older two-summary `SummaryDiff`.
+
+For compact dispersion summaries, metric series are ranked by their dispersion coefficient of
+variation. Key-set rows are likewise ranked by coefficient of variation. In `dispersion` mode each
+`KeyMatrixRow` persists a per-row `Dispersion` (`min`/`max`/`median`/`mean`/`stdDev`/
+`coefficientOfVariation`/`outlierIndex`) computed once over the row's per-capture values, mirroring
+`MetricSeries.Dispersion`; it is `null` in `trend` mode. Ranking and verdict reuse this persisted
+value rather than recomputing it.
+
+For an end-to-end comparative workflow (before/after and N-way trend journeys, verdict and
+trend interpretation, and the two doors) see
+[investigation-playbooks.md §1d](./investigation-playbooks.md#1d-did-my-fix-actually-help--comparative--n-way-trend-journeys).
 
 The CPU drilldown views (`top-methods`, `by-module`, `by-namespace`, `hot-path`,
 `caller-callee`, issue #313) re-aggregate the already-collected merged call tree — no new
@@ -257,6 +356,15 @@ cross-reference). `byGeneration` reports `Count` + total/mean/max pause per gene
 (`gen0`/`gen1`/`gen2`/`background`); background GCs form their own mutually-exclusive bucket, so
 `gen2` counts non-background gen2 collections only. Note these views describe only the events
 retained on the artifact (the collector caps at `maxEvents`).
+
+The `heap-stats` view (issue #384) re-projects the per-collection `GCHeapStats` samples retained
+behind the same `gc-events` handle — no new collection. Each sample carries the per-generation heap
+sizes (`Gen0`/`Gen1`/`Gen2`/`Loh`/`Poh`), total heap and promoted bytes, finalization survivors, and
+the `PinnedObjectCount` / `GcHandleCount`. The view returns the chronological samples (earliest
+`topN`) plus a `Trend` block with the first→last deltas for gen2, LOH, POH, total heap, pinned-object
+count, and GC-handle count — the classic signal for a slow managed leak or pinning pressure that pause
+data alone misses. `Poh*` fields are populated only by the V2 event (pinned object heap) and are 0 on
+runtimes that emit the V1 event.
 
 The event-catalog views (`catalog`, `byProvider`, `events`) answer "what events does this app
 emit?" without exposing EventSource payload values. `collect_events(kind="catalog")` enables a
@@ -294,94 +402,96 @@ same way at capture time (`AddressKind` / `Rva` / `BuildId` on each frame, `Disp
 `module+0x<rva>` or `<unmapped-or-not-captured 0x…>`). Hand the `(buildId, rva)` to
 `dotnet-native-mcp` for symbolication.
 
-> **Nota — truncação em `event-source`:** o coletor para de armazenar eventos
-> ao atingir `maxEvents`, mas continua contando o total. As views
-> `summary`/`byEventName` agora trazem `capturedCount` e `truncated`; quando
-> `truncated=true` os grupos refletem só o prefixo capturado — re-rode
-> `collect_events(kind="event_source")` com `maxEvents` maior pra agregados exatos.
+> **Note — `event-source` truncation:** the collector stops storing events
+> once it reaches `maxEvents`, but keeps counting the total. The
+> `summary`/`byEventName` views now carry `capturedCount` and `truncated`; when
+> `truncated=true` the groups reflect only the captured prefix — re-run
+> `collect_events(kind="event_source")` with a larger `maxEvents` for exact aggregates.
 
-Handles invalidam quando: o TTL expira, o processo alvo morre (evicção
-automática), ou um restart do server zera o store. Acesso a handle
-desconhecido devolve `DiagnosticError { Kind: "HandleExpired" }` com um
-`NextActionHint` apontando o coletor original.
+Handles are invalidated when: the TTL expires, the target process dies
+(automatic eviction), or a server restart clears the store. Accessing an
+unknown handle returns `DiagnosticError { Kind: "HandleExpired" }` with a
+`NextActionHint` pointing at the original collector. Responses with handles
+include both absolute `handleExpiresAt` and relative `handleExpiresInSeconds`
+so clients can refresh without parsing timestamps.
 
-Esse contrato é o equivalente "split collector, unified drilldown"
-(documentado em [`AGENTS.md`](../AGENTS.md)) aplicado a *todos* os coletores
-— mesmo padrão de `inspect_heap(source="dump")`/`inspect_heap(source="live")` e
-`collect_thread_snapshot`, agora colapsado num único verbo de query.
+This contract is the "split collector, unified drilldown" pattern
+(documented in [`AGENTS.md`](../AGENTS.md)) applied to *all* collectors
+— the same pattern as `inspect_heap(source="dump")`/`inspect_heap(source="live")` and
+`collect_thread_snapshot`, now collapsed into a single query verb.
 
 ### Kernel-side signals (`inspect_process(view="container")`)
 
-Mata o blind-spot mais comum em K8s: "app está lento, mas EventCounters dizem
-que CPU/memória estão ok" — na maior parte das vezes é **CPU throttling no
-cgroup**, invisível pelo runtime. `inspect_process(view="container")` lê cgroup v2 +
-`/proc/<pid>/oom_score` e devolve:
+Kills the most common blind-spot in K8s: "the app is slow, but EventCounters
+say CPU/memory are ok" — most of the time it's **CPU throttling at the
+cgroup**, invisible to the runtime. `inspect_process(view="container")` reads cgroup v2 +
+`/proc/<pid>/oom_score` and returns:
 
 - `Cpu`: `usage_usec`, `nr_periods`, `nr_throttled`, `throttled_usec`,
-  `ThrottlePercent` (canonical signal) e `QuotaCores` (null = unlimited).
-- `Memory`: `current`, `max`, `high`, `UsageFraction`, contadores
-  `oom_kill` / `max-hit` extraídos de `memory.events`.
+  `ThrottlePercent` (canonical signal) and `QuotaCores` (null = unlimited).
+- `Memory`: `current`, `max`, `high`, `UsageFraction`, plus
+  `oom_kill` / `max-hit` counters extracted from `memory.events`.
 - `Pressure` (PSI): `cpu.some.avg10`, `memory.some/full.avg10`, `io.some/full.avg10`.
-- `Pids` e `oom_score`.
+- `Pids` and `oom_score`.
 
-Tudo best-effort: arquivos faltando (PSI em kernel antigo, sem limite de
-memória, container sem read em `memory.events`) viram entradas em `Notes`, não
-erro fatal. Em Windows / cgroup v1 / sem cgroup, devolve `InContainer=false`
-+ `CgroupVersion` correto e `Notes` explicativo (job-object metrics ainda não
-foram wired).
+All best-effort: missing files (PSI on an old kernel, no memory limit,
+a container without read access to `memory.events`) become entries in `Notes`, not
+a fatal error. On Windows / cgroup v1 / no cgroup, it returns `InContainer=false`
++ the correct `CgroupVersion` and an explanatory `Notes` (job-object metrics are not
+yet wired).
 
-O `inspect_process(view="capabilities")` ganhou as flags do kernel-side para você saber
-se vale a pena tentar a coleta antes: `InContainer`, `CgroupV2`,
-`CanSeeThrottle` (true sse há quota configurada → throttling é observável),
+`inspect_process(view="capabilities")` gained the kernel-side flags so you know
+whether it's worth attempting the collection first: `InContainer`, `CgroupV2`,
+`CanSeeThrottle` (true iff a quota is configured → throttling is observable),
 `PsiAvailable`, `PerfInstalled`, `HasCapPerfmon`, `PerfEventParanoid`,
-`HasCapSysPtrace`, `PtraceScope` e `EtwKernelOk`. Slice 2b também expõe
-**`CanSampleOffCpu`** — true quando o sidecar já cumpre os pré-requisitos do
-backend (Linux: perf + privilégio suficiente para `sched_switch`; Windows:
-processo elevado). Quando false, `Notes` traz a hint concreta do motivo antes
-da LLM tentar `collect_sample(kind="off_cpu")` num sidecar sem privilégio.
+`HasCapSysPtrace`, `PtraceScope` and `EtwKernelOk`. It also exposes
+**`CanSampleOffCpu`** — true when the sidecar already meets the backend's
+prerequisites (Linux: perf + sufficient privilege for `sched_switch`; Windows:
+elevated process). When false, `Notes` carries the concrete hint for the reason before
+the LLM attempts `collect_sample(kind="off_cpu")` on an unprivileged sidecar.
 
-NextActionHints: throttle > 5% sugere `collect_sample(kind="cpu")` direto; memória >
-85% do limite sugere `inspect_heap(source="live")` antes do OOM-kill.
+NextActionHints: throttle > 5% suggests `collect_sample(kind="cpu")` directly; memory >
+85% of the limit suggests `inspect_heap(source="live")` before the OOM-kill.
 
 ### Off-CPU sampling (`collect_sample(kind="off_cpu")` + `query_snapshot`)
 
-> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="off_cpu", …)`](#collect_sample) instead; the legacy `collect_sample(kind="off_cpu")` remains registered behind a deprecation banner during the window (RFC 0002 §4.2 / issue #210).
+> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="off_cpu", …)`](#collect_sample) instead; the legacy `collect_sample(kind="off_cpu")` remains registered behind a deprecation banner during the window (issue #210).
 
-Complementa o `collect_sample(kind="cpu")` (que mostra **on-CPU** — onde o app gasta
-tempo executando) com **off-CPU** — onde threads ficaram **bloqueadas**
-(I/O, locks, condvars, monitor wait). Resolve o blind-spot clássico "CPU baixa
-mas latência alta": sampling on-CPU não enxerga porque as threads não estão
-rodando.
+Complements `collect_sample(kind="cpu")` (which shows **on-CPU** — where the app
+spends time executing) with **off-CPU** — where threads were **blocked**
+(I/O, locks, condvars, monitor wait). It resolves the classic blind-spot "low CPU
+but high latency": on-CPU sampling can't see it because the threads aren't
+running.
 
-- **Linux:** usa `perf record -a -e sched:sched_switch --call-graph dwarf` em
-  todo o sistema (o tracepoint `sched_switch` só dispara na thread que sai de
-  CPU, então restringir por PID perde o evento de IN). Spans são filtrados
-  pós-coleta pelo `/proc/<pid>/task/*` do alvo. Requer `CAP_PERFMON` (kernel
-  ≥ 5.8) ou `perf_event_paranoid <= -1`, e `perf` instalado
-  (`linux-tools-common` / `linux-tools-$(uname -r)` no Debian/Ubuntu).
+- **Linux:** uses `perf record -a -e sched:sched_switch --call-graph dwarf`
+  system-wide (the `sched_switch` tracepoint only fires on the thread leaving
+  CPU, so restricting by PID misses the IN event). Spans are filtered
+  post-collection by the target's `/proc/<pid>/task/*`. Requires `CAP_PERFMON` (kernel
+  ≥ 5.8) or `perf_event_paranoid <= -1`, and `perf` installed
+  (`linux-tools-common` / `linux-tools-$(uname -r)` on Debian/Ubuntu).
   `SymbolSource: "perf-sched-dwarf"`.
-- **Windows:** usa a sessão NT Kernel Logger via `TraceEvent` com
-  `ContextSwitch + Dispatcher + ImageLoad/Process/Thread`, stack walk no
-  `ContextSwitch` (a stack capturada na hora do switch-out é exatamente a
-  chamada bloqueante). Wait reason do kernel
-  (`UserRequest` / `WrLpcReceive` / `WrQueue`...) vira o `PrevState` do span,
-  mirror direto do `S/D/I` do Linux. Spans pendentes ao fim da janela viram
-  censored (`IsCensored=true`) com duração lower-bound, igual ao Linux.
-  Requer **BUILTIN\\Administrators** ou `SeSystemProfilePrivilege`; sem isso
-  devolve `PermissionDenied` com hint apontando os dois caminhos suportados
-  (`Administrators` **ou** `Profile system performance`). Pra produção, ver
+- **Windows:** uses the NT Kernel Logger session via `TraceEvent` with
+  `ContextSwitch + Dispatcher + ImageLoad/Process/Thread`, with a stack walk on
+  `ContextSwitch` (the stack captured at switch-out time is exactly the
+  blocking call). The kernel wait reason
+  (`UserRequest` / `WrLpcReceive` / `WrQueue`...) becomes the span's `PrevState`,
+  a direct mirror of Linux's `S/D/I`. Spans still pending at the end of the window become
+  censored (`IsCensored=true`) with a lower-bound duration, same as Linux.
+  Requires **BUILTIN\\Administrators** or `SeSystemProfilePrivilege`; without it
+  it returns `PermissionDenied` with a hint pointing at the two supported paths
+  (`Administrators` **or** `Profile system performance`). For production, see
   [`windows-sidecar-service.md`](./windows-sidecar-service.md)
-  (Windows Service com `LocalSystem` ou conta dedicada + privilégio único).
-  `SymbolSource: "etw-cswitch-pdb"` (resolve PDBs locais + `_NT_SYMBOL_PATH`).
-- **Managed↔kernel stack merge:** ainda não — frames são puramente nativos /
-  kernel em ambas as plataformas. Sub-slice 2c.
+  (Windows Service with `LocalSystem` or a dedicated account + a single privilege).
+  `SymbolSource: "etw-cswitch-pdb"` (resolves local PDBs + `_NT_SYMBOL_PATH`).
+- **Managed↔kernel stack merge:** not yet — frames are purely native /
+  kernel on both platforms.
 
-`collect_sample(kind="off_cpu")(pid, durationSeconds=10, topN=10)` devolve `{handle,
-summary, top}` com os stacks que mais tempo passaram off-CPU.
-`query_snapshot(handle, view, ...)` segue o padrão **split collector,
-unified drilldown**: `view="topStacks"` (default), `view="byThread"`
-(agregado por TID com `TopBlockingLeaf` + estado dominante), ou
-`view="stack"` com `stackRank=N` (1-based) pra exportar o stack completo.
+`collect_sample(kind="off_cpu")(pid, durationSeconds=10, topN=10)` returns `{handle,
+summary, top}` with the stacks that spent the most time off-CPU.
+`query_snapshot(handle, view, ...)` follows the **split collector,
+unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
+(aggregated by TID with `TopBlockingLeaf` + dominant state), or
+`view="stack"` with `stackRank=N` (1-based) to export the full stack.
 
 
 ## Quick index
@@ -398,17 +508,18 @@ unified drilldown**: `view="topStacks"` (default), `view="byThread"`
 | [`inspect_process(view="container")`](#inspect_process(view="container")) *(deprecated — use `inspect_process(view="container")`)* | cheap | no | ✅ (Linux) | reads `/sys/fs/cgroup` + `/proc` files |
 | [`inspect_process(view="memory_trend")`](#inspect_process(view="memory_trend")) *(deprecated — use `inspect_process(view="memory_trend")`)* | window-bound | no | ✅ | reads `/proc/<pid>/smaps_rollup` + `/proc/<pid>/stat` (Linux) or `GetProcessMemoryInfo` (Windows) |
 | [`inspect_process(view="runtime-config")`](#inspect_process(view="runtime-config")) | cheap | no | ✅ (Windows env partial) | ClrMD GC / ThreadPool probe + filtered `/proc/<pid>/environ` (Linux) |
-| [`inspect_process(view="resources")`](#inspect_process(view="resources")) | cheap / window-bound | no | ✅ (Linux/Windows partial) | reads `/proc/<pid>/fd`, `/proc/<pid>/net/tcp{,6}`, `/proc/<pid>/limits` (Linux) or `GetProcessHandleCount` (Windows) |
+| [`inspect_process(view="resources")`](#inspect_process(view="resources")) | cheap / window-bound | no | ✅ (Linux/Windows partial) | reads `/proc/<pid>/fd`, `/proc/<pid>/net/tcp{,6}`, `/proc/<pid>/limits`, `VmRSS` + a short `gc-heap-size` counter probe (Linux) or `GetProcessHandleCount` / `WorkingSet64` (Windows) |
 | [`inspect_process(view="requests-now")`](#inspect_process(view="requests-now")) | ~2 s | no | ✅ (ptrace required) | short EventPipe request window + live thread snapshot |
 | [`inspect_process(view="triage")`](#inspect_process(view="triage")) | ~5 s | no | ✅ | **Phase 12 IoT-style triage.** Collects counters (5s), classifies workload (cpu-bound/gc-pressure/memory-pressure/threadpool-starvation/lock-contention/io-bound/healthy), returns actionable hints. The LLM just follows the first hint — no interpretation needed. |
 | `collect_sample(kind="off_cpu")` (Linux/Windows) | window-bound | no | ✅ (Linux) | **Deprecated — use `collect_sample(kind="off_cpu")`.** system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
 | `query_snapshot` | cheap | no | ✅ | drilldown on handle from `collect_sample(kind="off_cpu")` |
-| [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/gc/event_source/activities/logs. |
+| [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/crash-guard/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/kestrel/networking/startup. |
 | [`collect_sample`](#collect_sample) | window-bound | depends on kind | ✅ (mostly — see kind) | **Canonical bounded-time sampler.** Dispatches by `kind` to cpu/off_cpu/allocation/native-alloc. |
 | [`collect_events(kind="counters")`](#collect_events(kind="counters")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="counters")`.** opens an EventPipe session |
 | [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")) | window-bound | no | ✅ (perf/ETW, native frames) | **Deprecated — use `collect_sample(kind="cpu")`.** EventPipe + temp `.nettrace` on disk |
 | [`collect_sample(kind="allocation")`](#collect_sample(kind="allocation")) | window-bound | no | ⚠️ TypeName empty | **Deprecated — use `collect_sample(kind="allocation")`.** EventPipe session |
 | [`collect_events(kind="exceptions")`](#collect_events(kind="exceptions")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="exceptions")`.** EventPipe session |
+| [`collect_events(kind="crash-guard")`](#collect_events(kind="crash-guard")) | window-bound (returns on exit) | no | ✅ | Runtime exception/crash guard; emits dump hint on unhandled exception |
 | [`collect_events(kind="gc")`](#collect_events(kind="gc")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="gc")`.** EventPipe session |
 | [`collect_events(kind="activities")`](#collect_events(kind="activities")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="activities")`.** EventPipe session |
 | [`collect_events(kind="event_source")`](#collect_events(kind="event_source")) | window-bound | no | ⚠️ provider must be embedded at publish | **Deprecated — use `collect_events(kind="event_source")`.** EventPipe session |
@@ -418,7 +529,7 @@ unified drilldown**: `view="topStacks"` (default), `view="byThread"`
 | [`capture_method_bytes`](#capture_method_bytes) | cheap | **yes** | ❌ (use `dotnet-native-mcp.disassemble`) | reads JIT code-heap |
 | `get_bytes(kind="module")` | cheap | **yes** (live module attach) | ❌ (materialize locally, then hand off) | streams PE / PDB bytes over MCP chunks |
 | `get_bytes(kind="dump")` | cheap | no | ❌ (materialize locally, then hand off) | streams dump bytes from `MCP_ARTIFACT_ROOT` |
-| `list_orchestrator(kind=pods\|investigations)` (orchestrator) | cheap | n/a | n/a | RFC 0002 §4.7 successor to `list_orchestrator(kind="pods")` + `list_orchestrator(kind="investigations")`. `kind=pods` → Kubernetes `pods.list` (scope `orchestrator-list`); `kind=investigations` → in-memory handle snapshot (scope `orchestrator-attach`). **Opt-in**, registered only when `Orchestrator:Enabled=true`. Legacy tool names remain accepted for one deprecation window (removed in 0.7.0). |
+| `list_orchestrator(kind=pods\|investigations)` (orchestrator) | cheap | n/a | n/a | Successor to `list_orchestrator(kind="pods")` + `list_orchestrator(kind="investigations")`. `kind=pods` → Kubernetes `pods.list` (scope `orchestrator-list`); `kind=investigations` → in-memory handle snapshot (scope `orchestrator-attach`). **Opt-in**, registered only when `Orchestrator:Enabled=true`. Legacy tool names remain accepted for one deprecation window (removed in 0.7.0). |
 
 "Window-bound" means the duration is the dominant cost; the tool will block for
 ~`durationSeconds`.
@@ -468,7 +579,7 @@ hint to the perf-replay fallback tracked in issue #92.
 
 ## `inspect_process`
 
-**Canonical bootstrap tool** ([RFC 0002 §4.6](./rfcs/0002-tool-surface-consolidation.md)).
+**Canonical bootstrap tool.**
 Consolidates the five legacy metadata tools — `inspect_process(view="list")`,
 `inspect_process(view="info")`, `inspect_process(view="capabilities")`, `inspect_process(view="container")`,
 `inspect_process(view="memory_trend")` — behind one `view` discriminator, and adds the
@@ -741,6 +852,10 @@ Cheap OS-level resource inspector for the classic "RSS grows but `gc-heap-size` 
 
 - **Linux**: counts `/proc/<pid>/fd`, classifies symlink targets (`socket:[...]`, `/...`, `pipe:[...]`, `anon_inode:[eventfd]`), aggregates TCP states from `/proc/<pid>/net/tcp{,6}`, and parses `Max open files` from `/proc/<pid>/limits`.
 - **Windows**: calls `GetProcessHandleCount`; FD/socket breakdowns stay `null` with a note.
+- **Managed/native split**: reads RSS (`VmRSS` on Linux, `WorkingSet64` on Windows) and
+  samples the `System.Runtime/gc-heap-size` EventCounter to populate `managedVsNative`.
+  If RSS is far larger than the GC heap, the response adds a note/hint to investigate
+  native allocations, fragmentation, pinned LOH/POH, mmap/file caches, or unmanaged libraries.
 
 **Parameters:**
 
@@ -761,17 +876,26 @@ Cheap OS-level resource inspector for the classic "RSS grows but `gc-heap-size` 
   "fd": { "sockets": 42, "regular": 96, "pipes": 16, "eventfds": 2, "other": 30 },
   "sockets": { "established": 12, "timeWait": 51, "closeWait": 0, "listen": 2, "other": 1 },
   "limits": { "noFileSoft": 1024, "noFileHard": 1024, "noFileUsageFraction": 0.1816 },
+  "managedVsNative": {
+    "rssBytes": 536870912,
+    "gcHeapBytes": 67108864,
+    "rssMinusGcHeapBytes": 469762048,
+    "gcHeapToRssRatio": 0.125,
+    "rssDominated": true,
+    "interpretation": "RSS is much larger than the managed GC heap; investigate native allocations, fragmentation, pinned LOH/POH, mmap/file caches, or unmanaged libraries."
+  },
   "notes": [],
   "trend": null
 }
 ```
 
-`trend.samples[]` repeats the same headline fields (`fdCount`, `handleCount`, `fd`, `sockets`, `limits`) per sample, with the top-level properties set to the latest sample.
+`trend.samples[]` repeats the same OS headline fields (`fdCount`, `handleCount`, `fd`, `sockets`, `limits`) per sample, with the top-level properties set to the latest sample. `managedVsNative` is populated on the top-level/latest sample from a best-effort GC heap probe near the end of the window; if the target is not a reachable .NET process, `managedVsNative.gcHeapBytes` is `null` and `notes[]` explains why.
 
 **Next-action hints:**
 - `closeWait > 100` and rising → `collect_events(kind="event_source", providerName="System.Net.Http")` to confirm undisposed responses / client misuse.
 - `noFileUsageFraction > 0.85` → consider `collect_process_dump` before the process hits `EMFILE` / "Too many open files".
 - huge `timeWait` with flat `fdCount` → connection churn / pooling issue, again best cross-checked with `System.Net.Http` events.
+- `managedVsNative.rssDominated = true` → `inspect_heap(source="live")` to rule out pinned/fragmented managed heap; if the GC heap remains flat, pivot to native allocation or mmap investigation.
 
 ---
 
@@ -814,40 +938,42 @@ Short ASP.NET Core request snapshot for the "which requests are hanging right no
 
 ## `collect_events`
 
-**Canonical EventPipe collector** (RFC 0002 §4.5). A single tool that dispatches
-by `kind` to the underlying counters / exceptions / gc / event_source /
-activities / logs / threadpool collector. New clients should call `collect_events` instead of the
-legacy entrypoints; the legacy tools remain registered and behaviorally
-identical, but each carries a `DEPRECATED` notice and will be removed in
-`0.7.0`.
+**Canonical EventPipe collector.** A single tool that dispatches by `kind` to
+the underlying counters / exceptions / crash-guard / gc / datas / catalog /
+event_source / activities / logs / jit / threadpool / contention / db /
+kestrel / networking / startup collectors. New clients should call
+`collect_events` instead of the legacy entrypoints; the legacy tools remain
+registered and behaviorally identical, but each carries a `DEPRECATED` notice
+and will be removed in `0.7.0`.
 
 **Parameters:**
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `kind` | `string` | — | One of `counters`, `exceptions`, `gc`, `datas`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`. Case-sensitive. |
+| `kind` | `string` | — | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `startup`. Case-sensitive. |
 | `processId` | `int?` | auto | Target process id. |
 | `durationSeconds` | `int` | 5 (counters) / 15 (datas) / 10 (others) | Collection window. |
 | `providers` / `meters` / `intervalSeconds` / `maxInstrumentTimeSeries` | counters only | — | Same as [`collect_events(kind="counters")`](#collect_events(kind="counters")). |
-| `maxRecent` | exceptions only | 100 | Same as [`collect_events(kind="exceptions")`](#collect_events(kind="exceptions")). |
-| `maxEvents` | gc / datas / event_source / logs only | 200 (`gc`, `event_source`) / 1000 (`datas`) / 500 (`logs`) | Same as the underlying tool. |
+| `maxRecent` | exceptions / crash-guard only | 100 | Maximum retained exception records. |
+| `maxEvents` | gc / datas / catalog / event_source / logs only | 200 (`gc`, `event_source`) / 1000 (`datas`) / 500 (`logs`) | Same as the underlying tool. |
 | `providerName` / `keywords` / `eventLevel` / `depth` / `unsafeProvider` | event_source only | — | Same as [`collect_events(kind="event_source")`](#collect_events(kind="event_source")). |
 | `sources` / `maxActivities` | activities only | — | Same as [`collect_events(kind="activities")`](#collect_events(kind="activities")). |
 | `categories` / `minLevel` / `maxMessageBytes` / `depth` | logs only | — | Same as [`collect_events(kind="logs")`](#collect_events(kind="logs")). |
-| `depth` | jit / threadpool / contention only | `Summary` | Inline verbosity for the curated runtime views. |
-| `intervalSeconds` / `depth` | db only | `1` / `Summary` | SqlClient EventCounter refresh interval + inline verbosity for the curated DB view. |
+| `depth` | exceptions / crash-guard / jit / threadpool / contention / startup only | `Summary` | Inline verbosity for the curated runtime views. |
+| `intervalSeconds` / `depth` | db / kestrel / networking only | `1` / `Summary` | EventCounter refresh interval + inline verbosity for curated views. |
 
 **Returns:** `CollectEventsEnvelope` — a polymorphic record that carries the
 `kind` discriminator plus exactly one populated payload field
-(`counters` / `exceptions` / `gc` / `datas` / `eventSource` / `activities` / `logs` /
-`jit` / `threadPool` / `contention` / `db`). The envelope's `summary`, `hints`,
+(`counters` / `exceptions` / `crashGuard` / `gc` / `datas` / `catalog` /
+`eventSource` / `activities` / `logs` / `jit` / `threadPool` / `contention` /
+`db` / `kestrel` / `networking` / `startup`). The envelope's `summary`, `hints`,
 `handle`, `handleExpiresAt`, and `resolvedProcess` are passed through from the
 underlying collector verbatim, so `query_snapshot` drilldowns continue to work
 unchanged.
 
 **Authorization.** The dispatcher is gated by `RequireAnyScope("read-counters","eventpipe")`
-and re-checks the per-kind scope inside the call so the boundaries of RFC 0001
-§2 are preserved: `kind="counters"` requires `read-counters`, every other
+and re-checks the per-kind scope inside the call so the scope boundaries
+are preserved: `kind="counters"` requires `read-counters`, every other
 kind requires `eventpipe` (`event_source` additionally honors the existing
 `eventsource-any` modifier).
 
@@ -855,7 +981,7 @@ kind requires `eventpipe` (`event_source` additionally honors the existing
 
 ## `collect_sample`
 
-**Canonical bounded-time sampler** (RFC 0002 §4.2). A single tool that
+**Canonical bounded-time sampler.** A single tool that
 dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc sampler.
 New clients should call `collect_sample` instead of the three legacy entry
 points; the legacy tools remain registered and behaviorally identical, but
@@ -874,6 +1000,7 @@ each carries a `DEPRECATED` notice and will be removed in `0.9.0`.
 | `resolveSourceLines` | `bool` | `true` | `cpu` only. Same as [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")). |
 | `maxResolvedSources` | `int?` | `topN` | `cpu` only. |
 | `resolveMethodInstantiations` / `maxResolvedMethodInstantiations` | — | — | `cpu` only. Same as `collect_sample(kind="cpu")`. |
+| `nativeAotMapFile` | `string?` | `null` | `cpu` on NativeAOT only. Path to the ILC `*.map.xml` (`<IlcGenerateMapFile>true</IlcGenerateMapFile>`). Emits a name-based `MethodIdentity` (TypeFullName + MethodName; MVID/token `null`) for hot managed AOT methods so the `dotnet-native-mcp` disassembly handoff works. Ignored on CoreCLR. See [`aot-coverage.md`](./aot-coverage.md) and [`handoff-contract.md`](./handoff-contract.md#nativeaot-identity--name-based-issue-395). |
 | `nativeAllocSamplePeriod` | `long` | `1000` | `native-alloc` only. Record one callchain per N allocator hits (throttles recorded samples, not the per-call uprobe trap cost). |
 
 **Returns:** `CollectSampleEnvelope` — a polymorphic record carrying the
@@ -988,7 +1115,7 @@ and also includes `http.server.request.duration` p95 when available.
 
 ## `collect_sample(kind="cpu")`
 
-> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="cpu", …)`](#collect_sample) instead. The legacy tool remains registered and behaviorally identical during the deprecation window (RFC 0002 §4.2 / issue #210).
+> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="cpu", …)`](#collect_sample) instead. The legacy tool remains registered and behaviorally identical during the deprecation window (issue #210).
 
 Captures a CPU sample via the `Microsoft-DotNETCore-SampleProfiler` provider,
 writes a temporary `.nettrace`, parses it with `TraceLog` and aggregates the
@@ -1075,7 +1202,7 @@ yields a few thousand samples; bump `durationSeconds` for sparse workloads.
 "optional"`). Spec clients should use task-augmented `tools/call` + `tasks/get` /
 `tasks/result`; for clients that don't implement Tasks, use the in-request
 `notifications/progress` + `notifications/cancelled` flow described under
-[MCP-native progress and cancellation](#mcp-native-progress-and-cancellation-rfc-0002-73-7--issue-211).
+[MCP-native progress and cancellation](#mcp-native-progress-and-cancellation-issue-211).
 
 ## Symbol resolution
 
@@ -1109,7 +1236,7 @@ closed form.
 
 ## `collect_sample(kind="allocation")`
 
-> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="allocation", …)`](#collect_sample) instead. The legacy tool remains registered and behaviorally identical during the deprecation window (RFC 0002 §4.2 / issue #210).
+> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="allocation", …)`](#collect_sample) instead. The legacy tool remains registered and behaviorally identical during the deprecation window (issue #210).
 
 Captures allocation samples from the target process via `GCAllocationTick`
 events from `Microsoft-Windows-DotNETRuntime` (keyword `GCKeyword=0x1`, level
@@ -1176,8 +1303,7 @@ returned handle to find which allocation sites are responsible.
 > **Deprecated — call [`collect_events`](#collect_events) with `kind="exceptions"`.**
 > Behaviorally identical; will be removed in `0.7.0`.
 
-
-exception thrown by the process during the window.
+Collects every exception thrown by the process during the window.
 
 **Parameters:**
 
@@ -1225,6 +1351,48 @@ matters; lower it when you only want a quick signal.
 "optional"`). Spec clients should use task-augmented `tools/call` + `tasks/get` /
 `tasks/result`. Clients that don't implement Tasks should use the in-request
 `notifications/progress` + `notifications/cancelled` flow.
+
+---
+
+## `collect_events(kind="crash-guard")`
+
+Starts a crash/unhandled-exception guard window. It subscribes to the runtime
+exception keyword (including `ExceptionThrown_V1`) plus crash-adjacent runtime
+events and returns early when the target process exits. Use it before triggering
+a suspected fatal path, or during an incident where the process is about to die.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int?` | auto | Target process id |
+| `durationSeconds` | `int` | `10` | Guard window; returns earlier if the process exits |
+| `maxRecent` | `int` | `100` | Maximum exception events to retain |
+| `depth` | `summary\|detail\|raw` | `Summary` | Summary keeps the final exception/headline inline; detail/raw include retained exceptions |
+
+**Returns:** `CrashGuardSnapshot` with `processExited`, `exitCode`,
+`unhandledExceptionObserved`, `finalException`, exact `byType` counts, retained
+`exceptions[]`, and `notes[]`. The handle accepts:
+
+- `query_snapshot(handle, view="summary")` — final exception + by-type counts.
+- `query_snapshot(handle, view="exceptions")` — retained exception stream.
+- `query_snapshot(handle, view="stack")` — managed stack for the final exception
+  when the runtime/event payload exposed one.
+
+When an unhandled exception is observed, the result emits a next-action hint
+toward `collect_process_dump(dumpType="Mini")` so the LLM can correlate
+exception type/message/stack with dump state. The dump tool still requires its
+normal explicit confirmation before writing a dump file.
+
+**Pairing with runtime-written crash dumps.** If the target is configured with
+`DOTNET_DbgEnableMiniDump=1` (and companion `DOTNET_DbgMiniDumpType` /
+`DOTNET_DbgMiniDumpName` when needed), the runtime may write a crash dump as the
+process terminates. Use `collect_events(kind="crash-guard")` to capture the
+exception stream and final managed stack, then correlate its `startedAt`,
+`finalException.timestamp`, `processId`, and `exitCode` with the dump file name
+or crash-report metadata. In that mode, `collect_process_dump` is optional: use
+the runtime-written dump if it already exists, or follow the hint when the
+process is still alive long enough for an explicit dump.
 
 ---
 
@@ -1444,6 +1612,48 @@ and groups the captured waits by contended call site and owner thread.
 - `byCallSite` is best-effort and depends on EventPipe call stacks being available in the session.
 - On current Linux runtimes, `ContentionStart` / `ContentionStop` may not be emitted over EventPipe even when `monitor-lock-contention-count` rises; the collector surfaces that caveat in `notes` when the window is empty.
 
+
+## `collect_events(kind="startup")`
+
+Collects startup and cold-start contributors that are visible during an EventPipe
+window: runtime loader events from `Microsoft-Windows-DotNETRuntime`
+`LoaderKeyword` (`0x8`) and DependencyInjection events from
+`Microsoft-Extensions-DependencyInjection`. Loader events include
+`AssemblyLoad` / `AssemblyLoad_V1`, `ModuleLoad` / `ModuleLoad_V2`, and any
+DC/load variants the runtime emits during the session. DI events are based on the
+provider's current source (`ServiceProviderBuilt`, `ServiceProviderDescriptors`, `CallSiteBuilt`,
+`ServiceResolved`, `ExpressionTreeGenerated`, `DynamicMethodBuilt`, and
+`ServiceRealizationFailed`; older/newer runtimes may vary).
+
+**Critical timing caveat:** attaching to an already-running process captures only
+loader/DI events emitted **during the collection window**. Events before attach —
+usually the most important part of initial cold-start — are missed. True
+cold-start capture requires enabling EventPipe before or at process start via a
+suspended/reverse-connect startup diagnostic port (for example `DOTNET_DiagnosticPorts`
+with the `suspend` modifier). Attaching after launch — including the CLI `--launch`
+child mode, which waits for the diagnostic endpoint to come up before collecting —
+does **not** recover pre-attach events. The collector always includes this
+caveat in `notes`; it does not pretend to recover pre-attach events.
+
+JIT-at-startup is not duplicated here; use `collect_events(kind="jit")` for JIT
+and tiered-compilation startup work. Static-constructor duration is not exposed
+as a clean EventPipe signal in this collector, so it is documented in `notes`
+rather than inferred.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int?` | auto | Target process id |
+| `durationSeconds` | `int` | `10` | Window length |
+| `depth` | `SamplingDepth` | `Summary` | `Summary` keeps headline counts and short loader/DI slices inline; `Detail` / `Raw` keep the captured lists inline |
+
+**Returns:** `StartupSnapshot` with assembly/module load counts, DI event counts,
+observed DI activity span, loader event lists, DI event list, merged timeline,
+and explanatory notes.
+
+**Drilldown:** `query_snapshot(handle, view="summary" | "assemblies" | "modules" | "di" | "timeline")`.
+
 ## `collect_events(kind="db")`
 
 Collects a curated database view by combining EF Core command activities with
@@ -1520,6 +1730,89 @@ per-tier counts, `reJitCount`, `osrCount`, and `hasIlMap`.
 - SqlClient pool stats depend on provider support; when the target only emits EF
   activities the `connectionPool` slice may be empty.
 
+## `collect_events(kind="kestrel")`
+
+Collects a curated Kestrel HTTP-server view by subscribing to the
+`Microsoft-AspNetCore-Server-Kestrel` EventSource. The collector pairs
+connection / request / TLS-handshake start+stop events to compute request and
+TLS latency percentiles and connection durations, tracks the
+`connection-queue-length` and `request-queue-length` EventCounters over the
+window to localize head-of-line blocking, and captures the live
+`KestrelServerOptions` JSON emitted by the `Configuration` event when the
+session is enabled (TLS, limits, keep-alive, HTTP protocol versions).
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int?` | — | Target process id |
+| `durationSeconds` | `int` | `10` | Window length |
+| `intervalSeconds` | `int` | `1` | Refresh interval requested from Kestrel EventCounters |
+| `depth` | `SamplingDepth` | `Summary` | `Summary` trims the by-operation list and drops the queue timeline + config JSON inline; `Detail` / `Raw` keep the full capture |
+
+**Returns:** `KestrelSnapshot` with:
+
+- `connectionsStarted` / `connectionsStopped` / `connectionsRejected`
+- `requestsStarted` / `requestsStopped`
+- `tlsHandshakesStarted` / `tlsHandshakesStopped` / `tlsHandshakesFailed`
+- `peakConnectionQueueLength` / `peakRequestQueueLength`
+- request latency `requestP50` / `requestP95` / `requestMax`
+- TLS latency `tlsHandshakeP50` / `tlsHandshakeP95` / `tlsHandshakeMax`
+- connection duration `connectionDurationP50` / `connectionDurationP95` / `connectionDurationMax`
+- `counters` (`KestrelCounterSample[]`), `queuePoints` (`KestrelQueuePoint[]`)
+- `byOperation` (`KestrelRequestGroup[]` keyed by HTTP method + path + version)
+- `tlsProtocols`, `configurationJson`, `notes`
+
+**Drilldown:** `query_snapshot(handle, view="summary" | "byOperation" | "queues" | "tls" | "config")`.
+
+**Notes:**
+
+- The `Configuration` event fires once when the EventPipe session is enabled, so
+  `configurationJson` reflects the server options at the moment of collection.
+- When no traffic flows during the window the collector returns a note and empty
+  aggregates — start the session **before** the load you want to observe.
+
+---
+
+## `collect_events(kind="networking")`
+
+Collects a curated outbound-networking view by subscribing to the stable .NET
+networking EventSources: `System.Net.Http` (HttpClient request lifecycle,
+connection pool, time-in-queue), `System.Net.NameResolution` (DNS),
+`System.Net.Security` (TLS handshakes) and `System.Net.Sockets` (socket
+connects). Request / DNS / TLS Start and Stop events are paired by EventSource
+activity id to compute latency percentiles, time-in-queue is read directly from
+`RequestLeftQueue`, outbound HTTP is grouped by `scheme://host:port` + method,
+and each provider's EventCounters are snapshotted.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int?` | — | Target process id |
+| `durationSeconds` | `int` | `10` | Window length |
+| `intervalSeconds` | `int` | `1` | Refresh interval requested from the networking EventCounters |
+| `depth` | `SamplingDepth` | `Summary` | `Summary` keeps only the top by-operation slice inline; `Detail` / `Raw` keep the full by-operation list |
+
+**Returns:** `NetworkingSnapshot` with:
+
+- HTTP: `httpRequestsStarted`/`Stopped`/`Failed`, `httpConnectionsEstablished`/`Closed`,
+  `httpRequestsLeftQueue`, `httpRequestP50`/`P95`/`Max`, `timeInQueueP50`/`P95`/`Max`
+- DNS: `dnsLookupsStarted`/`Stopped`/`Failed`, `dnsP50`/`P95`/`Max`
+- TLS: `tlsHandshakesStarted`/`Stopped`/`Failed`, `tlsP50`/`P95`/`Max`, `tlsProtocols`
+- Sockets: `socketConnectsStarted`/`Stopped`/`Failed`
+- `counters` (`NetworkingCounterSample[]`), `byOperation` (`NetworkingHttpGroup[]`), `notes`
+
+**Drilldown:** `query_snapshot(handle, view="summary" | "byOperation" | "queue" | "tls" | "dns")`.
+
+**Notes:**
+
+- Latency percentiles are best-effort: when Start/Stop events cannot be
+  correlated by activity id in the window the counts are still reported and a
+  note explains the gap.
+- Rising `timeInQueue` (the `queue` view) is the #1 outbound-HTTP saturation
+  signal — it means requests are waiting for a free pooled connection.
+
 ---
 
 ## `collect_events(kind="event_source")`
@@ -1578,12 +1871,25 @@ name and captures the events it emits in the window. Use for HTTP activity
 
 Writes a process dump to disk via the diagnostic IPC channel.
 
-> **Defense in depth — `confirm=true` required (B5.6 / RFC 0001 §4).** Without
-> `confirm=true` the tool returns a `{ "kind": "confirmation_required", ... }`
-> envelope describing the dump that *would* have been written (`targetPid`,
-> `dumpType`, `outputDirectory`) and writes nothing to disk. The
-> `dump-write` + `ptrace` scopes are still required on top of `confirm=true`.
-> Two-call pattern from an LLM:
+> **Human approval is required (defense in depth — [authorization](./authorization.md#per-call-confirmation)).**
+> Approval is obtained one of two ways, depending on the client's negotiated capabilities:
+>
+> 1. **Native MCP Elicitation (preferred).** When the client advertised the
+>    `elicitation` capability at initialize, the server **always** issues an
+>    `elicitation/create` request describing the dump that *would* be written
+>    (PID, dump type, output path, disk-cost / heap-contents warning) and a single
+>    boolean `approve` field. The dump is written only on an explicit approve —
+>    even if the caller also passed `confirm=true`; a decline writes nothing and
+>    returns an `approval_declined` envelope that does **not** invite a retry.
+>    `confirm=true` cannot bypass a human decline on a capable client.
+> 2. **`confirm=true` fallback.** Clients that did **not** negotiate elicitation
+>    keep the legacy two-call contract: without `confirm=true` the tool returns a
+>    `{ "kind": "confirmation_required", ... }` envelope (`targetPid`, `dumpType`,
+>    `outputDirectory`) and writes nothing; surface the preview to a human and
+>    re-issue with `confirm=true` after approval.
+>
+> The `dump-write` + `ptrace` scopes are still required on top of approval. Fallback
+> two-call pattern (non-elicitation client):
 >
 > ```text
 > # 1. Preview — no dump written.
@@ -1609,7 +1915,7 @@ Writes a process dump to disk via the diagnostic IPC channel.
 | `processId` | `int` | — | Target process id |
 | `dumpType` | `string` | `"Mini"` | `Mini` / `Triage` / `WithHeap` / `Full` |
 | `outputDirectory` | `string?` | artifact root | **Relative** sub-path under `MCP_ARTIFACT_ROOT`. Must not be absolute. |
-| `confirm` | `bool` | `false` | **Required `true` to actually write the dump.** Without it, the tool returns a `confirmation_required` preview and writes nothing. See RFC 0001 §4. |
+| `confirm` | `bool` | `false` | Approval fallback for clients **without** the MCP elicitation capability. **Required `true` to write the dump when elicitation is unavailable.** Elicitation-capable clients are **always** prompted natively and this flag is ignored for them (it cannot bypass a human decline). See [authorization](./authorization.md#per-call-confirmation). |
 
 **Returns:** `DumpToolResult` — a discriminated envelope:
 
@@ -1711,7 +2017,7 @@ JIT split the method). Suspend window on live attach is typically < 100 ms.
 
 ## `get_bytes`
 
-**Successor (RFC 0002 §4.4) to `get_bytes(kind="module")` + `get_bytes(kind="dump")`.** Single
+**Successor to `get_bytes(kind="module")` + `get_bytes(kind="dump")`.** Single
 byte-fetch entrypoint that dispatches on a `kind` discriminator:
 
 - `kind: "module"` — same shape as the legacy `get_bytes(kind="module")`. Required
@@ -1814,7 +2120,7 @@ covers dump artifacts under `MCP_ARTIFACT_ROOT`.
 
 ## `list_orchestrator`
 
-RFC 0002 §4.7 consolidation of the orchestrator listing surface (issue #212). One
+Consolidation of the orchestrator listing surface (issue #212). One
 read-only tool that dispatches on `kind`:
 
 | `kind` | Replaces | Required scope | Returns |
@@ -1855,9 +2161,9 @@ standard `DiagnosticError` envelope with kinds `InvalidArgument`,
 **Authorization.** The MCP scope filter accepts either of `orchestrator-list` /
 `orchestrator-attach`. The tool re-checks scopes per `kind` so a token holding
 only `orchestrator-list` cannot enumerate investigation handles by switching the
-discriminator (RFC §4.7).
+discriminator.
 
-**Why `attach_to_pod` / `detach_from_pod` are NOT folded in.** RFC §4.7 — those
+**Why `attach_to_pod` / `detach_from_pod` are NOT folded in.** Those
 verbs have side-effect boundaries (ephemeral-container injection, handle close,
 session unbind) that are distinct from read-only listing. They remain explicit.
 
@@ -1922,6 +2228,17 @@ matching `data.kind`. Errors (missing subscription id, unknown `kind`, Azure dis
 disabled, scope mismatch) surface as the standard `DiagnosticError` envelope with kinds
 `InvalidArgument`, `AzureDiscoveryDisabled`, or `PermissionDenied` respectively.
 
+**`readinessWarnings`.** Each candidate carries a best-effort `readinessWarnings[]` so the
+LLM can rank attach targets without an extra round-trip (empty does *not* prove attach-ready):
+- `webapps` — Windows sites are flagged (`Windows OS — sidecar not supported`); function apps
+  are excluded entirely.
+- `containerapps` — flags `No second container detected` (sidecar topology not deployed) and
+  `Scale=0` (may be scaled to zero and unreachable).
+
+**RBAC.** All kinds need **Reader** on the subscription (or a tighter resource-group scope).
+`aksclusters` with `includeKubeconfig=true` additionally needs the **Azure Kubernetes Service
+Cluster User Role** per cluster; missing it leaves `handoff` null on that row with a warning.
+
 **Registration.** Gated on the `AzureDiscovery:Enabled` configuration flag — a server
 with the master switch off looks identical to a pre-#232 build (the tool is not
 registered and the Azure SDK is never reached).
@@ -1931,8 +2248,7 @@ registered and the Azure SDK is never reached).
 - **#234** — AKS (`aksclusters`), including the kubeconfig-handle store.
 
 Until those PRs merge, calling the tool with `AzureDiscovery:Enabled=true` throws
-`NotImplementedException` through the backend stubs. See
-[`docs/azure-discovery.md`](./azure-discovery.md) for the full design.
+`NotImplementedException` through the backend stubs.
 
 ---
 
@@ -1944,7 +2260,7 @@ from the `Diagnostics:` configuration section and can be set via env vars
 (`Diagnostics__AllowSensitiveHeapValues=true`, `Diagnostics__EventSourceAllowlist__0=…`,
 `Diagnostics__SymbolServerAllowlist__0=msdl.microsoft.com`).
 
-> **B5.4 — modifier scopes preferred.** All three gates now accept an RFC 0001 modifier
+> **B5.4 — modifier scopes preferred.** All three gates now accept a modifier
 > scope on the bearer principal as an alternative authorisation path:
 > `sensitive-heap-read`, `eventsource-any`, `symbols-remote`. The scope-first predicate is
 > `principal.HasExplicitScope("<scope>") OR <legacy-flag-or-allowlist-allows>` — either
@@ -1967,7 +2283,8 @@ with `<redacted:metadata-only>` and the LLM gets length / type / address metadat
 
 To opt-in (**scope-first path, recommended**):
 
-1. mint a bearer token with the `sensitive-heap-read` scope (RFC 0001 §2.3 — see
+1. mint a bearer token with the `sensitive-heap-read` scope (see
+   [`authorization.md`](./authorization.md#modifier-scopes) and
    `deploy/helm/README.md` for the chart-level shape), **and**
 2. pass `includeSensitiveValues=true` on the per-call invocation.
 

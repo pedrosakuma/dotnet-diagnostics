@@ -8,21 +8,21 @@
 
 The server attaches to the .NET runtime diagnostic IPC socket and exposes 9 tools (process discovery, capability detection, EventCounters snapshot, CPU sampling, exception collection, GC events, EventSource passthrough, process dump) over either **Streamable HTTP** (default, with bearer-token auth — designed for sidecar / shared-deploy) or **stdio** (`--stdio`, recommended for local dev — the MCP client owns the process lifecycle, no daemon or bearer token; see issue #74).
 
-The repo also ships a **second deliverable** built on the same Core engine: **`dotnet-diagnostics-cli`** (`src/DotnetDiagnosticsMcp.Cli`, assembly name `dotnet-diagnostics`), a Core-only standalone CLI for humans / scripts / CI — one-shot sub-commands plus a stateful `session` REPL, **no HTTP, no bearer, no daemon**. Both tools publish to NuGet from the same release tag (`dotnet-diagnostics-mcp` and `dotnet-diagnostics-cli`). The CLI references **Core only** (asserted by `NoServerReferenceTests`); document it in [`docs/cli-reference.md`](./docs/cli-reference.md), not the MCP tool reference.
+The repo also ships a **second deliverable** built on the same Core engine: **`dotnet-diagnostics-cli`** (`src/DotnetDiagnostics.Cli`, assembly name `dotnet-diagnostics`), a Core-only standalone CLI for humans / scripts / CI — one-shot sub-commands plus a stateful `session` REPL, **no HTTP, no bearer, no daemon**. Both tools publish to NuGet from the same release tag (`dotnet-diagnostics-mcp` and `dotnet-diagnostics-cli`). The CLI references **Core only** (asserted by `NoServerReferenceTests`); document it in [`docs/cli-reference.md`](./docs/cli-reference.md), not the MCP tool reference.
 
-**Status:** MVP complete (Phases 1–6). Active work on Phase 7 is tracked in [issue #17](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/17) and the milestone [`Phase 7 — Roadmap`](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/milestone/1).
+**Status:** MVP complete (Phases 1–6). Active work on Phase 7 is tracked in [issue #17](https://github.com/pedrosakuma/dotnet-diagnostics/issues/17) and the milestone [`Phase 7 — Roadmap`](https://github.com/pedrosakuma/dotnet-diagnostics/milestone/1).
 
 ## Repository layout
 
 ```
 src/
-  DotnetDiagnosticsMcp.Core/      — IPC + EventPipe primitives, no MCP knowledge
-  DotnetDiagnosticsMcp.Server/    — MCP tools, HTTP transport, bearer auth
-  DotnetDiagnosticsMcp.Cli/       — standalone CLI (dotnet-diagnostics-cli), Core only, one-shot + session REPL
+  DotnetDiagnostics.Core/      — IPC + EventPipe primitives, no MCP knowledge
+  DotnetDiagnostics.Mcp/    — MCP tools, HTTP transport, bearer auth
+  DotnetDiagnostics.Cli/       — standalone CLI (dotnet-diagnostics-cli), Core only, one-shot + session REPL
 tests/
-  DotnetDiagnosticsMcp.Core.Tests/              — live process tests (spawn sample, attach, assert)
-  DotnetDiagnosticsMcp.Server.IntegrationTests/ — HTTP + MCP protocol tests
-  DotnetDiagnosticsMcp.Cli.Tests/               — CLI parsing, command, and session-REPL tests
+  DotnetDiagnostics.Core.Tests/              — live process tests (spawn sample, attach, assert)
+  DotnetDiagnostics.Mcp.IntegrationTests/ — HTTP + MCP protocol tests
+  DotnetDiagnostics.Cli.Tests/               — CLI parsing, command, and session-REPL tests
 samples/
   CoreClrSample/      — minimal ASP.NET API used by Core tests
   NativeAotSample/    — used to validate capability detection
@@ -41,23 +41,23 @@ All commands are run from the repo root.
 
 ```bash
 # Build everything
-dotnet build DotnetDiagnosticsMcp.slnx -c Release
+dotnet build DotnetDiagnostics.slnx -c Release
 
 # Run all tests (Core tests spawn a live sample process; require .NET 10 SDK on PATH)
-dotnet test DotnetDiagnosticsMcp.slnx -c Release --no-build
+dotnet test DotnetDiagnostics.slnx -c Release --no-build
 
 # Run only the integration tests
-dotnet test tests/DotnetDiagnosticsMcp.Server.IntegrationTests/ -c Release --no-build
+dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/ -c Release --no-build
 
 # Run the MCP server locally (launch profile listens on http://localhost:5130)
-dotnet run --project src/DotnetDiagnosticsMcp.Server -c Release
+dotnet run --project src/DotnetDiagnostics.Mcp -c Release
 
 # Run the standalone CLI (Core-only; one-shot or `session` REPL)
-dotnet run --project src/DotnetDiagnosticsMcp.Cli -c Release -- processes
-dotnet run --project src/DotnetDiagnosticsMcp.Cli -c Release -- session
+dotnet run --project src/DotnetDiagnostics.Cli -c Release -- processes
+dotnet run --project src/DotnetDiagnostics.Cli -c Release -- session
 
 # Run a single live test
-dotnet test tests/DotnetDiagnosticsMcp.Core.Tests/ -c Release --no-build \
+dotnet test tests/DotnetDiagnostics.Core.Tests/ -c Release --no-build \
   --filter FullyQualifiedName~Counters_ReturnsSystemRuntimeMetrics
 ```
 
@@ -68,6 +68,20 @@ documented in [`docs/central-orchestrator-design.md`](./docs/central-orchestrato
 sets `DOTNET_DBG_MCP_KIND_TEST=1` plus its companion env vars. The standard
 `ci.yml` server-integration leg filters `Category!=KindIntegration` so it
 never appears as a misleading "Passed" no-op there.
+
+**CI docs-only fast path — gate STEPS, never the job.** Branch protection
+requires four contexts: `Build & Test (ubuntu-latest)`, `Build & Test
+(windows-latest)`, `Kind Integration (ubuntu-latest)`, `Helm render smoke
+(B5.5)`. A `changes` job (`dorny/paths-filter`, `code` = any non-`*.md` file
+changed) lets docs-only PRs skip the expensive work — but each heavy job still
+**runs** and gates its individual steps on `needs.changes.outputs.code == 'true'`.
+Do **not** put the `if:` on the job (or use `paths-ignore` at the workflow
+level): a *skipped* required job never reports its context and deadlocks the PR
+in "Expected — Waiting" forever. A job whose `needs` succeeded but whose steps
+all skip still reports **success**, which is what satisfies the required check.
+The Kind workflow additionally caches Docker layers via `type=gha`; GHA cache is
+branch-scoped (PRs read `main`'s cache, write their own). Crash dumps upload only
+on failure (`if: ${{ failure() && … }}`); TRX always.
 
 **Bearer token.** The server reads `MCP_BEARER_TOKEN` from the environment. If unset, it
 generates an ephemeral 32-byte hex token at startup and logs it as a warning — there is no
@@ -132,6 +146,10 @@ When any of the above bites, the diagnostic signature is: `gh` exits 0, no URL o
 
 Our `.dockerignore` starts with `*` (deny-all) and re-includes specific paths. **If you remove the `!.editorconfig` line, the publish breaks** with CA1848/CA1873 errors because the analyzer suppressions live in `.editorconfig`. Same applies to `!samples/` for sample images.
 
+### 📝 Documentation is written in English
+
+All committed docs (`docs/**`, `README.md`, `AGENTS.md`, XML-doc / `[Description]` strings, code comments) are **English**. The audience for the tool reference and tool descriptions is the LLM / MCP client. Do not introduce Portuguese (or any non-English) prose into committed files, even when the working conversation is in another language — translate before committing. If you find an existing non-English passage, normalize it to English as part of the change you are making.
+
 ### ⏱️ EventPipe session startup is not instant
 
 EventPipe sessions take ~500ms–1s to fully start. Then `EventCounters` payloads arrive at `EventCounterIntervalSec` boundaries.
@@ -149,11 +167,22 @@ dotnet … collect_events(kind="exceptions")  # synchronous
 
 ### 🧪 Live tests are real
 
-`tests/DotnetDiagnosticsMcp.Core.Tests/LiveCoreClrProcessTests.cs` spawns the `CoreClrSample` webapi by invoking its published DLL directly (`dotnet …/CoreClrSample.dll`) and attaches to the resulting PID. The fixture deliberately avoids `dotnet run`, which creates a wrapper host process whose PID is not the application. Required: .NET 10 SDK on `PATH`, ability to bind to `127.0.0.1:0`, and ~10s of runtime. CI runs both Linux and Windows runners.
+`tests/DotnetDiagnostics.Core.Tests/LiveCoreClrProcessTests.cs` spawns the `CoreClrSample` webapi by invoking its published DLL directly (`dotnet …/CoreClrSample.dll`) and attaches to the resulting PID. The fixture deliberately avoids `dotnet run`, which creates a wrapper host process whose PID is not the application. Required: .NET 10 SDK on `PATH`, ability to bind to `127.0.0.1:0`, and ~10s of runtime. CI runs both Linux and Windows runners.
 
-### 🎯 One MCP tool per concept (15 tools after RFC 0002 §7.3 alias removal)
+### 💥 Linux host-crash flake (issues #147 / dotnet/runtime#128525)
 
-Anthropic recommends ≤10 tools per LLM context. We have 15 tools after RFC 0002 §7.3 #213 consolidated
+The xunit host segfaults on `ubuntu-latest` under full-suite load — a native crash in a runtime thread (`SIGSEGV` / `SEGV_MAPERR`, no managed exception). Originally attributed to the EventPipe SampleProfiler, but **empirical reproduction (5×) showed it is broader and asynchronous to the managed workload**: using the vstest blame `Sequence_*.xml`, the test in-flight at crash time **varies** across runs (`Counters_ReturnsSystemRuntimeMetrics` / `Diff_CpuSample_DetectsRegression` / `DumpInspector_InspectLiveAsync_…PinnedGcHandles` — EventCounters, SampleProfiler, and ClrMD live-heap respectively), unified only by being the slowest tests in the serialized `LiveProcess` collection. The faulting thread is always an **unmanaged runtime thread** (createdump's `wait4` abort path erases the original RIP), and `si_addr` always lands at the **deterministic low offset `0x1f6c0`** inside a 1 MB-aligned (thread-stack) region that is unmapped at fault time — a runtime use-after-unmap, not random corruption and not in any of our capture code (so **a managed lock cannot fix it**). The quarantined CPU-sampler tests are skipped on Linux CI via `[SkipOnLinuxCiFact]` (still run locally + on Windows); `scripts/ci-test-with-retry.sh` tolerates the phantom host crash.
+
+Two manual/nightly repro jobs un-quarantine those tests via `DOTNET_DBG_MCP_RUN_QUARANTINED_LINUX_TESTS=1` (the opt-in on `SkipOnLinuxCiFactAttribute`) and run the full Core suite to capture evidence for the runtime team:
+
+- **`.github/workflows/linux-crash-repro-preload.yml`** (preferred — this is the one that reproduces). A non-`ptrace` `LD_PRELOAD` interposer (`tools/linux-crash-repro/mmaptrace.c`) records the `mmap`/`munmap`/`mprotect` timeline via `syscall(2)`, so the full dump+EventPipe concurrency runs unperturbed and the ClrMD/ptrace live tests still pass. The runtime writes its own dump (`DOTNET_DbgEnableMiniDump`) + crashreport, and `--blame-hang-timeout` already emits the per-testhost `Sequence_*.xml` (uploaded as an artifact) that names the in-flight test. Do **not** add `--blame-crash`: its createdump collector ptrace-attaches and perturbs the run.
+- **`.github/workflows/linux-crash-repro.yml`** (older `strace -f` harness). `strace` (not `LD_AUDIT`) because the fault address is **not** file-backed — only `strace` sees anonymous/JIT mappings. But `strace -f`'s per-process ptrace tracer changes timing and breaks the ClrMD/ptrace live tests, so the dump+EventPipe load that triggers the crash is **not** faithfully reproduced — this harness largely masks the flake; prefer the preload job.
+
+Findings so far are posted on dotnet/runtime#128525 (issuecomment-4672447353, -4672792762). Re-run a job until a dump appears, then hand the gzipped mmap log + dump + crashreport + blame sequence upstream.
+
+### 🎯 One MCP tool per concept (15 tools)
+
+Anthropic recommends ≤10 tools per LLM context. We have 15 tools after #213 consolidated
 24 legacy aliases into 7 unified discriminator tools: `inspect_process`, `collect_events`, `collect_sample`,
 `query_snapshot`, `inspect_heap`, `list_orchestrator`, `get_bytes` plus 8 non-aliased tools
 (`collect_process_dump`, `collect_thread_snapshot`, `capture_method_bytes`, `start_investigation`,
@@ -168,18 +197,18 @@ Anthropic recommends ≤10 tools per LLM context. We have 15 tools after RFC 000
    answers parameterized follow-up questions. This keeps the tool surface flat while letting the
    LLM ask narrowly-scoped questions without re-paying the collection cost.
 
-See Phase 7 issues [#8 `mcp-drilldown`](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/8)
-and [#24 wave 1 heap drilldown](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/24).
+See Phase 7 issues [#8 `mcp-drilldown`](https://github.com/pedrosakuma/dotnet-diagnostics/issues/8)
+and [#24 wave 1 heap drilldown](https://github.com/pedrosakuma/dotnet-diagnostics/issues/24).
 
 ## Phase 7 — what is being designed and why
 
-All open work has a GitHub issue. **Read the meta tracking issue first**: [#17 Phase 7 — Post-MVP Roadmap](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/17). It carries the current dependency graph, execution order, label taxonomy, and links to the two deep-research artifacts that back the design. Don't inline that taxonomy here — it drifts.
+All open work has a GitHub issue. **Read the meta tracking issue first**: [#17 Phase 7 — Post-MVP Roadmap](https://github.com/pedrosakuma/dotnet-diagnostics/issues/17). It carries the current dependency graph, execution order, label taxonomy, and links to the two deep-research artifacts that back the design. Don't inline that taxonomy here — it drifts.
 
 ## How to contribute as an agent
 
 When picking up an issue:
 
-1. **Read the meta tracking issue** ([#17](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/17)) for the dependency graph. Don't start blocked work.
+1. **Read the meta tracking issue** ([#17](https://github.com/pedrosakuma/dotnet-diagnostics/issues/17)) for the dependency graph. Don't start blocked work.
 2. **Read the linked research findings** in the issue body before designing.
 3. **Build + run tests** before and after — `dotnet build` and `dotnet test` from the repo root.
 4. **Don't add tools without an issue** — discuss first in the relevant `drilldown` or `discoverability` issue.
@@ -199,7 +228,7 @@ turn. Skip them when the task is genuinely trivial.
   several flake / race-condition regressions that the human + author-agent
   pair both missed.
 - **Decompose-then-parallelise.** Features here tend to land as several small,
-  independent PRs (RFC 0002 shipped as 13). When the work decomposes into ≥2
+  independent PRs (one recent consolidation shipped as 13). When the work decomposes into ≥2
   independent trails (different directories, different test surfaces, no
   shared schema migration), prefer dispatching one background sub-agent per
   trail over serialising them in the main loop (in Copilot CLI: `task` with
@@ -225,6 +254,6 @@ to every contributor and every agent on this repo.
 ## Things deliberately not in scope
 
 - **Modifying the target application** — non-goal. Everything must work over the diagnostic socket.
-- **Persistent server-side state** — server stays stateless; investigation memory is portable JSON the agent persists externally (see issue [#10](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/10)).
+- **Persistent server-side state** — server stays stateless; investigation memory is portable JSON the agent persists externally (see issue [#10](https://github.com/pedrosakuma/dotnet-diagnostics/issues/10)).
 - **A web UI** — this is an MCP server; the UI is whatever MCP client the human uses.
 - **Replacing dotnet-monitor** — different goals. `dotnet-monitor` is rule-based collection for ops; we are interactive diagnosis for an LLM. They complement each other.

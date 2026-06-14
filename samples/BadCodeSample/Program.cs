@@ -3,8 +3,12 @@ using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Loader;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
@@ -53,6 +57,9 @@ var leakedBuffers = new List<byte[]>();
 var leakedFiles = new List<FileStream>();
 var leakedSockets = new List<LeakedSocketConnection>();
 var leakedHandleWindows = new List<(nint[] HandlePointers, byte[][] Payloads)>();
+var leakedTimers = new List<Timer>();
+var leakedAssemblyLoadContexts = new List<AlcLeakRoot>();
+var leakedNativeAllocations = new List<nint>();
 var badCodeEndpoints = new[]
 {
     "/cpu-burn?ms=2000",
@@ -65,6 +72,9 @@ var badCodeEndpoints = new[]
     "/fd-leak?count=64",
     "/socket-leak?count=32&host=loopback",
     "/handle-leak?type=pinned|normal|weak&count=200&seconds=10",
+    "/timer-leak?count=50",
+    "/alc-leak?count=4",
+    "/native-bloat?mb=128",
     "/meter-spam?count=5&kind=counter",
     "/log-spam?count=200&level=warning",
     "/jit-pressure?count=200",
@@ -73,6 +83,7 @@ var badCodeEndpoints = new[]
     "/threadpool-starve?blockers=50",
     "/lock-storm?seconds=5&blockers=8",
     "/db-n+1?count=15",
+    "/crash?mode=unhandled|stackoverflow|oom",
 };
 var lockObject = new object();
 var lockStormGate = new object();
@@ -341,7 +352,64 @@ app.MapGet("/handle-leak", async (string? type, int? count, int? seconds) =>
     }
 });
 
-// 12. ILogger warning/error storm — detect with collect_events(kind="logs")
+// 12. Timer leak — detect with collect_events(kind="counters") active-timer-count
+//     + inspect_heap/query_snapshot(view="timers")
+app.MapGet("/timer-leak", (int? count) =>
+{
+    var n = Math.Clamp(count ?? 50, 1, 5_000);
+    lock (leakedTimers)
+    {
+        for (var i = 0; i < n; i++)
+        {
+            leakedTimers.Add(new Timer(static _ => { }, null, TimeSpan.FromHours(1), TimeSpan.FromHours(1)));
+        }
+
+        return Results.Ok(new { added = n, totalLeaked = leakedTimers.Count });
+    }
+});
+
+// 13. Collectible AssemblyLoadContext leak — detect with inspect_heap + query_snapshot(view="alc")
+app.MapGet("/alc-leak", (int? count) =>
+{
+    var n = Math.Clamp(count ?? 4, 1, 256);
+    var assemblyPath = Assembly.GetExecutingAssembly().Location;
+    lock (leakedAssemblyLoadContexts)
+    {
+        for (var i = 0; i < n; i++)
+        {
+            var context = new LeakyAssemblyLoadContext($"BadCodeSample.AlcLeak.{Guid.NewGuid():N}", assemblyPath);
+            var assembly = context.LoadFromAssemblyPath(assemblyPath);
+            var type = assembly.GetType(nameof(LoopbackCloseServer), throwOnError: true)!;
+            var instance = Activator.CreateInstance(type, nonPublic: true)!;
+            var handler = AlcLeakFixture.Subscribe(instance);
+            leakedAssemblyLoadContexts.Add(new AlcLeakRoot(context, assembly, instance, handler));
+        }
+
+        return Results.Ok(new { added = n, totalLeaked = leakedAssemblyLoadContexts.Count });
+    }
+});
+
+// 14. Native/unmanaged RSS growth with a flat managed heap — detect with inspect_process(view="resources")
+app.MapGet("/native-bloat", (int? mb) =>
+{
+    var size = Math.Clamp(mb ?? 128, 1, 512) * 1024 * 1024;
+    var pointer = Marshal.AllocHGlobal(size);
+    for (var offset = 0; offset < size; offset += Environment.SystemPageSize)
+    {
+        Marshal.WriteByte(IntPtr.Add(pointer, offset), 0x5A);
+    }
+
+    Marshal.WriteByte(IntPtr.Add(pointer, size - 1), 0x5A);
+
+    lock (leakedNativeAllocations)
+    {
+        leakedNativeAllocations.Add(pointer);
+    }
+
+    return Results.Ok(new { addedMb = size / (1024 * 1024), allocations = leakedNativeAllocations.Count });
+});
+
+// 14. ILogger warning/error storm — detect with collect_events(kind="logs")
 app.MapGet("/log-spam", (ILoggerFactory loggerFactory, int? count, string? level) =>
 {
     var n = Math.Clamp(count ?? 200, 1, 5_000);
@@ -471,6 +539,26 @@ app.MapGet("/db-n+1", async (IDbContextFactory<BadCodeDbContext> dbContextFactor
     return Results.Ok(new { count = n, rows = rows.Count, sample = rows[0] });
 });
 
+// 17. Fatal crash fixture — detect with collect_events(kind="crash-guard")
+app.MapGet("/crash", (string? mode) =>
+{
+    var normalizedMode = mode?.Trim().ToLowerInvariant() switch
+    {
+        null or "" or "unhandled" => "unhandled",
+        "stackoverflow" => "stackoverflow",
+        "oom" => "oom",
+        _ => null,
+    };
+
+    if (normalizedMode is null)
+    {
+        return Results.BadRequest(new { error = "mode must be one of: unhandled, stackoverflow, oom" });
+    }
+
+    StartCrashThread(normalizedMode);
+    return Results.Accepted($"/crash?mode={normalizedMode}", new { mode = normalizedMode, delayMs = 500 });
+});
+
 app.Run();
 
 static GCHandleType ParseHandleKind(string? type) => type?.Trim().ToLowerInvariant() switch
@@ -498,6 +586,51 @@ static int CreateAndInvokeJitPressureMethod(int seed)
 
     var handler = method.CreateDelegate<Func<int, int>>();
     return handler(seed);
+}
+
+static void StartCrashThread(string mode)
+{
+    var thread = new Thread(() =>
+    {
+        Thread.Sleep(500);
+        switch (mode)
+        {
+            case "stackoverflow":
+                _ = CauseStackOverflow(0);
+                break;
+            case "oom":
+                ThrowAfterFlushWindow(new InvalidOperationException(CrashFixtureMessage("BadCodeSample crash fixture simulated an unhandled OOM termination.")));
+                break;
+            default:
+                ThrowAfterFlushWindow(new InvalidOperationException(CrashFixtureMessage("BadCodeSample crash fixture threw an unhandled exception.")));
+                break;
+        }
+    })
+    {
+        IsBackground = false,
+        Name = $"BadCodeSample crash fixture ({mode})",
+    };
+    thread.Start();
+}
+
+[MethodImpl(MethodImplOptions.NoInlining)]
+static int CauseStackOverflow(int depth)
+    => depth + CauseStackOverflow(depth + 1);
+
+static string CrashFixtureMessage(string headline)
+    => headline + Environment.NewLine + Environment.StackTrace;
+
+static void ThrowAfterFlushWindow(Exception exception)
+{
+    try
+    {
+        throw exception;
+    }
+    catch (Exception captured)
+    {
+        Thread.Sleep(1000);
+        ExceptionDispatchInfo.Capture(captured).Throw();
+    }
 }
 
 static async Task<LeakedSocketConnection> LeakLoopbackSocketAsync(int port)
@@ -554,6 +687,35 @@ sealed class LeakedSocketConnection(TcpClient client, NetworkStream stream)
 {
     public TcpClient Client { get; } = client;
     public NetworkStream Stream { get; } = stream;
+}
+
+sealed record AlcLeakRoot(
+    AssemblyLoadContext Context,
+    Assembly Assembly,
+    object Instance,
+    EventHandler Handler);
+
+sealed class LeakyAssemblyLoadContext(string name, string assemblyPath) : AssemblyLoadContext(name, isCollectible: true)
+{
+    private readonly AssemblyDependencyResolver _resolver = new(assemblyPath);
+
+    protected override Assembly? Load(AssemblyName assemblyName)
+    {
+        var path = _resolver.ResolveAssemblyToPath(assemblyName);
+        return path is null ? null : LoadFromAssemblyPath(path);
+    }
+}
+
+static class AlcLeakFixture
+{
+    private static readonly List<EventHandler> LeakedHandlers = new();
+
+    public static EventHandler Subscribe(object alcInstance)
+    {
+        EventHandler handler = (_, _) => GC.KeepAlive(alcInstance);
+        LeakedHandlers.Add(handler);
+        return handler;
+    }
 }
 
 static class AsyncStallFixture

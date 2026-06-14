@@ -115,6 +115,133 @@ legacy EventCounters. Look at:
 
 ---
 
+## 1d. "Did my fix actually help?" — comparative + N-way trend journeys
+
+Use this when you have **two or more captures of the same kind** and want a verdict instead of
+eyeballing two payloads. It covers the current comparable projector kinds — `gc-datas`,
+`counters`, `gc-events`, `contention-snapshot`, and `threadpool-snapshot` — across
+**before/after** (N=2) and **N-way trend** (N≥3) journeys. The engine and verdict semantics
+are identical regardless of which "door" you use; only the transport differs.
+
+### Two doors, one engine
+
+- **MCP, in-session handles** — capture each window, keep the handles, then
+  `query_snapshot(handle="<last>", view="diff", comparisonHandles=["<t0>","<t1>", …])`.
+  For the classic before/after, pass `baselineHandle="<baseline>"` instead. The current
+  handle is always the **last** capture in the journey.
+- **MCP, persisted JSON bodies** — `compare_to_baseline(snapshotsJson=[<json0>, <json1>, …])`.
+  Pass **JSON bodies only** (never file paths — the sidecar is stateless). Dispatch is by the
+  `Schema` field, so the same tool still compares two `InvestigationSummary` documents.
+- **CLI** — `collect --kind datas|counters|gc|contention|threadpool --save <file>` writes a `ComparableSnapshot`,
+  then `compare a.json b.json …` runs the same engine locally. Works one-shot and inside
+  `session` (`--save` then `compare`).
+
+### Before/after recipe (N=2)
+
+1. Capture a **baseline** window on the healthy / pre-fix build:
+   `collect_events(kind="datas")` (or `kind="counters"` / `kind="gc"` / `kind="contention"` /
+   `kind="threadpool"`).
+2. Apply the fix / config change and re-capture the **same** window on the new build.
+3. Compare — MCP: `query_snapshot(view="diff", baselineHandle="<baseline>")`; CLI:
+   `compare before.json after.json`.
+4. Read the top-level **`Verdict`**:
+   - `improvement` — the primary metric(s) moved the better-direction way.
+   - `regression` — the primary metric(s) moved the wrong way.
+   - `mixed` — some primaries improved, others regressed; read the per-metric `Direction`.
+   - `no_change` — primaries within `minDeltaPct`.
+   - `no_overlap` — the two captures share no comparable metric/key (e.g. different kinds of
+     work); re-capture comparable windows.
+   - `incomparable` — fewer than two captures or mixed kinds.
+5. `Pairwise.Headline` is `first→last`; `MetricSeries[].DeltaPct` and `KeyMatrix[].DeltaPct`
+   carry the per-metric / per-row deltas. `Notes[]` flags caveats (cross-process, unit
+   mismatch, top-N truncation).
+
+### N-way trend recipe (N≥3)
+
+Capture `t0..tn` of the **same kind** (especially `gc-datas`, `counters`, `contention`, or
+`threadpool`) while a workload ramps or a tuning loop runs, then compare all of them in order.
+The headline verdict is still
+`first→last`, but the real signal is each metric's **`Trend`**:
+
+- `MonotonicUp` / `MonotonicDown` — moving steadily one way (still trending).
+- `Converged` — moved early then settled; the system **adapted and stabilised** (e.g. DATAS
+  heap-count settling after load change).
+- `Oscillating` — flipping back and forth without settling; the configuration is **hunting**.
+- `Flat` — no meaningful movement across the series.
+
+`Pairwise.BaselineEach[]` (t0→ti) and `Pairwise.Adjacent[]` (ti→ti+1) let you locate **when**
+the change happened. This is how you tell "settled" from "still adapting" — a `Converged`
+series with a quiet tail is healthy; a `MonotonicUp` allocation-rate series at the tail is not.
+
+### Replica consistency recipe (dispersion mode)
+
+Use this when the question is **"are my N replicas consistent right now?"** rather than
+"did one process change over time?" Capture the same kind/window from each pod or replica,
+then compare them as an unordered fleet:
+
+- MCP handles: `query_snapshot(handle="<pod-c>", view="diff", comparisonHandles=["<pod-a>","<pod-b>"], mode="dispersion")`.
+- Persisted JSON: `compare_to_baseline(snapshotsJson=[<pod-a-json>, <pod-b-json>, <pod-c-json>], mode="dispersion")`.
+- CLI: `compare pod-a.json pod-b.json pod-c.json --mode dispersion`.
+
+Read the dispersion verdicts as:
+
+- `uniform` — shared metrics/key rows are close enough across captures.
+- `dispersed` — at least one metric/key row has a high coefficient of variation; inspect the
+  `Dispersion` stats on metric series or compact top key rows for the outlier.
+- `no_overlap` — captures do not share comparable metrics/key rows.
+- `incomparable` — fewer than two captures or mixed kinds.
+
+For compact summaries, metric series are ranked by their dispersion coefficient of variation.
+Key-set row ranking computes coefficient of variation from the row values at presentation time
+because `KeyMatrixRow` does not yet persist per-row dispersion stats. Richer row-level dispersion
+stats are a future enhancement.
+
+`mode="dispersion"` is available only on N-way comparable journeys; legacy pairwise
+`baselineHandle` sample diffs (`cpu-sample`, `heap-snapshot`, `allocation-sample`,
+`native-alloc-sample`) are rejected because their pairwise diff shape cannot represent dispersion.
+
+### Token guidance (compact verdict in context, full matrix on demand)
+
+Large journeys must not flood the LLM context:
+
+- Keep `depth="compact"` (the helpful default for triage): you get verdict + headline + counts
+  + `Notes[]` + the **top-N** metric/key deltas inline. Raise `topN` to widen the inline slice.
+- `depth="full"` inlines the entire `SnapshotJourneyDiff` **only** while it stays under the
+  32 KiB inline threshold. Past that, the server retains the full matrix in memory and the
+  inline payload carries a `journey://diff/{handle}` **Resource** link — pull it only when you
+  need the whole matrix.
+- The CLI mirror of that lever is `--save <file>` (writes the full matrix to disk) while the
+  terminal keeps the compact verdict + headline.
+
+See [tool-reference.md](./tool-reference.md) (`query_snapshot(view="diff")` /
+`compare_to_baseline`) and [cli-reference.md](./cli-reference.md) (`collect --save`, `compare`)
+for the full parameter and output contracts.
+
+### Streaming summaries to OpenTelemetry / Application Insights (opt-in)
+
+When the operator sets `MCP_INVESTIGATION_OTEL=1` (or
+`Observability:InvestigationTelemetry:Enabled=true`), every
+`export_investigation_summary` call additionally emits an `investigation.summary`
+OpenTelemetry span on the `DotnetDiagnostics.Mcp.Investigations` activity source —
+so a diagnostic run leaves a durable, queryable trail without changing the portable
+JSON the LLM owns (the server stays stateless: emit-and-forget). The span carries the
+investigation id, pid, build/container provenance, total samples, duration, and the
+top-N hotspots (`investigation.hotspot.{i}.method|module|exclusive_percent|inclusive_percent`,
+capped by `Observability:InvestigationTelemetry:MaxHotspotAttributes`, default 5).
+
+- **Off by default**; zero behavior change when unset (no span is produced).
+- Rides the **existing** OTLP tracing exporter — set `OTEL_EXPORTER_OTLP_ENDPOINT`
+  to ship spans to any OTLP backend (Grafana/Tempo, Honeycomb, …).
+- **Azure Application Insights**: no bespoke SDK needed — point
+  `OTEL_EXPORTER_OTLP_ENDPOINT` at the Application Insights OTLP ingestion endpoint
+  (or run the OpenTelemetry Collector with the Azure Monitor exporter). Query the
+  spans under `dependencies` / `traces` by `investigation.id`.
+
+This makes "show me every investigation against pod X over the last week" answerable
+in your telemetry backend, while `compare_to_baseline` remains the in-context diff path.
+
+---
+
 ## 2. "Memory keeps growing"
 
 ### Step 1
@@ -164,8 +291,18 @@ A growing `Pinned` / `Normal` bucket is the classic forgotten-`GCHandle.Alloc(..
 shape; `Dependent` often points at `ConditionalWeakTable`-style leaks.
 
 ### Step 5
-`collect_process_dump` with `dumpType = "WithHeap"`. **Defense in depth (B5.6 / RFC
-0001 §4):** call it once first *without* `confirm` to preview the dump that would be
+For plugin hosts, scripting workloads, or "metadata / Loader heap keeps growing"
+reports, run `query_snapshot(handle, view="alc")` on the same `inspect_heap` handle.
+Collectible ALC rows with `suspectedLeak=true` are still rooted; inspect the
+`retentionPath` to find the static cache/event-handler/object graph keeping a type from
+that ALC alive. The view is CoreCLR-only (NativeAOT has no ClrMD heap walk) and computes
+retention hints for at most 16 collectible ALCs per snapshot with the bounded
+64-frame / 250,000-object root search to avoid an O(contexts × heap) walk.
+
+### Step 6
+`collect_process_dump` with `dumpType = "WithHeap"`. **Defense in depth
+([per-call confirmation](./authorization.md#per-call-confirmation)):** call it once
+first *without* `confirm` to preview the dump that would be
 written (returns a `{ kind: "confirmation_required", targetPid, dumpType,
 outputDirectory }` envelope and writes nothing); then re-issue with `confirm=true`
 once a human has approved. The `dump-write` + `ptrace` scopes are still required on
@@ -212,6 +349,35 @@ log entries the app considers "handled" so you can correlate.
 If the exception only repros under specific code paths, capture a Mini dump at
 the moment of an alert with `collect_process_dump dumpType=Mini` to inspect
 thread stacks and locals.
+
+---
+
+## 3b. "The process crashes with an unhandled exception"
+
+### Step 1
+Start `collect_events(kind="crash-guard", durationSeconds=30)` **before**
+triggering the suspect path. EventPipe sessions are not retroactive; events
+thrown before the session opens are missed.
+
+### Step 2
+If the guard returns `unhandledExceptionObserved=true`, inspect
+`query_snapshot(handle, view="stack")` for the final exception type, message,
+and managed stack. Use `query_snapshot(handle, view="exceptions")` when the
+process threw multiple exceptions before the crash.
+
+### Step 3
+Correlate with dumps. If the environment has `DOTNET_DbgEnableMiniDump=1`, match
+the runtime-written crash dump by PID/timestamp with `finalException.timestamp`.
+If no runtime dump exists and the process is still alive, follow the
+`collect_process_dump(dumpType="Mini")` hint emitted by the guard; the dump tool
+will still require the normal explicit confirmation before writing the file.
+
+### Step 4
+For destructive fixtures such as stack overflow or OOM, prefer reproducing in an
+isolated sample/replica. The `BadCodeSample` `/crash?mode=unhandled` fixture is
+used in CI for the reliable unhandled-exception path; `stackoverflow` and `oom`
+are available for manual validation but are intentionally not asserted in the
+live test because they terminate the sample process more abruptly.
 
 ---
 
@@ -269,6 +435,24 @@ client-induced.
 5. If the DB snapshot is quiet, fall back to `collect_events(kind="event_source",
    providerName="System.Net.Http")` or `collect_sample(kind="cpu")` — the latency
    may be downstream or CPU-bound rather than database-bound.
+
+## 4e. "The spike is intermittent — I can't catch it manually"
+
+When the symptom (CPU spike, heap balloon, thread explosion) only appears for a few seconds at
+unpredictable times, a one-shot `collect_sample` / `inspect_heap` almost always misses it. Arm a
+**bounded threshold-gated capture** so the heavy artifact is taken the instant the metric trips:
+
+1. Pick the metric + threshold from the symptom: `cpu>85`, `gcHeapMb>=1500`, `rssMb>2000`,
+   `threadCount>400`, or `activeTimerCount>1000`.
+2. Arm `collect_events(kind="counters", triggerWhen="cpu>85", captureKind="cpu-sample", windowSeconds=120)`.
+   The call polls the counter and returns the moment it captures (or when the window elapses). Use
+   `captureKind="heap"` for memory spikes, `"thread-snapshot"` for thread/lock explosions, `"dump"`
+   (with `confirmDump=true`) for a full post-mortem.
+3. On a trip, follow the high-priority `query_snapshot(handle, …)` hint to drill into the captured
+   cpu-sample / heap / thread-snapshot without re-collecting.
+4. If `tripped=false`, re-arm with a longer `windowSeconds`, a lower threshold, or while you drive
+   the workload. Raise `maxCaptures` (≤10) to catch several breaches in one window.
+5. From the CLI / CI: `dotnet-diagnostics-cli collect --kind counters --pid <id> --capture-when 'cpu>85' --capture cpu-sample --window 120`.
 
 ---
 

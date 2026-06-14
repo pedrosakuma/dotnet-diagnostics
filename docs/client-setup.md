@@ -49,7 +49,7 @@ spawn / tear down the process per session:
 
 ```bash
 export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"
-dotnet run --project src/DotnetDiagnosticsMcp.Server
+dotnet run --project src/DotnetDiagnostics.Mcp
 # Server listens on http://localhost:5000 (or whatever ASP.NET picks)
 ```
 
@@ -112,6 +112,110 @@ export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"azp":"dotnet-diagnostics-mcp-client"}'
 
 Create a confidential client or service account, add the MCP scopes to its client scope mapping, and pass the resulting access token in the `Authorization` header.
 
+## Managed / workload-identity recipes (HTTP transport)
+
+The same OIDC/JWT path validates tokens minted from a **cloud platform identity** — no
+static secret to distribute. The caller mints a short-lived OIDC token from its workload
+identity; the sidecar validates it via standard OIDC metadata discovery and maps its
+claims onto MCP scopes. Set the issuer/audience the platform stamps, then map the
+caller's identity claim with `MCP_OIDC_REQUIRED_CLAIMS_JSON` (see
+[`docs/authorization.md`](./authorization.md) for the claim→scope model).
+
+> **Static bearer stays the loopback/local default.** Managed identity is additive and
+> opt-in; the opaque bearer path keeps working alongside it (a "break-glass" token).
+
+### Azure — Entra Workload Identity (AKS)
+
+The federated pod identity mints a token for the sidecar's app-registration audience.
+
+```bash
+export MCP_OIDC_ISSUER="https://login.microsoftonline.com/<tenant-id>/v2.0"
+export MCP_OIDC_AUDIENCE="api://dotnet-diagnostics-mcp"
+# Pin the calling workload identity's app/client id.
+export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"azp":"<workload-identity-client-id>"}'
+```
+
+Client side: the AKS workload-identity webhook projects an `AZURE_FEDERATED_TOKEN_FILE`;
+use `DefaultAzureCredential`/`WorkloadIdentityCredential` to acquire a token for
+`api://dotnet-diagnostics-mcp/.default`, and put MCP scopes in the app role / `scp` claim.
+
+### AWS — IRSA (IAM Roles for Service Accounts)
+
+The EKS OIDC provider issues a projected token; validate it audience-scoped.
+
+```bash
+export MCP_OIDC_ISSUER="https://oidc.eks.<region>.amazonaws.com/id/<cluster-id>"
+export MCP_OIDC_AUDIENCE="dotnet-diagnostics-mcp"
+# Pin the calling ServiceAccount.
+export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"sub":"system:serviceaccount:<namespace>:<sa-name>"}'
+# IRSA tokens carry no MCP scope claim — grant the scopes this identity may use.
+export MCP_OIDC_GRANTED_SCOPES="read-counters eventpipe"
+```
+
+Client side: project a token with `audience: dotnet-diagnostics-mcp` (a
+`serviceAccountToken` projected volume or `aws eks get-token`-style flow) and send it as
+the bearer. If your issuing flow can stamp MCP scopes in a `scope`/`scp` claim, use
+`MCP_OIDC_SCOPE_CLAIM` instead of (or alongside) `MCP_OIDC_GRANTED_SCOPES`.
+
+### GCP — Workload Identity Federation
+
+```bash
+export MCP_OIDC_ISSUER="https://accounts.google.com"
+export MCP_OIDC_AUDIENCE="dotnet-diagnostics-mcp"
+# Pin the calling service account's unique id (sub) or email.
+export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"email":"<gsa>@<project>.iam.gserviceaccount.com"}'
+```
+
+Client side: mint a Google-signed ID token whose `aud` is `dotnet-diagnostics-mcp` from
+the workload's service account and send it as the bearer.
+
+### Kubernetes — projected ServiceAccount token (in-cluster client → sidecar)
+
+For a same-cluster client authenticating to the sidecar with no cloud provider, use a
+projected `ServiceAccount` token bound to an explicit audience. The cluster's OIDC issuer
+serves the discovery document.
+
+```bash
+# Your cluster's issuer — kubectl get --raw /.well-known/openid-configuration | jq -r .issuer
+export MCP_OIDC_ISSUER="https://kubernetes.default.svc.cluster.local"
+export MCP_OIDC_AUDIENCE="dotnet-diagnostics-mcp"
+export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"sub":"system:serviceaccount:<namespace>:<sa-name>"}'
+# A raw projected SA token carries no scp/scope claim, so grant the MCP scopes this pinned
+# identity may use server-side (least-privilege; widen as the flow requires).
+export MCP_OIDC_GRANTED_SCOPES="read-counters eventpipe heap-read investigation-export"
+```
+
+The client mounts a projected token volume (`audience: dotnet-diagnostics-mcp`,
+`expirationSeconds: 3600`) and sends the file contents as the bearer. A ready-to-apply
+example is [`deploy/k8s/projected-token-auth.yaml`](../deploy/k8s/projected-token-auth.yaml).
+
+### Trusting more than one issuer at once
+
+A single sidecar can accept tokens from **multiple** issuers — e.g. a cloud
+workload-identity tenant *and* an in-cluster projected SA token issuer (handy for
+break-glass or mixed clients). The legacy `MCP_OIDC_ISSUER`/`MCP_OIDC_AUDIENCE` define the
+first issuer; add more via `MCP_OIDC_PROVIDERS_JSON` (a JSON array; each entry takes
+`issuer`, `audience`, optional `scopeClaim`, optional `requiredClaims`):
+
+```bash
+export MCP_OIDC_ISSUER="https://login.microsoftonline.com/<tenant-id>/v2.0"
+export MCP_OIDC_AUDIENCE="api://dotnet-diagnostics-mcp"
+export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"azp":"<workload-identity-client-id>"}'
+
+export MCP_OIDC_PROVIDERS_JSON='[
+  {
+    "issuer": "https://kubernetes.default.svc.cluster.local",
+    "audience": "dotnet-diagnostics-mcp",
+    "requiredClaims": { "sub": "system:serviceaccount:diag:investigator" }
+  }
+]'
+```
+
+Each presented JWT is validated against every configured issuer in turn; the first issuer
+whose signature, audience, and required claims all match wins. Tokens that match no
+trusted issuer get the same `401 {"kind":"unauthenticated"}` envelope as a bad opaque
+bearer.
+
 ## 2. Connect from the C# MCP SDK
 
 The pattern used by our integration tests:
@@ -142,7 +246,7 @@ var processes = await client.CallToolAsync(
     arguments: new Dictionary<string, object?> { ["view"] = "list" });
 ```
 
-See [`tests/DotnetDiagnosticsMcp.Server.IntegrationTests/McpToolsTests.cs`](../tests/DotnetDiagnosticsMcp.Server.IntegrationTests/McpToolsTests.cs)
+See [`tests/DotnetDiagnostics.Mcp.IntegrationTests/McpToolsTests.cs`](../tests/DotnetDiagnostics.Mcp.IntegrationTests/McpToolsTests.cs)
 for a full working example covering every tool.
 
 ## 3. Connect from Claude Desktop / a generic MCP client
@@ -230,9 +334,9 @@ out. `ServerInstructions` still describes the same hierarchy for clients that do
 
 ## Long-running collectors: cutover to MCP-native progress and cancellation
 
-Stage A of [RFC 0002 §7.3 #7 / issue #211](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/211)
-adds MCP-native progress and cancellation to `collect_sample(kind="cpu")` and
-`collect_events`. Clients should stop using the legacy polling bridge as soon
+Stage A of [issue #211](https://github.com/pedrosakuma/dotnet-diagnostics/issues/211)
+adds MCP-native progress and cancellation to `collect_sample`, `collect_events`
+and `inspect_heap`. Clients should stop using the legacy polling bridge as soon
 as their MCP runtime supports `notifications/progress` + `notifications/cancelled`
 on `tools/call`:
 
@@ -260,8 +364,49 @@ Cutover plan:
 2. Either path is sufficient: progress + cancel notifications cover the
    in-request lifecycle, while MCP Tasks cover the detached-poll lifecycle.
 
-> **Stage B (RFC 0002 §7.3 #7 / [issue #211](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/211)).**
+> **Stage B ([issue #211](https://github.com/pedrosakuma/dotnet-diagnostics/issues/211)).**
 > The legacy `collect_sample(kind="cpu")(runAsJob=true)` + `get_collection_status` +
 > `cancel_collection` polling bridge has been removed. The tool surface
 > dropped by two: clients that still depend on the polling path must adopt
 > one of the two paths above before upgrading.
+
+## MCP Tasks for long-running collectors
+
+`collect_sample`, `collect_events` and `inspect_heap` advertise
+`execution.taskSupport: "optional"` in `tools/list`, and the server advertises
+`capabilities.tasks.{list,cancel,requests.tools.call}`. Clients that implement the
+full MCP **Tasks** lifecycle can promote any of these calls to a detached task:
+
+- **C# MCP SDK** (≥ `1.3.0`): `client.CallToolAsTaskAsync(...)`, then poll
+  `tasks/get` and fetch the terminal result with `tasks/result`; cancel via
+  `tasks/cancel`.
+- **Generic clients**: send `tools/call` with `params.task` set.
+
+Tasks are **optional** — synchronous `tools/call` (with the in-request
+progress/cancel notifications above) keeps working for clients that don't
+implement the Tasks lifecycle.
+
+## Human approval for `collect_process_dump` (MCP Elicitation)
+
+`collect_process_dump` is the only destructive tool and requires explicit human
+approval ([issue #425](https://github.com/pedrosakuma/dotnet-diagnostics/issues/425)).
+How approval is requested depends on the capabilities your client negotiates at
+`initialize`:
+
+- **Elicitation-capable clients (preferred).** Advertise the `elicitation`
+  capability and register an elicitation handler. The server **always** issues an
+  `elicitation/create` request previewing the dump (PID, dump type, output path,
+  disk-cost + heap-contents warning) with a single boolean `approve` field; the
+  dump is written only when a human approves. A decline writes nothing — and
+  `confirm=true` cannot bypass it.
+  - **C# MCP SDK**: set `Capabilities.Elicitation = new ElicitationCapability()`
+    and `Handlers.ElicitationHandler = (request, ct) => …` on `McpClientOptions`,
+    returning an `ElicitResult { Action = "accept", Content = { ["approve"] = true } }`
+    (or `Action = "decline"`) after surfacing the request to a human.
+- **Clients without elicitation.** Fall back to the two-call `confirm=true`
+  contract: the first call returns a `confirmation_required` preview (nothing
+  written); after human approval, re-issue with `confirm=true`.
+
+This is capability-gated and degrades gracefully — a client that advertises
+neither elicitation nor sends `confirm=true` simply receives the
+`confirmation_required` preview and writes nothing.

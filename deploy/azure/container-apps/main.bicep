@@ -30,7 +30,7 @@ param environmentId string
 param appImage string
 
 @description('Image for the dotnet-diagnostics-mcp sidecar. Defaults to a released version tag (never :latest) so revisions are deterministic; for production override with a digest pin (image@sha256:...). See README.')
-param diagImage string = 'ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:0.3.1'
+param diagImage string = 'ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0'
 
 @description('TCP port the application container listens on. Exposed via ingress when ingressTarget=app.')
 param appPort int = 8080
@@ -143,7 +143,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
           // the diag image with USER root or change the app's USER directive.
           command: [
             'dotnet'
-            'DotnetDiagnosticsMcp.Server.dll'
+            'DotnetDiagnostics.Mcp.dll'
           ]
           env: [
             {

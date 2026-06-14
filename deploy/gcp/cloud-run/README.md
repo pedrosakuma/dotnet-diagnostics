@@ -8,9 +8,7 @@ IPC socket (created in `/tmp`), so the target app needs **no code changes**.
 
 This is the GCP-native counterpart to the
 [Azure Container Apps recipe](../../azure/container-apps/) and the
-[AWS ECS / Fargate recipe](../../aws/ecs-fargate/). It implements
-[`docs/cloud-recipes-design.md`](../../../docs/cloud-recipes-design.md)
-Phase 2.
+[AWS ECS / Fargate recipe](../../aws/ecs-fargate/).
 
 | Artifact | Purpose |
 |---|---|
@@ -76,7 +74,7 @@ visibility across containers.
    Artifact Registry in the same region:
    - Your application image.
    - The diagnostics sidecar image — default
-     `ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:0.3.1`. If your project
+     `ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0`. If your project
      blocks anonymous GHCR pulls, mirror it to Artifact Registry first.
 4. **A runtime service account** for the Cloud Run revision. It needs at
    minimum `roles/secretmanager.secretAccessor` on the bearer token secret:
@@ -129,7 +127,7 @@ attach will fail with `Permission denied`. See `AGENTS.md` →
      (`gcloud projects describe $(gcloud config get-value project) --format='value(projectNumber)'`)
    - `APP_IMAGE` — your application's container image URI
    - `DIAG_IMAGE` — diagnostics sidecar image (default
-     `ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:0.3.1`)
+     `ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0`)
    - `APP_SERVICE_ACCOUNT` — the service account email created above
    - `BEARER_SECRET_NAME` — Secret Manager secret holding the bearer token
      (appears in two places: the `run.googleapis.com/secrets` annotation
@@ -201,8 +199,8 @@ through Identity-Aware Proxy, or an SSH tunnel.
 
 ## Out of scope
 
-- **Public-by-default ingress.** The recipe defaults to internal ingress
-  per the design doc. Public exposure is an explicit override.
+- **Public-by-default ingress.** The recipe defaults to internal ingress.
+  Public exposure is an explicit override.
 - **External load balancer / IAP setup.** Cloud Run supports IAP and
   serverless NEGs, but provisioning them belongs in your platform's
   ingress layer, not in a diagnostics sidecar recipe.
@@ -217,16 +215,14 @@ through Identity-Aware Proxy, or an SSH tunnel.
 
 ## Reference
 
-- [`docs/cloud-recipes-design.md`](../../../docs/cloud-recipes-design.md) — the design that drives this recipe
-- [`docs/cloud-integrations-design.md`](../../../docs/cloud-integrations-design.md) — parent portfolio decision
 - [`AGENTS.md`](../../../AGENTS.md) — diagnostic socket UID invariant
 - [Cloud Run multi-container services](https://cloud.google.com/run/docs/deploying#multicontainer) — GCP docs
-- [Issue #22](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/22) — acceptance criteria
+- [Issue #22](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22) — acceptance criteria
 
 ## Production: pin to a digest
 
 The defaults above use a released version tag
-(`ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:0.3.1`) rather than `:latest`, so a
+(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0`) rather than `:latest`, so a
 new upstream push cannot silently re-deploy under your stack. For production
 workloads go one step further and pin to a **content-addressable digest** so the
 exact image bytes are immutable across replicas, rollbacks, and pull retries:
@@ -234,12 +230,12 @@ exact image bytes are immutable across replicas, rollbacks, and pull retries:
 ```bash
 # Resolve the current digest for the version tag you trust:
 docker buildx imagetools inspect \
-  ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:0.3.1 \
+  ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0 \
   --format '{{json .Manifest}}' | jq -r .digest
 # -> sha256:...
 
 # Use the digest form in your parameters / Bicep / service.yaml / template:
-ghcr.io/pedrosakuma/dotnet-diagnostics-mcp@sha256:<digest>
+ghcr.io/pedrosakuma/dotnet-diagnostics@sha256:<digest>
 ```
 
 Mirror the digest into your private registry (Artifact Registry, ECR, ACR) for

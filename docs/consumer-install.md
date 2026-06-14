@@ -27,7 +27,7 @@ dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 
 Upgrade: `dotnet tool update -g dotnet-diagnostics-mcp`. Uninstall: `dotnet tool uninstall -g dotnet-diagnostics-mcp`.
 
-> **Renamed in v0.2.2.** The NuGet package id was `DotnetDiagnosticsMcp.Server` for 0.1.0–0.2.1 and is now `dotnet-diagnostics-mcp` (matches the tool command and the sibling `dotnet-assembly-mcp`). If you have the old id installed, run `dotnet tool uninstall -g DotnetDiagnosticsMcp.Server` first, then install the new one. The legacy id has been unlisted on NuGet.org.
+> **Renamed in v0.2.2.** The NuGet package id was `DotnetDiagnostics.Mcp` for 0.1.0–0.2.1 and is now `dotnet-diagnostics-mcp` (matches the tool command and the sibling `dotnet-assembly-mcp`). If you have the old id installed, run `dotnet tool uninstall -g DotnetDiagnostics.Mcp` first, then install the new one. The legacy id has been unlisted on NuGet.org.
 
 ### 1b. Container
 
@@ -37,14 +37,14 @@ docker run -d \
   --restart unless-stopped \
   -p 127.0.0.1:8787:8080 \
   -e MCP_BEARER_TOKEN=$(openssl rand -hex 32) \
-  ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:latest
+  ghcr.io/pedrosakuma/dotnet-diagnostics:latest
 ```
 
 Attaching to a **live local process** from inside the container requires UID parity + a shared `/tmp` mount — see [docs/local-docker-sidecar.md](./local-docker-sidecar.md) for the canonical walkthrough.
 
 ### 1c. Single-file binary
 
-Grab the per-OS archive from the [GitHub Releases](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/releases) page (`linux-x64`, `linux-arm64`, `win-x64`, `win-arm64`, `osx-arm64`), extract, and place `dotnet-diagnostics-mcp` on PATH.
+Grab the per-OS archive from the [GitHub Releases](https://github.com/pedrosakuma/dotnet-diagnostics/releases) page (`linux-x64`, `linux-arm64`, `win-x64`, `win-arm64`, `osx-arm64`), extract, and place `dotnet-diagnostics-mcp` on PATH.
 
 ```bash
 tar -xzf dotnet-diagnostics-mcp-*-linux-x64.tar.gz -C ~/.local/bin
@@ -173,7 +173,7 @@ Add this to your `mcp-config.json` (Claude Desktop, Claude Code, Copilot CLI, Cu
 
 ## 4. Optional — pair with `dotnet-assembly-mcp`
 
-The diagnostics server resolves PDBs locally and stamps `SourceLocation` directly onto every `MethodIdentity` it emits for CPU samples (see [#28](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/28)). That means **in a dev environment** where the source tree is open in your editor, `dotnet-diagnostics-mcp` alone is enough to follow a hotspot to its source line.
+The diagnostics server resolves PDBs locally and stamps `SourceLocation` directly onto every `MethodIdentity` it emits for CPU samples (see [#28](https://github.com/pedrosakuma/dotnet-diagnostics/issues/28)). That means **in a dev environment** where the source tree is open in your editor, `dotnet-diagnostics-mcp` alone is enough to follow a hotspot to its source line.
 
 The partner [`pedrosakuma/dotnet-assembly-mcp`](https://github.com/pedrosakuma/dotnet-assembly-mcp) remains the right call for:
 

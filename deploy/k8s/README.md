@@ -8,6 +8,7 @@ This folder now contains both Kubernetes deployment models shipped by the repo:
 ## Files
 
 - [`sample-sidecar.yaml`](./sample-sidecar.yaml) — Namespace, Secret, Deployment with **target app + diagnosticsmcp sidecar**, and a ClusterIP Service. Best when investigations are frequent.
+- [`projected-token-auth.yaml`](./projected-token-auth.yaml) — sidecar variant that authenticates an in-cluster client with a **projected ServiceAccount token** validated over OIDC/JWT (secret-less; the static bearer remains a break-glass option). See [`../../docs/client-setup.md`](../../docs/client-setup.md#kubernetes--projected-serviceaccount-token-in-cluster-client--sidecar) and [`../../docs/authorization.md`](../../docs/authorization.md#oidc--jwt-issuers-claims--scopes).
 - [`central-target.yaml`](./central-target.yaml) — prepared target Deployment **without** a sidecar; used by the on-demand and orchestrator flows.
 - [`ephemeral-attach.patch.json`](./ephemeral-attach.patch.json) — raw `pods/ephemeralcontainers` patch for manual on-demand attach.
 - [`CENTRAL-TOPOLOGY.md`](./CENTRAL-TOPOLOGY.md) — operator-driven on-demand recipe and background on prepared targets.
@@ -58,7 +59,7 @@ Then port-forward the Service and point the MCP client at `http://127.0.0.1:5130
 kubectl kustomize deploy/k8s/orchestrator/kustomize/overlays/dev | kubectl apply -f -
 ```
 
-The dev overlay scopes discovery to `diagnosticsmcp-dev`, generates a placeholder bearer Secret, and keeps the image on `ghcr.io/pedrosakuma/dotnet-diagnostics-mcp:0.3.1`.
+The dev overlay scopes discovery to `diagnosticsmcp-dev`, generates a placeholder bearer Secret, and keeps the image on `ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0`.
 The prod overlay shows the same pattern with a pinned tag, explicit `replicas: 1`, and larger resource reservations.
 
 ### 3. Helm

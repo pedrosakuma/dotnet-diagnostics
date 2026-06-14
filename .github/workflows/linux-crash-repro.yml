@@ -1,0 +1,197 @@
+name: Linux crash repro (strace)
+
+# Deliberate reproduction job for the EventPipe SampleProfiler native crash on
+# ubuntu-latest, tracked upstream in dotnet/runtime#128525 and downstream in
+# #147. The runtime team (noahfalk) asked us to capture an mmap/munmap log so
+# the now-unmapped fault address can be correlated against whatever was
+# previously mapped there.
+#
+# Strategy:
+#   - Un-quarantine the Linux-CI-skipped CPU sampler tests via
+#     DOTNET_DBG_MCP_RUN_QUARANTINED_LINUX_TESTS=1 (see
+#     SkipOnLinuxCiFactAttribute) so the crashing path actually executes.
+#   - Run the FULL Core suite (the crash only reproduces under full-suite load,
+#     not when the sampling tests run in isolation — see #147).
+#   - Wrap the run in `strace -f` tracing the file/memory-map syscalls Noah
+#     suggested (openat, close, mmap, munmap) plus mprotect (JIT code is mapped
+#     anonymously then flipped to RX — LD_AUDIT would miss it, which is why we
+#     use strace and not an LD_AUDIT shim: the fault address in the captured
+#     dump was NOT file-backed).
+#   - Do NOT use `--blame-crash`: its createdump ptrace-attaches the test host,
+#     which collides with strace's tracer (one ptrace tracer per process), so it
+#     would yield no dump. strace alone is sufficient — it logs the caught
+#     SIGSEGV's si_addr at the signal-delivery-stop, and the surrounding
+#     drop-free mmap/munmap history says what was mapped there. See the
+#     "Test (Core) under strace" step for the full rationale.
+#
+# This job is intentionally NOT on the PR/push critical path: strace adds heavy
+# overhead that can change timing and mask the flake, and the crash is itself
+# probabilistic. Run it manually (workflow_dispatch) or let the nightly
+# schedule attempt a repro; re-run until it crashes, then hand the artifacts to
+# the runtime team.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 03:17 UTC nightly — odd minute to avoid the top-of-hour scheduler stampede.
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  linux-crash-repro:
+    name: Repro SampleProfiler crash under strace
+    runs-on: ubuntu-latest
+    # Ultimate backstop: even if both the sentinel reaper AND its bounded loop
+    # somehow fail to free strace, GitHub tears the job down here.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Install strace
+        run: sudo apt-get update && sudo apt-get install -y strace
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      # Full Core suite under strace, with the quarantined CPU sampler tests
+      # un-skipped. `continue-on-error` because a host crash is the desired
+      # outcome here — we always want the artifact upload to run afterwards.
+      #
+      # IMPORTANT — no `--blame-crash` here on purpose. .NET's blame-crash dump
+      # is produced by `createdump`, which `ptrace`-attaches to the test host.
+      # On Linux a process can have only ONE ptrace tracer, and `strace` already
+      # owns it, so createdump would fail with EPERM and emit no usable .dmp —
+      # while the job still "succeeds" (continue-on-error) and uploads a
+      # dump-less artifact. We deliberately rely on strace instead, which is
+      # sufficient on its own: strace reports signal-delivery-stops, so the
+      # caught SIGSEGV is logged as
+      #   --- SIGSEGV {si_code=SEGV_MAPERR, si_addr=0x...} ---
+      # BEFORE CoreCLR's handler runs. That single line gives the fault address,
+      # and the surrounding (drop-free) mmap/munmap history says what was mapped
+      # there — exactly the correlation dotnet/runtime#128525 asked for, all in
+      # one same-run log. (If a memory snapshot is ever also wanted, capture a
+      # KERNEL core via `ulimit -c unlimited` + a custom `kernel.core_pattern` —
+      # that path does not ptrace and so does not conflict with strace. We keep
+      # it out here to avoid the extra privileged plumbing and multi-GB cores.)
+      #
+      # strace flags:
+      #   -f              follow forks/threads (the test host is multi-threaded)
+      #   -tt             wall-clock timestamps (μs) to line up with the crash
+      #   -T              syscall duration (helps spot the stall before the fault)
+      #   -y              decode fds to paths (correlate openat -> mmap fd)
+      #   -s 256          keep full module paths, cap larger string args
+      #   -e trace=...    the file + memory-map syscalls noahfalk requested
+      #                   (+ mprotect for JIT RW->RX transitions)
+      #   signal-delivery-stops are always reported (we do NOT pass
+      #   `-e signal=none`), which is how the SIGSEGV si_addr lands in the log.
+      #   -o strace.log   single combined log (threads share the address space)
+      #
+      # AVOIDING THE strace HANG. `strace -f` does not exit until EVERY followed
+      # tracee has exited. Un-quarantining the sampler tests also runs the
+      # ClrMD/ptrace live tests, which cannot attach while strace owns the only
+      # ptrace slot, fail, and leak their CoreClrSample/BadCodeSample web-server
+      # children (infinite loops). Those orphans would keep strace alive forever
+      # (observed: a ~21 min hang on the first dispatch). Worse, a waiting
+      # `strace -f` IGNORES SIGINT/SIGTERM — only SIGKILL frees it — and SIGKILL
+      # is fine here because strace flushes its `-o` log per event, so the caught
+      # SIGSEGV line is already on disk before we kill it. So:
+      #   1. Run strace in the BACKGROUND so $! is strace's own PID.
+      #   2. The traced subtree drops a `test.done` sentinel the instant
+      #      `dotnet test` returns (still inside the tree, so it is itself traced).
+      #   3. A reaper SIGKILLs strace the moment the sentinel appears -> prompt
+      #      exit with a complete log, regardless of leaked children. The reaper's
+      #      bounded loop (3600 x 1s) doubles as a 60 min backstop, and the
+      #      job-level timeout-minutes is the final safety net.
+      - name: Test (Core) under strace
+        id: strace_run
+        continue-on-error: true
+        env:
+          CI: "true"
+          DOTNET_DBG_MCP_RUN_QUARANTINED_LINUX_TESTS: "1"
+        run: |
+          set -x
+          rm -f test.done
+          strace -f -tt -T -y -s 256 \
+            -e trace=openat,close,mmap,munmap,mprotect \
+            -o strace.log \
+            bash -c '
+              dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj \
+                --no-build --configuration Release \
+                --blame-hang-timeout 5m --blame-hang-dump-type none \
+                --logger "trx;LogFileName=core-crash-repro.trx" \
+                --results-directory TestResults
+              rc=$?
+              : > test.done
+              exit $rc
+            ' &
+          strace_pid=$!
+          # Reaper: SIGKILL strace as soon as the tests finish. SIGKILL is the
+          # only signal that frees a `strace -f` blocked on leaked tracees; the
+          # log is already flushed so nothing captured is lost. The bounded loop
+          # (<=60 min) is the backstop if the sentinel never lands.
+          (
+            for _ in $(seq 1 3600); do
+              [ -f test.done ] && break
+              sleep 1
+            done
+            kill -KILL "$strace_pid" 2>/dev/null || true
+          ) &
+          reaper_pid=$!
+          wait "$strace_pid" 2>/dev/null || true
+          kill -KILL "$reaper_pid" 2>/dev/null || true
+
+      - name: Summarize strace log
+        if: always()
+        run: |
+          if [[ -f strace.log ]]; then
+            echo "strace.log size: $(du -h strace.log | cut -f1)"
+            echo "mmap/munmap/mprotect line counts:"
+            grep -cE ' (mmap|munmap|mprotect)\(' strace.log || true
+            # Surface any captured fatal signal (with si_addr) directly in the
+            # job log so a repro is obvious without downloading the artifact.
+            # Capture into a var first: the default GitHub Actions shell runs
+            # with `-o pipefail`, so `grep | head` would misreport (SIGPIPE when
+            # truncating, exit 1 on no match). `|| true` keeps the step green.
+            echo "Captured fatal signals (si_addr is the unmapped fault address):"
+            sigs="$(grep -nE -e '--- SIG(SEGV|ABRT|BUS)' strace.log || true)"
+            if [[ -n "$sigs" ]]; then
+              echo "$sigs" | head -20
+            else
+              echo "  (none — no crash reproduced this run)"
+            fi
+            # Compress so the artifact stays small; the raw log is multi-GB-class.
+            gzip -9 strace.log
+          else
+            echo "No strace.log produced (strace failed to start?)."
+          fi
+
+      - name: Upload crash artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-crash-repro
+          path: |
+            strace.log.gz
+            **/TestResults/*.trx
+          if-no-files-found: warn
+          retention-days: 14

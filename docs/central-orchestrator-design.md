@@ -1,10 +1,10 @@
 # Central MCP orchestrator design
-_Status: Phase 1 spike for [issue #20](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/20)._
+_Status: Phase 1 spike for [issue #20](https://github.com/pedrosakuma/dotnet-diagnostics/issues/20)._
 This document answers one question:
 **How should `dotnet-diagnostics-mcp` expose a fleet of prepared Kubernetes Pods through one MCP endpoint without changing the current diagnostic tool bodies?**
 Short answer:
 **Add a central orchestrator that manages per-investigation ephemeral attaches and proxies the existing pod-local MCP server for exactly one target Pod at a time.**
-This is intentionally complementary to the central-topology feasibility spike in PR #137, which introduced `docs/central-k8s-design.md` on its branch. That earlier document established that a central topology is viable only if the data plane still launches something close to the target Pod. This document focuses on the missing follow-up: the MCP **orchestrator** that turns the current single-pod recipe into a fleet-facing surface.
+This is intentionally complementary to the central-topology feasibility work (PR #137), which established that a central topology is viable only if the data plane still launches something close to the target Pod. This document focuses on the missing follow-up: the MCP **orchestrator** that turns the current single-pod recipe into a fleet-facing surface.
 ---
 ## 1. Context
 ### 1.1 What `CENTRAL-TOPOLOGY.md` ships today
@@ -22,7 +22,7 @@ That topology is already the correct answer for the runtime's hard constraints:
 - it must see the same `/tmp/dotnet-diagnostic-*` socket path,
 - it must run under the same UID,
 - and some ClrMD-backed tools additionally need `CAP_SYS_PTRACE`.
-`docs/central-k8s-design.md` therefore made the right earlier decision: central topology is feasible, but only if the attach primitive still runs **in or extremely near** the target Pod context. The recommended primitive remains a **per-investigation ephemeral debug container**.
+The central-topology feasibility work (PR #137) therefore made the right earlier decision: central topology is feasible, but only if the attach primitive still runs **in or extremely near** the target Pod context. The recommended primitive remains a **per-investigation ephemeral debug container**.
 ### 1.2 What gap remains
 The current topology is still operator-driven and single-pod.
 A human or an external script must still:
@@ -89,7 +89,7 @@ The orchestrator intentionally inherits the same constraints as the current on-d
 - and no silent mutation of every Pod in the namespace.
 ### 2.4 Kubernetes-only scope; serverless container hosts use sidecar recipes
 The orchestrator is intentionally **Kubernetes-only**. Its data plane depends on the Kubernetes API surface — pod listing, ephemeral container injection, `pods/portforward` — and on Linux primitives (UID match, shared PID namespace, `CAP_SYS_PTRACE`) that serverless container hosts either do not expose or expose differently per provider. There is no plan to grow a parallel orchestrator for AWS ECS / Fargate, GCP Cloud Run, Azure Container Apps, or Azure App Service.
-For those serverless container hosts the answer is the **per-service sidecar recipes** under `deploy/azure/`, `deploy/aws/`, and `deploy/gcp/`. Each recipe wires one diagnostics MCP sidecar next to one target container in the same task / revision, sharing `/tmp` for the diagnostic IPC socket, and the MCP client talks to that endpoint directly. That is a smaller surface than the orchestrator (no fleet enumeration, no attach lifecycle, no portforward proxy) but it is the right shape for hosts where "attach a debug container to an existing workload" is not a first-class primitive. The cross-host capability matrix is documented in [`docs/cloud-recipes-design.md`](./cloud-recipes-design.md).
+For those serverless container hosts the answer is the **per-service sidecar recipes** under `deploy/azure/`, `deploy/aws/`, and `deploy/gcp/`. Each recipe wires one diagnostics MCP sidecar next to one target container in the same task / revision, sharing `/tmp` for the diagnostic IPC socket, and the MCP client talks to that endpoint directly. That is a smaller surface than the orchestrator (no fleet enumeration, no attach lifecycle, no portforward proxy) but it is the right shape for hosts where "attach a debug container to an existing workload" is not a first-class primitive. Each recipe's README documents its per-host constraints.
 ---
 ## 3. Tool surface
 ### 3.1 Principle
@@ -355,7 +355,7 @@ In practice the deployment guidance is now: prefer option (1) when you can co-lo
 > [Path hints are untrusted](./handoff-contract.md#path-hints-are-untrusted)
 > section of the handoff contract for the producer/consumer rules and a
 > worked example. This applies especially to the shipped **cross-MCP byte
-> fetch** mitigation (option 2 above, [#144](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/144)):
+> fetch** mitigation (option 2 above, [#144](https://github.com/pedrosakuma/dotnet-diagnostics/issues/144)):
 > the materialised scratch path the LLM hands to the client-side sibling MCP
 > inherits the same untrusted-hint contract and must be validated identically.
 
@@ -565,6 +565,7 @@ Wave 1 of Phase 8 adds a first-class operations surface for the central orchestr
 - **Prometheus metrics** at `/metrics` for attach success/failure, attach latency, active investigations, proxied tool calls, and TTL reaper evictions. The endpoint is scope-protected by default (`metrics-read`) and only becomes unauthenticated when `MCP_METRICS_OPEN=true` is set explicitly.
 - **Structured audit events** on stdout for `audit.orchestrator.attach`, `audit.orchestrator.detach`, and `audit.orchestrator.proxy_call`. These records log principal name, target identity, handle id, outcome, and latency where relevant, but never tool arguments or bearer values.
 - **Opt-in OpenTelemetry export** by wiring the orchestrator meter/activity source into OTLP only when `OTEL_EXPORTER_OTLP_ENDPOINT` is configured. Without that environment variable the server still serves local Prometheus scraping, but it does not push telemetry anywhere.
+- **Opt-in investigation-summary spans (#426)** — when `MCP_INVESTIGATION_OTEL=1` (or `Observability:InvestigationTelemetry:Enabled=true`) is set, each `export_investigation_summary` call also emits a short-lived `investigation.summary` span on the `DotnetDiagnostics.Mcp.Investigations` activity source. The span carries the investigation id, pid, build/container provenance, and the top-N hotspots (capped by `Observability:InvestigationTelemetry:MaxHotspotAttributes`, default 5). It is **off by default**, stateless (emit-and-forget — the portable JSON the LLM owns is unchanged), and rides the existing OTLP tracing exporter, so any OTLP backend receives it. **Azure Application Insights** is reachable without a bespoke SDK: point `OTEL_EXPORTER_OTLP_ENDPOINT` at the Application Insights OTLP ingestion endpoint (or run the OpenTelemetry Collector with the Azure Monitor exporter). Spans appear under `dependencies`/`traces` keyed by the investigation id.
 
 Operationally this closes three gaps that the original design intentionally deferred: SREs can alert on attach failures and latency regressions, auditors can answer "who attached to which pod when", and platform teams can scrape orchestrator health without parsing free-form logs.
 ---
@@ -584,7 +585,7 @@ without rewriting every tool body.
 - This design doc.
 - Alignment on whether target selection is session-bound by default.
 #### What actually shipped
-- New `ISessionTargetBindingStore` + `MemorySessionTargetBindingStore` (TTL-aware, thread-safe, lazy eviction on read) in `src/DotnetDiagnosticsMcp.Core/ProcessDiscovery/`.
+- New `ISessionTargetBindingStore` + `MemorySessionTargetBindingStore` (TTL-aware, thread-safe, lazy eviction on read) in `src/DotnetDiagnostics.Core/ProcessDiscovery/`.
 - New `SessionTargetBinding` record with `(ProcessId, Source, ExpiresAt?)`.
 - New `IProcessContextResolver.ResolveAsync(string? sessionId, int? requestedProcessId, CancellationToken)` overload. Default interface method delegates to the legacy overload so every external resolver implementation stays compatible.
 - `ProcessContextResolver` accepts an optional `ISessionTargetBindingStore` via ctor. Resolution precedence: explicit pid > session binding > local auto-resolve > ambiguous/not-found error.
@@ -612,10 +613,10 @@ Add the fleet-discovery and attach path:
 - Decision to use in-process kube client plus direct port-forward streams.
 - Agreement on namespace-first scope and label allowlist policy.
 #### Expected file touch list
-- `src/DotnetDiagnosticsMcp.Server/Tools/DiagnosticTools.cs`
-- new orchestrator/Kubernetes integration services under `src/DotnetDiagnosticsMcp.Server/`
-- auth/config wiring in `src/DotnetDiagnosticsMcp.Server/Program.cs`
-- potential new option models in `src/DotnetDiagnosticsMcp.Core/` if shared envelope types belong there
+- `src/DotnetDiagnostics.Mcp/Tools/DiagnosticTools.cs`
+- new orchestrator/Kubernetes integration services under `src/DotnetDiagnostics.Mcp/`
+- auth/config wiring in `src/DotnetDiagnostics.Mcp/Program.cs`
+- potential new option models in `src/DotnetDiagnostics.Core/` if shared envelope types belong there
 - `docs/tool-reference.md`
 - `docs/client-setup.md`
 - `README.md` summary paragraph if the server now supports orchestrator mode
@@ -637,9 +638,9 @@ Add the session-management half of the orchestrator:
 - P3 attach/session plumbing.
 - Agreement on default TTL policy.
 #### Expected file touch list
-- `src/DotnetDiagnosticsMcp.Server/Tools/DiagnosticTools.cs`
-- session store / lease services under `src/DotnetDiagnosticsMcp.Server/`
-- logging/audit helpers under `src/DotnetDiagnosticsMcp.Server/`
+- `src/DotnetDiagnostics.Mcp/Tools/DiagnosticTools.cs`
+- session store / lease services under `src/DotnetDiagnostics.Mcp/`
+- logging/audit helpers under `src/DotnetDiagnostics.Mcp/`
 - `docs/tool-reference.md`
 - `docs/central-orchestrator-design.md` if design notes need status callouts
 #### Test strategy
@@ -716,13 +717,13 @@ Meet the issue's acceptance criterion with a realistic cluster test:
 - [`deploy/k8s/CENTRAL-TOPOLOGY.md`](../deploy/k8s/CENTRAL-TOPOLOGY.md)
 - [`deploy/k8s/central-target.yaml`](../deploy/k8s/central-target.yaml)
 - [`deploy/k8s/ephemeral-attach.patch.json`](../deploy/k8s/ephemeral-attach.patch.json)
-- PR #137 (`docs/central-k8s-design.md` on that branch; complementary feasibility/design spike)
+- PR #137 (central K8s topology feasibility/design spike)
 ### Related issues
-- [#15 feat(infra): central K8s topology (no per-pod sidecar)](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/15)
-- [#16 feat(infra): cloud platform integrations (App Service / ACA / ECS / Lambda)](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/16)
-- [#17 Phase 7 — Post-MVP Roadmap](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/17)
-- [#20 Central MCP orchestrator (multi-pod fleet)](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/20)
-- [#22 Cloud recipes: AWS ECS/Fargate + GCP Cloud Run](https://github.com/pedrosakuma/dotnet-diagnostics-mcp/issues/22)
+- [#15 feat(infra): central K8s topology (no per-pod sidecar)](https://github.com/pedrosakuma/dotnet-diagnostics/issues/15)
+- [#16 feat(infra): cloud platform integrations (App Service / ACA / ECS / Lambda)](https://github.com/pedrosakuma/dotnet-diagnostics/issues/16)
+- [#17 Phase 7 — Post-MVP Roadmap](https://github.com/pedrosakuma/dotnet-diagnostics/issues/17)
+- [#20 Central MCP orchestrator (multi-pod fleet)](https://github.com/pedrosakuma/dotnet-diagnostics/issues/20)
+- [#22 Cloud recipes: AWS ECS/Fargate + GCP Cloud Run](https://github.com/pedrosakuma/dotnet-diagnostics/issues/22)
 ### Kubernetes references
 - [Ephemeral Containers](https://kubernetes.io/docs/concepts/workloads/pods/ephemeral-containers/)
 - [Debugging with an ephemeral container](https://kubernetes.io/docs/tasks/debug/debug-application/debug-running-pod/#ephemeral-container)
@@ -793,7 +794,7 @@ DOTNET_DBG_MCP_ORCH_URL=http://127.0.0.1:5130 \
 DOTNET_DBG_MCP_ORCH_TOKEN=kind-test-bearer-token \
 DOTNET_DBG_MCP_KIND_NAMESPACE=p6-sample \
 DOTNET_DBG_MCP_KIND_TARGET_LABEL=p6-target=a \
-dotnet test tests/DotnetDiagnosticsMcp.Server.IntegrationTests/ -c Release \
+dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/ -c Release \
   --filter "Category=KindIntegration"
 ```
 

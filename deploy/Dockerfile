@@ -16,22 +16,22 @@
 ARG DOTNET_VERSION=10.0
 
 # mcr.microsoft.com/dotnet/sdk:10.0
-FROM mcr.microsoft.com/dotnet/sdk@sha256:c0790639332692a0d56cdd81ed581cfd24d040d9839764c138994866df89a3b6 AS build
+FROM mcr.microsoft.com/dotnet/sdk@sha256:548d93f8a18a1acbe6cc127bc4f47281430d34a9e35c18afa80a8d6741c2adc3 AS build
 WORKDIR /src
 
 # Bring in the files needed to restore first so the layer caches well.
 COPY global.json Directory.Build.props Directory.Packages.props .editorconfig ./
-COPY src/DotnetDiagnosticsMcp.Core/DotnetDiagnosticsMcp.Core.csproj src/DotnetDiagnosticsMcp.Core/
-COPY src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj src/DotnetDiagnosticsMcp.Server/
-COPY src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj src/DotnetDiagnosticsMcp.Cli/
+COPY src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj src/DotnetDiagnostics.Core/
+COPY src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj src/DotnetDiagnostics.Mcp/
+COPY src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj src/DotnetDiagnostics.Cli/
 
-RUN dotnet restore src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj \
- && dotnet restore src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj
+RUN dotnet restore src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
+ && dotnet restore src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj
 
 # Copy the rest of the source needed by the server project.
 COPY src/ src/
 
-RUN dotnet publish src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.csproj \
+RUN dotnet publish src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj \
     -c Release \
     -o /app/publish \
     --no-restore \
@@ -42,7 +42,7 @@ RUN dotnet publish src/DotnetDiagnosticsMcp.Server/DotnetDiagnosticsMcp.Server.c
 # into the sidecar and run `dotnet-diagnostics-cli ...` against the shared target
 # process without standing up the HTTP server. UseAppHost=true so the symlink in
 # the runtime stage has a native launcher to point at.
-RUN dotnet publish src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj \
+RUN dotnet publish src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj \
     -c Release \
     -o /app/cli \
     --no-restore \
@@ -50,7 +50,7 @@ RUN dotnet publish src/DotnetDiagnosticsMcp.Cli/DotnetDiagnosticsMcp.Cli.csproj 
     /p:UseAppHost=true
 
 # mcr.microsoft.com/dotnet/aspnet:10.0
-FROM mcr.microsoft.com/dotnet/aspnet@sha256:8c0b6857eab7b2aa57884c839bf4678414606bd7d17370f18a842ac5cf414711 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet@sha256:ddcf70ad1ab963a4fcd41fbd722a6b660e404e87567cfbd46fd2809c21b02088 AS runtime
 WORKDIR /app
 
 # Kestrel listens on 8080 by default in our ASPNETCORE_URLS below.
@@ -102,4 +102,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1
 
-ENTRYPOINT ["dotnet", "DotnetDiagnosticsMcp.Server.dll"]
+ENTRYPOINT ["dotnet", "DotnetDiagnostics.Mcp.dll"]

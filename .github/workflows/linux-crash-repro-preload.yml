@@ -1,0 +1,164 @@
+name: Linux crash repro (LD_PRELOAD mmap trace)
+
+# Second, NON-ptrace reproduction job for the EventPipe SampleProfiler native
+# crash on ubuntu-latest (dotnet/runtime#128525, downstream #147). It is the
+# complement to linux-crash-repro.yml (strace): the runtime team asked for an
+# mmap/munmap history so the now-unmapped fault address can be correlated, and
+# strace captures that — but strace's `-f` ptrace (a) changes timing and (b)
+# breaks the ClrMD/ptrace live tests (one ptrace tracer per process), so under
+# strace the full dump+EventPipe load that the crash needs is NOT faithfully
+# reproduced. That likely masks the very flake we are hunting.
+#
+# This job instead records the same mmap/munmap/mprotect timeline with an
+# in-process LD_PRELOAD interposer (tools/linux-crash-repro/mmaptrace.c) that
+# calls the kernel directly via syscall(2). No ptrace is involved, so the entire
+# Core suite — including the ClrMD live tests — runs unperturbed and the crash
+# keeps its natural reproduction conditions, while we still get the map history
+# (including the anonymous JIT RW->RX mprotect transitions that LD_AUDIT would
+# miss). To recover the faulting address itself without a ptrace tracer we let
+# the runtime write its own crash dump + crash report (DOTNET_DbgEnableMiniDump
+# / DOTNET_EnableCrashReport) — createdump only ptrace-attaches the crashing
+# process at crash time, so it neither perturbs the run nor collides with the
+# live tests (which attach to a different, CoreClrSample child process).
+#
+# Like the strace job this is intentionally OFF the PR/push critical path: the
+# crash is probabilistic. Run it manually (workflow_dispatch) or let the nightly
+# schedule attempt a repro; re-run until a dump appears, then hand the gzipped
+# mmaptrace.log + dump + crashreport.json to the runtime team.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 03:47 UTC nightly — offset from the strace job (03:17) so they don't
+    # contend for the same runner window.
+    - cron: "47 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  linux-crash-repro-preload:
+    name: Repro SampleProfiler crash under mmap LD_PRELOAD shim
+    runs-on: ubuntu-latest
+    # No tracer here, so no hang risk — this is just a generous backstop.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      # Build the interposer. cc (build-essential) is preinstalled on the
+      # ubuntu-latest image. -Wall -Wextra is intentional: the shim ships in the
+      # repo and a clean compile is part of its contract.
+      - name: Build mmap trace shim
+        run: |
+          cc -shared -fPIC -O2 -Wall -Wextra \
+            -o tools/linux-crash-repro/mmaptrace.so \
+            tools/linux-crash-repro/mmaptrace.c
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      # Full Core suite, UNPERTURBED, with the quarantined CPU sampler tests
+      # un-skipped. continue-on-error because a host crash is the desired
+      # outcome and we always want the artifact upload to run.
+      #
+      #   LD_PRELOAD            inject the mmap/munmap/mprotect interposer into
+      #                         the test host and every child (each line is
+      #                         tagged with pid= so the crashing process can be
+      #                         isolated against the crash report).
+      #   MMAPTRACE_LOG         single append-only log; each event is one atomic
+      #                         <256-byte write(), so concurrent processes do not
+      #                         interleave and the lines around the crash are on
+      #                         disk even on a hard exit.
+      #   DOTNET_DbgEnableMiniDump / DbgMiniDumpType=1 (Mini) / DbgMiniDumpName
+      #                         have the runtime write its own dump on the native
+      #                         crash — carries the si_addr the team needs, with
+      #                         no ptrace tracer of our own.
+      #   DOTNET_EnableCrashReport   also emit the human-readable
+      #                              <dump>.crashreport.json next to the dump.
+      - name: Test (Core) under mmap LD_PRELOAD shim
+        id: preload_run
+        continue-on-error: true
+        env:
+          CI: "true"
+          DOTNET_DBG_MCP_RUN_QUARANTINED_LINUX_TESTS: "1"
+          LD_PRELOAD: ${{ github.workspace }}/tools/linux-crash-repro/mmaptrace.so
+          MMAPTRACE_LOG: ${{ github.workspace }}/mmaptrace.log
+          DOTNET_DbgEnableMiniDump: "1"
+          DOTNET_DbgMiniDumpType: "1"
+          DOTNET_DbgMiniDumpName: ${{ github.workspace }}/dumps/coredump.%p.dmp
+          DOTNET_EnableCrashReport: "1"
+        run: |
+          set -x
+          mkdir -p dumps
+          # --blame-hang-timeout already activates the blame data collector,
+          # which writes the per-testhost Sequence_*.xml naming the test(s)
+          # in-flight when the host died — the direct pointer to the triggering
+          # test topology (now uploaded below). We deliberately do NOT add
+          # --blame-crash: its crash dump collector would ptrace-attach and
+          # perturb the run / collide with DbgEnableMiniDump + the live tests.
+          dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj \
+            --no-build --configuration Release \
+            --blame-hang-timeout 5m --blame-hang-dump-type none \
+            --logger "trx;LogFileName=core-crash-repro-preload.trx" \
+            --results-directory TestResults
+
+      - name: Summarize mmap trace
+        if: always()
+        run: |
+          if [[ -f mmaptrace.log ]]; then
+            echo "mmaptrace.log size: $(du -h mmaptrace.log | cut -f1)"
+            echo "event counts (mmap / munmap / mprotect):"
+            grep -cE ' mmap\(' mmaptrace.log || true
+            grep -cE ' munmap\(' mmaptrace.log || true
+            grep -cE ' mprotect\(' mmaptrace.log || true
+            gzip -9 mmaptrace.log
+          else
+            echo "No mmaptrace.log produced (shim failed to load?)."
+          fi
+          # A dump only exists if the runtime caught a fatal native signal, so
+          # its presence is the clearest "crash reproduced" indicator.
+          echo "Crash dumps / reports:"
+          if compgen -G "dumps/*" > /dev/null; then
+            ls -la dumps
+            echo "CRASH REPRODUCED — correlate the dump's si_addr against the"
+            echo "mmap/munmap lines for the same pid in mmaptrace.log.gz."
+            # Best-effort: surface anything address/signal-shaped from the report.
+            for r in dumps/*.crashreport.json; do
+              [[ -e "$r" ]] || continue
+              echo "--- $r (excerpt) ---"
+              grep -oE '"(signal|native_address|stack_pointer|ip)"[^,]*' "$r" | head -20 || true
+            done
+          else
+            echo "  (none — no crash reproduced this run)"
+          fi
+
+      - name: Upload crash artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-crash-repro-preload
+          path: |
+            mmaptrace.log.gz
+            dumps/**
+            **/TestResults/**/Sequence_*.xml
+            **/TestResults/*.trx
+          if-no-files-found: warn
+          retention-days: 14

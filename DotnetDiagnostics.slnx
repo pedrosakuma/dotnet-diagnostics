@@ -1,0 +1,22 @@
+<Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/BadCodeSample/BadCodeSample.csproj" />
+    <Project Path="samples/CoreClrSample/CoreClrSample.csproj" />
+    <Project Path="samples/NativeAotSample/NativeAotSample.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/DotnetDiagnostics.BenchmarkDotNet/DotnetDiagnostics.BenchmarkDotNet.csproj" />
+    <Project Path="src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj" />
+    <Project Path="src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj" />
+    <Project Path="src/DotnetDiagnostics.Mcp/DotnetDiagnostics.Mcp.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj" />
+    <Project Path="tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj" />
+    <Project Path="tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj" />
+    <Project Path="tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj" />
+  </Folder>
+</Solution>
