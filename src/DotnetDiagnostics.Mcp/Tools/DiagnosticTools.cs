@@ -26,6 +26,7 @@ using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.NativeAlloc;
 using DotnetDiagnostics.Core.OffCpu;
+using DotnetDiagnostics.Core.Preflight;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Startup;
@@ -88,6 +89,17 @@ public sealed class DiagnosticTools
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
         CancellationToken cancellationToken = default)
         => ProcessInspectionUseCases.GetCapabilitiesAsync(detector, resolver, processId, cancellationToken);
+
+    /// <summary>
+    /// Target-optional environment self-diagnosis. Unlike <see cref="GetDiagnosticCapabilities"/>
+    /// (per-target boolean matrix), this returns remediation-first findings and works with no
+    /// <c>processId</c> at all — diagnosing the sidecar host before any target exists. Never fails:
+    /// every finding is reported as a check, not an error envelope.
+    /// </summary>
+    public static DiagnosticResult<PreflightReport> PerformPreflight(
+        IPreflightInspector inspector,
+        int? processId = null)
+        => ProcessInspectionUseCases.Preflight(inspector, processId);
 
     [RequireScope("read-counters")]
     [Description(

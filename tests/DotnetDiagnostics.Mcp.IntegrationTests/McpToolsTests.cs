@@ -1513,6 +1513,54 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task Preflight_HostOnly_ReturnsReportWithoutTarget()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "inspect_process",
+            new Dictionary<string, object?>
+            {
+                ["view"] = "preflight",
+                // No processId — host-only diagnosis must still succeed.
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var envelope = DeserializeStructured<InspectProcessReport>(result);
+        envelope.Should().NotBeNull();
+        envelope!.Preflight.Should().NotBeNull();
+        envelope.Preflight!.ProcessId.Should().BeNull();
+        envelope.Preflight.Checks.Should().NotBeEmpty();
+        // Socket-UID is not applicable without a target.
+        envelope.Preflight.Checks.Should().Contain(c => c.Id == "socket-uid");
+    }
+
+    [Fact]
+    public async Task Preflight_WithTarget_ScopesSocketUidCheckToThatPid()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "inspect_process",
+            new Dictionary<string, object?>
+            {
+                ["view"] = "preflight",
+                ["processId"] = Environment.ProcessId,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var envelope = DeserializeStructured<InspectProcessReport>(result);
+        envelope.Should().NotBeNull();
+        envelope!.Preflight.Should().NotBeNull();
+        envelope.Preflight!.ProcessId.Should().Be(Environment.ProcessId);
+        // Self-targeting: same UID, so the socket-UID check is never a blocker.
+        var socket = envelope.Preflight.Checks.Single(c => c.Id == "socket-uid");
+        socket.Status.Should().NotBe(DotnetDiagnostics.Core.Preflight.PreflightStatus.Blocked);
+    }
+
+    [Fact]
     public async Task GetMemoryTrend_RejectsInvalidDuration()
     {
         await using var client = await ConnectAsync();

@@ -48,6 +48,15 @@ Options:
             null,
             "  dotnet-diagnostics-cli capabilities --pid 1234"),
         new CommandHelp(
+            "doctor",
+            "Diagnose the environment (UID, ptrace, perf) and print the exact fix. Target-optional; exits non-zero on a hard blocker.",
+            null,
+"""
+  dotnet-diagnostics-cli doctor                # host-only readiness check
+  dotnet-diagnostics-cli doctor --pid 1234     # also verify socket UID vs target
+  dotnet-diagnostics-cli doctor --json
+"""),
+        new CommandHelp(
             "collect",
             "Open an EventPipe session and collect events (--kind required).",
 """

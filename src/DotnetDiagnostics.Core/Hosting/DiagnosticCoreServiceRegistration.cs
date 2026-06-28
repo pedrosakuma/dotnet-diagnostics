@@ -64,6 +64,7 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<IProcessDiscovery, LocalProcessDiscovery>();
         services.AddSingleton<DotnetDiagnostics.Core.Container.IContainerSignalsCollector, DotnetDiagnostics.Core.Container.CgroupV2SignalsCollector>();
         services.AddSingleton<ICapabilityDetector, CapabilityDetector>();
+        services.AddSingleton<DotnetDiagnostics.Core.Preflight.IPreflightInspector, DotnetDiagnostics.Core.Preflight.PreflightInspector>();
         services.AddSingleton<ISessionTargetBindingStore, MemorySessionTargetBindingStore>();
         services.AddSingleton<IProcessContextResolver, ProcessContextResolver>();
         services.AddSingleton<ICounterCollector, EventPipeCounterCollector>();

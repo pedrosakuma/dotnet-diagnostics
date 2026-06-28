@@ -547,6 +547,7 @@ unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
 | [`inspect_process(view="resources")`](#inspect_process(view="resources")) | cheap / window-bound | no | ✅ (Linux/Windows partial) | reads `/proc/<pid>/fd`, `/proc/<pid>/net/tcp{,6}`, `/proc/<pid>/limits`, `VmRSS` + a short `gc-heap-size` counter probe (Linux) or `GetProcessHandleCount` / `WorkingSet64` (Windows) |
 | [`inspect_process(view="requests-now")`](#inspect_process(view="requests-now")) | ~2 s | no | ✅ (ptrace required) | short EventPipe request window + live thread snapshot |
 | [`inspect_process(view="triage")`](#inspect_process(view="triage")) | ~5 s | no | ✅ | **Phase 12 IoT-style triage.** Collects counters (5s), classifies workload (cpu-bound/gc-pressure/memory-pressure/threadpool-starvation/lock-contention/io-bound/healthy), returns actionable hints. The LLM just follows the first hint — no interpretation needed. |
+| [`inspect_process(view="preflight")`](#inspect_process(view="preflight")) | cheap | no | ✅ | **Phase 13 environment self-diagnosis.** Target-optional, remediation-first readiness checks (diagnostic-socket UID, ClrMD attach/ptrace, perf off-CPU, native-alloc). Answers *"why can't I attach to this PID and how do I fix it?"* before paying for a failed collect. |
 | `collect_sample(kind="off_cpu")` (Linux/Windows) | window-bound | no | ✅ (Linux) | **Deprecated — use `collect_sample(kind="off_cpu")`.** system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
 | `query_snapshot` | cheap | no | ✅ | drilldown on handle from `collect_sample(kind="off_cpu")` |
 | [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/crash-guard/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/kestrel/networking/startup. |
@@ -750,6 +751,61 @@ events is used to classify the runtime as **CoreCLR** vs **NativeAOT**.
 **Notes:** always call this **first** in a session. The result tells the LLM
 (or human) which other tools can be used on the target. NativeAOT will return
 `runtime = "NativeAot"` and `canSampleCpu = false`.
+
+---
+
+## `inspect_process(view="preflight")`
+
+**Environment self-diagnosis (Phase 13 / issue #436).** Unlike `view="capabilities"`
+(a per-target boolean matrix), this view is **target-optional** and **remediation-first**:
+every non-OK finding carries a copy-pasteable fix (docker flag / k8s `securityContext`
+snippet / `sysctl`). Use it to answer *"why can't I attach to this PID and how do I fix
+it?"* before paying for a failed collect — it reuses the cheap host probes (ptrace, perf)
+and a `/proc/*/status` UID read, opens no EventPipe session, and never fails.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int?` | — | Optional. With a target, also validates the diagnostic-socket UID match against that pid. Omit for host-only diagnosis. |
+
+**Returns:** `PreflightReport`:
+
+```json
+{
+  "processId": 4242,
+  "os": "linux",
+  "overall": "Blocked",
+  "checks": [
+    {
+      "id": "clrmd-attach",
+      "title": "ClrMD live attach (ptrace)",
+      "status": "Blocked",
+      "reason": "Linux: kernel.yama.ptrace_scope=1 … and sidecar lacks CAP_SYS_PTRACE — same-UID peer attach is blocked.",
+      "remediation": "Grant the capability (container: --cap-add SYS_PTRACE / capabilities.add: ['SYS_PTRACE']) or relax the host (sudo sysctl -w kernel.yama.ptrace_scope=0).",
+      "affectedTools": ["collect_thread_snapshot", "inspect_heap(source=\"live\")", "inspect_heap(source=\"dump\")", "collect_process_dump"]
+    }
+  ]
+}
+```
+
+**Checks:**
+
+| `id` | Severity when failing | Affects |
+|---|---|---|
+| `socket-uid` | **Blocked** (UID mismatch) / Degraded (unreadable) | **all tools** — the diagnostic IPC socket is owned by the target UID |
+| `clrmd-attach` | **Blocked** | `collect_thread_snapshot`, `inspect_heap`, `collect_process_dump` |
+| `offcpu-perf` | Degraded | `collect_sample(kind="off_cpu")` |
+| `native-alloc` | Degraded | `collect_sample(kind="native-alloc")` |
+
+**Status ladder:** `Ok` < `Degraded` (optional capability missing; core diagnostics still
+work) < `Blocked` (hard blocker). `NotApplicable` checks (Linux-only checks on Windows, the
+socket-UID check with no target) are excluded from `overall`. The most severe check is
+surfaced first.
+
+**Notes:** the standalone CLI exposes the same engine as
+[`dotnet-diagnostics doctor`](./cli-reference.md#doctor), which additionally exits non-zero
+on a hard blocker for CI gating.
 
 ---
 
