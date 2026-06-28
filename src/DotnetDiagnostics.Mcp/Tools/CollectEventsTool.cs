@@ -6,6 +6,7 @@ using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Db;
+using DotnetDiagnostics.Core.DistributedTrace;
 using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
@@ -24,6 +25,8 @@ using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.Tools.Dispatch;
 using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Diagnostics;
+using DotnetDiagnostics.Mcp.Orchestrator;
+using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 using DotnetDiagnostics.Mcp.Security;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -69,6 +72,7 @@ public sealed class CollectEventsTool
         "kestrel",
         "networking",
         "startup",
+        "distributed_trace",
     };
 
     [RequireAnyScope("read-counters", "eventpipe")]
@@ -170,6 +174,9 @@ public sealed class CollectEventsTool
         IReadOnlyList<string>? sources = null,
         [Description("kind=activities only. Maximum number of captured activities to retain. Must be >= 1. Defaults to 200.")]
         int maxActivities = 200,
+        // kind=distributed_trace
+        [Description("kind=distributed_trace only (REQUIRED). The W3C trace-id (32-hex, e.g. the 'trace-id' field of a 'traceparent' header) to correlate across every attached Pod. Orchestrator mode must be enabled and you must have attached to the replicas first (attach_to_pod). Fans out a bounded collect_events(kind=activities) to each attached Pod, then stitches the per-Pod spans into one timeline ordered by parent/child span links with the slowest hop flagged.")]
+        string? traceId = null,
         // kind=logs
         [Description("kind=logs only. Optional case-insensitive glob filters for ILogger categories. Null/empty captures all categories.")]
         IReadOnlyList<string>? categories = null,
@@ -217,6 +224,18 @@ public sealed class CollectEventsTool
                     message,
                     new DiagnosticError("InsufficientScope", message, requiredScope));
             }
+        }
+
+        // Distributed trace correlation (#437): orchestrator fan-out across attached Pods. Handled
+        // before the gated-capture + single-process EventPipe paths because it neither targets a
+        // single pid nor opens a local EventPipe session — it proxies collect_events(kind=activities)
+        // to each attached Pod and stitches the results. Requires orchestrator services (only present
+        // when Orchestrator:Enabled=true) which are resolved optionally from the request scope.
+        if (canonicalKind == "distributed_trace")
+        {
+            return await RunDistributedTraceAsync(
+                requestContext, principal, traceId, durationSeconds, maxActivities, sources, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         // Bounded threshold-gated capture (#419): when triggerWhen + captureKind are supplied, the
@@ -485,6 +504,139 @@ public sealed class CollectEventsTool
         GatedCaptureKind.Dump => new[] { "dump-write", "ptrace" },
         _ => Array.Empty<string>(),
     };
+
+    /// <summary>
+    /// Distributed trace correlation fan-out (#437). Resolves the orchestrator services from the
+    /// request scope (present only when Orchestrator:Enabled=true), enumerates the caller's active
+    /// investigations, fans out a bounded activities capture to each, and stitches one timeline.
+    /// </summary>
+    private static async Task<DiagnosticResult<CollectEventsEnvelope>> RunDistributedTraceAsync(
+        RequestContext<CallToolRequestParams>? requestContext,
+        BearerPrincipal? principal,
+        string? traceId,
+        int? durationSeconds,
+        int maxActivities,
+        IReadOnlyList<string>? sources,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(traceId))
+        {
+            const string message = "kind='distributed_trace' requires a 'traceId' (the 32-hex W3C trace-id to correlate across attached Pods).";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message,
+                new DiagnosticError("InvalidArgument", message, "traceId"),
+                new NextActionHint("collect_events", "Pass the trace-id from the slow request's 'traceparent' header.", null));
+        }
+
+        if (maxActivities < 1)
+        {
+            const string message = "maxActivities must be >= 1.";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message, new DiagnosticError("InvalidArgument", message, "maxActivities"));
+        }
+
+        var effectiveDuration = durationSeconds ?? 10;
+        if (effectiveDuration < 1)
+        {
+            const string message = "durationSeconds must be >= 1.";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message, new DiagnosticError("InvalidArgument", message, "durationSeconds"));
+        }
+
+        var services = requestContext?.Services;
+        var store = services?.GetService(typeof(IInvestigationStore)) as IInvestigationStore;
+        var proxy = services?.GetService(typeof(IInvestigationProxyClient)) as IInvestigationProxyClient;
+        var options = services?.GetService(typeof(OrchestratorOptions)) as OrchestratorOptions;
+
+        if (store is null || proxy is null || options is null || !options.Enabled)
+        {
+            const string message = "kind='distributed_trace' requires orchestrator mode (Orchestrator:Enabled=true). " +
+                "It correlates a trace across Pods you have attached to via attach_to_pod.";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message,
+                new DiagnosticError(OrchestratorErrorKinds.OrchestratorDisabled, message),
+                new NextActionHint("list_orchestrator", "Enable orchestrator mode and attach to the replicas first.",
+                    new Dictionary<string, object?> { ["kind"] = "pods" }));
+        }
+
+        // Distributed correlation reads investigation handles + drives the proxy — gate it on the
+        // same scope attach_to_pod / list investigations use, on top of the eventpipe collection scope.
+        if (principal is not null && !principal.HasScope("orchestrator-attach"))
+        {
+            const string message = "kind='distributed_trace' requires the 'orchestrator-attach' scope (it reads your investigation handles and proxies to the attached Pods).";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message, new DiagnosticError(OrchestratorErrorKinds.PermissionDenied, message, "orchestrator-attach"));
+        }
+
+        var callerSessionId = requestContext?.Server is { } server
+            ? OrchestratorTools.TryGetServerSessionId(server)
+            : null;
+
+        var fanout = await DistributedTraceCorrelator.CorrelateAsync(
+            store, proxy, callerSessionId, traceId.Trim(), effectiveDuration, maxActivities, sources, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (fanout.AttachedActivePods == 0)
+        {
+            var message = "kind='distributed_trace': no Active investigations are attached. Call attach_to_pod for each replica first, then re-run with the same traceId.";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message,
+                new DiagnosticError("NoActiveInvestigation", message),
+                new NextActionHint("list_orchestrator", "List candidate Pods, then attach_to_pod to the replicas serving this trace.",
+                    new Dictionary<string, object?> { ["kind"] = "pods" }));
+        }
+
+        var timeline = fanout.Timeline;
+        var hints = new List<NextActionHint>();
+        string summary;
+
+        // Timeline is null only when zero per-Pod collections succeeded. With at least one attached Pod
+        // that means every reachable collection failed — surface that as a fan-out error, not as an
+        // empty (in-flight) trace, so the LLM does not conclude "the trace simply wasn't live".
+        if (timeline is null)
+        {
+            var message = $"distributed_trace {traceId}: every one of the {fanout.AttachedActivePods} attached Pod(s) " +
+                "failed to collect activities — no spans could be correlated. See the per-Pod errors.";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message,
+                new DiagnosticError("DistributedTraceFanoutFailed", message),
+                new NextActionHint("list_orchestrator", "Verify the attached Pods are still reachable, then re-run with the same traceId.",
+                    new Dictionary<string, object?> { ["kind"] = "investigations" }))
+                with
+            { Data = new CollectEventsEnvelope("distributed_trace", DistributedTrace: null, PodErrors: fanout.PodErrors) };
+        }
+
+        if (timeline.SpanCount == 0)
+        {
+            summary = $"distributed_trace {traceId}: fanned out to {fanout.AttachedActivePods} attached Pod(s) " +
+                $"but no matching spans were captured in {effectiveDuration}s. Trace correlation targets in-flight traces — re-run while the trace is live.";
+            hints.Add(new NextActionHint("collect_events",
+                "Re-issue with the trace live, or widen durationSeconds; confirm the replicas emit ActivitySource instrumentation.",
+                new Dictionary<string, object?> { ["kind"] = "distributed_trace", ["traceId"] = traceId, ["durationSeconds"] = effectiveDuration + 5 }));
+        }
+        else
+        {
+            var slow = timeline.SlowestHop;
+            summary = $"distributed_trace {timeline.TraceId}: stitched {timeline.SpanCount} span(s) across {timeline.Coverage.Count(c => c.MatchedSpans > 0)}/{fanout.AttachedActivePods} attached Pod(s)." +
+                (slow is not null
+                    ? $" Slowest hop: {slow.PodName} {slow.SourceName}/{slow.OperationName} (self {slow.SelfDurationMs:F1} ms)."
+                    : string.Empty);
+            if (slow is not null)
+            {
+                hints.Add(new NextActionHint("collect_sample",
+                    $"Drill into the slowest hop on Pod '{slow.PodName}' to see what its CPU is doing.",
+                    new Dictionary<string, object?> { ["kind"] = "cpu", ["durationSeconds"] = 10 }));
+            }
+        }
+
+        if (fanout.PodErrors.Count > 0)
+        {
+            summary += $" {fanout.PodErrors.Count} Pod(s) could not be collected (see data.podErrors).";
+        }
+
+        var envelope = new CollectEventsEnvelope("distributed_trace", DistributedTrace: timeline, PodErrors: fanout.PodErrors);
+        return DiagnosticResult.Ok(envelope, summary, hints.ToArray());
+    }
 }
 
 /// <summary>
@@ -512,4 +664,6 @@ public sealed record CollectEventsEnvelope(
     KestrelSnapshot? Kestrel = null,
     NetworkingSnapshot? Networking = null,
     StartupSnapshot? Startup = null,
-    GatedCaptureResult? GatedCapture = null);
+    GatedCaptureResult? GatedCapture = null,
+    DistributedTraceTimeline? DistributedTrace = null,
+    IReadOnlyList<string>? PodErrors = null);

@@ -153,6 +153,50 @@ public sealed class InvestigationProxyCallToolFilterTests
     }
 
     [Fact]
+    public async Task DoesNotForward_DistributedTraceFanout_RunsLocallyEvenWhenBound()
+    {
+        // #437 — collect_events(kind="distributed_trace") is an orchestrator-side fan-out: even when
+        // the session is bound to a single Active handle it must execute LOCALLY (so it can enumerate
+        // every attached Pod), never be proxied into the one bound Pod.
+        var fx = new Fixture();
+        fx.Binder.Bind("session-trace", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var p = Params("collect_events", new Dictionary<string, JsonElement>
+        {
+            ["kind"] = JsonSerializer.SerializeToElement("distributed_trace"),
+            ["traceId"] = JsonSerializer.SerializeToElement("0af7651916cd43dd8448eb211c80319c"),
+        });
+        var result = await fx.Invoke(p, sessionId: "session-trace");
+
+        result.IsError.Should().BeNull();
+        fx.LocalInvocations.Should().Be(1);
+        fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("collect_events", "distributed_trace", true)]
+    [InlineData("collect_events", "activities", false)]
+    [InlineData("collect_events", "counters", false)]
+    [InlineData("inspect_process", "distributed_trace", false)]
+    public void IsDistributedTraceFanout_MatchesOnlyCollectEventsDistributedTrace(string tool, string kind, bool expected)
+    {
+        var args = new Dictionary<string, JsonElement>
+        {
+            ["kind"] = JsonSerializer.SerializeToElement(kind),
+        };
+
+        InvestigationProxyCallToolFilter.IsDistributedTraceFanout(tool, args).Should().Be(expected);
+    }
+
+    [Fact]
+    public void IsDistributedTraceFanout_FalseWhenKindMissing()
+    {
+        InvestigationProxyCallToolFilter.IsDistributedTraceFanout("collect_events", new Dictionary<string, JsonElement>())
+            .Should().BeFalse();
+    }
+
+    [Fact]
     public async Task ForwardingFailure_SurfacesStructuredError_AndDoesNotFallThrough()
     {
         var fx = new Fixture();

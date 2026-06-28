@@ -456,6 +456,33 @@ unpredictable times, a one-shot `collect_sample` / `inspect_heap` almost always 
 
 ---
 
+## 4f. "One distributed trace is slow — which replica/hop is to blame?"
+
+When a request fans out across several services (or several replicas of one service) and the
+**end-to-end** latency is high, the question is *which hop* is slow, not *which process*. Use
+distributed trace correlation to follow one W3C trace across every attached Pod:
+
+1. Grab the `trace-id` from the slow request — the 32-hex `trace-id` field of its `traceparent`
+   header (`00-<trace-id>-<span-id>-01`), or from your APM / the response's `traceparent`.
+2. In orchestrator mode, `attach_to_pod` to **each** replica that could serve the trace (you need an
+   Active investigation handle per Pod). Confirm with `list_orchestrator(kind="investigations")`.
+3. While the trace is still **in-flight** (correlation captures live spans, not historical replays),
+   run `collect_events(kind="distributed_trace", traceId="<trace-id>", durationSeconds=15)`. It fans
+   out a bounded `collect_events(kind="activities")` to every attached Pod and stitches the spans.
+4. Read `DistributedTrace.SlowestHop` — it is the span with the largest **self-time** (own duration
+   minus time attributed to its direct children), so a parent that merely *waits* on a slow
+   downstream child is not mis-blamed. `Spans[]` gives the full causal order (parent before child,
+   `ParentResolved` shows cross-Pod links that resolved), and `Coverage`/`Warnings` tell you which
+   Pods matched and whether any were unreachable or showed clock skew.
+5. Drill into the culprit on the flagged `PodName`: bind/attach to that replica and run
+   `collect_sample(kind="cpu", durationSeconds=10)` (the auto-hint suggests exactly this) to see what
+   its CPU is doing during the slow hop.
+
+If `SpanCount=0` but Pods were reached, the trace had already completed — re-run while it is live, or
+widen `durationSeconds`. Requires the `eventpipe` + `orchestrator-attach` scopes.
+
+---
+
 ## 5. "Is this a NativeAOT app?"
 
 `inspect_process(view="capabilities")` returns `runtime: "NativeAot"`. On NativeAOT:

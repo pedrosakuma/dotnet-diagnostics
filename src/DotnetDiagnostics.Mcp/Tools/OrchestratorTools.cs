@@ -318,7 +318,7 @@ public sealed class OrchestratorTools
     // pattern the diagnostic-tools side uses for MCP-task correlation (see
     // DiagnosticTools.cs ~L2683). Returns null when no session is bound to the call
     // (e.g. stdio transport or unit tests that synthesize an McpServer without one).
-    private static string? TryGetServerSessionId(McpServer server)
+    internal static string? TryGetServerSessionId(McpServer server)
         => server?.GetType()
                   .GetProperty("SessionId", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                   ?.GetValue(server) as string;

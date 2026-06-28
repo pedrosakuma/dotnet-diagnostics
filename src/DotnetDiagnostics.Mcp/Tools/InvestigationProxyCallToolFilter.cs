@@ -117,6 +117,16 @@ internal static class InvestigationProxyCallToolFilter
             return await next(requestParams, cancellationToken).ConfigureAwait(false);
         }
 
+        // #437 — collect_events(kind="distributed_trace") is an orchestrator-side fan-out: it must run
+        // LOCALLY on the orchestrator (where it enumerates every attached Pod and proxies to each in
+        // turn), never be forwarded into a single bound Pod. Without this guard a session bound to one
+        // investigation would forward the whole fan-out into that one Pod, which has no orchestrator
+        // services and would fail.
+        if (IsDistributedTraceFanout(toolName, requestParams?.Arguments))
+        {
+            return await next(requestParams, cancellationToken).ConfigureAwait(false);
+        }
+
         if (string.IsNullOrEmpty(sessionId))
         {
             return await next(requestParams, cancellationToken).ConfigureAwait(false);
@@ -236,6 +246,18 @@ internal static class InvestigationProxyCallToolFilter
             JsonValueKind.Null or JsonValueKind.Undefined => false,
             _ => false,
         };
+    }
+
+    /// <summary>
+    /// True for <c>collect_events(kind="distributed_trace")</c> — the orchestrator-side fan-out that
+    /// must execute locally rather than being proxied into a single attached Pod (#437).
+    /// </summary>
+    internal static bool IsDistributedTraceFanout(string? toolName, IDictionary<string, JsonElement>? arguments)
+    {
+        if (!string.Equals(toolName, "collect_events", StringComparison.Ordinal)) return false;
+        if (arguments is null || !arguments.TryGetValue("kind", out var kind)) return false;
+        return kind.ValueKind == JsonValueKind.String
+            && string.Equals(kind.GetString(), "distributed_trace", StringComparison.Ordinal);
     }
 
     /// <summary>Exposed for tests — formats the error block surfaced on forwarding failure.</summary>
