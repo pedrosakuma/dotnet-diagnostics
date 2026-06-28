@@ -22,6 +22,7 @@ using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.OffCpu;
+using DotnetDiagnostics.Core.Preflight;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Startup;
@@ -61,6 +62,7 @@ internal static class CliCommands
     {
         "processes",
         "capabilities",
+        "doctor",
         "collect",
         "inspect-heap",
         "dump",
@@ -147,6 +149,7 @@ internal static class CliCommands
         {
             "processes" => Processes(services),
             "capabilities" => await CapabilitiesAsync(services, options, cancellationToken).ConfigureAwait(false),
+            "doctor" => Doctor(services, options),
             "collect" => await CollectAsync(services, options, cancellationToken).ConfigureAwait(false),
             "inspect-heap" => await InspectHeapAsync(services, options, cancellationToken).ConfigureAwait(false),
             "dump" => await DumpAsync(services, options, cancellationToken).ConfigureAwait(false),
@@ -605,6 +608,57 @@ internal static class CliCommands
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  Notes             : {caps.Notes}");
             }
         });
+    }
+
+    /// <summary>
+    /// Phase 13 / G1 — environment self-diagnosis. Target-optional: with <c>--pid</c> it validates
+    /// readiness against that target (diagnostic-socket UID match); without one it diagnoses the host.
+    /// Exits non-zero (via <see cref="CliCommandResult.IsError"/>) when a hard blocker is present, so
+    /// CI can gate on it. The diagnostic envelope itself stays a success envelope — the findings are
+    /// data, not an error.
+    /// </summary>
+    private static CliCommandResult Doctor(IServiceProvider services, CliOptions options)
+    {
+        var inspector = services.GetRequiredService<IPreflightInspector>();
+        var result = ProcessInspectionUseCases.Preflight(inspector, options.Pid);
+        var report = result.Data!;
+        var human = RenderDoctor(result, report);
+
+        // Blocker => non-zero exit for CI gating. Envelope stays Ok (IsError=false on the wire).
+        return new CliCommandResult(IsError: report.HasBlocker, Cancelled: false, Envelope: result, Human: human);
+    }
+
+    private static string RenderDoctor(DiagnosticResult<PreflightReport> result, PreflightReport report)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine(result.Summary);
+        sb.AppendLine();
+        sb.AppendLine(CultureInfo.InvariantCulture, $"  OS: {report.Os}   target: {(report.ProcessId is int pid ? pid.ToString(CultureInfo.InvariantCulture) : "<none>")}");
+        sb.AppendLine();
+
+        foreach (var check in report.Checks)
+        {
+            var glyph = check.Status switch
+            {
+                PreflightStatus.Ok => "OK  ",
+                PreflightStatus.Degraded => "WARN",
+                PreflightStatus.Blocked => "FAIL",
+                _ => "n/a ",
+            };
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  [{glyph}] {check.Title}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"         {check.Reason}");
+            if (!string.IsNullOrWhiteSpace(check.Remediation))
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"         fix: {check.Remediation}");
+            }
+
+            if (check.AffectedTools is { Count: > 0 } tools)
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"         affects: {string.Join(", ", tools)}");
+            }
+        }
+
+        return sb.ToString().TrimEnd();
     }
 
     private static async Task<CliCommandResult> CollectAsync(

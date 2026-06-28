@@ -1,4 +1,6 @@
+using System.Globalization;
 using DotnetDiagnostics.Core.Capabilities;
+using DotnetDiagnostics.Core.Preflight;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using Microsoft.Diagnostics.NETCore.Client;
 using static DotnetDiagnostics.Core.UseCases.ProcessResolutionHelpers;
@@ -110,5 +112,62 @@ public static class ProcessInspectionUseCases
                 new DiagnosticError("EndpointUnavailable", ex.Message, ex.GetType().FullName),
                 new NextActionHint("inspect_process", "Re-list processes. Common cause: sidecar UID mismatch with target."));
         }
+    }
+
+    /// <summary>
+    /// Target-optional environment self-diagnosis (Phase 13 / G1). Reuses the host probes via
+    /// <see cref="IPreflightInspector"/> and projects the report into a
+    /// <see cref="DiagnosticResult{T}"/> with a one-line verdict summary and remediation hints.
+    /// Never resolves through the diagnostic IPC and never fails: every finding is a check, so it
+    /// works even when no .NET process is reachable (host-only diagnosis).
+    /// </summary>
+    public static DiagnosticResult<PreflightReport> Preflight(
+        IPreflightInspector inspector,
+        int? processId = null)
+    {
+        ArgumentNullException.ThrowIfNull(inspector);
+
+        var report = inspector.Inspect(processId);
+        var summary = SummarisePreflight(report);
+        var hints = BuildPreflightHints(report);
+        return DiagnosticResult.Ok(report, summary, [.. hints]);
+    }
+
+    private static string SummarisePreflight(PreflightReport report)
+    {
+        var blocked = report.Checks.Count(c => c.Status == PreflightStatus.Blocked);
+        var degraded = report.Checks.Count(c => c.Status == PreflightStatus.Degraded);
+        var scope = report.ProcessId is int pid
+            ? $"pid {pid.ToString(CultureInfo.InvariantCulture)}"
+            : "host-only (no target)";
+
+        return report.Overall switch
+        {
+            PreflightStatus.Blocked =>
+                $"Preflight: BLOCKED ({scope}) — {blocked} hard blocker(s){(degraded > 0 ? $", {degraded} degraded" : string.Empty)}. See remediation on each blocked check.",
+            PreflightStatus.Degraded =>
+                $"Preflight: DEGRADED ({scope}) — core diagnostics OK, {degraded} optional capability(ies) unavailable.",
+            _ => $"Preflight: OK ({scope}) — the environment is ready for diagnostics.",
+        };
+    }
+
+    private static List<NextActionHint> BuildPreflightHints(PreflightReport report)
+    {
+        var hints = new List<NextActionHint>();
+        foreach (var check in report.Checks.Where(c =>
+                     c.Status is PreflightStatus.Blocked or PreflightStatus.Degraded &&
+                     c.Remediation is not null))
+        {
+            hints.Add(new NextActionHint(
+                "fix-environment",
+                $"[{check.Id}] {check.Remediation}",
+                new Dictionary<string, object?>
+                {
+                    ["check"] = check.Id,
+                    ["status"] = check.Status.ToString(),
+                }));
+        }
+
+        return hints;
     }
 }

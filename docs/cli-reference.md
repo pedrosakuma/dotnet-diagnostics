@@ -110,6 +110,30 @@ live attach are available.
 dotnet-diagnostics-cli capabilities --pid 1234
 ```
 
+### `doctor`
+
+Diagnose the **environment** (not the workload) and print the exact fix. Target-optional and
+remediation-first: each blocked/degraded check carries a copy-pasteable docker flag / k8s
+`securityContext` snippet / `sysctl`. Reuses the cheap host probes (ptrace, perf) plus a
+`/proc/*/status` UID read — no EventPipe session, no privilege.
+
+```bash
+dotnet-diagnostics-cli doctor                # host-only readiness check
+dotnet-diagnostics-cli doctor --pid 1234     # also verify the diagnostic-socket UID vs the target
+dotnet-diagnostics-cli doctor --json
+```
+
+Checks: `socket-uid` (UID mismatch blocks **all** tools), `clrmd-attach` (ptrace — blocks
+thread snapshot / heap / dump), `offcpu-perf` and `native-alloc` (optional samplers). Status
+ladder: `Ok` < `Degraded` < `Blocked`.
+
+**Exit code:** `doctor` exits **non-zero (1)** when a hard blocker (`Blocked`) is present and
+`0` otherwise, so it can gate a CI job:
+
+```bash
+dotnet-diagnostics-cli doctor --pid "$APP_PID" || { echo "environment not ready"; exit 1; }
+```
+
 ### `collect`
 
 Open an EventPipe session and collect a window of events. `--kind` is required.

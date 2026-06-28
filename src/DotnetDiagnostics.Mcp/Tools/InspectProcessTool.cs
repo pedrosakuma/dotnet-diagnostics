@@ -6,6 +6,7 @@ using DotnetDiagnostics.Core.Container;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Preflight;
 using DotnetDiagnostics.Core.Tools.Dispatch;
 using DotnetDiagnostics.Core.Triage;
 using DotnetDiagnostics.Mcp.Security;
@@ -77,6 +78,9 @@ public sealed class InspectProcessTool
     /// <summary>Phase 12 IoT-style triage: collect counters, classify, return verdict + hints.</summary>
     public const string TriageView = "triage";
 
+    /// <summary>Phase 13 environment self-diagnosis: target-optional, remediation-first readiness checks (UID, ptrace, perf).</summary>
+    public const string PreflightView = "preflight";
+
     private static readonly IReadOnlyList<string> AllowedViews = new[]
     {
         ListView,
@@ -88,6 +92,7 @@ public sealed class InspectProcessTool
         ResourcesView,
         RequestsNowView,
         TriageView,
+        PreflightView,
     };
 
     [RequireAnyScope("read-counters", "ptrace")]
@@ -112,6 +117,7 @@ public sealed class InspectProcessTool
         IRequestsNowCollector requestsNowCollector,
         ICounterCollector counterCollector,
         IPrincipalAccessor principalAccessor,
+        IPreflightInspector preflightInspector,
         [Description("Projection to compute. Defaults to 'list'. Values: " +
             "'triage' (collect counters ~5s, classify workload cpu-bound/gc-pressure/memory-pressure/threadpool-starvation/lock-contention/io-bound/healthy, return a verdict + actionable hints); " +
             "'list' (every .NET process visible to the diagnostic IPC; ignores processId); " +
@@ -119,7 +125,8 @@ public sealed class InspectProcessTool
             "'container' (cgroup limits + signals); 'memory_trend' (working-set trend over durationSeconds/sampleEverySeconds); " +
             "'resources' (single sample or trend); 'runtime-config' (filtered runtime env vars + best-effort ClrMD GC/ThreadPool settings); " +
             "'requests-now' (opens a short EventPipe session + captures a live thread snapshot — requires the ptrace scope). " +
-            "All views except 'list' auto-resolve the lone visible .NET process when processId is omitted.")]
+            "'preflight' (environment self-diagnosis: target-optional, remediation-first readiness checks for diagnostic-socket UID, ClrMD attach/ptrace, perf — answers 'why can't I attach to this PID and how do I fix it?'). " +
+            "All views except 'list' auto-resolve the lone visible .NET process when processId is omitted (except 'preflight', which runs host-only diagnosis when processId is omitted).")]
         string? view = ListView,
         [Description("Operating system process id of the target. Required by no view: list ignores it, every other view auto-resolves the lone visible .NET process when omitted.")]
         int? processId = null,
@@ -208,6 +215,10 @@ public sealed class InspectProcessTool
                     .ConfigureAwait(false),
                 canonical,
                 (report, data) => report with { Triage = data }),
+            PreflightView => Wrap(
+                DiagnosticTools.PerformPreflight(preflightInspector, processId),
+                canonical,
+                (report, data) => report with { Preflight = data }),
             _ => throw new InvalidOperationException(
                 $"DiscriminatorDispatch accepted unknown view '{canonical}'."),
         };
@@ -261,6 +272,7 @@ public sealed class InspectProcessTool
 /// <param name="Resources">Populated when <c>view=resources</c> — FD / handle / socket state.</param>
 /// <param name="RequestsNow">Populated when <c>view=requests-now</c> — in-flight ASP.NET Core requests with thread stacks.</param>
 /// <param name="Triage">Populated when <c>view=triage</c> — Phase 12 IoT-style classification with verdict, severity, evidence, and actionable hints.</param>
+/// <param name="Preflight">Populated when <c>view=preflight</c> — Phase 13 environment self-diagnosis: target-optional, remediation-first readiness checks.</param>
 public sealed record InspectProcessReport(
     string View,
     IReadOnlyList<DotnetProcess>? List = null,
@@ -271,4 +283,5 @@ public sealed record InspectProcessReport(
     RuntimeConfigView? RuntimeConfig = null,
     ProcessResources? Resources = null,
     IReadOnlyList<InFlightHttpRequest>? RequestsNow = null,
-    TriageResult? Triage = null);
+    TriageResult? Triage = null,
+    PreflightReport? Preflight = null);
