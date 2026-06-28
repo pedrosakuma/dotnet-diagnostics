@@ -108,6 +108,42 @@ it asked for).
 retained `Activities[]` inline (bounded by `maxActivities`) and relies on
 `query_snapshot(handle, view=...)` for narrower drilldown views.
 
+### Distributed trace correlation (`collect_events(kind="distributed_trace")`)
+
+When you are attached to several replicas of the same service (orchestrator mode — one
+`attach_to_pod` per Pod), `collect_events(kind="distributed_trace")` follows **one** W3C trace
+across all of them and stitches the per-Pod spans into a single timeline. It is the distributed
+counterpart of `kind="activities"`: instead of capturing activities on one process it **fans out** a
+bounded `collect_events(kind="activities")` to every attached Pod, matches the spans whose
+`trace-id` equals the supplied `traceId`, and joins parent→child spans **by span link, never by
+wall-clock** (so clock skew between nodes cannot scramble the order).
+
+| Parameter | Meaning |
+| --- | --- |
+| `traceId` | **Required.** The 32-hex W3C trace-id to correlate (the `trace-id` field of the slow request's `traceparent` header). |
+| `durationSeconds` | Capture window applied to each Pod's fan-out collection (default 10). Correlation targets **in-flight** traces — run it while the trace is live. |
+| `maxActivities` | Per-Pod cap on retained activities (the same bound as `kind="activities"`). |
+| `sources` | Optional ActivitySource name filter forwarded to each Pod. |
+
+Requirements: orchestrator mode (`Orchestrator:Enabled=true`), the `eventpipe` **and**
+`orchestrator-attach` scopes, and at least one **Active** investigation handle (i.e. you must
+`attach_to_pod` to the replicas first). The call always runs **locally on the orchestrator** even
+when your session is bound to a single Pod — it never proxies the whole fan-out into one replica.
+
+The result envelope carries a `DistributedTrace` timeline: the stitched `Spans[]` (each tagged with
+its `PodName`, `Depth`, `ParentResolved`, and **self-time** = own duration minus the time attributed
+to its direct children), the flagged `SlowestHop` (the span with the largest self-time — the hop
+that is actually slow, not merely *waiting* on a slow downstream child), per-Pod `Coverage`, and
+`Warnings` for orphan parents, zero-match Pods, or clock skew. Per-Pod failures are isolated: one
+unreachable replica is reported in `data.podErrors` (and the summary) and does not sink the rest of
+the correlation; if **every** attached Pod fails to collect, the call returns a
+`DistributedTraceFanoutFailed` error carrying those per-Pod messages.
+
+```text
+# after attach_to_pod against each replica:
+collect_events(kind="distributed_trace")(traceId="0af7651916cd43dd8448eb211c80319c", durationSeconds=15)
+```
+
 ### Threshold-gated capture (`collect_events` + `triggerWhen`)
 
 `collect_events(kind="counters")` can arm a **bounded** watch that captures a heavier artifact the
