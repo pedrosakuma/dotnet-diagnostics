@@ -33,6 +33,8 @@ public sealed record ThreadSnapshotQueryResult(
     public int? ThreadId { get; init; }
     /// <summary>Populated for <c>resolve-address</c> (issue #275).</summary>
     public IReadOnlyList<ResolvedAddressEntry>? ResolvedAddresses { get; init; }
+    /// <summary>Populated for <c>frame-vars</c> (issue #449).</summary>
+    public FrameVariablesResult? FrameVariables { get; init; }
 }
 
 /// <summary>

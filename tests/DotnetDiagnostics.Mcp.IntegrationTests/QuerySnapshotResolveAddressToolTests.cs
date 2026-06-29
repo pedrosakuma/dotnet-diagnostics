@@ -85,6 +85,7 @@ public sealed class QuerySnapshotResolveAddressToolTests
             new SensitiveValueGate(null),
             TestPrincipalAccessors.Root,
             resolver,
+            new NullFrameVariableResolver(),
             handle: handle,
             view: "resolve-address",
             address: address,
@@ -128,6 +129,12 @@ public sealed class QuerySnapshotResolveAddressToolTests
             => throw new NotSupportedException();
 
         public Task<HeapObjectSizeInspection> InspectObjectSizeAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class NullFrameVariableResolver : IFrameVariableResolver
+    {
+        public Task<FrameVariablesResult> ResolveAsync(ThreadSnapshotArtifact artifact, int managedThreadId, bool includeSensitiveValues, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
     }
 }

@@ -70,6 +70,10 @@ public sealed class QuerySnapshotTool
     // (module, rva, build-id) or an unmapped verdict (issue #275).
     internal const string ResolveAddressView = "resolve-address";
 
+    // Thread-snapshot view that re-opens the origin and walks one thread's stack roots, surfacing
+    // object-typed locals/parameters per frame — the ClrMD `!clrstack -a` equivalent (issue #449).
+    internal const string FrameVarsView = "frame-vars";
+
     // Legacy default views, mirrored so unified callers can omit `view` and still get
     // the same projection the kind's legacy tool returned by default.
     internal const string DefaultHeapView = "top-types";
@@ -120,14 +124,15 @@ public sealed class QuerySnapshotTool
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
+        IFrameVariableResolver frameVariableResolver,
         [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, collect_events(kind=\"counters\"), collect_events(kind=\"exceptions\"), collect_events(kind=\"crash-guard\"), collect_events(kind=\"gc\"), collect_events(kind=\"datas\"), collect_events(kind=\"catalog\"), collect_events(kind=\"event_source\"), collect_events(kind=\"activities\"), collect_events(kind=\"logs\"), collect_events(kind=\"jit\"), collect_events(kind=\"threadpool\"), collect_events(kind=\"contention\"), collect_events(kind=\"db\"), collect_events(kind=\"kestrel\"), collect_events(kind=\"networking\"), collect_events(kind=\"startup\")).")] string handle,
-        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|exceptions|stack|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
+        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address|frame-vars. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|exceptions|stack|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
         [Description("Maximum entries returned by any ranked-list view. Omit to use the per-kind legacy default: 50 for heap / thread / collection, 25 for off-CPU. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
         [Description("Heap view='top-types' only: ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
         [Description("Heap view='object'/'gcroot'/'objsize': managed object address. Thread view='resolve-address': one or more native/instruction addresses (comma-separated) to classify into (module, rva, build-id) or an unmapped verdict. Decimal or 0x-prefixed hex.")] string? address = null,
         [Description("Heap views 'duplicate-strings' / 'object' only: opt-in to raw string content / field-value previews (gated by `Diagnostics:AllowSensitiveHeapValues` AND `sensitive-heap-read` scope per docs/authorization.md#modifier-scopes).")] bool includeSensitiveValues = false,
-        [Description("Thread view='stack' only: thread id (ManagedThreadId for CoreCLR snapshots, OS TID for linux-native-stack snapshots).")] int? threadId = null,
+        [Description("Thread view='stack' only: thread id (ManagedThreadId for CoreCLR snapshots, OS TID for linux-native-stack snapshots). Required for view='frame-vars' (ManagedThreadId).")] int? threadId = null,
         [Description("Thread view='unique-stacks' only: number of top frames folded into the signature hash. Defaults to 20.")] int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
         [Description("Thread view='unique-stacks' only: drop groups with fewer than this many threads. Defaults to 1.")] int minCount = 1,
         [Description("Off-CPU view='stack' only: 1-based rank of the stack in the top-stacks list.")] int? stackRank = null,
@@ -208,6 +213,19 @@ public sealed class QuerySnapshotTool
                     {
                         return await ResolveThreadAddressesAsync(
                             handles, addressResolver, handle, address, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(view) && view!.Trim().Equals(FrameVarsView, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // frame-vars re-opens the origin via ClrMD (same ptrace/dump-read footprint as
+                        // inspect_heap live/dump) and may surface sensitive string values; gate it on
+                        // heap-read in addition to the kind-wide ptrace scope.
+                        if (!RequireScope(principal, ScopeHeapRead, out var heapForbidden))
+                        {
+                            return heapForbidden!;
+                        }
+                        return await ResolveFrameVariablesAsync(
+                            handles, frameVariableResolver, sensitiveGate, principalAccessor, handle, threadId, includeSensitiveValues, cancellationToken).ConfigureAwait(false);
                     }
 
                     var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultThreadView : view!;
@@ -524,6 +542,67 @@ public sealed class QuerySnapshotTool
         var unresolved = entries.Count(e => e.Kind == "unmapped-or-not-captured");
         var summary = $"Resolved {entries.Length} address(es) against snapshot '{handle}' ({origin}, pid {snapshot.ProcessId})" +
             (unresolved > 0 ? $"; {unresolved} unmapped-or-not-captured." : ".");
+        return AsObjectEnvelope(DiagnosticResult.Ok(result, summary));
+    }
+
+    private static async Task<DiagnosticResult<object>> ResolveFrameVariablesAsync(
+        IDiagnosticHandleStore handles,
+        IFrameVariableResolver resolver,
+        SensitiveValueGate sensitiveGate,
+        IPrincipalAccessor principalAccessor,
+        string handle,
+        int? threadId,
+        bool includeSensitiveValues,
+        CancellationToken cancellationToken)
+    {
+        var snapshot = handles.TryGet<ThreadSnapshotArtifact>(handle);
+        if (snapshot is null)
+        {
+            return HandleExpiredError(null, handle);
+        }
+
+        if (threadId is null)
+        {
+            return InvalidArgument(nameof(threadId), "is required for view='frame-vars' (ManagedThreadId from view='threads-summary')");
+        }
+
+        // Guard against PID reuse / drift: the requested thread must have been present in the
+        // captured snapshot, otherwise we'd resolve frames from whatever now owns that PID.
+        if (!snapshot.Threads.Any(t => t.ManagedThreadId == threadId.Value))
+        {
+            return AsObjectEnvelope(DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
+                $"Managed thread {threadId.Value} was not present in snapshot '{handle}'; re-capture before inspecting frame variables.",
+                new DiagnosticError("ThreadNotInSnapshot", $"thread {threadId.Value} absent from snapshot", handle),
+                new NextActionHint("query_snapshot", "Use view='threads-summary' to list current ManagedThreadIds.", null)));
+        }
+
+        var principalUnlocksSensitive = principalAccessor.Current?.HasExplicitScope("sensitive-heap-read") == true;
+        var emitSensitive = sensitiveGate.ShouldEmit(includeSensitiveValues, principalUnlocksSensitive);
+
+        FrameVariablesResult frameVars;
+        try
+        {
+            frameVars = await resolver.ResolveAsync(snapshot, threadId.Value, emitSensitive, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException)
+        {
+            return AsObjectEnvelope(DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
+                $"Could not inspect frame locals against snapshot '{handle}': {ex.Message}",
+                new DiagnosticError("FrameVariablesUnavailable", ex.Message, handle),
+                new NextActionHint("collect_thread_snapshot", "Re-capture the snapshot if the origin process or dump is no longer reachable.", null)));
+        }
+
+        var origin = snapshot.Origin.ToString().ToLowerInvariant();
+        var result = new ThreadSnapshotQueryResult(
+            handle, FrameVarsView, origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
+        {
+            FrameVariables = frameVars,
+            ThreadId = threadId.Value,
+        };
+
+        var varCount = frameVars.Frames.Sum(fr => fr.Variables.Count);
+        var summary = $"Recovered {varCount} object-typed local(s)/parameter(s) across {frameVars.Frames.Count} frame(s) on managed thread {frameVars.ManagedThreadId} from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId})" +
+            (frameVars.CurrentExceptionType is { } exType ? $"; current exception {exType}." : ".");
         return AsObjectEnvelope(DiagnosticResult.Ok(result, summary));
     }
 
