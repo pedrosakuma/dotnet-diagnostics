@@ -50,7 +50,7 @@ public static class SuspendedColdStartLauncher
             using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             connectCts.CancelAfter(connectTimeout);
 
-            DiagnosticsClientConnector connector;
+            DiagnosticsClientConnector? connector;
             try
             {
                 connector = await DiagnosticsClientConnector
@@ -59,6 +59,15 @@ public static class SuspendedColdStartLauncher
             }
             catch (OperationCanceledException) when (connectCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
+                throw new TimeoutException(
+                    $"Launched target (pid {target.ProcessId}) did not reverse-connect to the cold-start diagnostic port within {connectTimeout.TotalSeconds:0}s. Launch the app directly (e.g. 'dotnet App.dll' or a published apphost), not via 'dotnet run'.");
+            }
+
+            // FromDiagnosticPort returns null on a cancelled wait rather than throwing; surface the
+            // same timeout/cancel signal instead of letting a null connector NRE in SuspendedTarget.
+            if (connector is null)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
                 throw new TimeoutException(
                     $"Launched target (pid {target.ProcessId}) did not reverse-connect to the cold-start diagnostic port within {connectTimeout.TotalSeconds:0}s. Launch the app directly (e.g. 'dotnet App.dll' or a published apphost), not via 'dotnet run'.");
             }
