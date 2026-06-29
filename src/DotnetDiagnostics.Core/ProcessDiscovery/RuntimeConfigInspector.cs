@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Diagnostics.Runtime;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -31,6 +33,11 @@ public sealed class RuntimeConfigInspector : IRuntimeConfigInspector
     private readonly ILogger<RuntimeConfigInspector> _logger;
     private readonly string _procRoot;
 
+    private const long MaxRuntimeConfigBytes = 256 * 1024;
+    private const int MaxSwitchCount = 512;
+    private const int MaxSwitchNameLength = 256;
+    private const int MaxSwitchValueLength = 1024;
+
     public RuntimeConfigInspector(ILogger<RuntimeConfigInspector>? logger = null, string procRoot = "/proc")
     {
         _logger = logger ?? NullLogger<RuntimeConfigInspector>.Instance;
@@ -53,8 +60,7 @@ public sealed class RuntimeConfigInspector : IRuntimeConfigInspector
             .ToDictionary(static group => group.Key, static group => group.Last().Value, StringComparer.OrdinalIgnoreCase);
 
         var tieredCompilation = BuildTieredCompilationConfig(envMap, notes);
-        var appContextSwitches = Array.Empty<AppContextSwitchEntry>();
-        AddNoteOnce(notes, "AppContext switches are not introspectable without an in-process probe; appContextSwitches is currently empty by design.");
+        var appContextSwitches = ReadAppContextSwitches(processId, notes);
 
         GcConfig? gc = null;
         ThreadPoolConfig? threadPool = null;
@@ -250,6 +256,208 @@ public sealed class RuntimeConfigInspector : IRuntimeConfigInspector
             MinIocpThreads: portableThreadPool.TryReadField<short>("_legacy_minIOCompletionThreads", out var minIocp) ? minIocp : null,
             MaxIocpThreads: portableThreadPool.TryReadField<short>("_legacy_maxIOCompletionThreads", out var maxIocp) ? maxIocp : null,
             HillClimbingEnabled: true);
+    }
+
+    private IReadOnlyList<AppContextSwitchEntry> ReadAppContextSwitches(int processId, List<string> notes)
+    {
+        var configPath = TryResolveRuntimeConfigPath(processId);
+        if (configPath is null)
+        {
+            AddNoteOnce(notes, "AppContext switches unavailable: could not locate the target's <app>.runtimeconfig.json next to its main module; appContextSwitches is empty.");
+            return Array.Empty<AppContextSwitchEntry>();
+        }
+
+        try
+        {
+            var info = new FileInfo(configPath);
+            if (info.Length > MaxRuntimeConfigBytes)
+            {
+                AddNoteOnce(notes, $"AppContext switches unavailable: {configPath} exceeds {MaxRuntimeConfigBytes} bytes; appContextSwitches is empty.");
+                return Array.Empty<AppContextSwitchEntry>();
+            }
+
+            var json = File.ReadAllText(configPath);
+            var switches = ParseConfigProperties(json);
+            if (switches.Count == 0)
+            {
+                AddNoteOnce(notes, $"No configProperties present in {configPath}; appContextSwitches is empty.");
+            }
+            else
+            {
+                AddNoteOnce(notes, $"AppContext switches were read offline from {configPath} (runtimeOptions.configProperties); post-startup AppContext.SetSwitch overrides are not reflected.");
+            }
+
+            return switches;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            _logger.LogDebug(ex, "Failed to read runtimeconfig.json at {ConfigPath} for pid {ProcessId}", configPath, processId);
+            AddNoteOnce(notes, $"AppContext switches unavailable: failed to read {configPath} ({ex.GetType().Name}); appContextSwitches is empty.");
+            return Array.Empty<AppContextSwitchEntry>();
+        }
+    }
+
+    /// <summary>
+    /// Parses <c>runtimeOptions.configProperties</c> (AppContext switches + runtime knobs) from a
+    /// <c>runtimeconfig.json</c> document into a stable, name-sorted list. Values are normalised to
+    /// strings (booleans lower-cased) so the LLM sees the same form regardless of JSON kind.
+    /// </summary>
+    internal static IReadOnlyList<AppContextSwitchEntry> ParseConfigProperties(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return Array.Empty<AppContextSwitchEntry>();
+        }
+
+        using var document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty("runtimeOptions", out var runtimeOptions)
+            || runtimeOptions.ValueKind != JsonValueKind.Object
+            || !runtimeOptions.TryGetProperty("configProperties", out var configProperties)
+            || configProperties.ValueKind != JsonValueKind.Object)
+        {
+            return Array.Empty<AppContextSwitchEntry>();
+        }
+
+        var entries = new List<AppContextSwitchEntry>();
+        foreach (var property in configProperties.EnumerateObject())
+        {
+            // Allowlist known runtime / AppContext-switch namespaces. Custom configProperties keys can
+            // hold arbitrary app values (e.g. connection strings) — exposing those would bypass the
+            // env-var redaction boundary, so drop anything outside the recognised prefixes. Cap counts
+            // and lengths so a hostile runtimeconfig.json can't blow up the envelope.
+            if (!IsKnownSwitchKey(property.Name) || property.Name.Length > MaxSwitchNameLength)
+            {
+                continue;
+            }
+
+            var value = NormalizeConfigValue(property.Value);
+            if (value is not null && value.Length > MaxSwitchValueLength)
+            {
+                value = value[..MaxSwitchValueLength] + "…";
+            }
+
+            entries.Add(new AppContextSwitchEntry(property.Name, value));
+            if (entries.Count >= MaxSwitchCount)
+            {
+                break;
+            }
+        }
+
+        entries.Sort(static (left, right) => StringComparer.OrdinalIgnoreCase.Compare(left.Name, right.Name));
+        return entries;
+    }
+
+    private static readonly string[] KnownSwitchPrefixes =
+    {
+        "System.", "Microsoft.", "Switch.", "Windows.", "Internal.",
+    };
+
+    private static bool IsKnownSwitchKey(string name) =>
+        KnownSwitchPrefixes.Any(p => name.StartsWith(p, StringComparison.Ordinal));
+
+    private static string? NormalizeConfigValue(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.True => "true",
+        JsonValueKind.False => "false",
+        JsonValueKind.String => value.GetString(),
+        JsonValueKind.Null => null,
+        JsonValueKind.Number => value.GetRawText(),
+        _ => value.GetRawText(),
+    };
+
+    private string? TryResolveRuntimeConfigPath(int processId)
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        var candidates = new List<string>();
+
+        // Framework-dependent apps: cmdline is "dotnet /path/App.dll …"; runtimeconfig sits beside App.dll.
+        foreach (var dll in EnumerateManagedEntrypointDlls(processId))
+        {
+            candidates.Add(Path.ChangeExtension(dll, ".runtimeconfig.json"));
+        }
+
+        // Self-contained apps: the apphost (MainModule) lives beside App.runtimeconfig.json.
+        var mainModule = TryGetMainModuleFileName(processId);
+        if (!string.IsNullOrWhiteSpace(mainModule))
+        {
+            var directory = Path.GetDirectoryName(mainModule);
+            var baseName = Path.GetFileNameWithoutExtension(mainModule);
+            if (!string.IsNullOrWhiteSpace(directory) && !string.IsNullOrWhiteSpace(baseName))
+            {
+                candidates.Add(Path.Combine(directory, baseName + ".runtimeconfig.json"));
+            }
+        }
+
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private IEnumerable<string> EnumerateManagedEntrypointDlls(int processId)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            yield break;
+        }
+
+        var cmdlinePath = Path.Combine(_procRoot, processId.ToString(CultureInfo.InvariantCulture), "cmdline");
+
+        string[] args;
+        try
+        {
+            if (!File.Exists(cmdlinePath))
+            {
+                yield break;
+            }
+
+            var raw = File.ReadAllText(cmdlinePath);
+            args = raw.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogDebug(ex, "Failed to read cmdline for pid {ProcessId}", processId);
+            yield break;
+        }
+
+        foreach (var arg in args)
+        {
+            if (!arg.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // Only trust absolute cmdline DLL paths. A relative arg would have to be combined with
+            // /proc/<pid>/cwd, but that symlink reflects the live working dir and can be moved after
+            // startup (Directory.SetCurrentDirectory) — pointing us at an attacker-chosen file. The
+            // self-contained MainModule fallback covers the rooted-only case.
+            if (Path.IsPathRooted(arg))
+            {
+                yield return arg;
+            }
+        }
+    }
+
+    private static string? TryGetMainModuleFileName(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return process.MainModule?.FileName;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static TieredCompilationConfig? BuildTieredCompilationConfig(IReadOnlyDictionary<string, string> envMap, List<string> notes)

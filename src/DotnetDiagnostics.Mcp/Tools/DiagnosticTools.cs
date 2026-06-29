@@ -282,7 +282,7 @@ public sealed class DiagnosticTools
 
     [RequireScope("read-counters")]
     [Description(
-        "Reads a managed process's runtime configuration: best-effort GC and ThreadPool settings from a short ClrMD attach, tiered-compilation overrides from filtered runtime env vars, and a forward-compatible appContextSwitches field that currently stays empty with an explanatory note. " +
+        "Reads a managed process's runtime configuration: best-effort GC and ThreadPool settings from a short ClrMD attach, tiered-compilation overrides from filtered runtime env vars, and appContextSwitches parsed offline from the target's <app>.runtimeconfig.json (runtimeOptions.configProperties — AppContext switches and runtime knobs). " +
         "Environment variables are filtered to the DOTNET_ / COMPlus_ / ASPNETCORE_ / DOTNET_SYSTEM_ prefixes as a hard security boundary. " +
         "When processId is omitted the server auto-selects the lone reachable .NET process.")]
     public static async Task<DiagnosticResult<RuntimeConfigView>> GetRuntimeConfig(
@@ -547,6 +547,7 @@ public sealed class DiagnosticTools
         }
 
         parts.Add($"env={runtimeConfig.EnvVars.Count}");
+        parts.Add($"appContextSwitches={runtimeConfig.AppContextSwitches.Count}");
         return $"Process {runtimeConfig.ProcessId} runtime-config: {string.Join("; ", parts)}.";
     }
 
