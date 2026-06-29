@@ -309,7 +309,7 @@ internal sealed class SessionRepl
             // `query` is handled by the session-aware path (it can honour --handle against the live
             // shared store); every other command runs the same use case the one-shot CLI does.
             var result = string.Equals(options.Command, "query", StringComparison.Ordinal)
-                ? CliCommands.QuerySession(services, options)
+                ? await CliCommands.QuerySession(services, options, commandCts.Token).ConfigureAwait(false)
                 : await CliCommands.RunAsync(services, options, commandCts.Token).ConfigureAwait(false);
 
             await RenderAsync(result, options.Json, stdout, stderr).ConfigureAwait(false);

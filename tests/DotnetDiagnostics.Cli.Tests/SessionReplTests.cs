@@ -225,7 +225,92 @@ public sealed class SessionReplTests
         exit.Should().Be(0);
         stdout.Should().Contain("not available in the session yet");
         stdout.Should().Contain("NotSupportedInSession");
-        stdout.Should().Contain("live ClrMD attach");
+        stdout.Should().Contain("ClrMD runtime");
+        stdout.Should().Contain("query_heap_snapshot");
+    }
+
+    [Fact]
+    public async Task Query_HeapHandle_GcRootView_DumpOrigin_ServesChainFromDump()
+    {
+        var inspector = new StubDumpInspector
+        {
+            GcRootInspection = new HeapGcRootInspection(0x1f2a, "System.Byte[]",
+            [
+                new RetentionFrame("<root>", 0) { RootKind = "StaticVar" },
+                new RetentionFrame("System.Collections.Generic.List<System.Byte[]>", 0x4cd0),
+                new RetentionFrame("System.Byte[]", 0x1f2a),
+            ], Truncated: false),
+        };
+        var (services, store) = BuildServices(inspector);
+        var handle = store.Register(Environment.ProcessId, HeapInspectionUseCases.HeapSnapshotKind, DumpHeapSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view gcroot --address 0x1f2a\nexit\n", services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        inspector.LastAddress.Should().Be(0x1f2aUL, "the hex --address must be parsed and forwarded to the dump inspector");
+        stdout.Should().Contain("gcroot");
+        stdout.Should().Contain("StaticVar");
+        stdout.Should().Contain("origin=Dump");
+        stdout.Should().NotContain("NotSupportedInSession");
+    }
+
+    [Fact]
+    public async Task Query_HeapHandle_ObjectView_DumpOrigin_RedactsPreviews()
+    {
+        var inspector = new StubDumpInspector
+        {
+            ObjectInspection = new HeapObjectInspection(0x1234, "System.String", 64, "Small", "Generation0")
+            {
+                IsString = true,
+                StringValue = "super-secret-connection-string",
+                Fields = [new HeapObjectField("_value", "System.Char[]", "super-secret-connection-string")],
+            },
+        };
+        var (services, store) = BuildServices(inspector);
+        var handle = store.Register(Environment.ProcessId, HeapInspectionUseCases.HeapSnapshotKind, DumpHeapSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view object --address 4660\nexit\n", services);
+
+        exit.Should().Be(0);
+        inspector.LastAddress.Should().Be(4660UL, "decimal --address must be parsed and forwarded to the dump inspector");
+        stdout.Should().Contain("System.String");
+        stdout.Should().Contain("redacted:metadata-only");
+        stdout.Should().NotContain("super-secret-connection-string",
+            "the Core-only session holds no sensitive-value gate, so raw heap content must never be surfaced");
+    }
+
+    [Fact]
+    public async Task Query_HeapHandle_GcRootView_LiveOrigin_StaysServerOnly()
+    {
+        var inspector = new StubDumpInspector();
+        var (services, store) = BuildServices(inspector);
+        var handle = store.Register(Environment.ProcessId, HeapInspectionUseCases.HeapSnapshotKind, HeapSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view gcroot --address 0x1234\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("NotSupportedInSession");
+        inspector.LastAddress.Should().BeNull("a live-origin handle must not trigger a dump drilldown");
+    }
+
+    [Fact]
+    public async Task Query_HeapHandle_GcRootView_DumpOrigin_MissingAddress_IsRejected()
+    {
+        var inspector = new StubDumpInspector();
+        var (services, store) = BuildServices(inspector);
+        var handle = store.Register(Environment.ProcessId, HeapInspectionUseCases.HeapSnapshotKind, DumpHeapSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view gcroot\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("InvalidArgument");
+        stdout.Should().Contain("--address");
+        inspector.LastAddress.Should().BeNull();
     }
 
     [Fact]
@@ -862,6 +947,16 @@ public sealed class SessionReplTests
         return (services, store);
     }
 
+    private static (ServiceProvider Services, MemoryDiagnosticHandleStore Store) BuildServices(IDumpInspector inspector)
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var services = new ServiceCollection()
+            .AddSingleton<IDiagnosticHandleStore>(store)
+            .AddSingleton(inspector)
+            .BuildServiceProvider();
+        return (services, store);
+    }
+
     /// <summary>
     /// Builds a service provider wired with a <see cref="RecordingProcessContextResolver"/> so a
     /// <c>capabilities</c> command runs to a clean (failure) envelope without a live target while
@@ -929,6 +1024,52 @@ public sealed class SessionReplTests
         Heap: new DumpHeapSummary(1024, 0, 0, 1024, 0, 0, 1024),
         TopTypesByBytes: new[] { new TypeStat("System.String", "System.Private.CoreLib", 100, 4096, 40.0) },
         TopTypesByInstances: new[] { new TypeStat("System.String", "System.Private.CoreLib", 100, 4096, 40.0) });
+
+    private static HeapSnapshotArtifact DumpHeapSnapshot() => new(
+        Origin: HeapSnapshotOrigin.Dump,
+        ProcessId: Environment.ProcessId,
+        CapturedAt: DateTimeOffset.UtcNow,
+        WalkDuration: TimeSpan.FromMilliseconds(50),
+        Runtime: new DumpRuntimeInfo("CoreCLR", "10.0.0", "X64", IsServerGC: false, HeapCount: 1),
+        Heap: new DumpHeapSummary(1024, 0, 0, 1024, 0, 0, 1024),
+        TopTypesByBytes: new[] { new TypeStat("System.String", "System.Private.CoreLib", 100, 4096, 40.0) },
+        TopTypesByInstances: new[] { new TypeStat("System.String", "System.Private.CoreLib", 100, 4096, 40.0) })
+    {
+        DumpFilePath = "/artifacts/sample.dmp",
+    };
+
+    /// <summary>
+    /// Records the address it is asked for and returns pre-canned inspections, so the session
+    /// dump-drilldown path (#464) is exercised without a real .dmp file. The real ClrMD dump-DataTarget
+    /// walk is covered by the live Core integration test.
+    /// </summary>
+    private sealed class StubDumpInspector : IDumpInspector
+    {
+        public ulong? LastAddress { get; private set; }
+        public HeapObjectInspection? ObjectInspection { get; init; }
+        public HeapGcRootInspection? GcRootInspection { get; init; }
+
+        public Task<HeapSnapshotArtifact> InspectAsync(string dumpFilePath, DumpInspectionOptions? options = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<HeapSnapshotArtifact> InspectLiveAsync(int processId, DumpInspectionOptions? options = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<HeapObjectInspection> InspectObjectAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)
+        {
+            LastAddress = address;
+            return Task.FromResult(ObjectInspection ?? throw new InvalidOperationException("ObjectInspection not configured."));
+        }
+
+        public Task<HeapGcRootInspection> InspectGcRootAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)
+        {
+            LastAddress = address;
+            return Task.FromResult(GcRootInspection ?? throw new InvalidOperationException("GcRootInspection not configured."));
+        }
+
+        public Task<HeapObjectSizeInspection> InspectObjectSizeAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+    }
 
     private static CpuSampleTraceArtifact CpuTrace()
     {

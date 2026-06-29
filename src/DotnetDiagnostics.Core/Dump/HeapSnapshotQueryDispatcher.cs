@@ -10,12 +10,14 @@ namespace DotnetDiagnostics.Core.Dump;
 /// tool and the standalone CLI <c>session</c> REPL (issue #300) share one implementation.
 /// </summary>
 /// <remarks>
-/// Four heap views are deliberately <i>not</i> handled here and remain server-owned:
-/// <c>object</c>/<c>gcroot</c>/<c>objsize</c> require a live ClrMD attach via <c>IDumpInspector</c>
-/// plus the attach authorization guard, and <c>duplicate-strings</c> needs the server's
-/// sensitive-value redactor + gate. For those, <see cref="Dispatch"/> reports
+/// Four heap views are deliberately <i>not</i> handled here and remain caller-owned:
+/// <c>object</c>/<c>gcroot</c>/<c>objsize</c> need a ClrMD runtime over the snapshot's origin (a live
+/// attach behind the authorization guard, or — for dump-origin handles — the recorded dump file via
+/// <c>IDumpInspector</c>; see #464), and <c>duplicate-strings</c> needs the server's sensitive-value
+/// redactor + gate. For those, <see cref="Dispatch"/> reports
 /// <see cref="HeapDispatchOutcome.ServerOnlyView"/> so the caller can route them appropriately (the
-/// server falls through to its own handlers; the Core-only CLI surfaces a clear NotSupported envelope).
+/// server falls through to its own ClrMD handlers; the Core-only CLI serves <c>gcroot</c>/<c>object</c>
+/// from a dump-origin handle and surfaces a clear NotSupported envelope for the rest).
 /// </remarks>
 public static class HeapSnapshotQueryDispatcher
 {

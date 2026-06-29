@@ -1134,7 +1134,8 @@ internal static class CliCommands
     /// kinds are supported here; heap/cpu/thread drill-down routing still lives in the MCP server
     /// (deferred to a follow-up PR) and yields a clear <c>NotSupportedInSession</c> envelope.
     /// </summary>
-    public static CliCommandResult QuerySession(IServiceProvider services, CliOptions options)
+    public static async Task<CliCommandResult> QuerySession(
+        IServiceProvider services, CliOptions options, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
@@ -1156,12 +1157,14 @@ internal static class CliCommands
         var kind = lookup.Value.Kind;
 
         // Heap snapshot handles drill down through the host-neutral HeapSnapshotQueryDispatcher (#300):
-        // the projection views render from the walked snapshot alone (no live ClrMD attach, no
+        // the projection views render from the walked snapshot alone (no ClrMD runtime, no
         // sensitive-value redactor), which is exactly the subset a stateless session can serve. The
-        // four capability-bound views (object/gcroot/objsize, duplicate-strings) stay server-only.
+        // address-addressed views need a ClrMD runtime: for a dump-origin handle the session re-opens
+        // the dump file (Core-only, no live attach) to serve `gcroot`/`object` (#464); `objsize` and the
+        // sensitive `duplicate-strings` view, plus all live-origin attaches, stay server-only.
         if (kind == HeapInspectionUseCases.HeapSnapshotKind)
         {
-            return QueryHeapSession(options, lookup.Value.Artifact);
+            return await QueryHeapSession(services, options, lookup.Value.Artifact, cancellationToken).ConfigureAwait(false);
         }
 
         // CPU / allocation / native-alloc sample handles drill down through the host-neutral
@@ -1253,11 +1256,14 @@ internal static class CliCommands
     /// <summary>
     /// Renders a heap-snapshot drill-down inside the <c>session</c> REPL via the host-neutral
     /// <see cref="HeapSnapshotQueryDispatcher"/>. Projection views (<c>top-types</c>,
-    /// <c>retention-paths</c>, …) render from the walked snapshot; the four server-only views
-    /// (<c>object</c>/<c>gcroot</c>/<c>objsize</c> need a live attach, <c>duplicate-strings</c> needs
-    /// the server's sensitive-value gate) yield a clear <c>NotSupportedInSession</c> envelope.
+    /// <c>retention-paths</c>, …) render from the walked snapshot. The address-addressed
+    /// <c>gcroot</c>/<c>object</c> views are served for <b>dump-origin</b> handles by re-opening the
+    /// dump file through <see cref="IDumpInspector"/> (ClrMD walks GC roots on a dump DataTarget
+    /// exactly like a live one — #464); <c>objsize</c>, <c>duplicate-strings</c>, and every
+    /// live-origin attach stay server-only and yield a clear <c>NotSupportedInSession</c> envelope.
     /// </summary>
-    private static CliCommandResult QueryHeapSession(CliOptions options, object artifact)
+    private static async Task<CliCommandResult> QueryHeapSession(
+        IServiceProvider services, CliOptions options, object artifact, CancellationToken cancellationToken)
     {
         if (artifact is not HeapSnapshotArtifact heap)
         {
@@ -1281,15 +1287,162 @@ internal static class CliCommands
         if (outcome.ServerOnlyView)
         {
             var normalized = view.Trim().ToLowerInvariant();
+
+            // #464: gcroot/object over a dump-origin snapshot need no live attach — re-open the dump
+            // file with ClrMD (Core-only) and walk roots / read the object against the dump DataTarget.
+            if ((normalized == "gcroot" || normalized == "object") && heap.Origin == HeapSnapshotOrigin.Dump)
+            {
+                return await QueryHeapDumpDrilldown(services, options, heap, normalized, cancellationToken).ConfigureAwait(false);
+            }
+
             var detail = normalized == "duplicate-strings"
                 ? "The 'duplicate-strings' view exposes raw string previews behind the server's sensitive-value policy, which the standalone CLI cannot enforce; run the MCP server if you need it."
-                : "The 'object', 'gcroot' and 'objsize' views require a live ClrMD attach the session does not hold; run the MCP server's query_heap_snapshot tool with an address if you need them.";
+                : "The 'object', 'gcroot' and 'objsize' views need a ClrMD runtime: 'gcroot'/'object' are served in-session for dump-origin handles, but a live attach (and 'objsize') require the MCP server's query_heap_snapshot tool.";
             return Fail($"query: view '{view}' for a heap snapshot is not available in the session yet.", "NotSupportedInSession", detail);
         }
 
         // outcome.UnknownView
         return Fail($"query: unknown view '{view}' for a heap snapshot.", "InvalidArgument",
             $"Valid views: {string.Join(", ", HeapSnapshotQueryDispatcher.ProjectionViews)}.");
+    }
+
+    /// <summary>
+    /// Serves the address-addressed <c>gcroot</c>/<c>object</c> heap views for a <b>dump-origin</b>
+    /// snapshot inside the session (#464). The injected <see cref="IDumpInspector"/> re-opens the dump
+    /// file recorded on the artifact (no live attach) and walks the GC-root chain or reads the managed
+    /// object. The <c>object</c> view never emits raw string/field/array values — the Core-only CLI has
+    /// no sensitive-value gate, so previews are replaced with the metadata-only placeholder, matching
+    /// the MCP server's redacted default.
+    /// </summary>
+    private static async Task<CliCommandResult> QueryHeapDumpDrilldown(
+        IServiceProvider services, CliOptions options, HeapSnapshotArtifact heap, string view, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(options.Address))
+        {
+            return Fail($"query: --address <addr> is required for view '{view}'.", "InvalidArgument",
+                "Pass the managed object address (decimal or 0x-hex), e.g. query --handle <id> --view gcroot --address 0x1f2a3b40.");
+        }
+
+        if (!TryParseAddress(options.Address, out var address))
+        {
+            return Fail($"query: '--address {options.Address}' is not a valid object address.", "InvalidArgument",
+                "Use a non-zero decimal or 0x-prefixed hex address taken from a retention-paths / top-types row.");
+        }
+
+        var inspector = services.GetRequiredService<IDumpInspector>();
+        DiagnosticResult<HeapSnapshotQueryResult> result;
+        try
+        {
+            result = view == "gcroot"
+                ? BuildGcRootResult(heap, options.Handle!, await inspector.InspectGcRootAsync(heap, address, cancellationToken).ConfigureAwait(false))
+                : BuildObjectResult(heap, options.Handle!, await inspector.InspectObjectAsync(heap, address, cancellationToken).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return Fail($"query: view '{view}' could not be served from the dump.", "InspectionFailed", ex.Message);
+        }
+
+        return BuildResult<HeapSnapshotQueryResult>(result, static (sb, qr) =>
+        {
+            sb.AppendLine();
+            sb.AppendLine(JsonSerializer.Serialize(qr, QueryJsonOptions));
+        });
+    }
+
+    /// <summary>Parses a managed object address (decimal or <c>0x</c>-hex); rejects zero.</summary>
+    private static bool TryParseAddress(string value, out ulong result)
+    {
+        result = 0;
+        var s = value.Trim();
+        var parsed = (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+            ? ulong.TryParse(s.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out result)
+            : ulong.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out result));
+        return parsed && result != 0;
+    }
+
+    private static DiagnosticResult<HeapSnapshotQueryResult> BuildGcRootResult(
+        HeapSnapshotArtifact heap, string handle, HeapGcRootInspection inspection)
+    {
+        var origin = heap.Origin.ToString();
+        var summary = string.Create(CultureInfo.InvariantCulture,
+            $"query: gcroot view origin={origin} pid={heap.ProcessId} address=0x{inspection.Address:x} type={inspection.TypeFullName} frames={inspection.Chain.Count}{(inspection.Truncated ? " (truncated by BFS/depth caps)" : string.Empty)}");
+        var result = new HeapSnapshotQueryResult(handle, "gcroot", origin, heap.ProcessId, heap.CapturedAt)
+        {
+            Address = inspection.Address,
+            GcRoot = inspection,
+        };
+        return DiagnosticResult.Ok(result, summary);
+    }
+
+    private static DiagnosticResult<HeapSnapshotQueryResult> BuildObjectResult(
+        HeapSnapshotArtifact heap, string handle, HeapObjectInspection inspection)
+    {
+        var origin = heap.Origin.ToString();
+        var redacted = RedactObjectPreviews(inspection);
+        var summary = string.Create(CultureInfo.InvariantCulture,
+            $"query: object view origin={origin} pid={heap.ProcessId} address=0x{redacted.Address:x} type={redacted.TypeFullName} size={redacted.Size} (string/field previews redacted — no session sensitive-value gate)");
+        var result = new HeapSnapshotQueryResult(handle, "object", origin, heap.ProcessId, heap.CapturedAt)
+        {
+            Address = redacted.Address,
+            ObjectDetails = redacted,
+        };
+        return DiagnosticResult.Ok(result, summary);
+    }
+
+    /// <summary>
+    /// Replaces every string / field / array-element preview with the metadata-only placeholder so the
+    /// Core-only session never surfaces raw heap content (it holds no sensitive-value gate). Object
+    /// shape — type, size, generation, segment, array length, field names/types — is preserved.
+    /// </summary>
+    private static HeapObjectInspection RedactObjectPreviews(HeapObjectInspection inspection)
+    {
+        IReadOnlyList<HeapObjectField>? fields = inspection.Fields;
+        if (fields is { Count: > 0 })
+        {
+            var redacted = new List<HeapObjectField>(fields.Count);
+            foreach (var f in fields)
+            {
+                redacted.Add(new HeapObjectField(f.Name, f.TypeFullName, SensitiveDataRedactor.MetadataOnlyPlaceholder)
+                {
+                    ObjectAddress = f.ObjectAddress,
+                    ReferencedTypeFullName = f.ReferencedTypeFullName,
+                });
+            }
+
+            fields = redacted;
+        }
+
+        IReadOnlyList<HeapArrayElement>? array = inspection.ArraySample;
+        if (array is { Count: > 0 })
+        {
+            var redacted = new List<HeapArrayElement>(array.Count);
+            foreach (var a in array)
+            {
+                redacted.Add(new HeapArrayElement(a.Index, a.TypeFullName, SensitiveDataRedactor.MetadataOnlyPlaceholder)
+                {
+                    ObjectAddress = a.ObjectAddress,
+                    ReferencedTypeFullName = a.ReferencedTypeFullName,
+                });
+            }
+
+            array = redacted;
+        }
+
+        return new HeapObjectInspection(inspection.Address, inspection.TypeFullName, inspection.Size, inspection.SegmentKind, inspection.Generation)
+        {
+            IsArray = inspection.IsArray,
+            ArrayLength = inspection.ArrayLength,
+            ArraySample = array,
+            IsString = inspection.IsString,
+            StringValue = inspection.IsString ? SensitiveDataRedactor.MetadataOnlyPlaceholder : inspection.StringValue,
+            StringValueTruncated = inspection.StringValueTruncated,
+            Fields = fields,
+            Warnings = inspection.Warnings,
+        };
     }
 
     /// <summary>

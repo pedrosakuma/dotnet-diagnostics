@@ -410,6 +410,24 @@ decisions accrue over time, so a sustained window is best.
 | `samples` | per-GC measurements behind the decisions | `--top` |
 | `gen2` | gen2 "backstop" tuning events | `--top` |
 
+Heap-snapshot handles (`inspect-heap`) expose the projection views rendered from the walked snapshot
+(`top-types`, `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`,
+`delegate-targets`, `gchandles`, `async`, `timers`, `alc`) plus two address-addressed drilldowns:
+
+| View | What it shows | Relevant flags |
+| --- | --- | --- |
+| `top-types` (default) | top types by bytes/instances | `--top-types`, `--rank-by bytes\|instances` |
+| `retention-paths` | short GC retention chains | `--type-filter <substring>`, `--top-types` |
+| `gcroot` | shortest GC-root chain for one object (SOS `!gcroot`) | `--address <decimal\|0x-hex>` (**dump-origin handles only**) |
+| `object` | one managed object's shape (SOS `!do`) | `--address <decimal\|0x-hex>` (**dump-origin handles only**) |
+
+`gcroot` and `object` re-open the snapshot's origin with ClrMD to answer the address-scoped question.
+The Core-only session serves them for **dump-origin** handles (`inspect-heap --source dump`) by re-reading
+the recorded `.dmp` — no live attach — so an offline dump can still answer "what roots this object". The
+`object` view never prints raw string/field values in-session (the standalone CLI holds no sensitive-value
+gate); previews are replaced with `<redacted:metadata-only>`. Live-origin `gcroot`/`object` and the
+`objsize` / `duplicate-strings` views stay server-only — use the MCP server's `query_snapshot` tool.
+
 ### Cancellation (Ctrl-C)
 
 - **While a command runs:** the first Ctrl-C cancels only that command (cleaning up any temp `.nettrace` /

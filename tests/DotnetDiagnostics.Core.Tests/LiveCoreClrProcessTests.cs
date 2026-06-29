@@ -840,6 +840,67 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         objectSize.RetainedBytes.Should().Be(objectView.Size);
     }
 
+    [Fact(Timeout = 90_000)]
+    public async Task DumpInspector_InspectsObjectAndGcRoot_FromDumpOriginSnapshot()
+    {
+        // #464 (Phase 15 A2): gcroot/object parity over a DUMP-origin snapshot. ClrMD walks GC roots
+        // on a dump DataTarget exactly like a live attach, so an offline .dmp must answer "what roots
+        // this object" without re-attaching to the (possibly gone) process.
+        EnsureSampleRunning();
+        var baseUrl = await EnsureListeningUrlAsync(TimeSpan.FromSeconds(30));
+        using (var http = new HttpClient { BaseAddress = new Uri(baseUrl) })
+        {
+            for (var i = 0; i < 4; i++)
+            {
+                var response = await http.GetAsync("/leak");
+                response.EnsureSuccessStatusCode();
+            }
+        }
+
+        var dumpRoot = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-gcroot-dump-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dumpRoot);
+        try
+        {
+            var dumper = new DotnetDiagnostics.Core.Dump.DiagnosticsClientDumper(
+                new TestArtifactRootProvider(dumpRoot));
+            var dump = await dumper.WriteDumpAsync(Pid, ProcessDumpType.WithHeap, outputDirectory: null, CancellationToken.None);
+            File.Exists(dump.FilePath).Should().BeTrue();
+
+            var inspector = new ClrMdDumpInspector();
+            var snapshot = await inspector.InspectAsync(
+                dump.FilePath,
+                new DumpInspectionOptions(TopTypes: 25, IncludeRetentionPaths: true),
+                CancellationToken.None);
+
+            snapshot.Origin.Should().Be(HeapSnapshotOrigin.Dump);
+            snapshot.DumpFilePath.Should().Be(dump.FilePath, "the dump-origin drilldown re-opens this file with ClrMD");
+
+            var leakedBufferPath = snapshot.RetentionPaths?
+                .FirstOrDefault(path => string.Equals(path.TargetTypeFullName, "System.Byte[]", StringComparison.Ordinal));
+            leakedBufferPath.Should().NotBeNull(
+                "the /leak workload retains 1 MiB byte[] objects that should surface in the dump's retention paths");
+
+            var leakedBufferAddress = leakedBufferPath!.TargetObjectAddress;
+
+            // object view served from the dump DataTarget (no live attach).
+            var objectView = await inspector.InspectObjectAsync(snapshot, leakedBufferAddress, CancellationToken.None);
+            objectView.TypeFullName.Should().Be("System.Byte[]");
+            objectView.IsArray.Should().BeTrue();
+            objectView.ArrayLength.Should().Be(1_048_576);
+
+            // gcroot view served from the dump DataTarget — the whole point of #464.
+            var gcrootView = await inspector.InspectGcRootAsync(snapshot, leakedBufferAddress, CancellationToken.None);
+            gcrootView.Chain.Should().NotBeEmpty();
+            gcrootView.Chain[0].RootKind.Should().NotBeNullOrWhiteSpace(
+                "the leaked byte[] must remain reachable from some GC root captured in the dump");
+            gcrootView.Chain[^1].ObjectAddress.Should().Be(leakedBufferAddress);
+        }
+        finally
+        {
+            try { Directory.Delete(dumpRoot, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task DumpInspector_InspectLiveAsync_FindsPendingAsyncStateMachines()
     {

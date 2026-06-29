@@ -22,7 +22,7 @@ internal static class CliCompletionScripts
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
         "--top-types", "--retention-path-limit", "--symbol-path", "--dump-type", "--out", "--mvid",
         "--asset", "--handle", "--view", "--provider-filter", "--root-method-filter", "--rank-by",
-        "--type-filter", "--max-depth", "--max-nodes", "--thread-id", "--stack-rank",
+        "--type-filter", "--address", "--max-depth", "--max-nodes", "--thread-id", "--stack-rank",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode",
     };
 
@@ -69,6 +69,7 @@ internal static class CliCompletionScripts
                 "--root-method-filter",
                 "--rank-by",
                 "--type-filter",
+                "--address",
                 "--max-depth",
                 "--max-nodes",
                 "--thread-id",
