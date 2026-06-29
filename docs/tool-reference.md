@@ -144,6 +144,37 @@ the correlation; if **every** attached Pod fails to collect, the call returns a
 collect_events(kind="distributed_trace")(traceId="0af7651916cd43dd8448eb211c80319c", durationSeconds=15)
 ```
 
+### Replica counter skew (`collect_events(kind="replica_counters")`)
+
+When you are attached to several replicas of the same service (orchestrator mode — one
+`attach_to_pod` per Pod), `collect_events(kind="replica_counters")` captures the headline
+EventCounters from **every** attached Pod **simultaneously** and flags the outlier — answering
+"which replica is hot/leaking right now?" in one round-trip. It fans out a bounded
+`collect_events(kind="counters")` to each attached Pod in parallel (so the windows overlap), parses
+each `gc-heap-size` / `cpu` / `threadpool-queue` reading, and computes per-metric dispersion plus the
+single most-deviant replica. This is distinct from `compare_to_baseline`, which contrasts
+pre-collected **serial** snapshots — this is **live + simultaneous**.
+
+| Parameter | Meaning |
+| --- | --- |
+| `durationSeconds` | Counter window applied to each Pod's simultaneous fan-out collection (default 5). |
+| `intervalSeconds` | Counter refresh interval forwarded to each Pod (default 1). |
+
+Requirements: orchestrator mode (`Orchestrator:Enabled=true`), the `read-counters` **and**
+`orchestrator-attach` scopes, and at least one **Active** investigation handle. Like
+`distributed_trace`, the call always runs **locally on the orchestrator** and is never proxied into a
+single Pod. The result envelope carries a `ReplicaCounters` skew: per-replica `Replicas[]` readings,
+per-metric `Metrics[]` dispersion (min/max/mean/stddev, absolute + relative spread, min/max Pod), the
+flagged `OutlierPod` + `OutlierScore` (summed z-score), and `Warnings`. Per-Pod failures are isolated
+in `data.podErrors`; if **every** attached Pod fails, the call returns a `ReplicaCounterFanoutFailed`
+error carrying those messages.
+
+```text
+# after attach_to_pod against each replica:
+collect_events(kind="replica_counters")(durationSeconds=5)
+```
+
+
 ### Threshold-gated capture (`collect_events` + `triggerWhen`)
 
 `collect_events(kind="counters")` can arm a **bounded** watch that captures a heavier artifact the

@@ -18,6 +18,7 @@ using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.ReplicaCounters;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
@@ -73,6 +74,7 @@ public sealed class CollectEventsTool
         "networking",
         "startup",
         "distributed_trace",
+        "replica_counters",
     };
 
     [RequireAnyScope("read-counters", "eventpipe")]
@@ -134,6 +136,7 @@ public sealed class CollectEventsTool
             "'kestrel' (Kestrel HTTP server: connection/request/TLS latency, queue lengths, live KestrelServerOptions config), " +
             "'networking' (curated outbound HTTP / DNS / TLS / socket view: latency percentiles + HttpClient time-in-queue), " +
             "'startup' (loader + DependencyInjection events emitted during the window; pre-attach cold-start events are missed). " +
+            "'replica_counters' (orchestrator fan-out: simultaneous live counter capture across ALL attached Pods to find the replica skew outlier on cpu/gc-heap-size/threadpool-queue — requires attach_to_pod first). " +
             "All kinds except 'counters' use the 'eventpipe' scope. " +
             "IMPORTANT: for 'exceptions', 'crash-guard', and 'gc', start collection BEFORE the workload — EventPipe sessions " +
             "take ~500 ms–1 s to fully start and earlier events are missed. For 'startup', attaching to an already-running process misses the initial cold-start; true cold-start capture requires enabling EventPipe before/at process launch (reverse-connect or CLI --launch/DOTNET_ startup session).")]
@@ -214,7 +217,7 @@ public sealed class CollectEventsTool
         var principal = principalAccessor.Current;
         if (principal is not null)
         {
-            var requiredScope = canonicalKind == "counters" ? "read-counters" : "eventpipe";
+            var requiredScope = canonicalKind is "counters" or "replica_counters" ? "read-counters" : "eventpipe";
             if (!principal.HasScope(requiredScope))
             {
                 var message =
@@ -235,6 +238,16 @@ public sealed class CollectEventsTool
         {
             return await RunDistributedTraceAsync(
                 requestContext, principal, traceId, durationSeconds, maxActivities, sources, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        // Replica counter skew fan-out (#448): orchestrator simultaneous fan-out across attached Pods.
+        // Like distributed_trace it neither targets a single pid nor opens a local EventPipe session —
+        // it proxies collect_events(kind=counters) to each attached Pod in parallel and compares them.
+        if (canonicalKind == "replica_counters")
+        {
+            return await RunReplicaCountersAsync(
+                requestContext, principal, durationSeconds, intervalSeconds, cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -637,6 +650,101 @@ public sealed class CollectEventsTool
         var envelope = new CollectEventsEnvelope("distributed_trace", DistributedTrace: timeline, PodErrors: fanout.PodErrors);
         return DiagnosticResult.Ok(envelope, summary, hints.ToArray());
     }
+
+    /// <summary>
+    /// Replica counter skew fan-out (#448). Resolves the orchestrator services from the request scope,
+    /// enumerates the caller's active investigations, fans out a bounded counter capture to each
+    /// simultaneously, then identifies the outlier replica on cpu/gc-heap-size/threadpool-queue.
+    /// </summary>
+    private static async Task<DiagnosticResult<CollectEventsEnvelope>> RunReplicaCountersAsync(
+        RequestContext<CallToolRequestParams>? requestContext,
+        BearerPrincipal? principal,
+        int? durationSeconds,
+        int intervalSeconds,
+        CancellationToken cancellationToken)
+    {
+        var effectiveDuration = durationSeconds ?? 5;
+        if (effectiveDuration < 1)
+        {
+            const string message = "durationSeconds must be >= 1.";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message, new DiagnosticError("InvalidArgument", message, "durationSeconds"));
+        }
+
+        var services = requestContext?.Services;
+        var store = services?.GetService(typeof(IInvestigationStore)) as IInvestigationStore;
+        var proxy = services?.GetService(typeof(IInvestigationProxyClient)) as IInvestigationProxyClient;
+        var options = services?.GetService(typeof(OrchestratorOptions)) as OrchestratorOptions;
+
+        if (store is null || proxy is null || options is null || !options.Enabled)
+        {
+            const string message = "kind='replica_counters' requires orchestrator mode (Orchestrator:Enabled=true). " +
+                "It compares live counters across Pods you have attached to via attach_to_pod.";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message,
+                new DiagnosticError(OrchestratorErrorKinds.OrchestratorDisabled, message),
+                new NextActionHint("list_orchestrator", "Enable orchestrator mode and attach to the replicas first.",
+                    new Dictionary<string, object?> { ["kind"] = "pods" }));
+        }
+
+        if (principal is not null && !principal.HasScope("orchestrator-attach"))
+        {
+            const string message = "kind='replica_counters' requires the 'orchestrator-attach' scope (it reads your investigation handles and proxies to the attached Pods).";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message, new DiagnosticError(OrchestratorErrorKinds.PermissionDenied, message, "orchestrator-attach"));
+        }
+
+        var callerSessionId = requestContext?.Server is { } server
+            ? OrchestratorTools.TryGetServerSessionId(server)
+            : null;
+
+        var fanout = await ReplicaCounterFanout.CompareAsync(
+            store, proxy, callerSessionId, effectiveDuration, intervalSeconds, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (fanout.AttachedActivePods == 0)
+        {
+            var message = "kind='replica_counters': no Active investigations are attached. Call attach_to_pod for each replica first, then re-run.";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message,
+                new DiagnosticError("NoActiveInvestigation", message),
+                new NextActionHint("list_orchestrator", "List candidate Pods, then attach_to_pod to each replica.",
+                    new Dictionary<string, object?> { ["kind"] = "pods" }));
+        }
+
+        if (fanout.Skew is null)
+        {
+            var message = $"replica_counters: every one of the {fanout.AttachedActivePods} attached Pod(s) failed to collect counters — no replicas could be compared. See the per-Pod errors.";
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                message,
+                new DiagnosticError("ReplicaCounterFanoutFailed", message),
+                new NextActionHint("list_orchestrator", "Verify the attached Pods are still reachable, then re-run.",
+                    new Dictionary<string, object?> { ["kind"] = "investigations" }))
+                with
+            { Data = new CollectEventsEnvelope("replica_counters", ReplicaCounters: null, PodErrors: fanout.PodErrors) };
+        }
+
+        var skew = fanout.Skew;
+        var hints = new List<NextActionHint>();
+        var summary = skew.OutlierPod is not null
+            ? $"replica_counters: compared {skew.PodCount} replica(s); outlier is '{skew.OutlierPod}' (skew score {skew.OutlierScore:F2})."
+            : $"replica_counters: compared {skew.PodCount} replica(s); no clear outlier — replicas are within noise.";
+
+        if (skew.OutlierPod is not null)
+        {
+            hints.Add(new NextActionHint("collect_sample",
+                $"Drill into the outlier replica '{skew.OutlierPod}' to see what it is doing.",
+                new Dictionary<string, object?> { ["kind"] = "cpu", ["durationSeconds"] = 10 }));
+        }
+
+        if (fanout.PodErrors.Count > 0)
+        {
+            summary += $" {fanout.PodErrors.Count} Pod(s) could not be collected (see data.podErrors).";
+        }
+
+        var skewEnvelope = new CollectEventsEnvelope("replica_counters", ReplicaCounters: skew, PodErrors: fanout.PodErrors);
+        return DiagnosticResult.Ok(skewEnvelope, summary, hints.ToArray());
+    }
 }
 
 /// <summary>
@@ -666,4 +774,5 @@ public sealed record CollectEventsEnvelope(
     StartupSnapshot? Startup = null,
     GatedCaptureResult? GatedCapture = null,
     DistributedTraceTimeline? DistributedTrace = null,
+    ReplicaCounterSkew? ReplicaCounters = null,
     IReadOnlyList<string>? PodErrors = null);
