@@ -2184,13 +2184,26 @@ byte-fetch entrypoint that dispatches on a `kind` discriminator:
 - `kind: "trace"` — streams a raw `.nettrace` exported by `collect_sample(kind="cpu", exportTrace=true)`
   or `inspect_heap(source="gcdump", exportTrace=true)`. Required `traceFilePath`
   (under `MCP_ARTIFACT_ROOT`); identical validation/chunking to `kind="dump"`.
+- `kind: "list"` — read-only inventory of every artifact under `MCP_ARTIFACT_ROOT`
+  (recursive, newest first). Returns `{ root, count, totalSizeBytes, artifacts[] }`
+  where each entry has `relativePath`, `absolutePath`, `sizeBytes`, `lastModifiedUtc`,
+  `ageSeconds`. Use it to find dumps/traces to prune.
+- `kind: "delete"` — removes a single artifact named by `artifactPath` (relative to
+  `MCP_ARTIFACT_ROOT`; `..`, absolute, and symlink escapes rejected with
+  `InvalidArtifactPath`). Returns the deleted artifact's metadata. **Requires the
+  literal `delete-artifact` scope** in addition to `module-bytes-read`.
 
 Both branches share `offset` / `maxBytes` and return the same
 `ByteFetchEnvelope` documented below. Unknown `kind` returns a structured
 `InvalidArgument` error envelope listing the allowed values — never throws.
 
 > **Scope:** `module-bytes-read` (literal modifier — same enforcement as the
-> legacy tools).
+> legacy tools). `kind="delete"` additionally requires the literal `delete-artifact`
+> scope; root/`*` does not auto-grant it.
+>
+> **Artifact TTL reaper.** A background reaper prunes artifacts older than
+> `MCP_ARTIFACT_TTL_HOURS` (default 24h; `0`/negative disables it) so a sidecar doing
+> repeated WithHeap dumps does not fill `/tmp`. `kind="delete"` is the manual override.
 
 The legacy `get_bytes(kind="module")` and `get_bytes(kind="dump")` entrypoints remain available
 during the deprecation window and emit byte-for-byte identical envelopes — see
