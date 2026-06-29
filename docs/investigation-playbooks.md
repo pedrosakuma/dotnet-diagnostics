@@ -483,6 +483,29 @@ widen `durationSeconds`. Requires the `eventpipe` + `orchestrator-attach` scopes
 
 ---
 
+## 4g. "All my replicas should look the same — which one is the outlier right now?"
+
+When a service runs N replicas behind a load balancer, an unhealthy replica (heap leak, hot CPU,
+saturated thread pool) is often masked by the healthy ones. The question is *which replica is the
+outlier*, sampled at the **same moment** — not "did one process change over time" (that's
+`compare_to_baseline` on serial snapshots). Use the simultaneous counter fan-out:
+
+1. In orchestrator mode, `attach_to_pod` to **each** replica. Confirm with
+   `list_orchestrator(kind="investigations")` — you need an Active handle per Pod.
+2. Run `collect_events(kind="replica_counters", durationSeconds=5)`. It fans out a bounded
+   `collect_events(kind="counters")` to every attached Pod **in parallel** so the windows overlap,
+   then compares `cpu` / `gc-heap-size` / `threadpool-queue` across replicas.
+3. Read `ReplicaCounters.OutlierPod` (the most-deviant replica by summed z-score) and `Metrics[]`
+   for the per-metric spread (which counter skews, min/max Pod). `Replicas[]` is the raw per-Pod
+   readings; `data.podErrors` lists any replica that could not be collected.
+4. Drill into the flagged replica: bind/attach to `OutlierPod` and run
+   `collect_sample(kind="cpu")` or `inspect_heap` (the auto-hint suggests exactly this).
+
+If no clear outlier stands out, the replicas are balanced — look upstream. Requires the
+`read-counters` + `orchestrator-attach` scopes.
+
+---
+
 ## 5. "Is this a NativeAOT app?"
 
 `inspect_process(view="capabilities")` returns `runtime: "NativeAot"`. On NativeAOT:

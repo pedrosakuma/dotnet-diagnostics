@@ -176,23 +176,24 @@ public sealed class InvestigationProxyCallToolFilterTests
 
     [Theory]
     [InlineData("collect_events", "distributed_trace", true)]
+    [InlineData("collect_events", "replica_counters", true)]
     [InlineData("collect_events", "activities", false)]
     [InlineData("collect_events", "counters", false)]
     [InlineData("inspect_process", "distributed_trace", false)]
-    public void IsDistributedTraceFanout_MatchesOnlyCollectEventsDistributedTrace(string tool, string kind, bool expected)
+    public void IsOrchestratorFanout_MatchesOnlyCollectEventsFanoutKinds(string tool, string kind, bool expected)
     {
         var args = new Dictionary<string, JsonElement>
         {
             ["kind"] = JsonSerializer.SerializeToElement(kind),
         };
 
-        InvestigationProxyCallToolFilter.IsDistributedTraceFanout(tool, args).Should().Be(expected);
+        InvestigationProxyCallToolFilter.IsOrchestratorFanout(tool, args).Should().Be(expected);
     }
 
     [Fact]
-    public void IsDistributedTraceFanout_FalseWhenKindMissing()
+    public void IsOrchestratorFanout_FalseWhenKindMissing()
     {
-        InvestigationProxyCallToolFilter.IsDistributedTraceFanout("collect_events", new Dictionary<string, JsonElement>())
+        InvestigationProxyCallToolFilter.IsOrchestratorFanout("collect_events", new Dictionary<string, JsonElement>())
             .Should().BeFalse();
     }
 
