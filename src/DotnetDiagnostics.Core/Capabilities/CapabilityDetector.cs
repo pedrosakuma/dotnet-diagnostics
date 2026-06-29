@@ -60,12 +60,14 @@ public sealed class CapabilityDetector : ICapabilityDetector
         var canSampleOffCpu = OperatingSystem.IsLinux()
             ? _offCpuSampler is not null && _offCpuSampler.IsAvailable() && perfHost.CanTraceSchedSwitch
             : _offCpuSampler is not null && _offCpuSampler.IsAvailable();
-        // Native-alloc creates a dynamic uprobe (writes tracefs) — gate on CAP_SYS_ADMIN, which is
-        // strictly stronger than the CAP_PERFMON that off-CPU sched_switch tracing accepts.
+        // Native-alloc on Linux creates a dynamic uprobe (writes tracefs) — gate on CAP_SYS_ADMIN,
+        // which is strictly stronger than the CAP_PERFMON that off-CPU sched_switch tracing accepts.
+        // On Windows the ETW VirtualAlloc backend only needs the sampler's own elevation probe.
         var canSampleNativeAlloc = OperatingSystem.IsLinux()
-            && _nativeAllocSampler is not null
-            && _nativeAllocSampler.IsAvailable()
-            && perfHost.HasCapSysAdmin;
+            ? _nativeAllocSampler is not null
+              && _nativeAllocSampler.IsAvailable()
+              && perfHost.HasCapSysAdmin
+            : _nativeAllocSampler is not null && _nativeAllocSampler.IsAvailable();
         var ptrace = PtraceProbe.Detect();
         var euStackAvailable = IsEuStackAvailable();
         var (canCollectThreadSnapshot, threadSnapshotSource, threadSnapshotPreconditions) =

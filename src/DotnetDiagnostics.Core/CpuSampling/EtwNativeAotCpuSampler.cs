@@ -6,6 +6,7 @@ using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 using Microsoft.Diagnostics.Tracing.Session;
+using DotnetDiagnostics.Core.Etw;
 using DotnetDiagnostics.Core.Symbols;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -97,7 +98,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         }
 
         // Serialize ETW sessions to avoid system-wide contention.
-        await s_etwGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await KernelEtwSessionGate.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             return await CaptureAndProcessAsync(processId, duration, topN, sourceResolution, cancellationToken)
@@ -105,7 +106,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         }
         finally
         {
-            s_etwGate.Release();
+            KernelEtwSessionGate.Gate.Release();
         }
     }
 
