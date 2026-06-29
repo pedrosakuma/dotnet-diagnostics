@@ -1095,6 +1095,7 @@ each carries a `DEPRECATED` notice and will be removed in `0.9.0`.
 | `resolveMethodInstantiations` / `maxResolvedMethodInstantiations` | — | — | `cpu` only. Same as `collect_sample(kind="cpu")`. |
 | `nativeAotMapFile` | `string?` | `null` | `cpu` on NativeAOT only. Path to the ILC `*.map.xml` (`<IlcGenerateMapFile>true</IlcGenerateMapFile>`). Emits a name-based `MethodIdentity` (TypeFullName + MethodName; MVID/token `null`) for hot managed AOT methods so the `dotnet-native-mcp` disassembly handoff works. Ignored on CoreCLR. See [`aot-coverage.md`](./aot-coverage.md) and [`handoff-contract.md`](./handoff-contract.md#nativeaot-identity--name-based-issue-395). |
 | `nativeAllocSamplePeriod` | `long` | `1000` | `native-alloc` only. Record one callchain per N allocator hits (throttles recorded samples, not the per-call uprobe trap cost). |
+| `exportTrace` | `bool` | `false` | `cpu` only. When `true`, the raw `.nettrace` (normally deleted after parsing) is kept under `MCP_ARTIFACT_ROOT/traces/` and its relative path returned on the result. Fetch the bytes with `get_bytes(kind="trace")` for offline PerfView/Speedscope/Perfetto analysis. |
 
 **Returns:** `CollectSampleEnvelope` — a polymorphic record carrying the
 `kind` discriminator plus exactly one populated payload field
@@ -2117,6 +2118,9 @@ byte-fetch entrypoint that dispatches on a `kind` discriminator:
   `moduleVersionId`; optional `asset` (`"pe"`/`"pdb"`), `processId`.
 - `kind: "dump"` — same shape as the legacy `get_bytes(kind="dump")`. Required
   `dumpFilePath` (under `MCP_ARTIFACT_ROOT`).
+- `kind: "trace"` — streams a raw `.nettrace` exported by `collect_sample(kind="cpu", exportTrace=true)`
+  or `inspect_heap(source="gcdump", exportTrace=true)`. Required `traceFilePath`
+  (under `MCP_ARTIFACT_ROOT`); identical validation/chunking to `kind="dump"`.
 
 Both branches share `offset` / `maxBytes` and return the same
 `ByteFetchEnvelope` documented below. Unknown `kind` returns a structured
@@ -2208,6 +2212,37 @@ sibling MCP needs the dump bytes locally.
 
 **When NOT to use:** as a generic file reader — the sandbox intentionally only
 covers dump artifacts under `MCP_ARTIFACT_ROOT`.
+
+## `get_bytes(kind="trace")`
+
+Streams a raw `.nettrace` capture already living under `MCP_ARTIFACT_ROOT`. The
+file is produced by `collect_sample(kind="cpu", exportTrace=true)` (CPU sampling)
+or `inspect_heap(source="gcdump", exportTrace=true)` (induced-GC heap snapshot) —
+those tools keep the otherwise-deleted `.nettrace` under `traces/` and return its
+relative path. Hand the bytes off to PerfView, Speedscope, or Perfetto for fully
+offline analysis. The shape is identical to `get_bytes(kind="dump")`, but the
+`asset` is always `"trace"`.
+
+> **Scope:** same literal `module-bytes-read` requirement as `get_bytes(kind="dump")`.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `traceFilePath` | `string` | — | Relative path under `MCP_ARTIFACT_ROOT`, or an absolute path that still resolves under that root |
+| `offset` | `long` | `0` | Chunk start offset |
+| `maxBytes` | `int` | `4_194_304` | Requested chunk size; capped at `16 MiB` |
+
+**Notes:**
+
+- `traceFilePath` is re-validated on **every** call via the artifact-root sandbox
+  (same gate as `kind="dump"`); `..`, symlink escape, and absolute paths outside
+  the root return `InvalidArtifactPath`.
+- Artifacts larger than `256 MiB` are rejected with `InvalidArgument`.
+
+**When to use:** after `collect_sample(kind="cpu", exportTrace=true)` or
+`inspect_heap(source="gcdump", exportTrace=true)` when a client needs the raw
+trace bytes locally for PerfView/Speedscope/Perfetto.
 
 ---
 

@@ -152,6 +152,7 @@ public static class HeapInspectionUseCases
         int? processId = null,
         int topTypes = 20,
         TimeSpan? timeout = null,
+        bool exportTrace = false,
         CancellationToken cancellationToken = default)
     {
         var resolved = await ResolveContextAsync<LiveHeapInspection>(resolver, processId, cancellationToken).ConfigureAwait(false);
@@ -161,7 +162,7 @@ public static class HeapInspectionUseCases
 
         var snapshot = await collector.CollectAsync(
             pid,
-            new GcDumpOptions(TopTypes: topTypes, Timeout: timeout),
+            new GcDumpOptions(TopTypes: topTypes, Timeout: timeout, ExportTrace: exportTrace),
             cancellationToken).ConfigureAwait(false);
 
         var handle = handles.Register(pid, HeapSnapshotKind, snapshot, HeapSnapshotHandleTtl);
@@ -171,6 +172,10 @@ public static class HeapInspectionUseCases
         var summary = topByBytes.Count == 0
             ? $"gcdump of pid {pid} ({inspection.SuspendDuration.TotalMilliseconds:N0} ms) produced no objects. Snapshot handle: `{handle.Id}`."
             : $"gcdump of pid {pid} ({inspection.SuspendDuration.TotalMilliseconds:N0} ms) — heap {inspection.Heap.TotalBytes:N0} bytes; top type: `{topByBytes[0].TypeFullName}` ({topByBytes[0].TotalBytesPercent}% / {topByBytes[0].InstanceCount:N0} instances). Snapshot handle: `{handle.Id}`.";
+        if (!string.IsNullOrEmpty(inspection.TracePath))
+        {
+            summary += $" Raw trace exported to `{inspection.TracePath}` — fetch with get_bytes(kind=\"trace\").";
+        }
 
         var hint = BuildHeapDrilldownHint(handle.Id, topByBytes);
         var result = hint is null

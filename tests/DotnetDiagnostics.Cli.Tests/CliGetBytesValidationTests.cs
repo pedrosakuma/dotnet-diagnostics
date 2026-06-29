@@ -35,6 +35,25 @@ public sealed class CliGetBytesValidationTests
     }
 
     [Fact]
+    public void TryValidateGetBytes_TraceWithDumpFileAndOut_Succeeds()
+    {
+        var options = CliOptions.Parse(
+            new[] { "get-bytes", "--kind", "trace", "--dump-file", "./cpu.nettrace", "--out", "./copy.nettrace" }, out _)!;
+
+        CliCommands.TryValidateGetBytes(options, out var error).Should().BeTrue();
+        error.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryValidateGetBytes_TraceWithoutDumpFile_Fails()
+    {
+        var options = CliOptions.Parse(new[] { "get-bytes", "--kind", "trace", "--out", "./x" }, out _)!;
+
+        CliCommands.TryValidateGetBytes(options, out var error).Should().BeFalse();
+        error.Should().Contain("--kind trace requires --dump-file");
+    }
+
+    [Fact]
     public void TryValidateGetBytes_NoKind_Fails()
     {
         var options = CliOptions.Parse(new[] { "get-bytes", "--out", "./x" }, out _)!;
@@ -140,9 +159,9 @@ public sealed class CliGetBytesValidationTests
     }
 
     [Fact]
-    public void ByteKinds_AreModuleAndDump()
+    public void ByteKinds_AreModuleDumpAndTrace()
     {
-        CliCommands.ByteKinds.Should().BeEquivalentTo(new[] { "module", "dump" });
+        CliCommands.ByteKinds.Should().BeEquivalentTo(new[] { "module", "dump", "trace" });
     }
 
     [Fact]

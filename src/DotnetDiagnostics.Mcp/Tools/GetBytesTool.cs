@@ -29,8 +29,9 @@ public sealed class GetBytesTool
 {
     internal const string KindModule = "module";
     internal const string KindDump = "dump";
+    internal const string KindTrace = "trace";
 
-    internal static readonly IReadOnlyList<string> AllowedKinds = new[] { KindModule, KindDump };
+    internal static readonly IReadOnlyList<string> AllowedKinds = new[] { KindModule, KindDump, KindTrace };
 
     [RequireScope("module-bytes-read")]
     [McpServerTool(
@@ -41,8 +42,8 @@ public sealed class GetBytesTool
         Idempotent = true,
         UseStructuredContent = true)]
     [Description(
-        "Streams a managed module artifact (PE or PDB) or a dump file as repeated CallTool chunks so sibling MCPs can materialise pod-local binaries through the orchestrator proxy. " +
-        "Dispatches on 'kind': 'module' (resolve by ModuleVersionId in a live process; asset defaults to 'pe'; optional processId — server auto-selects when omitted) or 'dump' (path under MCP_ARTIFACT_ROOT, re-validated every call). " +
+        "Streams a managed module artifact (PE or PDB), a dump file, or a raw trace (.nettrace) as repeated CallTool chunks so sibling MCPs can materialise pod-local binaries through the orchestrator proxy. " +
+        "Dispatches on 'kind': 'module' (resolve by ModuleVersionId in a live process; asset defaults to 'pe'; optional processId — server auto-selects when omitted), 'dump' (path under MCP_ARTIFACT_ROOT, re-validated every call), or 'trace' (a .nettrace exported by collect_sample(kind='cpu', exportTrace=true) or inspect_heap(source='gcdump', exportTrace=true), path under MCP_ARTIFACT_ROOT, re-validated every call). " +
         "maxBytes defaults to 4 MiB and is capped at 16 MiB per response; total artifact size is capped at 256 MiB. " +
         "Successor to 'get_module_bytes' and 'get_dump_bytes'; both legacy tools remain available during the deprecation window and emit identical envelopes.")]
     public static async Task<DiagnosticResult<ByteFetchEnvelope>> GetBytes(
@@ -50,10 +51,11 @@ public sealed class GetBytesTool
         IDumpByteSource dumpByteSource,
         IProcessContextResolver resolver,
         IPrincipalAccessor principalAccessor,
-        [Description("Artifact kind to fetch: 'module' (PE/PDB of a loaded module) or 'dump' (dump file under the artifact root).")] string kind,
+        [Description("Artifact kind to fetch: 'module' (PE/PDB of a loaded module), 'dump' (dump file under the artifact root), or 'trace' (.nettrace under the artifact root).")] string kind,
         [Description("Module MVID (GUID 'D' format). Required when kind='module'; ignored otherwise.")] string? moduleVersionId = null,
         [Description("Module artifact when kind='module': 'pe' (default) or 'pdb'. Ignored when kind='dump'.")] string asset = "pe",
-        [Description("Dump path when kind='dump'. Relative paths resolve under MCP_ARTIFACT_ROOT; absolute paths must still resolve under that root. Ignored when kind='module'.")] string? dumpFilePath = null,
+        [Description("Dump path when kind='dump'. Relative paths resolve under MCP_ARTIFACT_ROOT; absolute paths must still resolve under that root. Ignored for other kinds.")] string? dumpFilePath = null,
+        [Description("Trace path when kind='trace'. Relative paths resolve under MCP_ARTIFACT_ROOT; absolute paths must still resolve under that root. Ignored for other kinds.")] string? traceFilePath = null,
         [Description("Byte offset where this chunk starts. Defaults to 0.")] long offset = 0,
         [Description("Maximum bytes to return in this response. Defaults to 4 MiB and is capped at 16 MiB.")] int maxBytes = FileChunkReader.DefaultChunkBytes,
         [Description("Operating system process id of the target .NET process. Used only when kind='module'; optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
@@ -87,6 +89,14 @@ public sealed class GetBytesTool
                 dumpByteSource,
                 principalAccessor,
                 dumpFilePath ?? string.Empty,
+                offset,
+                maxBytes,
+                loggerFactory,
+                cancellationToken).ConfigureAwait(false),
+            KindTrace => await DiagnosticTools.GetTraceBytes(
+                dumpByteSource,
+                principalAccessor,
+                traceFilePath ?? string.Empty,
                 offset,
                 maxBytes,
                 loggerFactory,

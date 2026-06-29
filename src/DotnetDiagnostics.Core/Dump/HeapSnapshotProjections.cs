@@ -51,6 +51,7 @@ public static class HeapSnapshotProjections
             Warnings: snapshot.Warnings)
         {
             Handle = handle,
+            TracePath = snapshot.TracePath,
         };
     }
 }

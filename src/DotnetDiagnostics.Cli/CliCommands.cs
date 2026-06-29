@@ -77,7 +77,7 @@ internal static class CliCommands
     public static readonly IReadOnlyList<string> HeapSources = new[] { "live", "dump", "gcdump" };
 
     /// <summary>Artifact kinds accepted by the <c>get-bytes</c> command (issue #288 PR4).</summary>
-    public static readonly IReadOnlyList<string> ByteKinds = new[] { "module", "dump" };
+    public static readonly IReadOnlyList<string> ByteKinds = new[] { "module", "dump", "trace" };
 
     /// <summary>Module assets accepted by <c>get-bytes --kind module</c> (issue #288 PR4).</summary>
     public static readonly IReadOnlyList<string> ByteAssets = new[] { "pe", "pdb" };
@@ -490,6 +490,20 @@ internal static class CliCommands
                 return false;
             }
         }
+        else if (options.Kind == "trace")
+        {
+            if (string.IsNullOrWhiteSpace(options.DumpFile))
+            {
+                error = "get-bytes --kind trace requires --dump-file <path> (the exported .nettrace).";
+                return false;
+            }
+
+            if (options.HasPid)
+            {
+                error = "get-bytes --kind trace does not accept --pid (the trace is offline).";
+                return false;
+            }
+        }
         else
         {
             // kind == dump
@@ -877,7 +891,7 @@ internal static class CliCommands
             var collector = services.GetRequiredService<IGcDumpHeapSnapshotCollector>();
             var gcResult = await HeapInspectionUseCases.InspectGcDump(
                 collector, handles, resolver,
-                options.Pid, topTypes, timeout: null, cancellationToken).ConfigureAwait(false);
+                options.Pid, topTypes, timeout: null, options.ExportTrace, cancellationToken).ConfigureAwait(false);
 
             return BuildResult<LiveHeapInspection>(gcResult, static (sb, data) => RenderTopTypes(sb, data.TopTypesByBytes));
         }
@@ -1441,6 +1455,18 @@ internal static class CliCommands
                 Path.GetFileName(options.DumpFile!), outputPath, maxBytes,
                 logger: null, principalName: null, cancellationToken).ConfigureAwait(false);
             return WrapMaterialization(dumpResult);
+        }
+
+        if (options.Kind == "trace")
+        {
+            var traceSource = services.GetRequiredService<IDumpByteSource>();
+            // CliHost pinned the artifact root at the trace file's directory; a relative file name
+            // resolves under it (SafeArtifactPath rejects anything outside the root).
+            var traceResult = await ByteMaterializationUseCases.MaterializeTraceBytes(
+                traceSource, principalAllowsLiteralScope,
+                Path.GetFileName(options.DumpFile!), outputPath, maxBytes,
+                logger: null, principalName: null, cancellationToken).ConfigureAwait(false);
+            return WrapMaterialization(traceResult);
         }
 
         var moduleSource = services.GetRequiredService<IModuleByteSource>();

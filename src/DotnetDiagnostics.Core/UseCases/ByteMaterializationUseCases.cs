@@ -179,6 +179,84 @@ public static class ByteMaterializationUseCases
     }
 
     /// <summary>
+    /// Streams every chunk of a trace file (.nettrace, resolved under the artifact root) and writes it
+    /// to <paramref name="outputPath"/>, returning a verified pointer. Mirrors
+    /// <see cref="MaterializeDumpBytes"/> exactly; only the audit/label differs.
+    /// </summary>
+    public static async Task<DiagnosticResult<ByteMaterialization>> MaterializeTraceBytes(
+        IDumpByteSource traceByteSource,
+        bool principalAllowsLiteralScope,
+        string traceFilePath,
+        string outputPath,
+        int maxBytes,
+        ILogger? logger,
+        string? principalName,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(traceByteSource);
+
+        if (string.IsNullOrWhiteSpace(traceFilePath)) return InvalidArg(nameof(traceFilePath), "is required");
+        if (string.IsNullOrWhiteSpace(outputPath)) return InvalidArg(nameof(outputPath), "is required");
+        if (maxBytes <= 0) return InvalidArg(nameof(maxBytes), "must be > 0");
+
+        if (!principalAllowsLiteralScope) return LiteralScopeForbidden("get_trace_bytes", principalName);
+
+        var fullOutputPath = Path.GetFullPath(outputPath);
+
+        try
+        {
+            var last = await MaterializeAsync(
+                fullOutputPath,
+                (offset, ct) => traceByteSource.FetchAsync(traceFilePath, offset, maxBytes, ct),
+                cancellationToken).ConfigureAwait(false);
+
+            logger?.LogInformation(
+                "get_trace_bytes materialised bytes. tokenName={TokenName} tracePath={TracePath} totalSize={TotalSize} output={Output}",
+                principalName ?? "(none)",
+                last.Identifier,
+                last.TotalSize,
+                fullOutputPath);
+
+            var pointer = new ByteMaterialization
+            {
+                Kind = "trace",
+                Asset = "trace",
+                Identifier = last.Identifier,
+                SourcePath = last.SourcePath,
+                OutputPath = fullOutputPath,
+                TotalBytes = last.TotalSize,
+                Sha256 = last.Sha256,
+            };
+            return DiagnosticResult.Ok(pointer, BuildSummary(pointer), BuildHint(pointer));
+        }
+        catch (ArtifactPathException ex)
+        {
+            return DiagnosticResult.Fail<ByteMaterialization>(
+                $"get_trace_bytes rejected the request: {ex.Message}",
+                new DiagnosticError("InvalidArtifactPath", ex.Message, ex.ParameterName),
+                new NextActionHint("get-bytes", "Re-issue with a trace path that resolves under the artifact root."));
+        }
+        catch (FileNotFoundException ex)
+        {
+            return ArtifactNotFound(ex.Message, ex.FileName ?? traceFilePath);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return DiagnosticResult.Fail<ByteMaterialization>(
+                $"get_trace_bytes rejected the request: {ex.Message}",
+                new DiagnosticError("InvalidArgument", ex.Message, ex.GetType().FullName));
+        }
+        catch (ByteIntegrityException ex)
+        {
+            return IntegrityFailure(ex.Message);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return OutputWriteFailure(fullOutputPath, ex);
+        }
+    }
+
+    /// <summary>
     /// Loops the chunked <paramref name="fetch"/> from offset 0 following <c>NextOffset</c>, writing the
     /// decoded bytes to a sibling staging file, verifying invariants on every chunk and the final
     /// SHA-256 end-to-end, then atomically replacing <paramref name="fullOutputPath"/>. The staging file

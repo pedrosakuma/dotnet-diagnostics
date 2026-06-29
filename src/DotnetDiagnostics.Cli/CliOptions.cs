@@ -77,6 +77,9 @@ internal sealed record CliOptions
     /// <summary>Absolute path to a previously-captured .dmp file (<c>--dump-file</c>) for <c>inspect-heap --source dump</c>.</summary>
     public string? DumpFile { get; init; }
 
+    /// <summary>When set (<c>--export-trace</c>), persists the raw .nettrace under the artifact root for offline analysis (<c>inspect-heap --source gcdump</c>). Surfaces the path so it can be fetched with <c>get-bytes --kind trace</c>.</summary>
+    public bool ExportTrace { get; init; }
+
     /// <summary>Top-N type count (<c>--top-types</c>) for <c>inspect-heap</c>. Null applies the default (20).</summary>
     public int? TopTypes { get; init; }
 
@@ -223,6 +226,7 @@ internal sealed record CliOptions
         string? minLevel = null;
         string? depth = null;
         var unsafeProvider = false;
+        var exportTrace = false;
         string? dumpFile = null;
         int? topTypes = null;
         var includeRetentionPaths = false;
@@ -293,6 +297,9 @@ internal sealed record CliOptions
                     break;
                 case "--unsafe-provider":
                     unsafeProvider = true;
+                    break;
+                case "--export-trace":
+                    exportTrace = true;
                     break;
                 case "--include-retention-paths":
                     includeRetentionPaths = true;
@@ -699,6 +706,7 @@ internal sealed record CliOptions
             MinLevel = minLevel,
             Depth = depth,
             UnsafeProvider = unsafeProvider,
+            ExportTrace = exportTrace,
             DumpFile = dumpFile,
             TopTypes = topTypes,
             IncludeRetentionPaths = includeRetentionPaths,

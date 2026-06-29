@@ -108,6 +108,8 @@ inspect-heap options:
       --include-delegate-targets  Group MulticastDelegate invocation lists by (target, method).
       --include-duplicate-strings Rank duplicate strings by aggregate retained bytes.
       --symbol-path <path>      NT_SYMBOL_PATH-style search path (remote servers off by default).
+      --export-trace            --source gcdump: persist the raw .nettrace under the artifact root
+                                (fetch later with get-bytes --kind trace).
 """,
 """
   dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
@@ -148,15 +150,16 @@ query options:
             "Materialise a module (PE/PDB) or dump file to disk (--out required).",
 """
 get-bytes options:
-      --kind <module|dump>      Required. Artifact to materialise.
+      --kind <module|dump|trace>  Required. Artifact to materialise.
       --out <file>              Required. Destination file the artifact is written to.
       --mvid <guid>             --kind module: module version id (GUID) to fetch.
       --asset <pe|pdb>          --kind module: artifact within the module (default pe).
-      --dump-file <path>        --kind dump: path to the source .dmp to copy out.
+      --dump-file <path>        --kind dump|trace: path to the source .dmp / .nettrace to copy out.
 """,
 """
   dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll
   dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
+  dotnet-diagnostics-cli get-bytes --kind trace --dump-file ./cpu.nettrace --out ./cpu.copy.nettrace
 """),
         new CommandHelp(
             "compare",

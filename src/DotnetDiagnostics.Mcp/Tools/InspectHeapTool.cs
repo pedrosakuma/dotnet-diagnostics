@@ -93,6 +93,7 @@ public sealed class InspectHeapTool
         [Description("When true, detect MulticastDelegate instances during the heap walk and group their invocation list by (target type, method) — surfaces 'event handler never unsubscribed' leaks. Cheap (folded into the existing heap pass).")] bool includeDelegateTargets = false,
         [Description("When true, hash every System.String during the heap walk and rank by aggregate retained bytes — surfaces missing string-interning. Cheap (folded into the existing heap pass) but allocates one hash per unique string.")] bool includeDuplicateStrings = false,
         [Description("Optional NT_SYMBOL_PATH-style search path reserved for symbol-resolving heap drilldowns. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
+        [Description("`source=\"gcdump\"` only. If true, persists the raw GC heap-dump .nettrace under the artifact root and returns its relative path so it can be fetched with get_bytes(kind='trace') for offline analysis. Defaults to false; ignored by `live` and `dump`.")] bool exportTrace = false,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
@@ -201,6 +202,7 @@ public sealed class InspectHeapTool
                             processId,
                             topTypes,
                             timeout: null,
+                            exportTrace,
                             ct).ConfigureAwait(false);
                         return AsObjectEnvelope(gc);
                     }
