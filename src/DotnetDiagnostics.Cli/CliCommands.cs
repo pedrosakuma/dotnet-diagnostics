@@ -74,7 +74,7 @@ internal static class CliCommands
     };
 
     /// <summary>Heap-snapshot sources accepted by the <c>inspect-heap</c> command (issue #288 PR3b).</summary>
-    public static readonly IReadOnlyList<string> HeapSources = new[] { "live", "dump" };
+    public static readonly IReadOnlyList<string> HeapSources = new[] { "live", "dump", "gcdump" };
 
     /// <summary>Artifact kinds accepted by the <c>get-bytes</c> command (issue #288 PR4).</summary>
     public static readonly IReadOnlyList<string> ByteKinds = new[] { "module", "dump" };
@@ -309,7 +309,7 @@ internal static class CliCommands
 
         if (options.Sources.Count > 1)
         {
-            error = "inspect-heap accepts a single --source (live or dump).";
+            error = "inspect-heap accepts a single --source (live, dump or gcdump).";
             return false;
         }
 
@@ -318,7 +318,7 @@ internal static class CliCommands
             source = options.Sources[0];
             if (!HeapSources.Contains(source, StringComparer.Ordinal))
             {
-                error = $"Unknown --source '{source}'. Valid values: live, dump.";
+                error = $"Unknown --source '{source}'. Valid values: live, dump, gcdump.";
                 return false;
             }
         }
@@ -871,6 +871,17 @@ internal static class CliCommands
         }
 
         var resolver = services.GetRequiredService<IProcessContextResolver>();
+
+        if (source == "gcdump")
+        {
+            var collector = services.GetRequiredService<IGcDumpHeapSnapshotCollector>();
+            var gcResult = await HeapInspectionUseCases.InspectGcDump(
+                collector, handles, resolver,
+                options.Pid, topTypes, timeout: null, cancellationToken).ConfigureAwait(false);
+
+            return BuildResult<LiveHeapInspection>(gcResult, static (sb, data) => RenderTopTypes(sb, data.TopTypesByBytes));
+        }
+
         var liveResult = await HeapInspectionUseCases.InspectLiveHeap(
             inspector, handles, resolver, allowlist,
             principalAllowsSymbolsRemote: true,

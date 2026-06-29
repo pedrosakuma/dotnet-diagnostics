@@ -2580,6 +2580,30 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
     internal static Task WaitForHttpReadyAsync(string baseUrl, TimeSpan timeout, string readinessPath = "/weatherforecast")
         => DiagnosticReadiness.WaitForHttpReadyAsync(baseUrl, timeout, readinessPath);
 
+    [Fact(Timeout = 60_000)]
+    public async Task GcDumpCollector_EmitsTopTypes_OverEventPipe()
+    {
+        EnsureSampleRunning();
+
+        var collector = new GcDumpHeapSnapshotCollector();
+        var snapshot = await collector.CollectAsync(
+            Pid,
+            // The induced gen-2 GC plus heap-graph streaming takes a couple of seconds;
+            // 20s gives EventPipe ample headroom to start and drain the bulk-node stream.
+            new GcDumpOptions(TopTypes: 25, Timeout: TimeSpan.FromSeconds(20)),
+            CancellationToken.None);
+
+        snapshot.Origin.Should().Be(HeapSnapshotOrigin.GcDump);
+        snapshot.ProcessId.Should().Be(Pid);
+        snapshot.Heap.TotalBytes.Should().BeGreaterThan(0, "an induced GC heap dump must report live objects");
+        snapshot.TopTypesByBytes.Should().NotBeEmpty();
+        snapshot.TopTypesByInstances.Should().NotBeEmpty();
+        // ClrMD-only views are unavailable over EventPipe.
+        snapshot.GcHandles.Should().BeNull();
+        snapshot.StaticFields.Should().BeNull();
+        snapshot.Warnings.Should().NotBeNull();
+    }
+
     private void EnsureSampleRunning()
     {
         if (_sample is null || !_sample.IsRunning)

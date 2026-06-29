@@ -35,8 +35,9 @@ public sealed class InspectHeapTool
     internal const string ToolName = "inspect_heap";
     internal const string SourceLive = "live";
     internal const string SourceDump = "dump";
+    internal const string SourceGcDump = "gcdump";
 
-    private static readonly IReadOnlyList<string> AllowedSources = new[] { SourceLive, SourceDump };
+    private static readonly IReadOnlyList<string> AllowedSources = new[] { SourceLive, SourceDump, SourceGcDump };
 
     // Static gate is `heap-read` only — the minimum scope shared by both backends.
     // `source="live"` additionally requires `ptrace` at runtime (see below) so that
@@ -66,6 +67,10 @@ public sealed class InspectHeapTool
         "and requires `processId` (auto-resolved when only one .NET process is reachable); " +
         "`source=\"dump\"` walks a previously-captured WithHeap/Full dump offline (read-only, no " +
         "ptrace) and requires `dumpFilePath`. Mini and Triage dumps return runtime metadata only. " +
+        "`source=\"gcdump\"` triggers an induced GC heap snapshot over EventPipe (the dotnet-gcdump " +
+        "mechanism — production-safe: no ptrace, no ClrMD attach, no dump file) and targets a live " +
+        "`processId` (auto-resolved); it returns per-type byte/instance totals but ClrMD-only views " +
+        "(GC handles, static fields, delegate targets, segment layout) stay empty. " +
         "Live and dump invocations both produce the same `HeapSnapshotArtifact`, addressable via " +
         "`query_heap_snapshot(handle, view, …)` for retention paths, static-field roots, task/timer leak candidates, AssemblyLoadContext leak candidates, GCHandle table aggregation, finalizer " +
         "queue and other drilldown views without re-walking. Live-origin handles are evicted when " +
@@ -77,7 +82,8 @@ public sealed class InspectHeapTool
         IProcessContextResolver resolver,
         SymbolServerAllowlist symbolServerAllowlist,
         IPrincipalAccessor principalAccessor,
-        [Description("Backend discriminator. `live` attaches to a running .NET process via ClrMD (requires CAP_SYS_PTRACE on Linux); `dump` walks a previously-captured dump file offline.")] string source,
+        IGcDumpHeapSnapshotCollector gcDumpCollector,
+        [Description("Backend discriminator. `live` attaches to a running .NET process via ClrMD (requires CAP_SYS_PTRACE on Linux); `dump` walks a previously-captured dump file offline; `gcdump` captures a GC heap snapshot over EventPipe (no ptrace, no dump file — production-safe).")] string source,
         [Description("Operating system process id of the target .NET process. Required for `source=\"live\"` (auto-resolved when only one .NET process is reachable); forbidden for `source=\"dump\"`.")] int? processId = null,
         [Description("Absolute path to a previously-captured .dmp file. Required for `source=\"dump\"`; forbidden for `source=\"live\"`.")] string? dumpFilePath = null,
         [Description("Number of types to return in each top-N list (bytes / instances). Defaults to 20.")] int topTypes = 20,
@@ -129,6 +135,16 @@ public sealed class InspectHeapTool
                         }));
             }
         }
+        else if (canonical == SourceGcDump)
+        {
+            // gcdump uses EventPipe (no ptrace, no dump file) — needs only heap-read, like dump,
+            // but targets a live PID like live. Auto-resolved when only one .NET process is visible.
+            if (hasDumpPath)
+            {
+                return InvalidArgument(nameof(dumpFilePath),
+                    "source='gcdump' forbids dumpFilePath — it captures from a live process over EventPipe. Drop dumpFilePath.");
+            }
+        }
         else
         {
             // source = "dump"
@@ -174,6 +190,19 @@ public sealed class InspectHeapTool
                             deprecation,
                             ct).ConfigureAwait(false);
                         return AsObjectEnvelope(live);
+                    }
+
+                    if (canonical == SourceGcDump)
+                    {
+                        var gc = await DiagnosticTools.InspectGcDump(
+                            gcDumpCollector,
+                            handles,
+                            resolver,
+                            processId,
+                            topTypes,
+                            timeout: null,
+                            ct).ConfigureAwait(false);
+                        return AsObjectEnvelope(gc);
                     }
 
                     var dump = await DiagnosticTools.InspectDump(
