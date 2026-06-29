@@ -966,6 +966,27 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task FrameVariables_ResolveLive_RecoversFramesForThread()
+    {
+        EnsureSampleRunning();
+
+        var inspector = new ClrMdThreadSnapshotInspector();
+        var snapshot = await inspector.InspectLiveAsync(
+            Pid,
+            new ThreadSnapshotOptions(MaxFramesPerThread: 32),
+            CancellationToken.None);
+
+        var threadWithFrames = snapshot.Threads.First(t => t.Frames.Count > 0);
+
+        var resolver = new ClrMdFrameVariableResolver();
+        var result = await resolver.ResolveAsync(snapshot, threadWithFrames.ManagedThreadId, includeSensitiveValues: false, CancellationToken.None);
+
+        result.ManagedThreadId.Should().Be(threadWithFrames.ManagedThreadId);
+        result.Frames.Should().NotBeEmpty("the chosen thread had managed frames in the snapshot");
+        result.Frames.Should().OnlyContain(f => f.InstructionPointer.StartsWith("0x", StringComparison.Ordinal));
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task AsyncStallClassifier_FindsTcsPending_FromBadCodeSample()
     {
         await using var sample = await LiveHttpSample.StartAsync("BadCodeSample", "/");
@@ -1513,6 +1534,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             new SensitiveValueGate(null),
             new NullPrincipalAccessor(),
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             handle: cpuHandle.Id,
             view: "diff",
             baselineHandle: heapHandle.Id,
@@ -1769,6 +1791,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             new SensitiveValueGate(null),
             new RootPrincipalAccessor(),
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             collected.Handle!,
             view: "byCallSite",
             topN: 10,
@@ -1820,6 +1843,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             new SensitiveValueGate(null),
             new RootPrincipalAccessor(),
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             collected.Handle!,
             view: "timeline",
             topN: 20,
@@ -1884,6 +1908,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             new SensitiveValueGate(null),
             new RootPrincipalAccessor(),
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             collected.Handle!,
             view: "byOperation",
             topN: 25,
@@ -2073,6 +2098,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             new SensitiveValueGate(null),
             new RootPrincipalAccessor(),
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             collected.Handle!,
             view: "errors",
             topN: 20,
@@ -2128,6 +2154,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             new SensitiveValueGate(null),
             new RootPrincipalAccessor(),
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             collected.Handle!,
             view: "topMethods",
             topN: collected.Data.Methods.Count,
@@ -2148,6 +2175,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             new SensitiveValueGate(null),
             new RootPrincipalAccessor(),
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             collected.Handle!,
             view: "tierDistribution",
             cancellationToken: CancellationToken.None);
@@ -2229,6 +2257,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             new SensitiveValueGate(null),
             new RootPrincipalAccessor(),
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             collected.Handle!,
             view: "n+1",
             topN: 20,
@@ -2296,6 +2325,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             new SensitiveValueGate(null),
             new RootPrincipalAccessor(),
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             collected.Handle!,
             view: "byOperation",
             topN: 25,
@@ -2324,6 +2354,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             new SensitiveValueGate(null),
             new RootPrincipalAccessor(),
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             collected.Handle!,
             view: "queue",
             topN: 25,
@@ -2564,6 +2595,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             new SensitiveValueGate(null),
             new RootPrincipalAccessor(),
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             handle,
             view: view,
             topN: topN,

@@ -431,6 +431,7 @@ public sealed class QuerySnapshotDiffToolTests
             new SensitiveValueGate(null),
             TestPrincipalAccessors.Root,
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
+            new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             handle: currentHandle,
             view: "diff",
             topN: topN,

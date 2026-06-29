@@ -340,7 +340,7 @@ Views available per `kind`:
 | `networking-snapshot` | `collect_events(kind="networking")` | `summary` (default), `byOperation`, `queue`, `tls`, `dns` |
 | `startup-snapshot` | `collect_events(kind="startup")` | `summary` (default), `assemblies`, `modules`, `di`, `timeline` |
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `object`, `gcroot`, `objsize`, `async`, `diff` |
-| `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address` |
+| `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address`, `frame-vars` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
 | `cpu-sample` / `allocation-sample` / `native-alloc-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `diff` |
 
@@ -468,6 +468,19 @@ never returns a bare pointer. Native/unresolved frames on every thread snapshot 
 same way at capture time (`AddressKind` / `Rva` / `BuildId` on each frame, `DisplayName` becomes
 `module+0x<rva>` or `<unmapped-or-not-captured 0x…>`). Hand the `(buildId, rva)` to
 `dotnet-native-mcp` for symbolication.
+
+`view="frame-vars"` (thread-snapshot, issue #449) is the ClrMD `!clrstack -a` equivalent. It
+re-opens the snapshot origin (dump file or live pid — same ptrace / dump-read footprint as
+`inspect_heap` live/dump, gated by `heap-read` on top of the kind-wide ptrace scope) and walks one
+managed thread's stack roots, attributing the object-typed locals/parameters alive on each frame to
+the frame that owns them, so an exception throw site can be inspected in-tool without a round-trip
+to offline `dotnet-dump analyze`. Pass the `ManagedThreadId` via `threadId`. Each variable reports
+`TypeFullName`, the object `Address` (hex), the register/stack `Location`, and pin/interior flags;
+the current managed exception type is surfaced when the thread is faulting. It is **best-effort**:
+ClrMD 3.x exposes object references but not source-level names, and value-type (struct/primitive) or
+optimized-away locals are not enumerable. Raw string previews and the exception message require
+`includeSensitiveValues` AND `Diagnostics:AllowSensitiveHeapValues` or the `sensitive-heap-read`
+scope.
 
 > **Note — `event-source` truncation:** the collector stops storing events
 > once it reaches `maxEvents`, but keeps counting the total. The
