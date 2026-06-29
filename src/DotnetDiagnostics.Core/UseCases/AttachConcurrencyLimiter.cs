@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+
 
 namespace DotnetDiagnostics.Core.UseCases;
 
@@ -22,7 +22,7 @@ public sealed class AttachConcurrencyLimiter
     /// <summary>Process-wide default instance honouring the environment overrides.</summary>
     public static AttachConcurrencyLimiter Shared { get; } = CreateFromEnvironment();
 
-    private readonly ConcurrentDictionary<int, SemaphoreSlim> _gates = new();
+    private readonly Dictionary<int, Gate> _gates = new();
     private readonly int _maxPerProcess;
 
     public AttachConcurrencyLimiter(int maxPerProcess = 1, TimeSpan? acquireTimeout = null)
@@ -42,15 +42,61 @@ public sealed class AttachConcurrencyLimiter
     /// must be disposed, or <c>null</c> when the gate is saturated and no permit became free
     /// within <see cref="AcquireTimeout"/>.
     /// </summary>
-    public async Task<IDisposable?> TryAcquireAsync(int processId, CancellationToken cancellationToken)
+    public Task<IDisposable?> TryAcquireAsync(int processId, CancellationToken cancellationToken)
     {
-        var gate = _gates.GetOrAdd(processId, _ => new SemaphoreSlim(_maxPerProcess, _maxPerProcess));
-        if (!await gate.WaitAsync(AcquireTimeout, cancellationToken).ConfigureAwait(false))
+        // Reference-count gates so a long-running server attaching to many short-lived pids does
+        // not accumulate idle SemaphoreSlim entries forever; the last releaser removes the pid.
+        // Get-or-create + Waiters++ runs under the lock so a gate we hold a waiter on can never be
+        // removed/disposed concurrently; the (possibly blocking) WaitAsync happens outside the lock.
+        Gate gate;
+        lock (_gates)
         {
+            gate = _gates.TryGetValue(processId, out var existing)
+                ? existing
+                : _gates[processId] = new Gate(_maxPerProcess);
+            gate.Waiters++;
+        }
+
+        return AcquireCoreAsync(processId, gate, cancellationToken);
+    }
+
+    private async Task<IDisposable?> AcquireCoreAsync(int processId, Gate gate, CancellationToken cancellationToken)
+    {
+        bool acquired;
+        try
+        {
+            acquired = await gate.Semaphore.WaitAsync(AcquireTimeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            ReleaseWaiter(processId, gate, permitHeld: false);
+            throw;
+        }
+
+        if (!acquired)
+        {
+            ReleaseWaiter(processId, gate, permitHeld: false);
             return null;
         }
 
-        return new Releaser(gate);
+        return new Releaser(this, processId, gate);
+    }
+
+    private void ReleaseWaiter(int processId, Gate gate, bool permitHeld)
+    {
+        lock (_gates)
+        {
+            if (permitHeld)
+            {
+                gate.Semaphore.Release();
+            }
+
+            if (--gate.Waiters <= 0)
+            {
+                _gates.Remove(processId);
+                gate.Semaphore.Dispose();
+            }
+        }
     }
 
     private static AttachConcurrencyLimiter CreateFromEnvironment()
@@ -70,16 +116,35 @@ public sealed class AttachConcurrencyLimiter
         return new AttachConcurrencyLimiter(max, TimeSpan.FromMilliseconds(waitMs));
     }
 
+    private sealed class Gate
+    {
+        public Gate(int maxPerProcess) => Semaphore = new SemaphoreSlim(maxPerProcess, maxPerProcess);
+
+        public SemaphoreSlim Semaphore { get; }
+
+        public int Waiters { get; set; }
+    }
+
     private sealed class Releaser : IDisposable
     {
-        private SemaphoreSlim? _gate;
+        private readonly AttachConcurrencyLimiter _owner;
+        private readonly int _processId;
+        private Gate? _gate;
 
-        public Releaser(SemaphoreSlim gate) => _gate = gate;
+        public Releaser(AttachConcurrencyLimiter owner, int processId, Gate gate)
+        {
+            _owner = owner;
+            _processId = processId;
+            _gate = gate;
+        }
 
         public void Dispose()
         {
             var gate = Interlocked.Exchange(ref _gate, null);
-            gate?.Release();
+            if (gate is not null)
+            {
+                _owner.ReleaseWaiter(_processId, gate, permitHeld: true);
+            }
         }
     }
 }
