@@ -8,13 +8,13 @@ namespace DotnetDiagnostics.Core.Threads;
 /// </summary>
 public static class AsyncStallClassifier
 {
-    private const string SyncOverAsync = "SyncOverAsync";
-    private const string ChannelAwait = "ChannelAwait";
-    private const string ChannelWriteBackpressure = "ChannelWriteBackpressure";
-    private const string TcsPending = "TcsPending";
-    private const string SemaphoreAwait = "SemaphoreAwait";
-    private const string Delay = "Delay";
-    private const string Unknown = "Unknown";
+    internal const string SyncOverAsync = "SyncOverAsync";
+    internal const string ChannelAwait = "ChannelAwait";
+    internal const string ChannelWriteBackpressure = "ChannelWriteBackpressure";
+    internal const string TcsPending = "TcsPending";
+    internal const string SemaphoreAwait = "SemaphoreAwait";
+    internal const string Delay = "Delay";
+    internal const string Unknown = "Unknown";
 
     private static readonly string[] BucketOrder = [SyncOverAsync, ChannelAwait, ChannelWriteBackpressure, TcsPending, SemaphoreAwait, Delay, Unknown];
 
@@ -61,9 +61,16 @@ public static class AsyncStallClassifier
             TopBlockedAsync: topBlocked);
     }
 
+    /// <summary>
+    /// Shared single-thread async-wait classification reused by the wait-chain analyzer
+    /// (<see cref="WaitChainAnalyzer"/>) so async edge detection stays in lock-step with the
+    /// <c>async-stalls</c> buckets. Returns the bucket name (see the <c>internal const</c> bucket
+    /// tokens above) or <c>null</c> when the thread shows no async-wait signal.
+    /// </summary>
+    internal static string? ClassifyAsyncWait(ManagedThread thread) => ClassifyThread(thread);
+
     private static string? ClassifyThread(ManagedThread thread)
-    {
-        ArgumentNullException.ThrowIfNull(thread);
+    {        ArgumentNullException.ThrowIfNull(thread);
 
         var top = thread.TopFrameMethod ?? (thread.Frames.Count > 0 ? thread.Frames[0].DisplayName : null) ?? string.Empty;
 

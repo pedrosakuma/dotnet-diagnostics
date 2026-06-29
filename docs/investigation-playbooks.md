@@ -448,6 +448,31 @@ client-induced.
    - `Unknown` → async-looking stack, but inspect `query_snapshot(handle, view="stack", threadId=...)` before concluding.
 4. Reproduce locally with `samples/BadCodeSample`'s `/async-stall?bucket=tcs|channel|sync-over-async|semaphore&seconds=N` fixture.
 
+## 4c-bis. "The hang spans locks AND async — or might be a deadlock"
+
+When a stall crosses concerns — thread A waits on a lock held by B, which is itself blocked on an
+async op or starved by the ThreadPool — neither `view="deadlocks"` (monitor cycles only) nor
+`view="async-stalls"` (buckets, no chaining) shows the whole story. Use the unified wait-chain view.
+
+1. Capture `collect_thread_snapshot` while the hang is happening.
+2. Run `query_snapshot(handle, view="wait-chains")`.
+3. Read `chains[]` top-down — it is ranked longest / most-blocked first:
+   - `isCycle=true` (`terminalKind="cycle"`) → a **true deadlock**; the `links[]` enumerate the
+     waiter→owner monitor cycle (same data as `view="deadlocks"`, but in chain form).
+   - `terminalKind="threadpool-starvation"` → the chain ends in **ThreadPool starvation**: a
+     sync-over-async hop is waiting for a worker that the pool cannot supply (pending work, no idle
+     workers, at max). Cross-check `query_snapshot(handle, view="threadpool")`.
+   - `terminalKind="async-construct"` → the chain ends parked on an async construct
+     (`SemaphoreSlim`, `Task`, `Channel`, `TaskCompletionSource`); follow the construct, not a thread.
+   - `terminalKind="owner-running"` → the chain ends at a lock owner that is actively running — the
+     bottleneck is that owner's work, not a deadlock.
+4. For each hop, `edgeKind` tells you the wait kind (`monitor-lock` / `async-continuation` /
+   `threadpool-starvation`) and `waitReason` is human-readable. **Note on ownership:** monitor hops
+   carry a concrete `ownerThreadId`; async hops set `ownerThreadId=null` and attach a `note` because
+   the thread/task that will complete an await is **not** recoverable from a point-in-time snapshot —
+   the view never guesses an async owner.
+5. Pivot to `query_snapshot(handle, view="stack", threadId=...)` on any hop thread to read its frames.
+
 ## 4d. "Slow query / N+1 suspected"
 
 1. Start `collect_events(kind="db", durationSeconds=10-15)` **before** driving the

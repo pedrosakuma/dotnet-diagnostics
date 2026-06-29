@@ -7,7 +7,7 @@ namespace DotnetDiagnostics.Core.Threads;
 /// analogue of <see cref="DotnetDiagnostics.Core.Dump.HeapSnapshotQueryDispatcher"/> and
 /// <see cref="DotnetDiagnostics.Core.CpuSampling.CpuSampleQueryDispatcher"/>. Every thread view
 /// (<c>threads-summary</c>, <c>stack</c>, <c>lock-graph</c>, <c>deadlocks</c>, <c>top-blocked</c>,
-/// <c>unique-stacks</c>, <c>async-stalls</c>, <c>threadpool</c>) renders purely from the already
+/// <c>unique-stacks</c>, <c>async-stalls</c>, <c>wait-chains</c>, <c>threadpool</c>) renders purely from the already
 /// captured artifact — no live ClrMD attach, no authorization — so both the MCP server's
 /// <c>query_thread_snapshot</c> tool and the standalone CLI <c>session</c> REPL (issue #300) share
 /// one implementation.
@@ -17,7 +17,7 @@ public static class ThreadSnapshotQueryDispatcher
     /// <summary>The view names this dispatcher renders from a snapshot alone (drill-down without re-capturing).</summary>
     public static IReadOnlyList<string> SessionViews { get; } = new[]
     {
-        "threads-summary", "stack", "lock-graph", "deadlocks", "top-blocked", "unique-stacks", "async-stalls", "threadpool",
+        "threads-summary", "stack", "lock-graph", "deadlocks", "top-blocked", "unique-stacks", "async-stalls", "wait-chains", "threadpool",
     };
 
     /// <summary>
@@ -46,8 +46,9 @@ public static class ThreadSnapshotQueryDispatcher
             "top-blocked" => QueryTopBlocked(snapshot, handle, origin, topN),
             "unique-stacks" => QueryUniqueStacks(snapshot, handle, origin, topN, framesToHash, minCount),
             "async-stalls" => QueryAsyncStalls(snapshot, handle, origin, topN),
+            "wait-chains" => QueryWaitChains(snapshot, handle, origin, topN),
             "threadpool" => QueryThreadPool(snapshot, handle, origin),
-            _ => InvalidArg<ThreadSnapshotQueryResult>(nameof(view), $"must be 'threads-summary', 'stack', 'lock-graph', 'deadlocks', 'top-blocked', 'unique-stacks', 'async-stalls' or 'threadpool' (got '{view}')"),
+            _ => InvalidArg<ThreadSnapshotQueryResult>(nameof(view), $"must be 'threads-summary', 'stack', 'lock-graph', 'deadlocks', 'top-blocked', 'unique-stacks', 'async-stalls', 'wait-chains' or 'threadpool' (got '{view}')"),
         };
     }
 
@@ -167,6 +168,29 @@ public static class ThreadSnapshotQueryDispatcher
             new ThreadSnapshotQueryResult(handle, "async-stalls", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
             {
                 AsyncStalls = view,
+            },
+            summary);
+    }
+
+    private static DiagnosticResult<ThreadSnapshotQueryResult> QueryWaitChains(
+        ThreadSnapshotArtifact snapshot, string handle, string origin, int topN)
+    {
+        var view = WaitChainAnalyzer.Analyze(snapshot, handle, topN);
+        string summary;
+        if (view.Chains.Count == 0)
+        {
+            summary = $"No wait-chains detected in snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) across {view.EdgeCount} wait edge(s).";
+        }
+        else
+        {
+            var top = view.Chains[0];
+            summary = $"Built {view.Chains.Count} wait-chain(s) ({view.CycleCount} cycle/deadlock, {view.OpenChainCount} open) in snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) across {view.EdgeCount} wait edge(s). Top chain: {top.Length} hop(s) rooted at managed thread {top.RootThreadId}, terminating in {top.TerminalKind}.";
+        }
+
+        return DiagnosticResult.Ok(
+            new ThreadSnapshotQueryResult(handle, "wait-chains", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
+            {
+                WaitChains = view,
             },
             summary);
     }
