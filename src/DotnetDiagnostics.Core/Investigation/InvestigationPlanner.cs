@@ -1,4 +1,5 @@
 using System.Globalization;
+using DotnetDiagnostics.Core;
 
 namespace DotnetDiagnostics.Core.Investigation;
 
@@ -29,6 +30,7 @@ public sealed class InvestigationPlanner : IInvestigationPlanner
         var mode = ResolveMode(request);
         var (steps, terminals, earlyStops, alternates, comparisons) = BuildPlan(mode, request, constraints);
         var next = steps.First(s => s.Status == StepStatus.Pending);
+        var (nextAction, playbook) = BuildExecutablePath(next, steps, terminals);
 
         return new InvestigationPlan(
             InvestigationId: _idFactory(),
@@ -44,7 +46,9 @@ public sealed class InvestigationPlanner : IInvestigationPlanner
             EarlyStopConditions: earlyStops,
             AlternateBranches: alternates,
             Constraints: constraints,
-            BaselineComparisons: comparisons);
+            BaselineComparisons: comparisons,
+            NextAction: nextAction,
+            Playbook: playbook);
     }
 
     private static InvestigationMode ResolveMode(InvestigationRequest request)
@@ -511,6 +515,97 @@ public sealed class InvestigationPlanner : IInvestigationPlanner
                 ["dumpType"] = constraints.MaxDumpType,
             },
             RequiresApproval: true); // dumps are always approval-gated regardless of constraints
+
+    // ───────────────────────────── executable playbook ─────────────────────────────
+
+    // Placeholder token the client substitutes with the handle a prior collector returns,
+    // e.g. "${cpu-sample.handle}" → the handle from that step's collect_sample response.
+    private static string HandlePlaceholder(string stepId)
+        => string.Concat("${", stepId, ".handle}");
+
+    /// <summary>
+    /// Projects the immediate next step plus a short ordered "happy-path" chain (the next 2-4
+    /// calls following each step's primary decision branch) into executable
+    /// <see cref="NextActionHint"/>s. After a CPU/alloc sample the canonical drilldown call
+    /// (<c>query_snapshot</c> over the sample handle) is synthesized. Deterministic and stateless —
+    /// the server only SUGGESTS these calls; the client executes them.
+    /// </summary>
+    private static (NextActionHint NextAction, IReadOnlyList<NextActionHint> Playbook) BuildExecutablePath(
+        InvestigationStep first,
+        IReadOnlyList<InvestigationStep> steps,
+        IReadOnlyList<InvestigationTerminal> terminals,
+        int maxSteps = 4)
+    {
+        var byStep = steps.ToDictionary(s => s.StepId, StringComparer.Ordinal);
+        var byTerminal = terminals.ToDictionary(t => t.TerminalId, StringComparer.Ordinal);
+        var playbook = new List<NextActionHint>(maxSteps);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var current = first;
+
+        while (current is not null && playbook.Count < maxSteps && visited.Add(current.StepId))
+        {
+            var priority = playbook.Count == 0 ? NextActionHintPriority.High : NextActionHintPriority.Normal;
+            playbook.Add(StepToHint(current, priority));
+
+            // A CPU/alloc sample returns a handle; the next call drills into it with query_snapshot.
+            if (string.Equals(current.ToolName, "collect_sample", StringComparison.Ordinal)
+                && playbook.Count < maxSteps)
+            {
+                playbook.Add(DrilldownHint(current));
+            }
+
+            var primary = current.Branches.Count > 0 ? current.Branches[0] : null;
+            if (primary is null)
+            {
+                break;
+            }
+
+            if (byStep.TryGetValue(primary.NextStepId, out var nextStep))
+            {
+                current = nextStep;
+                continue;
+            }
+
+            if (byTerminal.TryGetValue(primary.NextStepId, out var terminal))
+            {
+                if (terminal.ToolName is { } tool && terminal.ToolParams is { } toolParams
+                    && playbook.Count < maxSteps)
+                {
+                    var reason = terminal.RequiresApproval
+                        ? $"{terminal.Description} (approval-gated — confirm before executing)."
+                        : terminal.Description;
+                    playbook.Add(new NextActionHint(tool, reason, toolParams));
+                }
+
+                break;
+            }
+
+            break;
+        }
+
+        return (playbook[0], playbook);
+    }
+
+    private static NextActionHint StepToHint(InvestigationStep step, NextActionHintPriority priority)
+        => new(step.ToolName, step.Rationale, step.ToolParams) { Priority = priority };
+
+    private static NextActionHint DrilldownHint(InvestigationStep sampleStep)
+    {
+        var kind = sampleStep.ToolParams.TryGetValue("kind", out var k) ? k as string : null;
+        var topN = sampleStep.ToolParams.TryGetValue("topN", out var n) ? n : 25;
+        var handleRef = HandlePlaceholder(sampleStep.StepId);
+        var args = new Dictionary<string, object?>
+        {
+            ["handle"] = handleRef,
+            ["view"] = "call-tree",
+            ["topN"] = topN,
+        };
+        return new NextActionHint(
+            "query_snapshot",
+            $"Drill into the {kind ?? "sample"} call tree once {sampleStep.StepId} returns a handle; "
+                + $"substitute {handleRef} with the handle from that response.",
+            args);
+    }
 
     private sealed record PlanTuple(
         IReadOnlyList<InvestigationStep> Steps,

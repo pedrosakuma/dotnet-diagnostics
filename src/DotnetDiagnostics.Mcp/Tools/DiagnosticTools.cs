@@ -2865,14 +2865,16 @@ public sealed class DiagnosticTools
         var plan = planner.Plan(request);
         var summary = $"Mode={plan.Mode}. Next step #{plan.NextStep.StepNumber}: {plan.NextStep.ToolName}. " +
                       $"{plan.AllSteps.Count} total step(s), {plan.EarlyStopConditions.Count} early-stop condition(s). " +
+                      $"Playbook: {(plan.Playbook?.Count ?? 0)} chained call(s) ready to execute. " +
                       $"Honor MaxToolCalls={plan.Constraints.MaxToolCalls}.";
 
-        var hintParams = new Dictionary<string, object?>(plan.NextStep.ToolParams);
-        return WithContext(DiagnosticResult.Ok(
-            plan,
-            summary,
-            new NextActionHint(plan.NextStep.ToolName, plan.NextStep.Rationale, hintParams)),
-            resolved.Context);
+        // Surface the planner's executable playbook as ordered hints so a low-context LLM can
+        // dispatch the next 2-4 calls verbatim. The immediate call is marked High priority.
+        var hints = (plan.Playbook is { Count: > 0 } playbook
+                ? playbook
+                : new[] { new NextActionHint(plan.NextStep.ToolName, plan.NextStep.Rationale, plan.NextStep.ToolParams) })
+            .ToArray();
+        return WithContext(DiagnosticResult.Ok(plan, summary, hints), resolved.Context);
     }
 
     [RequireScope("investigation-export")]

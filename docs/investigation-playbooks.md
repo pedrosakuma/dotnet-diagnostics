@@ -566,6 +566,56 @@ instance" investigations.
 
 ---
 
+## Auto-pilot: executable next-action + chained playbook (`start_investigation`)
+
+`start_investigation` returns an `InvestigationPlan` — a decision tree of tool calls.
+Two additive fields let an LLM (or one-click client) follow the diagnostic loop without
+re-deriving any parameters:
+
+- **`nextAction`** — the immediate, ready-to-run call: the exact tool name plus a
+  fully-filled arguments map (the pid is already substituted). It reuses the same
+  `NextActionHint` shape every collector emits (`nextTool`, `reason`, `suggestedArguments`,
+  `priority`), so the client can dispatch it verbatim. It is also mirrored into the
+  envelope `hints` (priority `high`).
+- **`playbook`** — the ordered next **2–4 chained calls** following the plan's primary
+  decision branch, each an executable `NextActionHint`. The first entry is `nextAction`.
+  A `collect_sample` step is automatically followed by its `query_snapshot` drilldown.
+
+A step that consumes a handle from a prior collector references it with a
+`${stepId.handle}` placeholder. The client substitutes the placeholder with the `handle`
+field returned by that collector's response — e.g. after `collect_sample(kind="cpu")` (the
+`cpu-sample` step) returns `handle: "ABC123"`, the next playbook entry
+`query_snapshot(handle="${cpu-sample.handle}", view="call-tree", topN=25)` becomes
+`query_snapshot(handle="ABC123", …)`.
+
+Example `playbook` for a cold high-CPU investigation on pid `4242`:
+
+```jsonc
+"nextAction": {
+  "nextTool": "collect_events",
+  "reason": "USE-style vitals first. …",
+  "suggestedArguments": { "kind": "counters", "processId": 4242, "durationSeconds": 5 },
+  "priority": "high"
+},
+"playbook": [
+  { "nextTool": "collect_events",
+    "suggestedArguments": { "kind": "counters", "processId": 4242, "durationSeconds": 5 },
+    "priority": "high" },
+  { "nextTool": "collect_sample",
+    "suggestedArguments": { "kind": "cpu", "processId": 4242, "durationSeconds": 20, "topN": 25 } },
+  { "nextTool": "query_snapshot",
+    "suggestedArguments": { "handle": "${cpu-sample.handle}", "view": "call-tree", "topN": 25 } }
+]
+```
+
+For a memory-leak hypothesis the playbook chains `collect_events(counters)` →
+`collect_events(gc)` → `collect_process_dump` (the dump step's `reason` is flagged
+**approval-gated** — confirm before executing).
+
+This is deterministic and **stateless**: the server only *suggests* the calls — it never
+auto-executes anything, holds no session, and runs no daemon. The client (LLM) stays in
+control of the loop and owns every execution decision.
+
 ## Adapting playbooks for the LLM
 
 When wiring `dotnet-diagnostics-mcp` into an LLM-driven agent, encode this priority as
