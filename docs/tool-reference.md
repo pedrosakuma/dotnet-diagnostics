@@ -355,7 +355,7 @@ Views available per `kind`:
 | `kestrel-snapshot` | `collect_events(kind="kestrel")` | `summary` (default), `byOperation`, `queues`, `tls`, `config` |
 | `networking-snapshot` | `collect_events(kind="networking")` | `summary` (default), `byOperation`, `queue`, `tls`, `dns` |
 | `startup-snapshot` | `collect_events(kind="startup")` | `summary` (default), `assemblies`, `modules`, `di`, `timeline` |
-| `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `object`, `gcroot`, `objsize`, `async`, `diff` |
+| `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address`, `frame-vars` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
 | `cpu-sample` / `allocation-sample` / `native-alloc-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `diff` |
@@ -381,6 +381,19 @@ larger matrices are retained in memory and the inline payload includes `journey:
 so the assistant can pull the full matrix as an MCP Resource. Pairwise sample diffs remain
 inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap-snapshot` and
 `allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second rates
+
+`heap-snapshot` `view="growth"` is the retention-aware **live heap leak hunt** (issue #463).
+Capture two live heap snapshots N seconds apart — `inspect_heap(source="live", includeRetentionPaths=true)` —
+then call `query_snapshot(handle=<later>, view="growth", baselineHandle=<earlier>)`. It ranks the
+managed types that *grew* by retained `bytes` (default) or `instances` (`rankBy`), reporting per-type
+baseline/current/delta for both dimensions, and attaches the retention chains recorded on the *later*
+snapshot to the top growers so the model sees "which types grew, **and what's holding them**" in one
+round-trip. Only positive growth at or above `minDeltaPct` (default `5.0`) surfaces; `topN` (default `25`)
+caps the ranked rows while `totalGrowers` reports the full count. The verdict is `leak_suspected` when any
+type grew, else `stable`. Unlike `view="diff"` — which ranks by percentage and can bury a large
+absolute-but-modest-% leak — `growth` ranks strictly by absolute growth, the signal that matters for a
+steady-state leak. Both handles must be `heap-snapshot` kind; a missing/expired `baselineHandle` returns
+the standard `InvalidArgument` / `HandleExpired` envelope. Requires the `heap-read` scope.
 
 `heap-snapshot` `view="timers"` projects the already-walked heap into a task/timer leak
 drilldown: total live `System.Threading.Timer` / `TimerQueueTimer` objects, total live
