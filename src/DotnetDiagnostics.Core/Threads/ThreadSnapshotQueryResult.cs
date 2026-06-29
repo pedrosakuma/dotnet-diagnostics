@@ -29,6 +29,8 @@ public sealed record ThreadSnapshotQueryResult(
     public ThreadPoolSnapshot? ThreadPool { get; init; }
     /// <summary>Populated for <c>async-stalls</c>.</summary>
     public AsyncStallsView? AsyncStalls { get; init; }
+    /// <summary>Populated for <c>wait-chains</c>.</summary>
+    public WaitChainsView? WaitChains { get; init; }
     /// <summary>Echoes the thread id used by the <c>stack</c> view.</summary>
     public int? ThreadId { get; init; }
     /// <summary>Populated for <c>resolve-address</c> (issue #275).</summary>
@@ -122,3 +124,62 @@ public sealed record AsyncStalledThread(
     string Bucket,
     double? DurationMs,
     IReadOnlyList<string> TopFrames);
+
+/// <summary>
+/// Aggregate returned by <c>query_snapshot(view="wait-chains")</c>. Unifies three wait-edge kinds
+/// (sync monitor locks, async continuations, ThreadPool starvation) into ranked directed wait-chains.
+/// <see cref="Chains"/> is ordered longest / most-blocked first; cycles (true deadlocks) are flagged
+/// distinctly from open chains via <see cref="WaitChain.IsCycle"/>.
+/// </summary>
+public sealed record WaitChainsView(
+    string View,
+    int ThreadCount,
+    int EdgeCount,
+    int CycleCount,
+    int OpenChainCount,
+    bool ThreadPoolStarved,
+    IReadOnlyList<WaitChain> Chains)
+{
+    /// <summary>Analyzer-wide honest caveats (e.g. async-ownership indeterminacy from a snapshot).</summary>
+    public IReadOnlyList<string> Notes { get; init; } = Array.Empty<string>();
+}
+
+/// <summary>
+/// One ranked wait-chain: a directed walk <c>root → wait-reason → next node → …</c> terminating in a
+/// cycle, a ThreadPool-starvation sink, an async construct, or a running lock owner.
+/// </summary>
+public sealed record WaitChain(
+    int Rank,
+    bool IsCycle,
+    int Length,
+    int BlockedThreadCount,
+    int RootThreadId,
+    string TerminalKind,
+    IReadOnlyList<WaitChainLink> Links)
+{
+    /// <summary>Per-chain caveats (e.g. indeterminate async-resumption ownership) — never guesses.</summary>
+    public IReadOnlyList<string> Notes { get; init; } = Array.Empty<string>();
+}
+
+/// <summary>
+/// One hop of a <see cref="WaitChain"/>: thread <see cref="WaitingThreadId"/> is blocked by
+/// <see cref="WaitReason"/> (edge kind <see cref="EdgeKind"/>) on the node described by
+/// <see cref="TargetKind"/> / <see cref="TargetLabel"/>.
+/// </summary>
+public sealed record WaitChainLink(
+    int WaitingThreadId,
+    uint WaitingOSThreadId,
+    string EdgeKind,
+    string WaitReason,
+    string TargetKind,
+    string? TargetLabel)
+{
+    /// <summary>Owner thread id for a <c>monitor-lock</c> edge; <c>null</c> for async / ThreadPool sinks.</summary>
+    public int? OwnerThreadId { get; init; }
+    /// <summary>Contended lock object address for a <c>monitor-lock</c> edge as hex; <c>null</c> otherwise.</summary>
+    public string? LockObjectAddress { get; init; }
+    /// <summary>Contended lock object type for a <c>monitor-lock</c> edge; <c>null</c> otherwise.</summary>
+    public string? LockObjectTypeFullName { get; init; }
+    /// <summary>Honest caveat attached to this hop (e.g. async-ownership not recoverable from a snapshot).</summary>
+    public string? Note { get; init; }
+}

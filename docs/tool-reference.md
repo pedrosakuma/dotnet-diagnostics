@@ -100,7 +100,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="requests")` | The full in-flight request list. Summary keeps the headline counts + the oldest requests inline; drill in with `query_snapshot(handle, view=requests|longRunning)`. |
 | `collect_events(kind="startup")` | The loader/DI event lists and full timeline. Summary keeps headline counts, top assembly/module aggregates, and notes. |
 | `collect_events(kind="sweep")` | The five sub-snapshots' bulky lists (counters, gc, exceptions, threadpool, resource). Summary keeps the triage verdict + per-collector handles. Each sub-collector's full payload stays behind its handle (`data.handles`). |
-| `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph|deadlocks|unique-stacks|async-stalls)`. |
+| `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph\|deadlocks\|unique-stacks\|async-stalls\|wait-chains)`. |
 
 Explicit `topN` always wins over the depth default — if you pass
 `topN=10, depth=Summary` you get up to 10 hotspots inline (the LLM knows what
@@ -358,7 +358,7 @@ Views available per `kind`:
 | `in-flight-requests` | `collect_events(kind="requests")` | `summary` (default), `requests`, `longRunning` |
 | `startup-snapshot` | `collect_events(kind="startup")` | `summary` (default), `assemblies`, `modules`, `di`, `timeline` |
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
-| `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address`, `frame-vars` |
+| `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
 | `cpu-sample` / `allocation-sample` / `native-alloc-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `diff` |
 
@@ -412,6 +412,24 @@ collectible leaks. Retention hints are computed during the heap walk for at most
 collectible ALCs per snapshot, using the same bounded root-search machinery as `gcroot`
 (64 frames / 250,000 visited objects); additional contexts are still listed without a
 path. NativeAOT has no DAC/ClrMD heap walk, so this view is CoreCLR-only.
+
+`thread-snapshot` `view="wait-chains"` builds ranked, multi-hop **wait-chains** that span the
+three ways a .NET thread stalls, all from the already-captured snapshot (no re-collection):
+(1) **sync monitor lock** — a thread waiting on a contended SyncBlock → the thread that *owns* it
+(the same waiter→owner edges `view="deadlocks"` walks); (2) **async continuation** — a thread parked
+sync-over-async (`Task.Wait`/`.Result`/`GetResult`) or awaiting an incomplete construct
+(`SemaphoreSlim.WaitAsync`, channel reads/writes, `TaskCompletionSource`, a generic `MoveNext`) → the
+construct it is blocked on (classified by the same recognizer as `async-stalls`); (3) **ThreadPool
+starvation** — a sync-over-async chain that terminates in "waiting for a ThreadPool worker that isn't
+available", detected when the snapshot's ThreadPool has pending work, no idle workers, and is at its
+maximum. Chains are ranked longest / most-blocked first; true **cycles** are flagged distinctly
+(`isCycle=true`, `terminalKind="cycle"`) from open chains that sink in starvation, an async construct,
+or a running lock owner. Each hop reports `edgeKind`, a human `waitReason`, and the target node.
+**Honesty about async ownership:** monitor hops carry a concrete `ownerThreadId` (recorded in the
+snapshot), but async-continuation resumption ownership is generally **not** recoverable from a
+point-in-time snapshot — nothing in thread state records which thread/task will complete an
+outstanding await — so async hops emit an explicit `note` and `ownerThreadId=null` rather than
+guessing. Requires the `ptrace` scope (same as every thread view).
 
 The address-addressed views `object` (SOS `!do`), `gcroot` (SOS `!gcroot`) and `objsize` (SOS
 `!objsize`) take an `address` and re-open the snapshot's origin with ClrMD to answer the question. They

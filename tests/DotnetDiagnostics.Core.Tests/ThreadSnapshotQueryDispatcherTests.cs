@@ -130,10 +130,22 @@ public sealed class ThreadSnapshotQueryDispatcherTests
     }
 
     [Fact]
-    public void SessionViews_ListsEightViews()
+    public void Dispatch_WaitChains_ReturnsView()
+    {
+        var outcome = ThreadSnapshotQueryDispatcher.Dispatch(
+            Snapshot(), Handle, "wait-chains", threadId: null, topN: 50, framesToHash: 20, minCount: 1);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.View.Should().Be("wait-chains");
+        outcome.Data.WaitChains.Should().NotBeNull();
+        outcome.Data.WaitChains!.Chains.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void SessionViews_ListsNineViews()
     {
         ThreadSnapshotQueryDispatcher.SessionViews.Should().Equal(
-            "threads-summary", "stack", "lock-graph", "deadlocks", "top-blocked", "unique-stacks", "async-stalls", "threadpool");
+            "threads-summary", "stack", "lock-graph", "deadlocks", "top-blocked", "unique-stacks", "async-stalls", "wait-chains", "threadpool");
     }
 
     private static ThreadSnapshotArtifact Snapshot()
