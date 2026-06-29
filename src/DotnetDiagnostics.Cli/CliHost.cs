@@ -633,7 +633,17 @@ internal static class CliHost
         ConsoleCancelEventHandler? cancelHandler = null;
         if (ownsConsole)
         {
-            cancelHandler = (_, e) => { e.Cancel = true; coldCts.Cancel(); };
+            var cancelledOnce = 0;
+            cancelHandler = (_, e) =>
+            {
+                // First Ctrl-C: cooperatively cancel and clean up. Second Ctrl-C: fall through to
+                // hard termination so a wedged connect/stop/dispose cannot trap the user.
+                if (Interlocked.Exchange(ref cancelledOnce, 1) == 0)
+                {
+                    e.Cancel = true;
+                }
+                coldCts.Cancel();
+            };
             Console.CancelKeyPress += cancelHandler;
         }
 

@@ -100,10 +100,20 @@ public sealed class EventPipeStartupCollector : IStartupCollector
             .ConfigureAwait(false);
 
         // Cold start: the session is now armed but the target is still suspended. Resume only after the
-        // EventStream pipe exists so pre-attach loader/DI events are recorded, not lost in the gap.
+        // EventStream pipe exists so pre-attach loader/DI events are recorded, not lost in the gap. If
+        // resume throws, dispose the just-created session so it is not leaked.
         if (resumeAsync is not null)
         {
-            await resumeAsync().ConfigureAwait(false);
+            try
+            {
+                await resumeAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
+                session.Dispose();
+                throw;
+            }
         }
 
         var startedAt = DateTimeOffset.UtcNow;
