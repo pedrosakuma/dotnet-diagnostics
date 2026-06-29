@@ -1211,8 +1211,10 @@ public sealed class DiagnosticTools
         "growth) to a concrete call site. " +
         "Hotspot-only (issue #279): counts are sampled allocator-call hits, NOT bytes, and NOT " +
         "alloc/free retention — it shows who allocates most, not what leaks. " +
-        "Backend: Linux only. Needs the perf binary plus permission to create a uprobe " +
-        "(CAP_SYS_ADMIN / tracefs write access — strictly more than off-CPU's CAP_PERFMON). " +
+        "Backend: Linux uses perf uprobes on libc malloc/calloc/realloc (needs the perf binary plus " +
+        "permission to create a uprobe — CAP_SYS_ADMIN / tracefs write access). Windows uses the NT " +
+        "Kernel Logger VirtualAlloc ETW provider with stack walk (needs administrative elevation / " +
+        "SeSystemProfilePrivilege); both emit the identical call-tree handle. " +
         "Returns the top-N allocator stacks inline and a handle for the query_snapshot call-tree drilldown.")]
     public static async Task<DiagnosticResult<NativeAllocSample>> CollectNativeAllocSample(
         INativeAllocSampler sampler,
@@ -1247,17 +1249,27 @@ public sealed class DiagnosticTools
                     "Confirm the target is a dynamically-linked glibc/musl process; statically-linked or custom-allocator (jemalloc/tcmalloc) targets aren't supported by the libc uprobe path.",
                     new Dictionary<string, object?> { ["processId"] = pid }));
         }
+        catch (UnauthorizedAccessException ex)
+        {
+            return DiagnosticResult.Fail<NativeAllocSample>(
+                $"collect_sample(kind=\"native-alloc\") could not start NT Kernel Logger VirtualAlloc capture for pid {pid}: Windows denied access to the provider.",
+                new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
+                new NextActionHint("inspect_process",
+                    "After granting either BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance') to the sidecar account and restarting the Windows service, re-check capabilities before retrying.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
+        }
         catch (InvalidOperationException ex) when (ex.Message.Contains("perf", StringComparison.OrdinalIgnoreCase)
                                                    || ex.Message.Contains("uprobe", StringComparison.OrdinalIgnoreCase)
                                                    || ex.Message.Contains("tracefs", StringComparison.OrdinalIgnoreCase)
                                                    || ex.Message.Contains("CAP_", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("ETW", StringComparison.OrdinalIgnoreCase)
                                                    || ex.Message.Contains("paranoid", StringComparison.OrdinalIgnoreCase))
         {
             return DiagnosticResult.Fail<NativeAllocSample>(
                 ex.Message,
                 new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
                 new NextActionHint("inspect_process",
-                    "Check the capability matrix; install linux-perf and add CAP_SYS_ADMIN to the sidecar securityContext.",
+                    "Check the capability matrix; on Linux install linux-perf and add CAP_SYS_ADMIN to the sidecar securityContext, on Windows run the sidecar elevated.",
                     new Dictionary<string, object?> { ["processId"] = pid }));
         }
 

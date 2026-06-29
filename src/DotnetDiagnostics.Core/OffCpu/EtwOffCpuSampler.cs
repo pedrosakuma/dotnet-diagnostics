@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Etw;
 using DotnetDiagnostics.Core.Memory;
 using Microsoft.Diagnostics.Symbols;
 using Microsoft.Diagnostics.Tracing;
@@ -50,9 +51,8 @@ namespace DotnetDiagnostics.Core.OffCpu;
 /// </remarks>
 public sealed class EtwOffCpuSampler : IOffCpuSampler
 {
-    // Serialize concurrent kernel ETW sessions — they share the global NT Kernel Logger slot
-    // and overlapping sessions cause buffer starvation / start failures.
-    private static readonly SemaphoreSlim s_etwGate = new(1, 1);
+    // Serialize concurrent kernel ETW sessions across ALL kernel samplers via the shared
+    // process-wide gate (see KernelEtwSessionGate): the NT Kernel Logger is one global slot.
     private readonly ILogger<EtwOffCpuSampler> _logger;
     private readonly MvidReader _mvidReader;
     private readonly SymbolPathBuilder _symbolPathBuilder;
@@ -124,14 +124,14 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
             EnsureSystemProfilePrivilegeEnabledIfPresent();
         }
 
-        await s_etwGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await KernelEtwSessionGate.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             return await CaptureAndProcessAsync(processId, duration, topN, symbolPath, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            s_etwGate.Release();
+            KernelEtwSessionGate.Gate.Release();
         }
     }
 
@@ -446,7 +446,7 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
     }
 
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    private static void EnsureSystemProfilePrivilegeEnabledIfPresent()
+    internal static void EnsureSystemProfilePrivilegeEnabledIfPresent()
     {
         using var identity = WindowsIdentity.GetCurrent(TokenAccessLevels.Query | TokenAccessLevels.AdjustPrivileges);
         var privilege = GetTokenPrivilegeState(identity.AccessToken, SystemProfilePrivilegeName);

@@ -71,7 +71,7 @@ public sealed class CollectSampleTool
             "'cpu' (on-CPU SampleProfiler / perf — top managed hotspots with MethodIdentity handoff), " +
             "'off_cpu' (where threads are blocked and for how long — Linux sched_switch via perf, Windows ContextSwitch via NT Kernel Logger), " +
             "'allocation' (managed GCAllocationTick rolled up by type — TypeName is empty on NativeAOT), " +
-            "'native-alloc' (unmanaged malloc/calloc/realloc via perf uprobes — Linux only, needs CAP_SYS_ADMIN; sampled call counts, not bytes). " +
+            "'native-alloc' (unmanaged allocations — Linux uprobes libc malloc/calloc/realloc via perf (needs CAP_SYS_ADMIN); Windows captures NT Kernel Logger VirtualAlloc via ETW (needs admin elevation); sampled call counts, not bytes). " +
             "Long-running collections expose MCP-native progress/cancellation or can be promoted to an MCP Task.")]
         string kind = KindCpu,
         // Shared options.
@@ -99,7 +99,7 @@ public sealed class CollectSampleTool
         string? nativeAotMapFile = null,
         [Description("kind='cpu' only. If true, persists the raw .nettrace under the artifact root and returns its relative path so it can be fetched with get_bytes(kind='trace') for offline PerfView/Speedscope/Perfetto analysis. Defaults to false.")]
         bool exportTrace = false,
-        [Description("kind='native-alloc' only. perf sample period — record one callchain per this many allocator hits. Must be >= 1. Defaults to 1000. Higher reduces overhead and resolution; throttles recorded samples but not the per-call uprobe trap cost.")]
+        [Description("kind='native-alloc' on Linux only. perf sample period — record one callchain per this many allocator hits. Must be >= 1. Defaults to 1000. Higher reduces overhead and resolution; throttles recorded samples but not the per-call uprobe trap cost. Ignored by the Windows ETW VirtualAlloc backend, which records every allocation.")]
         long nativeAllocSamplePeriod = 1000,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,

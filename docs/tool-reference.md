@@ -1181,7 +1181,7 @@ each carries a `DEPRECATED` notice and will be removed in `0.9.0`.
 | `maxResolvedSources` | `int?` | `topN` | `cpu` only. |
 | `resolveMethodInstantiations` / `maxResolvedMethodInstantiations` | — | — | `cpu` only. Same as `collect_sample(kind="cpu")`. |
 | `nativeAotMapFile` | `string?` | `null` | `cpu` on NativeAOT only. Path to the ILC `*.map.xml` (`<IlcGenerateMapFile>true</IlcGenerateMapFile>`). Emits a name-based `MethodIdentity` (TypeFullName + MethodName; MVID/token `null`) for hot managed AOT methods so the `dotnet-native-mcp` disassembly handoff works. Ignored on CoreCLR. See [`aot-coverage.md`](./aot-coverage.md) and [`handoff-contract.md`](./handoff-contract.md#nativeaot-identity--name-based-issue-395). |
-| `nativeAllocSamplePeriod` | `long` | `1000` | `native-alloc` only. Record one callchain per N allocator hits (throttles recorded samples, not the per-call uprobe trap cost). |
+| `nativeAllocSamplePeriod` | `long` | `1000` | `native-alloc` on **Linux** only. Record one callchain per N allocator hits (throttles recorded samples, not the per-call uprobe trap cost). Ignored by the Windows ETW VirtualAlloc backend, which records every committed allocation. |
 | `exportTrace` | `bool` | `false` | `cpu` only. When `true`, the raw `.nettrace` (normally deleted after parsing) is kept under `MCP_ARTIFACT_ROOT/traces/` and its relative path returned on the result. Fetch the bytes with `get_bytes(kind="trace")` for offline PerfView/Speedscope/Perfetto analysis. |
 
 **Returns:** `CollectSampleEnvelope` — a polymorphic record carrying the
@@ -1199,22 +1199,29 @@ and NativeAOT, but on NativeAOT GCAllocationTick events carry an empty
 TypeName — surfaced via the envelope summary so the LLM knows to fall back
 to `kind="cpu"` for per-site attribution.
 
-**`kind="native-alloc"` (issue #279).** Attributes **native/unmanaged** allocations
-(off the GC heap — P/Invoke, native libraries, the runtime itself) to a call site
-by uprobing the target's libc allocator (`malloc`/`calloc`/`realloc`) with
-`perf probe` + `perf record --call-graph dwarf`. Companion to `kind="allocation"`,
-which only sees the managed GC heap. **Linux only**; needs the `perf` binary plus
-permission to create a uprobe (`CAP_SYS_ADMIN` / tracefs write access — strictly more
-than off-CPU's `CAP_PERFMON`), gated by `inspect_process(view="capabilities")`'s
-`CanSampleNativeAlloc`. **Hotspot-only:** counts are *sampled allocator-call hits, not
-bytes*, and it does NOT do alloc/free retention matching — it shows who allocates most,
-not what leaks. Drill into the merged call tree with `query_snapshot(view="call-tree")`;
-compare two windows with `query_snapshot(view="diff")`. Escalate to it from
-`inspect_process(view="memory_trend")` when RSS / anonymous pages climb while the managed
-heap stays flat. On Windows/macOS (or a Linux host without `perf`) the unified tool
-returns a structured `NotSupported` envelope — same shape as `kind="off_cpu"` on
-unsupported hosts — never a crash; a missing `CAP_SYS_ADMIN` instead surfaces as
-`PermissionDenied`.
+**`kind="native-alloc"` (issue #279, Phase 15 Windows parity #466).** Attributes
+**native/unmanaged** allocations (off the GC heap — P/Invoke, native libraries, the
+runtime itself) to a call site. Companion to `kind="allocation"`, which only sees the
+managed GC heap. Two backends emit the **identical** call-tree handle:
+
+- **Linux** uprobes the target's libc allocator (`malloc`/`calloc`/`realloc`) with
+  `perf probe` + `perf record --call-graph dwarf`. Needs the `perf` binary plus permission
+  to create a uprobe (`CAP_SYS_ADMIN` / tracefs write access — strictly more than off-CPU's
+  `CAP_PERFMON`). The `nativeAllocSamplePeriod` knob throttles recorded callchains.
+- **Windows** captures the NT Kernel Logger **`VirtualAlloc`** ETW provider with stack walks
+  (the libc allocator's underlying OS commit path — what PerfView's "Net Virtual Alloc
+  Stacks" view is built on). Needs administrative elevation / `SeSystemProfilePrivilege`;
+  `nativeAllocSamplePeriod` is ignored (every committed allocation is recorded).
+
+Both are gated by `inspect_process(view="capabilities")`'s `CanSampleNativeAlloc`.
+**Hotspot-only:** counts are *allocator-call hits, not bytes*, and neither backend does
+alloc/free retention matching — it shows who allocates most, not what leaks. Drill into the
+merged call tree with `query_snapshot(view="call-tree")`; compare two windows with
+`query_snapshot(view="diff")`. Escalate to it from `inspect_process(view="memory_trend")`
+when RSS / anonymous pages climb while the managed heap stays flat. On an unsupported host
+(e.g. macOS, or a Linux host without `perf`) the unified tool returns a structured
+`NotSupported` envelope — never a crash; a missing `CAP_SYS_ADMIN` (Linux) or denied ETW
+access (Windows) instead surfaces as `PermissionDenied`.
 
 **Authorization.** Gated by `RequireScope("eventpipe")`, matching the three
 legacy samplers verbatim.

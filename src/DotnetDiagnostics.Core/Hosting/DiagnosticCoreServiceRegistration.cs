@@ -83,8 +83,8 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<DotnetDiagnostics.Core.OffCpu.EtwOffCpuSampler>();
         services.AddSingleton<DotnetDiagnostics.Core.OffCpu.IOffCpuSampler, DotnetDiagnostics.Core.OffCpu.RoutingOffCpuSampler>();
         services.AddSingleton<DotnetDiagnostics.Core.NativeAlloc.PerfNativeAllocSampler>();
-        services.AddSingleton<DotnetDiagnostics.Core.NativeAlloc.INativeAllocSampler>(
-            sp => sp.GetRequiredService<DotnetDiagnostics.Core.NativeAlloc.PerfNativeAllocSampler>());
+        services.AddSingleton<DotnetDiagnostics.Core.NativeAlloc.EtwNativeAllocSampler>();
+        services.AddSingleton<DotnetDiagnostics.Core.NativeAlloc.INativeAllocSampler, DotnetDiagnostics.Core.NativeAlloc.RoutingNativeAllocSampler>();
         services.AddSingleton<IExceptionCollector, EventPipeExceptionCollector>();
         services.AddSingleton<IGcCollector, EventPipeGcCollector>();
         services.AddSingleton<IGcDatasCollector, EventPipeGcDatasCollector>();
