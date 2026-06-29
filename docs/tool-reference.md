@@ -893,7 +893,7 @@ Cheap startup-configuration snapshot for questions like "is this Server GC?", "w
 - **Tiered compilation**: sourced from startup env overrides (`DOTNET_TieredCompilation`, `DOTNET_TC_QuickJit`, `DOTNET_TieredPGO`, plus `COMPlus_` aliases when present).
 - **Environment variables**: Linux reads `/proc/<pid>/environ`; Windows currently returns an explanatory note and an empty `envVars[]`.
 - **Security boundary**: `envVars[]` is strictly filtered to `DOTNET_`, `COMPlus_`, `ASPNETCORE_`, and `DOTNET_SYSTEM_` prefixes. Everything else is intentionally dropped.
-- **AppContext switches**: forward-compatible field shape; today returns `[]` with a note because the runtime does not expose them out-of-process.
+- **AppContext switches**: parsed offline from the target's `<app>.runtimeconfig.json` (`runtimeOptions.configProperties`) located next to the main module — AppContext switches (`Switch.System.*`, `System.Net.*`, HTTP/3 / TLS / gRPC / metrics opt-ins) and runtime knobs. No ClrMD attach; post-startup `AppContext.SetSwitch` overrides are not reflected. Empty with a note when the file cannot be located.
 
 **Parameters:**
 
@@ -929,10 +929,13 @@ Cheap startup-configuration snapshot for questions like "is this Server GC?", "w
     { "name": "DOTNET_TieredCompilation", "value": "1" },
     { "name": "ASPNETCORE_URLS", "value": "http://127.0.0.1:0" }
   ],
-  "appContextSwitches": [],
+  "appContextSwitches": [
+    { "name": "System.GC.Server", "value": "false" },
+    { "name": "System.Net.SocketsHttpHandler.Http3Support", "value": "true" }
+  ],
   "notes": [
     "Environment variables are filtered to known runtime prefixes (DOTNET_ / COMPlus_ / ASPNETCORE_ / DOTNET_SYSTEM_); all other process env vars are intentionally omitted as a security boundary.",
-    "AppContext switches are not introspectable without an in-process probe; appContextSwitches is currently empty by design."
+    "AppContext switches were read offline from /app/MyApp.runtimeconfig.json (runtimeOptions.configProperties); post-startup AppContext.SetSwitch overrides are not reflected."
   ]
 }
 ```

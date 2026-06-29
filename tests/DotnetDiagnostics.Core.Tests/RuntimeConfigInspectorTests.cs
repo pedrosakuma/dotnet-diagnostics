@@ -69,4 +69,44 @@ public sealed class RuntimeConfigInspectorTests
         RuntimeConfigInspector.IsAllowlistedEnvironmentVariable("   ").Should().BeFalse();
         RuntimeConfigInspector.IsAllowlistedEnvironmentVariable("DOTNET").Should().BeFalse(); // no underscore
     }
+
+    [Fact]
+    public void ParseConfigProperties_ReadsSwitchesAndKnobs_NameSorted_ValuesNormalised()
+    {
+        const string json = """
+        {
+          "runtimeOptions": {
+            "tfm": "net10.0",
+            "configProperties": {
+              "System.GC.Server": true,
+              "System.Net.Http.EnableActivityPropagation": false,
+              "System.Net.SocketsHttpHandler.Http3Support": true,
+              "Switch.System.Net.DontEnableSystemDefaultTlsVersions": false,
+              "System.Threading.ThreadPool.MinThreads": 8,
+              "Custom.Connection": "Server=local"
+            }
+          }
+        }
+        """;
+
+        var switches = RuntimeConfigInspector.ParseConfigProperties(json);
+
+        switches.Should().BeEquivalentTo(
+        [
+            new AppContextSwitchEntry("Custom.Connection", "Server=local"),
+            new AppContextSwitchEntry("Switch.System.Net.DontEnableSystemDefaultTlsVersions", "false"),
+            new AppContextSwitchEntry("System.GC.Server", "true"),
+            new AppContextSwitchEntry("System.Net.Http.EnableActivityPropagation", "false"),
+            new AppContextSwitchEntry("System.Net.SocketsHttpHandler.Http3Support", "true"),
+            new AppContextSwitchEntry("System.Threading.ThreadPool.MinThreads", "8"),
+        ], options => options.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void ParseConfigProperties_ReturnsEmpty_WhenNoConfigProperties()
+    {
+        RuntimeConfigInspector.ParseConfigProperties("{\"runtimeOptions\":{\"tfm\":\"net10.0\"}}").Should().BeEmpty();
+        RuntimeConfigInspector.ParseConfigProperties("{}").Should().BeEmpty();
+        RuntimeConfigInspector.ParseConfigProperties("").Should().BeEmpty();
+    }
 }

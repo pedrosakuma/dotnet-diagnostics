@@ -302,7 +302,19 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
                 $"empty EnvVars must be explained by a platform note. notes: {notes}");
         }
 
-        runtimeConfig.AppContextSwitches.Should().BeEmpty();
+        if (runtimeConfig.AppContextSwitches.Count > 0)
+        {
+            runtimeConfig.Notes.Should().Contain(
+                note => note.Contains("runtimeconfig.json", StringComparison.OrdinalIgnoreCase),
+                $"populated AppContext switches must cite the offline runtimeconfig.json source. notes: {notes}");
+        }
+        else
+        {
+            runtimeConfig.Notes.Should().Contain(
+                note => note.Contains("AppContext switches", StringComparison.OrdinalIgnoreCase)
+                    || note.Contains("configProperties", StringComparison.OrdinalIgnoreCase),
+                $"empty AppContext switches must be explained by a note. notes: {notes}");
+        }
         runtimeConfig.Notes.Should().Contain(note => note.Contains("security boundary", StringComparison.OrdinalIgnoreCase));
     }
 
