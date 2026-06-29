@@ -30,9 +30,14 @@ public static class ChildProcessLauncher
     /// process's console (real-time output for interactive use); when non-null the child's stdout and
     /// stderr are redirected and pumped to <paramref name="consoleSink"/> instead — used by the CLI in
     /// <c>--json</c> mode so the launched app's logging never contaminates the machine-readable envelope
-    /// on stdout.
+    /// on stdout. The optional <paramref name="environment"/> entries are layered onto the child's
+    /// inherited environment (used to inject <c>DOTNET_DiagnosticPorts</c> for cold-start capture).
     /// </summary>
-    public static LaunchedTarget Launch(string fileName, IReadOnlyList<string> arguments, TextWriter? consoleSink = null)
+    public static LaunchedTarget Launch(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        TextWriter? consoleSink = null,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
         ArgumentNullException.ThrowIfNull(arguments);
@@ -49,6 +54,14 @@ public static class ChildProcessLauncher
         foreach (var arg in arguments)
         {
             startInfo.ArgumentList.Add(arg);
+        }
+
+        if (environment is not null)
+        {
+            foreach (var pair in environment)
+            {
+                startInfo.Environment[pair.Key] = pair.Value;
+            }
         }
 
         Process process;

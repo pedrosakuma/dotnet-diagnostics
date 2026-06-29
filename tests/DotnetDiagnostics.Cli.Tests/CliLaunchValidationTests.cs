@@ -121,4 +121,48 @@ public sealed class CliLaunchValidationTests
         CliCommands.TryValidateLaunch(options, out var error).Should().BeTrue();
         error.Should().BeNull();
     }
+
+    [Fact]
+    public void Parse_SuspendStartupFlag_IsCaptured()
+    {
+        var options = CliOptions.Parse(
+            new[] { "collect", "--kind", "startup", "--suspend-startup", "--launch", "--", "dotnet", "App.dll" },
+            out var error);
+
+        error.Should().BeNull();
+        options!.SuspendStartup.Should().BeTrue();
+        options.Launch.Should().BeTrue();
+        options.LaunchArgs.Should().Equal("dotnet", "App.dll");
+    }
+
+    [Fact]
+    public void Validate_SuspendStartupWithLaunchAndStartupKind_Succeeds()
+    {
+        var options = CliOptions.Parse(
+            new[] { "collect", "--kind", "startup", "--suspend-startup", "--launch", "--", "dotnet", "App.dll" },
+            out _)!;
+
+        CliCommands.TryValidateLaunch(options, out var error).Should().BeTrue();
+        error.Should().BeNull();
+    }
+
+    [Fact]
+    public void Validate_SuspendStartupWithoutLaunch_Fails()
+    {
+        var options = CliOptions.Parse(new[] { "collect", "--kind", "startup", "--suspend-startup" }, out _)!;
+
+        CliCommands.TryValidateLaunch(options, out var error).Should().BeFalse();
+        error.Should().Contain("requires --launch");
+    }
+
+    [Fact]
+    public void Validate_SuspendStartupWithNonStartupKind_Fails()
+    {
+        var options = CliOptions.Parse(
+            new[] { "collect", "--kind", "gc", "--suspend-startup", "--launch", "--", "dotnet", "App.dll" },
+            out _)!;
+
+        CliCommands.TryValidateLaunch(options, out var error).Should().BeFalse();
+        error.Should().Contain("--kind startup");
+    }
 }

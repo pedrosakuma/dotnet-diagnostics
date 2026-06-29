@@ -197,6 +197,15 @@ internal sealed record CliOptions
     public bool LaunchedByCli { get; init; }
 
     /// <summary>
+    /// Cold-start capture opt-in (<c>--suspend-startup</c>, issue #446). With <c>--launch</c>, spawns the
+    /// target suspended on a reverse-connect <c>DOTNET_DiagnosticPorts</c> port, arms the EventPipe
+    /// session before any managed code runs, then resumes — capturing static ctors, DI build,
+    /// module-init exceptions and startup timings the post-attach path misses. CLI-only; default OFF.
+    /// Applies to <c>collect --kind startup</c> and <c>collect --kind cpu</c>.
+    /// </summary>
+    public bool SuspendStartup { get; init; }
+
+    /// <summary>
     /// Parses <paramref name="args"/>. Returns a populated <see cref="CliOptions"/> on success, or
     /// <c>null</c> with a non-null <paramref name="error"/> describing the first usage problem.
     /// </summary>
@@ -260,6 +269,7 @@ internal sealed record CliOptions
         int? maxCaptures = null;
         int? windowSeconds = null;
         var launch = false;
+        var suspendStartup = false;
         List<string>? launchArgs = null;
 
         for (var i = 0; i < args.Count; i++)
@@ -321,6 +331,9 @@ internal sealed record CliOptions
                     break;
                 case "--launch":
                     launch = true;
+                    break;
+                case "--suspend-startup":
+                    suspendStartup = true;
                     break;
                 case "--pid":
                 case "-p":
@@ -740,6 +753,7 @@ internal sealed record CliOptions
             MaxCaptures = maxCaptures,
             WindowSeconds = windowSeconds,
             Launch = launch,
+            SuspendStartup = suspendStartup,
             LaunchArgs = launchArgs ?? (IReadOnlyList<string>)Array.Empty<string>(),
         };
     }

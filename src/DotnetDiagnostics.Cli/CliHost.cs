@@ -286,6 +286,15 @@ internal static class CliHost
             return 2;
         }
 
+        // Cold-start capture (issue #446): when --suspend-startup is set, the target is launched
+        // SUSPENDED on a reverse-connect diagnostic port, the EventPipe session is armed before any
+        // managed code runs, and only then resumed — so pre-attach events are recovered. This is a
+        // distinct flow from --launch (attach-after-ready), so handle it first and return.
+        if (options.SuspendStartup)
+        {
+            return await RunColdStartAsync(options, stdout, stderr, cancellationToken).ConfigureAwait(false);
+        }
+
         // Opt-in `--launch` dev mode (issue #365): spawn the target as a child of this process so the
         // ClrMD live-attach commands are permitted under Yama ptrace_scope=1 without privilege. The
         // launched pid becomes the effective --pid for this one-shot command; the child is terminated
@@ -586,6 +595,99 @@ internal static class CliHost
         }
 
         return (target, target.ProcessId, null, false);
+    }
+
+    /// <summary>Maximum time to wait for a suspended cold-start child to reverse-connect.</summary>
+    private static readonly TimeSpan ColdStartConnectTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Cold-start capture flow (issue #446): launch the target SUSPENDED on a reverse-connect diagnostic
+    /// port, arm the EventPipe session before any managed code runs, resume, collect, render. The
+    /// suspended child is always torn down (success, error, or Ctrl-C) before returning.
+    /// </summary>
+    private static async Task<int> RunColdStartAsync(
+        CliOptions options,
+        TextWriter stdout,
+        TextWriter stderr,
+        CancellationToken cancellationToken)
+    {
+        var program = options.LaunchArgs[0];
+        var argv = new string[options.LaunchArgs.Count - 1];
+        for (var i = 1; i < options.LaunchArgs.Count; i++)
+        {
+            argv[i - 1] = options.LaunchArgs[i];
+        }
+
+        var consoleSink = options.Json ? stderr : null;
+
+        await stderr.WriteLineAsync(string.Create(
+            CultureInfo.InvariantCulture,
+            $"Cold-start: launching '{program}' suspended on a reverse-connect diagnostic port (capturing pre-attach startup events)…"))
+            .ConfigureAwait(false);
+
+        // SIGINT does not raise ProcessExit on a plain console app (.NET 10), so a temporary cooperative
+        // Ctrl-C handler scoped to this run ensures the suspended child is never orphaned. Only hook the
+        // real console (tests inject writers).
+        using var coldCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var ownsConsole = ReferenceEquals(stdout, Console.Out) || ReferenceEquals(stderr, Console.Error);
+        ConsoleCancelEventHandler? cancelHandler = null;
+        if (ownsConsole)
+        {
+            var cancelledOnce = 0;
+            cancelHandler = (_, e) =>
+            {
+                // First Ctrl-C: cooperatively cancel and clean up. Second Ctrl-C: fall through to
+                // hard termination so a wedged connect/stop/dispose cannot trap the user.
+                if (Interlocked.Exchange(ref cancelledOnce, 1) == 0)
+                {
+                    e.Cancel = true;
+                }
+                coldCts.Cancel();
+            };
+            Console.CancelKeyPress += cancelHandler;
+        }
+
+        SuspendedTarget? target = null;
+        try
+        {
+            target = await SuspendedColdStartLauncher
+                .LaunchSuspendedAsync(program, argv, consoleSink, ColdStartConnectTimeout, coldCts.Token)
+                .ConfigureAwait(false);
+
+            using var host = BuildHost(options);
+            var ansiEnabled = !options.Json && CliAnsi.IsEnabled(stdout, forceAnsi: null);
+            var result = await CliCommands.RunColdStartStartupAsync(host.Services, options, target, coldCts.Token).ConfigureAwait(false);
+            await RenderAsync(result, options.Json, ansiEnabled, stdout).ConfigureAwait(false);
+            return await ToExitCodeAsync(result, options.Command, stderr).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (coldCts.IsCancellationRequested)
+        {
+            await stderr.WriteLineAsync($"dotnet-diagnostics-cli {options.Command}: cancelled cold-start — suspended child terminated and port cleaned up.")
+                .ConfigureAwait(false);
+            return 130;
+        }
+        catch (TimeoutException ex)
+        {
+            await stderr.WriteLineAsync(ex.Message).ConfigureAwait(false);
+            return 1;
+        }
+        catch (InvalidOperationException ex)
+        {
+            await stderr.WriteLineAsync(ex.Message).ConfigureAwait(false);
+            return 1;
+        }
+        finally
+        {
+            if (cancelHandler is not null)
+            {
+                Console.CancelKeyPress -= cancelHandler;
+            }
+
+            if (target is not null)
+            {
+                await target.DisposeAsync().ConfigureAwait(false);
+            }
+        }
     }
 
     /// <summary>

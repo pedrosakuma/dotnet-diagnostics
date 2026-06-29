@@ -48,6 +48,42 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         bool exportTrace = false,
         CancellationToken cancellationToken = default)
+        => await SampleCoreAsync(
+            client: null, resumeAsync: null, processId, duration, topN, sourceResolution,
+            methodInstantiationResolution, nativeAotSymbols, exportTrace, cancellationToken).ConfigureAwait(false);
+
+    /// <summary>
+    /// True cold-start CPU sampling (issue #446): arms the sampling session on a <b>suspended</b>
+    /// reverse-connected target and only then resumes it, so the trace captures startup JIT, static
+    /// ctors and module-init CPU that the post-attach path misses. CLI-only.
+    /// </summary>
+    public async Task<CpuSampleResult> SampleColdStartAsync(
+        DotnetDiagnostics.Core.Launch.SuspendedTarget target,
+        TimeSpan duration,
+        int topN = 25,
+        SourceResolutionOptions? sourceResolution = null,
+        MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
+        bool exportTrace = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        return await SampleCoreAsync(
+            target.Client, target.ResumeAsync, target.ProcessId, duration, topN, sourceResolution,
+            methodInstantiationResolution, nativeAotSymbols, exportTrace, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<CpuSampleResult> SampleCoreAsync(
+        DiagnosticsClient? client,
+        Func<ValueTask>? resumeAsync,
+        int processId,
+        TimeSpan duration,
+        int topN,
+        SourceResolutionOptions? sourceResolution,
+        MethodInstantiationResolutionOptions? methodInstantiationResolution,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols,
+        bool exportTrace,
+        CancellationToken cancellationToken = default)
     {
         if (duration <= TimeSpan.Zero || duration > TimeSpan.FromMinutes(5))
         {
@@ -68,7 +104,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
 
         try
         {
-            await CollectTraceAsync(processId, tracePath, duration, exportPath is not null, cancellationToken).ConfigureAwait(false);
+            await CollectTraceAsync(client, resumeAsync, processId, tracePath, duration, exportPath is not null, cancellationToken).ConfigureAwait(false);
             if (exportPath is not null)
             {
                 SafeArtifactPath.SetRestrictiveFilePermissions(exportPath);
@@ -113,7 +149,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         return rel.Replace(Path.DirectorySeparatorChar, '/');
     }
 
-    private static async Task CollectTraceAsync(int pid, string outputPath, TimeSpan duration, bool restricted, CancellationToken ct)
+    private static async Task CollectTraceAsync(DiagnosticsClient? providedClient, Func<ValueTask>? resumeAsync, int pid, string outputPath, TimeSpan duration, bool restricted, CancellationToken ct)
     {
         var providers = new[]
         {
@@ -124,10 +160,17 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 (long)ClrTraceEventParser.Keywords.Default),
         };
 
-        var client = new DiagnosticsClient(pid);
+        var client = providedClient ?? new DiagnosticsClient(pid);
         var session = await client
             .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: true, circularBufferMB: 256, TimeSpan.FromSeconds(30), ct)
             .ConfigureAwait(false);
+
+        // Cold start: resume the suspended runtime only after the sampling session exists, so startup
+        // CPU (JIT, static ctors, module init) is captured rather than lost before attach.
+        if (resumeAsync is not null)
+        {
+            await resumeAsync().ConfigureAwait(false);
+        }
 
         var copyTask = Task.Run(async () =>
         {

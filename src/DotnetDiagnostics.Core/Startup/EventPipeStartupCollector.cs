@@ -1,6 +1,7 @@
 using System.Diagnostics.Tracing;
 using System.Globalization;
 using DotnetDiagnostics.Core.Internal;
+using DotnetDiagnostics.Core.Launch;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Extensions.Logging;
@@ -60,25 +61,75 @@ public sealed class EventPipeStartupCollector : IStartupCollector
             throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be positive.");
         }
 
+        var client = new DiagnosticsClient(processId);
+        return await CollectCoreAsync(client, processId, duration, coldStart: false, resumeAsync: null, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<StartupSnapshot> CollectColdStartAsync(
+        SuspendedTarget target,
+        TimeSpan duration,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        if (duration <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be positive.");
+        }
+
+        return await CollectCoreAsync(target.Client, target.ProcessId, duration, coldStart: true, target.ResumeAsync, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<StartupSnapshot> CollectCoreAsync(
+        DiagnosticsClient client,
+        int processId,
+        TimeSpan duration,
+        bool coldStart,
+        Func<ValueTask>? resumeAsync,
+        CancellationToken cancellationToken)
+    {
         var providers = new[]
         {
             new EventPipeProvider(RuntimeProvider, EventLevel.Verbose, LoaderKeyword),
             new EventPipeProvider(DependencyInjectionProvider, EventLevel.Verbose, (long)EventKeywords.All),
         };
 
-        var client = new DiagnosticsClient(processId);
         var session = await client
             .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: false, circularBufferMB: 128, TimeSpan.FromSeconds(30), cancellationToken)
             .ConfigureAwait(false);
 
-        var startedAt = DateTimeOffset.UtcNow;
-        var notes = new HashSet<string>(StringComparer.Ordinal)
+        // Cold start: the session is now armed but the target is still suspended. Resume only after the
+        // EventStream pipe exists so pre-attach loader/DI events are recorded, not lost in the gap. If
+        // resume throws, dispose the just-created session so it is not leaked.
+        if (resumeAsync is not null)
         {
-            "This startup collector attaches to an already-running process and only captures loader/DI events emitted during this collection window; events before attach, including most initial cold start, are missed. True cold-start capture requires starting EventPipe before or at process launch via a suspended/reverse-connect startup diagnostic port (e.g. DOTNET_DiagnosticPorts with the 'suspend' modifier); attaching after launch — including the CLI --launch child mode, which waits for the diagnostic endpoint before collecting — does not recover pre-attach events.",
-            "Static constructor timing is not exposed as a clean EventPipe event by this collector; no static-constructor duration is inferred.",
-            "JIT-at-startup is covered by collect_events(kind=\"jit\"); startup does not duplicate JIT events.",
-            "DependencyInjection ServiceProviderBuilt can be replayed when the provider is enabled for already-built providers; observed DI activity duration is the span between captured DI events, not an exact container-build stopwatch.",
-        };
+            try
+            {
+                await resumeAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
+                session.Dispose();
+                throw;
+            }
+        }
+
+        var startedAt = DateTimeOffset.UtcNow;
+        var notes = new HashSet<string>(StringComparer.Ordinal);
+        if (coldStart)
+        {
+            notes.Add("Cold-start capture: EventPipe was armed on the suspended reverse-connect diagnostic port (DOTNET_DiagnosticPorts ...,suspend) before the runtime resumed, so static constructors, DI container build, module-init exceptions and startup timings are included. This is the only mode that recovers pre-attach events.");
+        }
+        else
+        {
+            notes.Add("This startup collector attaches to an already-running process and only captures loader/DI events emitted during this collection window; events before attach, including most initial cold start, are missed. True cold-start capture requires starting EventPipe before or at process launch via a suspended/reverse-connect startup diagnostic port (e.g. DOTNET_DiagnosticPorts with the 'suspend' modifier); attaching after launch — including the CLI --launch child mode, which waits for the diagnostic endpoint before collecting — does not recover pre-attach events. Use --suspend-startup with --launch for true cold-start capture.");
+        }
+
+        notes.Add("Static constructor timing is not exposed as a clean EventPipe event by this collector; no static-constructor duration is inferred.");
+        notes.Add("JIT-at-startup is covered by collect_events(kind=\"jit\"); startup does not duplicate JIT events.");
+        notes.Add("DependencyInjection ServiceProviderBuilt can be replayed when the provider is enabled for already-built providers; observed DI activity duration is the span between captured DI events, not an exact container-build stopwatch.");
         var assemblies = new List<StartupAssemblyLoad>();
         var modules = new List<StartupModuleLoad>();
         var diEvents = new List<StartupDiEvent>();

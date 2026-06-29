@@ -997,6 +997,53 @@ public static class EventCollectionUseCases
             resolved.Context);
     }
 
+    /// <summary>
+    /// Cold-start variant of <see cref="CollectStartup"/> (issue #446): arms the session on a suspended
+    /// reverse-connected target and resumes inside the collector, so pre-attach events are recovered. No
+    /// process-context resolution is performed up front because the runtime is suspended; the pid is the
+    /// launched child's.
+    /// </summary>
+    public static async Task<DiagnosticResult<StartupSnapshot>> CollectStartupColdStart(
+        IStartupCollector collector,
+        IDiagnosticHandleStore handles,
+        DotnetDiagnostics.Core.Launch.SuspendedTarget target,
+        int durationSeconds = 10,
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(collector);
+        ArgumentNullException.ThrowIfNull(handles);
+        ArgumentNullException.ThrowIfNull(target);
+        if (durationSeconds < 1) return InvalidArg<StartupSnapshot>(nameof(durationSeconds), "must be >= 1");
+
+        var pid = target.ProcessId;
+        var snapshot = await collector.CollectColdStartAsync(target, TimeSpan.FromSeconds(durationSeconds), cancellationToken).ConfigureAwait(false);
+
+        var inlineSnapshot = snapshot;
+        if (depth == SamplingDepth.Summary)
+        {
+            inlineSnapshot = snapshot with
+            {
+                AssemblyLoads = snapshot.AssemblyLoads.Take(5).ToList(),
+                ModuleLoads = snapshot.ModuleLoads.Take(5).ToList(),
+                DiEvents = snapshot.DiEvents.Take(5).ToList(),
+                Timeline = snapshot.Timeline.Take(20).ToList(),
+            };
+        }
+
+        var summary = $"Cold-start capture over {durationSeconds}s (suspended reverse-connect; pre-attach events included): assemblies={snapshot.TotalAssemblyLoads}, modules={snapshot.TotalModuleLoads}, DI events={snapshot.TotalDiEvents}, service providers built={snapshot.DiServiceProviderBuiltCount}, observed DI span={snapshot.ObservedDiActivityDuration.TotalMilliseconds:F1}ms.";
+
+        var handle = handles.Register(pid, CollectionHandleKinds.StartupSnapshot, snapshot, CollectionHandleTtl);
+        return DiagnosticResult.OkWithHandle(
+            inlineSnapshot,
+            summary,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint("query_snapshot",
+                "Drill into the startup timeline without re-collecting (views: summary, assemblies, modules, di, timeline).",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "timeline", ["topN"] = 50 }));
+    }
+
     /// <summary>Captures completed ActivitySource spans via the DiagnosticSource EventPipe bridge.</summary>
     public static async Task<DiagnosticResult<ActivityCapture>> CollectActivities(
         IActivityCollector collector,
