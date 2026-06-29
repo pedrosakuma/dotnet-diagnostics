@@ -104,6 +104,10 @@ public enum HeapSnapshotOrigin
     Dump,
     /// <summary>Snapshot captured by attaching to a live process via ClrMD.</summary>
     Live,
+    /// <summary>Snapshot captured over EventPipe (.gcdump style, no ptrace/ClrMD attach). The
+    /// prod-safe alternative: type-level top-N is available, but ClrMD-only views (GC handles,
+    /// static fields, delegate targets, finalizable types) are not populated.</summary>
+    GcDump,
 }
 
 /// <summary>
