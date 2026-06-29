@@ -53,6 +53,11 @@ public sealed class QuerySnapshotTool
     internal const string CallTreeView = "call-tree";
     internal const string DiffView = "diff";
 
+    // Heap-snapshot view that diffs two LIVE heap snapshots N seconds apart and ranks the types
+    // that grew by retained bytes / instances, with retention-path drill-down on the top growers
+    // (issue #463 — leak hunting). Like `diff`, it needs a second handle (baselineHandle).
+    internal const string GrowthView = "growth";
+
     // Every view the cpu-sample / allocation-sample / native-alloc-sample kinds accept (analytics
     // views from #313 plus the original call-tree and the server-only diff).
     private static readonly string[] CpuViewNames =
@@ -126,9 +131,9 @@ public sealed class QuerySnapshotTool
         INativeAddressResolver addressResolver,
         IFrameVariableResolver frameVariableResolver,
         [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, collect_events(kind=\"counters\"), collect_events(kind=\"exceptions\"), collect_events(kind=\"crash-guard\"), collect_events(kind=\"gc\"), collect_events(kind=\"datas\"), collect_events(kind=\"catalog\"), collect_events(kind=\"event_source\"), collect_events(kind=\"activities\"), collect_events(kind=\"logs\"), collect_events(kind=\"jit\"), collect_events(kind=\"threadpool\"), collect_events(kind=\"contention\"), collect_events(kind=\"db\"), collect_events(kind=\"kestrel\"), collect_events(kind=\"networking\"), collect_events(kind=\"startup\")).")] string handle,
-        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address|frame-vars. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|exceptions|stack|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
+        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff|growth. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|threadpool|resolve-address|frame-vars. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|exceptions|stack|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
         [Description("Maximum entries returned by any ranked-list view. Omit to use the per-kind legacy default: 50 for heap / thread / collection, 25 for off-CPU. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
-        [Description("Heap view='top-types' only: ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
+        [Description("Heap view='top-types' and view='growth': ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
         [Description("Heap view='object'/'gcroot'/'objsize': managed object address. Thread view='resolve-address': one or more native/instruction addresses (comma-separated) to classify into (module, rva, build-id) or an unmapped verdict. Decimal or 0x-prefixed hex.")] string? address = null,
         [Description("Heap views 'duplicate-strings' / 'object' only: opt-in to raw string content / field-value previews (gated by `Diagnostics:AllowSensitiveHeapValues` AND `sensitive-heap-read` scope per docs/authorization.md#modifier-scopes).")] bool includeSensitiveValues = false,
@@ -141,9 +146,9 @@ public sealed class QuerySnapshotTool
         [Description("DATAS 'tuning' view only: when true, emit only the rows where the heap-count decision changed versus the previous GC (plus the first row as a baseline).")] bool changesOnly = false,
         [Description("Call-tree only: maximum tree depth from the root. Must be >= 1. Defaults to 8.")] int maxDepth = 8,
         [Description("Call-tree only: approximate cap on the number of nodes returned (top children at each level). Must be >= 1. Defaults to 200.")] int maxNodes = 200,
-        [Description("Diff view only: baseline handle to compare against the current `handle`. Required for legacy pairwise diff unless `comparisonHandles` is supplied.")] string? baselineHandle = null,
+        [Description("Diff view: baseline handle to compare against the current `handle`. Required for legacy pairwise diff unless `comparisonHandles` is supplied. Heap view='growth': required — the EARLIER live heap snapshot handle to diff the current (later) one against.")] string? baselineHandle = null,
         [Description("Diff view only: ordered handles to compare before the current `handle` for N-way journey diffs. Do not combine with `baselineHandle`; the current handle is appended as the final capture.")] string[]? comparisonHandles = null,
-        [Description("Diff view only: minimum absolute delta percentage required for a row to surface in `Changed`. Defaults to 5.0.")] double minDeltaPct = 5.0,
+        [Description("Diff/growth views: minimum absolute delta percentage required for a row to surface. Defaults to 5.0.")] double minDeltaPct = 5.0,
         [Description("Diff view only: inline verbosity for comparable journey diffs. `full` returns the full matrix when it is below the inline threshold; `compact` returns verdict/headline/counts/notes plus top-N metric and key deltas. Large full diffs always return compact inline data plus a journey://diff/{handle} Resource link. Defaults to `full`.")] string depth = "full",
         [Description("Diff view only: journey interpretation mode. `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers and requires N-way comparable captures via comparisonHandles.")] string? mode = null,
         [Description("cpu-sample/allocation-sample 'hot-path' view only: a child must carry at least this percent of its parent's inclusive samples to extend the chain. Defaults to 50.")] double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
@@ -181,6 +186,10 @@ public sealed class QuerySnapshotTool
                     if (isDiffView)
                     {
                         return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN, depth, journeyMode);
+                    }
+                    if (IsGrowthView(view))
+                    {
+                        return TryBuildHeapGrowth(handles, handle, lookup.Value, baselineHandle, rankBy, minDeltaPct, topN);
                     }
                     var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultHeapView : view!;
                     var heap = await DiagnosticTools.QueryHeapSnapshot(
@@ -439,6 +448,85 @@ public sealed class QuerySnapshotTool
 
     private static bool IsDiffView(string? view)
         => string.Equals(view, DiffView, StringComparison.Ordinal);
+
+    private static bool IsGrowthView(string? view)
+        => string.Equals(view?.Trim(), GrowthView, StringComparison.OrdinalIgnoreCase);
+
+    private static DiagnosticResult<object> TryBuildHeapGrowth(
+        IDiagnosticHandleStore handles,
+        string handle,
+        HandleLookup currentLookup,
+        string? baselineHandle,
+        string rankBy,
+        double minDeltaPct,
+        int? topN)
+    {
+        if (string.IsNullOrWhiteSpace(baselineHandle))
+        {
+            return InvalidArgument(nameof(baselineHandle), "is required when view='growth' (pass the EARLIER live heap snapshot handle)");
+        }
+
+        var normalizedRank = (rankBy ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalizedRank.Length == 0)
+        {
+            normalizedRank = HeapGrowthDiff.RankByBytes;
+        }
+        if (normalizedRank is not (HeapGrowthDiff.RankByBytes or HeapGrowthDiff.RankByInstances))
+        {
+            return InvalidArgument(nameof(rankBy), $"must be 'bytes' or 'instances' (got '{rankBy}')");
+        }
+
+        if (minDeltaPct < 0)
+        {
+            return InvalidArgument(nameof(minDeltaPct), "must be >= 0");
+        }
+
+        var effectiveTopN = topN ?? 25;
+        if (effectiveTopN < 1)
+        {
+            return InvalidArgument(nameof(topN), "must be >= 1 when view='growth'");
+        }
+
+        var baselineLookup = handles.TryGetWithKind(baselineHandle!);
+        if (baselineLookup is null)
+        {
+            return HandleExpiredError("Baseline", baselineHandle!);
+        }
+
+        if (!string.Equals(currentLookup.Kind, baselineLookup.Value.Kind, StringComparison.Ordinal))
+        {
+            return InvalidKindPair(currentLookup.Kind, baselineLookup.Value.Kind);
+        }
+
+        if (currentLookup.Artifact is not HeapSnapshotArtifact current || baselineLookup.Value.Artifact is not HeapSnapshotArtifact baseline)
+        {
+            return UnsupportedDiffKind(currentLookup.Kind);
+        }
+
+        if (baseline.Origin != HeapSnapshotOrigin.Live || current.Origin != HeapSnapshotOrigin.Live)
+        {
+            return InvalidArgument(
+                nameof(baselineHandle),
+                $"view='growth' requires two LIVE heap snapshots (got baseline origin '{baseline.Origin}', current origin '{current.Origin}'). Capture both with inspect_heap(source=\"live\") on the same running process and pass the EARLIER handle as baselineHandle.");
+        }
+
+        var growth = HeapGrowthDiff.Build(baseline, baselineHandle!, current, handle, normalizedRank, minDeltaPct, effectiveTopN);
+
+        var topGrower = growth.Growers.Count > 0 ? growth.Growers[0] : null;
+        var summary = topGrower is null
+            ? $"No types grew (>= {minDeltaPct}% by {normalizedRank}) between baseline '{baselineHandle}' and current '{handle}' over {growth.Elapsed.TotalSeconds:F1}s — verdict {growth.Verdict}."
+            : $"Heap grew {growth.TotalHeapGrowthBytes:N0} bytes over {growth.Elapsed.TotalSeconds:F1}s (pid {growth.ProcessId}); {growth.TotalGrowers} type(s) grew, top {growth.Growers.Count} returned ranked by {normalizedRank}. Top grower `{topGrower.TypeFullName}` +{topGrower.BytesDelta:N0} bytes / +{topGrower.InstancesDelta:N0} instances. Verdict {growth.Verdict}.";
+
+        var hint = topGrower is { RetentionPaths: null or { Count: 0 } }
+            ? new NextActionHint("inspect_heap",
+                "Re-capture both snapshots with includeRetentionPaths=true to see what's holding the top growers.",
+                new Dictionary<string, object?> { ["processId"] = growth.ProcessId, ["source"] = "live", ["includeRetentionPaths"] = true })
+            : new NextActionHint(ToolName,
+                "Drill into a specific grower with view='retention-paths' on the current handle.",
+                new Dictionary<string, object?> { ["handle"] = handle, ["view"] = "retention-paths", ["typeFullName"] = topGrower?.TypeFullName });
+
+        return AsObjectEnvelope(DiagnosticResult.Ok<object>(growth, summary, hint));
+    }
 
     // Legacy typed pairwise (N=2 baselineHandle) kinds handled by ComparablePairwiseSampleDiff in their own
     // case blocks. They also gain N-ary comparable projectors over time; this list backs the

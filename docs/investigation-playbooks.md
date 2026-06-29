@@ -292,6 +292,27 @@ If `resources` looks clean, continue with GC-focused investigation.
 `collect_events(kind="gc")` for 15–30 s. If gen-2 collections happen but `gen-2-size`
 doesn't drop, you have surviving objects (leak or long-lived cache).
 
+### Step 3a — Live heap growth diff (retention-aware leak hunt)
+Once Step 3 confirms surviving objects, pin down **which types** are growing and **what's
+holding them** without two offline dumps + manual SOS `!objsize` / `!gcroot`. Take two live
+heap snapshots N seconds apart (30–120 s under steady load), then diff them:
+
+```text
+inspect_heap(source="live", processId=12345, includeRetentionPaths=true)   # → baseline handle H1
+# …wait while the leak accrues…
+inspect_heap(source="live", processId=12345, includeRetentionPaths=true)   # → current handle H2
+query_snapshot(handle=H2, view="growth", baselineHandle=H1)                 # ranked growth + retention
+```
+
+`view="growth"` ranks the types whose retained `bytes` (or `instances`, via `rankBy`) grew
+between the two captures, attaching the retention chains from the *later* snapshot to the top
+growers — so the verdict `leak_suspected` comes with the static cache / event-handler / collection
+that is keeping each growing type alive. It ranks by **absolute** growth (not percentage), so a
+large-but-modest-% leak does not get buried under noisy small types. Pass `includeRetentionPaths=true`
+on both captures to populate the "what's holding them" drill-down (the view notes it and suggests a
+re-capture otherwise). This is the fastest path from "memory keeps growing" to a named leaking type
+plus its root.
+
 ### Step 4
 If `working-set` keeps climbing but the managed heap still looks deceptively small,
 run `query_snapshot(handle, view="gchandles")` on a recent `inspect_heap` handle.
