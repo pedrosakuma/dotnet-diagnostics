@@ -65,6 +65,7 @@ public sealed class CliCollectValidationTests
     [InlineData("db")]
     [InlineData("kestrel")]
     [InlineData("networking")]
+    [InlineData("requests")]
     [InlineData("startup")]
     [InlineData("sweep")]
     public void TryValidateCollect_KnownKindsWithoutProvider_Succeed(string kind)
@@ -121,7 +122,7 @@ public sealed class CliCollectValidationTests
         CliCommands.CollectKinds.Should().BeEquivalentTo(new[]
         {
             "counters", "exceptions", "crash-guard", "gc", "datas", "catalog", "event_source", "activities",
-            "logs", "jit", "threadpool", "contention", "db", "kestrel", "networking", "startup", "sweep",
+            "logs", "jit", "threadpool", "contention", "db", "kestrel", "networking", "requests", "startup", "sweep",
         });
     }
 

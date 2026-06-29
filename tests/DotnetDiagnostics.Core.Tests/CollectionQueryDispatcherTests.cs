@@ -8,6 +8,7 @@ using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Logs;
+using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.ThreadPool;
 using FluentAssertions;
 
@@ -845,5 +846,70 @@ public class CollectionQueryDispatcherTests
         // Only 100ms of the GC pause overlapped with the activity (300-400ms)
         impacted.GcPauseMs.Should().Be(100);
         impacted.GcPausePercent.Should().BeApproximately(33.33, 0.1); // 100ms of 300ms ≈ 33.33%
+    }
+    private static InFlightRequestSnapshot SampleInFlight() => new(
+        ProcessId: 7,
+        StartedAt: At,
+        Duration: TimeSpan.FromSeconds(2),
+        RequestsStarted: 3,
+        RequestsCompleted: 1,
+        InFlightCount: 2,
+        LongRunningCount: 1,
+        LongRunningThresholdMs: 1000,
+        OldestElapsedMs: 5000,
+        Requests: new[]
+        {
+            new InFlightRequest("trace-old", "span-old", "GET", "/slow-hang", At.AddSeconds(-5), 5000, IsLongRunning: true),
+            new InFlightRequest("trace-new", "span-new", "POST", "/orders", At.AddMilliseconds(-200), 200, IsLongRunning: false),
+        },
+        Notes: new[] { "note" });
+
+    [Fact]
+    public void InFlightRequests_SummaryView_ReturnsHeadlineCountsAndRequests()
+    {
+        var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.InFlightRequests, null, SampleInFlight(), 50);
+
+        outcome.Result.Should().NotBeNull();
+        outcome.Result!.View.Should().Be("summary");
+        var payload = outcome.Result.Payload.Should().BeOfType<InFlightRequestsSummaryView>().Subject;
+        payload.InFlightCount.Should().Be(2);
+        payload.LongRunningCount.Should().Be(1);
+        payload.OldestElapsedMs.Should().Be(5000);
+        payload.Requests.Should().HaveCount(2);
+        payload.Requests[0].Path.Should().Be("/slow-hang");
+    }
+
+    [Fact]
+    public void InFlightRequests_RequestsView_IsCappedByTopN()
+    {
+        var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.InFlightRequests, "requests", SampleInFlight(), 1);
+
+        var payload = outcome.Result!.Payload.Should().BeOfType<InFlightRequestsListView>().Subject;
+        payload.InFlightCount.Should().Be(2);
+        payload.Returned.Should().Be(1);
+        payload.Requests.Should().ContainSingle();
+        payload.Requests[0].Path.Should().Be("/slow-hang");
+    }
+
+    [Fact]
+    public void InFlightRequests_LongRunningView_FiltersToLongRunners()
+    {
+        var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.InFlightRequests, "longRunning", SampleInFlight(), 50);
+
+        var payload = outcome.Result!.Payload.Should().BeOfType<InFlightRequestsLongRunningView>().Subject;
+        payload.LongRunningCount.Should().Be(1);
+        payload.Requests.Should().ContainSingle();
+        payload.Requests[0].IsLongRunning.Should().BeTrue();
+        payload.Requests[0].Path.Should().Be("/slow-hang");
+    }
+
+    [Fact]
+    public void InFlightRequests_UnknownView_ReportsAllowedViews()
+    {
+        var outcome = CollectionQueryDispatcher.Dispatch(CollectionHandleKinds.InFlightRequests, "nope", SampleInFlight(), 50);
+
+        outcome.Result.Should().BeNull();
+        outcome.UnknownView.Should().Be("nope");
+        outcome.AllowedViews.Should().BeEquivalentTo(new[] { "summary", "requests", "longRunning" });
     }
 }

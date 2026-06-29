@@ -68,7 +68,7 @@ Options:
 collect options:
       --kind <kind>             Required. One of: counters, exceptions, crash-guard, gc, datas,
                                 catalog, event_source, activities, logs, jit, threadpool,
-                                contention, db, kestrel, networking, startup, sweep.
+                                contention, db, kestrel, networking, requests, startup, sweep.
   -d, --duration <int>          Collection window in seconds (default: counters 5, datas 15, sweep 6, others 10).
       --depth <level>           Verbosity: summary, detail (default), raw.
       --max-events <int>        Per-kind cap (events / exceptions / activities).
@@ -89,6 +89,8 @@ collect options:
       --source <name>           activities: ActivitySource filter (repeatable, * / ? globs).
       --category <glob>         logs: ILogger category filter (repeatable).
       --min-level <level>       logs: minimum level (default Information).
+      --threshold <ms>          requests: long-running flag threshold in ms (default 1000).
+      --max-events <int>        requests: also caps the in-flight requests returned (default 100).
       --unsafe-provider         event_source: opt in to a non-allowlisted provider.
       --save <file>             Save a comparable snapshot JSON (supports counters, datas, gc, contention, threadpool).
 """,
@@ -98,6 +100,7 @@ collect options:
   dotnet-diagnostics-cli collect --kind counters --pid MyApp --capture-when 'cpu>85' --capture cpu-sample --window 60
   dotnet-diagnostics-cli collect --kind datas --pid 1234 --save ./before.json
   dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
+  dotnet-diagnostics-cli collect --kind requests --pid MyApp --duration 5 --threshold 2000  # in-flight requests
   dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch -- dotnet App.dll  # cold start
 """),
         new CommandHelp(

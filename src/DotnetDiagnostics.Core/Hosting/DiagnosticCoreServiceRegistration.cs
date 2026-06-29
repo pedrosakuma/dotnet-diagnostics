@@ -9,6 +9,7 @@ using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
+using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.Exceptions;
@@ -97,6 +98,7 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<IContentionCollector, EventPipeContentionCollector>();
         services.AddSingleton<IDbCollector, EventPipeDbCollector>();
         services.AddSingleton<IKestrelCollector, EventPipeKestrelCollector>();
+        services.AddSingleton<IInFlightRequestCollector, EventPipeInFlightRequestCollector>();
         services.AddSingleton<INetworkingCollector, EventPipeNetworkingCollector>();
         services.AddSingleton<IStartupCollector, EventPipeStartupCollector>();
         services.AddSingleton<DotnetDiagnostics.Core.GatedCapture.IThresholdGatedCaptureCollector, DotnetDiagnostics.Core.GatedCapture.ThresholdGatedCaptureCollector>();

@@ -97,6 +97,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="db")` | The long `ByCommand[]` / `NPlusOne[]` lists. Summary keeps the headline aggregates + pool slice. |
 | `collect_events(kind="kestrel")` | The `byOperation[]` list, queue-length timeline, and `configurationJson`. Summary keeps the headline connection/request/TLS aggregates + latency tail. |
 | `collect_events(kind="networking")` | The full `ByOperation[]` list. Summary keeps headline HTTP/DNS/TLS/socket counts + latency tails; drill in with `query_snapshot(handle, view=byOperation|queue|tls|dns)`. |
+| `collect_events(kind="requests")` | The full in-flight request list. Summary keeps the headline counts + the oldest requests inline; drill in with `query_snapshot(handle, view=requests|longRunning)`. |
 | `collect_events(kind="startup")` | The loader/DI event lists and full timeline. Summary keeps headline counts, top assembly/module aggregates, and notes. |
 | `collect_events(kind="sweep")` | The five sub-snapshots' bulky lists (counters, gc, exceptions, threadpool, resource). Summary keeps the triage verdict + per-collector handles. Each sub-collector's full payload stays behind its handle (`data.handles`). |
 | `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph|deadlocks|unique-stacks|async-stalls)`. |
@@ -262,7 +263,7 @@ same `tools/call` request — no second round-trip, no polling. This is the
 Tools wired up:
 
 - `collect_sample` (every `kind` — cpu, off_cpu, allocation, native-alloc)
-- `collect_events` (every `kind` — counters, exceptions, crash-guard, gc, datas, catalog, event_source, activities, logs, jit, threadpool, contention, db, kestrel, networking, startup)
+- `collect_events` (every `kind` — counters, exceptions, crash-guard, gc, datas, catalog, event_source, activities, logs, jit, threadpool, contention, db, kestrel, networking, requests, startup)
 - `inspect_heap` (both `source="live"` and `source="dump"` — emits an **indeterminate** heartbeat, since a ClrMD heap walk has no a-priori duration, plus a terminal `progress=100` on success)
 
 How it works:
@@ -315,7 +316,7 @@ The LLM may always ignore a prompt and drive ad-hoc.
 The windowed collectors — every `collect_events(kind=…)` variant (`counters`,
 `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `activities`,
 `event_source`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`,
-`networking`, `startup`) — return, alongside the inline summary
+`networking`, `requests`, `startup`) — return, alongside the inline summary
 + top-N, an opaque `handle` (Crockford-base32, TTL ~10 min) registered in an
 in-memory store. The LLM can then re-project the same artifact under a
 different view **without re-running EventPipe** by calling `query_snapshot`:
@@ -354,6 +355,7 @@ Views available per `kind`:
 | `db-snapshot` | `collect_events(kind="db")` | `summary` (default), `byCommand`, `n+1`, `connectionPool` |
 | `kestrel-snapshot` | `collect_events(kind="kestrel")` | `summary` (default), `byOperation`, `queues`, `tls`, `config` |
 | `networking-snapshot` | `collect_events(kind="networking")` | `summary` (default), `byOperation`, `queue`, `tls`, `dns` |
+| `in-flight-requests` | `collect_events(kind="requests")` | `summary` (default), `requests`, `longRunning` |
 | `startup-snapshot` | `collect_events(kind="startup")` | `summary` (default), `assemblies`, `modules`, `di`, `timeline` |
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `threadpool`, `resolve-address`, `frame-vars` |
@@ -632,7 +634,7 @@ unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
 | [`inspect_process(view="preflight")`](#inspect_process(view="preflight")) | cheap | no | ✅ | **Phase 13 environment self-diagnosis.** Target-optional, remediation-first readiness checks (diagnostic-socket UID, ClrMD attach/ptrace, perf off-CPU, native-alloc). Answers *"why can't I attach to this PID and how do I fix it?"* before paying for a failed collect. |
 | `collect_sample(kind="off_cpu")` (Linux/Windows) | window-bound | no | ✅ (Linux) | **Deprecated — use `collect_sample(kind="off_cpu")`.** system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
 | `query_snapshot` | cheap | no | ✅ | drilldown on handle from `collect_sample(kind="off_cpu")` |
-| [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/crash-guard/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/kestrel/networking/startup. |
+| [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/crash-guard/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/kestrel/networking/requests/startup. |
 | [`collect_sample`](#collect_sample) | window-bound | depends on kind | ✅ (mostly — see kind) | **Canonical bounded-time sampler.** Dispatches by `kind` to cpu/off_cpu/allocation/native-alloc. |
 | [`collect_events(kind="counters")`](#collect_events(kind="counters")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="counters")`.** opens an EventPipe session |
 | [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")) | window-bound | no | ✅ (perf/ETW, native frames) | **Deprecated — use `collect_sample(kind="cpu")`.** EventPipe + temp `.nettrace` on disk |
@@ -1128,7 +1130,7 @@ and will be removed in `0.7.0`.
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `kind` | `string` | — | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `startup`. Case-sensitive. |
+| `kind` | `string` | — | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`. Case-sensitive. |
 | `processId` | `int?` | auto | Target process id. |
 | `durationSeconds` | `int` | 5 (counters) / 15 (datas) / 10 (others) | Collection window. |
 | `providers` / `meters` / `intervalSeconds` / `maxInstrumentTimeSeries` | counters only | — | Same as [`collect_events(kind="counters")`](#collect_events(kind="counters")). |
@@ -1991,6 +1993,53 @@ and each provider's EventCounters are snapshotted.
   note explains the gap.
 - Rising `timeInQueue` (the `queue` view) is the #1 outbound-HTTP saturation
   signal — it means requests are waiting for a free pooled connection.
+
+---
+
+## `collect_events(kind="requests")`
+
+Enumerates the **in-flight** ASP.NET Core requests — the ones that started but
+had not finished when the collection window closed. This is the first move for
+*"the app is hung, what's it doing?"*: counters expose a *current-requests*
+number, but this kind lists **which** requests are stuck, with path, verb,
+elapsed time and trace-id, sorted oldest-first and flagging long-runners.
+
+The collector subscribes to the `Microsoft.AspNetCore.Hosting HttpRequestIn`
+Activity start/stop pairs through the `Microsoft-Diagnostics-DiagnosticSource`
+EventPipe bridge; a request observed as *started* but never *stopped* within the
+window is reported as in-flight, with `elapsedMs` measured from its start to the
+moment the window closed. It is **pure EventPipe — no `ptrace`** — so it is safe
+to run against a hung production process.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int?` | — | Target process id |
+| `durationSeconds` | `int` | `10` | Window length |
+| `longRunningThresholdMs` | `double` | `1000` | Elapsed-time threshold above which an in-flight request is flagged `isLongRunning` |
+| `maxRequests` | `int` | `100` | Cap on in-flight requests returned inline (oldest-first); the full set stays behind the handle |
+| `depth` | `SamplingDepth` | `Summary` | `Summary` keeps only the oldest requests inline; `Detail` / `Raw` keep the full captured list |
+
+**Returns:** `InFlightRequestSnapshot` with:
+
+- `requestsStarted` / `requestsCompleted`
+- `inFlightCount` / `longRunningCount` / `longRunningThresholdMs` / `oldestElapsedMs`
+- `requests` (`InFlightRequest[]`: `traceId`, `spanId`, `method`, `path`, `startedAt`, `elapsedMs`, `isLongRunning`)
+- `notes`
+
+**Drilldown:** `query_snapshot(handle, view="summary" | "requests" | "longRunning")`.
+
+**Notes:**
+
+- EventPipe sessions take ~500 ms–1 s to start; begin collection **before** (or
+  while) the stall is happening so the slow request's start event is captured.
+- Status code is only known when a request *completes*, so it is intentionally
+  not reported for in-flight requests.
+- For the **live thread stack** behind a stuck request (what line it is blocked
+  on), follow up with [`inspect_process(view="requests-now")`](#inspect_process(view="requests-now")),
+  which adds ClrMD-backed stacks and **requires the `ptrace` scope**. This kind
+  is the prod-safe, attach-free counterpart.
 
 ---
 

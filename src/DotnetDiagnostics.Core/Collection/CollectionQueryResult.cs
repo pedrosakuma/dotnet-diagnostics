@@ -478,6 +478,35 @@ public sealed record KestrelConfigurationView(
     string? ConfigurationJson,
     IReadOnlyList<string> Notes);
 
+// --- In-flight request snapshot views ----------------------------------------------------------
+
+/// <summary>Default in-flight requests view: headline counts plus the oldest in-flight requests.</summary>
+public sealed record InFlightRequestsSummaryView(
+    long RequestsStarted,
+    long RequestsCompleted,
+    int InFlightCount,
+    int LongRunningCount,
+    double LongRunningThresholdMs,
+    double OldestElapsedMs,
+    int Returned,
+    IReadOnlyList<Requests.InFlightRequest> Requests,
+    IReadOnlyList<string> Notes);
+
+/// <summary>Every in-flight request captured in the window, oldest (longest-elapsed) first.</summary>
+public sealed record InFlightRequestsListView(
+    int InFlightCount,
+    int Returned,
+    double LongRunningThresholdMs,
+    IReadOnlyList<Requests.InFlightRequest> Requests);
+
+/// <summary>Only the in-flight requests whose elapsed time crossed the long-running threshold.</summary>
+public sealed record InFlightRequestsLongRunningView(
+    double LongRunningThresholdMs,
+    int LongRunningCount,
+    int Returned,
+    IReadOnlyList<Requests.InFlightRequest> Requests,
+    IReadOnlyList<string> Notes);
+
 // --- Networking snapshot views -----------------------------------------------------------------
 
 /// <summary>Default networking view: HTTP / DNS / TLS / socket headline counts plus latency tails and the latest counters.</summary>
