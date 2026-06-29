@@ -29,6 +29,17 @@ public sealed class CliOptionsTests
         options.Json.Should().BeTrue();
     }
 
+    [Fact]
+    public void Parse_QueryAddress_IsCaptured()
+    {
+        var options = CliOptions.Parse(new[] { "query", "--handle", "h1", "--view", "gcroot", "--address", "0x1f2a3b40" }, out var error);
+
+        error.Should().BeNull();
+        options!.Command.Should().Be("query");
+        options.View.Should().Be("gcroot");
+        options.Address.Should().Be("0x1f2a3b40");
+    }
+
     [Theory]
     [InlineData("-p")]
     [InlineData("--pid")]

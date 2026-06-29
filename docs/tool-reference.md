@@ -411,6 +411,15 @@ collectible ALCs per snapshot, using the same bounded root-search machinery as `
 (64 frames / 250,000 visited objects); additional contexts are still listed without a
 path. NativeAOT has no DAC/ClrMD heap walk, so this view is CoreCLR-only.
 
+The address-addressed views `object` (SOS `!do`), `gcroot` (SOS `!gcroot`) and `objsize` (SOS
+`!objsize`) take an `address` and re-open the snapshot's origin with ClrMD to answer the question. They
+work over **both** live and dump origins: a live handle briefly re-attaches behind the attach guard,
+while a **dump-origin** handle re-reads the recorded `.dmp` DataTarget — so an offline dump can still
+answer "what roots this object" without re-attaching to the (possibly gone) process. Authorization is the
+same kind-wide `heap-read` scope for either origin. The standalone Core CLI `session` REPL serves
+`gcroot`/`object` for dump-origin handles too (it has no live-attach guard), with `object` previews
+redacted to metadata-only.
+
 `compare_to_baseline(snapshotsJson=[...])` accepts the same comparable journey knobs:
 `topN`, `depth`, and `mode="trend"|"dispersion"`. Legacy `InvestigationSummary` JSON
 comparison ignores journey mode because it still returns the older two-summary `SummaryDiff`.

@@ -128,6 +128,9 @@ internal sealed record CliOptions
     /// <summary>Case-insensitive type substring for the heap <c>retention-paths</c> view (<c>--type-filter</c>). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public string? TypeFilter { get; init; }
 
+    /// <summary>Managed object address (decimal or <c>0x</c>-hex) for the heap <c>object</c> / <c>gcroot</c> views (<c>--address</c>). Honoured only by the stateful <c>session</c> <c>query</c> path, and only for dump-origin handles.</summary>
+    public string? Address { get; init; }
+
     /// <summary>Case-insensitive method substring to re-root the CPU <c>call-tree</c> view (<c>--root-method-filter</c>). Event-catalog query reuses it as an event-name filter. Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public string? RootMethodFilter { get; init; }
 
@@ -254,6 +257,7 @@ internal sealed record CliOptions
         string? view = null;
         string? rankBy = null;
         string? typeFilter = null;
+        string? address = null;
         string? rootMethodFilter = null;
         string? providerFilter = null;
         int? maxDepth = null;
@@ -585,6 +589,14 @@ internal sealed record CliOptions
 
                     typeFilter = typeFilterValue;
                     break;
+                case "--address":
+                    if (!TryTakeString(args, ref i, token, out var addressValue, out error))
+                    {
+                        return null;
+                    }
+
+                    address = addressValue;
+                    break;
                 case "--root-method-filter":
                     if (!TryTakeString(args, ref i, token, out var rootMethodFilterValue, out error))
                     {
@@ -737,6 +749,7 @@ internal sealed record CliOptions
             View = view,
             RankBy = rankBy,
             TypeFilter = typeFilter,
+            Address = address,
             RootMethodFilter = rootMethodFilter,
             ProviderFilter = providerFilter,
             ChangesOnly = changesOnly,
