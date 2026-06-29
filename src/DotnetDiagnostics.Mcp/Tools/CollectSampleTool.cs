@@ -97,6 +97,8 @@ public sealed class CollectSampleTool
         int? maxResolvedMethodInstantiations = null,
         [Description("kind='cpu' on NativeAOT only. Filesystem path to the ILC '*.map.xml' map file (publish with <IlcGenerateMapFile>true</IlcGenerateMapFile>). Enables a name-based MethodIdentity (TypeFullName + MethodName; MVID/token null) for hot managed AOT methods so the dotnet-native-mcp disassembly handoff works. Ignored on CoreCLR and by other kinds. Path is a hint only.")]
         string? nativeAotMapFile = null,
+        [Description("kind='cpu' only. If true, persists the raw .nettrace under the artifact root and returns its relative path so it can be fetched with get_bytes(kind='trace') for offline PerfView/Speedscope/Perfetto analysis. Defaults to false.")]
+        bool exportTrace = false,
         [Description("kind='native-alloc' only. perf sample period — record one callchain per this many allocator hits. Must be >= 1. Defaults to 1000. Higher reduces overhead and resolution; throttles recorded samples but not the per-call uprobe trap cost.")]
         long nativeAllocSamplePeriod = 1000,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
@@ -128,6 +130,7 @@ public sealed class CollectSampleTool
                     maxResolvedMethodInstantiations,
                     nativeAotMapFile,
                     depth,
+                    exportTrace,
                     deprecation,
                     requestContext,
                     cancellationToken).ConfigureAwait(false),

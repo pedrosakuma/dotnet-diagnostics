@@ -823,6 +823,7 @@ public sealed class DiagnosticTools
         [Description("NativeAOT only. Filesystem path to the ILC '*.map.xml' map file produced by publishing with <IlcGenerateMapFile>true</IlcGenerateMapFile> (ilc --map). When supplied, the perf-based AOT sampler emits a name-based MethodIdentity (TypeFullName + MethodName; MVID/metadata token stay null) for hot managed methods so the dotnet-native-mcp 'disassemble this hot AOT function' handoff works. Ignored on CoreCLR. The path is a hint only — the consumer must verify the artifact before loading it.")] string? nativeAotMapFile = null,
         [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 hotspots inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full sample is always retained behind the issued handle — drill in with get_call_tree.")]
         SamplingDepth depth = SamplingDepth.Summary,
+        [Description("If true, persists the raw .nettrace under the artifact root and returns its relative path so it can be fetched with get_bytes(kind='trace') for offline PerfView/Speedscope/Perfetto analysis. Defaults to false (the trace is parsed then deleted).")] bool exportTrace = false,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
@@ -865,7 +866,7 @@ public sealed class DiagnosticTools
                 "collect_cpu_sample",
                 TimeSpan.FromSeconds(durationSeconds),
                 TimeSpan.FromSeconds(1),
-                ct => sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, srcOpts, instantiationOpts, nativeAotOpts, ct),
+                ct => sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, srcOpts, instantiationOpts, nativeAotOpts, exportTrace, ct),
                 cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -912,12 +913,19 @@ public sealed class DiagnosticTools
         hints.Add(new NextActionHint("collect_events", "Confirm hot path isn't driven by exception-heavy control flow.",
             new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 }));
 
+        if (!string.IsNullOrEmpty(result.Artifact.TracePath))
+        {
+            hints.Add(new NextActionHint("get_bytes", "Fetch the raw .nettrace for offline PerfView/Speedscope/Perfetto analysis.",
+                new Dictionary<string, object?> { ["kind"] = "trace", ["traceFilePath"] = result.Artifact.TracePath }));
+        }
+
         var ok = BuildCpuSampleResult(
             result.Summary,
             durationSeconds,
             handle.Id,
             handle.ExpiresAt,
             depth,
+            result.Artifact.TracePath,
             hints.ToArray());
         return WithContext(ok, ctx);
     }
@@ -1316,6 +1324,7 @@ public sealed class DiagnosticTools
         string handleId,
         DateTimeOffset handleExpiresAt,
         SamplingDepth depth,
+        string? tracePath,
         params NextActionHint[] hints)
     {
         var top = sample.TopHotspots.Count > 0 ? sample.TopHotspots[0] : null;
@@ -1332,6 +1341,10 @@ public sealed class DiagnosticTools
                 ? $"Captured {sample.TotalSamples} samples over {durationSeconds}s — showing top {inlineSample.TopHotspots.Count} of {sample.TopHotspots.Count} hotspot(s) (dropped {droppedHotspots}; handle has all). Top method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive). Drill into the full call tree with query_snapshot(handle=\"{handleId}\", view=\"call-tree\")."
                 : $"Captured {sample.TotalSamples} samples over {durationSeconds}s. Top method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive). Drill into the full call tree with query_snapshot(handle=\"{handleId}\", view=\"call-tree\").")
             : $"Captured {sample.TotalSamples} samples but no method aggregation surfaced — increase durationSeconds or verify the target is under load.";
+        if (!string.IsNullOrEmpty(tracePath))
+        {
+            summary += $" Raw trace exported to '{tracePath}' — fetch with get_bytes(kind=\"trace\").";
+        }
 
         return DiagnosticResult.OkWithHandle(inlineSample, summary, handleId, handleExpiresAt, hints);
     }
@@ -2038,6 +2051,7 @@ public sealed class DiagnosticTools
         int? processId = null,
         int topTypes = 20,
         TimeSpan? timeout = null,
+        bool exportTrace = false,
         CancellationToken cancellationToken = default)
         => HeapInspectionUseCases.InspectGcDump(
             collector,
@@ -2046,6 +2060,7 @@ public sealed class DiagnosticTools
             processId,
             topTypes,
             timeout,
+            exportTrace,
             cancellationToken);
 
     [RequireScope("heap-read")]
@@ -2680,6 +2695,62 @@ public sealed class DiagnosticTools
         {
             return DiagnosticResult.Fail<ByteFetchEnvelope>(
                 $"get_dump_bytes rejected the request: {ex.Message}",
+                new DiagnosticError("InvalidArgument", ex.Message, ex.GetType().FullName));
+        }
+    }
+
+    [Description(
+        "Streams a raw trace file (.nettrace) under the artifact root in repeated CallTool chunks so a sibling MCP / human can materialise an exported CPU or GC trace for offline PerfView/Speedscope/Perfetto analysis. traceFilePath may be relative to MCP_ARTIFACT_ROOT or absolute when it still resolves under that root after symlink resolution. " +
+        "Path hints are untrusted: the tool re-validates every call through the artifact-root sandbox. maxBytes defaults to 4 MiB and is capped at 16 MiB per response; total artifact size is capped at 256 MiB.")]
+    public static async Task<DiagnosticResult<ByteFetchEnvelope>> GetTraceBytes(
+        IDumpByteSource traceByteSource,
+        IPrincipalAccessor principalAccessor,
+        [Description("Trace path to stream. Relative paths are resolved under the artifact root; absolute paths are allowed only when they still resolve under that root. Required.")] string traceFilePath,
+        [Description("Byte offset where this chunk starts. Defaults to 0.")] long offset = 0,
+        [Description("Maximum bytes to return in this response. Defaults to 4 MiB and is capped at 16 MiB.")] int maxBytes = FileChunkReader.DefaultChunkBytes,
+        ILoggerFactory? loggerFactory = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(traceFilePath)) return InvalidArg<ByteFetchEnvelope>(nameof(traceFilePath), "is required");
+        if (offset < 0) return InvalidArg<ByteFetchEnvelope>(nameof(offset), "must be >= 0");
+        if (maxBytes <= 0) return InvalidArg<ByteFetchEnvelope>(nameof(maxBytes), "must be > 0");
+
+        var logger = loggerFactory?.CreateLogger("DotnetDiagnostics.Mcp.Tools.GetTraceBytes");
+        var explicitScopeFailure = RequireLiteralScope<ByteFetchEnvelope>(
+            principalAccessor,
+            logger,
+            "get_trace_bytes",
+            identifierName: "tracePath",
+            identifierValue: traceFilePath,
+            offset);
+        if (explicitScopeFailure is not null)
+        {
+            return explicitScopeFailure;
+        }
+
+        try
+        {
+            var fetched = await traceByteSource.FetchAsync(traceFilePath, offset, maxBytes, cancellationToken).ConfigureAwait(false);
+            var envelope = fetched with { Kind = "trace", Asset = "trace" };
+            AuditByteFetch(logger, principalAccessor.Current, "get_trace_bytes", null, envelope.Identifier, envelope.Offset, envelope.ChunkSize, envelope.TotalSize);
+            return BuildByteFetchResult(envelope, BuildByteFetchSummary(envelope), BuildTraceByteFetchHint(envelope, maxBytes));
+        }
+        catch (DotnetDiagnostics.Core.Artifacts.ArtifactPathException artifactEx)
+        {
+            return DiagnosticResult.Fail<ByteFetchEnvelope>(
+                $"get_trace_bytes rejected the request: {artifactEx.Message}",
+                new DiagnosticError("InvalidArtifactPath", artifactEx.Message, artifactEx.ParameterName),
+                new NextActionHint("get_bytes",
+                    "Re-issue with a path under the artifact root; absolute paths must still resolve under that root after symlink resolution."));
+        }
+        catch (FileNotFoundException ex)
+        {
+            return ArtifactNotFound<ByteFetchEnvelope>("get_trace_bytes", ex.Message, ex.FileName ?? traceFilePath);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return DiagnosticResult.Fail<ByteFetchEnvelope>(
+                $"get_trace_bytes rejected the request: {ex.Message}",
                 new DiagnosticError("InvalidArgument", ex.Message, ex.GetType().FullName));
         }
     }
@@ -3489,6 +3560,20 @@ public sealed class DiagnosticTools
                 {
                     ["kind"] = "dump",
                     ["dumpFilePath"] = envelope.Identifier,
+                    ["offset"] = next,
+                    ["maxBytes"] = maxBytes,
+                })
+            : null;
+
+    private static NextActionHint? BuildTraceByteFetchHint(ByteFetchEnvelope envelope, int maxBytes)
+        => envelope.NextOffset is long next
+            ? new NextActionHint(
+                "get_bytes",
+                "Continue streaming the next chunk from the same trace artifact.",
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "trace",
+                    ["traceFilePath"] = envelope.Identifier,
                     ["offset"] = next,
                     ["maxBytes"] = maxBytes,
                 })

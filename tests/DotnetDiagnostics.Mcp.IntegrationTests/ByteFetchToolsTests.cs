@@ -152,6 +152,96 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetTraceBytes_RejectsPathTraversal()
+    {
+        using var artifactRoot = CreateArtifactRoot();
+        using var env = EnvScope.Set(EnvironmentArtifactRootProvider.EnvironmentVariableName, artifactRoot.Path);
+        await using var factory = CreateFactory(("module-reader", "trace-token", new[] { "module-bytes-read" }));
+        await using var client = await ConnectWithTokenAsync(factory, "trace-token");
+
+        var result = await client.CallToolAsync(
+            "get_bytes",
+            new Dictionary<string, object?> { ["kind"] = "trace", ["traceFilePath"] = "../escape.nettrace" },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Error.Should().NotBeNull();
+        envelope.Error!.Kind.Should().Be("InvalidArtifactPath");
+    }
+
+    [Fact]
+    public async Task GetTraceBytes_RoundTripsTraceContent()
+    {
+        using var artifactRoot = CreateArtifactRoot();
+        using var env = EnvScope.Set(EnvironmentArtifactRootProvider.EnvironmentVariableName, artifactRoot.Path);
+        await using var factory = CreateFactory(("byte-fetcher", "trace-roundtrip-token", new[] { "module-bytes-read" }));
+        await using var client = await ConnectWithTokenAsync(factory, "trace-roundtrip-token");
+
+        var traceFilePath = Path.Combine(artifactRoot.Path, "roundtrip.nettrace");
+        var expected = new byte[2 * 1024 * 1024 + 137];
+        RandomNumberGenerator.Fill(expected);
+        await File.WriteAllBytesAsync(traceFilePath, expected, CancellationToken.None);
+
+        var bytes = new List<byte>();
+        long offset = 0;
+        string? sha256 = null;
+        string? kind = null;
+        while (true)
+        {
+            var chunkResult = await client.CallToolAsync(
+                "get_bytes",
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "trace",
+                    ["traceFilePath"] = traceFilePath,
+                    ["offset"] = offset,
+                    ["maxBytes"] = 1024 * 1024,
+                },
+                cancellationToken: CancellationToken.None);
+
+            var chunkEnvelope = DeserializeEnvelope(chunkResult);
+            chunkEnvelope.Should().NotBeNull();
+            chunkEnvelope!.Error.Should().BeNull();
+            var data = chunkEnvelope.Data;
+            kind ??= data.GetProperty("kind").GetString();
+            bytes.AddRange(Convert.FromBase64String(data.GetProperty("base64Chunk").GetString()!));
+            sha256 ??= data.GetProperty("sha256").GetString();
+            if (!data.TryGetProperty("nextOffset", out var next) || next.ValueKind == JsonValueKind.Null)
+            {
+                break;
+            }
+
+            offset = next.GetInt64();
+        }
+
+        kind.Should().Be("trace");
+        var assembled = bytes.ToArray();
+        sha256.Should().Be(Convert.ToHexString(SHA256.HashData(assembled)).ToLowerInvariant());
+        assembled.Should().Equal(expected);
+    }
+
+    [Fact]
+    public async Task GetTraceBytes_MissingExplicitScope_IsRejected()
+    {
+        using var artifactRoot = CreateArtifactRoot();
+        using var env = EnvScope.Set(EnvironmentArtifactRootProvider.EnvironmentVariableName, artifactRoot.Path);
+        await using var factory = CreateFactory(("root-only", "trace-root-token", new[] { "*" }));
+        await using var client = await ConnectWithTokenAsync(factory, "trace-root-token");
+
+        var result = await client.CallToolAsync(
+            "get_bytes",
+            new Dictionary<string, object?> { ["kind"] = "trace", ["traceFilePath"] = "x.nettrace" },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Error.Should().NotBeNull();
+        envelope.Error!.Kind.Should().Be("Forbidden");
+        envelope.Error.Message.Should().Contain("module-bytes-read");
+    }
+
+    [Fact]
     public async Task GetDumpBytes_RejectsArtifactsOver256MiB()
     {
         using var artifactRoot = CreateArtifactRoot();

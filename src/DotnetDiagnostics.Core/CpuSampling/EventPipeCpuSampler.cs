@@ -1,4 +1,6 @@
 using System.Diagnostics.Tracing;
+using System.Globalization;
+using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
@@ -21,17 +23,20 @@ public sealed class EventPipeCpuSampler : ICpuSampler
     private readonly MvidReader _mvidReader;
     private readonly SymbolPathBuilder _symbolPathBuilder;
     private readonly ClrMdMethodInstantiationEnricher _instantiationEnricher;
+    private readonly IArtifactRootProvider? _artifactRoot;
 
     public EventPipeCpuSampler(
         ILogger<EventPipeCpuSampler>? logger = null,
         MvidReader? mvidReader = null,
         SymbolPathBuilder? symbolPathBuilder = null,
-        ClrMdMethodInstantiationEnricher? instantiationEnricher = null)
+        ClrMdMethodInstantiationEnricher? instantiationEnricher = null,
+        IArtifactRootProvider? artifactRoot = null)
     {
         _logger = logger ?? NullLogger<EventPipeCpuSampler>.Instance;
         _mvidReader = mvidReader ?? new MvidReader();
         _symbolPathBuilder = symbolPathBuilder ?? new SymbolPathBuilder();
         _instantiationEnricher = instantiationEnricher ?? new ClrMdMethodInstantiationEnricher();
+        _artifactRoot = artifactRoot;
     }
 
     public async Task<CpuSampleResult> SampleAsync(
@@ -41,6 +46,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         SourceResolutionOptions? sourceResolution = null,
         MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
         NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
+        bool exportTrace = false,
         CancellationToken cancellationToken = default)
     {
         if (duration <= TimeSpan.Zero || duration > TimeSpan.FromMinutes(5))
@@ -53,12 +59,20 @@ public sealed class EventPipeCpuSampler : ICpuSampler
             throw new ArgumentOutOfRangeException(nameof(topN), "topN must be positive.");
         }
 
-        var tracePath = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-{processId}-{Guid.NewGuid():N}.nettrace");
+        // When exportTrace is on, persist the raw .nettrace under the artifact root so it survives the
+        // collection and get_bytes(kind="trace") can stream it offline. Otherwise keep the legacy
+        // temp-file-and-delete behaviour.
+        var exportPath = exportTrace ? ResolveExportPath(processId) : null;
+        var tracePath = exportPath ?? Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-{processId}-{Guid.NewGuid():N}.nettrace");
         var startedAt = DateTimeOffset.UtcNow;
 
         try
         {
             await CollectTraceAsync(processId, tracePath, duration, cancellationToken).ConfigureAwait(false);
+            if (exportPath is not null)
+            {
+                SafeArtifactPath.SetRestrictiveFilePermissions(exportPath);
+            }
             var (total, hotspots, root, sources, identities) = AggregateHotspots(
                 tracePath,
                 processId,
@@ -67,13 +81,36 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 methodInstantiationResolution,
                 cancellationToken);
             var summary = new CpuSample(processId, startedAt, duration, total, hotspots);
-            var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, sources, identities);
+            var relativeTrace = exportPath is null ? null : RelativeToRoot(exportPath);
+            var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, sources, identities, TracePath: relativeTrace);
             return new CpuSampleResult(summary, artifact);
         }
         finally
         {
-            TryDelete(tracePath);
+            if (exportPath is null)
+            {
+                TryDelete(tracePath);
+            }
         }
+    }
+
+    private string ResolveExportPath(int processId)
+    {
+        if (_artifactRoot is null)
+        {
+            throw new InvalidOperationException("Trace export requires an artifact root; none was configured.");
+        }
+
+        var directory = SafeArtifactPath.ResolveDirectory(_artifactRoot.Root, "traces", defaultRelative: "traces");
+        var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssZ", CultureInfo.InvariantCulture);
+        return Path.Combine(directory, $"cpu_pid{processId.ToString(CultureInfo.InvariantCulture)}_{stamp}.nettrace");
+    }
+
+    private string RelativeToRoot(string fullPath)
+    {
+        var root = _artifactRoot!.Root;
+        var rel = Path.GetRelativePath(root, fullPath);
+        return rel.Replace(Path.DirectorySeparatorChar, '/');
     }
 
     private static async Task CollectTraceAsync(int pid, string outputPath, TimeSpan duration, CancellationToken ct)

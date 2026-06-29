@@ -751,7 +751,7 @@ internal static class CliHost
         }
 
         if (options.Command == "get-bytes"
-            && options.Kind == "dump"
+            && (options.Kind == "dump" || options.Kind == "trace")
             && !string.IsNullOrWhiteSpace(options.DumpFile))
         {
             var fullDumpPath = Path.GetFullPath(options.DumpFile);

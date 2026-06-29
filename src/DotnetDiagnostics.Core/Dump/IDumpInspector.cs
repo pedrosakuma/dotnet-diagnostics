@@ -155,6 +155,8 @@ public sealed record HeapSnapshotArtifact(
     public AssemblyLoadContextLeakView? AssemblyLoadContexts { get; init; }
     /// <summary>Diagnostic warnings emitted during the walk (degraded data, ClrMD limitations, …).</summary>
     public IReadOnlyList<string>? Warnings { get; init; }
+    /// <summary>Relative path (under the artifact root) of the persisted raw .nettrace when the gcdump capture was run with exportTrace=true; <c>null</c> otherwise (issue #445).</summary>
+    public string? TracePath { get; init; }
 }
 
 /// <summary>
@@ -387,6 +389,8 @@ public sealed record LiveHeapInspection(
 {
     /// <summary>Drilldown handle for follow-up queries; <c>null</c> when the inspector was invoked outside the MCP tool layer.</summary>
     public string? Handle { get; init; }
+    /// <summary>Relative path (under the artifact root) of the persisted raw .nettrace for an exported gcdump capture; <c>null</c> otherwise (issue #445).</summary>
+    public string? TracePath { get; init; }
 }
 
 public sealed record DumpRuntimeInfo(

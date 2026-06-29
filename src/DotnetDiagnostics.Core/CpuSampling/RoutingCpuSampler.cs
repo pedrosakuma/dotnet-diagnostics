@@ -39,6 +39,7 @@ public sealed class RoutingCpuSampler : ICpuSampler
         SourceResolutionOptions? sourceResolution = null,
         MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
         NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
+        bool exportTrace = false,
         CancellationToken cancellationToken = default)
     {
         var caps = await _capabilities.DetectAsync(processId, cancellationToken).ConfigureAwait(false);
@@ -48,7 +49,7 @@ public sealed class RoutingCpuSampler : ICpuSampler
                 .ConfigureAwait(false);
         }
 
-        return await _managed.SampleAsync(processId, duration, topN, sourceResolution, methodInstantiationResolution, nativeAotSymbols: null, cancellationToken).ConfigureAwait(false);
+        return await _managed.SampleAsync(processId, duration, topN, sourceResolution, methodInstantiationResolution, nativeAotSymbols: null, exportTrace, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<CpuSampleResult> SampleNativeAotAsync(
@@ -65,7 +66,7 @@ public sealed class RoutingCpuSampler : ICpuSampler
             if (_etw.IsAvailable())
             {
                 _logger.LogInformation("Routing CPU sample for pid {Pid} to ETW kernel profiling (NativeAOT on Windows).", processId);
-                return await _etw.SampleAsync(processId, duration, topN, sourceResolution, methodInstantiationResolution: null, nativeAotSymbols: null, cancellationToken).ConfigureAwait(false);
+                return await _etw.SampleAsync(processId, duration, topN, sourceResolution, methodInstantiationResolution: null, nativeAotSymbols: null, exportTrace: false, cancellationToken).ConfigureAwait(false);
             }
 
             throw new InvalidOperationException(
@@ -78,7 +79,7 @@ public sealed class RoutingCpuSampler : ICpuSampler
         if (_perf.IsAvailable())
         {
             _logger.LogInformation("Routing CPU sample for pid {Pid} to perf fallback (NativeAOT on Linux).", processId);
-            return await _perf.SampleAsync(processId, duration, topN, sourceResolution, methodInstantiationResolution: null, nativeAotSymbols, cancellationToken).ConfigureAwait(false);
+            return await _perf.SampleAsync(processId, duration, topN, sourceResolution, methodInstantiationResolution: null, nativeAotSymbols, exportTrace: false, cancellationToken).ConfigureAwait(false);
         }
 
         throw new InvalidOperationException(

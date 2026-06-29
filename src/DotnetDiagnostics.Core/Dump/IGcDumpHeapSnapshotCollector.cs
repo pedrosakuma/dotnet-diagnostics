@@ -29,7 +29,9 @@ public interface IGcDumpHeapSnapshotCollector
 /// <param name="TopTypes">Number of types projected into the inline summary lists. Defaults to 20.</param>
 /// <param name="SnapshotTopTypes">Number of types retained in the snapshot for drilldown. Should be ≥ <paramref name="TopTypes"/>. Defaults to 200.</param>
 /// <param name="Timeout">Upper bound on the whole dump. The induced GC plus heap walk usually finishes in a few seconds; defaults to 30s.</param>
+/// <param name="ExportTrace">When true, the raw GC heap-dump <c>.nettrace</c> is persisted under the artifact root and its relative path surfaced on <see cref="HeapSnapshotArtifact.TracePath"/> (issue #445). Defaults to false.</param>
 public sealed record GcDumpOptions(
     int TopTypes = 20,
     int SnapshotTopTypes = 200,
-    TimeSpan? Timeout = null);
+    TimeSpan? Timeout = null,
+    bool ExportTrace = false);

@@ -197,11 +197,13 @@ Walk the managed heap of a live process or a `.dmp`.
 | `--include-delegate-targets` | Group `MulticastDelegate` invocation lists by (target, method). |
 | `--include-duplicate-strings` | Rank duplicate strings by aggregate retained bytes. |
 | `--symbol-path <path>` | `NT_SYMBOL_PATH`-style search path (remote servers off by default). |
+| `--export-trace` | `--source gcdump`: keep the raw `.nettrace` under the artifact root and print its relative path (default off — the trace is deleted after parsing). Fetch it later with `get-bytes --kind trace`. |
 
 ```bash
 dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
 dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
 dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234   # EventPipe, no ptrace, prod-safe
+dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234 --export-trace  # keep raw .nettrace
 dotnet-diagnostics-cli inspect-heap --launch -- dotnet App.dll   # ptrace_scope=1, no privilege
 ```
 
@@ -231,19 +233,20 @@ dotnet-diagnostics-cli dump --pid 1234 --dump-type WithHeap --out ./dumps --conf
 
 ### `get-bytes`
 
-Materialise a module (PE/PDB) or a dump file to disk.
+Materialise a module (PE/PDB), a dump file, or a raw `.nettrace` to disk.
 
 | Option | Meaning |
 |---|---|
-| `--kind <module\|dump>` | Required. Artifact to materialise. |
+| `--kind <module\|dump\|trace>` | Required. Artifact to materialise. |
 | `--out <file>` | Required. Destination file. |
 | `--mvid <guid>` | `--kind module`: module version id (GUID) to fetch. |
 | `--asset <pe\|pdb>` | `--kind module`: artifact within the module (default `pe`). |
-| `--dump-file <path>` | `--kind dump`: path to the source `.dmp` to copy out. |
+| `--dump-file <path>` | `--kind dump\|trace`: path to the source `.dmp` / `.nettrace` to copy out. |
 
 ```bash
 dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll
 dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
+dotnet-diagnostics-cli get-bytes --kind trace --dump-file ./cpu.nettrace --out ./cpu.copy.nettrace
 ```
 
 ### `compare`

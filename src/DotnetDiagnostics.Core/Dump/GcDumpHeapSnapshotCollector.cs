@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.Tracing;
+using System.Globalization;
+using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
@@ -35,10 +37,14 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ILogger<GcDumpHeapSnapshotCollector> _logger;
+    private readonly IArtifactRootProvider? _artifactRoot;
 
-    public GcDumpHeapSnapshotCollector(ILogger<GcDumpHeapSnapshotCollector>? logger = null)
+    public GcDumpHeapSnapshotCollector(
+        ILogger<GcDumpHeapSnapshotCollector>? logger = null,
+        IArtifactRootProvider? artifactRoot = null)
     {
         _logger = logger ?? NullLogger<GcDumpHeapSnapshotCollector>.Instance;
+        _artifactRoot = artifactRoot;
     }
 
     public async Task<HeapSnapshotArtifact> CollectAsync(
@@ -57,8 +63,26 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         var capturedAt = DateTimeOffset.UtcNow;
         var sw = Stopwatch.StartNew();
 
-        var aggregator = await CollectGraphAsync(processId, timeout, cancellationToken).ConfigureAwait(false);
+        string? exportFullPath = null;
+        string? exportRelative = null;
+        if (opts.ExportTrace)
+        {
+            if (_artifactRoot is null)
+            {
+                throw new InvalidOperationException("Trace export requires an artifact root; none was configured.");
+            }
+            var directory = SafeArtifactPath.ResolveDirectory(_artifactRoot.Root, "traces", defaultRelative: "traces");
+            var stamp = capturedAt.ToString("yyyyMMddTHHmmssZ", CultureInfo.InvariantCulture);
+            exportFullPath = Path.Combine(directory, $"gcdump_pid{processId.ToString(CultureInfo.InvariantCulture)}_{stamp}.nettrace");
+            exportRelative = Path.GetRelativePath(_artifactRoot.Root, exportFullPath).Replace(Path.DirectorySeparatorChar, '/');
+        }
+
+        var aggregator = await CollectGraphAsync(processId, timeout, exportFullPath, cancellationToken).ConfigureAwait(false);
         sw.Stop();
+        if (exportFullPath is not null)
+        {
+            SafeArtifactPath.SetRestrictiveFilePermissions(exportFullPath);
+        }
 
         var warnings = new List<string>
         {
@@ -87,10 +111,11 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
             TopTypesByInstances: byInstances)
         {
             Warnings = warnings,
+            TracePath = exportRelative,
         };
     }
 
-    private async Task<GcDumpTypeAggregator> CollectGraphAsync(int processId, TimeSpan timeout, CancellationToken ct)
+    private async Task<GcDumpTypeAggregator> CollectGraphAsync(int processId, TimeSpan timeout, string? exportFullPath, CancellationToken ct)
     {
         var client = new DiagnosticsClient(processId);
 
@@ -114,7 +139,17 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
 
             var processing = Task.Run(() =>
             {
-                using var source = new EventPipeEventSource(session.EventStream);
+                Stream eventStream = session.EventStream;
+                FileStream? exportFile = null;
+                if (exportFullPath is not null)
+                {
+                    // Tee the raw EventPipe byte stream to disk while the aggregator consumes it, so the
+                    // persisted .nettrace is byte-identical to what dotnet-gcdump would write.
+                    exportFile = SafeArtifactPath.CreateRestrictedFile(exportFullPath);
+                    eventStream = new TeeReadStream(eventStream, exportFile);
+                }
+
+                using var source = new EventPipeEventSource(eventStream);
 
                 source.Clr.GCStart += data =>
                 {
@@ -153,6 +188,7 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
                 };
 
                 source.Process();
+                exportFile?.Dispose();
             }, CancellationToken.None);
 
             var deadline = Stopwatch.StartNew();
@@ -230,4 +266,43 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
             session.Dispose();
         }
     }
+}
+
+/// <summary>
+/// Read-only stream wrapper that mirrors every byte read from the inner stream into a sink
+/// stream. Used to persist a raw <c>.nettrace</c> while the aggregator parses the same EventPipe
+/// stream in-flight, so export adds no second collection pass. Only the read path is teed; writes are
+/// unsupported.
+/// </summary>
+internal sealed class TeeReadStream : Stream
+{
+    private readonly Stream _inner;
+    private readonly Stream _sink;
+
+    public TeeReadStream(Stream inner, Stream sink)
+    {
+        _inner = inner;
+        _sink = sink;
+    }
+
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        var read = _inner.Read(buffer, offset, count);
+        if (read > 0)
+        {
+            _sink.Write(buffer, offset, read);
+        }
+        return read;
+    }
+
+    public override void Flush() => _sink.Flush();
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }

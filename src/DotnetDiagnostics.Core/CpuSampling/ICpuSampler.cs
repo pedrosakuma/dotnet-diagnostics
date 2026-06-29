@@ -19,6 +19,7 @@ public interface ICpuSampler
         SourceResolutionOptions? sourceResolution = null,
         MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
         NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
+        bool exportTrace = false,
         CancellationToken cancellationToken = default);
 }
 

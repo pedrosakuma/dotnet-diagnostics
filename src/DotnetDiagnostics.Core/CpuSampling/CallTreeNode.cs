@@ -52,7 +52,8 @@ public sealed record CallTreeView(
 /// here is what <c>get_call_tree</c> walks on follow-up calls. <see cref="ResolvedSources"/>
 /// holds optional source-level resolution (file:line, SourceLink) for top-N hotspots — keyed
 /// by <c>(module, methodFullName)</c> so the exporter can attach the location without walking
-/// the whole tree.
+/// the whole tree. <see cref="TracePath"/>, when set, is the path of the persisted raw
+/// <c>.nettrace</c> under the artifact root (PerfView/Speedscope/Perfetto export, issue #445).
 /// </summary>
 public sealed record CpuSampleTraceArtifact(
     int ProcessId,
@@ -62,7 +63,8 @@ public sealed record CpuSampleTraceArtifact(
     CallTreeNode Root,
     IReadOnlyDictionary<SymbolRef, SourceLocation>? ResolvedSources = null,
     IReadOnlyDictionary<SymbolRef, MethodIdentity>? MethodIdentities = null,
-    NativeAotSymbolDemangler.SymbolSource SymbolSource = NativeAotSymbolDemangler.SymbolSource.Unknown)
+    NativeAotSymbolDemangler.SymbolSource SymbolSource = NativeAotSymbolDemangler.SymbolSource.Unknown,
+    string? TracePath = null)
 {
     public IReadOnlyDictionary<SymbolRef, SourceLocation> ResolvedSources { get; init; }
         = ResolvedSources ?? EmptyResolved;

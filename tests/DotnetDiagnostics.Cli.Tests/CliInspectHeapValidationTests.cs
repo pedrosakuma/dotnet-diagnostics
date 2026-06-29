@@ -14,6 +14,16 @@ namespace DotnetDiagnostics.Cli.Tests;
 public sealed class CliInspectHeapValidationTests
 {
     [Fact]
+    public void Parse_GcDumpWithExportTrace_SetsFlag()
+    {
+        var options = CliOptions.Parse(new[] { "inspect-heap", "--source", "gcdump", "--export-trace" }, out _)!;
+
+        options.ExportTrace.Should().BeTrue();
+        CliCommands.TryResolveHeapSource(options, out var source, out _).Should().BeTrue();
+        source.Should().Be("gcdump");
+    }
+
+    [Fact]
     public void TryResolveHeapSource_NoSourceNoDumpFile_InfersLive()
     {
         var options = CliOptions.Parse(new[] { "inspect-heap" }, out _)!;
