@@ -1,3 +1,5 @@
+using DotnetDiagnostics.Core;
+
 namespace DotnetDiagnostics.Core.Investigation;
 
 /// <summary>How the planner was invoked. Drives which steps and early-stop conditions emit.</summary>
@@ -71,6 +73,16 @@ public sealed record InvestigationConstraints(
     int MaxDurationSecondsPerCall = 30);
 
 /// <summary>Plan returned by <c>start_investigation</c>. Self-describing so the LLM can execute without re-reading docs.</summary>
+/// <remarks>
+/// <c>NextAction</c> is the immediate, one-click executable tool call for <see cref="NextStep"/>:
+/// tool name plus a fully-filled arguments map (pid and any prior-handle references already
+/// substituted). It reuses the <see cref="NextActionHint"/> shape used by every collector so the
+/// client can dispatch it verbatim. <c>Playbook</c> is the ordered short path (the next 2-4 chained
+/// calls) following the primary decision branch from <see cref="NextStep"/>; steps that depend on a
+/// handle from a prior collector reference it via a <c>${stepId.handle}</c> placeholder the client
+/// substitutes from that collector's response. Both are deterministic and stateless — the server
+/// only SUGGESTS these calls and never auto-executes anything.
+/// </remarks>
 public sealed record InvestigationPlan(
     string InvestigationId,
     DateTimeOffset CreatedAt,
@@ -85,7 +97,9 @@ public sealed record InvestigationPlan(
     string? Symptom = null,
     string? Hypothesis = null,
     BaselineHandle? Baseline = null,
-    IReadOnlyList<MetricComparison>? BaselineComparisons = null);
+    IReadOnlyList<MetricComparison>? BaselineComparisons = null,
+    NextActionHint? NextAction = null,
+    IReadOnlyList<NextActionHint>? Playbook = null);
 
 /// <summary>
 /// Named end-state for the decision tree (e.g. "report-cpu", "dump-heap"). Branches whose

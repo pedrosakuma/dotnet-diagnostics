@@ -1132,6 +1132,14 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         ToolParamString(plan.NextStep.ToolParams["kind"]).Should().Be("counters");
         plan.Constraints.MaxToolCalls.Should().Be(8);
         plan.AllSteps.Should().HaveCountGreaterThan(1);
+
+        // #468 — the planner surfaces a one-click executable next-action plus a chained playbook.
+        plan.NextAction.Should().NotBeNull();
+        plan.NextAction!.NextTool.Should().Be("collect_events");
+        ToolParamString(plan.NextAction.SuggestedArguments!["kind"]).Should().Be("counters");
+        plan.Playbook.Should().NotBeNull();
+        plan.Playbook!.Select(p => p.NextTool).Should().ContainInOrder(
+            new[] { "collect_events", "collect_sample", "query_snapshot" });
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Investigation;
 using FluentAssertions;
 using Xunit;
@@ -160,5 +161,96 @@ public class InvestigationPlannerTests
 
         first.InvestigationId.Should().Be("inv-test-1");
         second.InvestigationId.Should().Be("inv-test-2");
+    }
+
+    // ───────────────────────────── executable next-action / playbook (#468) ─────────────────────────────
+
+    [Fact]
+    public void Plan_ColdMode_EmitsExecutableNextAction_FilledWithPidAndKind()
+    {
+        var plan = _planner.Plan(new InvestigationRequest(ProcessId: 4242, Symptom: "high cpu"));
+
+        plan.NextAction.Should().NotBeNull("the planner must surface a one-click executable call");
+        plan.NextAction!.NextTool.Should().Be("collect_events");
+        plan.NextAction.Priority.Should().Be(NextActionHintPriority.High, "the immediate call is the highest-priority hint");
+        plan.NextAction.SuggestedArguments.Should().NotBeNull();
+        plan.NextAction.SuggestedArguments!["processId"].Should().Be(4242, "the pid must be substituted into the call");
+        plan.NextAction.SuggestedArguments!["kind"].Should().Be("counters");
+
+        // NextAction mirrors NextStep — same tool + identical filled arguments.
+        plan.NextAction.NextTool.Should().Be(plan.NextStep.ToolName);
+        plan.NextAction.SuggestedArguments.Should().BeEquivalentTo(plan.NextStep.ToolParams);
+    }
+
+    [Fact]
+    public void Plan_ColdMode_Playbook_ChainsVitalsThenCpuSampleThenDrilldown()
+    {
+        var plan = _planner.Plan(new InvestigationRequest(ProcessId: 4242, Symptom: "high cpu"));
+
+        plan.Playbook.Should().NotBeNull();
+        plan.Playbook!.Count.Should().BeInRange(2, 4, "a playbook is the next 2-4 chained calls");
+        plan.Playbook[0].Should().BeSameAs(plan.NextAction, "the playbook leads with the immediate next-action");
+
+        var tools = plan.Playbook.Select(p => p.NextTool).ToArray();
+        tools.Should().ContainInOrder(new[] { "collect_events", "collect_sample", "query_snapshot" },
+            "the cold happy-path is vitals → cpu sample → drill the sample handle");
+
+        // The drilldown references the sample's handle via a ${stepId.handle} placeholder.
+        var drilldown = plan.Playbook.First(p => p.NextTool == "query_snapshot");
+        drilldown.SuggestedArguments.Should().NotBeNull();
+        drilldown.SuggestedArguments!["handle"].Should().Be("${cpu-sample.handle}");
+        drilldown.SuggestedArguments!["view"].Should().Be("call-tree");
+        drilldown.SuggestedArguments!["topN"].Should().Be(25);
+    }
+
+    [Fact]
+    public void Plan_MemoryHypothesis_Playbook_EndsWithApprovalGatedDump()
+    {
+        var plan = _planner.Plan(new InvestigationRequest(ProcessId: 777, Hypothesis: "memory leak in cache"));
+
+        plan.NextAction!.NextTool.Should().Be("collect_events");
+        plan.NextAction.SuggestedArguments!["processId"].Should().Be(777);
+
+        var tools = plan.Playbook!.Select(p => p.NextTool).ToArray();
+        tools.Should().ContainInOrder(new[] { "collect_events", "collect_events", "collect_process_dump" },
+            "the memory path is vitals → gc events → heap dump");
+
+        var dump = plan.Playbook!.First(p => p.NextTool == "collect_process_dump");
+        dump.SuggestedArguments!["processId"].Should().Be(777);
+        dump.Reason.Should().Contain("approval-gated", "the dump step must flag that it needs confirmation");
+    }
+
+    [Fact]
+    public void Plan_LockHypothesis_Playbook_DrillsTheSampleHandle()
+    {
+        var plan = _planner.Plan(new InvestigationRequest(ProcessId: 99, Hypothesis: "lock contention on Cart.Checkout"));
+
+        var tools = plan.Playbook!.Select(p => p.NextTool).ToArray();
+        tools.Should().ContainInOrder(new[] { "collect_events", "collect_sample", "query_snapshot" },
+            "the lock path is contention events → cpu sample → drill the sample handle");
+
+        var drilldown = plan.Playbook!.First(p => p.NextTool == "query_snapshot");
+        drilldown.SuggestedArguments!["handle"].Should().Be("${lock-sample.handle}");
+    }
+
+    [Fact]
+    public void Plan_Playbook_IsNeverLongerThanFour_AndStartsWithNextStep()
+    {
+        var plans = new[]
+        {
+            _planner.Plan(new InvestigationRequest(1, Symptom: "latency")),
+            _planner.Plan(new InvestigationRequest(1, Hypothesis: "lock contention on x")),
+            _planner.Plan(new InvestigationRequest(1, Hypothesis: "memory leak")),
+            _planner.Plan(new InvestigationRequest(1, Hypothesis: "cpu hot path")),
+            _planner.Plan(new InvestigationRequest(1, Baseline: new BaselineHandle("inv", DateTimeOffset.UtcNow, new Dictionary<string, double> { ["cpu_pct"] = 1 }))),
+        };
+
+        foreach (var plan in plans)
+        {
+            plan.Playbook.Should().NotBeNull();
+            plan.Playbook!.Count.Should().BeInRange(1, 4);
+            plan.Playbook[0].NextTool.Should().Be(plan.NextStep.ToolName);
+            plan.Playbook[0].SuggestedArguments.Should().BeEquivalentTo(plan.NextStep.ToolParams);
+        }
     }
 }
