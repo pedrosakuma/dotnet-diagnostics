@@ -27,6 +27,11 @@ Options:
                                 no privilege. Supported by capabilities/collect/dump/inspect-heap/
                                 get-bytes and 'session'. The child is terminated on exit. Launch the
                                 app directly ('dotnet App.dll'), not via 'dotnet run'.
+      --suspend-startup         Cold-start capture for 'collect --kind startup' (with --launch):
+                                launch the target suspended on a reverse-connect DOTNET_DiagnosticPorts
+                                port, arm EventPipe before any managed code runs, then resume — capturing
+                                static ctors, DI build, module-init exceptions and startup timings the
+                                post-attach path misses. Default OFF.
   -h, --help                    Show this help.
 """;
 
@@ -93,6 +98,7 @@ collect options:
   dotnet-diagnostics-cli collect --kind counters --pid MyApp --capture-when 'cpu>85' --capture cpu-sample --window 60
   dotnet-diagnostics-cli collect --kind datas --pid 1234 --save ./before.json
   dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
+  dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch -- dotnet App.dll  # cold start
 """),
         new CommandHelp(
             "inspect-heap",

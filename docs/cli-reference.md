@@ -76,6 +76,7 @@ These apply to every command:
 | `-p, --pid <pid\|name>` | Target OS process id, or a case-insensitive prefix of the visible .NET process entrypoint/name. Purely numeric values are always treated as literal PIDs. **Auto-resolved** when exactly one .NET process is visible and `--pid` is omitted. |
 | `--json` | Emit the raw `DiagnosticResult<T>` envelope as JSON instead of the human table. JSON is never colorized. |
 | `--launch -- <app> [args]` | **Dev mode.** Launch `<app>` as a child of the CLI so live attach works under `kernel.yama.ptrace_scope=1` with no privilege — see the [Linux note](#linux-ptrace-note). Supported by `capabilities`, `collect`, `dump`, `inspect-heap` (live), `get-bytes` (module) and `session`. Mutually exclusive with `--pid`; the child is terminated on exit. |
+| `--suspend-startup` | **Cold-start capture (#446).** With `--launch`, launches the target *suspended* on a reverse-connect `DOTNET_DiagnosticPorts=…,suspend` port, arms the EventPipe session **before any managed code runs**, then resumes — capturing static constructors, DI container build, module-init exceptions and startup timings that the post-attach path always misses. Applies to `collect --kind startup`. CLI-only (the MCP server only attaches to existing pids). Default off. |
 | `-h, --help` | Show the global usage screen, or a focused screen for `<command> --help`. |
 
 Exit codes: `0` success (a `dump` preview is also a success), `1` a structured failure envelope
@@ -166,7 +167,16 @@ dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-whe
 dotnet-diagnostics-cli collect --kind datas --pid 1234 --duration 30 --save ./before.json
 dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
 dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
+dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch -- dotnet App.dll   # cold start
 ```
+
+> **Cold-start capture (`--suspend-startup`).** `collect --kind startup` attaching to an
+> already-running pid only sees loader/DI activity emitted *after* attach — the initial cold start
+> (static ctors, DI container build, module-init exceptions, startup timings) is gone. Pair
+> `--suspend-startup` with `--launch -- <app>` to launch the target *suspended* on a reverse-connect
+> `DOTNET_DiagnosticPorts=…,suspend` port, arm EventPipe before any managed code runs, then resume.
+> This mirrors dotnet-monitor reverse-connect and is CLI-only (the MCP server only attaches to live
+> pids). The suspended child + reverse-connect socket are always cleaned up on exit and on Ctrl-C.
 
 > **Timing.** EventPipe sessions take ~500 ms–1 s to start, and `counters` payloads arrive on
 > `--interval` boundaries — give `counters` at least ~6 s. For `exceptions` / `gc`, the collection window

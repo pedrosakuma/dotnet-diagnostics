@@ -371,6 +371,12 @@ internal static class CliCommands
                 return false;
             }
 
+            if (options.SuspendStartup)
+            {
+                error = "--suspend-startup requires --launch (cold-start capture launches the target suspended).";
+                return false;
+            }
+
             return true;
         }
 
@@ -402,6 +408,13 @@ internal static class CliCommands
         if (options.Command == "get-bytes" && string.Equals(options.Kind, "dump", StringComparison.Ordinal))
         {
             error = "--launch applies to a live target; it cannot be combined with get-bytes --kind dump.";
+            return false;
+        }
+
+        if (options.SuspendStartup
+            && !(options.Command == "collect" && options.Kind == "startup"))
+        {
+            error = "--suspend-startup applies only to 'collect --kind startup'.";
             return false;
         }
 
@@ -787,6 +800,34 @@ internal static class CliCommands
 
     private static CliCommandResult Wrap<T>(CliOptions options, DiagnosticResult<T> result) =>
         BuildResultWithComparableSave(options, result, static (_, _) => { });
+
+    /// <summary>
+    /// Cold-start capture entry point (issue #446): collects a startup snapshot on a target launched
+    /// suspended on a reverse-connect diagnostic port, arming the session before resume. Mirrors the
+    /// rendering of the normal <c>collect --kind startup</c> path so --json / human output is identical.
+    /// </summary>
+    internal static async Task<CliCommandResult> RunColdStartStartupAsync(
+        IServiceProvider services,
+        CliOptions options,
+        DotnetDiagnostics.Core.Launch.SuspendedTarget target,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(target);
+
+        var handles = services.GetRequiredService<IDiagnosticHandleStore>();
+        var duration = options.DurationSeconds ?? 10;
+        var depth = SamplingDepth.Detail;
+        if (options.Depth is not null && TryParseDepth(options.Depth, out var parsedDepth))
+        {
+            depth = parsedDepth;
+        }
+
+        return Wrap(options, await EventCollectionUseCases.CollectStartupColdStart(
+            services.GetRequiredService<IStartupCollector>(), handles, target, duration, depth, cancellationToken)
+            .ConfigureAwait(false));
+    }
 
     private static async Task<CliCommandResult> CompareAsync(CliOptions options, CancellationToken cancellationToken)
     {
