@@ -2479,3 +2479,16 @@ deprecation warning. Tools covered:
 
 `MCP_SYMBOL_PATH` and `_NT_SYMBOL_PATH` from the **operator-set environment** are *not*
 validated — they are treated as trusted by the deployment.
+
+### D2 — per-pid attach concurrency gate
+
+Live-attach tools suspend their target through the .NET diagnostic pipeline / ptrace, and a
+given process can be suspended by only one attacher at a time. Two simultaneous attaches
+against the same pid (`collect_thread_snapshot`, `inspect_heap(source="live")`,
+`collect_process_dump`, `capture_method_bytes`) therefore collide. A per-pid concurrency gate
+serializes them: while one attach holds the pid, a second attach against that same pid returns
+a retriable `Busy` envelope (`NextActionHint` to retry the same tool) instead of failing hard.
+Attaches against *different* pids and dump-based work (no live pid) are never gated.
+
+- `MCP_ATTACH_MAX_PER_PID` — permits in flight per pid (default `1`).
+- `MCP_ATTACH_WAIT_MS` — how long to wait for a permit before reporting busy (default `0`, fail fast).

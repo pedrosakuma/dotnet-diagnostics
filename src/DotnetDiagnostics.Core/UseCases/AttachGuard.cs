@@ -20,8 +20,31 @@ public static class AttachGuard
         string tool,
         int? processId,
         Func<Task<DiagnosticResult<T>>> body,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        AttachConcurrencyLimiter? limiter = null)
     {
+        // Per-pid concurrency gate (#452, D2): two live attaches against the same target collide
+        // because only one attacher can suspend it at a time. Serialize live attaches per pid;
+        // dump-based work (no live pid) is never gated.
+        IDisposable? permit = null;
+        if (processId is int gatedPid && gatedPid > 0)
+        {
+            limiter ??= AttachConcurrencyLimiter.Shared;
+            try
+            {
+                permit = await limiter.TryAcquireAsync(gatedPid, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+
+            if (permit is null)
+            {
+                return BusyResult<T>(tool, gatedPid);
+            }
+        }
+
         try
         {
             return await body().ConfigureAwait(false);
@@ -34,7 +57,24 @@ public static class AttachGuard
         {
             return ClassifyAttachFailure<T>(tool, processId, ex);
         }
+        finally
+        {
+            permit?.Dispose();
+        }
     }
+
+    /// <summary>
+    /// Retriable "busy" envelope returned when another attach already holds the per-pid gate.
+    /// The hint nudges the LLM to back off and retry the same tool rather than fail the run.
+    /// </summary>
+    public static DiagnosticResult<T> BusyResult<T>(string tool, int processId)
+        => DiagnosticResult.Fail<T>(
+            $"{tool} is busy: another attach against pid {processId} is in progress.",
+            new DiagnosticError("Busy", "Only one process-attach can suspend a target at a time; this pid already has an attach in flight.", "AttachConcurrencyLimiter"),
+            new NextActionHint(tool,
+                "Wait a moment and retry — the concurrent attach is expected to finish shortly.",
+                processId > 0 ? new Dictionary<string, object?> { ["processId"] = processId } : null)
+            { Priority = NextActionHintPriority.High });
 
     /// <summary>
     /// Maps a known attach failure (<paramref name="ex"/>) for <paramref name="tool"/> into a
