@@ -23,6 +23,7 @@ using DotnetDiagnostics.Core.Investigation;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.JitCapture;
 using DotnetDiagnostics.Core.Kestrel;
+using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.NativeAlloc;
 using DotnetDiagnostics.Core.OffCpu;
@@ -1750,6 +1751,29 @@ public sealed class DiagnosticTools
         return await EventCollectionUseCases.CollectKestrel(
             collector, resolver, handles,
             processId, durationSeconds, intervalSeconds, depth,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    [RequireScope("eventpipe")]
+    [Description(
+        "Enumerates the ASP.NET Core requests that are in-flight (started but not stopped) over a fixed EventPipe window — the key move for 'the app is hung, what's it doing?'. " +
+        "Subscribes to the Microsoft.AspNetCore.Hosting HttpRequestIn Activity start/stop pairs via the Microsoft-Diagnostics-DiagnosticSource bridge; requests that started but did not stop before the window closed are reported with path, verb, elapsed time and trace-id, sorted oldest-first and flagging long-runners over a threshold. " +
+        "Pure EventPipe — no ptrace — so it is safe against a hung production process. Drill in with query_snapshot(handle, view=summary|requests|longRunning); for the live thread stack behind a stuck request use inspect_process(view=requests-now) which adds ptrace-backed stacks.")]
+    public static async Task<DiagnosticResult<InFlightRequestSnapshot>> CollectInFlightRequests(
+        IInFlightRequestCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
+        [Description("Elapsed-time threshold (in milliseconds) above which an in-flight request is flagged as long-running. Defaults to 1000.")] double longRunningThresholdMs = 1000,
+        [Description("Maximum number of in-flight requests to return inline (oldest-first). Must be >= 1. Defaults to 100; the full set stays behind the handle.")] int maxRequests = 100,
+        [Description("Verbosity (summary|detail|raw). Default 'summary' keeps only the oldest in-flight requests inline; 'detail' and 'raw' return the full captured list.")]
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        return await EventCollectionUseCases.CollectInFlightRequests(
+            collector, resolver, handles,
+            processId, durationSeconds, longRunningThresholdMs, maxRequests, depth,
             cancellationToken).ConfigureAwait(false);
     }
 

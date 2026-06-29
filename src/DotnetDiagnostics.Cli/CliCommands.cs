@@ -123,6 +123,7 @@ internal static class CliCommands
         "db",
         "kestrel",
         "networking",
+        "requests",
         "startup",
         "sweep",
     };
@@ -770,6 +771,11 @@ internal static class CliCommands
             "kestrel" => Wrap(options, await EventCollectionUseCases.CollectKestrel(
                 services.GetRequiredService<IKestrelCollector>(), resolver, handles,
                 pid, duration, options.IntervalSeconds ?? 1, depth, cancellationToken).ConfigureAwait(false)),
+
+            "requests" => Wrap(options, await EventCollectionUseCases.CollectInFlightRequests(
+                services.GetRequiredService<DotnetDiagnostics.Core.Requests.IInFlightRequestCollector>(), resolver, handles,
+                pid, duration, options.Threshold ?? 1000, options.MaxEvents ?? 100, depth, cancellationToken).ConfigureAwait(false)),
+
             "startup" => Wrap(options, await EventCollectionUseCases.CollectStartup(
                 services.GetRequiredService<IStartupCollector>(), resolver, handles,
                 pid, duration, depth, cancellationToken).ConfigureAwait(false)),

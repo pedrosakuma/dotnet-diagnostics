@@ -9,6 +9,7 @@ using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
+using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 
@@ -43,6 +44,7 @@ public static class CollectionQueryDispatcher
         CollectionHandleKinds.ContentionSnapshot => new[] { "summary", "byCallSite", "byOwner" },
         CollectionHandleKinds.DbSnapshot => new[] { "summary", "byCommand", "n+1", "connectionPool" },
         CollectionHandleKinds.KestrelSnapshot => new[] { "summary", "byOperation", "queues", "tls", "config" },
+        CollectionHandleKinds.InFlightRequests => new[] { "summary", "requests", "longRunning" },
         CollectionHandleKinds.NetworkingSnapshot => new[] { "summary", "byOperation", "queue", "tls", "dns" },
         CollectionHandleKinds.StartupSnapshot => new[] { "summary", "assemblies", "modules", "di", "timeline" },
         _ => Array.Empty<string>(),
@@ -116,6 +118,8 @@ public static class CollectionQueryDispatcher
                 => Ok(Render(db, effectiveView, topN)),
             CollectionHandleKinds.KestrelSnapshot when artifact is KestrelSnapshot kestrel
                 => Ok(Render(kestrel, effectiveView, topN)),
+            CollectionHandleKinds.InFlightRequests when artifact is InFlightRequestSnapshot requests
+                => Ok(Render(requests, effectiveView, topN)),
             CollectionHandleKinds.NetworkingSnapshot when artifact is NetworkingSnapshot networking
                 => Ok(Render(networking, effectiveView, topN)),
             CollectionHandleKinds.StartupSnapshot when artifact is StartupSnapshot startup
@@ -704,6 +708,43 @@ public static class CollectionQueryDispatcher
 
         return new CollectionQueryResult(
             CollectionHandleKinds.KestrelSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
+    }
+
+    private static CollectionQueryResult Render(InFlightRequestSnapshot snapshot, string view, int topN)
+    {
+        object payload = view.ToLowerInvariant() switch
+        {
+            "requests" => new InFlightRequestsListView(
+                snapshot.InFlightCount,
+                Math.Min(topN, snapshot.Requests.Count),
+                snapshot.LongRunningThresholdMs,
+                snapshot.Requests.Take(topN).ToList()),
+            "longrunning" => RenderLongRunning(snapshot, topN),
+            _ => new InFlightRequestsSummaryView(
+                snapshot.RequestsStarted,
+                snapshot.RequestsCompleted,
+                snapshot.InFlightCount,
+                snapshot.LongRunningCount,
+                snapshot.LongRunningThresholdMs,
+                snapshot.OldestElapsedMs,
+                Math.Min(topN, snapshot.Requests.Count),
+                snapshot.Requests.Take(topN).ToList(),
+                snapshot.Notes),
+        };
+
+        return new CollectionQueryResult(
+            CollectionHandleKinds.InFlightRequests, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
+    }
+
+    private static InFlightRequestsLongRunningView RenderLongRunning(InFlightRequestSnapshot snapshot, int topN)
+    {
+        var longRunning = snapshot.Requests.Where(static request => request.IsLongRunning).ToList();
+        return new InFlightRequestsLongRunningView(
+            snapshot.LongRunningThresholdMs,
+            longRunning.Count,
+            Math.Min(topN, longRunning.Count),
+            longRunning.Take(topN).ToList(),
+            snapshot.Notes);
     }
 
     private static CollectionQueryResult Render(NetworkingSnapshot snapshot, string view, int topN)

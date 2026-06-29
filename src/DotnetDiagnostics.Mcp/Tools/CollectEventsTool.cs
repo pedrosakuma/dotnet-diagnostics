@@ -16,6 +16,7 @@ using DotnetDiagnostics.Core.GatedCapture;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
+using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.ReplicaCounters;
@@ -73,6 +74,7 @@ public sealed class CollectEventsTool
         "db",
         "kestrel",
         "networking",
+        "requests",
         "startup",
         "sweep",
         "distributed_trace",
@@ -82,7 +84,7 @@ public sealed class CollectEventsTool
     [RequireAnyScope("read-counters", "eventpipe")]
     [McpServerTool(
         Name = "collect_events",
-        Title = "Collect EventPipe events (counters | exceptions | crash-guard | gc | datas | catalog | event_source | activities | logs | jit | threadpool | contention | db | kestrel | networking | startup | sweep)",
+        Title = "Collect EventPipe events (counters | exceptions | crash-guard | gc | datas | catalog | event_source | activities | logs | jit | threadpool | contention | db | kestrel | networking | requests | startup | sweep)",
         Destructive = false,
         // Not read-only: the threshold-gated capture path (triggerWhen + captureKind="dump") can write
         // a process dump to disk. That path is doubly gated (confirmDump=true + the dump-write scope),
@@ -115,6 +117,7 @@ public sealed class CollectEventsTool
         IDbCollector dbCollector,
         IKestrelCollector kestrelCollector,
         INetworkingCollector networkingCollector,
+        IInFlightRequestCollector inFlightRequestCollector,
         IStartupCollector startupCollector,
         IProcessResourcesCollector processResourcesCollector,
         IThresholdGatedCaptureCollector gatedCaptureCollector,
@@ -138,6 +141,7 @@ public sealed class CollectEventsTool
             "'contention' (lock contention by call site + owner thread), 'db' (curated EF Core / SqlClient view), " +
             "'kestrel' (Kestrel HTTP server: connection/request/TLS latency, queue lengths, live KestrelServerOptions config), " +
             "'networking' (curated outbound HTTP / DNS / TLS / socket view: latency percentiles + HttpClient time-in-queue), " +
+            "'requests' (in-flight ASP.NET Core requests — which requests started but have not stopped, with path/verb/elapsed/trace-id, oldest-first, long-runners flagged; pure EventPipe / no ptrace — the first move for 'the app is hung, what's it doing?'). " +
             "'startup' (loader + DependencyInjection events emitted during the window; pre-attach cold-start events are missed). " +
             "'replica_counters' (orchestrator fan-out: simultaneous live counter capture across ALL attached Pods to find the replica skew outlier on cpu/gc-heap-size/threadpool-queue — requires attach_to_pod first). " +
             "'sweep' (parallel initial triage — fans out counters+gc+exceptions+threadpool+resource concurrently in ONE round-trip, returns a consolidated triage verdict + per-collector drill-down handles; cuts cold-start from 5–7 calls to 1–2). " +
@@ -181,6 +185,11 @@ public sealed class CollectEventsTool
         IReadOnlyList<string>? sources = null,
         [Description("kind=activities only. Maximum number of captured activities to retain. Must be >= 1. Defaults to 200.")]
         int maxActivities = 200,
+        // kind=requests
+        [Description("kind=requests only. Elapsed-time threshold (in milliseconds) above which an in-flight ASP.NET Core request is flagged as long-running. Must be >= 0. Defaults to 1000.")]
+        double longRunningThresholdMs = 1000,
+        [Description("kind=requests only. Maximum number of in-flight requests to return inline (oldest-first). Must be >= 1. Defaults to 100; the full set stays behind the handle.")]
+        int maxRequests = 100,
         // kind=distributed_trace
         [Description("kind=distributed_trace only (REQUIRED). The W3C trace-id (32-hex, e.g. the 'trace-id' field of a 'traceparent' header) to correlate across every attached Pod. Orchestrator mode must be enabled and you must have attached to the replicas first (attach_to_pod). Fans out a bounded collect_events(kind=activities) to each attached Pod, then stitches the per-Pod spans into one timeline ordered by parent/child span links with the slowest hop flagged.")]
         string? traceId = null,
@@ -406,6 +415,14 @@ public sealed class CollectEventsTool
                             ct).ConfigureAwait(false),
                         "networking",
                         (env, data) => env with { Networking = data }),
+
+                    "requests" => Project(
+                        await DiagnosticTools.CollectInFlightRequests(
+                            inFlightRequestCollector, resolver, handles,
+                            processId, effectiveDuration, longRunningThresholdMs, maxRequests, depth,
+                            ct).ConfigureAwait(false),
+                        "requests",
+                        (env, data) => env with { Requests = data }),
 
                     "startup" => Project(
                         await DiagnosticTools.CollectStartup(
@@ -763,7 +780,7 @@ public sealed class CollectEventsTool
 /// <summary>
 /// Polymorphic payload returned by <see cref="CollectEventsTool.CollectEvents"/>. Exactly one
 /// of the kind-specific fields (<see cref="Counters"/>, <see cref="Exceptions"/>, <see cref="CrashGuard"/>,
-/// <see cref="Gc"/>, <see cref="Datas"/>, <see cref="Catalog"/>, <see cref="EventSource"/>, <see cref="Activities"/>, <see cref="Logs"/>, <see cref="Jit"/>, <see cref="ThreadPool"/>, <see cref="Contention"/>, <see cref="Db"/>, <see cref="Kestrel"/>, <see cref="Networking"/>, <see cref="Startup"/>, <see cref="Sweep"/>) is populated, matched
+/// <see cref="Gc"/>, <see cref="Datas"/>, <see cref="Catalog"/>, <see cref="EventSource"/>, <see cref="Activities"/>, <see cref="Logs"/>, <see cref="Jit"/>, <see cref="ThreadPool"/>, <see cref="Contention"/>, <see cref="Db"/>, <see cref="Kestrel"/>, <see cref="Networking"/>, <see cref="Requests"/>, <see cref="Startup"/>, <see cref="Sweep"/>) is populated, matched
 /// by <see cref="Kind"/>. Mirrors the discriminator-envelope convention used by other
 /// consolidated tools (e.g. <c>get_method_il</c>).
 /// </summary>
@@ -784,6 +801,7 @@ public sealed record CollectEventsEnvelope(
     DbSnapshot? Db = null,
     KestrelSnapshot? Kestrel = null,
     NetworkingSnapshot? Networking = null,
+    InFlightRequestSnapshot? Requests = null,
     StartupSnapshot? Startup = null,
     SweepResult? Sweep = null,
     GatedCaptureResult? GatedCapture = null,

@@ -49,6 +49,9 @@ public static class CollectionHandleKinds
     /// <summary>Handle backing a <see cref="Kestrel.KestrelSnapshot"/> emitted by <c>collect_events(kind="kestrel")</c>.</summary>
     public const string KestrelSnapshot = "kestrel-snapshot";
 
+    /// <summary>Handle backing a <see cref="Requests.InFlightRequestSnapshot"/> emitted by <c>collect_events(kind="requests")</c>.</summary>
+    public const string InFlightRequests = "in-flight-requests";
+
     /// <summary>Handle backing a <see cref="Networking.NetworkingSnapshot"/> emitted by <c>collect_events(kind="networking")</c>.</summary>
     public const string NetworkingSnapshot = "networking-snapshot";
 

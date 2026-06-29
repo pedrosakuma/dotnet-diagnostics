@@ -21,6 +21,7 @@ using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
@@ -386,6 +387,50 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
             .Subject;
         request.Method.Should().NotBeNullOrWhiteSpace();
         request.TraceId.Should().NotBeNullOrWhiteSpace();
+
+        await driver;
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task Requests_EnumeratesInFlightBadCodeSampleRequest_WithoutPtrace()
+    {
+        await using var sample = await LiveHttpSample.StartAsync("BadCodeSample", "/");
+        using var http = new HttpClient
+        {
+            BaseAddress = new Uri(sample.BaseUrl),
+            Timeout = TimeSpan.FromSeconds(20),
+        };
+        var collector = new EventPipeInFlightRequestCollector();
+
+        // Fire a slow request that out-lives the collection window so it is still in-flight when
+        // the window closes. The collector is pure EventPipe (no ClrMD / ptrace).
+        var driver = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1200));
+            using var response = await http.GetAsync("/slow-hang?seconds=8", CancellationToken.None);
+            response.EnsureSuccessStatusCode();
+        });
+
+        var snapshot = await collector.CollectAsync(
+            sample.ProcessId,
+            TimeSpan.FromSeconds(4),
+            longRunningThresholdMs: 500,
+            maxRequests: 50,
+            CancellationToken.None);
+
+        snapshot.RequestsStarted.Should().BeGreaterThan(0);
+        snapshot.InFlightCount.Should().BeGreaterThan(0);
+
+        var request = snapshot.Requests.Should().Contain(request =>
+            request.ElapsedMs > 0 &&
+            request.Path.Contains("slow-hang", StringComparison.OrdinalIgnoreCase))
+            .Subject;
+        request.Method.Should().Be("GET");
+        request.TraceId.Should().NotBeNullOrWhiteSpace();
+
+        // The slow request has been running well past the 500 ms threshold by window close.
+        snapshot.Requests.Should().Contain(r => r.IsLongRunning);
+        snapshot.OldestElapsedMs.Should().BeGreaterThan(0);
 
         await driver;
     }

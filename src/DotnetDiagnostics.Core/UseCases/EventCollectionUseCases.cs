@@ -11,6 +11,7 @@ using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
+using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
@@ -866,6 +867,83 @@ public static class EventCollectionUseCases
             hints.Add(new NextActionHint("query_snapshot",
                 "Read the live KestrelServerOptions JSON (TLS, limits, keep-alive, HTTP protocol versions) captured at session enable.",
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "config" }));
+        }
+
+        return WithContext(DiagnosticResult.OkWithHandle(
+            inlineSnapshot,
+            summary,
+            handle.Id,
+            handle.ExpiresAt,
+            hints.ToArray()),
+            resolved.Context);
+    }
+
+    /// <summary>Enumerates ASP.NET Core requests that are in-flight (started but not stopped) over a fixed EventPipe window — pure EventPipe, no ptrace.</summary>
+    public static async Task<DiagnosticResult<InFlightRequestSnapshot>> CollectInFlightRequests(
+        IInFlightRequestCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        int? processId = null,
+        int durationSeconds = 10,
+        double longRunningThresholdMs = 1000,
+        int maxRequests = 100,
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<InFlightRequestSnapshot>(nameof(durationSeconds), "must be >= 1");
+        if (longRunningThresholdMs < 0) return InvalidArg<InFlightRequestSnapshot>(nameof(longRunningThresholdMs), "must be >= 0");
+        if (maxRequests < 1) return InvalidArg<InFlightRequestSnapshot>(nameof(maxRequests), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<InFlightRequestSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+
+        var snapshot = await collector.CollectAsync(
+            pid,
+            TimeSpan.FromSeconds(durationSeconds),
+            longRunningThresholdMs,
+            maxRequests,
+            cancellationToken).ConfigureAwait(false);
+
+        var inlineSnapshot = snapshot;
+        if (depth == SamplingDepth.Summary)
+        {
+            inlineSnapshot = snapshot with { Requests = snapshot.Requests.Take(10).ToList() };
+        }
+
+        var handle = handles.Register(pid, CollectionHandleKinds.InFlightRequests, snapshot, CollectionHandleTtl);
+        var hints = new List<NextActionHint>();
+
+        string summary;
+        if (snapshot.RequestsStarted == 0)
+        {
+            summary = $"No ASP.NET Core requests started in {durationSeconds}s. Confirm the target hosts an ASP.NET Core app and that traffic flows during collection (start the session before the load).";
+        }
+        else if (snapshot.InFlightCount == 0)
+        {
+            summary = $"All {snapshot.RequestsStarted} request(s) that started in {durationSeconds}s also completed — nothing is in-flight.";
+        }
+        else
+        {
+            summary = $"{snapshot.InFlightCount} request(s) still in-flight after {durationSeconds}s " +
+                      $"({snapshot.RequestsStarted} started, {snapshot.RequestsCompleted} completed). " +
+                      $"Oldest has been running {snapshot.OldestElapsedMs:F0}ms. " +
+                      $"{snapshot.LongRunningCount} exceed the {snapshot.LongRunningThresholdMs:F0}ms long-running threshold.";
+
+            hints.Add(new NextActionHint("query_snapshot",
+                "List every in-flight request (path, verb, elapsed, trace-id) oldest-first without re-collecting.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "requests", ["topN"] = 50 }));
+
+            if (snapshot.LongRunningCount > 0)
+            {
+                hints.Add(new NextActionHint("query_snapshot",
+                    "Focus on the requests that crossed the long-running threshold — the most likely stuck work.",
+                    new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "longRunning", ["topN"] = 50 }));
+
+                hints.Add(new NextActionHint("inspect_process",
+                    "Capture the live thread stacks behind these in-flight requests (requires the ptrace scope).",
+                    new Dictionary<string, object?> { ["view"] = "requests-now", ["processId"] = pid }));
+            }
         }
 
         return WithContext(DiagnosticResult.OkWithHandle(
