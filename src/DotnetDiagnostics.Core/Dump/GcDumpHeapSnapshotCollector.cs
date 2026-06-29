@@ -141,54 +141,62 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
             {
                 Stream eventStream = session.EventStream;
                 FileStream? exportFile = null;
-                if (exportFullPath is not null)
+                try
                 {
-                    // Tee the raw EventPipe byte stream to disk while the aggregator consumes it, so the
-                    // persisted .nettrace is byte-identical to what dotnet-gcdump would write.
-                    exportFile = SafeArtifactPath.CreateRestrictedFile(exportFullPath);
-                    eventStream = new TeeReadStream(eventStream, exportFile);
+                    if (exportFullPath is not null)
+                    {
+                        // Tee the raw EventPipe byte stream to disk while the aggregator consumes it, so the
+                        // persisted .nettrace is byte-identical to what dotnet-gcdump would write.
+                        exportFile = SafeArtifactPath.CreateRestrictedFile(exportFullPath);
+                        eventStream = new TeeReadStream(eventStream, exportFile);
+                    }
+
+                    using var source = new EventPipeEventSource(eventStream);
+
+                    source.Clr.GCStart += data =>
+                    {
+                        dataSeen = true;
+                        if (gcNum < 0 && data.Depth == 2 && data.Type != GCType.BackgroundGC)
+                        {
+                            gcNum = data.Count;
+                        }
+                    };
+                    source.Clr.GCStop += data =>
+                    {
+                        if (data.Count == gcNum)
+                        {
+                            // Mark completion only — do NOT StopProcessing here. GCStop proves the induced
+                            // GC finished, but tail GCBulkNode/TypeBulkType events may still be buffered.
+                            // The control path stops the session, letting Process() drain to EOF naturally.
+                            dumpComplete = true;
+                        }
+                    };
+                    source.Clr.TypeBulkType += data =>
+                    {
+                        for (var i = 0; i < data.Count; i++)
+                        {
+                            var v = data.Values(i);
+                            aggregator.RegisterType(v.TypeID, v.TypeName);
+                        }
+                    };
+                    source.Clr.GCBulkNode += data =>
+                    {
+                        dataSeen = true;
+                        for (var i = 0; i < data.Count; i++)
+                        {
+                            var v = data.Values(i);
+                            aggregator.AddNode(v.TypeID, v.Size);
+                        }
+                    };
+
+                    source.Process();
                 }
-
-                using var source = new EventPipeEventSource(eventStream);
-
-                source.Clr.GCStart += data =>
+                finally
                 {
-                    dataSeen = true;
-                    if (gcNum < 0 && data.Depth == 2 && data.Type != GCType.BackgroundGC)
-                    {
-                        gcNum = data.Count;
-                    }
-                };
-                source.Clr.GCStop += data =>
-                {
-                    if (data.Count == gcNum)
-                    {
-                        // Mark completion only — do NOT StopProcessing here. GCStop proves the induced
-                        // GC finished, but tail GCBulkNode/TypeBulkType events may still be buffered.
-                        // The control path stops the session, letting Process() drain to EOF naturally.
-                        dumpComplete = true;
-                    }
-                };
-                source.Clr.TypeBulkType += data =>
-                {
-                    for (var i = 0; i < data.Count; i++)
-                    {
-                        var v = data.Values(i);
-                        aggregator.RegisterType(v.TypeID, v.TypeName);
-                    }
-                };
-                source.Clr.GCBulkNode += data =>
-                {
-                    dataSeen = true;
-                    for (var i = 0; i < data.Count; i++)
-                    {
-                        var v = data.Values(i);
-                        aggregator.AddNode(v.TypeID, v.Size);
-                    }
-                };
-
-                source.Process();
-                exportFile?.Dispose();
+                    // Always release the export handle, even when the parser throws, so a failed/cancelled
+                    // export does not leak the fd or leave the restricted file locked.
+                    exportFile?.Dispose();
+                }
             }, CancellationToken.None);
 
             var deadline = Stopwatch.StartNew();

@@ -68,7 +68,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
 
         try
         {
-            await CollectTraceAsync(processId, tracePath, duration, cancellationToken).ConfigureAwait(false);
+            await CollectTraceAsync(processId, tracePath, duration, exportPath is not null, cancellationToken).ConfigureAwait(false);
             if (exportPath is not null)
             {
                 SafeArtifactPath.SetRestrictiveFilePermissions(exportPath);
@@ -113,7 +113,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         return rel.Replace(Path.DirectorySeparatorChar, '/');
     }
 
-    private static async Task CollectTraceAsync(int pid, string outputPath, TimeSpan duration, CancellationToken ct)
+    private static async Task CollectTraceAsync(int pid, string outputPath, TimeSpan duration, bool restricted, CancellationToken ct)
     {
         var providers = new[]
         {
@@ -131,7 +131,11 @@ public sealed class EventPipeCpuSampler : ICpuSampler
 
         var copyTask = Task.Run(async () =>
         {
-            await using var output = File.Create(outputPath);
+            // For artifact-root exports use FileMode.CreateNew (symlink-leaf-swap safe, born 0600);
+            // the temp path keeps the legacy create since it lives under a private GUID temp name.
+            await using var output = restricted
+                ? SafeArtifactPath.CreateRestrictedFile(outputPath)
+                : File.Create(outputPath);
             await session.EventStream.CopyToAsync(output, ct).ConfigureAwait(false);
         }, ct);
 
