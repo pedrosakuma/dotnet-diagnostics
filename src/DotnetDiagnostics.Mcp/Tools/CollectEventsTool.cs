@@ -23,6 +23,7 @@ using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Threads;
+using DotnetDiagnostics.Core.Triage;
 using DotnetDiagnostics.Core.Tools.Dispatch;
 using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Diagnostics;
@@ -73,6 +74,7 @@ public sealed class CollectEventsTool
         "kestrel",
         "networking",
         "startup",
+        "sweep",
         "distributed_trace",
         "replica_counters",
     };
@@ -80,7 +82,7 @@ public sealed class CollectEventsTool
     [RequireAnyScope("read-counters", "eventpipe")]
     [McpServerTool(
         Name = "collect_events",
-        Title = "Collect EventPipe events (counters | exceptions | crash-guard | gc | datas | catalog | event_source | activities | logs | jit | threadpool | contention | db | kestrel | networking | startup)",
+        Title = "Collect EventPipe events (counters | exceptions | crash-guard | gc | datas | catalog | event_source | activities | logs | jit | threadpool | contention | db | kestrel | networking | startup | sweep)",
         Destructive = false,
         // Not read-only: the threshold-gated capture path (triggerWhen + captureKind="dump") can write
         // a process dump to disk. That path is doubly gated (confirmDump=true + the dump-write scope),
@@ -114,6 +116,7 @@ public sealed class CollectEventsTool
         IKestrelCollector kestrelCollector,
         INetworkingCollector networkingCollector,
         IStartupCollector startupCollector,
+        IProcessResourcesCollector processResourcesCollector,
         IThresholdGatedCaptureCollector gatedCaptureCollector,
         ICpuSampler cpuSampler,
         IThreadSnapshotInspector threadSnapshotInspector,
@@ -137,6 +140,7 @@ public sealed class CollectEventsTool
             "'networking' (curated outbound HTTP / DNS / TLS / socket view: latency percentiles + HttpClient time-in-queue), " +
             "'startup' (loader + DependencyInjection events emitted during the window; pre-attach cold-start events are missed). " +
             "'replica_counters' (orchestrator fan-out: simultaneous live counter capture across ALL attached Pods to find the replica skew outlier on cpu/gc-heap-size/threadpool-queue — requires attach_to_pod first). " +
+            "'sweep' (parallel initial triage — fans out counters+gc+exceptions+threadpool+resource concurrently in ONE round-trip, returns a consolidated triage verdict + per-collector drill-down handles; cuts cold-start from 5–7 calls to 1–2). " +
             "All kinds except 'counters' use the 'eventpipe' scope. " +
             "IMPORTANT: for 'exceptions', 'crash-guard', and 'gc', start collection BEFORE the workload — EventPipe sessions " +
             "take ~500 ms–1 s to fully start and earlier events are missed. For 'startup', attaching to an already-running process misses the initial cold-start; true cold-start capture requires enabling EventPipe before/at process launch (reverse-connect or CLI --launch/DOTNET_ startup session).")]
@@ -265,7 +269,7 @@ public sealed class CollectEventsTool
 
         // Default durationSeconds per kind matches the legacy tool defaults so callers omitting
         // the parameter see no behavioral change.
-        var effectiveDuration = durationSeconds ?? (canonicalKind == "counters" ? 5 : canonicalKind == "datas" ? 15 : 10);
+        var effectiveDuration = durationSeconds ?? (canonicalKind == "counters" ? 5 : canonicalKind == "datas" ? 15 : canonicalKind == "sweep" ? SweepUseCase.MinimumDurationSeconds : 10);
 
         // Stage A of issue #211: emit MCP notifications/progress while the
         // EventPipe session is open, and translate MCP notifications/cancelled into a partial
@@ -410,6 +414,15 @@ public sealed class CollectEventsTool
                             ct).ConfigureAwait(false),
                         "startup",
                         (env, data) => env with { Startup = data }),
+
+                    "sweep" => Project(
+                        await SweepUseCase.RunSweep(
+                            counterCollector, gcCollector, exceptionCollector, threadPoolCollector, processResourcesCollector,
+                            resolver, handles,
+                            processId, effectiveDuration, maxRecent, maxEvents ?? 200, depth,
+                            ct).ConfigureAwait(false),
+                        "sweep",
+                        (env, data) => env with { Sweep = data }),
  
                     // Unreachable — TryValidate narrowed canonicalKind to the AllowedKinds set above.
                     _ => DiagnosticResult.Fail<CollectEventsEnvelope>(
@@ -750,7 +763,7 @@ public sealed class CollectEventsTool
 /// <summary>
 /// Polymorphic payload returned by <see cref="CollectEventsTool.CollectEvents"/>. Exactly one
 /// of the kind-specific fields (<see cref="Counters"/>, <see cref="Exceptions"/>, <see cref="CrashGuard"/>,
-/// <see cref="Gc"/>, <see cref="Datas"/>, <see cref="Catalog"/>, <see cref="EventSource"/>, <see cref="Activities"/>, <see cref="Logs"/>, <see cref="Jit"/>, <see cref="ThreadPool"/>, <see cref="Contention"/>, <see cref="Db"/>, <see cref="Kestrel"/>, <see cref="Networking"/>, <see cref="Startup"/>) is populated, matched
+/// <see cref="Gc"/>, <see cref="Datas"/>, <see cref="Catalog"/>, <see cref="EventSource"/>, <see cref="Activities"/>, <see cref="Logs"/>, <see cref="Jit"/>, <see cref="ThreadPool"/>, <see cref="Contention"/>, <see cref="Db"/>, <see cref="Kestrel"/>, <see cref="Networking"/>, <see cref="Startup"/>, <see cref="Sweep"/>) is populated, matched
 /// by <see cref="Kind"/>. Mirrors the discriminator-envelope convention used by other
 /// consolidated tools (e.g. <c>get_method_il</c>).
 /// </summary>
@@ -772,6 +785,7 @@ public sealed record CollectEventsEnvelope(
     KestrelSnapshot? Kestrel = null,
     NetworkingSnapshot? Networking = null,
     StartupSnapshot? Startup = null,
+    SweepResult? Sweep = null,
     GatedCaptureResult? GatedCapture = null,
     DistributedTraceTimeline? DistributedTrace = null,
     ReplicaCounterSkew? ReplicaCounters = null,

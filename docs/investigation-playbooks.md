@@ -19,6 +19,14 @@ a symptom and walks through the tool calls in order.
 
 **Hypothesis tree:** CPU bound → GC bound → I/O / downstream bound → contention.
 
+### Step 0 — Cold-start sweep (one call, parallel)
+Before stepping through vitals manually, run `collect_events(kind="sweep")`. It fans out the
+five EventPipe-safe collectors (counters + gc + exceptions + threadpool + resource) **concurrently**
+in ~6 s and returns a classified `triage` verdict, each sub-summary, and per-collector drill-down
+handles in `data.handles`. Follow the verdict's top hint (and `data.handles[...]` for `query_snapshot`)
+instead of re-collecting. Drop to the manual steps below only when the sweep verdict is ambiguous or
+you need a longer window for a specific signal.
+
 ### Step 1 — Quick vitals
 Call `collect_events(kind="counters")` with default providers for 5 s. If the target emits
 Meter data, prefer `http.server.request.duration` p95 from `Meters[]`; otherwise fall back to

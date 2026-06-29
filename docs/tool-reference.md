@@ -98,6 +98,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="kestrel")` | The `byOperation[]` list, queue-length timeline, and `configurationJson`. Summary keeps the headline connection/request/TLS aggregates + latency tail. |
 | `collect_events(kind="networking")` | The full `ByOperation[]` list. Summary keeps headline HTTP/DNS/TLS/socket counts + latency tails; drill in with `query_snapshot(handle, view=byOperation|queue|tls|dns)`. |
 | `collect_events(kind="startup")` | The loader/DI event lists and full timeline. Summary keeps headline counts, top assembly/module aggregates, and notes. |
+| `collect_events(kind="sweep")` | The five sub-snapshots' bulky lists (counters, gc, exceptions, threadpool, resource). Summary keeps the triage verdict + per-collector handles. Each sub-collector's full payload stays behind its handle (`data.handles`). |
 | `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph|deadlocks|unique-stacks|async-stalls)`. |
 
 Explicit `topN` always wins over the depth default — if you pass
@@ -107,6 +108,21 @@ it asked for).
 `collect_events(kind="activities")` does **not** currently expose `depth`; it always returns the
 retained `Activities[]` inline (bounded by `maxActivities`) and relies on
 `query_snapshot(handle, view=...)` for narrower drilldown views.
+
+### Parallel initial triage (`collect_events(kind="sweep")`)
+
+`collect_events(kind="sweep")` is the recommended **first** call when triaging an unfamiliar
+process. Instead of issuing five sequential collections (~25–40 s), it fans out the five
+EventPipe-safe collectors — `counters`, `gc`, `exceptions`, `threadpool` and `resource` — **concurrently**
+in a single round-trip and returns one consolidated envelope:
+
+- `data.triage` — the classified verdict + severity + evidence (same shape as the legacy triage).
+- `data.counters` / `data.gc` / `data.exceptions` / `data.threadpool` / `data.resource` — each sub-snapshot's summary inline.
+- `data.handles` — per-collector drill-down handles (`counters`, `gc`, `exceptions`, `threadpool`); pass these to `query_snapshot` to follow up without re-collecting.
+- `data.failures` — per-collector failure notes; empty when every collector succeeded (one slow/failed collector never blocks the rest).
+
+`durationSeconds` defaults to 6 and is floored at 6 s so each EventPipe session has time to start and
+emit at least one interval. The top-level `Hints[]` point at the next best drill-down for the verdict.
 
 ### Distributed trace correlation (`collect_events(kind="distributed_trace")`)
 
