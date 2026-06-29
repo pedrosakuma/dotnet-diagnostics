@@ -893,7 +893,7 @@ Cheap startup-configuration snapshot for questions like "is this Server GC?", "w
 - **Tiered compilation**: sourced from startup env overrides (`DOTNET_TieredCompilation`, `DOTNET_TC_QuickJit`, `DOTNET_TieredPGO`, plus `COMPlus_` aliases when present).
 - **Environment variables**: Linux reads `/proc/<pid>/environ`; Windows currently returns an explanatory note and an empty `envVars[]`.
 - **Security boundary**: `envVars[]` is strictly filtered to `DOTNET_`, `COMPlus_`, `ASPNETCORE_`, and `DOTNET_SYSTEM_` prefixes. Everything else is intentionally dropped.
-- **AppContext switches**: parsed offline from the target's `<app>.runtimeconfig.json` (`runtimeOptions.configProperties`) located next to the main module — AppContext switches (`Switch.System.*`, `System.Net.*`, HTTP/3 / TLS / gRPC / metrics opt-ins) and runtime knobs. No ClrMD attach; post-startup `AppContext.SetSwitch` overrides are not reflected. Empty with a note when the file cannot be located.
+- **AppContext switches**: parsed offline from the target's `<app>.runtimeconfig.json` (`runtimeOptions.configProperties`) located next to the main module via the absolute cmdline DLL or the self-contained apphost — AppContext switches (`Switch.System.*`, `System.Net.*`, HTTP/3 / TLS / gRPC / metrics opt-ins) and runtime knobs. Only known runtime namespaces (`System.`, `Microsoft.`, `Switch.`, `Windows.`, `Internal.`) are surfaced; custom configProperties keys are dropped so app secrets can't leak. No ClrMD attach; post-startup `AppContext.SetSwitch` overrides are not reflected. Empty with a note when the file cannot be located.
 
 **Parameters:**
 

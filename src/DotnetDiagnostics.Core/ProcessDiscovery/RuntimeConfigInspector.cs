@@ -33,6 +33,11 @@ public sealed class RuntimeConfigInspector : IRuntimeConfigInspector
     private readonly ILogger<RuntimeConfigInspector> _logger;
     private readonly string _procRoot;
 
+    private const long MaxRuntimeConfigBytes = 256 * 1024;
+    private const int MaxSwitchCount = 512;
+    private const int MaxSwitchNameLength = 256;
+    private const int MaxSwitchValueLength = 1024;
+
     public RuntimeConfigInspector(ILogger<RuntimeConfigInspector>? logger = null, string procRoot = "/proc")
     {
         _logger = logger ?? NullLogger<RuntimeConfigInspector>.Instance;
@@ -264,6 +269,13 @@ public sealed class RuntimeConfigInspector : IRuntimeConfigInspector
 
         try
         {
+            var info = new FileInfo(configPath);
+            if (info.Length > MaxRuntimeConfigBytes)
+            {
+                AddNoteOnce(notes, $"AppContext switches unavailable: {configPath} exceeds {MaxRuntimeConfigBytes} bytes; appContextSwitches is empty.");
+                return Array.Empty<AppContextSwitchEntry>();
+            }
+
             var json = File.ReadAllText(configPath);
             var switches = ParseConfigProperties(json);
             if (switches.Count == 0)
@@ -309,12 +321,39 @@ public sealed class RuntimeConfigInspector : IRuntimeConfigInspector
         var entries = new List<AppContextSwitchEntry>();
         foreach (var property in configProperties.EnumerateObject())
         {
-            entries.Add(new AppContextSwitchEntry(property.Name, NormalizeConfigValue(property.Value)));
+            // Allowlist known runtime / AppContext-switch namespaces. Custom configProperties keys can
+            // hold arbitrary app values (e.g. connection strings) — exposing those would bypass the
+            // env-var redaction boundary, so drop anything outside the recognised prefixes. Cap counts
+            // and lengths so a hostile runtimeconfig.json can't blow up the envelope.
+            if (!IsKnownSwitchKey(property.Name) || property.Name.Length > MaxSwitchNameLength)
+            {
+                continue;
+            }
+
+            var value = NormalizeConfigValue(property.Value);
+            if (value is not null && value.Length > MaxSwitchValueLength)
+            {
+                value = value[..MaxSwitchValueLength] + "…";
+            }
+
+            entries.Add(new AppContextSwitchEntry(property.Name, value));
+            if (entries.Count >= MaxSwitchCount)
+            {
+                break;
+            }
         }
 
         entries.Sort(static (left, right) => StringComparer.OrdinalIgnoreCase.Compare(left.Name, right.Name));
         return entries;
     }
+
+    private static readonly string[] KnownSwitchPrefixes =
+    {
+        "System.", "Microsoft.", "Switch.", "Windows.", "Internal.",
+    };
+
+    private static bool IsKnownSwitchKey(string name) =>
+        KnownSwitchPrefixes.Any(p => name.StartsWith(p, StringComparison.Ordinal));
 
     private static string? NormalizeConfigValue(JsonElement value) => value.ValueKind switch
     {
@@ -372,16 +411,6 @@ public sealed class RuntimeConfigInspector : IRuntimeConfigInspector
         }
 
         var cmdlinePath = Path.Combine(_procRoot, processId.ToString(CultureInfo.InvariantCulture), "cmdline");
-        var cwdPath = Path.Combine(_procRoot, processId.ToString(CultureInfo.InvariantCulture), "cwd");
-        string? workingDirectory = null;
-        try
-        {
-            workingDirectory = Directory.Exists(cwdPath) ? cwdPath : null;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _logger.LogDebug(ex, "Failed to resolve cwd for pid {ProcessId}", processId);
-        }
 
         string[] args;
         try
@@ -407,13 +436,13 @@ public sealed class RuntimeConfigInspector : IRuntimeConfigInspector
                 continue;
             }
 
+            // Only trust absolute cmdline DLL paths. A relative arg would have to be combined with
+            // /proc/<pid>/cwd, but that symlink reflects the live working dir and can be moved after
+            // startup (Directory.SetCurrentDirectory) — pointing us at an attacker-chosen file. The
+            // self-contained MainModule fallback covers the rooted-only case.
             if (Path.IsPathRooted(arg))
             {
                 yield return arg;
-            }
-            else if (workingDirectory is not null)
-            {
-                yield return Path.Combine(workingDirectory, arg);
             }
         }
     }

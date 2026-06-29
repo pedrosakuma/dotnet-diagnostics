@@ -91,15 +91,36 @@ public sealed class RuntimeConfigInspectorTests
 
         var switches = RuntimeConfigInspector.ParseConfigProperties(json);
 
+        // Custom.Connection is dropped: only known runtime/AppContext-switch prefixes are exposed so a
+        // custom configProperties key (e.g. a connection string) can't bypass the redaction boundary.
         switches.Should().BeEquivalentTo(
         [
-            new AppContextSwitchEntry("Custom.Connection", "Server=local"),
             new AppContextSwitchEntry("Switch.System.Net.DontEnableSystemDefaultTlsVersions", "false"),
             new AppContextSwitchEntry("System.GC.Server", "true"),
             new AppContextSwitchEntry("System.Net.Http.EnableActivityPropagation", "false"),
             new AppContextSwitchEntry("System.Net.SocketsHttpHandler.Http3Support", "true"),
             new AppContextSwitchEntry("System.Threading.ThreadPool.MinThreads", "8"),
         ], options => options.WithStrictOrdering());
+    }
+
+    [Fact]
+    public void ParseConfigProperties_DropsCustomKeys()
+    {
+        const string json = """
+        {
+          "runtimeOptions": {
+            "configProperties": {
+              "System.GC.Server": true,
+              "Custom.Connection": "Server=secret",
+              "MyApp.ApiKey": "abc123"
+            }
+          }
+        }
+        """;
+
+        var switches = RuntimeConfigInspector.ParseConfigProperties(json);
+
+        switches.Should().ContainSingle().Which.Name.Should().Be("System.GC.Server");
     }
 
     [Fact]
