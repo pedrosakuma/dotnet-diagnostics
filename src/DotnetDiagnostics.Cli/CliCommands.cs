@@ -124,6 +124,7 @@ internal static class CliCommands
         "kestrel",
         "networking",
         "startup",
+        "sweep",
     };
 
     private static readonly IComparableProjector[] ComparableProjectors =
@@ -697,7 +698,7 @@ internal static class CliCommands
         var handles = services.GetRequiredService<IDiagnosticHandleStore>();
         var pid = options.Pid;
         // Mirror the MCP collect_events per-kind duration defaults (counters: 5; all others: 10).
-        var duration = options.DurationSeconds ?? (options.Kind == "counters" ? 5 : options.Kind == "datas" ? 15 : 10);
+        var duration = options.DurationSeconds ?? (options.Kind == "counters" ? 5 : options.Kind == "datas" ? 15 : options.Kind == "sweep" ? SweepUseCase.MinimumDurationSeconds : 10);
         // The CLI is a stateless one-shot: the in-memory handle store is disposed when the command
         // returns, so a drilldown handle can never be queried in a follow-up invocation. Default to
         // Detail so the captured records stay inline (and land in --json) instead of being trimmed
@@ -772,6 +773,16 @@ internal static class CliCommands
             "startup" => Wrap(options, await EventCollectionUseCases.CollectStartup(
                 services.GetRequiredService<IStartupCollector>(), resolver, handles,
                 pid, duration, depth, cancellationToken).ConfigureAwait(false)),
+
+            "sweep" => Wrap(options, await SweepUseCase.RunSweep(
+                services.GetRequiredService<ICounterCollector>(),
+                services.GetRequiredService<IGcCollector>(),
+                services.GetRequiredService<IExceptionCollector>(),
+                services.GetRequiredService<IThreadPoolCollector>(),
+                services.GetRequiredService<IProcessResourcesCollector>(),
+                resolver, handles,
+                pid, duration, options.MaxEvents ?? 100, options.MaxEvents ?? 200, depth,
+                cancellationToken).ConfigureAwait(false)),
 
             "networking" => Wrap(options, await EventCollectionUseCases.CollectNetworking(
                 services.GetRequiredService<INetworkingCollector>(), resolver, handles,

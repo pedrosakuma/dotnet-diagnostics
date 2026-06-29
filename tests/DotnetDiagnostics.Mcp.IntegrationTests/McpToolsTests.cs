@@ -562,6 +562,32 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task Sweep_FansOutAllCollectors_AndReturnsTriage()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_events",
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "sweep",
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 6,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var envelope = DeserializeStructured<CollectEventsEnvelope>(result);
+        envelope.Should().NotBeNull();
+        envelope!.Kind.Should().Be("sweep");
+        envelope.Sweep.Should().NotBeNull();
+        envelope.Sweep!.DurationSeconds.Should().Be(6);
+        envelope.Sweep.Triage.Should().NotBeNull();
+        envelope.Sweep.Counters.Should().NotBeNull();
+        envelope.Sweep.Handles.Should().ContainKey("counters");
+    }
+
+    [Fact]
     public async Task CollectExceptions_RunsAgainstSelfHost()
     {
         await using var client = await ConnectAsync();

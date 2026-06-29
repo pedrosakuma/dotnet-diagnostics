@@ -68,8 +68,8 @@ Options:
 collect options:
       --kind <kind>             Required. One of: counters, exceptions, crash-guard, gc, datas,
                                 catalog, event_source, activities, logs, jit, threadpool,
-                                contention, db, kestrel, networking, startup.
-  -d, --duration <int>          Collection window in seconds (default: counters 5, datas 15, others 10).
+                                contention, db, kestrel, networking, startup, sweep.
+  -d, --duration <int>          Collection window in seconds (default: counters 5, datas 15, sweep 6, others 10).
       --depth <level>           Verbosity: summary, detail (default), raw.
       --max-events <int>        Per-kind cap (events / exceptions / activities).
       --interval <int>          Refresh interval in seconds (counters, db). Default 1.

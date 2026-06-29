@@ -25,6 +25,8 @@ using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Threads;
+using DotnetDiagnostics.Core.Triage;
+using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Security;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
@@ -132,6 +134,41 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
 
         snapshot.Counters.Should().NotBeEmpty();
         snapshot.Counters.Should().Contain(c => c.Provider == "System.Runtime" && c.Name == "cpu-usage");
+    }
+
+    [Fact(Timeout = 90_000)]
+    public async Task Sweep_RunsAllCollectorsConcurrently_AndClassifies()
+    {
+        EnsureSampleRunning();
+
+        var handles = new MemoryDiagnosticHandleStore();
+        var resolver = new FixedProcessContextResolver(Pid);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = await SweepUseCase.RunSweep(
+            new EventPipeCounterCollector(),
+            new EventPipeGcCollector(),
+            new EventPipeExceptionCollector(),
+            new EventPipeThreadPoolCollector(),
+            new ProcessResourcesCollector(),
+            resolver,
+            handles,
+            processId: Pid,
+            durationSeconds: 6,
+            cancellationToken: CancellationToken.None);
+        sw.Stop();
+
+        result.IsError.Should().BeFalse();
+        result.Data.Should().NotBeNull();
+        var sweep = result.Data!;
+        sweep.DurationSeconds.Should().Be(6);
+        sweep.Counters.Should().NotBeNull();
+        sweep.Triage.Should().NotBeNull();
+        sweep.Resource.Should().NotBeNull();
+        sweep.Handles.Should().ContainKey("counters");
+        // Five concurrent ~6s collectors must finish far quicker than five sequential ones (~30s).
+        sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(20));
+        result.Summary.Should().Contain("Sweep over 6s");
     }
 
     [LinuxOnlyFact]
