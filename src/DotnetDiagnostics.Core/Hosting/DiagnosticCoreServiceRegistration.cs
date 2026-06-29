@@ -61,6 +61,8 @@ public static class DiagnosticCoreServiceRegistration
 
         services.AddSingleton(new SymbolPathBuilder(configuredSymbolPath));
         services.AddSingleton<DotnetDiagnostics.Core.Artifacts.IArtifactRootProvider, DotnetDiagnostics.Core.Artifacts.EnvironmentArtifactRootProvider>();
+        services.AddSingleton<DotnetDiagnostics.Core.Artifacts.IArtifactLifecycle, DotnetDiagnostics.Core.Artifacts.FileSystemArtifactLifecycle>();
+        services.AddHostedService<DotnetDiagnostics.Core.Artifacts.ArtifactReaperBackgroundService>();
         services.AddSingleton<IProcessDiscovery, LocalProcessDiscovery>();
         services.AddSingleton<DotnetDiagnostics.Core.Container.IContainerSignalsCollector, DotnetDiagnostics.Core.Container.CgroupV2SignalsCollector>();
         services.AddSingleton<ICapabilityDetector, CapabilityDetector>();

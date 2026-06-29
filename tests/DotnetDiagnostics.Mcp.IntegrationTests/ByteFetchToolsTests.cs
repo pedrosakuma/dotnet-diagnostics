@@ -267,6 +267,92 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         envelope.Error.Message.Should().Contain("256 MiB");
     }
 
+    [Fact]
+    public async Task GetBytes_List_ReturnsArtifactsNewestFirst()
+    {
+        using var artifactRoot = CreateArtifactRoot();
+        using var env = EnvScope.Set(EnvironmentArtifactRootProvider.EnvironmentVariableName, artifactRoot.Path);
+        await File.WriteAllBytesAsync(Path.Combine(artifactRoot.Path, "a.dmp"), new byte[64], CancellationToken.None);
+        Directory.CreateDirectory(Path.Combine(artifactRoot.Path, "sub"));
+        await File.WriteAllBytesAsync(Path.Combine(artifactRoot.Path, "sub", "b.nettrace"), new byte[16], CancellationToken.None);
+
+        await using var factory = CreateFactory(("module-reader", "list-token", new[] { "module-bytes-read" }));
+        await using var client = await ConnectWithTokenAsync(factory, "list-token");
+
+        var result = await client.CallToolAsync(
+            "get_bytes",
+            new Dictionary<string, object?> { ["kind"] = "list" },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope!.Error.Should().BeNull();
+        envelope.Data.GetProperty("count").GetInt32().Should().Be(2);
+        envelope.Data.GetProperty("totalSizeBytes").GetInt64().Should().Be(80);
+    }
+
+    [Fact]
+    public async Task GetBytes_Delete_RemovesArtifactWithScope()
+    {
+        using var artifactRoot = CreateArtifactRoot();
+        using var env = EnvScope.Set(EnvironmentArtifactRootProvider.EnvironmentVariableName, artifactRoot.Path);
+        var path = Path.Combine(artifactRoot.Path, "trash.dmp");
+        await File.WriteAllBytesAsync(path, new byte[8], CancellationToken.None);
+
+        await using var factory = CreateFactory(("deleter", "del-token", new[] { "module-bytes-read", "delete-artifact" }));
+        await using var client = await ConnectWithTokenAsync(factory, "del-token");
+
+        var result = await client.CallToolAsync(
+            "get_bytes",
+            new Dictionary<string, object?> { ["kind"] = "delete", ["artifactPath"] = "trash.dmp" },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope!.Error.Should().BeNull();
+        envelope.Data.GetProperty("deleted").GetProperty("relativePath").GetString().Should().Be("trash.dmp");
+        File.Exists(path).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetBytes_Delete_MissingScope_IsRejected()
+    {
+        using var artifactRoot = CreateArtifactRoot();
+        using var env = EnvScope.Set(EnvironmentArtifactRootProvider.EnvironmentVariableName, artifactRoot.Path);
+        var path = Path.Combine(artifactRoot.Path, "keep.dmp");
+        await File.WriteAllBytesAsync(path, new byte[8], CancellationToken.None);
+
+        await using var factory = CreateFactory(("reader", "noscope-token", new[] { "module-bytes-read" }));
+        await using var client = await ConnectWithTokenAsync(factory, "noscope-token");
+
+        var result = await client.CallToolAsync(
+            "get_bytes",
+            new Dictionary<string, object?> { ["kind"] = "delete", ["artifactPath"] = "keep.dmp" },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope!.Error.Should().NotBeNull();
+        envelope.Error!.Kind.Should().Be("Forbidden");
+        envelope.Error.Message.Should().Contain("delete-artifact");
+        File.Exists(path).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task GetBytes_Delete_RejectsPathTraversal()
+    {
+        using var artifactRoot = CreateArtifactRoot();
+        using var env = EnvScope.Set(EnvironmentArtifactRootProvider.EnvironmentVariableName, artifactRoot.Path);
+        await using var factory = CreateFactory(("deleter", "trav-token", new[] { "module-bytes-read", "delete-artifact" }));
+        await using var client = await ConnectWithTokenAsync(factory, "trav-token");
+
+        var result = await client.CallToolAsync(
+            "get_bytes",
+            new Dictionary<string, object?> { ["kind"] = "delete", ["artifactPath"] = "../escape.dmp" },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope!.Error.Should().NotBeNull();
+        envelope.Error!.Kind.Should().Be("InvalidArtifactPath");
+    }
+
     public async Task InitializeAsync()
     {
         _sample = await LiveSampleProcess.StartPublishedAsync(
