@@ -2031,6 +2031,23 @@ public sealed class DiagnosticTools
             deprecation,
             cancellationToken);
 
+    public static Task<DiagnosticResult<LiveHeapInspection>> InspectGcDump(
+        IGcDumpHeapSnapshotCollector collector,
+        IDiagnosticHandleStore handles,
+        IProcessContextResolver resolver,
+        int? processId = null,
+        int topTypes = 20,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+        => HeapInspectionUseCases.InspectGcDump(
+            collector,
+            handles,
+            resolver,
+            processId,
+            topTypes,
+            timeout,
+            cancellationToken);
+
     [RequireScope("heap-read")]
     [Description(
         "Returns a slice of a heap snapshot previously captured by inspect_dump or inspect_live_heap, addressed by its handle. " +

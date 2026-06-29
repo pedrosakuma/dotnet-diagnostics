@@ -128,8 +128,10 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
                 {
                     if (data.Count == gcNum)
                     {
+                        // Mark completion only — do NOT StopProcessing here. GCStop proves the induced
+                        // GC finished, but tail GCBulkNode/TypeBulkType events may still be buffered.
+                        // The control path stops the session, letting Process() drain to EOF naturally.
                         dumpComplete = true;
-                        source.StopProcessing();
                     }
                 };
                 source.Clr.TypeBulkType += data =>
@@ -154,10 +156,12 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
             }, CancellationToken.None);
 
             var deadline = Stopwatch.StartNew();
+            var cancelled = false;
             while (!processing.Wait(100, CancellationToken.None))
             {
                 if (ct.IsCancellationRequested)
                 {
+                    cancelled = true;
                     break;
                 }
                 if (!dataSeen && deadline.Elapsed.TotalSeconds > 5)
@@ -180,15 +184,26 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
                 _logger.LogDebug(ex, "Stopping gcdump EventPipe session for PID {Pid} threw.", processId);
             }
 
+            // After StopAsync the stream closes; bound the drain wait so a cancelled caller is not held
+            // for the full dump timeout. The reader observes EOF and returns shortly.
+            var drainBudget = cancelled ? TimeSpan.FromSeconds(2) : timeout;
             try
             {
-                await processing.WaitAsync(timeout, CancellationToken.None).ConfigureAwait(false);
+                await processing.WaitAsync(drainBudget, CancellationToken.None).ConfigureAwait(false);
             }
             catch (TimeoutException)
             {
-                // Processing did not drain in time; return whatever was aggregated.
+                // Processing did not drain in time; return whatever was aggregated so far. The
+                // aggregator is lock-guarded so a late reader cannot corrupt the projection; observe
+                // the orphaned task so its faults don't surface as unobserved exceptions.
+                _ = processing.ContinueWith(
+                    static t => _ = t.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
             }
 
+            ct.ThrowIfCancellationRequested();
             return aggregator;
         }
         finally

@@ -188,7 +188,7 @@ Walk the managed heap of a live process or a `.dmp`.
 
 | Option | Meaning |
 |---|---|
-| `--source <live\|dump>` | Snapshot source. Inferred: `dump` when `--dump-file` is set, else `live`. |
+| `--source <live\|dump\|gcdump>` | Snapshot source. Inferred: `dump` when `--dump-file` is set, else `live`. `gcdump` triggers an induced GC heap snapshot over EventPipe — no ptrace, no dump file, production-safe — but only per-type byte/instance totals (ClrMD-only views stay empty). |
 | `--dump-file <path>` | `--source dump`: path to a previously-captured `.dmp`. |
 | `--top-types <int>` | Top-N type count (default 20). |
 | `--include-retention-paths` | Walk a short GC retention chain for the top types. |
@@ -201,6 +201,7 @@ Walk the managed heap of a live process or a `.dmp`.
 ```bash
 dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
 dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
+dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234   # EventPipe, no ptrace, prod-safe
 dotnet-diagnostics-cli inspect-heap --launch -- dotnet App.dll   # ptrace_scope=1, no privilege
 ```
 

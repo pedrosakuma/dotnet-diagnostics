@@ -140,6 +140,45 @@ public static class HeapInspectionUseCases
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Captures a managed-heap snapshot over EventPipe (the dotnet-gcdump mechanism) — no ptrace,
+    /// no ClrMD attach, no dump file. Registers the same <c>heap-snapshot</c> handle so the
+    /// <c>query_snapshot</c> drilldown views work unchanged; ClrMD-only views stay empty.
+    /// </summary>
+    public static async Task<DiagnosticResult<LiveHeapInspection>> InspectGcDump(
+        IGcDumpHeapSnapshotCollector collector,
+        IDiagnosticHandleStore handles,
+        IProcessContextResolver resolver,
+        int? processId = null,
+        int topTypes = 20,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        var resolved = await ResolveContextAsync<LiveHeapInspection>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+        var ctx = resolved.Context;
+
+        var snapshot = await collector.CollectAsync(
+            pid,
+            new GcDumpOptions(TopTypes: topTypes, Timeout: timeout),
+            cancellationToken).ConfigureAwait(false);
+
+        var handle = handles.Register(pid, HeapSnapshotKind, snapshot, HeapSnapshotHandleTtl);
+        var inspection = snapshot.ToLiveHeapInspection(topTypes, handle.Id);
+
+        var topByBytes = inspection.TopTypesByBytes;
+        var summary = topByBytes.Count == 0
+            ? $"gcdump of pid {pid} ({inspection.SuspendDuration.TotalMilliseconds:N0} ms) produced no objects. Snapshot handle: `{handle.Id}`."
+            : $"gcdump of pid {pid} ({inspection.SuspendDuration.TotalMilliseconds:N0} ms) — heap {inspection.Heap.TotalBytes:N0} bytes; top type: `{topByBytes[0].TypeFullName}` ({topByBytes[0].TotalBytesPercent}% / {topByBytes[0].InstanceCount:N0} instances). Snapshot handle: `{handle.Id}`.";
+
+        var hint = BuildHeapDrilldownHint(handle.Id, topByBytes);
+        var result = hint is null
+            ? DiagnosticResult.Ok(inspection, summary)
+            : DiagnosticResult.Ok(inspection, summary, hint);
+        return WithContext(result, ctx);
+    }
+
     private static NextActionHint? BuildHeapDrilldownHint(string handle, IReadOnlyList<TypeStat> topByBytes)
     {
         // Prefer the cross-MCP handoff to dotnet-assembly-mcp when a type identity is available —

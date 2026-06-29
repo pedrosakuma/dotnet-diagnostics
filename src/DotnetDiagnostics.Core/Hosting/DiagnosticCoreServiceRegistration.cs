@@ -102,6 +102,7 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<IModuleByteSource, ClrMdModuleByteSource>();
         services.AddSingleton<IDumpByteSource, FileSystemDumpByteSource>();
         services.AddSingleton<IDumpInspector, ClrMdDumpInspector>();
+        services.AddSingleton<IGcDumpHeapSnapshotCollector, GcDumpHeapSnapshotCollector>();
         services.AddSingleton<DotnetDiagnostics.Core.Threads.ClrMdThreadSnapshotInspector>();
         services.AddSingleton<DotnetDiagnostics.Core.Threads.LinuxNativeThreadSnapshotInspector>();
         services.AddSingleton<DotnetDiagnostics.Core.Threads.PerfReplayThreadSnapshotInspector>();

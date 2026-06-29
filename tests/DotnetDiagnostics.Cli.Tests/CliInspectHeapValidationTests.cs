@@ -101,9 +101,29 @@ public sealed class CliInspectHeapValidationTests
     }
 
     [Fact]
-    public void HeapSources_AreLiveAndDump()
+    public void HeapSources_AreLiveDumpAndGcDump()
     {
-        CliCommands.HeapSources.Should().BeEquivalentTo(new[] { "live", "dump" });
+        CliCommands.HeapSources.Should().BeEquivalentTo(new[] { "live", "dump", "gcdump" });
+    }
+
+    [Fact]
+    public void TryResolveHeapSource_GcDump_Succeeds()
+    {
+        var options = CliOptions.Parse(new[] { "inspect-heap", "--source", "gcdump", "--pid", "1234" }, out _)!;
+
+        CliCommands.TryResolveHeapSource(options, out var source, out var error).Should().BeTrue();
+        source.Should().Be("gcdump");
+        error.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryResolveHeapSource_GcDumpWithDumpFile_Fails()
+    {
+        var options = CliOptions.Parse(
+            new[] { "inspect-heap", "--source", "gcdump", "--dump-file", "./app.dmp" }, out _)!;
+
+        CliCommands.TryResolveHeapSource(options, out _, out var error).Should().BeFalse();
+        error.Should().Contain("does not accept --dump-file");
     }
 
     private static async Task<(int Exit, string Stdout, string Stderr)> RunAsync(params string[] args)
