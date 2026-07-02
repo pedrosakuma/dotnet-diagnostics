@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-07-02
+
+Highlights: **Two parity waves** bringing the standalone CLI and the BenchmarkDotNet
+in-process diagnoser up to conceptual parity with the MCP server's diagnostic surface.
+Fully additive: **no new MCP tools** (15-tool cap held), **no breaking changes** — every
+item extends an existing CLI command/`kind`/`view` or the bench collector surface, plus
+guardrail tests that fail the build if the surface and its docs ever drift apart.
+
+### Added
+- **CLI ⇄ MCP parity wave** (meta #485) — the Core-only `dotnet-diagnostics` CLI now covers
+  every Core-eligible capability the MCP server exposes:
+  - `inspect --view triage|runtime-config` — triage autopilot + AppContext-switch runtime
+    config over the CLI (#486).
+  - `query --view frame-vars --thread-id` — exception throw-site locals/params drilldown on
+    a captured thread snapshot (#487).
+  - `investigate` (planner autopilot) + `export-summary` (portable CPU-investigation JSON)
+    commands (#488).
+  - `--native-aot-map` flag on gated `--capture cpu-sample` for NativeAOT symbolization (#489).
+- **Bench parity wave** (meta #496) — the `dotnet-diagnostics-benchmarkdotnet` in-process
+  diagnoser grew from 13 to 17 capture kinds and gained a discoverable, type-safe API:
+  - `kestrel`, `networking`, and `requests` collect kinds (#497).
+  - `gcdump` heap-retention kind — EventPipe-based (no ptrace), reusing the Core
+    `InspectGcDump` facade whose CoreCLR-only guard degrades NativeAOT to a friendly
+    `NotSupported` entry rather than crashing; the "what survives" complement to
+    `allocation`'s "what churns" (#498).
+  - **Discoverable capture API** — a public `BenchmarkDiagnosticKind` enum + token catalog
+    and a `params`-enum overload on `[DiagnosticKind]`, so kinds are picked from a typed
+    enum instead of a free-text string (the string overload is retained for back-compat);
+    `DurationSeconds` is now a settable named argument (#499).
+
+### Changed
+- **Off-CPU sampling in the bench diagnoser** is documented as intentionally out of scope
+  (host `perf`/privilege dependency); feasibility via child-launch/container is tracked as a
+  future spike (#501).
+
+### Docs / Tests
+- `cli-reference.md` synced with the current CLI surface, backed by a `CliDocParityTests`
+  guardrail that fails the build if a new command/kind is left undocumented (#490).
+- Bench `README` gained an enum-API usage example and a "Not captured (intentionally out of
+  scope)" section (`event_source`, `startup`, `crash-guard`, `sweep`, `off_cpu`,
+  `native-alloc`), backed by a `BenchDocParityTests` guardrail asserting enum ⇄ collector ⇄
+  docs parity (#500).
+
 ## [0.15.0] — 2026-07-02
 
 Highlights: **Phase 15 — deep heap/memory diagnostics, distributed correlation, and
