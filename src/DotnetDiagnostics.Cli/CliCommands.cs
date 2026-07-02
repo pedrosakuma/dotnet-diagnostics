@@ -50,6 +50,11 @@ internal sealed record CliCommandResult(bool IsError, bool Cancelled, object Env
 
     /// <summary>UTC moment <see cref="Handle"/> expires, or <c>null</c>.</summary>
     public DateTimeOffset? HandleExpiresAt { get; init; }
+
+    /// <summary>When <see langword="true"/>, <see cref="Human"/> is emitted to stdout verbatim — no
+    /// ANSI colorization — because it is a machine-readable payload (e.g. <c>export-summary</c>'s
+    /// portable JSON document) that a consumer pipes or persists.</summary>
+    public bool RawHuman { get; init; }
 }
 
 /// <summary>
@@ -1435,7 +1440,10 @@ internal static class CliCommands
     {
         using var document = JsonDocument.Parse(json);
         var element = document.RootElement.Clone();
-        return new CliCommandResult(IsError: false, Cancelled: false, Envelope: element, Human: json);
+        return new CliCommandResult(IsError: false, Cancelled: false, Envelope: element, Human: json)
+        {
+            RawHuman = true,
+        };
     }
 
     private static void TryDeleteQuietly(string path)

@@ -294,6 +294,22 @@ internal static class CliHost
             return 2;
         }
 
+        if (options.Command == "investigate" && !CliCommands.TryValidateInvestigate(options, out var investigateError))
+        {
+            await stderr.WriteLineAsync(investigateError).ConfigureAwait(false);
+            await stderr.WriteLineAsync().ConfigureAwait(false);
+            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+            return 2;
+        }
+
+        if (options.Command == "export-summary" && !CliCommands.TryValidateExportSummary(options, out var exportSummaryError))
+        {
+            await stderr.WriteLineAsync(exportSummaryError).ConfigureAwait(false);
+            await stderr.WriteLineAsync().ConfigureAwait(false);
+            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+            return 2;
+        }
+
         // Cold-start capture (issue #446): when --suspend-startup is set, the target is launched
         // SUSPENDED on a reverse-connect diagnostic port, the EventPipe session is armed before any
         // managed code runs, and only then resumed — so pre-attach events are recovered. This is a
@@ -413,7 +429,8 @@ internal static class CliHost
         }
         else
         {
-            await stdout.WriteLineAsync(CliAnsi.ColorizeHuman(result.Human, ansiEnabled)).ConfigureAwait(false);
+            var human = result.RawHuman ? result.Human : CliAnsi.ColorizeHuman(result.Human, ansiEnabled);
+            await stdout.WriteLineAsync(human).ConfigureAwait(false);
         }
     }
 
