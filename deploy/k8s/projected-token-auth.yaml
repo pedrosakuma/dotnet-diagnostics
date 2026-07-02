@@ -110,7 +110,7 @@ spec:
 
         # ----- 2. dotnet-diagnostics-mcp sidecar (OIDC/JWT enabled) -----
         - name: diagnosticsmcp
-          image: ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0
+          image: ghcr.io/pedrosakuma/dotnet-diagnostics:0.16.0
           imagePullPolicy: IfNotPresent
           securityContext:
             capabilities:

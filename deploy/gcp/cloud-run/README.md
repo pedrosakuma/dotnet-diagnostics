@@ -74,7 +74,7 @@ visibility across containers.
    Artifact Registry in the same region:
    - Your application image.
    - The diagnostics sidecar image — default
-     `ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0`. If your project
+     `ghcr.io/pedrosakuma/dotnet-diagnostics:0.16.0`. If your project
      blocks anonymous GHCR pulls, mirror it to Artifact Registry first.
 4. **A runtime service account** for the Cloud Run revision. It needs at
    minimum `roles/secretmanager.secretAccessor` on the bearer token secret:
@@ -127,7 +127,7 @@ attach will fail with `Permission denied`. See `AGENTS.md` →
      (`gcloud projects describe $(gcloud config get-value project) --format='value(projectNumber)'`)
    - `APP_IMAGE` — your application's container image URI
    - `DIAG_IMAGE` — diagnostics sidecar image (default
-     `ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0`)
+     `ghcr.io/pedrosakuma/dotnet-diagnostics:0.16.0`)
    - `APP_SERVICE_ACCOUNT` — the service account email created above
    - `BEARER_SECRET_NAME` — Secret Manager secret holding the bearer token
      (appears in two places: the `run.googleapis.com/secrets` annotation
@@ -222,7 +222,7 @@ through Identity-Aware Proxy, or an SSH tunnel.
 ## Production: pin to a digest
 
 The defaults above use a released version tag
-(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0`) rather than `:latest`, so a
+(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.16.0`) rather than `:latest`, so a
 new upstream push cannot silently re-deploy under your stack. For production
 workloads go one step further and pin to a **content-addressable digest** so the
 exact image bytes are immutable across replicas, rollbacks, and pull retries:
@@ -230,7 +230,7 @@ exact image bytes are immutable across replicas, rollbacks, and pull retries:
 ```bash
 # Resolve the current digest for the version tag you trust:
 docker buildx imagetools inspect \
-  ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0 \
+  ghcr.io/pedrosakuma/dotnet-diagnostics:0.16.0 \
   --format '{{json .Manifest}}' | jq -r .digest
 # -> sha256:...
 
