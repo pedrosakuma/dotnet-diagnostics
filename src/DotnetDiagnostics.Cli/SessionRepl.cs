@@ -452,6 +452,7 @@ internal sealed class SessionRepl
             case "capabilities":
             case "collect":
             case "dump":
+            case "inspect":
                 return true;
             case "inspect-heap":
                 return options.DumpFile is null

@@ -505,7 +505,7 @@ internal static class CliHost
         ArgumentNullException.ThrowIfNull(options);
         return options.Command switch
         {
-            "capabilities" or "collect" or "dump" or "doctor" => true,
+            "capabilities" or "collect" or "dump" or "doctor" or "inspect" => true,
             "inspect-heap" => options.DumpFile is null && !options.Sources.Contains("dump", StringComparer.Ordinal),
             "get-bytes" => string.Equals(options.Kind, "module", StringComparison.Ordinal),
             _ => false,
