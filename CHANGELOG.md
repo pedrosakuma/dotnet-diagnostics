@@ -2,6 +2,68 @@
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-07-02
+
+Highlights: **Phase 15 — deep heap/memory diagnostics, distributed correlation, and
+investigation UX**. A large additive wave: new heap-retention and native-memory views,
+an async wait-chain analyzer, an investigation autopilot, distributed trace stitching
+across pods, multi-issuer OIDC, and OpenTelemetry export — plus a documented NativeAOT
+gcdump boundary. All additive: **no new MCP tools** (15-tool cap held), **no breaking
+changes** — every item extends an existing `kind`/`view`/hint or is a new deploy/security
+surface.
+
+### Added
+- **Heap growth diff (live)** — `inspect_heap` retention-aware live heap growth diff to
+  surface leaking types between two snapshots (#475).
+- **gcroot/object views over dumps** — `query_snapshot(view="gcroot"|"object")` answers
+  retention questions over dump-origin heap snapshots (#476).
+- **`inspect_heap(source="gcdump")`** — production-safe heap snapshot via gcdump
+  (CoreCLR), registered in the shared handle store for parameterized drilldown (#453).
+- **ALC leak heap drilldown** — surfaces AssemblyLoadContext leaks (#422); timer-leak and
+  native-vs-managed memory split views (#421).
+- **`collect_sample` native-alloc sampling on Windows (ETW)** — Phase 15 C1 native
+  allocation sampling (#480).
+- **`query_snapshot(view="wait-chains")`** — ranked async wait-chain analyzer spanning
+  sync monitor locks + async continuations + threadpool starvation, built purely from
+  already-captured thread-snapshot data (no new tool/collector) (#479).
+- **`query_snapshot` frame-vars** — exception throw-site locals/params (#460).
+- **`inspect_process(view="requests-now")`** in-flight ASP.NET Core request enumeration,
+  plus an EventPipe-only requests-inflight variant (Started-but-never-Stopped, oldest
+  first) that needs no ptrace (#477).
+- **`collect_events(kind="sweep")`** — parallel initial-triage multi-collector sweep (#459).
+- **crash-guard event collector** (#420).
+- **`inspect_process(view="runtime-config")`** now surfaces AppContext switches (#456).
+- **`get_bytes(kind="trace")`** — export raw `.nettrace`/`.gcdump` artifacts (#454).
+- **Investigation autopilot** — `start_investigation` returns an executable next-step
+  recommendation (Phase 15 D1) (#478).
+- **doctor/preflight** — target-optional environment self-diagnosis command (#439).
+- **Artifact lifecycle** — list/delete + TTL reaper for captured artifacts (#461).
+- **Distributed trace correlation** — trace-stitching engine (#440) with orchestrator
+  fan-out across pods (#442).
+- **Multi-pod counter fan-out** — replica-skew comparison across replicas (#458).
+- **Cold-start suspended launch port** — attach at launch before startup runs (Phase 15
+  A3) (#457).
+- **Per-pid attach concurrency throttle** for ptrace-backed tools (#455).
+- **Multi-issuer OIDC** — `MCP_OIDC_PROVIDERS_JSON` array of trusted issuers plus
+  managed/workload-identity (IRSA / AKS) recipes (#428).
+- **OpenTelemetry export** — stream `InvestigationSummary` to OTel (#427).
+- **Native MCP elicitation** for dump approval + Tasks on collectors (#429).
+- **Bounded threshold-gated capture** — client-owned, bounded auto-capture (#423).
+- **NativeAOT `MethodIdentity`** — name-based method identity from ILC `map.xml` on CPU
+  samples (#416).
+- **Cloud deploy recipes (Wave C)** — ECS/EC2, ACI, and Functions-on-ACA topologies (#411).
+- **CLI + MCP ergonomics** — CLI ergonomics improvements (#417) and MCP tool ergonomics
+  metadata (#418).
+
+### Changed
+- **NativeAOT gcdump documented as unsupported** — requesting a gcdump on a .NET 10
+  NativeAOT target **crashes the process** (upstream runtime SIGSEGV, reproduced by the
+  official `dotnet-gcdump` tool). `canCollectGcDump` is now CoreCLR-only, with
+  defense-in-depth guards and a friendly `NotSupported` result; use `collect_process_dump`
+  instead. Added a NativeAOT leak-hunt investigation playbook (#481, #482).
+- `GcDumpOptions.Runtime` added as an **init-only property** (ABI-preserving; no positional
+  constructor change).
+
 ## [0.14.0] — 2026-06-11
 
 Highlights: **Phase 12 Wave A (ergonomics/quick-wins) + Wave B (collectors)**. Five
