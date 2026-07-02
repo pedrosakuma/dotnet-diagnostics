@@ -6,6 +6,19 @@ internal static class CliCompletionScripts
 {
     public static readonly IReadOnlyList<string> Shells = new[] { "bash", "zsh", "pwsh" };
 
+    /// <summary>
+    /// Every long option flag (<c>--foo</c>) advertised by the completion catalog — both the global
+    /// options and the per-command option lists — de-duplicated. Exposed for the doc-parity guardrail
+    /// so completion can never advertise a flag that is absent from <c>docs/cli-reference.md</c>.
+    /// </summary>
+    internal static IReadOnlyList<string> AllCommandOptionFlags =>
+        GlobalOptions
+            .Concat(CommandOptions.Values.SelectMany(static options => options))
+            .Where(static flag => flag.StartsWith("--", StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(static flag => flag, StringComparer.Ordinal)
+            .ToArray();
+
     private static readonly IReadOnlyList<string> GlobalOptions = new[]
     {
         "-p",
@@ -22,7 +35,7 @@ internal static class CliCompletionScripts
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--dump-type", "--out", "--mvid",
         "--asset", "--handle", "--view", "--provider-filter", "--root-method-filter", "--rank-by",
-        "--type-filter", "--address", "--max-depth", "--max-nodes", "--thread-id", "--stack-rank",
+        "--type-filter", "--address", "--max-depth", "--max-nodes", "--thread-id",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode",
         "--symptom", "--hypothesis", "--max-tool-calls", "--top-hotspots",
     };
@@ -81,7 +94,6 @@ internal static class CliCompletionScripts
                 "--max-depth",
                 "--max-nodes",
                 "--thread-id",
-                "--stack-rank",
                 "--frames-to-hash",
                 "--min-count",
                 "--top",

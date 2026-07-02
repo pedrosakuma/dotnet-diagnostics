@@ -68,4 +68,22 @@ public sealed class CliDocParityTests
         doc.Should().Contain("`frame-vars`",
             "docs/cli-reference.md must document the thread-snapshot 'frame-vars' drilldown view.");
     }
+
+    [Fact]
+    public void CliReference_DocumentsEveryAdvertisedCompletionFlag()
+    {
+        // Every long flag the shell-completion catalog advertises must be documented, so completion can
+        // never surface a flag that the reference omits (or, conversely, one that the CLI cannot reach).
+        var doc = ReadCliReference();
+
+        foreach (var flag in CliCompletionScripts.AllCommandOptionFlags)
+        {
+            // Match on a flag boundary so a prefix flag (e.g. `--top`) is not spuriously satisfied by a
+            // longer one (`--top-types`). Flags appear in the reference as `--flag`, `--flag <v>`, etc.
+            var documented = System.Text.RegularExpressions.Regex.IsMatch(
+                doc, $@"(?<![\w-]){System.Text.RegularExpressions.Regex.Escape(flag)}(?![\w-])");
+            documented.Should().BeTrue(
+                $"docs/cli-reference.md must document the completion-advertised flag '{flag}'.");
+        }
+    }
 }
