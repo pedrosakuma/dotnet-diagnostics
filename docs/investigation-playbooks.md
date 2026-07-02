@@ -363,6 +363,17 @@ that aren't in the sidecar image.
 
 ---
 
+## 2c. "My NativeAOT process is leaking"
+
+NativeAOT changes the leak-hunt toolbox. The managed object-graph tools from §2 are **unavailable**: `inspect_heap(source="gcdump")` is withheld because requesting a gcdump **crashes** the .NET 10 AOT target (the runtime segfaults — see [`aot-coverage.md`](./aot-coverage.md) `[^aot-gcdump]`), and the ClrMD `source="live"`/`source="dump"` heap walks have no NativeAOT DAC. So you localize the leak by **allocation site**, not by retained object graph.
+
+1. **Confirm the growth signal.** `collect_events(kind="counters", durationSeconds=…)` and watch `gc-heap-size`, `gen-2-size`, `loh-size`, `poh-size` and `working-set` trend upward. For a rigorous read, use the §1d before/after or N-way trend recipe (`compare_to_baseline`) — counters work identically on AOT.
+2. **Localize the allocations.** `collect_sample(kind="cpu")`. NativeAOT allocation sites surface as **native frames** — `RhNewObject`, `RhNewArray`, `RhAllocateObject` — so the hot callers pinpoint *where* the growth comes from even without a heap graph. Publish with `StripSymbols=false` (or pass a `.map.xml` via `nativeAotMapFile=`) to get managed method names on those frames (see `[^aot-mapfile]`).
+3. **Cross-check allocation volume by type.** `collect_sample(kind="allocation")` gives per-type byte totals, but note `TypeName` is `<unknown>` on AOT (`[^aot-typename]`) — rank by bytes and correlate with the step-2 allocation-site frames to name the culprit.
+4. **Capture evidence for offline analysis.** `collect_process_dump` produces a **native** dump you can archive and analyze offline. This is the AOT substitute for a gcdump — it preserves the full process image (managed heap analysis tooling for AOT is limited, but the dump is the durable artifact).
+
+---
+
 ## 3. "We're seeing 5xxs in production"
 
 ### Step 1
