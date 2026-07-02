@@ -2120,6 +2120,139 @@ name and captures the events it emits in the window. Use for HTTP activity
 
 ---
 
+## `inspect_heap`
+
+Inspects a managed heap and returns the top retained types plus optional
+retention paths, roots, static-field owners, delegate targets, and duplicate
+strings. Registers a `heap-snapshot` drilldown handle so follow-up questions go
+through [`query_snapshot`](#query_snapshot) without re-walking the heap.
+
+**Backend discriminator (`source`, required):**
+
+| `source` | Backend | ptrace / dump | Notes |
+|---|---|---|---|
+| `live` | ClrMD attach to a running process | needs `CAP_SYS_PTRACE` on Linux | suspends the target for the walk |
+| `dump` | Offline walk of a captured `.dmp` | neither | `dumpFilePath` required |
+| `gcdump` | GC heap snapshot over EventPipe | neither — **production-safe** | CoreCLR only; NativeAOT returns a friendly `NotSupported` (issue #471) |
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `source` | `string` | — | `live` \| `dump` \| `gcdump`. See table above |
+| `processId` | `int?` | auto-select | Required for `source="live"` (auto-resolved when one .NET process is reachable); forbidden for `source="dump"` |
+| `dumpFilePath` | `string?` | — | Absolute path to a captured `.dmp`. Required for `source="dump"`; forbidden for `source="live"` |
+| `topTypes` | `int` | `20` | Types returned in each top-N (bytes / instances) list |
+| `includeRetentionPaths` | `bool` | `false` | Walk a short GC retention chain for the top types (slower; lengthens the live suspend window) |
+| `retentionPathLimit` | `int` | `8` | Retention-chain depth cap when retention paths are enabled |
+| `includeStaticFields` | `bool` | `false` | Rank loaded types' static reference fields by referenced size — surfaces "singleton grew forever" leaks |
+| `includeDelegateTargets` | `bool` | `false` | Group `MulticastDelegate` invocation lists by (target type, method) — surfaces "event handler never unsubscribed" leaks |
+| `includeDuplicateStrings` | `bool` | `false` | Hash every `System.String` and rank by aggregate retained bytes — surfaces missing interning |
+| `symbolPath` | `string?` | — | NT_SYMBOL_PATH-style search path. Remote symbol servers are **off by default** (issue #165) — `srv*http(s)://…` must be on `Diagnostics:SymbolServerAllowlist` |
+| `exportTrace` | `bool` | `false` | `source="gcdump"` only. Persist the raw `.nettrace` under the artifact root and return its relative path for `get_bytes(kind="trace")` |
+
+**Returns:** a `HeapInspectionResult` summary plus a `heap-snapshot` `handle`
+(~10 min TTL). Drill further via [`query_snapshot`](#query_snapshot) with any of
+the heap views: `top-types`, `retention-paths`, `roots-by-kind`,
+`finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`,
+`duplicate-strings`, `gchandles`, `timers`, `alc`, `object`, `gcroot`, `objsize`,
+`async`, `diff`, `growth`.
+
+**Scope:** `heap-read`. `source="live"` additionally requires the runtime
+`ptrace` scope on the bearer (root/wildcard tokens satisfy it; dedicated bearers
+must hold the literal `ptrace` scope). **Requires:** `source="live"` needs
+`CAP_SYS_PTRACE` on Linux; `source="gcdump"` requires a CoreCLR target (NativeAOT
+is refused, not crashed).
+
+---
+
+## `collect_thread_snapshot`
+
+Captures managed thread states plus the SyncBlock lock graph (holder address,
+owning thread, waiter count) from a live process or a dump. Returns the top-3
+blocked threads inline plus a `thread-snapshot` `handle` (~10 min TTL) for
+deadlock / unique-stack / wait-chain drilldown. Dump-origin handles are **not**
+evicted when the producer PID exits.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int?` | auto-select | Live PID. Mutually exclusive with `dumpFilePath`; auto-selects when both are null |
+| `dumpFilePath` | `string?` | — | Path to a captured `.dmp`. Mutually exclusive with `processId` |
+| `maxFramesPerThread` | `int` | `64` | Max stack frames captured per thread |
+| `includeRuntimeFrames` | `bool` | `false` | Include PInvoke trampolines / runtime frames with no managed method |
+| `includeNativeFrames` | `bool` | `false` | Include pure native frames ClrMD cannot resolve |
+| `symbolPath` | `string?` | — | NT_SYMBOL_PATH-style path (same remote-server allowlist rule as `inspect_heap`) |
+| `depth` | `string` | `summary` | `summary` (top-3 blocked, no lock graph) \| `detail` (top-25 threads + top-25 locks) \| `raw` (= detail). The full snapshot is always retained behind the handle |
+
+**Returns:** `ThreadSnapshotQueryResult` + `thread-snapshot` handle. Drill via
+[`query_snapshot`](#query_snapshot) thread views: `threads-summary`, `stack`,
+`lock-graph`, `deadlocks`, `top-blocked`, `unique-stacks`, `async-stalls`,
+`wait-chains`, `threadpool`, `resolve-address`, `frame-vars`.
+
+**Scope:** `ptrace`. **Requires:** live attach needs `CAP_SYS_PTRACE` on Linux.
+
+---
+
+## `query_snapshot`
+
+The single **drilldown surface**. Every collector that captures a reusable
+artifact (heap, thread, off-CPU, event collection, CPU/allocation/native-alloc
+sample) registers a handle in the shared handle store; `query_snapshot` answers
+parameterized follow-up questions against that handle without re-paying the
+collection cost. It replaces the five legacy per-family query tools
+(`query_heap_snapshot`, `query_thread_snapshot`, `query_off_cpu_snapshot`,
+`query_collection`, `get_call_tree`) behind one `(handle, view)` contract; the
+dispatcher reads the artifact kind and forwards to the matching implementation so
+response envelopes stay byte-identical (asserted by
+`QuerySnapshotCompatibilityTests`).
+
+**Core parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `handle` | `string` | — | Drilldown handle from a prior collector |
+| `view` | `string?` | per-kind default | Kind-specific view (catalog below). Omit for the kind's default |
+| `topN` | `int?` | 50 heap/thread/collection, 25 off-CPU | Max entries in a ranked-list view |
+
+**View catalog (by handle kind):**
+
+- **heap** (`inspect_heap`): `top-types` (default), `retention-paths`,
+  `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`,
+  `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`,
+  `object`, `gcroot`, `objsize`, `async`, `diff`, `growth`.
+- **thread** (`collect_thread_snapshot`): `top-blocked` (default),
+  `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`,
+  `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`.
+- **off-CPU** (`collect_sample(kind="off_cpu")`): `topStacks` (default),
+  `byThread`, `stack`.
+- **collection** (`collect_events(kind=…)`): `summary` (default), plus
+  per-kind views such as `byProvider`, `byType`, `exceptions`, `pauseHistogram`,
+  `byGeneration`, `heap-stats`, `n+1`, `connectionPool`, `queues`, `dns`,
+  `config`, `timeline`, `hillClimbing`, `requests`, `longRunning`, …
+- **cpu-sample / allocation-sample / native-alloc-sample**: `call-tree`
+  (default), `top-methods`, `by-module`, `by-namespace`, `hot-path`,
+  `caller-callee`, `diff`.
+
+**Common view-specific parameters** (each ignored outside its view):
+`rankBy` (`bytes`/`instances`), `typeFullName`, `address`,
+`includeSensitiveValues`, `threadId`, `framesToHash`, `minCount`, `stackRank`,
+`rootMethodFilter`, `providerFilter`, `changesOnly`, `maxDepth`, `maxNodes`,
+`baselineHandle`, `comparisonHandles`, `minDeltaPct`, `depth`, `mode`,
+`hotPathThresholdPercent`. See the tool's parameter descriptions for the exact
+view→parameter mapping.
+
+**Authorization.** The static gate accepts any drilldown-capable bearer; after
+resolving the handle kind the tool re-applies the exact legacy scope at runtime
+(heap → `heap-read`, thread → `ptrace`, off-CPU → `eventpipe`, call-tree →
+`investigation-export`, collections → `read-counters`/`eventpipe`). Unknown
+handle kinds, unknown views, and parameter-shape violations return structured
+`InvalidArgument` / `UnsupportedHandleKind` / `HandleExpired` envelopes — never a
+500.
+
+---
+
 ## `collect_process_dump`
 
 Writes a process dump to disk via the diagnostic IPC channel.
@@ -2485,6 +2618,52 @@ pointing at `list_orchestrator` and will be removed in **0.7.0**.
 
 ---
 
+## `attach_to_pod`
+
+Injects a diagnostic **ephemeral container** into a target Kubernetes Pod so the
+sidecar shares the target's PID namespace and diagnostic IPC socket, then returns
+an investigation handle bound to the current MCP session. This is a side-effecting
+verb (deliberately **not** folded into `list_orchestrator`).
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `namespace` | `string?` | `Orchestrator:DefaultNamespace` | Pod namespace |
+| `podName` | `string` | — | Pod name. **Required** |
+| `containerName` | `string?` | first container in the Pod spec | Target container inside the Pod |
+| `ttlSeconds` | `int?` | `Orchestrator:DefaultInvestigationTtlSeconds` (1800) | Per-investigation TTL |
+| `requirePreparedTarget` | `bool` | `true` | When true, refuses to attach to Pods that don't carry the prepared opt-in label |
+| `allowReuseExistingSession` | `bool` | `true` | When true, returns an existing investigation for the same target instead of injecting a second ephemeral container |
+
+**Returns:** `AttachSession` (investigation handle + resolved target). Use the
+handle with the diagnostic tools, then release it with
+[`detach_from_pod`](#detach_from_pod). **Scope:** `orchestrator-attach`.
+Requires the orchestrator to be enabled; disabled servers return
+`OrchestratorDisabled`.
+
+---
+
+## `detach_from_pod`
+
+Closes an active investigation handle: tears down the cached MCP client, stops
+the port-forward, unbinds every MCP session still pointed at the handle, and
+marks it `Closed` so subsequent tool calls fall back to local execution.
+**NOTE:** the ephemeral diagnostics container **cannot** be removed (a Kubernetes
+constraint) — it stays on the Pod's spec until the Pod is recreated, so detach
+only releases the orchestrator-side transport, it does not roll the Pod back.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `handleId` | `string?` | handle bound to the current session | Investigation handle id returned by `attach_to_pod` |
+
+**Returns:** `DetachResult`. **Scope:** `orchestrator-attach`. Idempotent —
+calling on a missing / already-terminal handle is a no-op and returns Ok.
+
+---
+
 ## `discover_azure`
 
 Azure discovery v1 (issue #232, parent #230). Single `kind`-discriminated tool that
@@ -2549,6 +2728,82 @@ registered and the Azure SDK is never reached).
 
 Until those PRs merge, calling the tool with `AzureDiscovery:Enabled=true` throws
 `NotImplementedException` through the backend stubs.
+
+---
+
+## `start_investigation`
+
+Plans a .NET performance investigation as a decision tree **before** any collector
+runs, so the LLM executes a bounded, prioritized sequence instead of guessing.
+Returns an `InvestigationPlan` (ordered steps + rationale + a tool-call budget).
+The mode is inferred from which inputs are supplied:
+
+- **cold** — a `symptom` only → full triage decision tree.
+- **hypothesis** — a `hypothesis` → a targeted plan confirming/refuting it.
+- **warm** — a prior `baseline` → resume from a known-good comparison.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `processId` | `int?` | auto-select | Target PID (auto-selects when one .NET process is visible) |
+| `symptom` | `string?` | — | Plain-language symptom (e.g. `high latency on /checkout since v2025.10`). Required for cold mode |
+| `hypothesis` | `string?` | — | Specific hypothesis to test → hypothesis mode |
+| `baseline` | `BaselineHandle?` | — | Baseline from a prior investigation → warm mode |
+| `maxToolCalls` | `int` | `8` | Hard cap on tool calls before forcing summarization |
+| `dumpRequiresApproval` | `bool` | `true` | Mark `collect_process_dump` steps as approval-gated |
+
+**Scope:** `investigation-export`. See
+[investigation-playbooks.md](./investigation-playbooks.md) for worked cold /
+warm / hypothesis journeys.
+
+---
+
+## `export_investigation_summary`
+
+Reads a prior `collect_sample(kind="cpu")` drilldown handle and produces a
+portable, versioned investigation summary the LLM can persist externally
+(server stays stateless) and later diff with `compare_to_baseline`.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `handle` | `string` | — | Handle from a prior `collect_sample(kind="cpu")` call. **Required** |
+| `format` | `SummaryFormat` | `json` | `json` (portable) or `markdown` (human-readable for PRs) |
+| `topHotspots` | `int` | `10` | Max hotspots included |
+| `buildAssemblyName` | `string?` | — | Managed assembly name of the target |
+| `previousInvestigationId` | `string?` | — | Link lineage to a previous summary |
+| `fixCommitSha` / `fixPullRequestUrl` / `fixDescription` | `string?` | — | Optional proposed-fix metadata |
+| `notes` | `string?` | — | Free-form notes appended to the summary |
+
+**Returns:** `ExportedInvestigationSummary`. An expired/unknown handle returns a
+`HandleExpired` envelope with a hint to re-run the sampler. **Scope:**
+`investigation-export`.
+
+---
+
+## `compare_to_baseline`
+
+Diffs a current investigation summary against a baseline (or compares an ordered
+journey of `ComparableSnapshot` bodies) and returns a verdict + headline + ranked
+deltas. Large matrices return a compact inline payload plus a
+`journey://diff/{handle}` Resource link.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `baselineSummaryJson` | `string?` | — | Baseline summary JSON (from a prior `export_investigation_summary`). Optional when `snapshotsJson` is supplied |
+| `currentSummaryJson` | `string?` | — | Current summary JSON. Optional when `snapshotsJson` is supplied |
+| `snapshotsJson` | `string[]?` | — | Ordered `ComparableSnapshot` JSON bodies for an N-way journey diff (bodies, not file paths) |
+| `topN` | `int` | `25` | Max metric series / key rows in compact inline payloads |
+| `depth` | `string` | `full` | `full` (whole matrix when small) or `compact` (verdict/headline/top deltas) |
+| `mode` | `string?` | `trend` | `trend` (ordered captures over time) or `dispersion` (unordered replicas → outliers) |
+
+**Scope:** `investigation-export`. Pairs with `export_investigation_summary` for
+"did my fix actually help?" journeys — see
+[investigation-playbooks.md](./investigation-playbooks.md).
 
 ---
 
