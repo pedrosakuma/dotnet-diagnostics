@@ -10,6 +10,7 @@ public class InProcessDiagnosticCollectorTests
     {
         "counters", "exceptions", "gc", "cpu", "allocation", "datas", "catalog",
         "activities", "logs", "jit", "threadpool", "contention", "db",
+        "kestrel", "networking", "requests",
     };
 
     [Fact]
@@ -29,6 +30,9 @@ public class InProcessDiagnosticCollectorTests
     [InlineData("cpu", true)]
     [InlineData("allocation", true)]
     [InlineData("contention", true)]
+    [InlineData("kestrel", true)]
+    [InlineData("networking", true)]
+    [InlineData("requests", true)]
     [InlineData("event_source", false)]
     [InlineData("startup", false)]
     [InlineData("nonsense", false)]

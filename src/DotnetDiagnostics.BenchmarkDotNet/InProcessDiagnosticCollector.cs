@@ -12,8 +12,11 @@ using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Hosting;
 using DotnetDiagnostics.Core.Jit;
+using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
+using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.UseCases;
@@ -52,6 +55,9 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
         "threadpool",
         "contention",
         "db",
+        "kestrel",
+        "networking",
+        "requests",
     };
 
     /// <summary>
@@ -118,6 +124,12 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
                 services.GetRequiredService<IContentionCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
             "db" => Materialize(kind, await EventCollectionUseCases.CollectDb(
                 services.GetRequiredService<IDbCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
+            "kestrel" => Materialize(kind, await EventCollectionUseCases.CollectKestrel(
+                services.GetRequiredService<IKestrelCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
+            "networking" => Materialize(kind, await EventCollectionUseCases.CollectNetworking(
+                services.GetRequiredService<INetworkingCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
+            "requests" => Materialize(kind, await EventCollectionUseCases.CollectInFlightRequests(
+                services.GetRequiredService<IInFlightRequestCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
             "activities" => Materialize(kind, await EventCollectionUseCases.CollectActivities(
                 services.GetRequiredService<IActivityCollector>(), resolver, handles, processId, durationSeconds: durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
             _ => KindCapture.Unsupported(kind),
