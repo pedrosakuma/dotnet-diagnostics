@@ -524,6 +524,61 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_ThreadSnapshotHandle_FrameVarsView_MissingThreadId_ReturnsError()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "thread-snapshot", ThreadSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view frame-vars\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("InvalidArgument");
+        stdout.Should().Contain("--thread-id");
+        stdout.Should().Contain("frame-vars");
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotHandle_FrameVarsView_WithThreadId_CallsResolver()
+    {
+        var resolver = new StubFrameVariableResolver(new FrameVariablesResult(
+            ManagedThreadId: 1,
+            OSThreadId: 10_001,
+            Frames:
+            [
+                new FrameVariables(0, "GroupA.Leaf", "GroupA.Type", "App.dll", "0x1000", "0x2000", []),
+            ]));
+        var (services, store) = BuildServices(resolver);
+        var handle = store.Register(Environment.ProcessId, "thread-snapshot", ThreadSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view frame-vars --thread-id 1\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("frame-vars");
+        stdout.Should().Contain("GroupA.Leaf");
+        resolver.WasInvoked.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotHandle_FrameVarsView_ThreadNotInSnapshot_ReturnsError()
+    {
+        var resolver = new StubFrameVariableResolver(new FrameVariablesResult(
+            ManagedThreadId: 1,
+            OSThreadId: 10_001,
+            Frames: []));
+        var (services, store) = BuildServices(resolver);
+        var handle = store.Register(Environment.ProcessId, "thread-snapshot", ThreadSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view frame-vars --thread-id 999\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("was not present in the captured snapshot");
+        resolver.WasInvoked.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Query_OffCpuHandle_DefaultsToTopStacks()
     {
         var (services, store) = BuildServices();
@@ -763,10 +818,12 @@ public sealed class SessionReplTests
     }
 
     [Fact]
-    public void SessionViewsFor_ThreadSnapshotKind_ReturnsAllEightViews()
+    public void SessionViewsFor_ThreadSnapshotKind_IncludesAllNineDispatcherViewsPlusFrameVars()
     {
-        CliCommands.SessionViewsFor("thread-snapshot")
-            .Should().Equal(ThreadSnapshotQueryDispatcher.SessionViews);
+        var views = CliCommands.SessionViewsFor("thread-snapshot");
+        views.Should().Contain(ThreadSnapshotQueryDispatcher.SessionViews);
+        views.Should().Contain("frame-vars");
+        views.Should().HaveCount(ThreadSnapshotQueryDispatcher.SessionViews.Count + 1);
     }
 
     [Fact]
@@ -955,6 +1012,35 @@ public sealed class SessionReplTests
             .AddSingleton(inspector)
             .BuildServiceProvider();
         return (services, store);
+    }
+
+    private static (ServiceProvider Services, MemoryDiagnosticHandleStore Store) BuildServices(IFrameVariableResolver resolver)
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var services = new ServiceCollection()
+            .AddSingleton<IDiagnosticHandleStore>(store)
+            .AddSingleton(resolver)
+            .BuildServiceProvider();
+        return (services, store);
+    }
+
+    /// <summary>
+    /// Stub <see cref="IFrameVariableResolver"/> that returns a fixed <see cref="FrameVariablesResult"/>
+    /// and records whether it was invoked, so tests can verify routing without a live ClrMD attach.
+    /// </summary>
+    private sealed class StubFrameVariableResolver(FrameVariablesResult result) : IFrameVariableResolver
+    {
+        public bool WasInvoked { get; private set; }
+
+        public Task<FrameVariablesResult> ResolveAsync(
+            ThreadSnapshotArtifact artifact,
+            int managedThreadId,
+            bool includeSensitiveValues,
+            CancellationToken cancellationToken = default)
+        {
+            WasInvoked = true;
+            return Task.FromResult(result);
+        }
     }
 
     /// <summary>
