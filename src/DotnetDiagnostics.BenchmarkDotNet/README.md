@@ -42,8 +42,13 @@ child PID; results land in `<artifacts>/diagnostics/*.json` and a consolidated
 ## Supported collect kinds
 
 `counters`, `exceptions`, `gc`, `cpu`, `allocation`, `datas`, `catalog`, `activities`, `logs`,
-`jit`, `threadpool`, `contention`, `db`. (`event_source` is intentionally excluded — it needs an
-explicit provider name.)
+`jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`. (`event_source` is
+intentionally excluded — it needs an explicit provider name.)
+
+The `kestrel`, `networking` and `requests` kinds collect the ASP.NET Core / HTTP pipeline views —
+Kestrel server request timings, `HttpClient`/socket/DNS/TLS activity, and in-flight ASP.NET requests
+respectively — so a web/API benchmark can attribute its own server-side and outbound-I/O cost, not
+just CPU and allocations.
 
 The `cpu` kind runs the EventPipe **CPU sampler** (CoreCLR only) against the benchmark child and
 attributes cost **per stack frame**: each hotspot carries its *exclusive* (self) and *inclusive*
