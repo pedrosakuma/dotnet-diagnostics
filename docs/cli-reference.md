@@ -423,7 +423,7 @@ exposes drilldown views computed from the merged call tree without re-sampling:
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
-| `call-tree` (default) | the merged inclusive/exclusive call tree | `--max-nodes`, `--min-count`, `--root-method-filter`, `--rank-by` |
+| `call-tree` (default) | the merged inclusive/exclusive call tree | `--max-depth` (tree depth, default `8`), `--max-nodes`, `--min-count`, `--root-method-filter`, `--rank-by` |
 | `top-methods` | methods ranked by sample cost | `--top` (default `20`), `--rank-by exclusive\|inclusive` |
 | `by-module` | samples grouped by owning module | `--top`, `--rank-by` |
 | `by-namespace` | samples grouped by namespace | `--top`, `--rank-by` |
@@ -501,6 +501,7 @@ call-stack / blocking views (`threads-summary`, `stack`, `lock-graph`, `deadlock
 | --- | --- | --- |
 | `wait-chains` | who-waits-on-whom chains toward the blocking root | — |
 | `async-stalls` | stalled `async` state machines and their await points | — |
+| `unique-stacks` | threads folded into shared stack signatures, ranked by group size | `--frames-to-hash` (top frames in the signature hash, default `20`), `--min-count` (drop groups smaller than N, default `1`) |
 | `frame-vars` | one thread's local variables and parameters for a chosen stack frame (re-opens the origin via ClrMD) | `--thread-id <id>` (required) |
 
 `frame-vars` requires `--thread-id` to pick the thread whose frame variables to resolve; the thread must
