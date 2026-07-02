@@ -24,6 +24,7 @@ internal static class CliCompletionScripts
         "--asset", "--handle", "--view", "--provider-filter", "--root-method-filter", "--rank-by",
         "--type-filter", "--address", "--max-depth", "--max-nodes", "--thread-id", "--stack-rank",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode",
+        "--symptom", "--hypothesis", "--max-tool-calls", "--top-hotspots",
     };
 
     private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> CommandOptions =
@@ -88,6 +89,8 @@ internal static class CliCompletionScripts
             },
             ["get-bytes"] = new[] { "--kind", "--out", "--mvid", "--asset", "--dump-file" },
             ["compare"] = new[] { "--json", "--save", "--mode" },
+            ["investigate"] = new[] { "--symptom", "--hypothesis", "--max-tool-calls" },
+            ["export-summary"] = new[] { "--handle", "--out", "--top-hotspots" },
             ["session"] = Array.Empty<string>(),
             ["completion"] = Array.Empty<string>(),
         };

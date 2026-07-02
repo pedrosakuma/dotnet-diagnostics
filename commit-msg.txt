@@ -1,0 +1,42 @@
+feat(cli): add investigate and export-summary commands (#488)
+
+Brings the investigation-memory workflow to the CLI (issue #488).
+
+## New commands
+
+### investigate
+- Calls `IInvestigationPlanner.Plan()` (Core-only, no I/O) with the target pid
+  (auto-resolved when omitted), optional `--symptom`, `--hypothesis`, and
+  `--max-tool-calls` constraints.
+- Routes cold / warm / hypothesis mode exactly as the MCP `start_investigation`
+  tool does, using the same `InvestigationRequest` + `InvestigationConstraints`
+  value objects from Core.
+- Renders the next recommended step (tool name + rationale), the full step list,
+  and early-stop conditions in human-readable form; `--json` emits the full
+  `DiagnosticResult<InvestigationPlan>` envelope.
+
+### export-summary
+- Reads a `CpuSampleTraceArtifact` from the session handle store via
+  `IInvestigationSummaryExporter.Export()` (Core-only).
+- Requires `--handle <id>` (a CPU-sample handle from `collect --kind cpu` in a
+  `session` REPL — handles are session-scoped).
+- Streams the portable summary JSON to stdout or writes to `--out <file>`.
+- Server is stateless: the caller owns persistence (paste JSON into a PR / ADR).
+
+## Changes
+
+- **CliOptions**: `--symptom`, `--hypothesis`, `--max-tool-calls`, `--top-hotspots`
+- **CliCommands**: Commands list, `RunAsync` routing, `TryValidateInvestigate`,
+  `TryValidateExportSummary`, `InvestigateAsync`, `ExportSummaryAsync`
+- **CliHelp**: focused help entries for both commands
+- **CliCompletionScripts**: `CommandOptions` entries + `ValueFlags` additions
+- **CliHintProjection**: `start_investigation` → `investigate`,
+  `export_investigation_summary` → `export-summary` mappings in `ToolToCommand`
+  and `ReasonRewrites` (so Core hints using MCP names project cleanly to CLI vocab)
+- **Tests**: 18 new parse / validation tests in `CliInvestigateTests.cs`
+
+All 327 CLI tests pass. Full solution builds with zero warnings in source projects.
+
+Closes #488
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>

@@ -223,6 +223,39 @@ compare options:
   dotnet-diagnostics-cli compare ./a.json ./b.json ./c.json --mode dispersion --save ./matrix.json
 """),
         new CommandHelp(
+            "investigate",
+            "Plan a .NET performance investigation and get the recommended first step.",
+"""
+investigate options:
+      --pid <id>                Target process id (auto-resolved when only one .NET process is visible).
+      --symptom <text>          Plain-language symptom, e.g. 'high latency on /checkout since v2'. Required for cold mode.
+      --hypothesis <text>       Specific hypothesis to test, e.g. 'lock contention on Cart.Checkout'. Triggers hypothesis mode.
+      --max-tool-calls <int>    Hard limit on recommended tool calls before forcing summarization. Default 8.
+""",
+"""
+  dotnet-diagnostics-cli investigate --pid 1234 --symptom 'high CPU after deploy'
+  dotnet-diagnostics-cli investigate --pid 1234 --hypothesis 'lock contention in Cart.Checkout'
+  dotnet-diagnostics-cli investigate --json
+"""),
+        new CommandHelp(
+            "export-summary",
+            "Export a portable investigation summary JSON from a prior CPU-sample handle (session only).",
+"""
+export-summary options:
+      --handle <id>             Required. CPU-sample handle from a prior 'collect --kind cpu' command.
+      --out <file>              Write the summary to a file (default: stdout).
+      --top-hotspots <int>      Max hotspots to include in the summary. Default 10.
+
+  Note: export-summary requires a CPU-sample handle, which is only available in a 'session' REPL
+  after running 'collect --kind cpu'. The JSON is portable: paste it into a PR or ADR and
+  supply it to a future investigation to compare baselines (server is stateless — you own persistence).
+""",
+"""
+  diag> collect --kind cpu --pid 1234            # obtain a handle
+  diag> export-summary --handle <id>             # print JSON to stdout
+  diag> export-summary --handle <id> --out ./inv.json
+"""),
+        new CommandHelp(
             "session",
             "Start a stateful REPL that keeps collected handles queryable across commands.",
 """

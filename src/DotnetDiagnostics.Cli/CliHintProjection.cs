@@ -53,7 +53,21 @@ internal static class CliHintProjection
         ["get-bytes"] = "get-bytes",
         ["query"] = "query",
         ["session"] = "session",
+        ["start_investigation"] = "investigate",
+        ["export_investigation_summary"] = "export-summary",
+        ["investigate"] = "investigate",
+        ["export-summary"] = "export-summary",
     };
+
+    /// <summary>
+    /// Maps an MCP tool name to the CLI command that performs the equivalent action, or
+    /// <see langword="false"/> when the tool has no one-shot CLI equivalent (e.g. <c>collect_sample</c>,
+    /// <c>collect_thread_snapshot</c>, <c>query_snapshot</c>). Shared with
+    /// <see cref="CliInvestigationProjection"/> so plan steps are projected through the same table the
+    /// hint projection uses.
+    /// </summary>
+    internal static bool TryMapToolToCommand(string mcpToolName, out string command)
+        => ToolToCommand.TryGetValue(mcpToolName, out command!);
 
     /// <summary>
     /// Ordered (specific → general) rewrites for the handful of Core hint reasons that embed MCP call
@@ -76,6 +90,8 @@ internal static class CliHintProjection
         (" Use collect_thread_snapshot(view=\"threadpool\") when a ptrace-backed snapshot is acceptable.", ""),
         ("outputDirectory", "--out"),
         ("processId", "--pid"),
+        ("start_investigation", "investigate"),
+        ("export_investigation_summary", "export-summary"),
     };
 
     /// <summary>

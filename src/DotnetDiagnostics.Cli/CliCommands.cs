@@ -30,6 +30,8 @@ using DotnetDiagnostics.Core.Triage;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.UseCases;
+using DotnetDiagnostics.Core.Investigation;
+using DotnetDiagnostics.Core.Memory;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace DotnetDiagnostics.Cli;
@@ -48,6 +50,11 @@ internal sealed record CliCommandResult(bool IsError, bool Cancelled, object Env
 
     /// <summary>UTC moment <see cref="Handle"/> expires, or <c>null</c>.</summary>
     public DateTimeOffset? HandleExpiresAt { get; init; }
+
+    /// <summary>When <see langword="true"/>, <see cref="Human"/> is emitted to stdout verbatim — no
+    /// ANSI colorization — because it is a machine-readable payload (e.g. <c>export-summary</c>'s
+    /// portable JSON document) that a consumer pipes or persists.</summary>
+    public bool RawHuman { get; init; }
 }
 
 /// <summary>
@@ -71,6 +78,8 @@ internal static class CliCommands
         "query",
         "get-bytes",
         "compare",
+        "investigate",
+        "export-summary",
         "session",
         "completion",
     };
@@ -165,6 +174,8 @@ internal static class CliCommands
             "query" => Query(),
             "get-bytes" => await GetBytesAsync(services, options, cancellationToken).ConfigureAwait(false),
             "compare" => await CompareAsync(options, cancellationToken).ConfigureAwait(false),
+            "investigate" => await InvestigateAsync(services, options, cancellationToken).ConfigureAwait(false),
+            "export-summary" => await ExportSummaryAsync(services, options, cancellationToken).ConfigureAwait(false),
             "completion" => Completion(options),
             _ => throw new ArgumentException($"Unknown command '{options.Command}'.", nameof(options)),
         };
@@ -194,6 +205,8 @@ internal static class CliCommands
             "dump" => TryValidateDump(options, out error),
             "get-bytes" => TryValidateGetBytes(options, out error),
             "compare" => TryValidateCompare(options, out error),
+            "investigate" => TryValidateInvestigate(options, out error),
+            "export-summary" => TryValidateExportSummary(options, out error),
             "completion" => TryValidateCompletion(options, out error),
             _ => true,
         };
@@ -607,6 +620,48 @@ internal static class CliCommands
         if (!JourneyModeParser.TryParse(options.Mode, out _))
         {
             error = $"Unknown --mode '{options.Mode}'. Valid values: trend, dispersion.";
+            return false;
+        }
+
+        return true;
+    }
+
+    public static bool TryValidateInvestigate(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+
+        if (options.MaxToolCalls is < 1)
+        {
+            error = "--max-tool-calls must be >= 1.";
+            return false;
+        }
+
+        // Cold mode (no --hypothesis) has nothing to anchor the plan on without a stated symptom;
+        // the planner would silently default to a generic route. Require one so the plan is meaningful.
+        if (string.IsNullOrWhiteSpace(options.Hypothesis) && string.IsNullOrWhiteSpace(options.Symptom))
+        {
+            error = "The 'investigate' command requires --symptom <text> (or --hypothesis <text>) so the plan can be anchored to what you observed.";
+            return false;
+        }
+
+        return true;
+    }
+
+    public static bool TryValidateExportSummary(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(options.Handle))
+        {
+            error = "The 'export-summary' command requires --handle <id> (a CPU-sample handle from 'collect --kind cpu').";
+            return false;
+        }
+
+        if (options.TopHotspots is < 1)
+        {
+            error = "--top-hotspots must be >= 1.";
             return false;
         }
 
@@ -1208,6 +1263,202 @@ internal static class CliCommands
         }
 
         return new CliCommandResult(IsError: false, Cancelled: false, diff, RenderJourneyDiff(diff));
+    }
+
+    private static async Task<CliCommandResult> InvestigateAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+    {
+        var planner = services.GetRequiredService<IInvestigationPlanner>();
+        var resolver = services.GetRequiredService<IProcessContextResolver>();
+
+        var resolved = await ProcessResolutionHelpers.ResolveContextAsync<InvestigationPlan>(
+            resolver, options.Pid, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null)
+        {
+            return BuildResult(resolved.Failure, static (_, _) => { });
+        }
+
+        var constraints = new InvestigationConstraints(
+            MaxToolCalls: options.MaxToolCalls ?? 8);
+
+        var request = new InvestigationRequest(
+            ProcessId: resolved.ProcessId,
+            Symptom: options.Symptom,
+            Hypothesis: options.Hypothesis,
+            Constraints: constraints);
+
+        var plan = planner.Plan(request);
+        var cliPlan = CliInvestigationProjection.Project(plan);
+        var summary = $"Mode={cliPlan.Mode}. Next step #{cliPlan.NextStep.StepNumber}: {cliPlan.NextStep.StepId}. " +
+                      $"{cliPlan.AllSteps.Count} total step(s), {cliPlan.EarlyStopConditions.Count} early-stop condition(s). " +
+                      $"Honor MaxToolCalls={cliPlan.MaxToolCalls}.";
+        var result = ProcessResolutionHelpers.WithContext(DiagnosticResult.Ok(cliPlan, summary), resolved.Context);
+
+        return BuildResult(result, static (sb, plan) =>
+        {
+            sb.AppendLine();
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  investigation-id : {plan.InvestigationId}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  mode             : {plan.Mode}");
+            if (!string.IsNullOrWhiteSpace(plan.Symptom))
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  symptom          : {plan.Symptom}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(plan.Hypothesis))
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  hypothesis       : {plan.Hypothesis}");
+            }
+
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  max-tool-calls   : {plan.MaxToolCalls}");
+            sb.AppendLine();
+            sb.AppendLine("  next step:");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"    #{plan.NextStep.StepNumber} {plan.NextStep.StepId}{FormatStepCommand(plan.NextStep.Command)}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"    rationale: {plan.NextStep.Rationale}");
+            if (plan.AllSteps.Count > 1)
+            {
+                sb.AppendLine();
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  all steps ({plan.AllSteps.Count}):");
+                foreach (var step in plan.AllSteps)
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"    #{step.StepNumber} [{step.Status}] {step.StepId}{FormatStepCommand(step.Command)}");
+                }
+            }
+
+            if (plan.EarlyStopConditions.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("  early-stop conditions:");
+                foreach (var cond in plan.EarlyStopConditions)
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"    - {cond.Description} → {cond.Action}");
+                }
+            }
+        });
+    }
+
+    private static string FormatStepCommand(string? command)
+        => string.IsNullOrWhiteSpace(command) ? string.Empty : $" (via {command})";
+
+    private static async Task<CliCommandResult> ExportSummaryAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (!TryValidateExportSummary(options, out var validationError))
+        {
+            throw new ArgumentException(validationError, nameof(options));
+        }
+
+        var exporter = services.GetRequiredService<IInvestigationSummaryExporter>();
+        var handles = services.GetRequiredService<IDiagnosticHandleStore>();
+
+        var lookup = handles.TryGetWithKind(options.Handle!);
+        if (lookup is null)
+        {
+            return BuildResult<ExportedInvestigationSummary>(
+                DiagnosticResult.Fail<ExportedInvestigationSummary>(
+                    $"Handle '{options.Handle}' is unknown or expired. Collect a CPU sample first with 'collect --kind cpu', then re-run export-summary.",
+                    new DiagnosticError("HandleExpired",
+                        "Drill-down handles live until the session ends or the target process exits.",
+                        options.Handle)),
+                static (_, _) => { });
+        }
+
+        if (lookup.Value.Artifact is not CpuSampleTraceArtifact artifact)
+        {
+            return BuildResult<ExportedInvestigationSummary>(
+                DiagnosticResult.Fail<ExportedInvestigationSummary>(
+                    $"Handle '{options.Handle}' is a '{lookup.Value.Kind}' handle, not a CPU sample. " +
+                    "export-summary needs a CPU-sample handle; re-run with a handle from 'collect --kind cpu'.",
+                    new DiagnosticError("HandleKindMismatch",
+                        "export-summary projects CPU-sample hotspots into a portable investigation summary.",
+                        options.Handle)),
+                static (_, _) => { });
+        }
+
+        var topHotspots = options.TopHotspots ?? 10;
+        var exported = exporter.Export(new ExportRequest(
+            Handle: options.Handle!,
+            Artifact: artifact,
+            TopHotspots: topHotspots,
+            Format: SummaryFormat.Json));
+
+        if (!string.IsNullOrWhiteSpace(options.OutDir))
+        {
+            try
+            {
+                var fullPath = Path.GetFullPath(options.OutDir);
+                var dir = Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrWhiteSpace(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                // Atomic write: a failure mid-write must never truncate/clobber a pre-existing summary.
+                var tempPath = fullPath + ".tmp-" + Guid.NewGuid().ToString("N");
+                try
+                {
+                    await File.WriteAllTextAsync(tempPath, exported.Rendered, cancellationToken).ConfigureAwait(false);
+                    File.Move(tempPath, fullPath, overwrite: true);
+                }
+                catch
+                {
+                    TryDeleteQuietly(tempPath);
+                    throw;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+            {
+                return BuildResult<ExportedInvestigationSummary>(
+                    DiagnosticResult.Fail<ExportedInvestigationSummary>(
+                        $"export-summary: failed to write '{options.OutDir}'.",
+                        new DiagnosticError("OutputWriteFailure", ex.Message)),
+                    static (_, _) => { });
+            }
+
+            var writtenBytes = exported.Rendered.Length;
+            var writeSummary = $"Exported investigation summary {exported.Summary.InvestigationId} ({writtenBytes} chars) to {options.OutDir}.";
+            return BuildResult(DiagnosticResult.Ok(exported, writeSummary), (sb, e) =>
+            {
+                sb.AppendLine();
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  written to : {options.OutDir}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  id         : {e.Summary.InvestigationId}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  hotspots   : {e.Summary.Findings.TopHotspots.Count}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  size       : {writtenBytes} chars");
+            });
+        }
+
+        // stdout mode: emit exactly the portable summary document (verbatim, pipe-able), identical to
+        // what --out persists. Both --json and human paths print the same portable JSON — never a
+        // decorated human envelope that a consumer would have to strip.
+        return RawJsonResult(exported.Rendered);
+    }
+
+    private static CliCommandResult RawJsonResult(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var element = document.RootElement.Clone();
+        return new CliCommandResult(IsError: false, Cancelled: false, Envelope: element, Human: json)
+        {
+            RawHuman = true,
+        };
+    }
+
+    private static void TryDeleteQuietly(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort cleanup of the temp file; the original write failure is already surfaced.
+        }
     }
 
     private static async Task<CliCommandResult> InspectHeapAsync(
