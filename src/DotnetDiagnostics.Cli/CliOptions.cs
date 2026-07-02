@@ -183,6 +183,18 @@ internal sealed record CliOptions
     /// <summary>Hard upper bound (seconds) on how long the threshold-gated watch is armed (<c>--window</c>). Required in gated mode.</summary>
     public int? WindowSeconds { get; init; }
 
+    /// <summary>Free-text symptom description for the <c>investigate</c> command (<c>--symptom</c>): e.g. 'high latency on /checkout'. Required for cold mode.</summary>
+    public string? Symptom { get; init; }
+
+    /// <summary>Specific hypothesis to test for the <c>investigate</c> command (<c>--hypothesis</c>): e.g. 'lock contention on Cart.Checkout'. Triggers hypothesis mode.</summary>
+    public string? Hypothesis { get; init; }
+
+    /// <summary>Hard limit on tool calls before forcing summarization for the <c>investigate</c> command (<c>--max-tool-calls</c>). Null applies the default (8).</summary>
+    public int? MaxToolCalls { get; init; }
+
+    /// <summary>Top-N hotspots to include in the <c>export-summary</c> output (<c>--top-hotspots</c>). Null applies the default (10).</summary>
+    public int? TopHotspots { get; init; }
+
     /// <summary>
     /// Opt-in <c>--launch</c> dev mode (issue #365): re-launch the target as a child of the CLI so
     /// ClrMD live attach is permitted under Yama <c>ptrace_scope=1</c> with zero privilege. The program
@@ -280,6 +292,10 @@ internal sealed record CliOptions
         string? captureKind = null;
         int? maxCaptures = null;
         int? windowSeconds = null;
+        string? symptom = null;
+        string? hypothesis = null;
+        int? maxToolCalls = null;
+        int? topHotspots = null;
         var launch = false;
         var suspendStartup = false;
         List<string>? launchArgs = null;
@@ -444,6 +460,38 @@ internal sealed record CliOptions
                     }
 
                     windowSeconds = windowValue;
+                    break;
+                case "--symptom":
+                    if (!TryTakeString(args, ref i, token, out var symptomValue, out error))
+                    {
+                        return null;
+                    }
+
+                    symptom = symptomValue;
+                    break;
+                case "--hypothesis":
+                    if (!TryTakeString(args, ref i, token, out var hypothesisValue, out error))
+                    {
+                        return null;
+                    }
+
+                    hypothesis = hypothesisValue;
+                    break;
+                case "--max-tool-calls":
+                    if (!TryTakeInt(args, ref i, token, out var maxToolCallsValue, out error))
+                    {
+                        return null;
+                    }
+
+                    maxToolCalls = maxToolCallsValue;
+                    break;
+                case "--top-hotspots":
+                    if (!TryTakeInt(args, ref i, token, out var topHotspotsValue, out error))
+                    {
+                        return null;
+                    }
+
+                    topHotspots = topHotspotsValue;
                     break;
                 case "--top-types":
                     if (!TryTakeInt(args, ref i, token, out var topTypesValue, out error))
@@ -782,6 +830,10 @@ internal sealed record CliOptions
             CaptureKind = captureKind,
             MaxCaptures = maxCaptures,
             WindowSeconds = windowSeconds,
+            Symptom = symptom,
+            Hypothesis = hypothesis,
+            MaxToolCalls = maxToolCalls,
+            TopHotspots = topHotspots,
             Launch = launch,
             SuspendStartup = suspendStartup,
             LaunchArgs = launchArgs ?? (IReadOnlyList<string>)Array.Empty<string>(),

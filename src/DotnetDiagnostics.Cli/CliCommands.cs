@@ -30,6 +30,8 @@ using DotnetDiagnostics.Core.Triage;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.UseCases;
+using DotnetDiagnostics.Core.Investigation;
+using DotnetDiagnostics.Core.Memory;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace DotnetDiagnostics.Cli;
@@ -71,6 +73,8 @@ internal static class CliCommands
         "query",
         "get-bytes",
         "compare",
+        "investigate",
+        "export-summary",
         "session",
         "completion",
     };
@@ -165,6 +169,8 @@ internal static class CliCommands
             "query" => Query(),
             "get-bytes" => await GetBytesAsync(services, options, cancellationToken).ConfigureAwait(false),
             "compare" => await CompareAsync(options, cancellationToken).ConfigureAwait(false),
+            "investigate" => await InvestigateAsync(services, options, cancellationToken).ConfigureAwait(false),
+            "export-summary" => await ExportSummaryAsync(services, options, cancellationToken).ConfigureAwait(false),
             "completion" => Completion(options),
             _ => throw new ArgumentException($"Unknown command '{options.Command}'.", nameof(options)),
         };
@@ -194,6 +200,8 @@ internal static class CliCommands
             "dump" => TryValidateDump(options, out error),
             "get-bytes" => TryValidateGetBytes(options, out error),
             "compare" => TryValidateCompare(options, out error),
+            "investigate" => TryValidateInvestigate(options, out error),
+            "export-summary" => TryValidateExportSummary(options, out error),
             "completion" => TryValidateCompletion(options, out error),
             _ => true,
         };
@@ -607,6 +615,40 @@ internal static class CliCommands
         if (!JourneyModeParser.TryParse(options.Mode, out _))
         {
             error = $"Unknown --mode '{options.Mode}'. Valid values: trend, dispersion.";
+            return false;
+        }
+
+        return true;
+    }
+
+    public static bool TryValidateInvestigate(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+
+        if (options.MaxToolCalls is < 1)
+        {
+            error = "--max-tool-calls must be >= 1.";
+            return false;
+        }
+
+        return true;
+    }
+
+    public static bool TryValidateExportSummary(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(options.Handle))
+        {
+            error = "The 'export-summary' command requires --handle <id> (a CPU-sample handle from 'collect --kind cpu').";
+            return false;
+        }
+
+        if (options.TopHotspots is < 1)
+        {
+            error = "--top-hotspots must be >= 1.";
             return false;
         }
 
@@ -1208,6 +1250,156 @@ internal static class CliCommands
         }
 
         return new CliCommandResult(IsError: false, Cancelled: false, diff, RenderJourneyDiff(diff));
+    }
+
+    private static async Task<CliCommandResult> InvestigateAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+    {
+        var planner = services.GetRequiredService<IInvestigationPlanner>();
+        var resolver = services.GetRequiredService<IProcessContextResolver>();
+
+        var resolved = await ProcessResolutionHelpers.ResolveContextAsync<InvestigationPlan>(
+            resolver, options.Pid, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null)
+        {
+            return BuildResult(resolved.Failure, static (_, _) => { });
+        }
+
+        var constraints = new InvestigationConstraints(
+            MaxToolCalls: options.MaxToolCalls ?? 8);
+
+        var request = new InvestigationRequest(
+            ProcessId: resolved.ProcessId,
+            Symptom: options.Symptom,
+            Hypothesis: options.Hypothesis,
+            Constraints: constraints);
+
+        var plan = planner.Plan(request);
+        var summary = $"Mode={plan.Mode}. Next step #{plan.NextStep.StepNumber}: {plan.NextStep.ToolName}. " +
+                      $"{plan.AllSteps.Count} total step(s), {plan.EarlyStopConditions.Count} early-stop condition(s). " +
+                      $"Honor MaxToolCalls={plan.Constraints.MaxToolCalls}.";
+        var result = ProcessResolutionHelpers.WithContext(DiagnosticResult.Ok(plan, summary), resolved.Context);
+
+        return BuildResult(result, static (sb, plan) =>
+        {
+            sb.AppendLine();
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  investigation-id : {plan.InvestigationId}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  mode             : {plan.Mode}");
+            if (!string.IsNullOrWhiteSpace(plan.Symptom))
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  symptom          : {plan.Symptom}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(plan.Hypothesis))
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  hypothesis       : {plan.Hypothesis}");
+            }
+
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  max-tool-calls   : {plan.Constraints.MaxToolCalls}");
+            sb.AppendLine();
+            sb.AppendLine("  next step:");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"    #{plan.NextStep.StepNumber} {plan.NextStep.ToolName}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"    rationale: {plan.NextStep.Rationale}");
+            if (plan.AllSteps.Count > 1)
+            {
+                sb.AppendLine();
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  all steps ({plan.AllSteps.Count}):");
+                foreach (var step in plan.AllSteps)
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"    #{step.StepNumber} [{step.Status}] {step.ToolName}");
+                }
+            }
+
+            if (plan.EarlyStopConditions.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("  early-stop conditions:");
+                foreach (var cond in plan.EarlyStopConditions)
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"    - {cond.Description} → {cond.Action}");
+                }
+            }
+        });
+    }
+
+    private static async Task<CliCommandResult> ExportSummaryAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+    {
+        if (!TryValidateExportSummary(options, out var validationError))
+        {
+            throw new ArgumentException(validationError, nameof(options));
+        }
+
+        var exporter = services.GetRequiredService<IInvestigationSummaryExporter>();
+        var handles = services.GetRequiredService<IDiagnosticHandleStore>();
+
+        var artifact = handles.TryGet<CpuSampleTraceArtifact>(options.Handle!);
+        if (artifact is null)
+        {
+            return BuildResult<ExportedInvestigationSummary>(
+                DiagnosticResult.Fail<ExportedInvestigationSummary>(
+                    $"Handle '{options.Handle}' is unknown or expired. Collect a CPU sample first with 'collect --kind cpu', then re-run export-summary.",
+                    new DiagnosticError("HandleExpired",
+                        "Drill-down handles live until the session ends or the target process exits.",
+                        options.Handle)),
+                static (_, _) => { });
+        }
+
+        var topHotspots = options.TopHotspots ?? 10;
+        var exported = exporter.Export(new ExportRequest(
+            Handle: options.Handle!,
+            Artifact: artifact,
+            TopHotspots: topHotspots,
+            Format: SummaryFormat.Json));
+
+        if (!string.IsNullOrWhiteSpace(options.OutDir))
+        {
+            try
+            {
+                var fullPath = Path.GetFullPath(options.OutDir);
+                var dir = Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrWhiteSpace(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                await File.WriteAllTextAsync(fullPath, exported.Rendered, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+            {
+                return BuildResult<ExportedInvestigationSummary>(
+                    DiagnosticResult.Fail<ExportedInvestigationSummary>(
+                        $"export-summary: failed to write '{options.OutDir}'.",
+                        new DiagnosticError("OutputWriteFailure", ex.Message)),
+                    static (_, _) => { });
+            }
+        }
+
+        var bytes = exported.Rendered.Length;
+        var dest = string.IsNullOrWhiteSpace(options.OutDir) ? "stdout" : options.OutDir;
+        var okSummary = $"Exported investigation summary {exported.Summary.InvestigationId} ({bytes} chars) to {dest}.";
+        var okResult = DiagnosticResult.Ok(exported, okSummary);
+
+        return BuildResult(okResult, (sb, e) =>
+        {
+            if (string.IsNullOrWhiteSpace(options.OutDir))
+            {
+                sb.AppendLine();
+                sb.AppendLine(e.Rendered);
+            }
+            else
+            {
+                sb.AppendLine();
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  written to : {options.OutDir}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  id         : {e.Summary.InvestigationId}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  hotspots   : {e.Summary.Findings.TopHotspots.Count}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  size       : {bytes} chars");
+            }
+        });
     }
 
     private static async Task<CliCommandResult> InspectHeapAsync(

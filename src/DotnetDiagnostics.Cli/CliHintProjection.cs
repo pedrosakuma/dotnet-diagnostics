@@ -53,6 +53,10 @@ internal static class CliHintProjection
         ["get-bytes"] = "get-bytes",
         ["query"] = "query",
         ["session"] = "session",
+        ["start_investigation"] = "investigate",
+        ["export_investigation_summary"] = "export-summary",
+        ["investigate"] = "investigate",
+        ["export-summary"] = "export-summary",
     };
 
     /// <summary>
@@ -76,6 +80,8 @@ internal static class CliHintProjection
         (" Use collect_thread_snapshot(view=\"threadpool\") when a ptrace-backed snapshot is acceptable.", ""),
         ("outputDirectory", "--out"),
         ("processId", "--pid"),
+        ("start_investigation", "investigate"),
+        ("export_investigation_summary", "export-summary"),
     };
 
     /// <summary>
