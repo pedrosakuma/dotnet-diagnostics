@@ -135,6 +135,22 @@ ladder: `Ok` < `Degraded` < `Blocked`.
 dotnet-diagnostics-cli doctor --pid "$APP_PID" || { echo "environment not ready"; exit 1; }
 ```
 
+### `inspect`
+
+One-call process inspector exposing two views (`--view` required):
+
+| View | What it does |
+|---|---|
+| `triage` | Collects counters for `--duration` seconds (default 5), classifies the workload, and returns a verdict with severity and ranked indicators. Verdicts: `cpu-bound`, `gc-pressure`, `memory-pressure`, `threadpool-starvation`, `lock-contention`, `io-bound`, `healthy`. |
+| `runtime-config` | Reads the process's effective runtime configuration: GC mode and heap count, ThreadPool worker/IOCP bounds, tiered-compilation flags, filtered runtime env vars, and AppContext switches. |
+
+```bash
+dotnet-diagnostics-cli inspect --view triage --pid 1234
+dotnet-diagnostics-cli inspect --view triage --pid 1234 --duration 10
+dotnet-diagnostics-cli inspect --view runtime-config --pid 1234
+dotnet-diagnostics-cli inspect --view triage --json
+```
+
 ### `collect`
 
 Open an EventPipe session and collect a window of events. `--kind` is required.

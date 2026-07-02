@@ -948,6 +948,8 @@ public sealed class SessionReplTests
     [InlineData("capabilities", true)]
     [InlineData("collect --kind gc", true)]
     [InlineData("dump --confirm", true)]
+    [InlineData("inspect --view triage", true)]
+    [InlineData("inspect --view runtime-config", true)]
     [InlineData("inspect-heap", true)]
     [InlineData("inspect-heap --source live", true)]
     [InlineData("inspect-heap --source dump --dump-file x.dmp", false)]

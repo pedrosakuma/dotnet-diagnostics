@@ -254,6 +254,14 @@ internal static class CliHost
             return 2;
         }
 
+        if (options.Command == "inspect" && !CliCommands.TryValidateInspect(options, out var inspectError))
+        {
+            await stderr.WriteLineAsync(inspectError).ConfigureAwait(false);
+            await stderr.WriteLineAsync().ConfigureAwait(false);
+            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+            return 2;
+        }
+
         if (options.Command == "inspect-heap" && !CliCommands.TryValidateInspectHeap(options, out var heapError))
         {
             await stderr.WriteLineAsync(heapError).ConfigureAwait(false);
@@ -497,7 +505,7 @@ internal static class CliHost
         ArgumentNullException.ThrowIfNull(options);
         return options.Command switch
         {
-            "capabilities" or "collect" or "dump" or "doctor" => true,
+            "capabilities" or "collect" or "dump" or "doctor" or "inspect" => true,
             "inspect-heap" => options.DumpFile is null && !options.Sources.Contains("dump", StringComparer.Ordinal),
             "get-bytes" => string.Equals(options.Kind, "module", StringComparison.Ordinal),
             _ => false,
