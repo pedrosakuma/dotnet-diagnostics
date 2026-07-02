@@ -96,7 +96,8 @@ public sealed class DiagnosticPrompts
               1. `collect_events(kind="counters", {{pid.Arg}}durationSeconds={{win}})` — read `gc-heap-size`,
                  `gen-0-size`, `gen-1-size`, `gen-2-size`, `loh-size`, `poh-size`,
                  `gc-fragmentation`, and `working-set`. The response stamps `resolvedProcess`
-                 with `runtime` + `canCollectGcDump`; note NativeAOT cannot do gcdump.
+                 with `runtime` + `canCollectGcDump`; note NativeAOT cannot do gcdump
+                 (requesting one crashes .NET 10 AOT targets — use collect_process_dump).
                  Decide:
                    - Gen2 grows monotonically → leak or large cache; continue.
                    - LOH grows → large-object allocations; continue.

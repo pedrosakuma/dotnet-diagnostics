@@ -79,7 +79,7 @@ public sealed class DiagnosticTools
     [RequireScope("read-counters")]
     [Description(
         "Probes the target process to determine which diagnostic tools the server can use against it. " +
-        "Detects CoreCLR vs NativeAOT (NativeAOT lacks CPU sampling and gcdump) and returns a capability matrix. " +
+        "Detects CoreCLR vs NativeAOT (NativeAOT lacks managed CPU sampling and gcdump) and returns a capability matrix. " +
         "Takes up to ~2 seconds while probing the SampleProfiler provider. " +
         "processId is optional: when exactly one .NET process is reachable the server auto-resolves it. " +
         "Most callers no longer need this tool first — every other tool already attaches a compact capability digest " +

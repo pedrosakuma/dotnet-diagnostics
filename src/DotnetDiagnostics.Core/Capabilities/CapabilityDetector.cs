@@ -79,7 +79,11 @@ public sealed class CapabilityDetector : ICapabilityDetector
         // relies on an out-of-process sampler (perf on Linux, ETW on Windows).
         var canSampleCpu = (runtime == RuntimeFlavor.CoreClr) ||
                            (runtime == RuntimeFlavor.NativeAot && (perfAvailable || etwAvailable));
-        var canCollectGcDump = runtime == RuntimeFlavor.CoreClr;
+        // gcdump (the EventPipe GCHeapSnapshot dump) is CoreCLR-only. On NativeAOT .NET 10, requesting
+        // the GCHeapSnapshot keyword crashes the target (the runtime segfaults mid-handshake and the
+        // process exits — reproduced on SDK 10.0.201), so the capability is deliberately withheld rather
+        // than advertised at a reduced tier (issue #471).
+        var canCollectGcDump = ComputeCanCollectGcDump(runtime);
         var canReadCounters = probe.SessionStarted;
         var canCollectExceptions = probe.SessionStarted;
         var canCollectHttp = probe.SessionStarted;
@@ -345,13 +349,16 @@ public sealed class CapabilityDetector : ICapabilityDetector
             RuntimeFlavor.CoreClr => "CoreCLR runtime detected; all diagnostic tools available.",
             RuntimeFlavor.NativeAot when etwAvailable =>
                 "NativeAOT detected (SampleProfiler emitted no events). CPU sampling is available via Windows ETW " +
-                "kernel profiling (native symbols from PDB/export table). gcdump is not supported.",
+                "kernel profiling (native symbols from PDB/export table). gcdump is not supported (requesting the " +
+                "GCHeapSnapshot keyword crashes .NET 10 NativeAOT targets); use collect_process_dump instead.",
             RuntimeFlavor.NativeAot when perfAvailable =>
                 "NativeAOT detected (SampleProfiler emitted no events). CPU sampling is available via the Linux 'perf' fallback " +
-                "(native symbols only, no managed IL handoff). gcdump is not supported.",
+                "(native symbols only, no managed IL handoff). gcdump is not supported (requesting the " +
+                "GCHeapSnapshot keyword crashes .NET 10 NativeAOT targets); use collect_process_dump instead.",
             RuntimeFlavor.NativeAot =>
                 "NativeAOT detected (SampleProfiler emitted no events). " +
-                "CPU sampling and gcdump are not available; counters, exceptions and EventSources still work. " +
+                "CPU sampling and gcdump are not available (gcdump crashes .NET 10 NativeAOT targets); " +
+                "counters, exceptions and EventSources still work. " +
                 "On Windows, run as Administrator to enable ETW kernel profiling. " +
                 "On Linux, install 'perf' with CAP_PERFMON to enable the native CPU sampling fallback.",
             _ => "Could not classify runtime flavor."
@@ -424,6 +431,15 @@ public sealed class CapabilityDetector : ICapabilityDetector
 
         return primary;
     }
+
+    /// <summary>
+    /// Determines whether an EventPipe GCHeapSnapshot dump (the dotnet-gcdump mechanism) can be
+    /// collected. This is CoreCLR-only: NativeAOT is excluded because requesting the GCHeapSnapshot
+    /// keyword crashes .NET 10 NativeAOT targets (the runtime segfaults mid-handshake and the process
+    /// exits — reproduced on SDK 10.0.201), so the capability must not be advertised (issue #471).
+    /// </summary>
+    internal static bool ComputeCanCollectGcDump(RuntimeFlavor runtime) =>
+        runtime == RuntimeFlavor.CoreClr;
 
     internal static (bool CanCollect, string? Source, string? Preconditions) EvaluateThreadSnapshotSupport(
         RuntimeFlavor runtime,

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Diagnostics.Tracing;
 using System.Globalization;
 using DotnetDiagnostics.Core.Artifacts;
+using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
@@ -53,6 +54,19 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         CancellationToken cancellationToken = default)
     {
         var opts = options ?? new GcDumpOptions();
+
+        // Backstop guard (issue #471). Requesting the GCHeapSnapshot EventPipe keyword crashes
+        // NativeAOT .NET 10 targets — the runtime segfaults and the process exits mid-handshake
+        // (reproduced on SDK 10.0.201). The capability gate already withholds gcdump on AOT, but a
+        // direct caller (e.g. the CLI session REPL) must never reach the session-start code path and
+        // kill the target, so we refuse here before touching the diagnostic socket.
+        if (opts.Runtime == RuntimeFlavor.NativeAot)
+        {
+            throw new NotSupportedException(
+                "gcdump is not supported on NativeAOT: requesting the GCHeapSnapshot EventPipe keyword " +
+                "crashes .NET 10 NativeAOT targets (the runtime segfaults). Use collect_process_dump instead.");
+        }
+
         var timeout = opts.Timeout ?? DefaultTimeout;
         if (timeout <= TimeSpan.Zero)
         {
