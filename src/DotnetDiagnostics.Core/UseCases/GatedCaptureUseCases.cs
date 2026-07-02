@@ -54,6 +54,7 @@ public static class GatedCaptureUseCases
         bool confirmDump = false,
         int? processId = null,
         string? dumpOutputDirectory = null,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(collector);
@@ -108,7 +109,7 @@ public static class GatedCaptureUseCases
                 case GatedCaptureKind.CpuSample:
                 {
                     var result = await cpuSampler
-                        .SampleAsync(pid, TimeSpan.FromSeconds(CpuSampleDurationSeconds), topN: 25, cancellationToken: ct)
+                        .SampleAsync(pid, TimeSpan.FromSeconds(CpuSampleDurationSeconds), topN: 25, nativeAotSymbols: nativeAotSymbols, cancellationToken: ct)
                         .ConfigureAwait(false);
                     var handle = handles.Register(pid, CpuSampleHandleKind, result.Artifact, HandleTtl);
                     return new GatedCaptureOutcome(

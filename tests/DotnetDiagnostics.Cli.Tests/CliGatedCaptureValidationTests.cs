@@ -95,4 +95,66 @@ public sealed class CliGatedCaptureValidationTests
         CliCommands.TryValidateWatch(options, out var error).Should().BeTrue();
         error.Should().BeNull();
     }
+
+    [Fact]
+    public void Parse_NativeAotMap_PopulatesField()
+    {
+        var options = CliOptions.Parse(
+            new[]
+            {
+                "collect", "--kind", "counters", "--pid", "1234",
+                "--capture-when", "cpu>85", "--capture", "cpu-sample", "--window", "60",
+                "--native-aot-map", "/publish/map.xml",
+            },
+            out var error)!;
+
+        error.Should().BeNull();
+        options.NativeAotMapFile.Should().Be("/publish/map.xml");
+    }
+
+    [Fact]
+    public void TryValidateCollect_NativeAotMap_MissingFile_Fails()
+    {
+        var options = CliOptions.Parse(
+            new[]
+            {
+                "collect", "--kind", "counters", "--pid", "1",
+                "--capture-when", "cpu>85", "--capture", "cpu-sample", "--window", "60",
+                "--native-aot-map", "/no/such/map.xml",
+            },
+            out _)!;
+
+        CliCommands.TryValidateCollect(options, out var error).Should().BeFalse();
+        error.Should().Contain("does not exist");
+        error.Should().Contain("/no/such/map.xml");
+    }
+
+    [Fact]
+    public void TryValidateCollect_NativeAotMap_WrongCaptureKind_Fails()
+    {
+        var options = CliOptions.Parse(
+            new[]
+            {
+                "collect", "--kind", "counters", "--pid", "1",
+                "--capture-when", "cpu>85", "--capture", "dump", "--window", "60",
+                "--native-aot-map", "/publish/map.xml",
+            },
+            out _)!;
+
+        CliCommands.TryValidateCollect(options, out var error).Should().BeFalse();
+        error.Should().Contain("cpu-sample");
+        error.Should().Contain("--native-aot-map");
+    }
+
+    [Fact]
+    public void TryValidateCollect_NativeAotMap_WithoutCapture_Fails()
+    {
+        // --native-aot-map without any --capture should fail, not silently pass.
+        var options = CliOptions.Parse(
+            new[] { "collect", "--kind", "counters", "--pid", "1", "--native-aot-map", "/publish/map.xml" },
+            out _)!;
+
+        CliCommands.TryValidateCollect(options, out var error).Should().BeFalse();
+        error.Should().Contain("--capture cpu-sample");
+    }
 }

@@ -101,6 +101,13 @@ internal sealed record CliOptions
     /// <summary>NT_SYMBOL_PATH-style search path (<c>--symbol-path</c>) for symbol-resolving heap drilldowns.</summary>
     public string? SymbolPath { get; init; }
 
+    /// <summary>
+    /// Path to the ILC <c>*.map.xml</c> map file for NativeAOT CPU sampling (<c>--native-aot-map</c>).
+    /// When set, the perf-based AOT sampler emits a name-based <c>MethodIdentity</c> for managed frames.
+    /// Optional and inert for CoreCLR targets. Only honoured with <c>--capture cpu-sample</c>.
+    /// </summary>
+    public string? NativeAotMapFile { get; init; }
+
     /// <summary>Dump type for the <c>dump</c> command (<c>--dump-type</c>): Mini, Triage, WithHeap or Full. Null applies the default (Mini).</summary>
     public string? DumpType { get; init; }
 
@@ -247,6 +254,7 @@ internal sealed record CliOptions
         var includeDelegateTargets = false;
         var includeDuplicateStrings = false;
         string? symbolPath = null;
+        string? nativeAotMapFile = null;
         string? dumpType = null;
         string? outDir = null;
         var confirm = false;
@@ -525,6 +533,14 @@ internal sealed record CliOptions
 
                     symbolPath = symbolPathValue;
                     break;
+                case "--native-aot-map":
+                    if (!TryTakeString(args, ref i, token, out var nativeAotMapValue, out error))
+                    {
+                        return null;
+                    }
+
+                    nativeAotMapFile = nativeAotMapValue;
+                    break;
                 case "--dump-type":
                     if (!TryTakeString(args, ref i, token, out var dumpTypeValue, out error))
                     {
@@ -740,6 +756,7 @@ internal sealed record CliOptions
             IncludeDelegateTargets = includeDelegateTargets,
             IncludeDuplicateStrings = includeDuplicateStrings,
             SymbolPath = symbolPath,
+            NativeAotMapFile = nativeAotMapFile,
             DumpType = dumpType,
             OutDir = outDir,
             Confirm = confirm,

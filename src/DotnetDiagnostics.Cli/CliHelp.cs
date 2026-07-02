@@ -82,6 +82,12 @@ collect options:
       --capture <kind>          What to capture on trip: dump, cpu-sample, heap, thread-snapshot.
       --window <seconds>        Required with --capture-when. Bounds the watch (max 300s).
       --max-captures <int>      Stop after N captures (default 1, max 10).
+      --native-aot-map <path>   NativeAOT only (Linux / perf path). Path to the ILC *.map.xml
+                                produced by publishing with <IlcGenerateMapFile>true</IlcGenerateMapFile>.
+                                When supplied with --capture cpu-sample, the AOT sampler emits
+                                name-based MethodIdentity for managed frames instead of raw
+                                addresses. Optional and inert for CoreCLR targets. Requires
+                                --capture cpu-sample; silently ignored on Windows (ETW path).
       --provider <name>         counters: EventCounter provider (repeatable);
                                 catalog: EventPipe provider (repeatable; replaces broad defaults);
                                 event_source: required provider name.
