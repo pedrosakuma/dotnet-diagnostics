@@ -22,16 +22,25 @@ using DotnetDiagnostics.BenchmarkDotNet;
 public class Workload
 {
     [Benchmark]
-    [DiagnosticKind("gc", durationSeconds: 5)]   // which collect kind best explains this method
+    // Prefer the type-safe, IntelliSense-discoverable enum overload:
+    [DiagnosticKind(BenchmarkDiagnosticKind.Gc, DurationSeconds = 5)]
     public void AllocateLots() { /* ... */ }
 
     [Benchmark]
-    [DiagnosticKind("contention,threadpool")]    // multiple kinds run sequentially
+    [DiagnosticKind(BenchmarkDiagnosticKind.Contention, BenchmarkDiagnosticKind.ThreadPool)]  // run sequentially
     public void LockStorm() { /* ... */ }
+
+    [Benchmark]
+    [DiagnosticKind("gc,threadpool")]   // the free-text string overload still works (validated at run time)
+    public void Legacy() { /* ... */ }
 }
 
 BenchmarkRunner.Run<Workload>();
 ```
+
+> **Discoverability.** Pass `BenchmarkDiagnosticKind` values for compile-time-checked, IntelliSense-
+> completed kinds. The `string` overload remains for back-compat, but a typo there is only caught at
+> BenchmarkDotNet validation time.
 
 The diagnoser runs in the BenchmarkDotNet **orchestrator** process (not the measured child), so the
 heavy ClrMD/TraceEvent dependencies it pulls in never contaminate the benchmark's timing or
