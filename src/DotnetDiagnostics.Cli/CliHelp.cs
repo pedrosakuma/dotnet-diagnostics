@@ -149,9 +149,22 @@ query options:
       --provider-filter <text>  Session query: event-catalog provider substring filter.
       --changes-only            Session query: DATAS 'tuning' view; show only heap-count changes.
       --root-method-filter <t>  Session query: CPU method filter; event-catalog event-name filter.
+      --thread-id <int>         Session query: ManagedThreadId; required for thread-snapshot 'frame-vars' view.
   Note: drill-down handles are MCP-session scoped; the one-shot CLI emits its full result
   inline on the originating command (use --depth detail / --json). 'query' always returns a
   NotSupported envelope (exit 1).
+
+  Thread-snapshot views (session only):
+    threads-summary  List all threads with state and top frame.
+    stack            Full managed stack for --thread-id <ManagedThreadId>.
+    lock-graph       Monitor lock ownership graph.
+    deadlocks        Deadlock cycles.
+    top-blocked      Threads most likely blocked (default).
+    unique-stacks    Deduplicated stacks by hash.
+    async-stalls     Async continuation stalls.
+    wait-chains      Thread wait-chain analysis.
+    threadpool       Thread-pool queue/worker statistics.
+    frame-vars       Object-typed locals/parameters on each frame via ClrMD re-open; requires --thread-id.
 """,
             string.Empty),
         new CommandHelp(
@@ -199,6 +212,12 @@ session notes:
   dotnet-diagnostics-cli session
   diag> collect --kind gc --pid 1234
   diag> query --handle <id> --view pauseHistogram
+  diag> exit
+
+  # Thread-snapshot frame-vars drilldown:
+  diag> collect --kind thread-snapshot --pid 1234
+  diag> query --handle <id> --view threads-summary
+  diag> query --handle <id> --view frame-vars --thread-id 7
   diag> exit
 
   dotnet-diagnostics-cli session --launch -- dotnet App.dll   # binds the launched child for the session

@@ -1071,6 +1071,14 @@ internal static class CliCommands
     private const string OffCpuSessionKind = "off-cpu-snapshot";
 
     /// <summary>
+    /// All thread-snapshot views available in the session REPL: the nine purely artifact-based
+    /// <see cref="ThreadSnapshotQueryDispatcher.SessionViews"/> plus <c>frame-vars</c>, which
+    /// re-opens the snapshot origin via ClrMD to walk one thread's local variables and parameters.
+    /// </summary>
+    private static readonly IReadOnlyList<string> ThreadSnapshotAllSessionViews =
+        [.. ThreadSnapshotQueryDispatcher.SessionViews, "frame-vars"];
+
+    /// <summary>
     /// The subset of <see cref="CollectionQueryDispatcher.ViewsFor(string)"/> that the session
     /// <c>query</c> path can actually render for <paramref name="kind"/> — i.e. minus
     /// <see cref="SessionExcludedViews"/>. Used both to advertise valid views after a collect and to
@@ -1090,7 +1098,7 @@ internal static class CliCommands
 
         if (kind == ThreadSnapshotSessionKind)
         {
-            return ThreadSnapshotQueryDispatcher.SessionViews;
+            return ThreadSnapshotAllSessionViews;
         }
 
         if (kind == OffCpuSessionKind)
@@ -1182,11 +1190,12 @@ internal static class CliCommands
         }
 
         // Thread-snapshot handles drill down through the host-neutral ThreadSnapshotQueryDispatcher
-        // (#300): every view (threads-summary, stack, lock-graph, deadlocks, top-blocked, unique-stacks,
-        // async-stalls, threadpool) renders from the captured artifact alone — no live ClrMD attach.
+        // (#300): most views render from the captured artifact alone — no live ClrMD attach. The
+        // frame-vars view re-opens the origin via ClrMD to resolve one thread's local variables
+        // (#487) and is therefore async.
         if (kind == ThreadSnapshotSessionKind)
         {
-            return QueryThreadSnapshotSession(options, lookup.Value.Artifact);
+            return await QueryThreadSnapshotSessionAsync(services, options, lookup.Value.Artifact, cancellationToken).ConfigureAwait(false);
         }
 
         // Off-CPU handles drill down through the host-neutral OffCpuQueryDispatcher (#300): topStacks,
@@ -1575,12 +1584,15 @@ internal static class CliCommands
     }
 
     /// <summary>
-    /// Renders a thread-snapshot drill-down inside the <c>session</c> REPL via the host-neutral
-    /// <see cref="ThreadSnapshotQueryDispatcher"/>. All eight views render from the captured artifact —
-    /// the dispatcher returns a clear <c>InvalidArgument</c> (listing valid views) for an unknown view,
-    /// which this helper surfaces directly.
+    /// Renders a thread-snapshot drill-down inside the <c>session</c> REPL. The nine artifact-based
+    /// views (<see cref="ThreadSnapshotQueryDispatcher.SessionViews"/>) render purely from the
+    /// captured snapshot via the host-neutral <see cref="ThreadSnapshotQueryDispatcher"/>. The
+    /// <c>frame-vars</c> view (#487) re-opens the snapshot origin via <see cref="IFrameVariableResolver"/>
+    /// (ClrMD, same ptrace/dump-read footprint as the original snapshot) and returns the object-typed
+    /// locals/parameters on each managed frame of the specified thread.
     /// </summary>
-    private static CliCommandResult QueryThreadSnapshotSession(CliOptions options, object artifact)
+    private static async Task<CliCommandResult> QueryThreadSnapshotSessionAsync(
+        IServiceProvider services, CliOptions options, object artifact, CancellationToken cancellationToken)
     {
         if (artifact is not ThreadSnapshotArtifact snapshot)
         {
@@ -1589,6 +1601,12 @@ internal static class CliCommands
         }
 
         var view = string.IsNullOrWhiteSpace(options.View) ? "top-blocked" : options.View;
+
+        if (string.Equals(view, "frame-vars", StringComparison.OrdinalIgnoreCase))
+        {
+            return await QueryFrameVarsAsync(services, options, snapshot, cancellationToken).ConfigureAwait(false);
+        }
+
         var topN = options.TopTypes ?? 50;
         var framesToHash = options.FramesToHash ?? 20;
         var minCount = options.MinCount ?? 1;
@@ -1599,6 +1617,49 @@ internal static class CliCommands
         {
             sb.AppendLine();
             sb.AppendLine(JsonSerializer.Serialize(qr, QueryJsonOptions));
+        });
+    }
+
+    /// <summary>
+    /// Re-opens the snapshot origin via <see cref="IFrameVariableResolver"/> (ClrMD) and renders the
+    /// object-typed locals/parameters of the specified managed thread. Requires <c>--thread-id</c>.
+    /// </summary>
+    private static async Task<CliCommandResult> QueryFrameVarsAsync(
+        IServiceProvider services, CliOptions options, ThreadSnapshotArtifact snapshot, CancellationToken cancellationToken)
+    {
+        if (options.ThreadId is null)
+        {
+            return Fail(
+                "--thread-id (ManagedThreadId) is required for view 'frame-vars'.",
+                "InvalidArgument",
+                "Obtain the ManagedThreadId from view='threads-summary', then re-run: query --handle <id> --view frame-vars --thread-id <id>.");
+        }
+
+        var resolver = services.GetRequiredService<IFrameVariableResolver>();
+        FrameVariablesResult frameVars;
+        try
+        {
+            frameVars = await resolver.ResolveAsync(
+                snapshot, options.ThreadId.Value, includeSensitiveValues: false, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return Fail($"frame-vars: {ex.Message}", "FrameVarsFailed",
+                "Frame variable resolution failed. Ensure the target process is still running (live origin) or the dump file is accessible (dump origin). Value-type locals are not enumerable via ClrMD.");
+        }
+
+        var summary = string.Create(
+            CultureInfo.InvariantCulture,
+            $"frame-vars: {frameVars.Frames.Count} frame(s) for managed thread {frameVars.ManagedThreadId} (OS tid {frameVars.OSThreadId}).");
+        var ok = DiagnosticResult.Ok(frameVars, summary);
+        return BuildResult<FrameVariablesResult>(ok, static (sb, r) =>
+        {
+            sb.AppendLine();
+            sb.AppendLine(JsonSerializer.Serialize(r, QueryJsonOptions));
         });
     }
 
