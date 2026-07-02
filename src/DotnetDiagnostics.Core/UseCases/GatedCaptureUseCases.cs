@@ -38,7 +38,7 @@ public static class GatedCaptureUseCases
     /// outcome. <paramref name="confirmDump"/> mirrors <c>collect_process_dump</c>'s confirmation gate:
     /// captureKind=dump writes a heap dump to disk and is refused until the caller passes it.
     /// </summary>
-    public static async Task<DiagnosticResult<GatedCaptureResult>> WatchAndCapture(
+    public static Task<DiagnosticResult<GatedCaptureResult>> WatchAndCapture(
         IThresholdGatedCaptureCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -54,7 +54,36 @@ public static class GatedCaptureUseCases
         bool confirmDump = false,
         int? processId = null,
         string? dumpOutputDirectory = null,
-        NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
+        CancellationToken cancellationToken = default)
+        => WatchAndCapture(
+            collector, resolver, handles, cpuSampler, threadInspector, dumpInspector, dumper,
+            triggerWhen, captureKind, windowSeconds, maxCaptures, sampleIntervalSeconds, confirmDump,
+            processId, dumpOutputDirectory, nativeAotSymbols: null, cancellationToken);
+
+    /// <summary>
+    /// Overload of <see cref="WatchAndCapture(IThresholdGatedCaptureCollector, IProcessContextResolver, IDiagnosticHandleStore, ICpuSampler, IThreadSnapshotInspector, IDumpInspector, IProcessDumper, string?, string?, int, int, int, bool, int?, string?, CancellationToken)"/>
+    /// that additionally threads NativeAOT symbol resolution options into the CPU sampler so
+    /// <c>captureKind=cpu-sample</c> can resolve method names from a <c>.map.xml</c> file on AOT targets.
+    /// The parameters preceding <paramref name="nativeAotSymbols"/> are required here (rather than
+    /// optional) so this overload never collides with the backward-compatible overload above.
+    /// </summary>
+    public static async Task<DiagnosticResult<GatedCaptureResult>> WatchAndCapture(
+        IThresholdGatedCaptureCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        ICpuSampler cpuSampler,
+        IThreadSnapshotInspector threadInspector,
+        IDumpInspector dumpInspector,
+        IProcessDumper dumper,
+        string? triggerWhen,
+        string? captureKind,
+        int windowSeconds,
+        int maxCaptures,
+        int sampleIntervalSeconds,
+        bool confirmDump,
+        int? processId,
+        string? dumpOutputDirectory,
+        NativeAotSymbolResolutionOptions? nativeAotSymbols,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(collector);
