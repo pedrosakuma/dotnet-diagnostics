@@ -1635,6 +1635,16 @@ internal static class CliCommands
                 "Obtain the ManagedThreadId from view='threads-summary', then re-run: query --handle <id> --view frame-vars --thread-id <id>.");
         }
 
+        // Guard against PID reuse / drift: the requested thread must have been present in the
+        // captured snapshot, otherwise we'd resolve frames from whatever now owns that PID.
+        if (!snapshot.Threads.Any(t => t.ManagedThreadId == options.ThreadId.Value))
+        {
+            return Fail(
+                $"Managed thread {options.ThreadId.Value} was not present in the captured snapshot; re-capture before inspecting frame variables.",
+                "ThreadNotInSnapshot",
+                "Use view='threads-summary' to list the ManagedThreadIds actually captured in this snapshot.");
+        }
+
         var resolver = services.GetRequiredService<IFrameVariableResolver>();
         FrameVariablesResult frameVars;
         try

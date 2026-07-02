@@ -214,8 +214,8 @@ session notes:
   diag> query --handle <id> --view pauseHistogram
   diag> exit
 
-  # Thread-snapshot frame-vars drilldown:
-  diag> collect --kind thread-snapshot --pid 1234
+  # Thread-snapshot frame-vars drilldown (capture a thread-snapshot handle first):
+  diag> collect --kind counters --pid 1234 --capture-when 'cpu>0' --capture thread-snapshot --window 30
   diag> query --handle <id> --view threads-summary
   diag> query --handle <id> --view frame-vars --thread-id 7
   diag> exit

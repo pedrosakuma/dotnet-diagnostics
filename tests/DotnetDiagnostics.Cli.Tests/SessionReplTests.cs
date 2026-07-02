@@ -561,6 +561,24 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_ThreadSnapshotHandle_FrameVarsView_ThreadNotInSnapshot_ReturnsError()
+    {
+        var resolver = new StubFrameVariableResolver(new FrameVariablesResult(
+            ManagedThreadId: 1,
+            OSThreadId: 10_001,
+            Frames: []));
+        var (services, store) = BuildServices(resolver);
+        var handle = store.Register(Environment.ProcessId, "thread-snapshot", ThreadSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view frame-vars --thread-id 999\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("was not present in the captured snapshot");
+        resolver.WasInvoked.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Query_OffCpuHandle_DefaultsToTopStacks()
     {
         var (services, store) = BuildServices();
