@@ -71,7 +71,7 @@ grants no `CAP_SYS_PTRACE`:
    base, reachable by the environment (pass `registryServer/...` for private
    registries).
 5. **The diag sidecar image** (default
-   `ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0`).
+   `ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0`).
 6. **A bearer token** for the MCP HTTP transport:
    ```bash
    export DIAG_TOKEN=$(openssl rand -hex 32)
@@ -119,7 +119,7 @@ az deployment group create \
       name=fn-diag \
       environmentId=$ENV_ID \
       appImage=$FUNCTIONS_IMAGE \
-      diagImage=ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0 \
+      diagImage=ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0 \
       diagBearerToken=$DIAG_TOKEN \
       azureWebJobsStorage="$STORAGE_CONN"
 ```
@@ -184,12 +184,12 @@ az containerapp delete -n fn-diag -g diag-rg -y
 ## Production: pin to a digest
 
 The defaults use a released version tag
-(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0`) rather than `:latest`. For
+(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0`) rather than `:latest`. For
 production pin to a **content-addressable digest**:
 
 ```bash
 docker buildx imagetools inspect \
-  ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0 \
+  ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0 \
   --format '{{json .Manifest}}' | jq -r .digest
 # -> sha256:...
 # Use ghcr.io/pedrosakuma/dotnet-diagnostics@sha256:<digest> in your parameters.
