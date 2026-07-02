@@ -157,7 +157,7 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 
 | Option | Meaning |
 |---|---|
-| `--kind <kind>` | One of `counters`, `exceptions`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`. |
+| `--kind <kind>` | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`, `sweep`. |
 | `-d, --duration <int>` | Window in seconds (default: `counters` 5, `datas` 15, others 10). |
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
 | `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |
@@ -166,6 +166,7 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 | `--capture-when <pred>` | Threshold-gated capture (`--kind counters`). Arm a **bounded** watch and capture when a single metric predicate `<metric><op><value>` trips — e.g. `cpu>85`, `gcHeapMb>=1500`, `rssMb>2000`, `threadCount>400`, `activeTimerCount>1000`. Operators: `>` `>=` `<` `<=`. |
 | `--capture <kind>` | What to capture on trip: `dump`, `cpu-sample`, `heap`, `thread-snapshot`. Required with `--capture-when`. |
 | `--window <seconds>` | Required with `--capture-when`. Hard upper bound on how long the watch is armed (1–300). |
+| `--native-aot-map <file>` | With `--capture cpu-sample` against a **NativeAOT** target, resolve method names from a `.map.xml` file (the AOT compiler's symbol map) so hot frames show managed method identities instead of raw addresses. Ignored for CoreCLR targets, which resolve symbols from runtime metadata. |
 | `--max-captures <int>` | Stop after N captures (default 1, max 10). |
 | `--provider <name>` | `counters`: EventCounter provider (repeatable); `catalog`: EventPipe provider (repeatable; replaces broad defaults); `event_source`: required provider name. |
 | `--meter <name>` | `counters`: Meter name (repeatable). |
@@ -207,6 +208,14 @@ dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch -- dotn
 > stats plus a drilldown handle. That handle is only reachable by a later `query` **within the same
 > `session`** (the in-memory handle store is disposed when a one-shot command exits) — run gated
 > capture inside the `session` REPL when you need to drill into the captured artifact afterward.
+
+> **Less-obvious kinds.** `crash-guard` arms an unhandled-exception / crash watch and reports the
+> managed exception that would fault the process. `requests` enumerates in-flight ASP.NET Core
+> requests (no ptrace — reads `Microsoft.AspNetCore.Hosting` diagnostics; query-string values are
+> dropped to avoid leaking PII). `startup` captures cold-start activity — pair it with
+> `--suspend-startup --launch` (below) to see everything before the first managed instruction.
+> `sweep` runs a bounded parallel triage sweep across several collectors at once and returns a single
+> consolidated verdict, the fastest "what's wrong right now" one-shot.
 
 ### `inspect-heap`
 
@@ -293,6 +302,46 @@ dotnet-diagnostics-cli compare ./before.json ./mid.json ./after.json --save ./ma
 
 For how to read the verdict / trend and when to reach for a journey, see
 [investigation-playbooks.md §1d](./investigation-playbooks.md#1d-did-my-fix-actually-help--comparative--n-way-trend-journeys).
+
+### `investigate`
+
+Plan a triage investigation. The planner classifies the likely failure mode from what you observed and
+returns an ordered, branching plan (next step + rationale + all candidate steps + early-stop conditions)
+that you execute yourself with the other CLI commands — the CLI stays **stateless**, it never runs the
+plan for you. Requires `--symptom <text>` (or `--hypothesis <text>`) so the plan is anchored to a real
+observation; `--max-tool-calls <n>` (default 8) caps the plan length. Steps are rendered in CLI
+vocabulary (e.g. `collect`), never MCP tool names.
+
+| Option | Meaning |
+|---|---|
+| `--symptom <text>` | What you observed (e.g. `"p99 latency spiked"`). Required unless `--hypothesis` is given. |
+| `--hypothesis <text>` | A suspected root cause to test (switches the plan into hypothesis mode). |
+| `--max-tool-calls <n>` | Upper bound on plan length (default 8). |
+
+```bash
+dotnet-diagnostics-cli investigate --pid 1234 --symptom "high CPU after deploy"
+dotnet-diagnostics-cli investigate --pid 1234 --hypothesis "lock contention on the cache" --json
+```
+
+### `export-summary`
+
+Project a CPU-sample handle into a **portable investigation summary** (JSON): the top hotspots plus
+metadata, suitable for attaching to a ticket or feeding another tool. Requires `--handle <id>` from a
+`collect --kind cpu` (gated `--capture cpu-sample`) inside a `session`. With no `--out`, the portable
+JSON document is written to stdout **verbatim** (identical to what `--out` persists), so it pipes
+cleanly; `--out <file>` writes it atomically instead.
+
+| Option | Meaning |
+|---|---|
+| `--handle <id>` | CPU-sample handle to summarize (required). |
+| `--top-hotspots <n>` | Number of hotspots to include (default 10). |
+| `--out <file>` | Write the summary to a file (atomic) instead of stdout. |
+
+```bash
+# inside a session, after a cpu-sample handle exists:
+export-summary --handle h-abc123 --top-hotspots 15
+export-summary --handle h-abc123 --out ./cpu-summary.json
+```
 
 ### `query`
 
@@ -443,6 +492,19 @@ the recorded `.dmp` — no live attach — so an offline dump can still answer "
 `object` view never prints raw string/field values in-session (the standalone CLI holds no sensitive-value
 gate); previews are replaced with `<redacted:metadata-only>`. Live-origin `gcroot`/`object` and the
 `objsize` / `duplicate-strings` views stay server-only — use the MCP server's `query_snapshot` tool.
+
+Thread-snapshot handles (from a gated `--capture thread-snapshot` inside a `session`) expose the
+call-stack / blocking views (`threads-summary`, `stack`, `lock-graph`, `deadlocks`, `top-blocked`,
+`unique-stacks`, `async-stalls`, `wait-chains`, `threadpool`) plus `frame-vars`:
+
+| View | What it shows | Relevant flags |
+| --- | --- | --- |
+| `wait-chains` | who-waits-on-whom chains toward the blocking root | — |
+| `async-stalls` | stalled `async` state machines and their await points | — |
+| `frame-vars` | one thread's local variables and parameters for a chosen stack frame (re-opens the origin via ClrMD) | `--thread-id <id>` (required) |
+
+`frame-vars` requires `--thread-id` to pick the thread whose frame variables to resolve; the thread must
+be present in the captured snapshot.
 
 ### Cancellation (Ctrl-C)
 
