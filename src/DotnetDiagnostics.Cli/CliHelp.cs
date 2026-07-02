@@ -104,6 +104,26 @@ collect options:
   dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch -- dotnet App.dll  # cold start
 """),
         new CommandHelp(
+            "inspect",
+            "One-shot process inspector: workload triage or runtime configuration (--view required).",
+"""
+inspect options:
+      --view <view>             Required. One of: triage, runtime-config.
+  -d, --duration <int>          triage: counter collection window in seconds (default 5).
+inspect views:
+  triage          Collect counters for <duration>s, classify the workload (verdict, severity,
+                  top indicators) and return actionable next steps. Verdicts: cpu-bound, gc-pressure,
+                  memory-pressure, threadpool-starvation, lock-contention, io-bound, healthy.
+  runtime-config  Read the process's effective runtime configuration: GC mode, ThreadPool bounds,
+                  tiered-compilation flags, runtime env vars and AppContext switches.
+""",
+"""
+  dotnet-diagnostics-cli inspect --view triage --pid 1234
+  dotnet-diagnostics-cli inspect --view triage --pid 1234 --duration 10
+  dotnet-diagnostics-cli inspect --view runtime-config --pid 1234
+  dotnet-diagnostics-cli inspect --view triage --json
+"""),
+        new CommandHelp(
             "inspect-heap",
             "Walk the managed heap of a live process or a .dmp (--source live|dump|gcdump).",
 """

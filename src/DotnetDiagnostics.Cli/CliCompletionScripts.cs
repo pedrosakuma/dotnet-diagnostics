@@ -31,6 +31,7 @@ internal static class CliCompletionScripts
         {
             ["processes"] = Array.Empty<string>(),
             ["capabilities"] = Array.Empty<string>(),
+            ["doctor"] = Array.Empty<string>(),
             ["collect"] = new[]
             {
                 "--kind",
@@ -47,6 +48,7 @@ internal static class CliCompletionScripts
                 "--unsafe-provider",
                 "--save",
             },
+            ["inspect"] = new[] { "--view", "-d", "--duration" },
             ["inspect-heap"] = new[]
             {
                 "--source",

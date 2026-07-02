@@ -254,6 +254,14 @@ internal static class CliHost
             return 2;
         }
 
+        if (options.Command == "inspect" && !CliCommands.TryValidateInspect(options, out var inspectError))
+        {
+            await stderr.WriteLineAsync(inspectError).ConfigureAwait(false);
+            await stderr.WriteLineAsync().ConfigureAwait(false);
+            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+            return 2;
+        }
+
         if (options.Command == "inspect-heap" && !CliCommands.TryValidateInspectHeap(options, out var heapError))
         {
             await stderr.WriteLineAsync(heapError).ConfigureAwait(false);
