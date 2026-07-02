@@ -42,13 +42,22 @@ child PID; results land in `<artifacts>/diagnostics/*.json` and a consolidated
 ## Supported collect kinds
 
 `counters`, `exceptions`, `gc`, `cpu`, `allocation`, `datas`, `catalog`, `activities`, `logs`,
-`jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`. (`event_source` is
-intentionally excluded — it needs an explicit provider name.)
+`jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `gcdump`.
+(`event_source` is intentionally excluded — it needs an explicit provider name.)
 
 The `kestrel`, `networking` and `requests` kinds collect the ASP.NET Core / HTTP pipeline views —
 Kestrel server request timings, `HttpClient`/socket/DNS/TLS activity, and in-flight ASP.NET requests
 respectively — so a web/API benchmark can attribute its own server-side and outbound-I/O cost, not
 just CPU and allocations.
+
+The `gcdump` kind captures a managed-heap **retention** snapshot (per-type instance counts and byte
+totals) via the EventPipe `GCHeapSnapshot` keyword — the same mechanism `dotnet-gcdump` uses, with
+**no ptrace, no ClrMD attach and no dump file**. It is the *what survives* complement to
+`allocation`'s *what churns*: `allocation` (and `MemoryDiagnoser`) tell you how many bytes a method
+allocated; `gcdump` tells you which types are still **retained** on the heap. The full type table is
+retained behind the envelope's `heap-snapshot` handle for `query_snapshot` drill-down. `gcdump` is
+**CoreCLR-only** — requesting the `GCHeapSnapshot` keyword crashes .NET 10 NativeAOT targets, so on a
+NativeAOT child the capability is withheld and surfaces as a `NotSupported` entry rather than a crash.
 
 The `cpu` kind runs the EventPipe **CPU sampler** (CoreCLR only) against the benchmark child and
 attributes cost **per stack frame**: each hotspot carries its *exclusive* (self) and *inclusive*
