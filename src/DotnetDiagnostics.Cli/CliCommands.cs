@@ -302,6 +302,23 @@ internal static class CliCommands
             }
         }
 
+        if (!string.IsNullOrWhiteSpace(options.NativeAotMapFile))
+        {
+            if (!string.Equals(options.CaptureKind, "cpu-sample", StringComparison.Ordinal))
+            {
+                error = options.CaptureKind is null
+                    ? "--native-aot-map requires '--capture cpu-sample'."
+                    : $"--native-aot-map is not supported by '--capture {options.CaptureKind}'. It is only valid with '--capture cpu-sample'.";
+                return false;
+            }
+
+            if (!File.Exists(options.NativeAotMapFile))
+            {
+                error = $"--native-aot-map: file '{options.NativeAotMapFile}' does not exist.";
+                return false;
+            }
+        }
+
         return true;
     }
 
@@ -995,7 +1012,11 @@ internal static class CliCommands
                 services.GetRequiredService<IProcessDumper>(),
                 options.CaptureWhen, options.CaptureKind, options.WindowSeconds ?? 0,
                 options.MaxCaptures ?? 1, options.WatchIntervalSeconds ?? 2, options.Confirm, pid,
-                dumpOutputDirectory: null, cancellationToken).ConfigureAwait(false)),
+                dumpOutputDirectory: null,
+                nativeAotSymbols: string.IsNullOrWhiteSpace(options.NativeAotMapFile)
+                    ? null
+                    : new NativeAotSymbolResolutionOptions(MapFilePath: options.NativeAotMapFile),
+                cancellationToken).ConfigureAwait(false)),
 
             "counters" => Wrap(options, await EventCollectionUseCases.SnapshotCounters(
                 services.GetRequiredService<ICounterCollector>(), resolver, handles,

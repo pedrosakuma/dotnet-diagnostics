@@ -534,7 +534,7 @@ public sealed class CollectEventsTool
         var result = await GatedCaptureUseCases.WatchAndCapture(
             gatedCaptureCollector, resolver, handles, cpuSampler, threadSnapshotInspector, dumpInspector, processDumper,
             triggerWhen, captureKind, windowSeconds, maxCaptures, sampleIntervalSeconds, confirmDump, processId,
-            dumpOutputDirectory: null, cancellationToken).ConfigureAwait(false);
+            dumpOutputDirectory: null, nativeAotSymbols: null, cancellationToken).ConfigureAwait(false);
 
         return Project(result, "counters", (env, data) => env with { GatedCapture = data });
     }

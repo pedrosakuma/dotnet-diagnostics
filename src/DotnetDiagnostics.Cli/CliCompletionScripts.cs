@@ -20,7 +20,7 @@ internal static class CliCompletionScripts
     {
         "-p", "--pid", "--kind", "-d", "--duration", "--depth", "--max-events", "--interval",
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
-        "--top-types", "--retention-path-limit", "--symbol-path", "--dump-type", "--out", "--mvid",
+        "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--dump-type", "--out", "--mvid",
         "--asset", "--handle", "--view", "--provider-filter", "--root-method-filter", "--rank-by",
         "--type-filter", "--address", "--max-depth", "--max-nodes", "--thread-id", "--stack-rank",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode",
@@ -47,6 +47,11 @@ internal static class CliCompletionScripts
                 "--min-level",
                 "--unsafe-provider",
                 "--save",
+                "--capture-when",
+                "--capture",
+                "--window",
+                "--max-captures",
+                "--native-aot-map",
             },
             ["inspect"] = new[] { "--view", "-d", "--duration" },
             ["inspect-heap"] = new[]
@@ -176,7 +181,7 @@ internal static class CliCompletionScripts
             # through to option completion (that would offer flags as the flag's value).
             if [[ " $value_flags " == *" $prev "* ]]; then
                 case "$prev" in
-                    --save|--dump-file|--out|--symbol-path)
+                    --save|--dump-file|--out|--symbol-path|--native-aot-map)
                         COMPREPLY=( $(compgen -f -- "$cur") )
                         ;;
                 esac
@@ -261,7 +266,7 @@ internal static class CliCompletionScripts
             # through to option completion (that would offer flags as the flag's value).
             if (( ${value_flags[(Ie)${words[CURRENT-1]}]} )); then
                 case ${words[CURRENT-1]} in
-                    --save|--dump-file|--out|--symbol-path) _files ;;
+                    --save|--dump-file|--out|--symbol-path|--native-aot-map) _files ;;
                 esac
                 return
             fi
@@ -349,7 +354,7 @@ internal static class CliCompletionScripts
                     if ($valueFlags -contains $previous) {
                         # A value-taking flag with no enum candidates; offer file paths for
                         # path-like flags and nothing otherwise, never option flags.
-                        if ($previous -in @('--save', '--dump-file', '--out', '--symbol-path')) {
+                        if ($previous -in @('--save', '--dump-file', '--out', '--symbol-path', '--native-aot-map')) {
                             Get-ChildItem -Name -ErrorAction SilentlyContinue
                         }
                     } elseif ($null -eq $command) {
