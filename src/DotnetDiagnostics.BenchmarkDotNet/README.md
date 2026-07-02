@@ -99,6 +99,23 @@ EventPipe collectors must not run concurrently against one PID, so multiple kind
 are collected **sequentially** within the measurement window. Keep the count small (1–2) and the
 per-kind duration short relative to the job's actual-run length.
 
+## Not captured (intentionally out of scope)
+
+These diagnostic kinds exist in the engine but are deliberately **not** exposed by the diagnoser,
+each for a concrete reason — they are not gaps:
+
+- `event_source` — needs an explicit provider name, so it can't be selected by a bare kind token.
+- `startup` — the diagnoser attaches after the benchmark host is already running, so it cannot
+  observe cold-start loader/DI events.
+- `crash-guard` — a crash/first-chance guard for a failing process, not a benchmark perf view.
+- `sweep` — a combined multi-kind sweep; redundant here since a method can already list multiple
+  kinds on its `[DiagnosticKind]`.
+- **off-CPU** sampling (`off_cpu`) — attributes *blocked/wait* time, but needs host `perf` + kernel
+  tracepoints + elevated privilege, so it is not portable in-process for a benchmark. Feasibility via
+  the child-launch/container angle is tracked separately (issue #501).
+- **native-alloc** (`native-alloc`) — native (unmanaged) allocation sampling is Windows/ETW-only and
+  niche for managed benchmarks.
+
 ## Stability
 
 While this package is `0.x` its public API carries no SemVer stability guarantee.
