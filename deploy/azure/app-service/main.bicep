@@ -33,7 +33,7 @@ param planSku string = 'P0v3'
 param appImage string
 
 @description('Image for the dotnet-diagnostics-mcp sidecar. Defaults to a released version tag (never :latest) so revisions are deterministic; for production override with a digest pin (image@sha256:...). See README.')
-param diagImage string = 'ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0'
+param diagImage string = 'ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0'
 
 @description('TCP port the application container listens on.')
 param appPort int = 8080

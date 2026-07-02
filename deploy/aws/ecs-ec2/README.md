@@ -73,7 +73,7 @@ recipe is operationally simpler.
      the MCP endpoint to the public internet.
 4. **Container images reachable from the task** — your app image plus the
    diagnostics sidecar image (default
-   `ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0`; mirror to ECR if your
+   `ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0`; mirror to ECR if your
    account blocks anonymous GHCR pulls).
 5. **A bearer token in AWS Secrets Manager** for the MCP HTTP transport:
    ```bash
@@ -241,13 +241,13 @@ Once the service is healthy and reachable from your operator network
 ## Production: pin to a digest
 
 The defaults use a released version tag
-(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0`) rather than `:latest`. For
+(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0`) rather than `:latest`. For
 production go one step further and pin to a **content-addressable digest** so
 the exact image bytes are immutable across replicas and rollbacks:
 
 ```bash
 docker buildx imagetools inspect \
-  ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0 \
+  ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0 \
   --format '{{json .Manifest}}' | jq -r .digest
 # -> sha256:...
 # Use ghcr.io/pedrosakuma/dotnet-diagnostics@sha256:<digest> in your parameters.

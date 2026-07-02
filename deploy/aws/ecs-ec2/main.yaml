@@ -55,7 +55,7 @@ Parameters:
 
   DiagImage:
     Type: String
-    Default: ghcr.io/pedrosakuma/dotnet-diagnostics:0.14.0
+    Default: ghcr.io/pedrosakuma/dotnet-diagnostics:0.15.0
     Description: >-
       Container image URI for the diagnostics MCP sidecar. Pinned to a released
       version tag rather than :latest to keep stack updates deterministic. For
