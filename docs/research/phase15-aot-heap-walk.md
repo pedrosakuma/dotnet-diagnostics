@@ -3,6 +3,8 @@
 **Issue**: #467 (Phase 15 C2) · **Branch**: `feature/c2-aot-research` · **Date**: 2026-06-29
 **Status**: Research spike — no production code. Output is this findings doc + a GO/NO-GO and follow-up issues.
 
+> ⚠️ **Superseded by issue [#471](https://github.com/pedrosakuma/dotnet-diagnostics/issues/471) (2026-06-30).** The "GO" verdict below was **empirically reversed**: on .NET 10 (SDK 10.0.201), requesting the `GCHeapSnapshot` keyword (`0x1980001`) against a live NativeAOT target causes a hard **segfault (`Segmentation fault (core dumped)`)** that **kills the target process** (the diagnostic IPC stream closes mid-handshake → `EndOfStreamException`); the benign GC keyword (`0x1`) is safe but streams no `GCBulkNode` events. gcdump is therefore **withheld** on NativeAOT (`canCollectGcDump: false`, with use-case + collector `NotSupported` guards) rather than enabled at address-only fidelity. Treat the feasibility analysis below as historical context for the fidelity *ceiling* (address-only, no type names, no static roots), not as a recommendation to lift the gate. See [`docs/aot-coverage.md`](../aot-coverage.md) (`[^aot-gcdump]`).
+
 ## Executive summary
 
 **GO** — a managed heap walk *is* feasible on NativeAOT .NET 10 via the

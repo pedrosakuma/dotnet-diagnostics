@@ -12,7 +12,7 @@ using DotnetDiagnostics.Core.Capabilities;
 /// <param name="Runtime">Runtime flavour as detected by <see cref="ICapabilityDetector"/> (e.g. CoreClr, NativeAot, Unknown).</param>
 /// <param name="RuntimeVersion">CLR product version string when available.</param>
 /// <param name="CanSampleCpu">True when CPU sampling is reachable (CoreCLR SampleProfiler, or NativeAOT with perf/ETW).</param>
-/// <param name="CanCollectGcDump">True when ETW/EventPipe gcdump can be requested (CoreCLR only).</param>
+/// <param name="CanCollectGcDump">True when ETW/EventPipe gcdump can be requested (CoreCLR only; withheld on NativeAOT because requesting a gcdump crashes .NET 10 AOT targets).</param>
 /// <param name="AutoResolved">True when the caller omitted <c>processId</c> and the server resolved it from a single-match list.</param>
 /// <param name="BindingSource">
 /// Origin label introduced in Phase 2 of the central-orchestrator design (issue #20). Set to

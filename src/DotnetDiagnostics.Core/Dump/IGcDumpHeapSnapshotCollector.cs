@@ -1,5 +1,7 @@
 namespace DotnetDiagnostics.Core.Dump;
 
+using DotnetDiagnostics.Core.Capabilities;
+
 /// <summary>
 /// Collects a managed-heap snapshot over EventPipe — the same mechanism <c>dotnet-gcdump</c> uses —
 /// without writing a process dump or attaching ClrMD/ptrace to the target. This is the
@@ -34,4 +36,14 @@ public sealed record GcDumpOptions(
     int TopTypes = 20,
     int SnapshotTopTypes = 200,
     TimeSpan? Timeout = null,
-    bool ExportTrace = false);
+    bool ExportTrace = false)
+{
+    /// <summary>
+    /// Runtime flavor of the target. gcdump is a CoreCLR-only capability: on <see cref="RuntimeFlavor.NativeAot"/>
+    /// the collector refuses with <see cref="NotSupportedException"/> before opening a session, because requesting
+    /// the GCHeapSnapshot EventPipe keyword crashes .NET 10 NativeAOT targets (issue #471). Kept as an init-only
+    /// property (rather than a positional parameter) so the existing constructor ABI is preserved. Defaults to
+    /// <see cref="RuntimeFlavor.CoreClr"/> so existing callers are unaffected.
+    /// </summary>
+    public RuntimeFlavor Runtime { get; init; } = RuntimeFlavor.CoreClr;
+}

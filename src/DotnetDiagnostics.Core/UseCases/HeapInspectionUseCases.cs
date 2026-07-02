@@ -1,3 +1,4 @@
+using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.ProcessDiscovery;
@@ -160,9 +161,30 @@ public static class HeapInspectionUseCases
         var pid = resolved.ProcessId;
         var ctx = resolved.Context;
 
+        // gcdump is CoreCLR-only. Requesting the GCHeapSnapshot keyword crashes .NET 10 NativeAOT
+        // targets (segfault mid-handshake), so refuse with a clear pivot instead of killing the
+        // target (issue #471). Gate on the resolved capability so this stays consistent with the
+        // CapabilityDetector gate — it also withholds gcdump when the runtime could not be classified
+        // (RuntimeFlavor.Unknown), which might be an unclassified AOT process.
+        if (ctx is not null && !ctx.CanCollectGcDump)
+        {
+            var reason = ctx.Runtime == RuntimeFlavor.NativeAot
+                ? "Requesting the EventPipe GCHeapSnapshot keyword crashes .NET 10 NativeAOT targets " +
+                  "(the runtime segfaults and the process exits), so the capability is intentionally withheld."
+                : "gcdump is only supported on CoreCLR; this target's runtime could not be positively " +
+                  "classified as CoreCLR, so it is withheld as a safety precaution (it crashes NativeAOT targets).";
+            return DiagnosticResult.Fail<LiveHeapInspection>(
+                $"gcdump is not supported on this target (pid {pid}, runtime {ctx.Runtime}).",
+                new DiagnosticError(
+                    "NotSupported",
+                    reason,
+                    "Use collect_process_dump for a native dump. Managed heap-graph inspection " +
+                    "(inspect_heap source=live/dump) is also unavailable on NativeAOT (no ClrMD DAC)."));
+        }
+
         var snapshot = await collector.CollectAsync(
             pid,
-            new GcDumpOptions(TopTypes: topTypes, Timeout: timeout, ExportTrace: exportTrace),
+            new GcDumpOptions(TopTypes: topTypes, Timeout: timeout, ExportTrace: exportTrace) { Runtime = ctx?.Runtime ?? RuntimeFlavor.Unknown },
             cancellationToken).ConfigureAwait(false);
 
         var handle = handles.Register(pid, HeapSnapshotKind, snapshot, HeapSnapshotHandleTtl);
