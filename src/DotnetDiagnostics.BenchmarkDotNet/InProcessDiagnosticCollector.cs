@@ -7,6 +7,7 @@ using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
@@ -35,10 +36,13 @@ namespace DotnetDiagnostics.BenchmarkDotNet;
 internal sealed class InProcessDiagnosticCollector : IDisposable
 {
     /// <summary>
-    /// The <c>collect</c> kinds the diagnoser can dispatch in-process. Mirrors the CLI's
+    /// The diagnostic kinds the diagnoser can dispatch in-process. Mirrors the CLI's
     /// <c>CollectKinds</c> minus <c>event_source</c> (needs an explicit provider name and is
     /// not benchmark-relevant) and <c>startup</c> (the diagnoser attaches after the benchmark
-    /// host is already running, so it cannot observe cold-start loader/DI events).
+    /// host is already running, so it cannot observe cold-start loader/DI events), plus
+    /// <c>gcdump</c> — a managed-heap <b>retention</b> snapshot (EventPipe GCHeapSnapshot, no
+    /// ptrace / no dump file) that complements the <c>allocation</c> churn view. <c>gcdump</c> is
+    /// CoreCLR-only and degrades to a <c>NotSupported</c> entry on NativeAOT children.
     /// </summary>
     public static readonly IReadOnlySet<string> SupportedKinds = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -58,6 +62,7 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
         "kestrel",
         "networking",
         "requests",
+        "gcdump",
     };
 
     /// <summary>
@@ -130,6 +135,8 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
                 services.GetRequiredService<INetworkingCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
             "requests" => Materialize(kind, await EventCollectionUseCases.CollectInFlightRequests(
                 services.GetRequiredService<IInFlightRequestCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
+            "gcdump" => Materialize(kind, await HeapInspectionUseCases.InspectGcDump(
+                services.GetRequiredService<IGcDumpHeapSnapshotCollector>(), handles, resolver, processId, cancellationToken: cancellationToken).ConfigureAwait(false)),
             "activities" => Materialize(kind, await EventCollectionUseCases.CollectActivities(
                 services.GetRequiredService<IActivityCollector>(), resolver, handles, processId, durationSeconds: durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
             _ => KindCapture.Unsupported(kind),
