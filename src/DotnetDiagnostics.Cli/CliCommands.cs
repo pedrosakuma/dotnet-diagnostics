@@ -632,6 +632,14 @@ internal static class CliCommands
             return false;
         }
 
+        // Cold mode (no --hypothesis) has nothing to anchor the plan on without a stated symptom;
+        // the planner would silently default to a generic route. Require one so the plan is meaningful.
+        if (string.IsNullOrWhiteSpace(options.Hypothesis) && string.IsNullOrWhiteSpace(options.Symptom))
+        {
+            error = "The 'investigate' command requires --symptom <text> (or --hypothesis <text>) so the plan can be anchored to what you observed.";
+            return false;
+        }
+
         return true;
     }
 
@@ -1277,10 +1285,11 @@ internal static class CliCommands
             Constraints: constraints);
 
         var plan = planner.Plan(request);
-        var summary = $"Mode={plan.Mode}. Next step #{plan.NextStep.StepNumber}: {plan.NextStep.ToolName}. " +
-                      $"{plan.AllSteps.Count} total step(s), {plan.EarlyStopConditions.Count} early-stop condition(s). " +
-                      $"Honor MaxToolCalls={plan.Constraints.MaxToolCalls}.";
-        var result = ProcessResolutionHelpers.WithContext(DiagnosticResult.Ok(plan, summary), resolved.Context);
+        var cliPlan = CliInvestigationProjection.Project(plan);
+        var summary = $"Mode={cliPlan.Mode}. Next step #{cliPlan.NextStep.StepNumber}: {cliPlan.NextStep.StepId}. " +
+                      $"{cliPlan.AllSteps.Count} total step(s), {cliPlan.EarlyStopConditions.Count} early-stop condition(s). " +
+                      $"Honor MaxToolCalls={cliPlan.MaxToolCalls}.";
+        var result = ProcessResolutionHelpers.WithContext(DiagnosticResult.Ok(cliPlan, summary), resolved.Context);
 
         return BuildResult(result, static (sb, plan) =>
         {
@@ -1297,10 +1306,10 @@ internal static class CliCommands
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  hypothesis       : {plan.Hypothesis}");
             }
 
-            sb.AppendLine(CultureInfo.InvariantCulture, $"  max-tool-calls   : {plan.Constraints.MaxToolCalls}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  max-tool-calls   : {plan.MaxToolCalls}");
             sb.AppendLine();
             sb.AppendLine("  next step:");
-            sb.AppendLine(CultureInfo.InvariantCulture, $"    #{plan.NextStep.StepNumber} {plan.NextStep.ToolName}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"    #{plan.NextStep.StepNumber} {plan.NextStep.StepId}{FormatStepCommand(plan.NextStep.Command)}");
             sb.AppendLine(CultureInfo.InvariantCulture, $"    rationale: {plan.NextStep.Rationale}");
             if (plan.AllSteps.Count > 1)
             {
@@ -1308,7 +1317,7 @@ internal static class CliCommands
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  all steps ({plan.AllSteps.Count}):");
                 foreach (var step in plan.AllSteps)
                 {
-                    sb.AppendLine(CultureInfo.InvariantCulture, $"    #{step.StepNumber} [{step.Status}] {step.ToolName}");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"    #{step.StepNumber} [{step.Status}] {step.StepId}{FormatStepCommand(step.Command)}");
                 }
             }
 
@@ -1324,6 +1333,9 @@ internal static class CliCommands
         });
     }
 
+    private static string FormatStepCommand(string? command)
+        => string.IsNullOrWhiteSpace(command) ? string.Empty : $" (via {command})";
+
     private static async Task<CliCommandResult> ExportSummaryAsync(
         IServiceProvider services,
         CliOptions options,
@@ -1337,14 +1349,26 @@ internal static class CliCommands
         var exporter = services.GetRequiredService<IInvestigationSummaryExporter>();
         var handles = services.GetRequiredService<IDiagnosticHandleStore>();
 
-        var artifact = handles.TryGet<CpuSampleTraceArtifact>(options.Handle!);
-        if (artifact is null)
+        var lookup = handles.TryGetWithKind(options.Handle!);
+        if (lookup is null)
         {
             return BuildResult<ExportedInvestigationSummary>(
                 DiagnosticResult.Fail<ExportedInvestigationSummary>(
                     $"Handle '{options.Handle}' is unknown or expired. Collect a CPU sample first with 'collect --kind cpu', then re-run export-summary.",
                     new DiagnosticError("HandleExpired",
                         "Drill-down handles live until the session ends or the target process exits.",
+                        options.Handle)),
+                static (_, _) => { });
+        }
+
+        if (lookup.Value.Artifact is not CpuSampleTraceArtifact artifact)
+        {
+            return BuildResult<ExportedInvestigationSummary>(
+                DiagnosticResult.Fail<ExportedInvestigationSummary>(
+                    $"Handle '{options.Handle}' is a '{lookup.Value.Kind}' handle, not a CPU sample. " +
+                    "export-summary needs a CPU-sample handle; re-run with a handle from 'collect --kind cpu'.",
+                    new DiagnosticError("HandleKindMismatch",
+                        "export-summary projects CPU-sample hotspots into a portable investigation summary.",
                         options.Handle)),
                 static (_, _) => { });
         }
@@ -1367,7 +1391,18 @@ internal static class CliCommands
                     Directory.CreateDirectory(dir);
                 }
 
-                await File.WriteAllTextAsync(fullPath, exported.Rendered, cancellationToken).ConfigureAwait(false);
+                // Atomic write: a failure mid-write must never truncate/clobber a pre-existing summary.
+                var tempPath = fullPath + ".tmp-" + Guid.NewGuid().ToString("N");
+                try
+                {
+                    await File.WriteAllTextAsync(tempPath, exported.Rendered, cancellationToken).ConfigureAwait(false);
+                    File.Move(tempPath, fullPath, overwrite: true);
+                }
+                catch
+                {
+                    TryDeleteQuietly(tempPath);
+                    throw;
+                }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
             {
@@ -1377,29 +1412,45 @@ internal static class CliCommands
                         new DiagnosticError("OutputWriteFailure", ex.Message)),
                     static (_, _) => { });
             }
-        }
 
-        var bytes = exported.Rendered.Length;
-        var dest = string.IsNullOrWhiteSpace(options.OutDir) ? "stdout" : options.OutDir;
-        var okSummary = $"Exported investigation summary {exported.Summary.InvestigationId} ({bytes} chars) to {dest}.";
-        var okResult = DiagnosticResult.Ok(exported, okSummary);
-
-        return BuildResult(okResult, (sb, e) =>
-        {
-            if (string.IsNullOrWhiteSpace(options.OutDir))
-            {
-                sb.AppendLine();
-                sb.AppendLine(e.Rendered);
-            }
-            else
+            var writtenBytes = exported.Rendered.Length;
+            var writeSummary = $"Exported investigation summary {exported.Summary.InvestigationId} ({writtenBytes} chars) to {options.OutDir}.";
+            return BuildResult(DiagnosticResult.Ok(exported, writeSummary), (sb, e) =>
             {
                 sb.AppendLine();
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  written to : {options.OutDir}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  id         : {e.Summary.InvestigationId}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  hotspots   : {e.Summary.Findings.TopHotspots.Count}");
-                sb.AppendLine(CultureInfo.InvariantCulture, $"  size       : {bytes} chars");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  size       : {writtenBytes} chars");
+            });
+        }
+
+        // stdout mode: emit exactly the portable summary document (verbatim, pipe-able), identical to
+        // what --out persists. Both --json and human paths print the same portable JSON — never a
+        // decorated human envelope that a consumer would have to strip.
+        return RawJsonResult(exported.Rendered);
+    }
+
+    private static CliCommandResult RawJsonResult(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var element = document.RootElement.Clone();
+        return new CliCommandResult(IsError: false, Cancelled: false, Envelope: element, Human: json);
+    }
+
+    private static void TryDeleteQuietly(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
             }
-        });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort cleanup of the temp file; the original write failure is already surfaced.
+        }
     }
 
     private static async Task<CliCommandResult> InspectHeapAsync(

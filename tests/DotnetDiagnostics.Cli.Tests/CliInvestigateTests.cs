@@ -68,9 +68,9 @@ public sealed class CliInvestigateTests
     }
 
     [Fact]
-    public void TryValidateInvestigate_NoOptions_ReturnsTrue()
+    public void TryValidateInvestigate_SymptomOnly_ReturnsTrue()
     {
-        var opts = new CliOptions { Command = "investigate" };
+        var opts = new CliOptions { Command = "investigate", Symptom = "requests timing out" };
 
         var valid = CliCommands.TryValidateInvestigate(opts, out var error);
 
@@ -103,7 +103,29 @@ public sealed class CliInvestigateTests
     [Fact]
     public void TryValidateInvestigate_MaxToolCallsPositive_ReturnsTrue()
     {
-        var opts = new CliOptions { Command = "investigate", MaxToolCalls = 1 };
+        var opts = new CliOptions { Command = "investigate", MaxToolCalls = 1, Symptom = "high CPU" };
+
+        var valid = CliCommands.TryValidateInvestigate(opts, out var error);
+
+        valid.Should().BeTrue();
+        error.Should().BeNull();
+    }
+
+    [Fact]
+    public void TryValidateInvestigate_NoSymptomNoHypothesis_ReturnsFalse()
+    {
+        var opts = new CliOptions { Command = "investigate", MaxToolCalls = 8 };
+
+        var valid = CliCommands.TryValidateInvestigate(opts, out var error);
+
+        valid.Should().BeFalse();
+        error.Should().Contain("symptom");
+    }
+
+    [Fact]
+    public void TryValidateInvestigate_HypothesisWithoutSymptom_ReturnsTrue()
+    {
+        var opts = new CliOptions { Command = "investigate", Hypothesis = "lock contention on the cache" };
 
         var valid = CliCommands.TryValidateInvestigate(opts, out var error);
 
@@ -192,7 +214,7 @@ public sealed class CliInvestigateTests
     [Fact]
     public void TryValidateCommand_Investigate_ValidOptions_ReturnsTrue()
     {
-        var opts = new CliOptions { Command = "investigate", Pid = 1234 };
+        var opts = new CliOptions { Command = "investigate", Pid = 1234, Symptom = "high CPU" };
 
         var valid = CliCommands.TryValidateCommand(opts, out var error);
 
@@ -209,5 +231,40 @@ public sealed class CliInvestigateTests
 
         valid.Should().BeFalse();
         error.Should().Contain("--handle");
+    }
+
+    // ──────────────────────────────── CLI projection (no MCP leak) ──────────────────────────────
+
+    [Fact]
+    public void Project_ColdPlan_ExposesCliCommandsNotMcpToolNames()
+    {
+        var plan = new Core.Investigation.InvestigationPlanner().Plan(
+            new Core.Investigation.InvestigationRequest(
+                ProcessId: 4242,
+                Symptom: "high CPU",
+                Hypothesis: null,
+                Constraints: new Core.Investigation.InvestigationConstraints(MaxToolCalls: 8)));
+
+        var cli = CliInvestigationProjection.Project(plan);
+
+        // The vitals step maps to the CLI 'collect' command, never the MCP 'collect_events' tool name.
+        cli.NextStep.Command.Should().Be("collect");
+        cli.AllSteps.Should().OnlyContain(s => s.Command == null || !s.Command.Contains('_'));
+
+        // Serialize the projected DTO (this is exactly what the --json envelope emits) and assert no
+        // MCP vocabulary survives anywhere in the payload.
+        var json = System.Text.Json.JsonSerializer.Serialize(cli);
+        foreach (var token in CliHintProjection.LeakTokens)
+        {
+            json.Should().NotContain(token, $"projected investigate output must not leak MCP token '{token}'");
+        }
+    }
+
+    [Theory]
+    [InlineData("collect_events(kind=\"counters\")", "collect --kind counters")]
+    [InlineData("Drill with query_snapshot(handle, view=\"call-tree\").", "Drill with query --view call-tree.")]
+    public void Scrub_RewritesMcpCallSyntaxToCliVocabulary(string input, string expected)
+    {
+        CliInvestigationProjection.Scrub(input).Should().Be(expected);
     }
 }
