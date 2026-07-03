@@ -15,6 +15,7 @@ using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Signals;
 using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 using Microsoft.Extensions.Logging;
@@ -238,7 +239,8 @@ public static class EventCollectionUseCases
                 new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 });
 
         var handle = handles.Register(pid, CollectionHandleKinds.ExceptionSnapshot, snap, CollectionHandleTtl);
-        return WithContext(DiagnosticResult.OkWithHandle(
+        var signals = ExceptionSignals.Detect(snap, handle.Id);
+        var result = DiagnosticResult.OkWithHandle(
             inlineSnap,
             summary,
             handle.Id,
@@ -246,8 +248,13 @@ public static class EventCollectionUseCases
             primaryHint,
             new NextActionHint("query_snapshot",
                 "Drill into this exception snapshot without re-collecting (views: summary, byType, recent).",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byType", ["topN"] = 20 })),
-            resolved.Context);
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byType", ["topN"] = 20 }));
+        if (signals.Count > 0)
+        {
+            result = result with { Signals = signals };
+        }
+
+        return WithContext(result, resolved.Context);
     }
 
     /// <summary>Captures exception/crash signals and returns early if the target exits.</summary>
@@ -296,13 +303,19 @@ public static class EventCollectionUseCases
                 ? $"Crash guard observed process exit after {snap.Duration.TotalSeconds:F1}s (exitCode={snap.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}) and {snap.TotalExceptions} exception(s)."
                 : $"Crash guard captured {snap.TotalExceptions} exception(s) over {durationSeconds}s; no unhandled exception or process exit observed.";
 
-        return WithContext(DiagnosticResult.OkWithHandle(
+        var signals = ExceptionSignals.Detect(snap, handle.Id);
+        var result = DiagnosticResult.OkWithHandle(
             inlineSnap,
             summary,
             handle.Id,
             handle.ExpiresAt,
-            hints.ToArray()),
-            resolved.Context);
+            hints.ToArray());
+        if (signals.Count > 0)
+        {
+            result = result with { Signals = signals };
+        }
+
+        return WithContext(result, resolved.Context);
     }
 
     /// <summary>Pairs GCStart/GCStop events into pause durations and per-generation counts.</summary>

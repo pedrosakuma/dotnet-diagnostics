@@ -133,6 +133,47 @@ public sealed class DepthContractTests : IClassFixture<McpToolsTests.AuthedFacto
     }
 
     [Fact]
+    public async Task CollectExceptions_SurfacesByTypeSignal_WhenOneTypeDominates()
+    {
+        await using var client = await ConnectAsync();
+
+        // A single dominant exception type thrown continuously across the whole collection window
+        // (EventPipe session startup is ~1s, so throw for longer than the window to be robust).
+        using var stop = new CancellationTokenSource();
+        var workload = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                try { throw new InvalidOperationException("signal-test"); }
+                catch { /* intentionally swallowed */ }
+                await Task.Delay(25);
+            }
+        });
+
+        var envelope = DeserializeEnvelope<CollectEventsEnvelope>(await client.CallToolAsync(
+            "collect_events",
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "exceptions",
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 4,
+                ["maxRecent"] = 50,
+                ["depth"] = "Summary",
+            },
+            cancellationToken: CancellationToken.None));
+
+        await stop.CancelAsync();
+        await workload;
+
+        envelope.Should().NotBeNull();
+        // The diagnosis-agnostic by-type concentration signal must lead the envelope (#524).
+        envelope!.Signals.Should().NotBeNullOrEmpty();
+        var byType = envelope.Signals!.Should().ContainSingle(s => s.Signal == "exceptions.by-type").Subject;
+        byType.Buckets[0].Key.Should().Contain("InvalidOperationException");
+        byType.Buckets[0].Handle.Should().Be(envelope.Handle);
+    }
+
+    [Fact]
     public async Task CollectGcEvents_SummaryDropsEventsDetailKeepsThem()
     {
         await using var client = await ConnectAsync();

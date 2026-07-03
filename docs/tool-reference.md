@@ -38,7 +38,8 @@ captured, but only the dimensions that *stand out* are forwarded in the envelope
 Each `SignalGroup` carries:
 
 - `signal`: stable id of the **grouping dimension** — not a diagnosis (e.g.
-  `cpu.self-time.concentration`, `cpu.self-time.by-namespace`).
+  `cpu.self-time.concentration`, `cpu.self-time.by-namespace`, `exceptions.by-type`,
+  `exceptions.by-throw-site`).
 - `summary`: one-line description of what stands out.
 - `salience`: `0`–`1`, how far the grouping stands out (magnitude / concentration).
 - `buckets[]`: the top members of the grouping, each `{ key, magnitude, unit,
@@ -59,6 +60,16 @@ read-only MCP Resource `signals://cpu-sample/{handle}`, so a client can re-pull 
 current signals for a handle without re-running the sampler. The providers run over
 the full merged call tree stored under the handle, so the namespace roll-up is
 faithful and nothing is lost to the inline top-N cap.
+
+**Exceptions.** `collect_events(kind="exceptions")` and `collect_events(kind="crash-guard")`
+surface exception groupings inline: `exceptions.by-type` (does one exception type
+dominate the stream vs. spread thin — off the exact per-type counts, both collectors)
+and `exceptions.by-throw-site` (roll-up by `type × innermost frame`). The throw-site
+roll-up needs resolved managed stacks, which only the crash-guard collector captures,
+and even there it is best-effort (live EventPipe stack resolution can be empty), so its
+shares are relative to the stack-resolved events and it simply produces nothing when no
+stacks were resolved. The standard exception stream carries no stack, so it only ever
+emits `exceptions.by-type`.
 
 ### Implicit bootstrap (`processId` is optional)
 
