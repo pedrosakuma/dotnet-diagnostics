@@ -291,7 +291,7 @@ internal static class DiagnosticServiceRegistration
             .WithResources<Resources.HeapSnapshotResources>()
             .WithResources<Resources.ThreadSnapshotResources>()
             .WithResources<Resources.JourneyDiffResources>()
-            .WithResources<Resources.FindingsResources>();
+            .WithResources<Resources.SignalsResources>();
 
         if (enableOrchestratorTools)
         {

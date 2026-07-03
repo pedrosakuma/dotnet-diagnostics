@@ -223,6 +223,24 @@ internal static class CpuSampleAnalytics
         return stats;
     }
 
+    /// <summary>
+    /// The global self-time (exclusive) leader across the whole merged tree, or <c>null</c> when there
+    /// is no on-CPU leaf to attribute. Ranks over the full tree (not the inclusive-capped hotspots), so
+    /// the true leaf is found even on a deep stack. Shared by every sampler so the inline
+    /// <see cref="CpuSample.TopSelfTime"/> and the stored-artifact / Resource path agree.
+    /// </summary>
+    internal static Hotspot? TopSelfTime(CallTreeNode root, long total)
+    {
+        var ranked = RankMethods(root, total, byInclusive: false);
+        if (ranked.Count == 0 || ranked[0].ExclusiveSamples <= 0)
+        {
+            return null;
+        }
+
+        var m = ranked[0];
+        return new Hotspot(new SampledFrame(m.Module, m.Method), m.InclusiveSamples, m.ExclusiveSamples, m.Identity);
+    }
+
     internal static IReadOnlyList<GroupSampleStat> RankGroups(CallTreeNode root, long total, Func<CallTreeNode, string> keySelector)
     {
         var aggregated = Aggregate(root, keySelector);

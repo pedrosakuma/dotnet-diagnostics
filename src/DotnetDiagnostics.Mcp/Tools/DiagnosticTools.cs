@@ -11,7 +11,7 @@ using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Container;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
-using DotnetDiagnostics.Core.Findings;
+using DotnetDiagnostics.Core.Signals;
 using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.Dump;
@@ -904,10 +904,11 @@ public sealed class DiagnosticTools
 
         var handle = handles.Register(pid, "cpu-sample", result.Artifact, CpuSampleHandleTtl);
 
-        // Findings layer (#515): cross-reference the samples into ranked, engine-derived conclusions
-        // (e.g. regex-backtracking) surfaced at the top of the envelope. Same detectors the findings
-        // Resource re-runs for this handle. Empty when nothing is detected (no noise on the wire).
-        var findings = CpuSampleFindings.Detect(result.Summary, handle.Id);
+        // Signal-grouping ("vector") layer (#514): forward only the salient, diagnosis-agnostic
+        // groupings of these samples (self-time concentration + namespace roll-up) at the top of the
+        // envelope, rather than making the consumer re-derive them from the raw payload. Same signals
+        // the Resource re-derives for this handle. Empty when nothing is salient (no noise on the wire).
+        var signals = CpuSampleSignals.Detect(result.Summary, handle.Id);
 
         var hints = new List<NextActionHint>();
 
@@ -933,7 +934,7 @@ public sealed class DiagnosticTools
             handle.ExpiresAt,
             depth,
             result.Artifact.TracePath,
-            findings,
+            signals,
             hints.ToArray());
         return WithContext(ok, ctx);
     }
@@ -1309,7 +1310,7 @@ public sealed class DiagnosticTools
         DateTimeOffset handleExpiresAt,
         SamplingDepth depth,
         string? tracePath,
-        IReadOnlyList<Finding> findings,
+        IReadOnlyList<SignalGroup> signals,
         params NextActionHint[] hints)
     {
         var top = sample.TopHotspots.Count > 0 ? sample.TopHotspots[0] : null;
@@ -1364,7 +1365,7 @@ public sealed class DiagnosticTools
 
         return DiagnosticResult.OkWithHandle(inlineSample, summary, handleId, handleExpiresAt, hints)
             with
-        { Findings = findings.Count > 0 ? findings : null };
+        { Signals = signals.Count > 0 ? signals : null };
     }
 
     [RequireAnyScope("read-counters", "eventpipe")]
