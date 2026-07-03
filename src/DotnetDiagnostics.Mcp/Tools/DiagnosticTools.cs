@@ -909,6 +909,9 @@ public sealed class DiagnosticTools
             hints.Add(regexHint);
         }
 
+        hints.Add(new NextActionHint("query_snapshot", "Rank methods by self-time (exclusive) — where CPU is actually spent, past the inclusive threadpool/dispatch roots.",
+            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "top-methods", ["rankBy"] = "exclusive" })
+        { Priority = NextActionHintPriority.High });
         hints.Add(new NextActionHint("query_snapshot", "Walk the merged caller→callee tree built from the same samples.",
             new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
         { Priority = NextActionHintPriority.High });
@@ -1342,6 +1345,12 @@ public sealed class DiagnosticTools
         params NextActionHint[] hints)
     {
         var top = sample.TopHotspots.Count > 0 ? sample.TopHotspots[0] : null;
+        // Prefer the sampler's global self-time leader (uncapped); fall back to the hottest exclusive
+        // frame within the inclusive-capped TopHotspots for samplers that don't compute TopSelfTime.
+        var topSelfTime = sample.TopSelfTime
+            ?? (sample.TopHotspots.Count > 0
+                ? sample.TopHotspots.Aggregate((a, b) => b.ExclusiveSamples > a.ExclusiveSamples ? b : a)
+                : null);
         var inlineSample = sample;
         var droppedHotspots = 0;
         if (depth == SamplingDepth.Summary && sample.TopHotspots.Count > 3)
@@ -1350,10 +1359,35 @@ public sealed class DiagnosticTools
             inlineSample = sample with { TopHotspots = sample.TopHotspots.Take(3).ToArray() };
         }
 
+        // Lead with self-time (exclusive): in almost every server workload the inclusive leaders are
+        // the invariant threadpool/dispatch roots (Thread.StartCallback → …→ Dispatch), so naming the
+        // #1 inclusive frame as "Top method" is a poor lead. The hottest exclusive frame is where the
+        // CPU is actually spent. Fall back to inclusive framing only when self-time is absent (a
+        // blocked/wait-bound or unresolved capture, where the sampler has no on-CPU leaf to attribute).
+        string leadPhrase;
+        if (topSelfTime is not null && topSelfTime.ExclusiveSamples > 0)
+        {
+            var selfPercent = sample.TotalSamples > 0 ? topSelfTime.ExclusiveSamples * 100.0 / sample.TotalSamples : 0;
+            leadPhrase =
+                $"Hottest self-time method: {topSelfTime.Frame.Method} ({topSelfTime.ExclusiveSamples} exclusive, {selfPercent:0.#}% of samples). " +
+                $"Rank self-time with query_snapshot(handle=\"{handleId}\", view=\"top-methods\") or walk the call path with view=\"call-tree\".";
+        }
+        else if (top is not null)
+        {
+            leadPhrase =
+                $"Top inclusive method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive) — " +
+                $"no dominant self-time frame (the workload looks blocked/wait-bound or symbols are unresolved). " +
+                $"Walk the call path with query_snapshot(handle=\"{handleId}\", view=\"call-tree\").";
+        }
+        else
+        {
+            leadPhrase = string.Empty;
+        }
+
         var summary = top is not null
             ? (depth == SamplingDepth.Summary && droppedHotspots > 0
-                ? $"Captured {sample.TotalSamples} samples over {durationSeconds}s — showing top {inlineSample.TopHotspots.Count} of {sample.TopHotspots.Count} hotspot(s) (dropped {droppedHotspots}; handle has all). Top method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive). Drill into the full call tree with query_snapshot(handle=\"{handleId}\", view=\"call-tree\")."
-                : $"Captured {sample.TotalSamples} samples over {durationSeconds}s. Top method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive). Drill into the full call tree with query_snapshot(handle=\"{handleId}\", view=\"call-tree\").")
+                ? $"Captured {sample.TotalSamples} samples over {durationSeconds}s — showing top {inlineSample.TopHotspots.Count} of {sample.TopHotspots.Count} hotspot(s) (dropped {droppedHotspots}; handle has all). {leadPhrase}"
+                : $"Captured {sample.TotalSamples} samples over {durationSeconds}s. {leadPhrase}")
             : $"Captured {sample.TotalSamples} samples but no method aggregation surfaced — increase durationSeconds or verify the target is under load.";
         if (!string.IsNullOrEmpty(tracePath))
         {

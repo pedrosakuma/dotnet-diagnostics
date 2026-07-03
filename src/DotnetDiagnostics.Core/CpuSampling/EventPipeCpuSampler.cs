@@ -116,7 +116,18 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 sourceResolution,
                 methodInstantiationResolution,
                 cancellationToken);
-            var summary = new CpuSample(processId, startedAt, duration, total, hotspots);
+            // Rank self-time (exclusive) across the WHOLE merged tree, not the inclusive-capped
+            // TopHotspots — the true global leaf can sit outside the inclusive top-N on a deep stack.
+            // Same ranking the query_snapshot(view="top-methods", rankBy="exclusive") view uses.
+            var selfTimeRanked = CpuSampleAnalytics.RankMethods(root, total, byInclusive: false);
+            var topSelfTime = selfTimeRanked.Count > 0 && selfTimeRanked[0].ExclusiveSamples > 0
+                ? new Hotspot(
+                    new SampledFrame(selfTimeRanked[0].Module, selfTimeRanked[0].Method),
+                    selfTimeRanked[0].InclusiveSamples,
+                    selfTimeRanked[0].ExclusiveSamples,
+                    selfTimeRanked[0].Identity)
+                : null;
+            var summary = new CpuSample(processId, startedAt, duration, total, hotspots) { TopSelfTime = topSelfTime };
             var relativeTrace = exportPath is null ? null : RelativeToRoot(exportPath);
             var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, sources, identities, TracePath: relativeTrace);
             return new CpuSampleResult(summary, artifact);
