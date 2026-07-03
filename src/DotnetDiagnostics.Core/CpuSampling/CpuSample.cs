@@ -26,4 +26,15 @@ public sealed record CpuSample(
     /// drill into the trace artifact just to know whether demangling succeeded.
     /// </summary>
     public NativeAotSymbolDemangler.SymbolSource? SymbolSource { get; init; }
+
+    /// <summary>
+    /// The single hottest method by <b>self-time</b> (exclusive samples) across the whole merged call
+    /// tree — computed before <see cref="TopHotspots"/> is capped by inclusive rank, so it is the true
+    /// global self-time leader even when it falls outside the inclusive top-N. This is what a CPU
+    /// investigation should lead with: in most server workloads the inclusive top is the invariant
+    /// ThreadPool/dispatch roots, while self-time points at where cycles are actually burned.
+    /// <c>null</c> when no dominant on-CPU leaf exists (wait-bound / unresolved capture) or the
+    /// sampler does not compute it (the consumer then falls back to the inclusive-ranked hotspots).
+    /// </summary>
+    public Hotspot? TopSelfTime { get; init; }
 }
