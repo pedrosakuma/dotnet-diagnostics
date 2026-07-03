@@ -20,6 +20,7 @@ you're using, then reach for the cross-cutting references.
 | [`output-examples.md`](./output-examples.md) | **What each capture actually returns** — real, trimmed output per family (counters, gc, exceptions, threadpool, contention, cpu, allocation), stamped per release |
 | [`investigation-playbooks.md`](./investigation-playbooks.md) | Step-by-step recipes for common symptoms (slow, leaking, 5xx, slow HTTP, NativeAOT) |
 | [`bad-code-scenarios.md`](./bad-code-scenarios.md) | The anti-patterns in `samples/BadCodeSample/` and the investigation flow each one exercises |
+| [`case-studies/`](./case-studies/) | **Narrated end-to-end investigations** — each tells the story of one non-obvious failure from misleading symptom → refuted wrong hypothesis → real cause → fix → verification, with the real captures at every step |
 
 ### MCP server (`dotnet-diagnostics-mcp`)
 
