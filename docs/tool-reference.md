@@ -18,10 +18,44 @@ Every structured tool response is a `DiagnosticResult<T>` envelope with:
   optional `suggestedArguments`, and `priority` (`high`, `normal`, or `low`;
   default `normal`).
 - `data`: the tool-specific payload on success.
+- `findings`: optional ranked `Finding[]` — engine-derived, cross-signal
+  diagnostic conclusions (each with `pattern`, `severity`, `confidence`,
+  `evidence` referencing a handle, `suggestedFix`, and a `nextAction`). Leads the
+  response so the consumer reads "what is likely wrong" without re-deriving it
+  from `data`. Omitted from the wire when nothing was detected (no noise). See
+  [Findings layer](#findings-layer).
 - `error`: `DiagnosticError` on classified failures.
 - `handle` / `handleExpiresAt` / `handleExpiresInSeconds`: present when the
   tool minted a drilldown handle. `handleExpiresInSeconds` is computed when the
   response is serialized and is floored at `0` after expiry.
+
+### Findings layer
+
+Some collectors cross-reference the signals they just captured into ranked,
+engine-derived **findings** — compact conclusions ("here is what is likely
+wrong") surfaced in the envelope's `findings[]` so the consumer does not have to
+re-derive them from the raw payload. Each `Finding` carries:
+
+- `pattern`: stable machine id (e.g. `regex-backtracking`).
+- `severity`: `critical` | `high` | `medium` | `low` | `info`.
+- `confidence`: `0`–`1`.
+- `title`: one-line conclusion.
+- `evidence[]`: supporting signals, each referencing a drilldown `handle` (not
+  inlined blobs) with an optional `value` + `unit`.
+- `suggestedFix` and `nextAction` (a `NextActionHint`).
+
+Findings are **transparent grouping / cross-signal aggregation**, never a trained
+model: the ground-truth label only comes from the consumer that already saw the
+finding, so any accumulated dataset would be contaminated by the suggestion
+(consumer-side leakage). They are advisory — the evidence handles let you always
+drill and disagree. Ranking is by (severity, confidence) descending, capped so
+the payload stays small.
+
+**Resource.** `collect_sample(kind="cpu")` findings are also exposed as a
+read-only MCP Resource `findings://cpu-sample/{handle}`, so a client can re-pull
+the current findings for a handle without re-running the sampler. The detectors
+run over the full merged call tree stored under the handle, so nothing is lost to
+the inline top-N cap.
 
 ### Implicit bootstrap (`processId` is optional)
 
@@ -1374,6 +1408,11 @@ reports the aggregate symbol-resolution quality of `topHotspots`:
 - `Mixed` — quality varies across `topHotspots`. Inspect per-frame.
 - `Unknown` / omitted — CoreCLR sample (the EventPipe path resolves managed
   names directly; this field does not apply).
+
+**Findings.** CPU samples are cross-referenced into ranked
+[findings](#findings-layer) surfaced in the envelope's `findings[]` (e.g.
+`regex-backtracking` when the regex engine dominates inclusive samples). The same
+findings are also readable as the `findings://cpu-sample/{handle}` Resource.
 
 **Routing.** `collect_sample(kind="cpu")` dispatches based on
 `inspect_process(view="capabilities")`:

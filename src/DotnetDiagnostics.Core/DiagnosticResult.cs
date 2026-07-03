@@ -19,6 +19,14 @@ public sealed record DiagnosticResult<T>(
     /// <summary>The typed diagnostic payload, omitted on failure responses.</summary>
     public T? Data { get; init; }
 
+    /// <summary>
+    /// Engine-derived, ranked diagnostic conclusions cross-referenced from the collected data (see
+    /// <see cref="DotnetDiagnostics.Core.Findings.Finding"/>). Leads the response so a consumer can
+    /// read "what is likely wrong" without re-deriving it from <see cref="Data"/>. <c>null</c> (and
+    /// omitted from the wire) when nothing was detected, keeping the empty path noise-free.
+    /// </summary>
+    public IReadOnlyList<DotnetDiagnostics.Core.Findings.Finding>? Findings { get; init; }
+
     /// <summary>True when the call failed and <see cref="Error"/> is populated.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsError => Error is not null;

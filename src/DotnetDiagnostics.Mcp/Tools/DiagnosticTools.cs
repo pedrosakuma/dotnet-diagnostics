@@ -11,6 +11,7 @@ using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Container;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Findings;
 using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.Dump;
@@ -903,11 +904,12 @@ public sealed class DiagnosticTools
 
         var handle = handles.Register(pid, "cpu-sample", result.Artifact, CpuSampleHandleTtl);
 
+        // Findings layer (#515): cross-reference the samples into ranked, engine-derived conclusions
+        // (e.g. regex-backtracking) surfaced at the top of the envelope. Same detectors the findings
+        // Resource re-runs for this handle. Empty when nothing is detected (no noise on the wire).
+        var findings = CpuSampleFindings.Detect(result.Summary, handle.Id);
+
         var hints = new List<NextActionHint>();
-        if (TryBuildRegexBacktrackingHint(result.Summary, handle.Id) is { } regexHint)
-        {
-            hints.Add(regexHint);
-        }
 
         hints.Add(new NextActionHint("query_snapshot", "Rank methods by self-time (exclusive) — where CPU is actually spent, past the inclusive threadpool/dispatch roots.",
             new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "top-methods", ["rankBy"] = "exclusive" })
@@ -931,44 +933,9 @@ public sealed class DiagnosticTools
             handle.ExpiresAt,
             depth,
             result.Artifact.TracePath,
+            findings,
             hints.ToArray());
         return WithContext(ok, ctx);
-    }
-
-    /// <summary>
-    /// Auto-hint (#388): when the hottest CPU frames sit inside the regex engine
-    /// (<c>System.Text.RegularExpressions.RegexRunner</c> / <c>RegexInterpreter</c>), the most
-    /// likely cause is catastrophic backtracking on attacker- or user-controlled input. Surface a
-    /// targeted hint pointing at the call tree (to locate the calling pattern) and the standard
-    /// mitigations: a <c>[GeneratedRegex]</c> source-generated pattern, a match timeout, and bounding
-    /// the input length. Returns <c>null</c> when no regex frame is hot so the hint stays high-signal.
-    /// </summary>
-    internal static NextActionHint? TryBuildRegexBacktrackingHint(CpuSample sample, string handleId)
-    {
-        // Only fire when the regex engine is genuinely *hot*, not merely present somewhere in the
-        // returned topN: require a regex frame to carry a meaningful inclusive-sample share. A
-        // low-ranked incidental regex call (common in any app) must not trigger the warning.
-        if (sample.TotalSamples <= 0)
-        {
-            return null;
-        }
-
-        var minInclusive = sample.TotalSamples * 0.20;
-        var hot = sample.TopHotspots.Any(h =>
-            h.InclusiveSamples >= minInclusive
-            && (h.Frame.Method.Contains("System.Text.RegularExpressions.RegexRunner", StringComparison.Ordinal)
-                || h.Frame.Method.Contains("System.Text.RegularExpressions.RegexInterpreter", StringComparison.Ordinal)));
-        if (!hot)
-        {
-            return null;
-        }
-
-        return new NextActionHint(
-            "query_snapshot",
-            "Hot frames are inside the regex engine (RegexRunner / RegexInterpreter) — a classic sign of " +
-            "catastrophic backtracking on user-controlled input. Walk the call tree to find the calling pattern, " +
-            "then mitigate with a [GeneratedRegex] source-generated regex, a match timeout, and an input-length bound.",
-            new Dictionary<string, object?> { ["handle"] = handleId, ["view"] = "call-tree", ["maxDepth"] = 12, ["maxNodes"] = 200 });
     }
 
     [RequireScope("eventpipe")]
@@ -1342,6 +1309,7 @@ public sealed class DiagnosticTools
         DateTimeOffset handleExpiresAt,
         SamplingDepth depth,
         string? tracePath,
+        IReadOnlyList<Finding> findings,
         params NextActionHint[] hints)
     {
         var top = sample.TopHotspots.Count > 0 ? sample.TopHotspots[0] : null;
@@ -1394,7 +1362,9 @@ public sealed class DiagnosticTools
             summary += $" Raw trace exported to '{tracePath}' — fetch with get_bytes(kind=\"trace\").";
         }
 
-        return DiagnosticResult.OkWithHandle(inlineSample, summary, handleId, handleExpiresAt, hints);
+        return DiagnosticResult.OkWithHandle(inlineSample, summary, handleId, handleExpiresAt, hints)
+            with
+        { Findings = findings.Count > 0 ? findings : null };
     }
 
     [RequireAnyScope("read-counters", "eventpipe")]
