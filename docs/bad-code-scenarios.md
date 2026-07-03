@@ -59,11 +59,29 @@ the output.
 | 6 | "GC pauses are frequent in production" | repeated `GET /loh-alloc?count=200` | `collect_events(kind="counters")`, `collect_events(kind="gc")` | `loh-size` and `gen2-gc-count` rise; collector reports gen-2 collections with `LowMemory` / `Induced` reasons (or just frequent gen-2) |
 | 7 | "Outbound HTTP calls are slow" | `GET /slow-http?url=https://httpbin.org/delay/3` | `collect_events(kind="event_source")` `name=System.Net.Http`, `collect_events(kind="counters")` with `System.Net.Http` | EventSource emits `Request*/Response*` events with latency between them; `requests-started-rate` and `current-requests` visible in counters |
 | 8 | "The process dies from an unhandled exception" | `GET /crash?mode=unhandled` | `collect_events(kind="crash-guard")` started before the request | `unhandledExceptionObserved=true`; `finalException` has the fatal type/message and `query_snapshot(view="stack")` returns the managed stack when available |
+| 9 | "A trivial in-memory lookup pegs the CPU at ~95%" | sustained `GET /culture-lookup?iterations=3000000` | `inspect_process(view="triage")`, `collect_sample(kind="cpu")` → `query_snapshot(view="call-tree")` | triage says cpu-bound (Critical); the top sampled frames are *inclusive* threadpool plumbing, but the call-tree drill lands on a high-*exclusive* `System.Globalization.CompareInfo.IcuGetHashCodeOfString` leaf (~89% of CPU) — a culture-aware `Dictionary` comparer |
 
 `/crash?mode=stackoverflow` is intentionally abrupt and may terminate before
 all EventPipe buffers flush. `/crash?mode=oom` simulates an OOM-class fatal
 termination with an unhandled exception rather than forcing the host into real
 memory exhaustion.
+
+> **Deterministic repro + a fixed variant (scenario 4).** `/sync-over-async`
+> accepts `delaySeconds=N`, which points its fan-out at a local
+> `/slow-hang?seconds=N` instead of a flaky public host — so the ThreadPool
+> starvation reproduces offline, every time. `/sync-over-async-fixed` is the
+> awaited, non-blocking version with the same parameters, for a live before/after.
+> The full narrated investigation is in
+> [`case-studies/sync-over-async.md`](./case-studies/sync-over-async.md).
+
+> **Runtime-only bug + a fixed variant (scenario 9).** `/culture-lookup` builds a
+> `Dictionary` with `StringComparer.InvariantCultureIgnoreCase`, so every
+> `TryGetValue` pays a culture-aware ICU string hash — a cost that is **invisible in
+> the endpoint source** (the hot loop is identical to the fast version).
+> `/culture-lookup-fixed` uses `OrdinalIgnoreCase` (~12× faster) for a live
+> before/after. This is the scenario that shows what the tools add *over* static
+> analysis; the full MCP-driven investigation is in
+> [`case-studies/culture-lookup.md`](./case-studies/culture-lookup.md).
 
 ## How an LLM should drive this
 

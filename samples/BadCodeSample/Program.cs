@@ -66,6 +66,9 @@ var badCodeEndpoints = new[]
     "/leak?mb=4",
     "/exceptions?count=200",
     "/sync-over-async?n=20",
+    "/sync-over-async-fixed?n=20&delaySeconds=3",
+    "/culture-lookup?iterations=2000000",
+    "/culture-lookup-fixed?iterations=2000000",
     "/lock-contention?threads=32&ms=1500",
     "/loh-alloc?count=20",
     "/slow-http?url=https://httpbin.org/delay/3",
@@ -154,9 +157,14 @@ app.MapGet("/exceptions", (int? count) =>
 
 // 4. Sync-over-async / thread pool starvation — detect with counters
 //    (threadpool-queue-length, threadpool-thread-count) + collect_sample(kind="cpu")
-app.MapGet("/sync-over-async", (IHttpClientFactory http, int? n) =>
+// The BROKEN version: every fan-out call parks a ThreadPool thread on
+// .GetAwaiter().GetResult(). Pass delaySeconds=N to make the downstream a
+// deterministic loopback /slow-hang?seconds=N (offline, repeatable starvation);
+// omit it to hit the real remote host (production-shaped but flaky).
+app.MapGet("/sync-over-async", (IHttpClientFactory http, HttpRequest request, int? n, int? delaySeconds) =>
 {
     var clients = Math.Clamp(n ?? 20, 1, 200);
+    var target = ResolveSyncOverAsyncTarget(request, delaySeconds);
     var tasks = new List<Task>();
     for (var i = 0; i < clients; i++)
     {
@@ -166,7 +174,7 @@ app.MapGet("/sync-over-async", (IHttpClientFactory http, int? n) =>
             client.Timeout = TimeSpan.FromSeconds(5);
             try
             {
-                _ = client.GetAsync("https://example.com").GetAwaiter().GetResult();
+                _ = client.GetAsync(target).GetAwaiter().GetResult();
             }
             catch
             {
@@ -174,7 +182,86 @@ app.MapGet("/sync-over-async", (IHttpClientFactory http, int? n) =>
         }));
     }
     Task.WaitAll(tasks.ToArray());
-    return Results.Ok(new { dispatched = clients });
+    return Results.Ok(new { dispatched = clients, target });
+});
+
+// The FIXED version: identical fan-out and downstream, but awaited end-to-end —
+// it holds ZERO ThreadPool threads while the calls are in flight, so the same
+// load that starves the endpoint above stays healthy here. Use it for a
+// deterministic before/after with delaySeconds=N against both endpoints.
+app.MapGet("/sync-over-async-fixed", async (IHttpClientFactory http, HttpRequest request, int? n, int? delaySeconds) =>
+{
+    var clients = Math.Clamp(n ?? 20, 1, 200);
+    var target = ResolveSyncOverAsyncTarget(request, delaySeconds);
+    var client = http.CreateClient("slow");
+    client.Timeout = TimeSpan.FromSeconds(5);
+    var tasks = new List<Task>();
+    for (var i = 0; i < clients; i++)
+    {
+        tasks.Add(SafeGetAsync(client, target));
+    }
+    await Task.WhenAll(tasks);
+    return Results.Ok(new { dispatched = clients, target });
+
+    static async Task SafeGetAsync(HttpClient client, string url)
+    {
+        try
+        {
+            _ = await client.GetAsync(url);
+        }
+        catch
+        {
+        }
+    }
+});
+
+static string ResolveSyncOverAsyncTarget(HttpRequest request, int? delaySeconds)
+    => delaySeconds is int seconds
+        ? $"{request.Scheme}://{request.Host}/slow-hang?seconds={Math.Clamp(seconds, 1, 4)}"
+        : "https://example.com";
+
+// Culture-aware dictionary lookup — a hot path whose cost is INVISIBLE in the
+// endpoint source. The dictionaries are built with different string comparers;
+// the "slow" one uses a culture-sensitive comparer, so every lookup pays for
+// globalization (System.Globalization.CompareInfo hashing/compare via ICU)
+// instead of a plain ordinal hash. The loop below looks identical for both.
+var flagKeys = Enumerable.Range(0, 1000)
+    .Select(i => $"Feature.Flag.{i:D4}.Enabled")
+    .ToArray();
+var cultureAwareFlags = new Dictionary<string, bool>(StringComparer.InvariantCultureIgnoreCase);
+var ordinalFlags = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+foreach (var flagKey in flagKeys)
+{
+    cultureAwareFlags[flagKey] = true;
+    ordinalFlags[flagKey] = true;
+}
+
+static long RunFlagLookups(string[] keys, IReadOnlyDictionary<string, bool> flags, int loops)
+{
+    var hits = 0L;
+    for (var i = 0; i < loops; i++)
+    {
+        var key = keys[i % keys.Length];
+        if (flags.TryGetValue(key, out var enabled) && enabled)
+        {
+            hits++;
+        }
+    }
+    return hits;
+}
+
+app.MapGet("/culture-lookup", (int? iterations) =>
+{
+    var loops = Math.Clamp(iterations ?? 2_000_000, 1, 50_000_000);
+    var hits = RunFlagLookups(flagKeys, cultureAwareFlags, loops);
+    return Results.Ok(new { loops, hits, comparer = "InvariantCultureIgnoreCase" });
+});
+
+app.MapGet("/culture-lookup-fixed", (int? iterations) =>
+{
+    var loops = Math.Clamp(iterations ?? 2_000_000, 1, 50_000_000);
+    var hits = RunFlagLookups(flagKeys, ordinalFlags, loops);
+    return Results.Ok(new { loops, hits, comparer = "OrdinalIgnoreCase" });
 });
 
 // 5. Monitor lock contention — detect with counters
