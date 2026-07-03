@@ -290,7 +290,8 @@ internal static class DiagnosticServiceRegistration
             .WithResources<Resources.TraceSessionResources>()
             .WithResources<Resources.HeapSnapshotResources>()
             .WithResources<Resources.ThreadSnapshotResources>()
-            .WithResources<Resources.JourneyDiffResources>();
+            .WithResources<Resources.JourneyDiffResources>()
+            .WithResources<Resources.FindingsResources>();
 
         if (enableOrchestratorTools)
         {
