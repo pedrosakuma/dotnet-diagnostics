@@ -36,7 +36,7 @@ engine-derived **findings** — compact conclusions ("here is what is likely
 wrong") surfaced in the envelope's `findings[]` so the consumer does not have to
 re-derive them from the raw payload. Each `Finding` carries:
 
-- `pattern`: stable machine id (e.g. `regex-backtracking`).
+- `pattern`: stable machine id (e.g. `regex-backtracking`, `culture-aware-string-op`).
 - `severity`: `critical` | `high` | `medium` | `low` | `info`.
 - `confidence`: `0`–`1`.
 - `title`: one-line conclusion.
@@ -1411,8 +1411,10 @@ reports the aggregate symbol-resolution quality of `topHotspots`:
 
 **Findings.** CPU samples are cross-referenced into ranked
 [findings](#findings-layer) surfaced in the envelope's `findings[]` (e.g.
-`regex-backtracking` when the regex engine dominates inclusive samples). The same
-findings are also readable as the `findings://cpu-sample/{handle}` Resource.
+`regex-backtracking` when the regex engine dominates inclusive samples, or
+`culture-aware-string-op` when an ICU/NLS collation frame dominates self-time —
+the tell-tale of an accidental culture-sensitive comparer on a hot lookup). The
+same findings are also readable as the `findings://cpu-sample/{handle}` Resource.
 
 **Routing.** `collect_sample(kind="cpu")` dispatches based on
 `inspect_process(view="capabilities")`:

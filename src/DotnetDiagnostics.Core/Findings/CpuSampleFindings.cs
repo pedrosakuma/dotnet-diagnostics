@@ -14,13 +14,14 @@ public static class CpuSampleFindings
         new IFindingProvider<CpuFindingContext>[]
         {
             new RegexBacktrackingFindingProvider(),
+            new CultureAwareStringFindingProvider(),
         };
 
     /// <summary>Detects findings from the compact CPU-sample summary (the inline collection path).</summary>
     public static IReadOnlyList<Finding> Detect(CpuSample sample, string handleId)
     {
         ArgumentNullException.ThrowIfNull(sample);
-        return Detect(new CpuFindingContext(sample.TotalSamples, sample.TopHotspots, handleId));
+        return Detect(new CpuFindingContext(sample.TotalSamples, sample.TopHotspots, handleId, sample.TopSelfTime));
     }
 
     /// <summary>
@@ -37,7 +38,13 @@ public static class CpuSampleFindings
             .Select(m => new Hotspot(new SampledFrame(m.Module, m.Method), m.InclusiveSamples, m.ExclusiveSamples, m.Identity))
             .ToArray();
 
-        return Detect(new CpuFindingContext(artifact.TotalSamples, hotspots, handleId));
+        // Global self-time leader (uncapped), mirroring what EventPipeCpuSampler sets on the summary.
+        var selfRanked = CpuSampleAnalytics.RankMethods(artifact.Root, artifact.TotalSamples, byInclusive: false);
+        var topSelfTime = selfRanked.Count > 0 && selfRanked[0].ExclusiveSamples > 0
+            ? new Hotspot(new SampledFrame(selfRanked[0].Module, selfRanked[0].Method), selfRanked[0].InclusiveSamples, selfRanked[0].ExclusiveSamples, selfRanked[0].Identity)
+            : null;
+
+        return Detect(new CpuFindingContext(artifact.TotalSamples, hotspots, handleId, topSelfTime));
     }
 
     /// <summary>Runs every registered provider over the context and ranks the union.</summary>
