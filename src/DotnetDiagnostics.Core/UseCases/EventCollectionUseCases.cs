@@ -360,7 +360,8 @@ public static class EventCollectionUseCases
                 new Dictionary<string, object?> { ["processId"] = pid, ["providerName"] = "System.Net.Http", ["durationSeconds"] = 10 });
 
         var handle = handles.Register(pid, CollectionHandleKinds.GcEvents, gc, CollectionHandleTtl);
-        return WithContext(DiagnosticResult.OkWithHandle(
+        var signals = GcSignals.Detect(gc, handle.Id);
+        var result = DiagnosticResult.OkWithHandle(
             inlineGc,
             summary,
             handle.Id,
@@ -368,8 +369,13 @@ public static class EventCollectionUseCases
             primaryHint,
             new NextActionHint("query_snapshot",
                 "Drill into these GC events without re-collecting (views: summary, events, pauseHistogram, timeline, longestPauses, byGeneration).",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "pauseHistogram" })),
-            resolved.Context);
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "pauseHistogram" }));
+        if (signals.Count > 0)
+        {
+            result = result with { Signals = signals };
+        }
+
+        return WithContext(result, resolved.Context);
     }
 
     /// <summary>

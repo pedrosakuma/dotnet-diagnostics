@@ -39,7 +39,8 @@ Each `SignalGroup` carries:
 
 - `signal`: stable id of the **grouping dimension** — not a diagnosis (e.g.
   `cpu.self-time.concentration`, `cpu.self-time.by-namespace`, `exceptions.by-type`,
-  `exceptions.by-throw-site`).
+  `exceptions.by-throw-site`, `allocations.by-type`, `allocations.by-site`,
+  `gc.pause-time-share`, `gc.gen2-share`, `gc.loh-growth`).
 - `summary`: one-line description of what stands out.
 - `salience`: `0`–`1`, how far the grouping stands out (magnitude / concentration).
 - `buckets[]`: the top members of the grouping, each `{ key, magnitude, unit,
@@ -70,6 +71,18 @@ and even there it is best-effort (live EventPipe stack resolution can be empty),
 shares are relative to the stack-resolved events and it simply produces nothing when no
 stacks were resolved. The standard exception stream carries no stack, so it only ever
 emits `exceptions.by-type`.
+
+**Allocations & GC.** `collect_sample(kind="allocation")` surfaces byte-weighted
+concentration groupings: `allocations.by-type` (does one type dominate the allocated
+bytes) and `allocations.by-site` (does one call-site — the leaf allocating frame —
+dominate them). `allocations.by-type` skips the NativeAOT `<unknown>` placeholder (an
+attribution gap, not a real type concentrating). `allocations.by-site` simply produces
+nothing when no allocation stacks resolved. `collect_events(kind="gc")` surfaces three
+neutral trend/magnitude signals over the full (untrimmed) window: `gc.pause-time-share`
+(fraction of the window spent paused), `gc.gen2-share` (fraction of collections that
+were gen2, elevated vs. the gen0-dominated norm) and `gc.loh-growth` (LOH size growth
+across the window, from the `GCHeapStats` time series) — each a magnitude the consumer
+interprets, never a verdict.
 
 ### Implicit bootstrap (`processId` is optional)
 

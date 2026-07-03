@@ -984,6 +984,11 @@ public sealed class DiagnosticTools
         var sample = result.Summary;
         var handle = handles.Register(pid, "allocation-sample", new AllocationSampleArtifact(sample, result.Artifact), CpuSampleHandleTtl);
 
+        // Signal-grouping ("vector") layer (#514/#525): forward only the salient, diagnosis-agnostic
+        // byte-concentration groupings (by type + by call site) rather than making the consumer
+        // re-derive them from the ranked lists. Empty when nothing is salient (no noise on the wire).
+        var signals = AllocationSignals.Detect(sample, handle.Id);
+
         var topType = sample.TopByBytes.Count > 0 ? sample.TopByBytes[0] : null;
         var unknownOnly = topType?.TypeName == "<unknown>" && sample.TopByBytes.Count == 1;
         var summaryText = unknownOnly
@@ -1008,7 +1013,9 @@ public sealed class DiagnosticTools
             new NextActionHint("collect_sample", "Cross-reference: identify hot CPU paths that correlate with the top allocating types.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
             new NextActionHint("collect_events", "Observe GC pause frequency and generation distribution caused by this allocation load.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds }));
+                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds }))
+            with
+        { Signals = signals.Count > 0 ? signals : null };
         return WithContext(ok, ctx);
     }
 
