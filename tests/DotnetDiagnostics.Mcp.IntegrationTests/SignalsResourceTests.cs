@@ -5,19 +5,19 @@ using FluentAssertions;
 
 namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
-public sealed class FindingsResourceTests
+public sealed class SignalsResourceTests
 {
-    private static CpuSampleTraceArtifact HotRegexArtifact()
+    private static CpuSampleTraceArtifact HotArtifact()
     {
         var leaf = new CallTreeNode(
-            new SampledFrame("System.Private.CoreLib.dll", "System.Text.RegularExpressions.RegexRunner.Scan()"),
-            InclusiveSamples: 80,
-            ExclusiveSamples: 80,
+            new SampledFrame("System.Private.CoreLib.dll", "System.Globalization.CompareInfo.IcuGetHashCodeOfString()"),
+            InclusiveSamples: 89,
+            ExclusiveSamples: 89,
             Children: Array.Empty<CallTreeNode>());
         var root = new CallTreeNode(
             new SampledFrame("MyApp.dll", "MyApp.Handler()"),
             InclusiveSamples: 100,
-            ExclusiveSamples: 20,
+            ExclusiveSamples: 11,
             Children: new[] { leaf });
 
         return new CpuSampleTraceArtifact(
@@ -29,37 +29,39 @@ public sealed class FindingsResourceTests
     }
 
     [Fact]
-    public void ReadCpuSampleFindings_ReturnsRegexFinding_ForRegisteredHandle()
+    public void ReadCpuSampleSignals_ReturnsGroupings_ForRegisteredHandle()
     {
         var store = new MemoryDiagnosticHandleStore();
-        var handle = store.Register(4242, "cpu-sample", HotRegexArtifact(), TimeSpan.FromMinutes(10));
+        var handle = store.Register(4242, "cpu-sample", HotArtifact(), TimeSpan.FromMinutes(10));
 
-        var json = FindingsResources.ReadCpuSampleFindings(store, handle.Id);
+        var json = SignalsResources.ReadCpuSampleSignals(store, handle.Id);
 
-        json.Should().Contain("regex-backtracking");
+        json.Should().Contain("cpu.self-time.concentration");
+        json.Should().Contain("cpu.self-time.by-namespace");
+        json.Should().Contain("System.Globalization");
         json.Should().Contain(handle.Id);
     }
 
     [Fact]
-    public void ReadCpuSampleFindings_ReturnsError_ForNonCpuHandle()
+    public void ReadCpuSampleSignals_ReturnsError_ForNonCpuHandle()
     {
         // A CpuSampleTraceArtifact registered under a non-cpu-sample kind (allocation/native-alloc)
         // must NOT be interpreted as CPU samples.
         var store = new MemoryDiagnosticHandleStore();
-        var handle = store.Register(4242, "allocation-sample", HotRegexArtifact(), TimeSpan.FromMinutes(10));
+        var handle = store.Register(4242, "allocation-sample", HotArtifact(), TimeSpan.FromMinutes(10));
 
-        var json = FindingsResources.ReadCpuSampleFindings(store, handle.Id);
+        var json = SignalsResources.ReadCpuSampleSignals(store, handle.Id);
 
         json.Should().Contain("unknown");
-        json.Should().NotContain("regex-backtracking");
+        json.Should().NotContain("cpu.self-time");
     }
 
     [Fact]
-    public void ReadCpuSampleFindings_ReturnsError_ForUnknownHandle()
+    public void ReadCpuSampleSignals_ReturnsError_ForUnknownHandle()
     {
         var store = new MemoryDiagnosticHandleStore();
 
-        var json = FindingsResources.ReadCpuSampleFindings(store, "does-not-exist");
+        var json = SignalsResources.ReadCpuSampleSignals(store, "does-not-exist");
 
         json.Should().Contain("unknown");
     }

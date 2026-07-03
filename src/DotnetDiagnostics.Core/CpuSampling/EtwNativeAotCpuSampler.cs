@@ -325,7 +325,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
                 ? NativeAotSymbolDemangler.SymbolSource.PdbResolved
                 : NativeAotSymbolDemangler.SymbolSource.Stripped;
 
-        var summary = new CpuSample(processId, startedAt, duration, total, hotspots);
+        var summary = new CpuSample(processId, startedAt, duration, total, hotspots) { TopSelfTime = CpuSampleAnalytics.TopSelfTime(root, total) };
         var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, null, null, symbolSource);
         return new CpuSampleResult(summary, artifact);
     }

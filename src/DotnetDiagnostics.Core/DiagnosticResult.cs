@@ -20,12 +20,14 @@ public sealed record DiagnosticResult<T>(
     public T? Data { get; init; }
 
     /// <summary>
-    /// Engine-derived, ranked diagnostic conclusions cross-referenced from the collected data (see
-    /// <see cref="DotnetDiagnostics.Core.Findings.Finding"/>). Leads the response so a consumer can
-    /// read "what is likely wrong" without re-deriving it from <see cref="Data"/>. <c>null</c> (and
-    /// omitted from the wire) when nothing was detected, keeping the empty path noise-free.
+    /// Engine-derived, salient <b>signal groupings</b> ("vector") cross-referenced from the collected
+    /// data (see <see cref="DotnetDiagnostics.Core.Signals.SignalGroup"/>). Diagnosis-agnostic: they
+    /// surface where a signal concentrates / how signals co-move so a consumer can drill without
+    /// re-deriving it from <see cref="Data"/>, never naming a root cause. Leads the response.
+    /// <c>null</c> (and omitted from the wire) when nothing salient was detected, keeping the empty
+    /// path noise-free.
     /// </summary>
-    public IReadOnlyList<DotnetDiagnostics.Core.Findings.Finding>? Findings { get; init; }
+    public IReadOnlyList<DotnetDiagnostics.Core.Signals.SignalGroup>? Signals { get; init; }
 
     /// <summary>True when the call failed and <see cref="Error"/> is populated.</summary>
     [System.Text.Json.Serialization.JsonIgnore]

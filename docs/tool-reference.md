@@ -18,44 +18,47 @@ Every structured tool response is a `DiagnosticResult<T>` envelope with:
   optional `suggestedArguments`, and `priority` (`high`, `normal`, or `low`;
   default `normal`).
 - `data`: the tool-specific payload on success.
-- `findings`: optional ranked `Finding[]` — engine-derived, cross-signal
-  diagnostic conclusions (each with `pattern`, `severity`, `confidence`,
-  `evidence` referencing a handle, `suggestedFix`, and a `nextAction`). Leads the
-  response so the consumer reads "what is likely wrong" without re-deriving it
-  from `data`. Omitted from the wire when nothing was detected (no noise). See
-  [Findings layer](#findings-layer).
+- `signals`: optional ranked `SignalGroup[]` — engine-derived, **diagnosis-agnostic**
+  groupings of the collected data (each with a `signal` grouping-id, a `summary`,
+  a `salience` in `[0,1]`, and `buckets[]` referencing a handle, plus an optional
+  `nextAction`). Leads the response so the consumer sees *where a signal
+  concentrates* without re-deriving it from `data`. Omitted from the wire when
+  nothing is salient (no noise). See [Signal-grouping layer](#signal-grouping-layer).
 - `error`: `DiagnosticError` on classified failures.
 - `handle` / `handleExpiresAt` / `handleExpiresInSeconds`: present when the
   tool minted a drilldown handle. `handleExpiresInSeconds` is computed when the
   response is serialized and is floored at `0` after expiry.
 
-### Findings layer
+### Signal-grouping layer
 
-Some collectors cross-reference the signals they just captured into ranked,
-engine-derived **findings** — compact conclusions ("here is what is likely
-wrong") surfaced in the envelope's `findings[]` so the consumer does not have to
-re-derive them from the raw payload. Each `Finding` carries:
+Some collectors reduce the raw data they just captured into a compact **"vector"**
+of salient signal groupings — think edge / IoT: a huge volume of raw signal is
+captured, but only the dimensions that *stand out* are forwarded in the envelope's
+`signals[]`, so the consumer does not have to re-derive them from the raw payload.
+Each `SignalGroup` carries:
 
-- `pattern`: stable machine id (e.g. `regex-backtracking`).
-- `severity`: `critical` | `high` | `medium` | `low` | `info`.
-- `confidence`: `0`–`1`.
-- `title`: one-line conclusion.
-- `evidence[]`: supporting signals, each referencing a drilldown `handle` (not
-  inlined blobs) with an optional `value` + `unit`.
-- `suggestedFix` and `nextAction` (a `NextActionHint`).
+- `signal`: stable id of the **grouping dimension** — not a diagnosis (e.g.
+  `cpu.self-time.concentration`, `cpu.self-time.by-namespace`).
+- `summary`: one-line description of what stands out.
+- `salience`: `0`–`1`, how far the grouping stands out (magnitude / concentration).
+- `buckets[]`: the top members of the grouping, each `{ key, magnitude, unit,
+  handle }`, referencing a drilldown `handle` (not inlined blobs).
+- `nextAction`: an optional neutral `NextActionHint` to drill in.
 
-Findings are **transparent grouping / cross-signal aggregation**, never a trained
-model: the ground-truth label only comes from the consumer that already saw the
-finding, so any accumulated dataset would be contaminated by the suggestion
-(consumer-side leakage). They are advisory — the evidence handles let you always
-drill and disagree. Ranking is by (severity, confidence) descending, capped so
-the payload stays small.
+Signals **group and correlate; they do not diagnose**. They surface *where* a
+signal concentrates / *how* signals co-move (e.g. "89% of self-time in
+`System.Globalization`"), never *what* the bug is or how to fix it — the consumer
+draws the conclusion and can always drill and disagree. This is transparent
+grouping, never a trained model: the ground-truth label only ever comes from the
+consumer that already saw the signal, so any accumulated dataset would be
+contaminated (consumer-side leakage). Ranking is by `salience` descending, capped
+so the payload stays small.
 
-**Resource.** `collect_sample(kind="cpu")` findings are also exposed as a
-read-only MCP Resource `findings://cpu-sample/{handle}`, so a client can re-pull
-the current findings for a handle without re-running the sampler. The detectors
-run over the full merged call tree stored under the handle, so nothing is lost to
-the inline top-N cap.
+**Resource.** `collect_sample(kind="cpu")` signals are also exposed as a
+read-only MCP Resource `signals://cpu-sample/{handle}`, so a client can re-pull the
+current signals for a handle without re-running the sampler. The providers run over
+the full merged call tree stored under the handle, so the namespace roll-up is
+faithful and nothing is lost to the inline top-N cap.
 
 ### Implicit bootstrap (`processId` is optional)
 
@@ -1409,10 +1412,14 @@ reports the aggregate symbol-resolution quality of `topHotspots`:
 - `Unknown` / omitted — CoreCLR sample (the EventPipe path resolves managed
   names directly; this field does not apply).
 
-**Findings.** CPU samples are cross-referenced into ranked
-[findings](#findings-layer) surfaced in the envelope's `findings[]` (e.g.
-`regex-backtracking` when the regex engine dominates inclusive samples). The same
-findings are also readable as the `findings://cpu-sample/{handle}` Resource.
+**Signals.** CPU samples are reduced into ranked, diagnosis-agnostic
+[signal groupings](#signal-grouping-layer) surfaced in the envelope's `signals[]`:
+`cpu.self-time.concentration` (how concentrated on-CPU time is, and in which
+frames) and — on the Resource path — `cpu.self-time.by-namespace` (which namespace
+the self-time rolls up into, e.g. `System.Globalization` or
+`System.Text.RegularExpressions`, without naming the cause). The same signals are
+readable as the `signals://cpu-sample/{handle}` Resource, re-derived over the full
+call tree.
 
 **Routing.** `collect_sample(kind="cpu")` dispatches based on
 `inspect_process(view="capabilities")`:

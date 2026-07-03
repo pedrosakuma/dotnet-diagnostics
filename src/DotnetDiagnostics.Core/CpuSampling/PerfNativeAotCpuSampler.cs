@@ -133,8 +133,11 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             // GC workers that exited between recording and parsing.
             var (total, hotspots, root, symbolSource, identities) = Aggregate(
                 script, processId: 0, topN, methodMap, moduleName, modulePath);
-            var summary = new CpuSample(processId, startedAt, duration, total, hotspots) { SymbolSource = symbolSource };
             var stampedRoot = CallTreeIdentityProjector.Stamp(root, identities);
+            // Compute the global self-time leader from the SAME (identity-stamped) tree the artifact
+            // stores, so the inline signals match the signals:// Resource path.
+            var topSelfTime = CpuSampleAnalytics.TopSelfTime(stampedRoot, total);
+            var summary = new CpuSample(processId, startedAt, duration, total, hotspots) { SymbolSource = symbolSource, TopSelfTime = topSelfTime };
             var artifact = new CpuSampleTraceArtifact(
                 processId, startedAt, duration, total, stampedRoot, null, identities, symbolSource);
             return new CpuSampleResult(summary, artifact);
