@@ -481,6 +481,7 @@ public sealed class CollectEventsTool
         return new DiagnosticResult<CollectEventsEnvelope>(inner.Summary, inner.Hints, inner.Error)
         {
             Data = inner.IsError ? null : envelope,
+            Signals = inner.Signals,
             Handle = inner.Handle,
             HandleExpiresAt = inner.HandleExpiresAt,
             ResolvedProcess = inner.ResolvedProcess,
