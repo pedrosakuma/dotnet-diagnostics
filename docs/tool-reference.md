@@ -41,7 +41,8 @@ Each `SignalGroup` carries:
   `cpu.self-time.concentration`, `cpu.self-time.by-namespace`, `exceptions.by-type`,
   `exceptions.by-throw-site`, `allocations.by-type`, `allocations.by-site`,
   `gc.pause-time-share`, `gc.gen2-share`, `gc.loh-growth`, `threads.by-wait-state`,
-  `threads.by-wait-target`, `counters.trend`).
+  `threads.by-wait-target`, `counters.trend`, `correlation.co-occurrence`,
+  `correlation.thread-overlap`).
 - `summary`: one-line description of what stands out.
 - `salience`: `0`–`1`, how far the grouping stands out (magnitude / concentration).
 - `buckets[]`: the top members of the grouping, each `{ key, magnitude, unit,
@@ -105,6 +106,20 @@ barely move, or stay near zero throughout, produce nothing — a steady workload
 surfaces no signal. Prefer `compare_to_baseline` when the investigation already has a
 recorded baseline to diff against; `counters.trend` is the within-window fallback when
 it doesn't.
+
+**Cross-signal correlation.** `collect_events(kind="sweep")` fans out the counters, GC
+and exceptions collectors over the same window, and each already computes its own
+signal groupings independently; `correlation.co-occurrence` fires when **two or more**
+of them stand out at once (e.g. a counter trend and an elevated `gc.gen2-share` in the
+same sweep), leading the envelope with buckets referencing each contributing collector's
+handle. Salience is the *minimum* of the contributing groupings, so the correlation is
+never rated above its weakest ingredient, and it produces nothing when only one collector
+stands out — the common, uncorrelated case. `collect_thread_snapshot` additionally
+surfaces `correlation.thread-overlap`: does a thread that owns a contended lock (the
+`threads.by-wait-target` domain) also appear among the blocked threads
+(`threads.by-wait-state` domain)? A pure thread-identity intersection over the same
+snapshot, not a new capture — it produces nothing when no contended lock's owner is
+itself blocked. Neither correlation infers a cause; both stay drill-in pointers.
 
 ### Implicit bootstrap (`processId` is optional)
 

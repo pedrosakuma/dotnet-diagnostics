@@ -4,6 +4,7 @@ using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Signals;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Triage;
 using static DotnetDiagnostics.Core.UseCases.ProcessResolutionHelpers;
@@ -104,7 +105,24 @@ public static class SweepUseCase
             $"threadpool starvation={starvation}, fd={fdText}.{failureText}";
 
         var hints = BuildSweepHints(triage, pid);
-        return WithContext(DiagnosticResult.Ok(sweep, summary, hints.ToArray()), resolved.Context);
+
+        // Cross-signal correlation (#528): each collector already computed its own diagnosis-agnostic
+        // signal groupings independently; surface it when ≥2 of them stood out in this SAME window
+        // (a co-occurrence single-signal views can't see), never inferring a cause between them.
+        var correlation = CoOccurrenceSignals.Detect(new CoOccurrenceContext(
+        [
+            new CorrelationSource("counters", counters.Handle, counters.Signals ?? []),
+            new CorrelationSource("gc", gc.Handle, gc.Signals ?? []),
+            new CorrelationSource("exceptions", exceptions.Handle, exceptions.Signals ?? []),
+        ]));
+
+        var result = DiagnosticResult.Ok(sweep, summary, hints.ToArray());
+        if (correlation.Count > 0)
+        {
+            result = result with { Signals = correlation };
+        }
+
+        return WithContext(result, resolved.Context);
     }
 
     private static void Note<T>(List<string> failures, string kind, DiagnosticResult<T> r)

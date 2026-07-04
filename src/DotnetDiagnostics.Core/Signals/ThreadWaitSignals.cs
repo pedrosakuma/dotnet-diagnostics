@@ -6,7 +6,8 @@ namespace DotnetDiagnostics.Core.Signals;
 /// Runs the registered thread-wait <see cref="ISignalProvider{TContext}"/>s and returns a ranked,
 /// capped set of <see cref="SignalGroup"/>s — the salient "vector" the engine forwards instead of the
 /// full thread + lock lists. Diagnosis-agnostic: surfaces where threads concentrate by wait state and
-/// by wait target, never why (no lock-contention / sync-over-async naming).
+/// by wait target (and, via #528, where those two groupings overlap by thread identity), never why
+/// (no lock-contention / sync-over-async naming).
 /// </summary>
 public static class ThreadWaitSignals
 {
@@ -15,6 +16,7 @@ public static class ThreadWaitSignals
         {
             new ThreadByWaitStateProvider(),
             new ThreadByWaitTargetProvider(),
+            new ThreadOwnerOverlapProvider(),
         };
 
     /// <summary>Derives signals from a thread-snapshot artifact (the full, un-truncated snapshot).</summary>
