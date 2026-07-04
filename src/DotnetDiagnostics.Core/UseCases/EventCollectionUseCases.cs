@@ -159,6 +159,12 @@ public static class EventCollectionUseCases
         // but the inline payload is depth-gated to keep first-look responses small.
         var handle = handles.Register(pid, CollectionHandleKinds.Counters, snapshot, CollectionHandleTtl);
 
+        // Signal-grouping ("vector") layer (#514/#527): forward only the salient, diagnosis-agnostic
+        // counter movement rather than making the consumer re-derive it from the full counter table.
+        // Computed off the full snapshot (first vs last observed value per counter), not the
+        // headline-filtered inline payload. Empty when nothing is salient (no noise on the wire).
+        var signals = CounterTrendSignals.Detect(snapshot, handle.Id);
+
         var inlinePayload = snapshot;
         var droppedCounters = 0;
         var droppedMeters = 0;
@@ -170,6 +176,11 @@ public static class EventCollectionUseCases
             droppedMeters = snapshot.Meters.Count - filteredMeters.Count;
             inlinePayload = snapshot with { Counters = filteredCounters, Meters = filteredMeters };
         }
+
+        // FirstCounters exists purely to feed CounterTrendSignals.Detect above; the handle already
+        // carries it via the full `snapshot`, so drop it from the inline payload to avoid doubling
+        // (or, at Summary depth, un-filteredly re-inflating) the wire response.
+        inlinePayload = inlinePayload with { FirstCounters = null };
 
         var requestDuration = HeadlineCounters.FindRequestDuration(snapshot.Meters);
         var requestDurationText = requestDuration?.Histogram is { } histogram
@@ -194,6 +205,11 @@ public static class EventCollectionUseCases
             handle.Id,
             handle.ExpiresAt,
             [.. hints]);
+        if (signals.Count > 0)
+        {
+            ok = ok with { Signals = signals };
+        }
+
         return WithContext(ok, resolved.Context);
     }
 
