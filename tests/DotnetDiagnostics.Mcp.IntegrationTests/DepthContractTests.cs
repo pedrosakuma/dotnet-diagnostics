@@ -369,6 +369,71 @@ public sealed class DepthContractTests : IClassFixture<McpToolsTests.AuthedFacto
     }
 
     [Fact]
+    public async Task Sweep_SurfacesCoOccurrenceSignal_WhenTwoCollectorsBothStandOut()
+    {
+        await using var client = await ConnectAsync();
+
+        // Drive two independent, co-moving signals within the same sweep window: a climbing
+        // active-timer-count (counters.trend) and a gen2-dominated collection stream (gc.gen2-share).
+        // Neither workload depends on the other — the correlation is purely observed co-occurrence.
+        var timers = new List<Timer>();
+        using var stop = new CancellationTokenSource();
+        var timerWorkload = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                lock (timers)
+                {
+                    timers.Add(new Timer(_ => { }, null, TimeSpan.FromMinutes(5), Timeout.InfiniteTimeSpan));
+                }
+
+                await Task.Delay(20);
+            }
+        });
+        var gcWorkload = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+                await Task.Delay(50);
+            }
+        });
+
+        try
+        {
+            var envelope = DeserializeEnvelope<CollectEventsEnvelope>(await client.CallToolAsync(
+                "collect_events",
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "sweep",
+                    ["processId"] = Environment.ProcessId,
+                    ["durationSeconds"] = 6,
+                },
+                cancellationToken: CancellationToken.None));
+
+            await stop.CancelAsync();
+            try { await Task.WhenAll(timerWorkload, gcWorkload); } catch { /* expected */ }
+
+            envelope.Should().NotBeNull();
+            // The cross-signal co-occurrence must lead the sweep envelope (#528) when ≥2 of its
+            // collectors each stood out in this same window.
+            envelope!.Signals.Should().NotBeNullOrEmpty();
+            var co = envelope.Signals!.Should().ContainSingle(s => s.Signal == "correlation.co-occurrence").Subject;
+            co.Buckets.Count.Should().BeGreaterThanOrEqualTo(2);
+        }
+        finally
+        {
+            lock (timers)
+            {
+                foreach (var timer in timers)
+                {
+                    timer.Dispose();
+                }
+            }
+        }
+    }
+
+    [Fact]
     public async Task CollectEventSource_SummaryDropsEventsDetailKeepsThem()
     {
         await using var client = await ConnectAsync();
