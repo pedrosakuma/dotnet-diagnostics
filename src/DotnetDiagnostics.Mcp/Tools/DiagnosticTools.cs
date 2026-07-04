@@ -2452,6 +2452,12 @@ public sealed class DiagnosticTools
             var origin = snapshot.Origin.ToString().ToLowerInvariant();
             var blocked = snapshot.Threads.Count(t => t.IsLikelyBlocked);
             var contended = snapshot.Locks.Count(l => l.IsContended);
+
+            // Signal-grouping ("vector") layer (#514/#526): forward only the salient, diagnosis-agnostic
+            // wait-state / wait-target concentration rather than making the consumer re-derive it from
+            // the raw thread + lock lists. Empty when nothing is salient (no noise on the wire).
+            var signals = ThreadWaitSignals.Detect(snapshot, handle.Id);
+
             ThreadSnapshotQueryResult summaryView;
             string summary;
             if (depth == SamplingDepth.Summary)
@@ -2506,7 +2512,7 @@ public sealed class DiagnosticTools
             var result = hint is null
                 ? DiagnosticResult.Ok(summaryView, summary)
                 : DiagnosticResult.Ok(summaryView, summary, hint);
-            return WithContext(result, liveCtx);
+            return WithContext(result with { Signals = signals.Count > 0 ? signals : null }, liveCtx);
         }, cancellationToken).ConfigureAwait(false);
     }
 

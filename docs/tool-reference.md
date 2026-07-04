@@ -40,7 +40,8 @@ Each `SignalGroup` carries:
 - `signal`: stable id of the **grouping dimension** — not a diagnosis (e.g.
   `cpu.self-time.concentration`, `cpu.self-time.by-namespace`, `exceptions.by-type`,
   `exceptions.by-throw-site`, `allocations.by-type`, `allocations.by-site`,
-  `gc.pause-time-share`, `gc.gen2-share`, `gc.loh-growth`).
+  `gc.pause-time-share`, `gc.gen2-share`, `gc.loh-growth`, `threads.by-wait-state`,
+  `threads.by-wait-target`).
 - `summary`: one-line description of what stands out.
 - `salience`: `0`–`1`, how far the grouping stands out (magnitude / concentration).
 - `buckets[]`: the top members of the grouping, each `{ key, magnitude, unit,
@@ -83,6 +84,15 @@ neutral trend/magnitude signals over the full (untrimmed) window: `gc.pause-time
 were gen2, elevated vs. the gen0-dominated norm) and `gc.loh-growth` (LOH size growth
 across the window, from the `GCHeapStats` time series) — each a magnitude the consumer
 interprets, never a verdict.
+
+**Threads.** `collect_thread_snapshot` surfaces two thread-concentration groupings:
+`threads.by-wait-state` (do many threads share the same inferred wait state — e.g.
+`Monitor.Enter (contended)`, `Thread.Sleep`, `Socket I/O` — from each thread's top
+frame) and `threads.by-wait-target` (the finer, resolvable-only complement: does one
+SyncBlock/monitor account for most of the lock-waiting threads). Neither names lock
+contention or sync-over-async as a cause — that conclusion is left to the consumer,
+who can drill via the referenced handle (`view=top-blocked` / `view=lock-graph`).
+`threads.by-wait-target` simply produces nothing when no lock has waiters.
 
 ### Implicit bootstrap (`processId` is optional)
 
