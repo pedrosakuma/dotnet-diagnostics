@@ -343,6 +343,33 @@ export-summary --handle h-abc123 --top-hotspots 15
 export-summary --handle h-abc123 --out ./cpu-summary.json
 ```
 
+### Signal-grouping layer
+
+`collect --kind counters`, `exceptions`, `gc` and `sweep` embed a top-level `signals[]` array in
+the JSON envelope (`--json` or `--depth detail`/`raw`) whenever something is salient — the same
+diagnosis-agnostic "vector" the MCP server documents in
+[tool-reference.md](./tool-reference.md#signal-grouping-layer): a stable `signal` id (e.g.
+`exceptions.by-type`, `gc.gen2-share`, `counters.trend`, `correlation.co-occurrence`), a one-line
+`summary`, a `salience` in `[0,1]`, and `buckets[]` referencing a handle. It groups and correlates;
+it never names a root cause or a fix. Omitted from the wire when nothing stands out.
+
+```bash
+dotnet-diagnostics-cli collect --kind exceptions --pid 1234 --duration 6 --json
+# ⇒ top-level "signals": [{ "signal": "exceptions.by-type", "salience": 1, ... }] when one
+#   exception type dominates the window
+```
+
+> **CPU / allocation / thread-wait signals need the MCP server today.** The engine also computes
+> `cpu.self-time.*`, `allocations.by-type` / `by-site`, and `threads.by-wait-state` /
+> `by-wait-target` / `correlation.thread-overlap` — but the standalone CLI only reaches CPU
+> samples, allocation samples, and thread snapshots through the `--capture-when` gated-capture
+> path (there is no `collect --kind cpu`/`allocation`/`thread-snapshot`), and that path returns a
+> compact trip summary without the inline `signals[]` (see the gated-capture note above). The CLI's
+> `query` views for those handles (`call-tree`, `top-methods`, …) don't re-derive them either. To
+> see those groupings today, drive the same workload through the MCP server:
+> `collect_sample(kind="cpu"|"allocation")` embeds them inline, and `signals://cpu-sample/{handle}`
+> re-pulls them for any `cpu-sample` handle (gated or not) without re-sampling.
+
 ### `query`
 
 Re-render a previously-collected handle under a different view **without re-collecting**.
