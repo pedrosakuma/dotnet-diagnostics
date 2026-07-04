@@ -42,4 +42,13 @@ public sealed record CounterSnapshot(
     TimeSpan Duration,
     IReadOnlyList<CounterValue> Counters,
     IReadOnlyList<MeterInstrumentValue> Meters,
-    IReadOnlyList<string> Notes);
+    IReadOnlyList<string> Notes)
+{
+    /// <summary>
+    /// The first-observed value for each counter present in <see cref="Counters"/> (<see cref="Counters"/>
+    /// itself holds the last-observed value per key). Lets the signal-grouping layer (#527) compute an
+    /// intra-window delta/trend without a second collection pass. <c>null</c> when the collector didn't
+    /// populate it (e.g. older callers, or a window too short to observe more than one tick).
+    /// </summary>
+    public IReadOnlyList<CounterValue>? FirstCounters { get; init; }
+}

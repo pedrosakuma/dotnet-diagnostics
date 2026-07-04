@@ -108,6 +108,9 @@ public sealed class EventPipeCounterCollector : ICounterCollector
 
         var startedAt = DateTimeOffset.UtcNow;
         var latestCounters = new ConcurrentDictionary<string, CounterValue>(StringComparer.Ordinal);
+        // First-observed value per counter key, so the signal-grouping layer (#527) can derive an
+        // intra-window delta/trend (latestCounters[key] - firstCounters[key]) without a second pass.
+        var firstCounters = new ConcurrentDictionary<string, CounterValue>(StringComparer.Ordinal);
         var instrumentMetadata = new ConcurrentDictionary<int, InstrumentMetadata>();
         var latestMeters = new ConcurrentDictionary<string, MeterInstrumentValue>(StringComparer.Ordinal);
         var notes = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
@@ -143,7 +146,9 @@ public sealed class EventPipeCounterCollector : ICounterCollector
                     }
 
                     var key = $"{traceEvent.ProviderName}/{payload.Name}";
-                    latestCounters[key] = payload with { Provider = traceEvent.ProviderName };
+                    var value = payload with { Provider = traceEvent.ProviderName };
+                    latestCounters[key] = value;
+                    firstCounters.TryAdd(key, value);
                 };
 
                 source.Process();
@@ -193,8 +198,16 @@ public sealed class EventPipeCounterCollector : ICounterCollector
         var orderedNotes = notes.Keys
             .OrderBy(note => note, StringComparer.Ordinal)
             .ToList();
+        // Same order/keys as `counters`, but the first-observed value per key (empty when only one
+        // tick fired during the window, in which case first == last and no trend is derivable).
+        var firstCounterValues = counters
+            .Select(c => firstCounters.TryGetValue($"{c.Provider}/{c.Name}", out var first) ? first : c)
+            .ToList();
 
-        return new CounterSnapshot(processId, startedAt, duration, counters, meterValues, orderedNotes);
+        return new CounterSnapshot(processId, startedAt, duration, counters, meterValues, orderedNotes)
+        {
+            FirstCounters = firstCounterValues,
+        };
     }
 
     private static void HandleMetricsEvent(

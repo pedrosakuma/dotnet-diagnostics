@@ -41,7 +41,7 @@ Each `SignalGroup` carries:
   `cpu.self-time.concentration`, `cpu.self-time.by-namespace`, `exceptions.by-type`,
   `exceptions.by-throw-site`, `allocations.by-type`, `allocations.by-site`,
   `gc.pause-time-share`, `gc.gen2-share`, `gc.loh-growth`, `threads.by-wait-state`,
-  `threads.by-wait-target`).
+  `threads.by-wait-target`, `counters.trend`).
 - `summary`: one-line description of what stands out.
 - `salience`: `0`–`1`, how far the grouping stands out (magnitude / concentration).
 - `buckets[]`: the top members of the grouping, each `{ key, magnitude, unit,
@@ -93,6 +93,18 @@ SyncBlock/monitor account for most of the lock-waiting threads). Neither names l
 contention or sync-over-async as a cause — that conclusion is left to the consumer,
 who can drill via the referenced handle (`view=top-blocked` / `view=lock-graph`).
 `threads.by-wait-target` simply produces nothing when no lock has waiters.
+
+**Counters.** `collect_events(kind="counters")` surfaces `counters.trend`: which
+counter moved the most between the first and last observed value in the collection
+window (e.g. a climbing ThreadPool queue length, a rising contention count, growing
+working set), off the full un-filtered snapshot — not the headline-filtered inline
+view. Movement is graded by a scale-invariant relative change
+(`(last - first) / max(|first|, |last|)`, bounded to `[-1, 1]`) so one threshold works
+across counters with different units (percent, bytes, item counts). Counters that
+barely move, or stay near zero throughout, produce nothing — a steady workload
+surfaces no signal. Prefer `compare_to_baseline` when the investigation already has a
+recorded baseline to diff against; `counters.trend` is the within-window fallback when
+it doesn't.
 
 ### Implicit bootstrap (`processId` is optional)
 

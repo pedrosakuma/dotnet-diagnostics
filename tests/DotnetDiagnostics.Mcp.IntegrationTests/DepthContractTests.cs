@@ -311,6 +311,64 @@ public sealed class DepthContractTests : IClassFixture<McpToolsTests.AuthedFacto
     }
 
     [Fact]
+    public async Task SnapshotCounters_SurfacesTrendSignal_WhenActiveTimerCountClimbs()
+    {
+        await using var client = await ConnectAsync();
+
+        // Grow active-timer-count from ~0 at the first EventCounters tick to a much higher value by
+        // the last one, without touching ThreadPool sizing (which would risk starving the in-memory
+        // test server's own worker threads) — a within-window climb counters.trend (#527) should surface.
+        var timers = new List<Timer>();
+        using var stop = new CancellationTokenSource();
+        var workload = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                lock (timers)
+                {
+                    timers.Add(new Timer(_ => { }, null, TimeSpan.FromMinutes(5), Timeout.InfiniteTimeSpan));
+                }
+
+                await Task.Delay(20);
+            }
+        });
+
+        try
+        {
+            var envelope = DeserializeEnvelope<CollectEventsEnvelope>(await client.CallToolAsync(
+                "collect_events",
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "counters",
+                    ["processId"] = Environment.ProcessId,
+                    ["durationSeconds"] = 4,
+                    ["intervalSeconds"] = 1,
+                    ["providers"] = new[] { "System.Runtime" },
+                },
+                cancellationToken: CancellationToken.None));
+
+            await stop.CancelAsync();
+            try { await workload; } catch { /* expected */ }
+
+            envelope.Should().NotBeNull();
+            // The diagnosis-agnostic within-window trend signal must lead the envelope (#527).
+            envelope!.Signals.Should().NotBeNullOrEmpty();
+            var trend = envelope.Signals!.Should().ContainSingle(s => s.Signal == "counters.trend").Subject;
+            trend.Buckets[0].Handle.Should().Be(envelope.Handle);
+        }
+        finally
+        {
+            lock (timers)
+            {
+                foreach (var timer in timers)
+                {
+                    timer.Dispose();
+                }
+            }
+        }
+    }
+
+    [Fact]
     public async Task CollectEventSource_SummaryDropsEventsDetailKeepsThem()
     {
         await using var client = await ConnectAsync();
