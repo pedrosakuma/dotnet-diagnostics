@@ -204,6 +204,7 @@ public sealed class CollectSampleTool
         return new DiagnosticResult<CollectSampleEnvelope>(inner.Summary, inner.Hints, inner.Error)
         {
             Data = inner.IsError ? null : envelope,
+            Signals = inner.Signals,
             Handle = inner.Handle,
             HandleExpiresAt = inner.HandleExpiresAt,
             ResolvedProcess = inner.ResolvedProcess,

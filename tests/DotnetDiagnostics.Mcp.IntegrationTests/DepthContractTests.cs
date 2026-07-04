@@ -231,6 +231,86 @@ public sealed class DepthContractTests : IClassFixture<McpToolsTests.AuthedFacto
     }
 
     [Fact]
+    public async Task CollectGcEvents_SurfacesGen2ShareSignal_WhenGen2Dominates()
+    {
+        await using var client = await ConnectAsync();
+
+        // Force several gen-2 collections, keep them running across the whole window so the
+        // gen2 share of total collections stays elevated (#525).
+        using var stop = new CancellationTokenSource();
+        var workload = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+                await Task.Delay(50);
+            }
+        });
+
+        var envelope = DeserializeEnvelope<CollectEventsEnvelope>(await client.CallToolAsync(
+            "collect_events",
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "gc",
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 4,
+                ["maxEvents"] = 50,
+                ["depth"] = "Summary",
+            },
+            cancellationToken: CancellationToken.None));
+
+        await stop.CancelAsync();
+        await workload;
+
+        envelope.Should().NotBeNull();
+        // The diagnosis-agnostic gen2-share signal must lead the envelope (#525).
+        envelope!.Signals.Should().NotBeNullOrEmpty();
+        var gen2 = envelope.Signals!.Should().ContainSingle(s => s.Signal == "gc.gen2-share").Subject;
+        gen2.Buckets[0].Handle.Should().Be(envelope.Handle);
+    }
+
+    [Fact]
+    public async Task CollectAllocationSample_SurfacesByTypeSignal_WhenOneTypeDominates()
+    {
+        await using var client = await ConnectAsync();
+
+        // Allocate one dominant, byte-heavy type continuously across the whole collection window.
+        using var stop = new CancellationTokenSource();
+        var workload = Task.Run(() =>
+        {
+            var sink = new List<byte[]>();
+            while (!stop.IsCancellationRequested)
+            {
+                sink.Add(new byte[64 * 1024]);
+                if (sink.Count > 64)
+                {
+                    sink.Clear();
+                }
+            }
+        });
+
+        var envelope = DeserializeEnvelope<CollectSampleEnvelope>(await client.CallToolAsync(
+            "collect_sample",
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "allocation",
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 4,
+                ["depth"] = "Summary",
+            },
+            cancellationToken: CancellationToken.None));
+
+        await stop.CancelAsync();
+        try { await workload; } catch { /* expected */ }
+
+        envelope.Should().NotBeNull();
+        // The diagnosis-agnostic by-type concentration signal must lead the envelope (#525).
+        envelope!.Signals.Should().NotBeNullOrEmpty();
+        var byType = envelope.Signals!.Should().ContainSingle(s => s.Signal == "allocations.by-type").Subject;
+        byType.Buckets[0].Handle.Should().Be(envelope.Handle);
+    }
+
+    [Fact]
     public async Task CollectEventSource_SummaryDropsEventsDetailKeepsThem()
     {
         await using var client = await ConnectAsync();
