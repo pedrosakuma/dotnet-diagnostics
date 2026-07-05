@@ -68,11 +68,28 @@ Options:
 collect options:
       --kind <kind>             Required. One of: counters, exceptions, crash-guard, gc, datas,
                                 catalog, event_source, activities, logs, jit, threadpool,
-                                contention, db, kestrel, networking, requests, startup, sweep.
+                                contention, db, kestrel, networking, requests, startup, sweep,
+                                cpu, allocation, off_cpu (alias off-cpu), native-alloc,
+                                thread-snapshot.
   -d, --duration <int>          Collection window in seconds (default: counters 5, datas 15, sweep 6, others 10).
       --depth <level>           Verbosity: summary, detail (default), raw.
+      --top <int>               Top-N rows / hotspots for cpu, allocation, off_cpu, native-alloc.
       --max-events <int>        Per-kind cap (events / exceptions / activities).
       --interval <int>          Refresh interval in seconds (counters, db). Default 1.
+      --symbol-path <path>      NT_SYMBOL_PATH-style search path for cpu, off_cpu and
+                                thread-snapshot symbol resolution.
+      --export-trace            cpu: persist the raw .nettrace under the artifact root.
+      --resolve-source-lines    cpu: resolve top hotspots to source file:line (default on).
+      --no-resolve-source-lines cpu: disable source file:line resolution.
+      --resolve-method-instantiations
+                                cpu: opt in to ClrMD generic-instantiation enrichment.
+      --native-alloc-sample-period <int>
+                                native-alloc: perf sample period (default 1000).
+      --dump-file <path>        thread-snapshot: inspect a previously-captured dump instead of a live pid.
+      --max-frames-per-thread <int>
+                                thread-snapshot: cap frames captured per thread (default 64).
+      --include-runtime-frames  thread-snapshot: include CLR/runtime helper frames.
+      --include-native-frames   thread-snapshot: include native frames.
       --watch <seconds>         Re-run and redraw every N seconds until Ctrl-C.
                                 With --capture-when: metric sample interval (default 2) for the
                                 bounded gated-capture watch (no redraw loop).
@@ -104,6 +121,11 @@ collect options:
   dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
   dotnet-diagnostics-cli collect --kind counters --pid MyApp --watch 2
   dotnet-diagnostics-cli collect --kind counters --pid MyApp --capture-when 'cpu>85' --capture cpu-sample --window 60
+  dotnet-diagnostics-cli collect --kind cpu --pid 1234 --top 20 --export-trace
+  dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --symbol-path /symbols
+  dotnet-diagnostics-cli collect --kind allocation --pid 1234 --top 15
+  dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500
+  dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128
   dotnet-diagnostics-cli collect --kind datas --pid 1234 --save ./before.json
   dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
   dotnet-diagnostics-cli collect --kind requests --pid MyApp --duration 5 --threshold 2000  # in-flight requests
@@ -114,7 +136,7 @@ collect options:
             "One-shot process inspector: workload triage or runtime configuration (--view required).",
 """
 inspect options:
-      --view <view>             Required. One of: triage, runtime-config.
+      --view <view>             Required. One of: triage, runtime-config, container.
   -d, --duration <int>          triage: counter collection window in seconds (default 5).
 inspect views:
   triage          Collect counters for <duration>s, classify the workload (verdict, severity,
@@ -122,11 +144,13 @@ inspect views:
                   memory-pressure, threadpool-starvation, lock-contention, io-bound, healthy.
   runtime-config  Read the process's effective runtime configuration: GC mode, ThreadPool bounds,
                   tiered-compilation flags, runtime env vars and AppContext switches.
+  container       Read cgroup/container CPU, memory, PSI, pid-limit and OOM signals for the target.
 """,
 """
   dotnet-diagnostics-cli inspect --view triage --pid 1234
   dotnet-diagnostics-cli inspect --view triage --pid 1234 --duration 10
   dotnet-diagnostics-cli inspect --view runtime-config --pid 1234
+  dotnet-diagnostics-cli inspect --view container --pid 1234
   dotnet-diagnostics-cli inspect --view triage --json
 """),
         new CommandHelp(

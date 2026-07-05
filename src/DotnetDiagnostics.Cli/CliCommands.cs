@@ -6,6 +6,7 @@ using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.Bytes;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Collection;
+using DotnetDiagnostics.Core.Container;
 using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Counters;
@@ -21,6 +22,7 @@ using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
+using DotnetDiagnostics.Core.NativeAlloc;
 using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.Preflight;
 using DotnetDiagnostics.Core.ProcessDiscovery;
@@ -88,7 +90,7 @@ internal static class CliCommands
     public static readonly IReadOnlyList<string> HeapSources = new[] { "live", "dump", "gcdump" };
 
     /// <summary>Views accepted by the <c>inspect</c> command (issue #486).</summary>
-    public static readonly IReadOnlyList<string> InspectViews = new[] { "triage", "runtime-config" };
+    public static readonly IReadOnlyList<string> InspectViews = new[] { "triage", "runtime-config", "container" };
 
     /// <summary>Artifact kinds accepted by the <c>get-bytes</c> command (issue #288 PR4).</summary>
     public static readonly IReadOnlyList<string> ByteKinds = new[] { "module", "dump", "trace" };
@@ -141,6 +143,12 @@ internal static class CliCommands
         "requests",
         "startup",
         "sweep",
+        "cpu",
+        "off_cpu",
+        "off-cpu",
+        "allocation",
+        "native-alloc",
+        "thread-snapshot",
     };
 
     private static readonly IComparableProjector[] ComparableProjectors =
@@ -284,6 +292,12 @@ internal static class CliCommands
             return false;
         }
 
+        if (options.DurationSeconds is < 1)
+        {
+            error = "--duration must be >= 1.";
+            return false;
+        }
+
         // Threshold-gated capture (#419): --capture-when / --capture / --window form one bounded
         // watch and must be supplied together with kind=counters. Deep validation (predicate parse,
         // ranges) happens in the use case so the error surfaces with recovery hints.
@@ -317,11 +331,13 @@ internal static class CliCommands
 
         if (!string.IsNullOrWhiteSpace(options.NativeAotMapFile))
         {
-            if (!string.Equals(options.CaptureKind, "cpu-sample", StringComparison.Ordinal))
+            var validForCpuCollect = string.Equals(options.Kind, "cpu", StringComparison.Ordinal);
+            var validForGatedCpuCapture = string.Equals(options.CaptureKind, "cpu-sample", StringComparison.Ordinal);
+            if (!validForCpuCollect && !validForGatedCpuCapture)
             {
                 error = options.CaptureKind is null
-                    ? "--native-aot-map requires '--capture cpu-sample'."
-                    : $"--native-aot-map is not supported by '--capture {options.CaptureKind}'. It is only valid with '--capture cpu-sample'.";
+                    ? "--native-aot-map requires 'collect --kind cpu' or '--capture cpu-sample'."
+                    : $"--native-aot-map is not supported by '--capture {options.CaptureKind}'. It is only valid with 'collect --kind cpu' or '--capture cpu-sample'.";
                 return false;
             }
 
@@ -330,6 +346,49 @@ internal static class CliCommands
                 error = $"--native-aot-map: file '{options.NativeAotMapFile}' does not exist.";
                 return false;
             }
+        }
+
+        var isCpu = string.Equals(options.Kind, "cpu", StringComparison.Ordinal);
+        var isOffCpu = string.Equals(options.Kind, "off_cpu", StringComparison.Ordinal)
+            || string.Equals(options.Kind, "off-cpu", StringComparison.Ordinal);
+        var isAllocation = string.Equals(options.Kind, "allocation", StringComparison.Ordinal);
+        var isNativeAlloc = string.Equals(options.Kind, "native-alloc", StringComparison.Ordinal);
+        var isThreadSnapshot = string.Equals(options.Kind, "thread-snapshot", StringComparison.Ordinal);
+
+        if ((isCpu || isOffCpu || isAllocation || isNativeAlloc) && options.Top is < 1)
+        {
+            error = "--top must be >= 1.";
+            return false;
+        }
+
+        if (isNativeAlloc && options.NativeAllocSamplePeriod is < 1)
+        {
+            error = "--native-alloc-sample-period must be >= 1.";
+            return false;
+        }
+
+        if (isThreadSnapshot && options.MaxFramesPerThread is < 1)
+        {
+            error = "--max-frames-per-thread must be >= 1.";
+            return false;
+        }
+
+        if (isThreadSnapshot && options.MaxFramesPerThread > ClrMdThreadSnapshotInspector.MaxFramesPerThreadHardCap)
+        {
+            error = $"--max-frames-per-thread must be <= {ClrMdThreadSnapshotInspector.MaxFramesPerThreadHardCap}.";
+            return false;
+        }
+
+        if (isThreadSnapshot && !string.IsNullOrWhiteSpace(options.DumpFile) && options.HasPid)
+        {
+            error = "collect --kind thread-snapshot accepts either --pid or --dump-file, not both.";
+            return false;
+        }
+
+        if (isThreadSnapshot && !string.IsNullOrWhiteSpace(options.DumpFile) && !File.Exists(options.DumpFile))
+        {
+            error = $"--dump-file: file '{options.DumpFile}' does not exist.";
+            return false;
         }
 
         return true;
@@ -762,6 +821,7 @@ internal static class CliCommands
         {
             "triage" => await InspectTriageAsync(services, options, cancellationToken).ConfigureAwait(false),
             "runtime-config" => await InspectRuntimeConfigAsync(services, options, cancellationToken).ConfigureAwait(false),
+            "container" => await InspectContainerAsync(services, options, cancellationToken).ConfigureAwait(false),
             _ => throw new ArgumentException($"Unknown inspect view '{options.View}'.", nameof(options)),
         };
     }
@@ -905,6 +965,69 @@ internal static class CliCommands
         });
     }
 
+    private static async Task<CliCommandResult> InspectContainerAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+    {
+        var result = await ContainerInspectionUseCases.GetContainerSignals(
+            services.GetRequiredService<IContainerSignalsCollector>(),
+            services.GetRequiredService<IProcessContextResolver>(),
+            options.Pid,
+            SamplingDepth.Detail,
+            cancellationToken).ConfigureAwait(false);
+
+        return BuildResult(result, static (sb, signals) =>
+        {
+            sb.AppendLine();
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  Scope            : {(signals.InContainer ? "container" : "host")} ({signals.CgroupVersion})");
+            if (!string.IsNullOrWhiteSpace(signals.CgroupPath))
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  Cgroup path      : {signals.CgroupPath}");
+            }
+
+            if (signals.Cpu is { } cpu)
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture,
+                    $"  CPU              : quota={FormatQuota(cpu.QuotaCores)}, throttled={FormatPercent(cpu.ThrottlePercent)} periods ({cpu.NrThrottled}/{cpu.NrPeriods})");
+            }
+
+            if (signals.Memory is { } mem)
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture,
+                    $"  Memory           : {FormatMiB(mem.CurrentBytes)}/{FormatMiB(mem.MaxBytes)} ({FormatFraction(mem.UsageFraction)})");
+                sb.AppendLine(CultureInfo.InvariantCulture,
+                    $"  OOM / max hits   : {mem.OomKillCount} / {mem.MaxHitCount}");
+            }
+
+            if (signals.Pressure is { } psi)
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture,
+                    $"  PSI              : cpu.some={FormatPsi(psi.CpuSomeAvg10)}  mem.some={FormatPsi(psi.MemSomeAvg10)}  mem.full={FormatPsi(psi.MemFullAvg10)}  io.some={FormatPsi(psi.IoSomeAvg10)}  io.full={FormatPsi(psi.IoFullAvg10)}");
+            }
+
+            if (signals.Pids is { } pids)
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture,
+                    $"  PIDs             : {pids.Current}/{(pids.Max is null ? "unlimited" : pids.Max.Value.ToString(CultureInfo.InvariantCulture))}");
+            }
+
+            if (signals.OomScore is { } oomScore)
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  oom_score        : {oomScore}");
+            }
+
+            if (signals.Notes.Count > 0)
+            {
+                sb.AppendLine("  Notes:");
+                foreach (var note in signals.Notes)
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"    {note}");
+                }
+            }
+        });
+    }
+
     private static string BuildRuntimeConfigSummary(RuntimeConfigView cfg)
     {
         var parts = new List<string>();
@@ -929,6 +1052,24 @@ internal static class CliCommands
         var maxStr = max.HasValue ? max.Value.ToString(CultureInfo.InvariantCulture) : "?";
         return $"{minStr}/{maxStr}";
     }
+
+    private static string FormatQuota(double? quotaCores)
+        => quotaCores is null ? "unlimited" : $"{quotaCores.Value:F2} cores";
+
+    private static string FormatPercent(double? value)
+        => value is null ? "n/a" : $"{value.Value:F1}%";
+
+    private static string FormatFraction(double? value)
+        => value is null ? "n/a" : $"{value.Value * 100:F0}%";
+
+    private static string FormatPsi(double? value)
+        => value is null ? "n/a" : $"{value.Value:F2}";
+
+    private static string FormatMiB(long bytes)
+        => $"{bytes / 1_048_576} MiB";
+
+    private static string FormatMiB(long? bytes)
+        => bytes is null ? "unlimited" : FormatMiB(bytes.Value);
 
     private static List<NextActionHint> BuildCliTriageHints(TriageResult triage, int pid)    {
         var hints = new List<NextActionHint>();
@@ -1162,12 +1303,111 @@ internal static class CliCommands
                 options.MaxEvents ?? 200, depth, options.UnsafeProvider, deprecation: null,
                 cancellationToken).ConfigureAwait(false)),
 
+            "cpu" => await CollectCpuSampleAsync(services, options, cancellationToken).ConfigureAwait(false),
+
+            "allocation" => await CollectAllocationSampleAsync(services, options, cancellationToken).ConfigureAwait(false),
+
+            "off_cpu" or "off-cpu" => await CollectOffCpuSampleAsync(services, options, cancellationToken).ConfigureAwait(false),
+
+            "native-alloc" => await CollectNativeAllocSampleAsync(services, options, cancellationToken).ConfigureAwait(false),
+
+            "thread-snapshot" => await CollectThreadSnapshotAsync(services, options, cancellationToken).ConfigureAwait(false),
+
             _ => throw new ArgumentException($"Unknown collect kind '{options.Kind}'.", nameof(options)),
         };
     }
 
     private static CliCommandResult Wrap<T>(CliOptions options, DiagnosticResult<T> result) =>
         BuildResultWithComparableSave(options, result, static (_, _) => { });
+
+    private static async Task<CliCommandResult> CollectCpuSampleAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+        => Wrap(options, await SamplerUseCases.CollectCpuSample(
+            services.GetRequiredService<ICpuSampler>(),
+            services.GetRequiredService<IDiagnosticHandleStore>(),
+            services.GetRequiredService<IProcessContextResolver>(),
+            services.GetRequiredService<SymbolServerAllowlist>(),
+            principalAllowsSymbolsRemote: false,
+            options.Pid,
+            options.DurationSeconds ?? 10,
+            options.Top ?? 25,
+            options.ResolveSourceLines ?? true,
+            options.SymbolPath,
+            options.ResolveMethodInstantiations,
+            options.NativeAotMapFile,
+            ParseDepth(options.Depth),
+            options.ExportTrace,
+            cancellationToken).ConfigureAwait(false));
+
+    private static async Task<CliCommandResult> CollectAllocationSampleAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+        => Wrap(options, await SamplerUseCases.CollectAllocationSample(
+            services.GetRequiredService<EventPipeAllocationSampler>(),
+            services.GetRequiredService<IDiagnosticHandleStore>(),
+            services.GetRequiredService<IProcessContextResolver>(),
+            options.Pid,
+            options.DurationSeconds ?? 10,
+            options.Top ?? 25,
+            cancellationToken).ConfigureAwait(false));
+
+    private static async Task<CliCommandResult> CollectOffCpuSampleAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+        => Wrap(options, await SamplerUseCases.CollectOffCpuSample(
+            services.GetRequiredService<IOffCpuSampler>(),
+            services.GetRequiredService<IDiagnosticHandleStore>(),
+            services.GetRequiredService<IProcessContextResolver>(),
+            services.GetRequiredService<SymbolServerAllowlist>(),
+            principalAllowsSymbolsRemote: false,
+            options.Pid,
+            options.DurationSeconds ?? 10,
+            options.Top ?? 25,
+            options.SymbolPath,
+            ParseDepth(options.Depth),
+            cancellationToken).ConfigureAwait(false));
+
+    private static async Task<CliCommandResult> CollectNativeAllocSampleAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+        => Wrap(options, await SamplerUseCases.CollectNativeAllocSample(
+            services.GetRequiredService<INativeAllocSampler>(),
+            services.GetRequiredService<IDiagnosticHandleStore>(),
+            services.GetRequiredService<IProcessContextResolver>(),
+            options.Pid,
+            options.DurationSeconds ?? 10,
+            options.Top ?? 25,
+            options.NativeAllocSamplePeriod ?? 1000,
+            cancellationToken).ConfigureAwait(false));
+
+    private static async Task<CliCommandResult> CollectThreadSnapshotAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+        => Wrap(options, await SamplerUseCases.CollectThreadSnapshot(
+            services.GetRequiredService<IThreadSnapshotInspector>(),
+            services.GetRequiredService<IDiagnosticHandleStore>(),
+            services.GetRequiredService<IProcessContextResolver>(),
+            services.GetRequiredService<SymbolServerAllowlist>(),
+            principalAllowsSymbolsRemote: false,
+            options.Pid,
+            options.DumpFile,
+            options.MaxFramesPerThread ?? 64,
+            options.IncludeRuntimeFrames,
+            options.IncludeNativeFrames,
+            options.SymbolPath,
+            ParseDepth(options.Depth),
+            cancellationToken).ConfigureAwait(false));
+
+    private static SamplingDepth ParseDepth(string? depth)
+        => depth is not null && TryParseDepth(depth, out var parsedDepth)
+            ? parsedDepth
+            : SamplingDepth.Detail;
 
     /// <summary>
     /// Cold-start capture entry point (issue #446): collects a startup snapshot on a target launched

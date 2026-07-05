@@ -18,10 +18,15 @@ public sealed class CliHintProjectionTests
     [InlineData("collect_events", "collect")]
     [InlineData("inspect_process", "processes")]
     [InlineData("list_dotnet_processes", "processes")]
+    [InlineData("collect_sample", "collect")]
+    [InlineData("collect_thread_snapshot", "collect")]
+    [InlineData("collect_off_cpu_sample", "collect")]
     [InlineData("inspect_heap", "inspect-heap")]
     [InlineData("inspect_live_heap", "inspect-heap")]
     [InlineData("inspect_dump", "inspect-heap")]
     [InlineData("collect_process_dump", "dump")]
+    [InlineData("query_snapshot", "query")]
+    [InlineData("query_heap_snapshot", "query")]
     public void TryProjectHint_TranslatesKnownMcpTool_ToCliCommand(string mcpTool, string cliCommand)
     {
         var ok = CliHintProjection.TryProjectHint(new NextActionHint(mcpTool, "Cheap first signal."), out var projected);
@@ -45,11 +50,6 @@ public sealed class CliHintProjectionTests
     }
 
     [Theory]
-    [InlineData("collect_sample")]
-    [InlineData("collect_thread_snapshot")]
-    [InlineData("collect_off_cpu_sample")]
-    [InlineData("query_snapshot")]
-    [InlineData("query_heap_snapshot")]
     [InlineData("dotnet-assembly-mcp.get_method")]
     public void TryProjectHint_DropsTools_WithoutCliEquivalent(string mcpTool)
     {
@@ -97,7 +97,7 @@ public sealed class CliHintProjectionTests
     {
         // Mapped tool, but the reason carries an MCP fragment with no rewrite rule -> must be dropped,
         // never rendered with a leak.
-        var hint = new NextActionHint("inspect_heap", "Use query_snapshot(handle=\"h1\", view=\"top-types\") to drill in.");
+        var hint = new NextActionHint("inspect_heap", "Use collect_cpu_sample for more detail.");
 
         var ok = CliHintProjection.TryProjectHint(hint, out _);
 
@@ -129,8 +129,20 @@ public sealed class CliHintProjectionTests
 
         var projected = CliHintProjection.Project(result);
 
-        projected.Hints.Should().HaveCount(2);
-        projected.Hints.Select(h => h.NextTool).Should().BeEquivalentTo(new[] { "collect", "inspect-heap" });
+        projected.Hints.Should().HaveCount(3);
+        projected.Hints.Select(h => h.NextTool).Should().BeEquivalentTo(new[] { "collect", "collect", "inspect-heap" });
+    }
+
+    [Fact]
+    public void TryProjectHint_RewritesQuerySnapshotSyntax_ToCliQueryFlags()
+    {
+        var hint = new NextActionHint("query_snapshot", "Use query_snapshot(handle=\"h1\", view=\"top-types\") to drill in.");
+
+        CliHintProjection.TryProjectHint(hint, out var projected).Should().BeTrue();
+
+        projected.NextTool.Should().Be("query");
+        projected.Reason.Should().Contain("query --handle h1 --view top-types");
+        AssertNoLeak(projected.NextTool + " " + projected.Reason);
     }
 
     [Fact]
@@ -270,12 +282,12 @@ public sealed class CliHintProjectionTests
     [Fact]
     public void BuildCliCapabilityNotes_LiveAttachBlocked_DropsUnrewritableReason_FallsBackToGeneric()
     {
-        // A reason carrying an MCP fragment with no rewrite rule must be dropped, not rendered.
+        // query_snapshot is now translatable into the session query syntax and should survive.
         var notes = CliHintProjection.BuildCliCapabilityNotes(
             Caps(RuntimeFlavor.CoreClr, canAttach: false,
                 attachReason: "Blocked — call query_snapshot(handle=\"h1\") instead."));
 
-        notes.Should().Contain("is unavailable.").And.NotContain("unavailable:");
+        notes.Should().Contain("unavailable:").And.Contain("query --handle h1");
         AssertNoLeak(notes);
     }
 

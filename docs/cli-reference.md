@@ -137,17 +137,19 @@ dotnet-diagnostics-cli doctor --pid "$APP_PID" || { echo "environment not ready"
 
 ### `inspect`
 
-One-call process inspector exposing two views (`--view` required):
+One-call process inspector exposing three views (`--view` required):
 
 | View | What it does |
 |---|---|
 | `triage` | Collects counters for `--duration` seconds (default 5), classifies the workload, and returns a verdict with severity and ranked indicators. Verdicts: `cpu-bound`, `gc-pressure`, `memory-pressure`, `threadpool-starvation`, `lock-contention`, `io-bound`, `healthy`. |
 | `runtime-config` | Reads the process's effective runtime configuration: GC mode and heap count, ThreadPool worker/IOCP bounds, tiered-compilation flags, filtered runtime env vars, and AppContext switches. |
+| `container` | Reads cgroup/container CPU quota + throttling, memory limits / OOM counters, PSI, pid limits and `oom_score` for the target process. Linux/cgroup-v2-first; returns partial signals plus notes when the host lacks a container envelope or PSI. |
 
 ```bash
 dotnet-diagnostics-cli inspect --view triage --pid 1234
 dotnet-diagnostics-cli inspect --view triage --pid 1234 --duration 10
 dotnet-diagnostics-cli inspect --view runtime-config --pid 1234
+dotnet-diagnostics-cli inspect --view container --pid 1234
 dotnet-diagnostics-cli inspect --view triage --json
 ```
 
@@ -157,16 +159,26 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 
 | Option | Meaning |
 |---|---|
-| `--kind <kind>` | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`, `sweep`. |
+| `--kind <kind>` | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`, `sweep`, `cpu`, `allocation`, `off_cpu` (alias `off-cpu`), `native-alloc`, `thread-snapshot`. |
 | `-d, --duration <int>` | Window in seconds (default: `counters` 5, `datas` 15, others 10). |
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
+| `--top <n>` | Top-N cap for sampler kinds: `cpu`, `allocation`, `off_cpu`, `native-alloc`. |
 | `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |
 | `--interval <int>` | Refresh interval in seconds (`counters`, `db`, `kestrel`, `networking`). Default 1. |
 | `--watch <seconds>` | Re-run the command every N seconds, clear/redraw the human output, and stop cleanly on Ctrl-C. Not compatible with `--json`. With `--capture-when` it is reinterpreted as the metric **sample interval** for the bounded gated watch (no redraw loop). |
 | `--capture-when <pred>` | Threshold-gated capture (`--kind counters`). Arm a **bounded** watch and capture when a single metric predicate `<metric><op><value>` trips — e.g. `cpu>85`, `gcHeapMb>=1500`, `rssMb>2000`, `threadCount>400`, `activeTimerCount>1000`. Operators: `>` `>=` `<` `<=`. |
 | `--capture <kind>` | What to capture on trip: `dump`, `cpu-sample`, `heap`, `thread-snapshot`. Required with `--capture-when`. |
 | `--window <seconds>` | Required with `--capture-when`. Hard upper bound on how long the watch is armed (1–300). |
-| `--native-aot-map <file>` | With `--capture cpu-sample` against a **NativeAOT** target, resolve method names from a `.map.xml` file (the AOT compiler's symbol map) so hot frames show managed method identities instead of raw addresses. Ignored for CoreCLR targets, which resolve symbols from runtime metadata. |
+| `--symbol-path <path>` | `NT_SYMBOL_PATH`-style search path for `cpu`, `off_cpu` and `thread-snapshot` symbol resolution. Remote symbol servers remain allowlist-gated just like `inspect-heap`. |
+| `--export-trace` | `cpu`: keep the raw `.nettrace` under the artifact root and surface its relative path (default off — the trace is deleted after parsing). Fetch it later with `get-bytes --kind trace`. |
+| `--resolve-source-lines` / `--no-resolve-source-lines` | `cpu`: enable/disable source file:line resolution for the top hotspots. Default **on**. |
+| `--resolve-method-instantiations` | `cpu`: opt in to a second ClrMD attach after sampling to recover closed generic method signatures for the hottest managed frames. |
+| `--native-aot-map <file>` | `cpu` (and gated `--capture cpu-sample`) against a **NativeAOT** target: resolve method names from a `.map.xml` file (the AOT compiler's symbol map) so hot frames show managed method identities instead of raw addresses. Ignored for CoreCLR targets, which resolve symbols from runtime metadata. |
+| `--native-alloc-sample-period <n>` | `native-alloc`: perf sample period (default `1000`) — record one call chain per this many allocator hits. Higher values reduce output volume at the cost of resolution. |
+| `--dump-file <path>` | `thread-snapshot`: inspect a previously-captured dump instead of attaching to a live pid. Mutually exclusive with `--pid`. |
+| `--max-frames-per-thread <n>` | `thread-snapshot`: cap captured frames per thread (default `64`, hard cap `512`). |
+| `--include-runtime-frames` | `thread-snapshot`: include CLR/runtime helper frames. Default off. |
+| `--include-native-frames` | `thread-snapshot`: include native frames ClrMD cannot map to managed methods. Default off. |
 | `--max-captures <int>` | Stop after N captures (default 1, max 10). |
 | `--provider <name>` | `counters`: EventCounter provider (repeatable); `catalog`: EventPipe provider (repeatable; replaces broad defaults); `event_source`: required provider name. |
 | `--meter <name>` | `counters`: Meter name (repeatable). |
@@ -181,10 +193,48 @@ dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
 dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --watch 2
 dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-when 'cpu>85' --capture cpu-sample --window 60
 dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-when 'rssMb>2000' --capture dump --window 120 --confirm
+dotnet-diagnostics-cli collect --kind cpu --pid 1234 --top 20 --export-trace
+dotnet-diagnostics-cli collect --kind allocation --pid 1234 --top 15
+dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --symbol-path /symbols
+dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500
+dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128
+dotnet-diagnostics-cli collect --kind thread-snapshot --dump-file ./app.dmp
 dotnet-diagnostics-cli collect --kind datas --pid 1234 --duration 30 --save ./before.json
 dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
 dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
 dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch -- dotnet App.dll   # cold start
+```
+
+#### Sampler kinds
+
+The standalone CLI now exposes the same **Core-only** sampler families the MCP server drives:
+
+| Kind | What it captures | Key flags | Summary shape |
+|---|---|---|---|
+| `cpu` | On-CPU stacks via EventPipe SampleProfiler (CoreCLR) or perf/ETW (NativeAOT/native). | `--top`, `--symbol-path`, `--export-trace`, `--resolve-source-lines`, `--resolve-method-instantiations`, `--native-aot-map` | top hotspots by inclusive/exclusive samples, plus `signals[]` such as `cpu.self-time.*` when something dominates |
+| `allocation` | Managed allocation samples (`GCAllocationTick`) with top types by bytes/count and call-tree drilldown. | `--top` | top types by bytes/count, plus `signals[]` such as `allocations.by-type` / `allocations.by-site` |
+| `off_cpu` / `off-cpu` | Off-CPU stacks (where threads wait / block) via perf or ETW backend. | `--top`, `--symbol-path` | top blocking stacks ranked by off-CPU time |
+| `native-alloc` | Native allocator-call hotspots (`malloc` / `calloc` / `realloc`) via perf/ETW backend. Counts are sampled **calls**, not bytes. | `--top`, `--native-alloc-sample-period` | top allocator stacks + shared call-tree handle |
+| `thread-snapshot` | Point-in-time managed threads + lock graph from a live pid or dump. | `--dump-file`, `--max-frames-per-thread`, `--include-runtime-frames`, `--include-native-frames`, `--symbol-path` | top blocked threads inline (`summary`) or a wider thread/lock slice (`detail`/`raw`), plus `signals[]` such as `threads.by-wait-state` |
+
+Examples:
+
+```bash
+# CPU hotspots + raw trace for offline PerfView / Speedscope:
+dotnet-diagnostics-cli collect --kind cpu --pid 1234 --top 20 --export-trace
+
+# Managed allocation pressure:
+dotnet-diagnostics-cli collect --kind allocation --pid 1234 --top 15 --json
+
+# Off-CPU blocking stacks:
+dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10
+
+# Native allocation hotspots (calls, not bytes):
+dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500
+
+# Live or dump-based thread snapshot:
+dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128
+dotnet-diagnostics-cli collect --kind thread-snapshot --dump-file ./app.dmp --include-runtime-frames
 ```
 
 > **Cold-start capture (`--suspend-startup`).** `collect --kind startup` attaching to an
@@ -345,30 +395,23 @@ export-summary --handle h-abc123 --out ./cpu-summary.json
 
 ### Signal-grouping layer
 
-`collect --kind counters`, `exceptions`, `gc` and `sweep` embed a top-level `signals[]` array in
+`collect --kind counters`, `exceptions`, `gc`, `sweep`, `cpu`, `allocation` and `thread-snapshot` embed a top-level `signals[]` array in
 the JSON envelope (`--json` or `--depth detail`/`raw`) whenever something is salient — the same
 diagnosis-agnostic "vector" the MCP server documents in
 [tool-reference.md](./tool-reference.md#signal-grouping-layer): a stable `signal` id (e.g.
-`exceptions.by-type`, `gc.gen2-share`, `counters.trend`, `correlation.co-occurrence`), a one-line
+`exceptions.by-type`, `gc.gen2-share`, `counters.trend`, `cpu.self-time.method`, `allocations.by-type`,
+`threads.by-wait-state`, `correlation.co-occurrence`), a one-line
 `summary`, a `salience` in `[0,1]`, and `buckets[]` referencing a handle. It groups and correlates;
 it never names a root cause or a fix. Omitted from the wire when nothing stands out.
 
 ```bash
-dotnet-diagnostics-cli collect --kind exceptions --pid 1234 --duration 6 --json
-# ⇒ top-level "signals": [{ "signal": "exceptions.by-type", "salience": 1, ... }] when one
-#   exception type dominates the window
+dotnet-diagnostics-cli collect --kind cpu --pid 1234 --json
+# ⇒ top-level "signals": [{ "signal": "cpu.self-time.method", "salience": 0.93, ... }] when one
+#   method dominates exclusive self-time
 ```
 
-> **CPU / allocation / thread-wait signals need the MCP server today.** The engine also computes
-> `cpu.self-time.*`, `allocations.by-type` / `by-site`, and `threads.by-wait-state` /
-> `by-wait-target` / `correlation.thread-overlap` — but the standalone CLI only reaches CPU
-> samples, allocation samples, and thread snapshots through the `--capture-when` gated-capture
-> path (there is no `collect --kind cpu`/`allocation`/`thread-snapshot`), and that path returns a
-> compact trip summary without the inline `signals[]` (see the gated-capture note above). The CLI's
-> `query` views for those handles (`call-tree`, `top-methods`, …) don't re-derive them either. To
-> see those groupings today, drive the same workload through the MCP server:
-> `collect_sample(kind="cpu"|"allocation")` embeds them inline, and `signals://cpu-sample/{handle}`
-> re-pulls them for any `cpu-sample` handle (gated or not) without re-sampling.
+`off_cpu` and `native-alloc` do **not** currently emit dedicated `signals[]` groupings; their value is
+the ranked stack output and the shared `session query` drilldowns.
 
 ### `query`
 
@@ -520,9 +563,19 @@ the recorded `.dmp` — no live attach — so an offline dump can still answer "
 gate); previews are replaced with `<redacted:metadata-only>`. Live-origin `gcroot`/`object` and the
 `objsize` / `duplicate-strings` views stay server-only — use the MCP server's `query_snapshot` tool.
 
-Thread-snapshot handles (from a gated `--capture thread-snapshot` inside a `session`) expose the
-call-stack / blocking views (`threads-summary`, `stack`, `lock-graph`, `deadlocks`, `top-blocked`,
-`unique-stacks`, `async-stalls`, `wait-chains`, `threadpool`) plus `frame-vars`:
+Off-CPU handles (`collect --kind off_cpu` or `off-cpu`) expose the off-CPU drilldowns already
+captured in the artifact:
+
+| View | What it shows | Relevant flags |
+| --- | --- | --- |
+| `topStacks` (default) | blocking stacks ranked by off-CPU time | — |
+| `byThread` | per-thread off-CPU rollup | — |
+| `stack` | one specific blocking stack | `--stack-rank <n>` |
+
+Thread-snapshot handles (`collect --kind thread-snapshot`, or a gated `--capture thread-snapshot`
+inside a `session`) expose the call-stack / blocking views (`threads-summary`, `stack`,
+`lock-graph`, `deadlocks`, `top-blocked`, `unique-stacks`, `async-stalls`, `wait-chains`,
+`threadpool`) plus `frame-vars`:
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |

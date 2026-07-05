@@ -43,6 +43,7 @@ public sealed class CliInspectValidationTests
     [Theory]
     [InlineData("triage")]
     [InlineData("runtime-config")]
+    [InlineData("container")]
     public void TryValidateInspect_KnownViews_Succeed(string view)
     {
         var options = CliOptions.Parse(["inspect", "--view", view], out _)!;
@@ -60,6 +61,7 @@ public sealed class CliInspectValidationTests
         error.Should().Contain("Unknown --view 'unknown'");
         error.Should().Contain("triage");
         error.Should().Contain("runtime-config");
+        error.Should().Contain("container");
     }
 
     [Fact]
@@ -111,6 +113,15 @@ public sealed class CliInspectValidationTests
     }
 
     [Fact]
+    public void Parse_InspectContainerView_Captured()
+    {
+        var options = CliOptions.Parse(["inspect", "--view", "container"], out var error);
+
+        error.Should().BeNull();
+        options!.View.Should().Be("container");
+    }
+
+    [Fact]
     public void Parse_InspectDuration_Captured()
     {
         var options = CliOptions.Parse(["inspect", "--view", "triage", "--duration", "10"], out var error);
@@ -122,7 +133,17 @@ public sealed class CliInspectValidationTests
     [Fact]
     public void InspectViews_ContainExpectedViews()
     {
-        CliCommands.InspectViews.Should().BeEquivalentTo(new[] { "triage", "runtime-config" });
+        CliCommands.InspectViews.Should().BeEquivalentTo(new[] { "triage", "runtime-config", "container" });
+    }
+
+    [Fact]
+    public async Task RunAsync_InspectContainer_CurrentProcess_Succeeds()
+    {
+        var (exit, stdout, stderr) = await RunAsync("inspect", "--view", "container", "--pid", Environment.ProcessId.ToString());
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("Scope");
     }
 
     [Fact]
