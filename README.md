@@ -146,10 +146,10 @@ as `dotnet-diagnostics-cli-<version>-<rid>`. **Full reference:** [`docs/cli-refe
 
 ## Tools Overview
 
-**15 unified tools.** Full schemas and return shapes: [`docs/tool-reference.md`](./docs/tool-reference.md).
+**16 unified tools.** Full schemas and return shapes: [`docs/tool-reference.md`](./docs/tool-reference.md).
 
 <details>
-<summary><strong>The 15 tools at a glance</strong></summary>
+<summary><strong>The 16 tools at a glance</strong></summary>
 
 | Tool | Purpose |
 |---|---|
