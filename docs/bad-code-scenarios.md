@@ -60,6 +60,7 @@ the output.
 | 7 | "Outbound HTTP calls are slow" | `GET /slow-http?url=https://httpbin.org/delay/3` | `collect_events(kind="event_source")` `name=System.Net.Http`, `collect_events(kind="counters")` with `System.Net.Http` | EventSource emits `Request*/Response*` events with latency between them; `requests-started-rate` and `current-requests` visible in counters |
 | 8 | "The process dies from an unhandled exception" | `GET /crash?mode=unhandled` | `collect_events(kind="crash-guard")` started before the request | `unhandledExceptionObserved=true`; `finalException` has the fatal type/message and `query_snapshot(view="stack")` returns the managed stack when available |
 | 9 | "A trivial in-memory lookup pegs the CPU at ~95%" | sustained `GET /culture-lookup?iterations=3000000` | `inspect_process(view="triage")`, `collect_sample(kind="cpu")` → `query_snapshot(view="call-tree")` | triage says cpu-bound (Critical); the top sampled frames are *inclusive* threadpool plumbing, but the call-tree drill lands on a high-*exclusive* `System.Globalization.CompareInfo.IcuGetHashCodeOfString` leaf (~89% of CPU) — a culture-aware `Dictionary` comparer |
+| 10 | "It's slow under load, but threads look idle, not spinning" | `GET /lock-storm?seconds=20&blockers=20` | `collect_thread_snapshot` | `threads.by-wait-state` signal shows most threads parked on `Monitor.Enter (contended)`; `correlation.thread-overlap` signal names the one owner thread that is itself asleep (`Thread.Sleep`) while 15+ others queue on the lock it holds |
 
 `/crash?mode=stackoverflow` is intentionally abrupt and may terminate before
 all EventPipe buffers flush. `/crash?mode=oom` simulates an OOM-class fatal
@@ -82,6 +83,16 @@ memory exhaustion.
 > before/after. This is the scenario that shows what the tools add *over* static
 > analysis; the full MCP-driven investigation is in
 > [`case-studies/culture-lookup.md`](./case-studies/culture-lookup.md).
+
+> **Cross-signal correlation (scenario 10).** `/lock-storm` holds
+> `lockStormGate` across a `Thread.Sleep(100)`, so the current lock owner is
+> simultaneously "likely blocked" and the reason everyone else is queued. Read
+> separately, "some threads wait" and "one lock has more waiters than others"
+> are both unremarkable; the `correlation.thread-overlap` signal joins the two
+> groupings and names the one owner thread that is asleep while holding the
+> lock. The full narrated investigation, including the raw lock-graph and the
+> wait-state signal it complements, is in
+> [`case-studies/lock-storm-correlation.md`](./case-studies/lock-storm-correlation.md).
 
 ## How an LLM should drive this
 

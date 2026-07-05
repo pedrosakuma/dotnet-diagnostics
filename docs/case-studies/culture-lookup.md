@@ -170,6 +170,87 @@ diagnosis. A `Dictionary<string, …>` hashes its keys with whatever
 **culture-sensitive**, every single `TryGetValue` pays a full Unicode
 collation-aware hash through ICU instead of a cheap ordinal one.
 
+## 3b. Postscript — with the signal-grouping layer (2026-07)
+
+Everything above happened before the signal-grouping ("vector") layer
+(#514/#523) existed — the drill from Step 1's inclusive trap to Step 2's
+`b__12 → IcuGetHashCodeOfString` leaf was manual reasoning over raw JSON. It's
+worth showing what the *same* `collect_sample(kind="cpu")` call returns
+**today**, because it collapses most of that manual work into one inline
+field.
+
+This capture is a fresh, real run of the exact production code path
+(`EventPipeCpuSampler` → `CpuSampleSignals.Detect`, the same call
+`collect_sample` makes) against a live BadCodeSample process driving the
+`/culture-lookup` workload — not a fabricated example:
+
+```jsonc
+// collect_sample(kind="cpu", processId=<pid>, durationSeconds=8, topN=15)
+{
+  "summary": "Captured … samples over 8s — showing top N of 15 hotspot(s). …",
+  "data": { "cpu": { "totalSamples": 62088, "topHotspots": [ /* … threadpool plumbing, exclusiveSamples: 0, same trap as Step 1 … */ ] } },
+  "signals": [
+    {
+      "signal": "cpu.self-time.concentration",
+      "summary": "CPU self-time is concentrated: 57.4% in System.Globalization.CompareInfo.IcuGetHashCodeOfString(...).",
+      "salience": 0.574,
+      "buckets": [
+        { "key": "System.Globalization.CompareInfo.IcuGetHashCodeOfString(...)", "magnitude": 57.4, "unit": "%" }
+      ],
+      "nextAction": { "nextTool": "query_snapshot", "reason": "Rank methods by self-time (exclusive) and walk the call tree to the owning frame.", "suggestedArguments": { "view": "top-methods", "rankBy": "exclusive" } }
+    }
+  ],
+  "handle": "…"
+}
+```
+
+The `signals[]` array names `IcuGetHashCodeOfString` as the self-time leader
+**in the same response** that hands back the (still inclusive-only, still
+trap-laden) `topHotspots` list — no need to eyeball `exclusiveSamples: 0`
+across three plumbing frames, and no need for a separate `query_snapshot`
+round-trip just to learn *which* frame to drill into. Steps 1–2 above still
+apply for the *call-tree path* (which endpoint/line called it), but the
+"where is the CPU actually going" question that used to take a full
+`topHotspots` read plus a `call-tree` query is now answered inline.
+
+One nuance worth being explicit about: this inline signal only has the
+sampler's single, uncapped self-time leader to work with, so
+`cpu.self-time.concentration` is the only signal that can fire inline. A
+second, richer signal — `cpu.self-time.by-namespace` — needs the full
+per-method self-time ranking, which is only built when the call tree is
+materialized (the `signals://cpu-sample/{handle}` MCP Resource, or
+equivalently `query_snapshot(view="top-methods", rankBy="exclusive")`).
+Pulling that same capture's Resource gives:
+
+```jsonc
+// signals://cpu-sample/{handle}
+[
+  { "signal": "cpu.self-time.concentration", "summary": "CPU self-time is concentrated: 57.4% in …IcuGetHashCodeOfString(...); top 5 frames account for 92.1%.", "salience": 0.574, "buckets": [ /* top 5 methods */ ] },
+  {
+    "signal": "cpu.self-time.by-namespace",
+    "summary": "CPU self-time concentrates in namespace System.Globalization (57.4%).",
+    "salience": 0.574,
+    "buckets": [
+      { "key": "System.Globalization", "magnitude": 57.4, "unit": "%" },
+      { "key": "System.Threading", "magnitude": 29.0, "unit": "%" },
+      { "key": "(global)", "magnitude": 11.4, "unit": "%" },
+      { "key": "Microsoft.Extensions.Logging.Console", "magnitude": 2.1, "unit": "%" }
+    ]
+  }
+]
+```
+
+`System.Globalization` at 57.4% is the same neutral, diagnosis-agnostic
+observation this whole case study spent two sections manually reconstructing
+— it doesn't say "culture-aware string comparison bug," it says "here's where
+the weight is," and leaves the conclusion to whoever's reading it. That's the
+point of the vector layer: it doesn't shortcut the *investigation* (you still
+need Step 2's call-tree drill and Step 3's "why does a dictionary lookup call
+ICU?" reasoning to land on root cause), it shortcuts the *triage* — which
+frame/namespace is worth looking at in the first place. See
+[`docs/tool-reference.md`](../tool-reference.md#signal-grouping-layer)
+for the general signal-grouping contract.
+
 ## 4. Root cause — the code I couldn't see
 
 Only *now*, diagnosis in hand, do we look at the source. The endpoint
