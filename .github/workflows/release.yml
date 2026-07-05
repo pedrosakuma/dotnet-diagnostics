@@ -38,7 +38,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: global.json
 
@@ -91,7 +91,7 @@ jobs:
         # Attests the package bytes that are uploaded as an artifact below; the same
         # bytes are downloaded by the publish-nuget job and pushed to NuGet.org, so
         # consumers verifying the published .nupkg get a matching SLSA attestation.
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: 'artifacts/nupkg/*.nupkg'
 
@@ -128,7 +128,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: global.json
 
@@ -194,7 +194,7 @@ jobs:
           fi
 
       - name: Attest binary archive provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: |
             artifacts/dotnet-diagnostics-mcp-*.tar.gz
@@ -228,7 +228,7 @@ jobs:
           path: artifacts
 
       - name: Create / update Release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
           generate_release_notes: true
           files: |
@@ -257,7 +257,7 @@ jobs:
           path: artifacts/nupkg
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: global.json
 
