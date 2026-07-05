@@ -68,6 +68,12 @@ public sealed class CliCollectValidationTests
     [InlineData("requests")]
     [InlineData("startup")]
     [InlineData("sweep")]
+    [InlineData("cpu")]
+    [InlineData("allocation")]
+    [InlineData("off_cpu")]
+    [InlineData("off-cpu")]
+    [InlineData("native-alloc")]
+    [InlineData("thread-snapshot")]
     public void TryValidateCollect_KnownKindsWithoutProvider_Succeed(string kind)
     {
         var options = CliOptions.Parse(new[] { "collect", "--kind", kind }, out _)!;
@@ -118,12 +124,36 @@ public sealed class CliCollectValidationTests
     [Fact]
     public void CollectKinds_MatchMcpDiscriminatorSet()
     {
-        // Keep the CLI's accepted kinds aligned with the MCP collect_events discriminator family.
+        // Keep the CLI's accepted kinds aligned with the MCP collect_events family plus the CLI's
+        // direct sampler parity additions / alias.
         CliCommands.CollectKinds.Should().BeEquivalentTo(new[]
         {
             "counters", "exceptions", "crash-guard", "gc", "datas", "catalog", "event_source", "activities",
             "logs", "jit", "threadpool", "contention", "db", "kestrel", "networking", "requests", "startup", "sweep",
+            "cpu", "allocation", "off_cpu", "off-cpu", "native-alloc", "thread-snapshot",
         });
+    }
+
+    [Fact]
+    public void TryValidateCollect_ThreadSnapshotPidAndDumpFile_Fails()
+    {
+        var options = CliOptions.Parse(
+            ["collect", "--kind", "thread-snapshot", "--pid", "1234", "--dump-file", "./app.dmp"],
+            out _)!;
+
+        CliCommands.TryValidateCollect(options, out var error).Should().BeFalse();
+        error.Should().Contain("either --pid or --dump-file");
+    }
+
+    [Fact]
+    public void TryValidateCollect_NativeAllocSamplePeriodZero_Fails()
+    {
+        var options = CliOptions.Parse(
+            ["collect", "--kind", "native-alloc", "--native-alloc-sample-period", "0"],
+            out _)!;
+
+        CliCommands.TryValidateCollect(options, out var error).Should().BeFalse();
+        error.Should().Contain("--native-alloc-sample-period must be >= 1");
     }
 
     private static async Task<(int Exit, string Stdout, string Stderr)> RunAsync(params string[] args)

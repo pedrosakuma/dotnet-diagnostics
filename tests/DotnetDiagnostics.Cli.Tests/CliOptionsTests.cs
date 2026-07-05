@@ -179,6 +179,34 @@ public sealed class CliOptionsTests
         options.UnsafeProvider.Should().BeTrue();
     }
 
+    [Fact]
+    public void Parse_SamplerFlags_AreCaptured()
+    {
+        var options = CliOptions.Parse(
+            new[]
+            {
+                "collect", "--kind", "cpu", "--top", "15", "--symbol-path", "/symbols",
+                "--no-resolve-source-lines", "--resolve-method-instantiations", "--export-trace",
+                "--native-aot-map", "/maps/app.map.xml", "--native-alloc-sample-period", "500",
+                "--dump-file", "./app.dmp", "--max-frames-per-thread", "128",
+                "--include-runtime-frames", "--include-native-frames",
+            },
+            out var error);
+
+        error.Should().BeNull();
+        options!.Top.Should().Be(15);
+        options.SymbolPath.Should().Be("/symbols");
+        options.ResolveSourceLines.Should().BeFalse();
+        options.ResolveMethodInstantiations.Should().BeTrue();
+        options.ExportTrace.Should().BeTrue();
+        options.NativeAotMapFile.Should().Be("/maps/app.map.xml");
+        options.NativeAllocSamplePeriod.Should().Be(500);
+        options.DumpFile.Should().Be("./app.dmp");
+        options.MaxFramesPerThread.Should().Be(128);
+        options.IncludeRuntimeFrames.Should().BeTrue();
+        options.IncludeNativeFrames.Should().BeTrue();
+    }
+
     [Theory]
     [InlineData("-d")]
     [InlineData("--duration")]

@@ -40,10 +40,15 @@ internal static class CliHintProjection
         ["collect_events"] = "collect",
         ["inspect_process"] = "processes",
         ["list_dotnet_processes"] = "processes",
+        ["collect_sample"] = "collect",
+        ["collect_thread_snapshot"] = "collect",
+        ["collect_off_cpu_sample"] = "collect",
         ["inspect_heap"] = "inspect-heap",
         ["inspect_live_heap"] = "inspect-heap",
         ["inspect_dump"] = "inspect-heap",
         ["collect_process_dump"] = "dump",
+        ["query_snapshot"] = "query",
+        ["query_heap_snapshot"] = "query",
         // Hints authored on the CLI side already use these verbs verbatim — keep them stable.
         ["collect"] = "collect",
         ["inspect-heap"] = "inspect-heap",
@@ -85,9 +90,8 @@ internal static class CliHintProjection
         ("dumpType='WithHeap'", "--dump-type WithHeap"),
         ("confirm=true", "--confirm"),
         (" + handoff payload to dotnet-assembly-mcp", ""),
-        // Threadpool collector note: keep the MinThreads/MaxThreads fact, drop the MCP-only
-        // collect_thread_snapshot follow-up the one-shot CLI cannot act on (#302).
-        (" Use collect_thread_snapshot(view=\"threadpool\") when a ptrace-backed snapshot is acceptable.", ""),
+        ("Use collect_thread_snapshot(view=\"threadpool\") when a ptrace-backed snapshot is acceptable.",
+            "Use collect --kind thread-snapshot when a ptrace-backed snapshot is acceptable."),
         ("outputDirectory", "--out"),
         ("processId", "--pid"),
         ("start_investigation", "investigate"),
@@ -188,6 +192,26 @@ internal static class CliHintProjection
                 reason = reason.Replace(from, to, StringComparison.Ordinal);
             }
         }
+
+        reason = System.Text.RegularExpressions.Regex.Replace(
+            reason,
+            @"query_(?:heap_)?snapshot\(handle=""([^""]+)""(?:,\s*view=""([^""]+)"")?(?:,\s*maxDepth=(\d+))?(?:,\s*maxNodes=(\d+))?(?:,\s*rankBy=""([^""]+)"")?\)",
+            static m =>
+            {
+                var parts = new List<string> { $"query --handle {m.Groups[1].Value}" };
+                if (m.Groups[2].Success) parts.Add($"--view {m.Groups[2].Value}");
+                if (m.Groups[3].Success) parts.Add($"--max-depth {m.Groups[3].Value}");
+                if (m.Groups[4].Success) parts.Add($"--max-nodes {m.Groups[4].Value}");
+                if (m.Groups[5].Success) parts.Add($"--rank-by {m.Groups[5].Value}");
+                return string.Join(" ", parts);
+            },
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+        reason = System.Text.RegularExpressions.Regex.Replace(
+            reason,
+            @"query_thread_snapshot\(view=([^)]+)\)",
+            "query --view $1",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
         return reason;
     }

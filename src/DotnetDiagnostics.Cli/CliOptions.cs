@@ -104,9 +104,44 @@ internal sealed record CliOptions
     /// <summary>
     /// Path to the ILC <c>*.map.xml</c> map file for NativeAOT CPU sampling (<c>--native-aot-map</c>).
     /// When set, the perf-based AOT sampler emits a name-based <c>MethodIdentity</c> for managed frames.
-    /// Optional and inert for CoreCLR targets. Only honoured with <c>--capture cpu-sample</c>.
+    /// Optional and inert for CoreCLR targets. Honoured by <c>collect --kind cpu</c> and by
+    /// threshold-gated <c>--capture cpu-sample</c>.
     /// </summary>
     public string? NativeAotMapFile { get; init; }
+
+    /// <summary>
+    /// CPU sampling source-line resolution toggle (<c>--resolve-source-lines</c> /
+    /// <c>--no-resolve-source-lines</c>). Null applies the default (enabled).
+    /// </summary>
+    public bool? ResolveSourceLines { get; init; }
+
+    /// <summary>
+    /// Opt-in closed-generic resolution for CPU sampling (<c>--resolve-method-instantiations</c>).
+    /// Default off.
+    /// </summary>
+    public bool ResolveMethodInstantiations { get; init; }
+
+    /// <summary>
+    /// Native allocation sampler period (<c>--native-alloc-sample-period</c>). Null applies the
+    /// default (1000).
+    /// </summary>
+    public long? NativeAllocSamplePeriod { get; init; }
+
+    /// <summary>
+    /// Thread-snapshot frame cap (<c>--max-frames-per-thread</c>). Null applies the default (64).
+    /// </summary>
+    public int? MaxFramesPerThread { get; init; }
+
+    /// <summary>
+    /// Include runtime/internal frames in a thread snapshot (<c>--include-runtime-frames</c>).
+    /// Default off.
+    /// </summary>
+    public bool IncludeRuntimeFrames { get; init; }
+
+    /// <summary>
+    /// Include native frames in a thread snapshot (<c>--include-native-frames</c>). Default off.
+    /// </summary>
+    public bool IncludeNativeFrames { get; init; }
 
     /// <summary>Dump type for the <c>dump</c> command (<c>--dump-type</c>): Mini, Triage, WithHeap or Full. Null applies the default (Mini).</summary>
     public string? DumpType { get; init; }
@@ -267,6 +302,12 @@ internal sealed record CliOptions
         var includeDuplicateStrings = false;
         string? symbolPath = null;
         string? nativeAotMapFile = null;
+        bool? resolveSourceLines = null;
+        var resolveMethodInstantiations = false;
+        long? nativeAllocSamplePeriod = null;
+        int? maxFramesPerThread = null;
+        var includeRuntimeFrames = false;
+        var includeNativeFrames = false;
         string? dumpType = null;
         string? outDir = null;
         var confirm = false;
@@ -589,6 +630,37 @@ internal sealed record CliOptions
 
                     nativeAotMapFile = nativeAotMapValue;
                     break;
+                case "--resolve-source-lines":
+                    resolveSourceLines = true;
+                    break;
+                case "--no-resolve-source-lines":
+                    resolveSourceLines = false;
+                    break;
+                case "--resolve-method-instantiations":
+                    resolveMethodInstantiations = true;
+                    break;
+                case "--native-alloc-sample-period":
+                    if (!TryTakeLong(args, ref i, token, out var nativeAllocSamplePeriodValue, out error))
+                    {
+                        return null;
+                    }
+
+                    nativeAllocSamplePeriod = nativeAllocSamplePeriodValue;
+                    break;
+                case "--max-frames-per-thread":
+                    if (!TryTakeInt(args, ref i, token, out var maxFramesPerThreadValue, out error))
+                    {
+                        return null;
+                    }
+
+                    maxFramesPerThread = maxFramesPerThreadValue;
+                    break;
+                case "--include-runtime-frames":
+                    includeRuntimeFrames = true;
+                    break;
+                case "--include-native-frames":
+                    includeNativeFrames = true;
+                    break;
                 case "--dump-type":
                     if (!TryTakeString(args, ref i, token, out var dumpTypeValue, out error))
                     {
@@ -805,6 +877,12 @@ internal sealed record CliOptions
             IncludeDuplicateStrings = includeDuplicateStrings,
             SymbolPath = symbolPath,
             NativeAotMapFile = nativeAotMapFile,
+            ResolveSourceLines = resolveSourceLines,
+            ResolveMethodInstantiations = resolveMethodInstantiations,
+            NativeAllocSamplePeriod = nativeAllocSamplePeriod,
+            MaxFramesPerThread = maxFramesPerThread,
+            IncludeRuntimeFrames = includeRuntimeFrames,
+            IncludeNativeFrames = includeNativeFrames,
             DumpType = dumpType,
             OutDir = outDir,
             Confirm = confirm,
@@ -871,6 +949,26 @@ internal sealed record CliOptions
         }
 
         value = args[++i];
+        return true;
+    }
+
+    private static bool TryTakeLong(IReadOnlyList<string> args, ref int i, string flag, out long value, out string? error)
+    {
+        value = 0;
+        error = null;
+        if (i + 1 >= args.Count)
+        {
+            error = $"Option '{flag}' requires a value.";
+            return false;
+        }
+
+        var raw = args[++i];
+        if (!long.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out value))
+        {
+            error = $"Option '{flag}' expects an integer, got '{raw}'.";
+            return false;
+        }
+
         return true;
     }
 }
