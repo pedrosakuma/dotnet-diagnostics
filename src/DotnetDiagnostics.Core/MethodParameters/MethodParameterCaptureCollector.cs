@@ -2,8 +2,10 @@ using System.Diagnostics;
 using System.Diagnostics.Tracing;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Runtime.Versioning;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Internal;
 using DotnetDiagnostics.Core.ProcessDiscovery;
@@ -30,6 +32,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
     private static readonly Guid NotifyOnlyProfilerClsid = new("6A494330-5848-4A23-9D87-0E57BBF6DE79");
     private static readonly Guid MutatingProfilerClsid = new("38759DC4-0685-4771-AD09-A7627CE1B3B4");
     private static readonly TimeSpan AttachTimeout = TimeSpan.FromSeconds(10);
+    private const UnixFileMode SecureSharedDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
     private readonly ManagedMethodFilterResolver _resolver;
     private readonly SensitiveDataRedactor _redactor;
     private readonly ILogger<MethodParameterCaptureCollector> _logger;
@@ -135,142 +138,148 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
         }
 
         var runtimeInstanceId = TryGetRuntimeInstanceId(environment) ?? Guid.NewGuid();
-        var sharedPath = Path.Combine(Path.GetTempPath(), "ddmp-mp");
-        Directory.CreateDirectory(sharedPath);
-        var socketPath = Path.Combine(sharedPath, runtimeInstanceId.ToString("D") + ".sock");
-
-        await DiagnosticsClientReflection.SetEnvironmentVariableAsync(client, SharedPathEnvVar, sharedPath, cancellationToken).ConfigureAwait(false);
-        await DiagnosticsClientReflection.SetEnvironmentVariableAsync(client, RuntimeInstanceEnvVar, runtimeInstanceId.ToString("D"), cancellationToken).ConfigureAwait(false);
-        await DiagnosticsClientReflection.SetEnvironmentVariableAsync(client, ParameterCaptureEnvVar, "1", cancellationToken).ConfigureAwait(false);
-        await DiagnosticsClientReflection.SetEnvironmentVariableAsync(client, NotifyProfilerModulePathEnvVar, notifyProfilerPath, cancellationToken).ConfigureAwait(false);
-        await DiagnosticsClientReflection.SetEnvironmentVariableAsync(client, MutatingProfilerModulePathEnvVar, mutatingProfilerPath, cancellationToken).ConfigureAwait(false);
-
-        var infrastructureReady = IsInfrastructureReady(environment) && File.Exists(socketPath);
-        if (!infrastructureReady)
+        var sharedPath = CreateSecureSharedDirectory();
+        try
         {
+            var socketPath = Path.Combine(sharedPath, runtimeInstanceId.ToString("D") + ".sock");
+
+            await DiagnosticsClientReflection.SetEnvironmentVariableAsync(client, SharedPathEnvVar, sharedPath, cancellationToken).ConfigureAwait(false);
+            await DiagnosticsClientReflection.SetEnvironmentVariableAsync(client, RuntimeInstanceEnvVar, runtimeInstanceId.ToString("D"), cancellationToken).ConfigureAwait(false);
+            await DiagnosticsClientReflection.SetEnvironmentVariableAsync(client, ParameterCaptureEnvVar, "1", cancellationToken).ConfigureAwait(false);
+            await DiagnosticsClientReflection.SetEnvironmentVariableAsync(client, NotifyProfilerModulePathEnvVar, notifyProfilerPath, cancellationToken).ConfigureAwait(false);
+            await DiagnosticsClientReflection.SetEnvironmentVariableAsync(client, MutatingProfilerModulePathEnvVar, mutatingProfilerPath, cancellationToken).ConfigureAwait(false);
+
+            var infrastructureReady = IsInfrastructureReady(environment) && File.Exists(socketPath);
+            if (!infrastructureReady)
+            {
+                try
+                {
+                    var attachFailure = await EnsureInfrastructureAsync(processId, client, notifyProfilerPath, mutatingProfilerPath, startupHookPath, environment, socketPath, cancellationToken).ConfigureAwait(false);
+                    if (attachFailure is not null)
+                    {
+                        return attachFailure;
+                    }
+                }
+                catch (TimeoutException ex)
+                {
+                    return DiagnosticResult.Fail<MethodParameterCaptureArtifact>(
+                        $"collect_sample(kind=\"method-params\") failed for pid {processId}: {ex.Message}",
+                        new DiagnosticError("Internal", ex.Message, ex.GetType().FullName));
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return DiagnosticResult.Fail<MethodParameterCaptureArtifact>(
+                        $"collect_sample(kind=\"method-params\") failed for pid {processId}: {ex.Message}",
+                        new DiagnosticError("Internal", ex.Message, ex.GetType().FullName));
+                }
+            }
+
+            var requestId = Guid.NewGuid();
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var session = client.StartEventPipeSession(
+                new[] { new EventPipeProvider(ProviderName, EventLevel.Informational, (long)EventKeywords.All) },
+                requestRundown: false,
+                circularBufferMB: 256);
+            using var source = new EventPipeEventSource(session.EventStream);
+            var observer = new ParameterCaptureObserver(_redactor, uniqueResolvedMethods);
+            var processingTask = Task.Run(() =>
+            {
+                source.Dynamic.All += traceEvent =>
+                {
+                    if (string.Equals(traceEvent.ProviderName, ProviderName, StringComparison.Ordinal))
+                    {
+                        observer.OnEvent(traceEvent);
+                    }
+                };
+                try
+                {
+                    source.Process();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Method-parameter EventPipe source terminated for pid {Pid}.", processId);
+                }
+            }, CancellationToken.None);
+
             try
             {
-                var attachFailure = await EnsureInfrastructureAsync(processId, client, notifyProfilerPath, mutatingProfilerPath, startupHookPath, environment, socketPath, cancellationToken).ConfigureAwait(false);
-                if (attachFailure is not null)
+                var payload = new StartCapturePayload
                 {
-                    return attachFailure;
-                }
+                    RequestId = requestId,
+                    Duration = request.Duration,
+                    Configuration = new CaptureParametersConfiguration
+                    {
+                        Methods = resolvedMethods.Select(binding => binding.PayloadDescription).DistinctBy(description => $"{description.ModuleName}|{description.TypeName}|{description.MethodName}").ToArray(),
+                        UseDebuggerDisplayAttribute = false,
+                        CaptureLimit = request.MaxEvents,
+                    },
+                };
+
+                await SendProfilerMessageAsync(socketPath, commandSet: 2, command: 0, JsonSerializer.SerializeToUtf8Bytes(payload), cancellationToken).ConfigureAwait(false);
+                await observer.WaitForStartedAsync(requestId, TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+                await observer.WaitForCompletionAsync(requestId, request.Duration + TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                observer.MarkCancelled();
             }
             catch (TimeoutException ex)
             {
                 return DiagnosticResult.Fail<MethodParameterCaptureArtifact>(
                     $"collect_sample(kind=\"method-params\") failed for pid {processId}: {ex.Message}",
-                    new DiagnosticError("Internal", ex.Message, ex.GetType().FullName));
+                    new DiagnosticError("Internal", ex.Message, ex.GetType().FullName),
+                    new NextActionHint("inspect_process", "Confirm the target remains healthy and reachable before retrying method-parameter capture.", new Dictionary<string, object?> { ["processId"] = processId }));
             }
-            catch (InvalidOperationException ex)
+            finally
+            {
+                try
+                {
+                    await SendProfilerMessageAsync(socketPath, commandSet: 2, command: 1, JsonSerializer.SerializeToUtf8Bytes(new StopCapturePayload { RequestId = requestId }), CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Best-effort stop for method-parameter capture failed for pid {Pid}.", processId);
+                }
+
+                try
+                {
+                    await session.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    await processingTask.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false);
+                }
+                catch
+                {
+                }
+            }
+
+            if (observer.TryGetFailure(requestId, out var failureReason))
             {
                 return DiagnosticResult.Fail<MethodParameterCaptureArtifact>(
-                    $"collect_sample(kind=\"method-params\") failed for pid {processId}: {ex.Message}",
-                    new DiagnosticError("Internal", ex.Message, ex.GetType().FullName));
+                    $"collect_sample(kind=\"method-params\") failed for pid {processId}: {failureReason}",
+                    new DiagnosticError("Internal", failureReason, nameof(requestId)));
             }
-        }
 
-        var requestId = Guid.NewGuid();
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        using var session = client.StartEventPipeSession(
-            new[] { new EventPipeProvider(ProviderName, EventLevel.Informational, (long)EventKeywords.All) },
-            requestRundown: false,
-            circularBufferMB: 256);
-        using var source = new EventPipeEventSource(session.EventStream);
-        var observer = new ParameterCaptureObserver(_redactor, uniqueResolvedMethods);
-        var processingTask = Task.Run(() =>
-        {
-            source.Dynamic.All += traceEvent =>
-            {
-                if (string.Equals(traceEvent.ProviderName, ProviderName, StringComparison.Ordinal))
-                {
-                    observer.OnEvent(traceEvent);
-                }
-            };
-            try
-            {
-                source.Process();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Method-parameter EventPipe source terminated for pid {Pid}.", processId);
-            }
-        }, CancellationToken.None);
-
-        try
-        {
-            var payload = new StartCapturePayload
-            {
-                RequestId = requestId,
-                Duration = request.Duration,
-                Configuration = new CaptureParametersConfiguration
-                {
-                    Methods = resolvedMethods.Select(binding => binding.PayloadDescription).DistinctBy(description => $"{description.ModuleName}|{description.TypeName}|{description.MethodName}").ToArray(),
-                    UseDebuggerDisplayAttribute = false,
-                    CaptureLimit = request.MaxEvents,
-                },
-            };
-
-            await SendProfilerMessageAsync(socketPath, commandSet: 2, command: 0, JsonSerializer.SerializeToUtf8Bytes(payload), cancellationToken).ConfigureAwait(false);
-            await observer.WaitForStartedAsync(requestId, TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
-            await observer.WaitForCompletionAsync(requestId, request.Duration + TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            observer.MarkCancelled();
-        }
-        catch (TimeoutException ex)
-        {
-            return DiagnosticResult.Fail<MethodParameterCaptureArtifact>(
-                $"collect_sample(kind=\"method-params\") failed for pid {processId}: {ex.Message}",
-                new DiagnosticError("Internal", ex.Message, ex.GetType().FullName),
-                new NextActionHint("inspect_process", "Confirm the target remains healthy and reachable before retrying method-parameter capture.", new Dictionary<string, object?> { ["processId"] = processId }));
+            var artifact = observer.BuildArtifact(
+                processId,
+                DateTimeOffset.UtcNow,
+                request.Duration,
+                runtimeVersion,
+                request.MethodFilters,
+                uniqueResolvedMethods,
+                request.MaxEvents,
+                request.PreviewCount);
+            return DiagnosticResult.Ok(artifact, $"Captured {artifact.CaptureCount} method invocation(s) from pid {processId}.") with { Cancelled = observer.Cancelled };
         }
         finally
         {
-            try
-            {
-                await SendProfilerMessageAsync(socketPath, commandSet: 2, command: 1, JsonSerializer.SerializeToUtf8Bytes(new StopCapturePayload { RequestId = requestId }), CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Best-effort stop for method-parameter capture failed for pid {Pid}.", processId);
-            }
-
-            try
-            {
-                await session.StopAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            catch
-            {
-            }
-
-            try
-            {
-                await processingTask.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false);
-            }
-            catch
-            {
-            }
+            CleanupSharedPath(sharedPath);
         }
-
-        if (observer.TryGetFailure(requestId, out var failureReason))
-        {
-            return DiagnosticResult.Fail<MethodParameterCaptureArtifact>(
-                $"collect_sample(kind=\"method-params\") failed for pid {processId}: {failureReason}",
-                new DiagnosticError("Internal", failureReason, nameof(requestId)));
-        }
-
-        var artifact = observer.BuildArtifact(
-            processId,
-            DateTimeOffset.UtcNow,
-            request.Duration,
-            runtimeVersion,
-            request.MethodFilters,
-            uniqueResolvedMethods,
-            request.MaxEvents,
-            request.PreviewCount);
-        return DiagnosticResult.Ok(artifact, $"Captured {artifact.CaptureCount} method invocation(s) from pid {processId}.") with { Cancelled = observer.Cancelled };
     }
 
     private async Task<DiagnosticResult<MethodParameterCaptureArtifact>?> EnsureInfrastructureAsync(
@@ -390,6 +399,58 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
 
     private static string GetAssetRoot()
         => Path.Combine(AppContext.BaseDirectory, "Vendor", "dotnet-monitor", "10.0.2");
+
+    [SupportedOSPlatform("linux")]
+    private static string CreateSecureSharedDirectory()
+    {
+        var tempRoot = Path.GetTempPath();
+        for (var attempt = 0; attempt < 16; attempt++)
+        {
+            var candidate = Path.Combine(tempRoot, $"ddmp-{Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(4))}");
+            if (File.Exists(candidate) || Directory.Exists(candidate))
+            {
+                continue;
+            }
+
+            Directory.CreateDirectory(candidate, SecureSharedDirectoryMode);
+            File.SetUnixFileMode(candidate, SecureSharedDirectoryMode);
+            ValidateSharedDirectory(candidate);
+            return candidate;
+        }
+
+        throw new InvalidOperationException("Could not allocate a secure short-path directory for method-parameter capture.");
+    }
+
+    [SupportedOSPlatform("linux")]
+    private static void ValidateSharedDirectory(string path)
+    {
+        var info = new DirectoryInfo(path);
+        info.Refresh();
+        if (info.LinkTarget is not null)
+        {
+            throw new InvalidOperationException($"Refusing to use symlinked shared directory '{path}' for method-parameter capture.");
+        }
+
+        var mode = File.GetUnixFileMode(path);
+        if (mode != SecureSharedDirectoryMode)
+        {
+            throw new InvalidOperationException($"Shared directory '{path}' must have Unix mode 0700; found '{mode}'.");
+        }
+    }
+
+    private static void CleanupSharedPath(string sharedPath)
+    {
+        try
+        {
+            if (Directory.Exists(sharedPath))
+            {
+                Directory.Delete(sharedPath, recursive: true);
+            }
+        }
+        catch
+        {
+        }
+    }
 
     private static async Task WaitForSocketAsync(string socketPath, int processId, CancellationToken cancellationToken)
     {
@@ -639,7 +700,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
         private CapturedParameterValue RenderParameter(TraceEvent traceEvent)
         {
             var name = Payload(traceEvent, "parameterName", 2);
-            var typeName = Payload(traceEvent, "parameterTypeName", 4);
+            var typeName = Payload(traceEvent, "parameterType", 3);
             if (string.IsNullOrWhiteSpace(typeName))
             {
                 typeName = "System.Object";
@@ -654,16 +715,6 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                 rawValue = TrimUtf8(rawValue, 4096);
                 truncated = true;
                 notes.Add("value-cap");
-            }
-
-            if (rawValue.Length > 256)
-            {
-                rawValue = rawValue[..256];
-                truncated = true;
-                if (!notes.Contains("preview-cap", StringComparer.Ordinal))
-                {
-                    notes.Add("preview-cap");
-                }
             }
 
             var redactedValue = redactor.Redact(rawValue) ?? rawValue;

@@ -75,6 +75,8 @@ public sealed record MethodParameterCaptureArtifact(
     string StopReason,
     IReadOnlyList<MethodParameterInvocation> Events)
 {
+    private const int PreviewCharacterLimit = 256;
+
     public MethodParameterCaptureSample ToPreviewSample()
         => new(
             RuntimeFlavor,
@@ -90,7 +92,32 @@ public sealed record MethodParameterCaptureArtifact(
             ValuesTruncated,
             ValuesRedacted,
             StopReason,
-            Events.Take(PreviewCount).ToArray());
+            Events.Take(PreviewCount).Select(CreatePreviewInvocation).ToArray());
+
+    private static MethodParameterInvocation CreatePreviewInvocation(MethodParameterInvocation invocation)
+        => invocation with
+        {
+            Parameters = invocation.Parameters.Select(CreatePreviewParameter).ToArray(),
+        };
+
+    private static CapturedParameterValue CreatePreviewParameter(CapturedParameterValue parameter)
+    {
+        if (parameter.Value.Length <= PreviewCharacterLimit)
+        {
+            return parameter;
+        }
+
+        var notes = parameter.Notes.Contains("preview-cap", StringComparer.Ordinal)
+            ? parameter.Notes
+            : parameter.Notes.Concat(["preview-cap"]).ToArray();
+
+        return parameter with
+        {
+            Value = parameter.Value[..PreviewCharacterLimit],
+            Truncated = true,
+            Notes = notes,
+        };
+    }
 }
 
 public sealed record MethodParameterCaptureQueryResult(

@@ -166,7 +166,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         result.Handle.Should().NotBeNullOrWhiteSpace();
         result.Data!.CaptureCount.Should().BeGreaterThan(0);
         result.Data.Events.SelectMany(invocation => invocation.Parameters)
-            .Should().Contain(parameter => parameter.Name == "milliseconds" && parameter.Value == "123");
+            .Should().Contain(parameter => parameter.Name == "milliseconds" && parameter.TypeName == "System.Int32" && parameter.Value == "123");
 
         var drilled = await QuerySnapshotTool.QuerySnapshot(
             handles,
@@ -186,7 +186,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         var query = drilled.Data.Should().BeOfType<MethodParameterCaptureQueryResult>().Subject;
         query.Events.Should().NotBeNull();
         query.Events!.Events.SelectMany(invocation => invocation.Parameters)
-            .Should().Contain(parameter => parameter.Name == "milliseconds" && parameter.Value == "123");
+            .Should().Contain(parameter => parameter.Name == "milliseconds" && parameter.TypeName == "System.Int32" && parameter.Value == "123");
     }
 
     [Fact]

@@ -50,4 +50,42 @@ public sealed class MethodParameterCaptureCollectorTests
         result.Error!.Kind.Should().Be("NotSupported");
         result.Error.Message.Should().Contain("NativeAOT");
     }
+
+    [Fact]
+    public void ToPreviewSample_TruncatesInlinePreviewWithoutMutatingRetainedArtifact()
+    {
+        var storedValue = new string('x', 300);
+        var artifact = new MethodParameterCaptureArtifact(
+            4242,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(2),
+            "CoreCLR",
+            "10.0.0",
+            [new MethodFilter("CoreClrSample.dll", "Program", "BurnCpu")],
+            [new ResolvedMethodIdentity("CoreClrSample.dll", Guid.NewGuid().ToString("D"), "Program", "BurnCpu", 0, 123, ["System.String"])],
+            10,
+            5,
+            1,
+            0,
+            0,
+            0,
+            false,
+            false,
+            "duration_elapsed",
+            [
+                new MethodParameterInvocation(
+                    1,
+                    DateTimeOffset.UtcNow,
+                    new ResolvedMethodIdentity("CoreClrSample.dll", Guid.NewGuid().ToString("D"), "Program", "BurnCpu", 0, 123, ["System.String"]),
+                    [new CapturedParameterValue("payload", "System.String", storedValue, false, false)])
+            ]);
+
+        var preview = artifact.ToPreviewSample();
+
+        artifact.Events[0].Parameters[0].Value.Should().HaveLength(300);
+        artifact.Events[0].Parameters[0].Truncated.Should().BeFalse();
+        preview.Events[0].Parameters[0].Value.Should().HaveLength(256);
+        preview.Events[0].Parameters[0].Truncated.Should().BeTrue();
+        preview.Events[0].Parameters[0].Notes.Should().Contain("preview-cap");
+    }
 }
