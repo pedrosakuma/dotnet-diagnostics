@@ -64,6 +64,7 @@ deliberately.
 | Modifier | Unlocks |
 |---|---|
 | `sensitive-heap-read` | Raw string contents / field-value previews (otherwise redacted) on heap + EventSource surfaces. |
+| `sensitive-parameter-read` | `collect_sample(kind="method-params")` plus `query_snapshot(view="events")` over `method-params-capture` handles. Literal scope only; still requires `Diagnostics:AllowMethodParameterCapture=true` and `includeSensitiveValues=true` per call. |
 | `eventsource-any` | `collect_events(kind="event_source")` against non-allowlisted providers (`unsafeProvider=true`). |
 | `symbols-remote` | Remote symbol servers (`srv*http(s)://…`) outside the configured allowlist. |
 | `orchestrator-admin` | List / operate on investigation handles minted by **other** MCP sessions. |

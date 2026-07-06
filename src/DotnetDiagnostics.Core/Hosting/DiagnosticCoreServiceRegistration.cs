@@ -11,6 +11,7 @@ using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Logs;
+using DotnetDiagnostics.Core.MethodParameters;
 using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.Exceptions;
 using DotnetDiagnostics.Core.Gc;
@@ -101,6 +102,7 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<IInFlightRequestCollector, EventPipeInFlightRequestCollector>();
         services.AddSingleton<INetworkingCollector, EventPipeNetworkingCollector>();
         services.AddSingleton<IStartupCollector, EventPipeStartupCollector>();
+        services.AddSingleton<IMethodParameterCaptureCollector, MethodParameterCaptureCollector>();
         services.AddSingleton<DotnetDiagnostics.Core.GatedCapture.IThresholdGatedCaptureCollector, DotnetDiagnostics.Core.GatedCapture.ThresholdGatedCaptureCollector>();
         services.AddSingleton<IProcessDumper, DiagnosticsClientDumper>();
         services.AddSingleton<IModuleByteSource, ClrMdModuleByteSource>();

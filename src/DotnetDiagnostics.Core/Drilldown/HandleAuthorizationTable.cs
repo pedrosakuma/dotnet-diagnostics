@@ -32,6 +32,7 @@ public static class HandleAuthorizationTable
             // legacy-boundary intent explicit at the table level.
             new KeyValuePair<ViewKey, string>(new ViewKey(HandleOrigin.Live, "retention-paths"), "sensitive-heap-read"),
             new KeyValuePair<ViewKey, string>(new ViewKey(HandleOrigin.Dump, "retention-paths"), "sensitive-heap-read"),
+            new KeyValuePair<ViewKey, string>(new ViewKey(HandleOrigin.Live, "events"), "sensitive-parameter-read"),
         });
 
     /// <summary>Returns the required scope for <paramref name="origin"/>/<paramref name="view"/>,
