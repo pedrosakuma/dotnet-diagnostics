@@ -122,6 +122,9 @@ public sealed class QuerySnapshotTool
         ReadOnly = true,
         Idempotent = true,
         UseStructuredContent = true)]
+    [Description(
+        "Drill into a prior collector's snapshot/sample by handle. The available views depend on the " +
+        "handle's kind — choose one via the 'view' parameter.")]
     public static async Task<DiagnosticResult<object>> QuerySnapshot(
         IDiagnosticHandleStore handles,
         IDumpInspector inspector,
