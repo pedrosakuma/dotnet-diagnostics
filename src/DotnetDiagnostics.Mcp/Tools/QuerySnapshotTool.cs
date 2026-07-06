@@ -7,9 +7,11 @@ using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Gc;
+using DotnetDiagnostics.Core.MethodParameters;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Symbols;
 using DotnetDiagnostics.Core.Threads;
+using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Security;
 using ModelContextProtocol.Server;
 
@@ -105,6 +107,7 @@ public sealed class QuerySnapshotTool
     private const string ScopeEventPipe = "eventpipe";
     private const string ScopeReadCounters = "read-counters";
     private const string ScopeInvestigationExport = "investigation-export";
+    private const string ScopeSensitiveParameterRead = "sensitive-parameter-read";
 
     [RequireAnyScope(
         ScopeReadCounters,
@@ -127,6 +130,7 @@ public sealed class QuerySnapshotTool
         IDumpInspector inspector,
         SensitiveDataRedactor redactor,
         SensitiveValueGate sensitiveGate,
+        SecurityOptions securityOptions,
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
         IFrameVariableResolver frameVariableResolver,
@@ -432,6 +436,47 @@ public sealed class QuerySnapshotTool
                         resolvedView,
                         topN ?? 50);
                     return AsObjectEnvelope(collection);
+                }
+
+            case MethodParameterCaptureUseCases.HandleKind:
+                {
+                    if (!RequireScope(principal, ScopeEventPipe, out var eventPipeForbidden))
+                    {
+                        return eventPipeForbidden!;
+                    }
+
+                    var artifact = handles.TryGet<MethodParameterCaptureArtifact>(handle);
+                    if (artifact is null)
+                    {
+                        return HandleExpiredError(null, handle);
+                    }
+
+                    var resolvedView = string.IsNullOrWhiteSpace(view) ? MethodParameterCaptureQueryDispatcher.SummaryView : view!;
+                    if (string.Equals(resolvedView, MethodParameterCaptureQueryDispatcher.EventsView, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!RequireExplicitScope(principal, ScopeSensitiveParameterRead, out var modifierForbidden))
+                        {
+                            return modifierForbidden!;
+                        }
+
+                        if (!securityOptions.AllowMethodParameterCapture)
+                        {
+                            return DiagnosticResult.Fail<object>(
+                                "Method parameter capture is disabled by server policy. Set `Diagnostics:AllowMethodParameterCapture=true` (env `Diagnostics__AllowMethodParameterCapture=true`) to enable it.",
+                                new DiagnosticError(
+                                    "MethodParameterCaptureDisabled",
+                                    "Method parameter capture is disabled by server policy. Set `Diagnostics:AllowMethodParameterCapture=true` (env `Diagnostics__AllowMethodParameterCapture=true`) to enable it."));
+                        }
+
+                        if (!includeSensitiveValues)
+                        {
+                            return InvalidArgument(nameof(includeSensitiveValues), "must be true when view='events' for a method-parameter capture handle");
+                        }
+                    }
+
+                    var effectiveTopN = topN ?? Math.Max(artifact.CaptureCount, 1);
+                    var methodParams = MethodParameterCaptureQueryDispatcher.Render(artifact, handle, resolvedView, effectiveTopN);
+                    return AsObjectEnvelope(methodParams);
                 }
 
             default:
@@ -876,6 +921,74 @@ public sealed class QuerySnapshotTool
             new NextActionHint(ToolName, "Retry with two handles issued by the same collector family.", null));
     }
 
+    public static Task<DiagnosticResult<object>> QuerySnapshot(
+        IDiagnosticHandleStore handles,
+        IDumpInspector inspector,
+        SensitiveDataRedactor redactor,
+        SensitiveValueGate sensitiveGate,
+        IPrincipalAccessor principalAccessor,
+        INativeAddressResolver addressResolver,
+        IFrameVariableResolver frameVariableResolver,
+        string handle,
+        string? view = null,
+        int? topN = null,
+        string rankBy = "bytes",
+        string? typeFullName = null,
+        string? address = null,
+        bool includeSensitiveValues = false,
+        int? threadId = null,
+        int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
+        int minCount = 1,
+        int? stackRank = null,
+        string? rootMethodFilter = null,
+        string? providerFilter = null,
+        bool changesOnly = false,
+        int maxDepth = 8,
+        int maxNodes = 200,
+        string? baselineHandle = null,
+        string[]? comparisonHandles = null,
+        double minDeltaPct = 5.0,
+        string depth = "full",
+        string? mode = null,
+        double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
+        string? investigationHandleId = null,
+        LegacyDiagnosticsFlagDeprecation? deprecation = null,
+        CancellationToken cancellationToken = default)
+        => QuerySnapshot(
+            handles,
+            inspector,
+            redactor,
+            sensitiveGate,
+            new SecurityOptions(),
+            principalAccessor,
+            addressResolver,
+            frameVariableResolver,
+            handle,
+            view,
+            topN,
+            rankBy,
+            typeFullName,
+            address,
+            includeSensitiveValues,
+            threadId,
+            framesToHash,
+            minCount,
+            stackRank,
+            rootMethodFilter,
+            providerFilter,
+            changesOnly,
+            maxDepth,
+            maxNodes,
+            baselineHandle,
+            comparisonHandles,
+            minDeltaPct,
+            depth,
+            mode,
+            hotPathThresholdPercent,
+            investigationHandleId,
+            deprecation,
+            cancellationToken);
+
     private static readonly string[] SupportedKinds =
     {
         DiagnosticTools.HeapSnapshotKind,
@@ -900,6 +1013,7 @@ public sealed class QuerySnapshotTool
         CollectionHandleKinds.KestrelSnapshot,
         CollectionHandleKinds.NetworkingSnapshot,
         CollectionHandleKinds.StartupSnapshot,
+        MethodParameterCaptureUseCases.HandleKind,
     };
 
     /// <summary>
@@ -939,6 +1053,20 @@ public sealed class QuerySnapshotTool
         }
 
         failure = Forbidden($"{a}|{b}", $"requires one of scope '{a}' or '{b}'");
+        return false;
+    }
+
+    private static bool RequireExplicitScope(BearerPrincipal? principal, string scope, out DiagnosticResult<object>? failure)
+    {
+        if (principal is null || principal.HasExplicitScope(scope))
+        {
+            failure = null;
+            return true;
+        }
+
+        failure = DiagnosticResult.Fail<object>(
+            $"`{ToolName}` requires the literal scope `{scope}` for method-parameter capture handles. Root or wildcard tokens do not auto-grant this modifier scope.",
+            new DiagnosticError("Forbidden", $"`{ToolName}` requires the literal scope `{scope}` for method-parameter capture handles. Root or wildcard tokens do not auto-grant this modifier scope.", scope));
         return false;
     }
 

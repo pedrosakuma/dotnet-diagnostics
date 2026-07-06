@@ -19,10 +19,12 @@ using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.JitCapture;
 using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
+using DotnetDiagnostics.Core.MethodParameters;
 using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Symbols;
 using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Threads;
@@ -116,6 +118,75 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         caps.Runtime.Should().Be(RuntimeFlavor.CoreClr);
         caps.CanSampleCpu.Should().BeTrue();
         caps.CanReadEventCounters.Should().BeTrue();
+    }
+
+    [LinuxOnlyFact(Timeout = 120_000)]
+    public async Task MethodParameterCapture_CapturesCpuBurnArgument_EndToEnd()
+    {
+        EnsureSampleRunning();
+        if (System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture != System.Runtime.InteropServices.Architecture.X64)
+        {
+            throw SkipException.ForReason("method-parameter capture V1 currently ships linux-x64 profiler payloads only.");
+        }
+
+        var handles = new MemoryDiagnosticHandleStore();
+        var resolver = new FixedProcessContextResolver(Pid);
+        var collector = new MethodParameterCaptureCollector(new MvidReader(), new SensitiveDataRedactor(new SecurityOptions()));
+        var baseUrl = await _sample!.WaitForListeningUrlAsync(TimeSpan.FromSeconds(30), "/weatherforecast");
+        using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+
+        var trigger = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+            using var response = await http.GetAsync("/cpu-burn?ms=123", CancellationToken.None).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+        });
+
+        var result = await MethodParameterCaptureUseCases.CollectAsync(
+            collector,
+            handles,
+            resolver,
+            Pid,
+            durationSeconds: 8,
+            maxEvents: 10,
+            previewCount: 10,
+            methods:
+            [
+                new MethodFilter("CoreClrSample.dll", "Program", "<<Main>$>g__BurnCpu|0_10")
+                {
+                    Signature = ["System.Int32"],
+                },
+            ],
+            cancellationToken: CancellationToken.None);
+
+        await trigger.ConfigureAwait(false);
+
+        result.Error.Should().BeNull();
+        result.Data.Should().NotBeNull();
+        result.Handle.Should().NotBeNullOrWhiteSpace();
+        result.Data!.CaptureCount.Should().BeGreaterThan(0);
+        result.Data.Events.SelectMany(invocation => invocation.Parameters)
+            .Should().Contain(parameter => parameter.Name == "milliseconds" && parameter.TypeName == "System.Int32" && parameter.Value == "123");
+
+        var drilled = await QuerySnapshotTool.QuerySnapshot(
+            handles,
+            new NoopDumpInspector(),
+            new SensitiveDataRedactor(new SecurityOptions()),
+            new SensitiveValueGate(new SecurityOptions()),
+            new SecurityOptions { AllowMethodParameterCapture = true },
+            new ScopedPrincipalAccessor("eventpipe", "sensitive-parameter-read"),
+            new ClrMdNativeAddressResolver(),
+            new ThrowingFrameVariableResolver(),
+            result.Handle!,
+            view: "events",
+            includeSensitiveValues: true,
+            cancellationToken: CancellationToken.None);
+
+        drilled.Error.Should().BeNull();
+        var query = drilled.Data.Should().BeOfType<MethodParameterCaptureQueryResult>().Subject;
+        query.Events.Should().NotBeNull();
+        query.Events!.Events.SelectMany(invocation => invocation.Parameters)
+            .Should().Contain(parameter => parameter.Name == "milliseconds" && parameter.TypeName == "System.Int32" && parameter.Value == "123");
     }
 
     [Fact]
@@ -2886,8 +2957,32 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
     {
         public Task<ProcessContextResolution> ResolveAsync(int? requestedProcessId, CancellationToken cancellationToken)
             => Task.FromResult(new ProcessContextResolution(
-                new ProcessContext(requestedProcessId ?? processId, RuntimeFlavor.CoreClr, true, true, false, "10.0-test", "explicit"),
+                new ProcessContext(requestedProcessId ?? processId, RuntimeFlavor.CoreClr, true, true, false, "10.0.0", "explicit"),
                 null));
+    }
+
+    private sealed class NoopDumpInspector : IDumpInspector
+    {
+        public Task<HeapSnapshotArtifact> InspectAsync(string dumpFilePath, DumpInspectionOptions? options = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<HeapSnapshotArtifact> InspectLiveAsync(int processId, DumpInspectionOptions? options = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<HeapObjectInspection> InspectObjectAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<HeapGcRootInspection> InspectGcRootAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<HeapObjectSizeInspection> InspectObjectSizeAsync(HeapSnapshotArtifact snapshot, ulong address, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class ThrowingFrameVariableResolver : IFrameVariableResolver
+    {
+        public Task<FrameVariablesResult> ResolveAsync(ThreadSnapshotArtifact artifact, int managedThreadId, bool includeSensitiveValues, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
     }
 
     private sealed class RootPrincipalAccessor : IPrincipalAccessor
@@ -2895,6 +2990,13 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         private static readonly BearerPrincipal Principal = new("test-root", ImmutableHashSet.Create(BearerPrincipal.RootScope));
 
         public BearerPrincipal? Current => Principal;
+    }
+
+    private sealed class ScopedPrincipalAccessor(params string[] scopes) : IPrincipalAccessor
+    {
+        private readonly BearerPrincipal _principal = new("test-principal", scopes.Length == 0 ? ImmutableHashSet<string>.Empty : ImmutableHashSet.Create(scopes));
+
+        public BearerPrincipal? Current => _principal;
     }
 }
 

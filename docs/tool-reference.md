@@ -1282,7 +1282,7 @@ kind requires `eventpipe` (`event_source` additionally honors the existing
 ## `collect_sample`
 
 **Canonical bounded-time sampler.** A single tool that
-dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc sampler.
+dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc / method-params sampler.
 New clients should call `collect_sample` instead of the three legacy entry
 points; the legacy tools remain registered and behaviorally identical, but
 each carries a `DEPRECATED` notice and will be removed in `0.9.0`.
@@ -1291,10 +1291,14 @@ each carries a `DEPRECATED` notice and will be removed in `0.9.0`.
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `kind` | `string` | `cpu` | One of `cpu`, `off_cpu`, `allocation`, `native-alloc`. Case-sensitive. |
+| `kind` | `string` | `cpu` | One of `cpu`, `off_cpu`, `allocation`, `native-alloc`, `method-params`. Case-sensitive. |
 | `processId` | `int?` | auto | Target process id. |
 | `durationSeconds` | `int` | `10` | Sampling window. ≥ 1. |
 | `topN` | `int` | `25` | Top hotspots / blocking stacks / types. |
+| `maxEvents` | `int` | `100` | `method-params` only. Maximum captured invocation rows retained in the live handle. 1–500. |
+| `previewCount` | `int` | `10` | `method-params` only. Inline preview rows returned directly from `collect_sample`. 1–25. |
+| `includeSensitiveValues` | `bool` | `false` | `method-params` only. **Required to be `true`** as an explicit acknowledgement that parameter values may contain secrets / PII. |
+| `methods` | `MethodFilter[]?` | `null` | `method-params` only. Explicit filters (`moduleName`, `typeName`, `methodName`, optional `genericArity`, `signature`, `moduleVersionId`). 1–10 filters. |
 | `depth` | `SamplingDepth` | `Summary` | Verbosity; applies to `cpu` / `off_cpu`. Ignored by `allocation`. |
 | `symbolPath` | `string?` | `null` | `cpu` / `off_cpu` only. Symbol search path; remote `srv*http(s)://…` segments are denied unless allowlisted (issue #165 / M3). |
 | `resolveSourceLines` | `bool` | `true` | `cpu` only. Same as [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")). |
@@ -1306,7 +1310,7 @@ each carries a `DEPRECATED` notice and will be removed in `0.9.0`.
 
 **Returns:** `CollectSampleEnvelope` — a polymorphic record carrying the
 `kind` discriminator plus exactly one populated payload field
-(`cpu` / `offCpu` / `allocation` / `nativeAlloc`). The envelope's `summary`, `hints`,
+(`cpu` / `offCpu` / `allocation` / `nativeAlloc` / `methodParams`). The envelope's `summary`, `hints`,
 `handle`, `handleExpiresAt`, and `resolvedProcess` are passed through from
 the underlying sampler verbatim, so `query_snapshot(view="call-tree")` and
 `query_snapshot` drilldowns continue to work unchanged.
@@ -1343,8 +1347,27 @@ when RSS / anonymous pages climb while the managed heap stays flat. On an unsupp
 `NotSupported` envelope — never a crash; a missing `CAP_SYS_ADMIN` (Linux) or denied ETW
 access (Windows) instead surfaces as `PermissionDenied`.
 
-**Authorization.** Gated by `RequireScope("eventpipe")`, matching the three
-legacy samplers verbatim.
+**`kind="method-params"` (issue #562).** Live-captures rendered parameter values for an
+explicit allowlist of managed methods by temporarily enabling the vendored dotnet-monitor
+notify-only + mutating profilers plus the startup hook inside a **.NET 8+ CoreCLR**
+process, then listening to the `Microsoft.Diagnostics.Monitoring.ParameterCapturing`
+EventPipe provider. V1 ships **linux-x64** payloads only; NativeAOT, Hot Reload targets,
+and processes already running a non-notify-only profiler return structured `NotSupported`
+or `Conflict` envelopes instead of a partial capture. The returned live handle kind is
+`method-params-capture` (10-minute TTL, evicted on process exit); drill into it with
+`query_snapshot(view="summary")` for metadata or `query_snapshot(view="events", includeSensitiveValues=true)`
+for the retained invocation rows.
+
+`method-params` rejects the knobs inherited from the other sampler kinds (`topN`, `depth`,
+`symbolPath`, `resolveSourceLines`, `maxResolvedSources`, `resolveMethodInstantiations`,
+`maxResolvedMethodInstantiations`, `nativeAotMapFile`, `exportTrace`,
+`nativeAllocSamplePeriod`) with `InvalidArgument` — only the method-parameter contract
+above is accepted for V1.
+
+**Authorization.** `collect_sample` itself is gated by `RequireScope("eventpipe")`. The
+`method-params` branch adds two more gates: the deployment must opt in with
+`Diagnostics:AllowMethodParameterCapture=true`, and the bearer token must carry the literal
+modifier scope `sensitive-parameter-read` (root / `*` tokens do **not** auto-grant it).
 
 ---
 

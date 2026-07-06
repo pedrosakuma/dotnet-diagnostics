@@ -3,12 +3,15 @@ using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.MethodParameters;
 using DotnetDiagnostics.Core.NativeAlloc;
 using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Tools.Dispatch;
+using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Security;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -34,6 +37,7 @@ public sealed class CollectSampleTool
     internal const string KindOffCpu = "off_cpu";
     internal const string KindAllocation = "allocation";
     internal const string KindNativeAlloc = "native-alloc";
+    internal const string KindMethodParams = "method-params";
 
     /// <summary>Allowed values for the <c>kind</c> discriminator. Order is preserved when
     /// rendered by <see cref="DiscriminatorDispatch"/> in failure envelopes.</summary>
@@ -43,12 +47,13 @@ public sealed class CollectSampleTool
         KindOffCpu,
         KindAllocation,
         KindNativeAlloc,
+        KindMethodParams,
     };
 
     [RequireScope("eventpipe")]
     [McpServerTool(
         Name = ToolName,
-        Title = "Collect a bounded-time sample (cpu | off_cpu | allocation)",
+        Title = "Collect a bounded-time sample (cpu | off_cpu | allocation | native-alloc | method-params)",
         Destructive = false,
         ReadOnly = true,
         Idempotent = false,
@@ -56,22 +61,26 @@ public sealed class CollectSampleTool
         TaskSupport = ToolTaskSupport.Optional)]
     [Description(
         "Unified bounded-time sampler. Choose the sampler via the 'kind' parameter " +
-        "(cpu, off_cpu, allocation, native-alloc). Returns a drilldown handle.")]
+        "(cpu, off_cpu, allocation, native-alloc, method-params). Returns a drilldown handle.")]
     public static async Task<DiagnosticResult<CollectSampleEnvelope>> CollectSample(
         ICpuSampler cpuSampler,
         IOffCpuSampler offCpuSampler,
         EventPipeAllocationSampler allocationSampler,
         INativeAllocSampler nativeAllocSampler,
+        IMethodParameterCaptureCollector methodParameterCollector,
         IDiagnosticHandleStore handles,
         IProcessContextResolver resolver,
         SymbolServerAllowlist symbolServerAllowlist,
+        SecurityOptions securityOptions,
         IPrincipalAccessor principalAccessor,
+        ILoggerFactory? loggerFactory = null,
         [Description(
             "Which sampler to run (default 'cpu'): " +
             "'cpu' (on-CPU SampleProfiler / perf — top managed hotspots with MethodIdentity handoff), " +
             "'off_cpu' (where threads are blocked and for how long — Linux sched_switch via perf, Windows ContextSwitch via NT Kernel Logger), " +
             "'allocation' (managed GCAllocationTick rolled up by type — TypeName is empty on NativeAOT), " +
-            "'native-alloc' (unmanaged allocations — Linux uprobes libc malloc/calloc/realloc via perf (needs CAP_SYS_ADMIN); Windows captures NT Kernel Logger VirtualAlloc via ETW (needs admin elevation); sampled call counts, not bytes). " +
+            "'native-alloc' (unmanaged allocations — Linux uprobes libc malloc/calloc/realloc via perf (needs CAP_SYS_ADMIN); Windows captures NT Kernel Logger VirtualAlloc via ETW (needs admin elevation); sampled call counts, not bytes), " +
+            "'method-params' (security-sensitive live parameter capture for explicitly-filtered methods on .NET 8+ CoreCLR; requires `sensitive-parameter-read`, `Diagnostics:AllowMethodParameterCapture=true`, and `includeSensitiveValues=true`). " +
             "Long-running collections expose MCP-native progress/cancellation or can be promoted to an MCP Task.")]
         string kind = KindCpu,
         // Shared options.
@@ -81,6 +90,14 @@ public sealed class CollectSampleTool
         int durationSeconds = 10,
         [Description("Maximum number of items returned (top hotspots, top blocking stacks, or top types depending on kind). Must be >= 1. Defaults to 25.")]
         int topN = 25,
+        [Description("kind='method-params' only. Maximum captured invocation rows retained in the live artifact. Must be between 1 and 500. Defaults to 100.")]
+        int maxEvents = 100,
+        [Description("kind='method-params' only. Number of retained invocation rows surfaced inline in the collect_sample response. Must be between 1 and 25. Defaults to 10.")]
+        int previewCount = 10,
+        [Description("kind='method-params' only. Required explicit acknowledgement for returning sensitive parameter values. The only accepted V1 value is true.")]
+        bool includeSensitiveValues = false,
+        [Description("kind='method-params' only. Explicit method filters to instrument. Each filter requires moduleName, typeName, methodName, and may optionally add genericArity, signature, and moduleVersionId. Between 1 and 10 filters are allowed.")]
+        IReadOnlyList<MethodFilter>? methods = null,
         [Description("Verbosity (summary|detail|raw). Applies to kind='cpu' and kind='off_cpu' — see the legacy collectors for semantics. Ignored by kind='allocation'.")]
         SamplingDepth depth = SamplingDepth.Summary,
         // kind=cpu / kind=off_cpu
@@ -181,12 +198,199 @@ public sealed class CollectSampleTool
                 KindNativeAlloc,
                 (env, data) => env with { NativeAlloc = data }),
 
+            KindMethodParams => await CollectMethodParametersAsync(
+                methodParameterCollector,
+                handles,
+                resolver,
+                securityOptions,
+                principalAccessor,
+                loggerFactory,
+                processId,
+                durationSeconds,
+                maxEvents,
+                previewCount,
+                includeSensitiveValues,
+                methods,
+                requestContext,
+                cancellationToken).ConfigureAwait(false),
+
             // Unreachable — TryValidate narrowed canonicalKind to the AllowedKinds set above.
             _ => DiagnosticResult.Fail<CollectSampleEnvelope>(
                 $"Unhandled kind '{canonicalKind}'.",
                 new DiagnosticError("InvalidArgument", $"Unhandled kind '{canonicalKind}'.", nameof(kind))),
         };
     }
+
+    private static async Task<DiagnosticResult<CollectSampleEnvelope>> CollectMethodParametersAsync(
+        IMethodParameterCaptureCollector methodParameterCollector,
+        IDiagnosticHandleStore handles,
+        IProcessContextResolver resolver,
+        SecurityOptions securityOptions,
+        IPrincipalAccessor principalAccessor,
+        ILoggerFactory? loggerFactory,
+        int? processId,
+        int durationSeconds,
+        int maxEvents,
+        int previewCount,
+        bool includeSensitiveValues,
+        IReadOnlyList<MethodFilter>? methods,
+        RequestContext<CallToolRequestParams>? requestContext,
+        CancellationToken cancellationToken)
+    {
+        var logger = loggerFactory?.CreateLogger("DotnetDiagnostics.Mcp.Tools.CollectSampleTool");
+        var principal = principalAccessor.Current;
+        if (principal?.HasExplicitScope("sensitive-parameter-read") != true)
+        {
+            logger?.LogWarning(
+                "{Tool} denied: literal sensitive-parameter-read scope required. tokenName={TokenName} processId={ProcessId} reason={Reason} methodFilters={MethodFilters} durationSeconds={DurationSeconds} maxEvents={MaxEvents}",
+                ToolName,
+                principal?.Name ?? "(none)",
+                processId,
+                "MissingSensitiveParameterScope",
+                RenderMethodFilters(methods),
+                durationSeconds,
+                maxEvents);
+            return DiagnosticResult.Fail<CollectSampleEnvelope>(
+                "`collect_sample(kind=\"method-params\")` requires the literal scope `sensitive-parameter-read`. Root or wildcard tokens do not auto-grant this modifier scope.",
+                new DiagnosticError(
+                    "Forbidden",
+                    "`collect_sample(kind=\"method-params\")` requires the literal scope `sensitive-parameter-read`. Root or wildcard tokens do not auto-grant this modifier scope.",
+                    "sensitive-parameter-read"));
+        }
+
+        if (!securityOptions.AllowMethodParameterCapture)
+        {
+            logger?.LogWarning(
+                "{Tool} denied: server policy disabled. tokenName={TokenName} processId={ProcessId} reason={Reason} methodFilters={MethodFilters} durationSeconds={DurationSeconds} maxEvents={MaxEvents}",
+                ToolName,
+                principal?.Name ?? "(none)",
+                processId,
+                "ServerPolicyDisabled",
+                RenderMethodFilters(methods),
+                durationSeconds,
+                maxEvents);
+            return DiagnosticResult.Fail<CollectSampleEnvelope>(
+                "Method parameter capture is disabled by server policy. Set `Diagnostics:AllowMethodParameterCapture=true` (env `Diagnostics__AllowMethodParameterCapture=true`) to enable it.",
+                new DiagnosticError(
+                    "MethodParameterCaptureDisabled",
+                    "Method parameter capture is disabled by server policy. Set `Diagnostics:AllowMethodParameterCapture=true` (env `Diagnostics__AllowMethodParameterCapture=true`) to enable it."));
+        }
+
+        if (!includeSensitiveValues)
+        {
+            return DiagnosticResult.Fail<CollectSampleEnvelope>(
+                "`collect_sample(kind=\"method-params\")` requires `includeSensitiveValues=true` for an explicit sensitive-data acknowledgement.",
+                new DiagnosticError(
+                    "InvalidArgument",
+                    "`collect_sample(kind=\"method-params\")` requires `includeSensitiveValues=true` for an explicit sensitive-data acknowledgement.",
+                    nameof(includeSensitiveValues)));
+        }
+
+        if (TryFindInvalidMethodParamsKnob(requestContext, out var invalidKnob))
+        {
+            return DiagnosticResult.Fail<CollectSampleEnvelope>(
+                $"Argument '{invalidKnob}' is not supported when kind='method-params'.",
+                new DiagnosticError("InvalidArgument", $"Argument '{invalidKnob}' is not supported when kind='method-params'.", invalidKnob));
+        }
+
+        logger?.LogInformation(
+            "{Tool} start. tokenName={TokenName} processId={ProcessId} runtimeVersion={RuntimeVersion} methodFilters={MethodFilters} durationSeconds={DurationSeconds} maxEvents={MaxEvents} previewCount={PreviewCount} includeSensitiveValues={IncludeSensitiveValues}",
+            ToolName,
+            principal?.Name ?? "(none)",
+            processId,
+            "(pending)",
+            RenderMethodFilters(methods),
+            durationSeconds,
+            maxEvents,
+            previewCount,
+            true);
+
+        var result = await MethodParameterCaptureUseCases.CollectAsync(
+            methodParameterCollector,
+            handles,
+            resolver,
+            processId,
+            durationSeconds,
+            maxEvents,
+            previewCount,
+            methods,
+            cancellationToken).ConfigureAwait(false);
+
+        if (result.Error is not null)
+        {
+            logger?.LogWarning(
+                "{Tool} aborted. tokenName={TokenName} processId={ProcessId} reason={Reason} errorKind={ErrorKind} detail={Detail} methodFilters={MethodFilters}",
+                ToolName,
+                principal?.Name ?? "(none)",
+                processId,
+                "CaptureFailed",
+                result.Error.Kind,
+                result.Error.Detail ?? result.Error.Message,
+                RenderMethodFilters(methods));
+            return Project(result, KindMethodParams, (env, data) => env with { MethodParams = data });
+        }
+
+        var artifact = result.Handle is { Length: > 0 } handleId
+            ? handles.TryGet<MethodParameterCaptureArtifact>(handleId)
+            : null;
+        logger?.LogInformation(
+            "{Tool} complete. tokenName={TokenName} processId={ProcessId} runtimeVersion={RuntimeVersion} methodFilters={MethodFilters} elapsedMs={ElapsedMs} captureCount={CaptureCount} droppedCount={DroppedCount} truncatedValueCount={TruncatedValueCount} redactedValueCount={RedactedValueCount} handleId={HandleId} handleExpiresAt={HandleExpiresAt}",
+            ToolName,
+            principal?.Name ?? "(none)",
+            processId,
+            result.Data?.RuntimeVersion ?? "(unknown)",
+            artifact is null ? RenderMethodFilters(methods) : string.Join(", ", artifact.ResolvedMethods.Select(FormatResolvedMethod)),
+            durationSeconds * 1000,
+            result.Data?.CaptureCount ?? 0,
+            result.Data?.DroppedCount ?? 0,
+            result.Data?.TruncatedValueCount ?? 0,
+            result.Data?.RedactedValueCount ?? 0,
+            result.Handle ?? "(none)",
+            result.HandleExpiresAt);
+
+        return Project(result, KindMethodParams, (env, data) => env with { MethodParams = data });
+    }
+
+    private static bool TryFindInvalidMethodParamsKnob(RequestContext<CallToolRequestParams>? requestContext, out string invalidKnob)
+    {
+        invalidKnob = string.Empty;
+        var arguments = requestContext?.Params?.Arguments;
+        if (arguments is null)
+        {
+            return false;
+        }
+
+        foreach (var key in new[]
+                 {
+                     "topN",
+                     "depth",
+                     "symbolPath",
+                     "resolveSourceLines",
+                     "maxResolvedSources",
+                     "resolveMethodInstantiations",
+                     "maxResolvedMethodInstantiations",
+                     "nativeAotMapFile",
+                     "exportTrace",
+                     "nativeAllocSamplePeriod",
+                 })
+        {
+            if (arguments.ContainsKey(key))
+            {
+                invalidKnob = key;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string RenderMethodFilters(IReadOnlyList<MethodFilter>? methods)
+        => methods is null || methods.Count == 0
+            ? "(none)"
+            : string.Join(", ", methods.Select(filter => $"{filter.ModuleName}!{filter.TypeName}.{filter.MethodName}"));
+
+    private static string FormatResolvedMethod(ResolvedMethodIdentity method)
+        => $"{method.ModuleName}!{method.TypeName}.{method.MethodName}";
 
     /// <summary>
     /// Re-wraps a legacy sampler's <see cref="DiagnosticResult{T}"/> as a
@@ -227,4 +431,5 @@ public sealed record CollectSampleEnvelope(
     CpuSample? Cpu = null,
     OffCpuSnapshot? OffCpu = null,
     AllocationSample? Allocation = null,
-    NativeAllocSample? NativeAlloc = null);
+    NativeAllocSample? NativeAlloc = null,
+    MethodParameterCaptureSample? MethodParams = null);

@@ -21,6 +21,10 @@ namespace DotnetDiagnostics.Core.Security;
 ///   inside a <c>srv*https://…</c> segment of a caller-supplied <c>symbolPath</c>.</description></item>
 ///   <item><description><c>RedactionPatterns</c> — string[]. Additional regex patterns
 ///   appended to the default redaction set used by the heap drilldowns.</description></item>
+///   <item><description><c>AllowMethodParameterCapture</c> — bool. When false (default),
+///   <c>collect_sample(kind="method-params")</c> is disabled regardless of bearer scopes.
+///   When true, callers still need the literal <c>sensitive-parameter-read</c> modifier scope
+///   and must pass <c>includeSensitiveValues=true</c> per call.</description></item>
 /// </list>
 /// </remarks>
 public sealed class SecurityOptions
@@ -41,4 +45,7 @@ public sealed class SecurityOptions
     /// <summary>Extra .NET regex patterns appended to the default redaction set. Used in
     /// addition to <see cref="SensitiveDataRedactor.DefaultPatterns"/>.</summary>
     public List<string> RedactionPatterns { get; set; } = new();
+
+    /// <summary>Deployment-wide opt-in for live method-parameter capture. Defaults to false.</summary>
+    public bool AllowMethodParameterCapture { get; set; }
 }
