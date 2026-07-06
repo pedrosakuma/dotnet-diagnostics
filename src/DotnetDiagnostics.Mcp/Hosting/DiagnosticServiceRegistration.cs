@@ -404,6 +404,7 @@ internal static class DiagnosticServiceRegistration
                             sp.GetRequiredService<Orchestrator.Investigations.IInvestigationSessionBinder>(),
                             sp.GetRequiredService<Orchestrator.Investigations.IInvestigationStore>(),
                             sp.GetRequiredService<Orchestrator.Investigations.IInvestigationProxyClient>(),
+                            sp.GetRequiredService<OrchestratorOptions>(),
                             sp.GetRequiredService<Security.IPrincipalAccessor>(),
                             sp.GetRequiredService<Observability.OrchestratorObservability>(),
                             () => loggerFactoryAccessor()?.CreateLogger(typeof(Tools.InvestigationProxyCallToolFilter).FullName!));

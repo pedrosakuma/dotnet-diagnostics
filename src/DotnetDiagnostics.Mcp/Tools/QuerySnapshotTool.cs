@@ -152,6 +152,8 @@ public sealed class QuerySnapshotTool
         [Description("Diff view only: inline verbosity for comparable journey diffs. `full` returns the full matrix when it is below the inline threshold; `compact` returns verdict/headline/counts/notes plus top-N metric and key deltas. Large full diffs always return compact inline data plus a journey://diff/{handle} Resource link. Defaults to `full`.")] string depth = "full",
         [Description("Diff view only: journey interpretation mode. `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers and requires N-way comparable captures via comparisonHandles.")] string? mode = null,
         [Description("cpu-sample/allocation-sample 'hot-path' view only: a child must carry at least this percent of its parent's inclusive samples to extend the chain. Defaults to 50.")] double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
+        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         CancellationToken cancellationToken = default)
     {

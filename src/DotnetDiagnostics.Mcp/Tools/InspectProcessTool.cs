@@ -136,6 +136,8 @@ public sealed class InspectProcessTool
         int sampleEverySeconds = 2,
         [Description("view=container only — depth knob forwarded to get_container_signals. Summary (default) drops the Notes[] caveats; Detail / Raw keep them.")]
         SamplingDepth depth = SamplingDepth.Summary,
+        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        string? investigationHandleId = null,
         CancellationToken cancellationToken = default)
     {
         if (!DiscriminatorDispatch.TryValidate<InspectProcessReport>(

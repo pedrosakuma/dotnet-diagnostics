@@ -242,7 +242,9 @@ wall-clock** (so clock skew between nodes cannot scramble the order).
 
 Requirements: orchestrator mode (`Orchestrator:Enabled=true`), the `eventpipe` **and**
 `orchestrator-attach` scopes, and at least one **Active** investigation handle (i.e. you must
-`attach_to_pod` to the replicas first). The call always runs **locally on the orchestrator** even
+`attach_to_pod` to the replicas first). Prefer passing those handles explicitly via
+`investigationHandleIds=[...]`; omitting them falls back to the legacy session-bound discovery path.
+The call always runs **locally on the orchestrator** even
 when your session is bound to a single Pod — it never proxies the whole fan-out into one replica.
 
 The result envelope carries a `DistributedTrace` timeline: the stitched `Spans[]` (each tagged with
@@ -276,7 +278,9 @@ pre-collected **serial** snapshots — this is **live + simultaneous**.
 | `intervalSeconds` | Counter refresh interval forwarded to each Pod (default 1). |
 
 Requirements: orchestrator mode (`Orchestrator:Enabled=true`), the `read-counters` **and**
-`orchestrator-attach` scopes, and at least one **Active** investigation handle. Like
+`orchestrator-attach` scopes, and at least one **Active** investigation handle. Prefer passing
+those handles explicitly via `investigationHandleIds=[...]`; omitting them falls back to the
+legacy session-bound discovery path. Like
 `distributed_trace`, the call always runs **locally on the orchestrator** and is never proxied into a
 single Pod. The result envelope carries a `ReplicaCounters` skew: per-replica `Replicas[]` readings,
 per-metric `Metrics[]` dispersion (min/max/mean/stddev, absolute + relative spread, min/max Pod), the
@@ -2718,7 +2722,7 @@ pointing at `list_orchestrator` and will be removed in **0.7.0**.
 { "name": "list_orchestrator", "arguments": {
     "kind": "pods", "namespace": "checkout", "labelSelector": "app=api" } }
 
-// List active handles for the current MCP session:
+// List active handles for the current bearer identity:
 { "name": "list_orchestrator", "arguments": {
     "kind": "investigations", "includeTerminal": false } }
 ```
@@ -2729,7 +2733,7 @@ pointing at `list_orchestrator` and will be removed in **0.7.0**.
 
 Injects a diagnostic **ephemeral container** into a target Kubernetes Pod so the
 sidecar shares the target's PID namespace and diagnostic IPC socket, then returns
-an investigation handle bound to the current MCP session. This is a side-effecting
+an opaque investigation handle. This is a side-effecting
 verb (deliberately **not** folded into `list_orchestrator`).
 
 **Parameters:**
@@ -2744,7 +2748,11 @@ verb (deliberately **not** folded into `list_orchestrator`).
 | `allowReuseExistingSession` | `bool` | `true` | When true, returns an existing investigation for the same target instead of injecting a second ephemeral container |
 
 **Returns:** `AttachSession` (investigation handle + resolved target). Use the
-handle with the diagnostic tools, then release it with
+handle explicitly on follow-up orchestrator/fan-out calls
+(`detach_from_pod(handleId=...)`,
+`collect_events(kind="distributed_trace"|"replica_counters", investigationHandleIds=[...])`),
+or route pod-local diagnostics through the returned proxy URL / `investigationHandleId`
+routing argument. Then release it with
 [`detach_from_pod`](#detach_from_pod). **Scope:** `orchestrator-attach`.
 Requires the orchestrator to be enabled; disabled servers return
 `OrchestratorDisabled`.
@@ -2764,7 +2772,7 @@ only releases the orchestrator-side transport, it does not roll the Pod back.
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `handleId` | `string?` | handle bound to the current session | Investigation handle id returned by `attach_to_pod` |
+| `handleId` | `string?` | handle bound to the current session (legacy fallback) | Investigation handle id returned by `attach_to_pod` |
 
 **Returns:** `DetachResult`. **Scope:** `orchestrator-attach`. Idempotent —
 calling on a missing / already-terminal handle is a no-op and returns Ok.

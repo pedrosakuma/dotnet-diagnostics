@@ -111,7 +111,7 @@ public sealed class OrchestratorToolsP4Tests
         // closable by an unrelated caller — otherwise any authenticated peer can DoS
         // another session's investigation just by knowing the handle id.
         var fx = new Fixture();
-        var h = Active() with { OwnerSessionId = "sess-other" };
+        var h = Active() with { OwnerBearerName = "sess-other" };
         fx.Store.Add(h);
 
         var result = await OrchestratorTools.DetachFromPod(
@@ -127,7 +127,7 @@ public sealed class OrchestratorToolsP4Tests
     public async Task DetachFromPod_OwnerMismatch_AdminOverride_Allows()
     {
         var fx = new Fixture { Options = { AllowCrossSessionAdmin = true } };
-        var h = Active() with { OwnerSessionId = "sess-other" };
+        var h = Active() with { OwnerBearerName = "sess-other" };
         fx.Store.Add(h);
 
         var result = await OrchestratorTools.DetachFromPod(
@@ -145,7 +145,7 @@ public sealed class OrchestratorToolsP4Tests
         // scope-first replacement for AllowCrossSessionAdmin. With the flag OFF
         // and only the scope granted, the owner-mismatch close must still succeed.
         var fx = new Fixture();
-        var h = Active() with { OwnerSessionId = "sess-other" };
+        var h = Active() with { OwnerBearerName = "sess-other" };
         fx.Store.Add(h);
 
         var result = await OrchestratorTools.DetachFromPod(
@@ -248,9 +248,9 @@ public sealed class OrchestratorToolsP4Tests
         // visible-only set, not the global store, or the size of another session's
         // investigation surface leaks via TotalKnown / *Count.
         var fx = new Fixture();
-        fx.Store.Add(Active("a1") with { OwnerSessionId = "sess-other" });
-        fx.Store.Add(Active("a2") with { OwnerSessionId = "sess-other", State = InvestigationState.Attaching });
-        fx.Store.Add(Active("c1") with { OwnerSessionId = "sess-other", State = InvestigationState.Closed });
+        fx.Store.Add(Active("a1") with { OwnerBearerName = "sess-other" });
+        fx.Store.Add(Active("a2") with { OwnerBearerName = "sess-other", State = InvestigationState.Attaching });
+        fx.Store.Add(Active("c1") with { OwnerBearerName = "sess-other", State = InvestigationState.Closed });
 
         var result = await OrchestratorTools.ListActiveInvestigations(fx.Store, fx.Options, TestPrincipalAccessors.Root, server: null!, includeTerminal: true);
 
@@ -266,8 +266,8 @@ public sealed class OrchestratorToolsP4Tests
     public async Task ListActiveInvestigations_AdminOverride_SeesEveryHandle()
     {
         var fx = new Fixture { Options = { AllowCrossSessionAdmin = true } };
-        fx.Store.Add(Active("a1") with { OwnerSessionId = "sess-other" });
-        fx.Store.Add(Active("a2") with { OwnerSessionId = "sess-other", State = InvestigationState.Closed });
+        fx.Store.Add(Active("a1") with { OwnerBearerName = "sess-other" });
+        fx.Store.Add(Active("a2") with { OwnerBearerName = "sess-other", State = InvestigationState.Closed });
 
         var result = await OrchestratorTools.ListActiveInvestigations(fx.Store, fx.Options, TestPrincipalAccessors.Root, server: null!, includeTerminal: true, includeAllSessions: true);
 
@@ -283,8 +283,8 @@ public sealed class OrchestratorToolsP4Tests
         // modifier scope, includeAllSessions=true returns cross-session handles
         // even with AllowCrossSessionAdmin=false.
         var fx = new Fixture();
-        fx.Store.Add(Active("a1") with { OwnerSessionId = "sess-other" });
-        fx.Store.Add(Active("a2") with { OwnerSessionId = "sess-other", State = InvestigationState.Closed });
+        fx.Store.Add(Active("a1") with { OwnerBearerName = "sess-other" });
+        fx.Store.Add(Active("a2") with { OwnerBearerName = "sess-other", State = InvestigationState.Closed });
 
         var result = await OrchestratorTools.ListActiveInvestigations(
             fx.Store, fx.Options,
@@ -305,7 +305,7 @@ public sealed class OrchestratorToolsP4Tests
         // one warning so operator log streams stay clean.
         OrchestratorAdminBypassPolicy.ResetWarningLatchForTests();
         var fx = new Fixture { Options = { AllowCrossSessionAdmin = true } };
-        fx.Store.Add(Active("a1") with { OwnerSessionId = "sess-other" });
+        fx.Store.Add(Active("a1") with { OwnerBearerName = "sess-other" });
 
         var capture = new CapturingLoggerFactory();
         for (var i = 0; i < 4; i++)
@@ -329,7 +329,7 @@ public sealed class OrchestratorToolsP4Tests
         // bypass must leave the log stream clean.
         OrchestratorAdminBypassPolicy.ResetWarningLatchForTests();
         var fx = new Fixture();
-        fx.Store.Add(Active("a1") with { OwnerSessionId = "sess-other" });
+        fx.Store.Add(Active("a1") with { OwnerBearerName = "sess-other" });
         var capture = new CapturingLoggerFactory();
 
         await OrchestratorTools.ListActiveInvestigations(

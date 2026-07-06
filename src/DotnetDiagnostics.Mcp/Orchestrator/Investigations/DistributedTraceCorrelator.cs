@@ -37,7 +37,8 @@ internal static class DistributedTraceCorrelator
     internal static async Task<FanoutResult> CorrelateAsync(
         IInvestigationStore store,
         IInvestigationProxyClient proxy,
-        string? callerSessionId,
+        string? callerBearerName,
+        IReadOnlyList<string>? investigationHandleIds,
         string traceId,
         int durationSeconds,
         int maxActivities,
@@ -47,12 +48,9 @@ internal static class DistributedTraceCorrelator
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(proxy);
 
-        var handles = store.Snapshot()
-            .Where(h => h.State == InvestigationState.Active && IsOwnedByCaller(h, callerSessionId))
-            .ToArray();
-
-        var captures = new List<(string PodName, ActivityCapture Capture)>(handles.Length);
         var errors = new List<string>();
+        var handles = ResolveHandles(store, callerBearerName, investigationHandleIds, errors);
+        var captures = new List<(string PodName, ActivityCapture Capture)>(handles.Length);
 
         var arguments = BuildActivitiesArguments(durationSeconds, maxActivities, sources);
 
@@ -168,15 +166,61 @@ internal static class DistributedTraceCorrelator
         return capture;
     }
 
-    private static bool IsOwnedByCaller(InvestigationHandle handle, string? callerSessionId)
+    private static bool IsOwnedByCaller(InvestigationHandle handle, string? callerBearerName)
     {
         // Mirrors OrchestratorTools.IsOwnedByCaller: un-owned handles (stdio / framework attaches)
-        // are reachable by every caller; session-bearing HTTP attaches are isolated per session.
-        if (handle.OwnerSessionId is null)
+        // are reachable by every caller; bearer-authenticated attaches are isolated per bearer.
+        if (handle.OwnerBearerName is null)
         {
             return true;
         }
 
-        return string.Equals(handle.OwnerSessionId, callerSessionId, StringComparison.Ordinal);
+        return string.Equals(handle.OwnerBearerName, callerBearerName, StringComparison.Ordinal);
+    }
+
+    private static InvestigationHandle[] ResolveHandles(
+        IInvestigationStore store,
+        string? callerBearerName,
+        IReadOnlyList<string>? investigationHandleIds,
+        List<string> errors)
+    {
+        if (investigationHandleIds is null)
+        {
+            return store.Snapshot()
+                .Where(h => h.State == InvestigationState.Active && IsOwnedByCaller(h, callerBearerName))
+                .ToArray();
+        }
+
+        if (investigationHandleIds.Count == 0)
+        {
+            return Array.Empty<InvestigationHandle>();
+        }
+
+        var handles = new List<InvestigationHandle>(investigationHandleIds.Count);
+        foreach (var handleId in investigationHandleIds.Distinct(StringComparer.Ordinal))
+        {
+            var handle = store.GetById(handleId);
+            if (handle is null)
+            {
+                errors.Add($"Handle '{handleId}' is unknown.");
+                continue;
+            }
+
+            if (handle.State != InvestigationState.Active)
+            {
+                errors.Add($"Handle '{handleId}' is {handle.State} and cannot participate in distributed_trace fan-out.");
+                continue;
+            }
+
+            if (!IsOwnedByCaller(handle, callerBearerName))
+            {
+                errors.Add($"Handle '{handleId}' is owned by a different bearer identity.");
+                continue;
+            }
+
+            handles.Add(handle);
+        }
+
+        return handles.ToArray();
     }
 }

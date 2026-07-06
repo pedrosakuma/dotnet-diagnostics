@@ -51,12 +51,10 @@ public sealed record InvestigationHandle(
     DateTimeOffset AttachedAt,
     DateTimeOffset ExpiresAt,
     string? FailureReason = null,
-    // H6 (issue #164): the MCP session id that minted this handle. Stamped on by
-    // attach_to_pod when the SDK exposes a session id (HTTP transport with the
-    // streamable-HTTP Mcp-Session-Id header). Null for stdio attaches or any
-    // transport that does not surface a session id — those handles are NOT
-    // session-scoped and remain reachable by every authenticated caller (this
-    // preserves stdio dev ergonomics; HTTP deployments always carry an owner).
+    // Identity of the bearer principal that minted this handle. Authorization is
+    // bound to the authenticated bearer and its scopes, not to protocol session
+    // headers. Null preserves stdio / synthetic-root ergonomics for transports
+    // that do not project a bearer identity into the tool call.
     // Hidden from the client-safe AttachSession projection so the LLM cannot
-    // enumerate other sessions' handles.
-    [property: JsonIgnore] string? OwnerSessionId = null);
+    // enumerate other callers' handles.
+    [property: JsonIgnore] string? OwnerBearerName = null);

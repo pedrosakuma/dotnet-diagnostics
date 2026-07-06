@@ -39,7 +39,7 @@ public sealed class ReplicaCounterFanoutTests
         };
 
         var fanout = await ReplicaCounterFanout.CompareAsync(
-            store, proxy, callerSessionId: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
+            store, proxy, callerBearerName: null, investigationHandleIds: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(3);
         fanout.PodErrors.Should().BeEmpty();
@@ -59,7 +59,7 @@ public sealed class ReplicaCounterFanoutTests
         proxy.Throw["bad"] = new InvalidOperationException("port-forward died");
 
         var fanout = await ReplicaCounterFanout.CompareAsync(
-            store, proxy, callerSessionId: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
+            store, proxy, callerBearerName: null, investigationHandleIds: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(2);
         fanout.Skew.Should().NotBeNull();
@@ -79,7 +79,7 @@ public sealed class ReplicaCounterFanoutTests
         proxy.Throw["pod-b"] = new InvalidOperationException("died B");
 
         var fanout = await ReplicaCounterFanout.CompareAsync(
-            store, proxy, callerSessionId: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
+            store, proxy, callerBearerName: null, investigationHandleIds: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(2);
         fanout.Skew.Should().BeNull();
@@ -90,9 +90,9 @@ public sealed class ReplicaCounterFanoutTests
     public async Task CompareAsync_SkipsNonActiveAndUnownedScoping()
     {
         var store = new MemoryInvestigationStore();
-        store.Add(ActiveHandle("inv-mine", "mine", ownerSessionId: "session-A"));
-        store.Add(ActiveHandle("inv-theirs", "theirs", ownerSessionId: "session-B"));
-        store.Add(ActiveHandle("inv-attaching", "attaching", ownerSessionId: "session-A") with
+        store.Add(ActiveHandle("inv-mine", "mine", ownerBearerName: "session-A"));
+        store.Add(ActiveHandle("inv-theirs", "theirs", ownerBearerName: "session-B"));
+        store.Add(ActiveHandle("inv-attaching", "attaching", ownerBearerName: "session-A") with
         {
             State = InvestigationState.Attaching,
         });
@@ -100,13 +100,47 @@ public sealed class ReplicaCounterFanoutTests
         var proxy = new StubProxyClient { ["mine"] = CountersResult(40, 40, 0, 1, "mine") };
 
         var fanout = await ReplicaCounterFanout.CompareAsync(
-            store, proxy, callerSessionId: "session-A", durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
+            store, proxy, callerBearerName: "session-A", investigationHandleIds: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(1);
         proxy.Calls.Should().ContainSingle().Which.Should().Be("mine");
     }
 
-    private static InvestigationHandle ActiveHandle(string handleId, string podName, string? ownerSessionId = null) => new(
+    [Fact]
+    public async Task CompareAsync_UsesExplicitHandleIdsInsteadOfCallerWideDiscovery()
+    {
+        var store = new MemoryInvestigationStore();
+        store.Add(ActiveHandle("inv-a", "pod-a", ownerBearerName: "bearer-A"));
+        store.Add(ActiveHandle("inv-b", "pod-b", ownerBearerName: "bearer-A"));
+
+        var proxy = new StubProxyClient
+        {
+            ["pod-b"] = CountersResult(50, 200, 2, 1, "pod-b"),
+        };
+
+        var fanout = await ReplicaCounterFanout.CompareAsync(
+            store, proxy, callerBearerName: "bearer-A", investigationHandleIds: new[] { "inv-b" }, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
+
+        fanout.AttachedActivePods.Should().Be(1);
+        proxy.Calls.Should().ContainSingle().Which.Should().Be("pod-b");
+    }
+
+    [Fact]
+    public async Task CompareAsync_ExplicitEmptyHandleList_DoesNotFallBackToCallerWideDiscovery()
+    {
+        var store = new MemoryInvestigationStore();
+        store.Add(ActiveHandle("inv-a", "pod-a", ownerBearerName: "bearer-A"));
+
+        var fanout = await ReplicaCounterFanout.CompareAsync(
+            store, new StubProxyClient(), callerBearerName: "bearer-A", investigationHandleIds: Array.Empty<string>(),
+            durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
+
+        fanout.AttachedActivePods.Should().Be(0);
+        fanout.PodErrors.Should().BeEmpty();
+        fanout.Skew.Should().BeNull();
+    }
+
+    private static InvestigationHandle ActiveHandle(string handleId, string podName, string? ownerBearerName = null) => new(
         HandleId: handleId,
         Namespace: "ns",
         PodName: podName,
@@ -116,7 +150,7 @@ public sealed class ReplicaCounterFanoutTests
         State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
-        OwnerSessionId: ownerSessionId);
+        OwnerBearerName: ownerBearerName);
 
     private static CallToolResult CountersResult(double cpu, double heap, double queue, int pid, string podName)
     {

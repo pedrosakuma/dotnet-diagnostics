@@ -193,6 +193,10 @@ public sealed class CollectEventsTool
         // kind=distributed_trace
         [Description("kind=distributed_trace only (REQUIRED). The W3C trace-id (32-hex, e.g. the 'trace-id' field of a 'traceparent' header) to correlate across every attached Pod. Orchestrator mode must be enabled and you must have attached to the replicas first (attach_to_pod). Fans out a bounded collect_events(kind=activities) to each attached Pod, then stitches the per-Pod spans into one timeline ordered by parent/child span links with the slowest hop flagged.")]
         string? traceId = null,
+        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied on non-fan-out kinds, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        string? investigationHandleId = null,
+        [Description("kind=distributed_trace or kind=replica_counters only. Explicit investigation handles returned by attach_to_pod. Primary routing path: when supplied, the fan-out scopes itself to these handles instead of discovering them from the current MCP session binding. Omit only for legacy session-bound callers.")]
+        IReadOnlyList<string>? investigationHandleIds = null,
         // kind=logs
         [Description("kind=logs only. Optional case-insensitive glob filters for ILogger categories. Null/empty captures all categories.")]
         IReadOnlyList<string>? categories = null,
@@ -250,7 +254,7 @@ public sealed class CollectEventsTool
         if (canonicalKind == "distributed_trace")
         {
             return await RunDistributedTraceAsync(
-                requestContext, principal, traceId, durationSeconds, maxActivities, sources, cancellationToken)
+                requestContext, principal, traceId, investigationHandleIds, durationSeconds, maxActivities, sources, cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -260,7 +264,7 @@ public sealed class CollectEventsTool
         if (canonicalKind == "replica_counters")
         {
             return await RunReplicaCountersAsync(
-                requestContext, principal, durationSeconds, intervalSeconds, cancellationToken)
+                requestContext, principal, investigationHandleIds, durationSeconds, intervalSeconds, cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -549,6 +553,35 @@ public sealed class CollectEventsTool
         _ => Array.Empty<string>(),
     };
 
+    private static IReadOnlyList<string>? ResolveInvestigationHandleIds(
+        IReadOnlyList<string>? explicitHandleIds,
+        RequestContext<CallToolRequestParams>? requestContext,
+        IInvestigationSessionBinder? sessionBinder)
+    {
+        if (explicitHandleIds is { Count: > 0 })
+        {
+            return explicitHandleIds;
+        }
+
+        if (requestContext?.Server is not { } server || sessionBinder is null)
+        {
+            return null;
+        }
+
+        var sessionId = OrchestratorTools.TryGetServerSessionId(server);
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            return null;
+        }
+
+        var handleIds = sessionBinder.Snapshot()
+            .Where(kvp => string.Equals(kvp.Key, sessionId, StringComparison.Ordinal))
+            .Select(kvp => kvp.Value)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return handleIds;
+    }
+
     /// <summary>
     /// Distributed trace correlation fan-out (#437). Resolves the orchestrator services from the
     /// request scope (present only when Orchestrator:Enabled=true), enumerates the caller's active
@@ -558,6 +591,7 @@ public sealed class CollectEventsTool
         RequestContext<CallToolRequestParams>? requestContext,
         BearerPrincipal? principal,
         string? traceId,
+        IReadOnlyList<string>? investigationHandleIds,
         int? durationSeconds,
         int maxActivities,
         IReadOnlyList<string>? sources,
@@ -591,6 +625,7 @@ public sealed class CollectEventsTool
         var store = services?.GetService(typeof(IInvestigationStore)) as IInvestigationStore;
         var proxy = services?.GetService(typeof(IInvestigationProxyClient)) as IInvestigationProxyClient;
         var options = services?.GetService(typeof(OrchestratorOptions)) as OrchestratorOptions;
+        var sessionBinder = services?.GetService(typeof(IInvestigationSessionBinder)) as IInvestigationSessionBinder;
 
         if (store is null || proxy is null || options is null || !options.Enabled)
         {
@@ -612,12 +647,16 @@ public sealed class CollectEventsTool
                 message, new DiagnosticError(OrchestratorErrorKinds.PermissionDenied, message, "orchestrator-attach"));
         }
 
-        var callerSessionId = requestContext?.Server is { } server
-            ? OrchestratorTools.TryGetServerSessionId(server)
-            : null;
-
         var fanout = await DistributedTraceCorrelator.CorrelateAsync(
-            store, proxy, callerSessionId, traceId.Trim(), effectiveDuration, maxActivities, sources, cancellationToken)
+            store,
+            proxy,
+            principal?.Name,
+            ResolveInvestigationHandleIds(investigationHandleIds, requestContext, sessionBinder),
+            traceId.Trim(),
+            effectiveDuration,
+            maxActivities,
+            sources,
+            cancellationToken)
             .ConfigureAwait(false);
 
         if (fanout.AttachedActivePods == 0)
@@ -690,6 +729,7 @@ public sealed class CollectEventsTool
     private static async Task<DiagnosticResult<CollectEventsEnvelope>> RunReplicaCountersAsync(
         RequestContext<CallToolRequestParams>? requestContext,
         BearerPrincipal? principal,
+        IReadOnlyList<string>? investigationHandleIds,
         int? durationSeconds,
         int intervalSeconds,
         CancellationToken cancellationToken)
@@ -706,6 +746,7 @@ public sealed class CollectEventsTool
         var store = services?.GetService(typeof(IInvestigationStore)) as IInvestigationStore;
         var proxy = services?.GetService(typeof(IInvestigationProxyClient)) as IInvestigationProxyClient;
         var options = services?.GetService(typeof(OrchestratorOptions)) as OrchestratorOptions;
+        var sessionBinder = services?.GetService(typeof(IInvestigationSessionBinder)) as IInvestigationSessionBinder;
 
         if (store is null || proxy is null || options is null || !options.Enabled)
         {
@@ -725,12 +766,14 @@ public sealed class CollectEventsTool
                 message, new DiagnosticError(OrchestratorErrorKinds.PermissionDenied, message, "orchestrator-attach"));
         }
 
-        var callerSessionId = requestContext?.Server is { } server
-            ? OrchestratorTools.TryGetServerSessionId(server)
-            : null;
-
         var fanout = await ReplicaCounterFanout.CompareAsync(
-            store, proxy, callerSessionId, effectiveDuration, intervalSeconds, cancellationToken)
+            store,
+            proxy,
+            principal?.Name,
+            ResolveInvestigationHandleIds(investigationHandleIds, requestContext, sessionBinder),
+            effectiveDuration,
+            intervalSeconds,
+            cancellationToken)
             .ConfigureAwait(false);
 
         if (fanout.AttachedActivePods == 0)

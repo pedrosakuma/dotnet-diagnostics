@@ -34,11 +34,10 @@ namespace DotnetDiagnostics.Mcp.Hosting;
 /// 404 — new endpoints on the pod-local MCP do NOT become automatically reachable.
 /// </para>
 /// <para>
-/// H6 (issue #164): when the handle carries an <c>OwnerSessionId</c>, the request
-/// must present the matching <c>Mcp-Session-Id</c> header. Mismatch → structured
-/// 403 envelope. Handles minted without an owner (stdio attach, framework calls
-/// with no session id) remain reachable by every authenticated caller for
-/// dev-time stdio ergonomics.
+/// When the handle carries an <c>OwnerBearerName</c>, the caller's authenticated
+/// bearer identity must match. Mismatch → structured 403 envelope. Handles minted
+/// without an owner (stdio attach, framework calls with no projected bearer identity)
+/// remain reachable by every authenticated caller for dev-time stdio ergonomics.
 /// </para>
 /// <para>
 /// M5 (issue #164): the route applies the "mcp" rate-limit policy (per-IP fixed
@@ -150,10 +149,9 @@ internal static class InvestigationProxyEndpoints
             return;
         }
 
-        // H6: enforce per-owner authorization. Streamable HTTP carries the MCP
-        // session id in the Mcp-Session-Id header; we compare it to the handle's
-        // OwnerSessionId. Handles minted without an owner (stdio attach, framework
-        // calls with no session id) remain reachable by every authenticated caller.
+        // Enforce per-owner authorization using bearer identity, not protocol-session
+        // headers. Handles minted without an owner (stdio attach, framework calls
+        // with no projected bearer identity) remain reachable by every authenticated caller.
         // When the deployment has explicitly opted into AllowCrossSessionAdmin
         // (Helm: orchestrator.allowCrossSessionAdmin=true), the check is bypassed
         // — this is the operator/central-orchestrator topology where a single
@@ -165,19 +163,18 @@ internal static class InvestigationProxyEndpoints
         // through OrchestratorAdminBypassPolicy emits a one-shot deprecation
         // warning the first time the flag is what enables the bypass.
         var adminBypass = OrchestratorAdminBypassPolicy.IsBypassAllowed(context.GetBearerPrincipal(), orchOptions, logger);
-        if (handle.OwnerSessionId is not null && !adminBypass)
+        if (handle.OwnerBearerName is not null && !adminBypass)
         {
-            var caller = ExtractCallerSessionId(context.Request);
-            if (!string.Equals(caller, handle.OwnerSessionId, StringComparison.Ordinal))
+            var caller = context.GetBearerPrincipal()?.Name;
+            if (!string.Equals(caller, handle.OwnerBearerName, StringComparison.Ordinal))
             {
                 logger.LogWarning(
-                    "Cross-session proxy attempt rejected: handle={HandleId} owner=present caller={CallerPresent} method={Method} path={Path}.",
+                    "Cross-bearer proxy attempt rejected: handle={HandleId} owner=present caller={CallerPresent} method={Method} path={Path}.",
                     handleId, caller is null ? "absent" : "present", context.Request.Method, context.Request.Path);
                 await WriteProblemAsync(context, StatusCodes.Status403Forbidden,
                     "ProxyOwnerMismatch",
-                    $"Investigation handle '{handleId}' is owned by a different MCP session. " +
-                    "Re-attach in this session via attach_to_pod to obtain a handle you own, " +
-                    "or present the Mcp-Session-Id header that originally minted the handle.").ConfigureAwait(false);
+                    $"Investigation handle '{handleId}' is owned by a different bearer identity. " +
+                    "Re-attach with the bearer that minted the handle, or have an operator use the orchestrator-admin bypass.").ConfigureAwait(false);
                 return;
             }
         }
@@ -489,20 +486,6 @@ internal static class InvestigationProxyEndpoints
         }
     }
 
-    /// <summary>
-    /// H6: extract the caller's MCP session id from the inbound request. The
-    /// Streamable-HTTP spec (and the MCP SDK) carry it in the <c>Mcp-Session-Id</c>
-    /// header on every request after <c>initialize</c>. Returns null when the
-    /// header is missing or empty so the caller can distinguish "no session"
-    /// from "wrong session" in logs.
-    /// </summary>
-    private static string? ExtractCallerSessionId(HttpRequest request)
-    {
-        if (!request.Headers.TryGetValue("Mcp-Session-Id", out var values)) return null;
-        var value = values.ToString();
-        return string.IsNullOrWhiteSpace(value) ? null : value;
-    }
-
     private static Task WriteProblemAsync(HttpContext context, int status, string detail)
         => WriteProblemAsync(context, status, kind: null, detail);
 
@@ -533,4 +516,3 @@ internal sealed class RequestSizeLimitMetadata(long maxRequestBodySize)
 {
     public long? MaxRequestBodySize { get; } = maxRequestBodySize;
 }
-

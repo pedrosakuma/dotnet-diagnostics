@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Mcp.IntegrationTests;
 using DotnetDiagnostics.Mcp.Observability;
+using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 using DotnetDiagnostics.Mcp.Security;
 using DotnetDiagnostics.Mcp.Tools;
@@ -153,6 +154,74 @@ public sealed class InvestigationProxyCallToolFilterTests
     }
 
     [Fact]
+    public async Task Forwards_WhenExplicitInvestigationHandleIdIsSupplied()
+    {
+        var fx = new Fixture();
+        fx.Store.Add(ActiveHandle);
+
+        var upstream = new CallToolResult
+        {
+            Content = new List<ContentBlock> { new TextContentBlock { Text = "upstream-ok" } },
+        };
+        fx.ProxyClient.Next = (_, _, _) => Task.FromResult(upstream);
+
+        var p = Params("collect_events", new Dictionary<string, JsonElement>
+        {
+            ["kind"] = JsonSerializer.SerializeToElement("counters"),
+            [InvestigationRoutingArguments.InvestigationHandleIdArgument] = JsonSerializer.SerializeToElement(ActiveHandle.HandleId),
+        });
+        var result = await fx.Invoke(p, sessionId: null);
+
+        result.Should().BeSameAs(upstream);
+        fx.ProxyClient.CallCount.Should().Be(1);
+        fx.ProxyClient.LastHandle.Should().BeSameAs(ActiveHandle);
+        fx.ProxyClient.LastRequest!.Arguments.Should().NotContainKey(InvestigationRoutingArguments.InvestigationHandleIdArgument);
+        fx.LocalInvocations.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Forwards_WhenExplicitInvestigationHandleIdIsSupplied_ByAdminBearer()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes("orchestrator-attach", "orchestrator-admin"));
+        fx.Store.Add(ActiveHandle with { OwnerBearerName = "somebody-else" });
+
+        var upstream = new CallToolResult
+        {
+            Content = new List<ContentBlock> { new TextContentBlock { Text = "upstream-ok" } },
+        };
+        fx.ProxyClient.Next = (_, _, _) => Task.FromResult(upstream);
+
+        var p = Params("collect_events", new Dictionary<string, JsonElement>
+        {
+            ["kind"] = JsonSerializer.SerializeToElement("counters"),
+            [InvestigationRoutingArguments.InvestigationHandleIdArgument] = JsonSerializer.SerializeToElement(ActiveHandle.HandleId),
+        });
+        var result = await fx.Invoke(p, sessionId: null);
+
+        result.Should().BeSameAs(upstream);
+        fx.ProxyClient.CallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ReturnsError_WhenExplicitInvestigationHandleIdIsMissing()
+    {
+        var fx = new Fixture();
+
+        var result = await fx.Invoke(Params("collect_events", new Dictionary<string, JsonElement>
+        {
+            ["kind"] = JsonSerializer.SerializeToElement("counters"),
+            [InvestigationRoutingArguments.InvestigationHandleIdArgument] = JsonSerializer.SerializeToElement("inv-missing"),
+        }), sessionId: null);
+
+        result.IsError.Should().BeTrue();
+        fx.LocalInvocations.Should().Be(0);
+        fx.ProxyClient.CallCount.Should().Be(0);
+        result.Content.Should().ContainSingle();
+        result.Content![0].Should().BeOfType<TextContentBlock>()
+            .Which.Text.Should().Contain("unknown or no longer active");
+    }
+
+    [Fact]
     public async Task DoesNotForward_DistributedTraceFanout_RunsLocallyEvenWhenBound()
     {
         // #437 — collect_events(kind="distributed_trace") is an orchestrator-side fan-out: even when
@@ -171,6 +240,25 @@ public sealed class InvestigationProxyCallToolFilterTests
 
         result.IsError.Should().BeNull();
         fx.LocalInvocations.Should().Be(1);
+        fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DoesNotForward_DistributedTraceFanout_PreservesExplicitHandleIdsForLocalExecution()
+    {
+        var fx = new Fixture();
+        fx.Binder.Bind("session-trace", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var p = Params("collect_events", new Dictionary<string, JsonElement>
+        {
+            ["kind"] = JsonSerializer.SerializeToElement("distributed_trace"),
+            [InvestigationRoutingArguments.InvestigationHandleIdsArgument] = JsonSerializer.SerializeToElement(new[] { ActiveHandle.HandleId }),
+            ["traceId"] = JsonSerializer.SerializeToElement("0af7651916cd43dd8448eb211c80319c"),
+        });
+        await fx.Invoke(p, sessionId: "session-trace");
+
+        fx.LastLocalRequest!.Arguments.Should().ContainKey(InvestigationRoutingArguments.InvestigationHandleIdsArgument);
         fx.ProxyClient.CallCount.Should().Be(0);
     }
 
@@ -319,12 +407,15 @@ public sealed class InvestigationProxyCallToolFilterTests
         public InMemorySessionBinder Binder { get; } = new();
         public InMemoryInvestigationStore Store { get; } = new();
         public FakeProxyClient ProxyClient { get; } = new();
-        public IPrincipalAccessor PrincipalAccessor { get; } = TestPrincipalAccessors.Root;
+        public IPrincipalAccessor PrincipalAccessor { get; }
+        public OrchestratorOptions Options { get; } = new();
         public OrchestratorObservability Observability { get; }
         public int LocalInvocations;
+        public CallToolRequestParams? LastLocalRequest;
 
-        public Fixture()
+        public Fixture(IPrincipalAccessor? principalAccessor = null)
         {
+            PrincipalAccessor = principalAccessor ?? TestPrincipalAccessors.Root;
             var services = new ServiceCollection();
             services.AddMetrics();
             var provider = services.BuildServiceProvider();
@@ -340,14 +431,16 @@ public sealed class InvestigationProxyCallToolFilterTests
             return InvestigationProxyCallToolFilter.InvokeAsync(
                 request,
                 sessionId,
-                next: (_, _) =>
+                next: (p, _) =>
                 {
+                    LastLocalRequest = p;
                     Interlocked.Increment(ref LocalInvocations);
                     return ValueTask.FromResult(new CallToolResult());
                 },
                 Binder,
                 Store,
                 ProxyClient,
+                Options,
                 PrincipalAccessor,
                 Observability,
                 loggerAccessor: () => null,
