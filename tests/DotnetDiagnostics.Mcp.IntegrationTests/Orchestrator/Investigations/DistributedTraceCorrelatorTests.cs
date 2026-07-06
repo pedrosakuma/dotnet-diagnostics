@@ -46,7 +46,7 @@ public sealed class DistributedTraceCorrelatorTests
         };
 
         var fanout = await DistributedTraceCorrelator.CorrelateAsync(
-            store, proxy, callerSessionId: null, TraceId, durationSeconds: 5, maxActivities: 100,
+            store, proxy, callerBearerName: null, investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
             sources: null, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(2);
@@ -86,7 +86,7 @@ public sealed class DistributedTraceCorrelatorTests
         proxy.Throw["bad"] = new InvalidOperationException("port-forward died");
 
         var fanout = await DistributedTraceCorrelator.CorrelateAsync(
-            store, proxy, callerSessionId: null, TraceId, durationSeconds: 5, maxActivities: 100,
+            store, proxy, callerBearerName: null, investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
             sources: null, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(2);
@@ -108,7 +108,7 @@ public sealed class DistributedTraceCorrelatorTests
         proxy.Throw["pod-b"] = new InvalidOperationException("forward died B");
 
         var fanout = await DistributedTraceCorrelator.CorrelateAsync(
-            store, proxy, callerSessionId: null, TraceId, durationSeconds: 5, maxActivities: 100,
+            store, proxy, callerBearerName: null, investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
             sources: null, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(2);
@@ -122,11 +122,11 @@ public sealed class DistributedTraceCorrelatorTests
     public async Task CorrelateAsync_SkipsNonActiveAndUnownedScoping()    {
         var store = new MemoryInvestigationStore();
         // Active + owned by the calling session.
-        store.Add(ActiveHandle("inv-mine", "mine", ownerSessionId: "session-A"));
+        store.Add(ActiveHandle("inv-mine", "mine", ownerBearerName: "session-A"));
         // Active but owned by a different session — must be skipped.
-        store.Add(ActiveHandle("inv-theirs", "theirs", ownerSessionId: "session-B"));
+        store.Add(ActiveHandle("inv-theirs", "theirs", ownerBearerName: "session-B"));
         // Owned by my session but not Active — must be skipped.
-        store.Add(ActiveHandle("inv-attaching", "attaching", ownerSessionId: "session-A") with
+        store.Add(ActiveHandle("inv-attaching", "attaching", ownerBearerName: "session-A") with
         {
             State = InvestigationState.Attaching,
         });
@@ -140,14 +140,52 @@ public sealed class DistributedTraceCorrelatorTests
         };
 
         var fanout = await DistributedTraceCorrelator.CorrelateAsync(
-            store, proxy, callerSessionId: "session-A", TraceId, durationSeconds: 5, maxActivities: 100,
+            store, proxy, callerBearerName: "session-A", investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
             sources: null, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(1);
         proxy.Calls.Should().ContainSingle().Which.Should().Be("mine");
     }
 
-    private static InvestigationHandle ActiveHandle(string handleId, string podName, string? ownerSessionId = null) => new(
+    [Fact]
+    public async Task CorrelateAsync_UsesExplicitHandleIdsInsteadOfCallerWideDiscovery()
+    {
+        var store = new MemoryInvestigationStore();
+        store.Add(ActiveHandle("inv-a", "pod-a", ownerBearerName: "bearer-A"));
+        store.Add(ActiveHandle("inv-b", "pod-b", ownerBearerName: "bearer-A"));
+
+        var start = DateTimeOffset.UtcNow;
+        var proxy = new StubProxyClient
+        {
+            ["pod-b"] = ActivitiesResult(CaptureWith(
+                Span("svc", "op", spanId: "aaaaaaaaaaaaaaaa", parentSpanId: null, start, TimeSpan.FromMilliseconds(40))),
+            "pod-b"),
+        };
+
+        var fanout = await DistributedTraceCorrelator.CorrelateAsync(
+            store, proxy, callerBearerName: "bearer-A", investigationHandleIds: new[] { "inv-b" }, TraceId, durationSeconds: 5, maxActivities: 100,
+            sources: null, CancellationToken.None);
+
+        fanout.AttachedActivePods.Should().Be(1);
+        proxy.Calls.Should().ContainSingle().Which.Should().Be("pod-b");
+    }
+
+    [Fact]
+    public async Task CorrelateAsync_ExplicitEmptyHandleList_DoesNotFallBackToCallerWideDiscovery()
+    {
+        var store = new MemoryInvestigationStore();
+        store.Add(ActiveHandle("inv-a", "pod-a", ownerBearerName: "bearer-A"));
+
+        var fanout = await DistributedTraceCorrelator.CorrelateAsync(
+            store, new StubProxyClient(), callerBearerName: "bearer-A", investigationHandleIds: Array.Empty<string>(), TraceId,
+            durationSeconds: 5, maxActivities: 100, sources: null, CancellationToken.None);
+
+        fanout.AttachedActivePods.Should().Be(0);
+        fanout.PodErrors.Should().BeEmpty();
+        fanout.Timeline.Should().BeNull();
+    }
+
+    private static InvestigationHandle ActiveHandle(string handleId, string podName, string? ownerBearerName = null) => new(
         HandleId: handleId,
         Namespace: "ns",
         PodName: podName,
@@ -157,7 +195,7 @@ public sealed class DistributedTraceCorrelatorTests
         State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
-        OwnerSessionId: ownerSessionId);
+        OwnerBearerName: ownerBearerName);
 
     private static CapturedActivity Span(
         string source, string operation, string spanId, string? parentSpanId,

@@ -39,7 +39,8 @@ internal static class ReplicaCounterFanout
     internal static async Task<FanoutResult> CompareAsync(
         IInvestigationStore store,
         IInvestigationProxyClient proxy,
-        string? callerSessionId,
+        string? callerBearerName,
+        IReadOnlyList<string>? investigationHandleIds,
         int durationSeconds,
         int intervalSeconds,
         CancellationToken cancellationToken)
@@ -47,12 +48,9 @@ internal static class ReplicaCounterFanout
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(proxy);
 
-        var handles = store.Snapshot()
-            .Where(h => h.State == InvestigationState.Active && IsOwnedByCaller(h, callerSessionId))
-            .ToArray();
-
-        var readings = new List<ReplicaCounterReading>(handles.Length);
         var errors = new List<string>();
+        var handles = ResolveHandles(store, callerBearerName, investigationHandleIds, errors);
+        var readings = new List<ReplicaCounterReading>(handles.Length);
         var arguments = BuildCountersArguments(durationSeconds, intervalSeconds);
 
         // Simultaneous fan-out: dispatch all per-Pod collections concurrently so the windows overlap
@@ -174,13 +172,59 @@ internal static class ReplicaCounterFanout
         return snapshot;
     }
 
-    private static bool IsOwnedByCaller(InvestigationHandle handle, string? callerSessionId)
+    private static bool IsOwnedByCaller(InvestigationHandle handle, string? callerBearerName)
     {
-        if (handle.OwnerSessionId is null)
+        if (handle.OwnerBearerName is null)
         {
             return true;
         }
 
-        return string.Equals(handle.OwnerSessionId, callerSessionId, StringComparison.Ordinal);
+        return string.Equals(handle.OwnerBearerName, callerBearerName, StringComparison.Ordinal);
+    }
+
+    private static InvestigationHandle[] ResolveHandles(
+        IInvestigationStore store,
+        string? callerBearerName,
+        IReadOnlyList<string>? investigationHandleIds,
+        List<string> errors)
+    {
+        if (investigationHandleIds is null)
+        {
+            return store.Snapshot()
+                .Where(h => h.State == InvestigationState.Active && IsOwnedByCaller(h, callerBearerName))
+                .ToArray();
+        }
+
+        if (investigationHandleIds.Count == 0)
+        {
+            return Array.Empty<InvestigationHandle>();
+        }
+
+        var handles = new List<InvestigationHandle>(investigationHandleIds.Count);
+        foreach (var handleId in investigationHandleIds.Distinct(StringComparer.Ordinal))
+        {
+            var handle = store.GetById(handleId);
+            if (handle is null)
+            {
+                errors.Add($"Handle '{handleId}' is unknown.");
+                continue;
+            }
+
+            if (handle.State != InvestigationState.Active)
+            {
+                errors.Add($"Handle '{handleId}' is {handle.State} and cannot participate in replica_counters fan-out.");
+                continue;
+            }
+
+            if (!IsOwnedByCaller(handle, callerBearerName))
+            {
+                errors.Add($"Handle '{handleId}' is owned by a different bearer identity.");
+                continue;
+            }
+
+            handles.Add(handle);
+        }
+
+        return handles.ToArray();
     }
 }

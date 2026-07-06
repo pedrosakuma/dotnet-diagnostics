@@ -184,8 +184,11 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Proxy_RejectsCrossSessionCaller_WithStructured403()
     {
-        // H6: handle minted with OwnerSessionId="owner-A", caller presents a different
-        // Mcp-Session-Id → 403 ProxyOwnerMismatch.
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal("owner-B", System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach")),
+            allowCrossSessionAdmin: false);
+
         _store.Add(NewHandleOwned("inv_owned", "owner-A", "pod-token"));
         _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK);
 
@@ -193,7 +196,6 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         {
             Content = new StringContent("{}", Encoding.UTF8, "application/json"),
         };
-        req.Headers.Add("Mcp-Session-Id", "owner-B");
 
         var response = await _client.SendAsync(req);
 
@@ -208,7 +210,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     {
         // H6 + AllowCrossSessionAdmin: when the deployment opts into admin mode
         // (operator / central orchestrator topology), the owner-session check is
-        // bypassed and the proxy forwards regardless of Mcp-Session-Id mismatch.
+        // bypassed and the proxy forwards regardless of bearer mismatch.
         await DisposeAsync();
         await InitializeAdminAsync();
 
@@ -219,7 +221,6 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         {
             Content = new StringContent("{}", Encoding.UTF8, "application/json"),
         };
-        req.Headers.Add("Mcp-Session-Id", "owner-B");
 
         var response = await _client.SendAsync(req);
 
@@ -249,7 +250,6 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         {
             Content = new StringContent("{}", Encoding.UTF8, "application/json"),
         };
-        req.Headers.Add("Mcp-Session-Id", "owner-B");
 
         var response = await _client.SendAsync(req);
 
@@ -280,7 +280,6 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             {
                 Content = new StringContent("{}", Encoding.UTF8, "application/json"),
             };
-            req.Headers.Add("Mcp-Session-Id", "owner-B");
             (await _client.SendAsync(req)).StatusCode.Should().Be(HttpStatusCode.OK);
         }
 
@@ -407,7 +406,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Proxy_RejectsAnonymousCaller_WhenHandleHasOwner()
     {
-        // H6: handle has an owner, caller omits the Mcp-Session-Id header entirely.
+        // Handle has an owner, caller presents no authenticated bearer identity.
         _store.Add(NewHandleOwned("inv_owned_anon", "owner-A", "pod-token"));
 
         var response = await _client.PostAsync("/proxy/inv_owned_anon/mcp", new StringContent("{}", Encoding.UTF8, "application/json"));
@@ -419,6 +418,11 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Proxy_AllowsOwnerSessionCaller()
     {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal("owner-A", System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach")),
+            allowCrossSessionAdmin: false);
+
         _store.Add(NewHandleOwned("inv_owned_ok", "owner-A", "pod-token"));
         _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
 
@@ -426,7 +430,6 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         {
             Content = new StringContent("{}", Encoding.UTF8, "application/json"),
         };
-        req.Headers.Add("Mcp-Session-Id", "owner-A");
 
         var response = await _client.SendAsync(req);
 
@@ -565,7 +568,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5));
 
-    private static InvestigationHandle NewHandleOwned(string id, string ownerSessionId, string podToken) => new(
+    private static InvestigationHandle NewHandleOwned(string id, string ownerBearerName, string podToken) => new(
         HandleId: id,
         Namespace: "ns",
         PodName: "pod",
@@ -575,7 +578,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5),
-        OwnerSessionId: ownerSessionId);
+        OwnerBearerName: ownerBearerName);
 
     private sealed class StubInvestigationStore : IInvestigationStore
     {

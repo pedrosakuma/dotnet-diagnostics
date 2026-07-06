@@ -66,6 +66,8 @@ public sealed class GetBytesTool
         [Description("Byte offset where this chunk starts. Defaults to 0.")] long offset = 0,
         [Description("Maximum bytes to return in this response. Defaults to 4 MiB and is capped at 16 MiB.")] int maxBytes = FileChunkReader.DefaultChunkBytes,
         [Description("Operating system process id of the target .NET process. Used only when kind='module'; optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        string? investigationHandleId = null,
         ILoggerFactory? loggerFactory = null,
         CancellationToken cancellationToken = default)
     {

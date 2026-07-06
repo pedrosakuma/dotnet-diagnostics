@@ -102,7 +102,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             State: InvestigationState.Attaching,
             AttachedAt: now,
             ExpiresAt: now + ttl,
-            OwnerSessionId: request.OwnerSessionId);
+            OwnerBearerName: request.OwnerBearerName);
 
         // Atomic check-and-reserve: when reuse is allowed and a target tuple already has an
         // Active/Attaching handle, return it instead of patching a second ephemeral container.
@@ -117,8 +117,8 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             // pod via the in-process call-tool forward and bypass the HTTP
             // proxy's ownership check). Un-owned handles (stdio / framework)
             // remain reusable by anyone.
-            if (existing!.OwnerSessionId is not null &&
-                !string.Equals(existing.OwnerSessionId, request.OwnerSessionId, StringComparison.Ordinal))
+            if (existing!.OwnerBearerName is not null &&
+                !string.Equals(existing.OwnerBearerName, request.OwnerBearerName, StringComparison.Ordinal))
             {
                 _logger.LogInformation(
                     "Refusing to reuse handle {HandleId} for {Namespace}/{Pod}/{Container}: owned by a different MCP session.",

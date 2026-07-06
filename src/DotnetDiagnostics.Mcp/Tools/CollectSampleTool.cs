@@ -101,6 +101,8 @@ public sealed class CollectSampleTool
         bool exportTrace = false,
         [Description("kind='native-alloc' on Linux only. perf sample period — record one callchain per this many allocator hits. Must be >= 1. Defaults to 1000. Higher reduces overhead and resolution; throttles recorded samples but not the per-call uprobe trap cost. Ignored by the Windows ETW VirtualAlloc backend, which records every allocation.")]
         long nativeAllocSamplePeriod = 1000,
+        [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
+        string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)

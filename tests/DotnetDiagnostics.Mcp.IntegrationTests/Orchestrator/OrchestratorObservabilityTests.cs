@@ -97,6 +97,7 @@ public sealed class OrchestratorObservabilityTests
             fx.Binder,
             fx.Store,
             fx.ProxyClient,
+            fx.Options,
             TestPrincipalAccessors.WithScopes("orchestrator-attach"),
             fx.Observability,
             loggerAccessor: () => NullLogger.Instance,
@@ -177,6 +178,7 @@ public sealed class OrchestratorObservabilityTests
             binder,
             store,
             proxyClient,
+            options,
             TestPrincipalAccessors.WithScopes("orchestrator-attach"),
             observability,
             loggerAccessor: () => NullLogger.Instance,
@@ -331,7 +333,7 @@ public sealed class OrchestratorObservabilityTests
                 State: InvestigationState.Active,
                 AttachedAt: DateTimeOffset.UtcNow,
                 ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
-                OwnerSessionId: request.OwnerSessionId);
+                OwnerBearerName: request.OwnerBearerName);
             _store.Add(handle);
             return Task.FromResult(handle);
         }

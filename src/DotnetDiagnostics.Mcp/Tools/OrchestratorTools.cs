@@ -199,7 +199,7 @@ public sealed class OrchestratorTools
             TtlSeconds: ttlSeconds,
             RequirePreparedTarget: requirePreparedTarget,
             AllowReuseExistingSession: allowReuseExistingSession,
-            OwnerSessionId: TryGetServerSessionId(server));
+            OwnerBearerName: principalAccessor.Current?.Name);
 
         InvestigationHandle handle;
         try
@@ -348,13 +348,14 @@ public sealed class OrchestratorTools
         OrchestratorObservability observability,
         McpServer server,
         ILoggerFactory? loggerFactory = null,
-        [Description("Investigation handle id returned by attach_to_pod. When omitted, defaults to the handle currently bound to this MCP session.")]
+        [Description("Investigation handle id returned by attach_to_pod. When omitted, falls back to the handle currently bound to this MCP session (legacy compatibility only).")]
         string? handleId = null,
         CancellationToken cancellationToken = default)
     {
         _ = cancellationToken; // Close pipeline is best-effort and must finish even if the caller bailed.
 
         var sessionId = TryGetServerSessionId(server);
+        var callerBearerName = principalAccessor.Current?.Name;
         var resolvedHandleId = handleId;
         if (string.IsNullOrWhiteSpace(resolvedHandleId))
         {
@@ -390,17 +391,17 @@ public sealed class OrchestratorTools
         var adminBypass = OrchestratorAdminBypassPolicy.IsBypassAllowed(principalAccessor.Current, options, bypassLogger);
         var existing = store.GetById(resolvedHandleId);
         if (existing is not null &&
-            existing.OwnerSessionId is not null &&
-            !string.Equals(existing.OwnerSessionId, sessionId, StringComparison.Ordinal) &&
+            existing.OwnerBearerName is not null &&
+            !string.Equals(existing.OwnerBearerName, callerBearerName, StringComparison.Ordinal) &&
             !adminBypass)
         {
             observability.RecordDetach(principalAccessor.Current, resolvedHandleId, "manual", "failure");
             return DiagnosticResult.Fail<DetachResult>(
-                summary: $"detach_from_pod: handle '{resolvedHandleId}' is owned by a different MCP session.",
+                summary: $"detach_from_pod: handle '{resolvedHandleId}' is owned by a different bearer identity.",
                 error: new DiagnosticError(
                     Kind: "PermissionDenied",
-                    Message: "Cannot close another MCP session's investigation handle.",
-                    Detail: "Re-attach to the pod in this session, or wait for the TTL reaper to retire the handle."));
+                    Message: "Cannot close another bearer's investigation handle.",
+                    Detail: "Use the handle minted by your bearer identity, or wait for the TTL reaper to retire the handle."));
         }
 
         var outcome = await closer.CloseAsync(
@@ -436,15 +437,15 @@ public sealed class OrchestratorTools
             summary,
             new NextActionHint(
                 "attach_to_pod",
-                "Subsequent diagnostic tool calls on this MCP session now resolve locally on the orchestrator host. " +
+                "Subsequent diagnostic tool calls on this client now resolve locally on the orchestrator host. " +
                 "Re-attach with attach_to_pod if you need to continue investigating the same Pod."));
     }
 
     [RequireScope("orchestrator-attach")]
     [Description(
-        "Returns every investigation handle the orchestrator has minted on behalf of this MCP session. " +
+        "Returns every investigation handle the orchestrator has minted on behalf of the current bearer identity. " +
         "By default only Active/Attaching handles are returned — pass includeTerminal=true to also see " +
-        "Closed/Expired/Failed entries for diagnostic forensics. Other sessions' handles are NEVER " +
+        "Closed/Expired/Failed entries for diagnostic forensics. Other bearers' handles are NEVER " +
         "returned unless the orchestrator is configured with Orchestrator:AllowCrossSessionAdmin=true " +
         "AND the caller passes includeAllSessions=true (operator-audit escape hatch). " +
         "Bearer tokens are never included; the shape matches attach_to_pod's response so the same " +
@@ -457,7 +458,7 @@ public sealed class OrchestratorTools
         ILoggerFactory? loggerFactory = null,
         [Description("When true, includes handles in terminal states (Closed/Expired/Failed). Default false — only Active/Attaching.")]
         bool includeTerminal = false,
-        [Description("Operator-only opt-in (requires Orchestrator:AllowCrossSessionAdmin=true). When true, returns handles minted by other MCP sessions. Default false — every caller sees only its own handles.")]
+        [Description("Operator-only opt-in (requires Orchestrator:AllowCrossSessionAdmin=true). When true, returns handles minted by other bearer identities. Default false — every caller sees only its own handles.")]
         bool includeAllSessions = false,
         CancellationToken cancellationToken = default)
     {
@@ -465,14 +466,14 @@ public sealed class OrchestratorTools
 
         var snapshot = store.Snapshot();
 
-        // H6 (issue #164): determine the caller's MCP session id once. Handles
-        // owned by other sessions are filtered out below unless the admin
-        // escape hatch is active. A null sessionId (stdio / unit test) is
+        // Determine the caller's bearer identity once. Handles
+        // owned by other bearers are filtered out below unless the admin
+        // escape hatch is active. A null bearer name (stdio / unit test) is
         // treated as "system caller" and matches only handles that were minted
-        // without an owner (OwnerSessionId == null) — those are exactly the
+        // without an owner (OwnerBearerName == null) — those are exactly the
         // handles created on the same un-scoped transport, so the secure
         // behavior degrades sensibly.
-        var callerSessionId = TryGetServerSessionId(server!);
+        var callerBearerName = principalAccessor.Current?.Name;
         // B5.2 (docs/authorization.md#scopes) + B5.3 (issue #184): admin listing requires EITHER the legacy
         // AllowCrossSessionAdmin deployment flag OR the per-bearer 'orchestrator-admin'
         // modifier scope. Both are operator-grade. The shared policy helper logs a one-shot
@@ -485,12 +486,12 @@ public sealed class OrchestratorTools
         // must be computed over the *visible* set only. Returning a global
         // TotalKnown / state counts would re-introduce the enumeration side
         // channel that H6 closes: an attacker could attach a tiny probe handle
-        // and watch the counts move as other sessions attached / detached.
+        // and watch the counts move as other bearers attached / detached.
         int active = 0, attaching = 0, closed = 0, expired = 0, failed = 0;
         int visibleTotal = 0;
         foreach (var h in snapshot)
         {
-            if (!adminListing && !IsOwnedByCaller(h, callerSessionId)) continue;
+            if (!adminListing && !IsOwnedByCaller(h, callerBearerName)) continue;
             visibleTotal++;
             switch (h.State)
             {
@@ -508,7 +509,7 @@ public sealed class OrchestratorTools
         foreach (var h in snapshot)
         {
             if (!includeTerminal && IsTerminalState(h.State)) continue;
-            if (!adminListing && !IsOwnedByCaller(h, callerSessionId))
+            if (!adminListing && !IsOwnedByCaller(h, callerBearerName))
             {
                 redactedCount++;
                 continue;
@@ -534,8 +535,8 @@ public sealed class OrchestratorTools
         if (items.Count == 0)
         {
             summary = includeTerminal
-                ? "list_active_investigations: no investigations owned by this MCP session."
-                : "list_active_investigations: no Active/Attaching investigations owned by this MCP session. Pass includeTerminal=true to inspect Closed/Expired/Failed history.";
+                ? "list_active_investigations: no investigations owned by this bearer identity."
+                : "list_active_investigations: no Active/Attaching investigations owned by this bearer identity. Pass includeTerminal=true to inspect Closed/Expired/Failed history.";
         }
         else
         {
@@ -548,7 +549,7 @@ public sealed class OrchestratorTools
 
         // redactedCount is intentionally consumed internally for logging only.
         // We do NOT include it in the user-visible summary because that would
-        // still leak the existence of other sessions' handles.
+        // still leak the existence of other bearers' handles.
         _ = redactedCount;
 
         return Task.FromResult(DiagnosticResult.Ok(
@@ -561,16 +562,16 @@ public sealed class OrchestratorTools
                     : "Pass an item's handleId to detach_from_pod to close it explicitly, or wait for the TTL reaper.")));
     }
 
-    private static bool IsOwnedByCaller(InvestigationHandle handle, string? callerSessionId)
+    private static bool IsOwnedByCaller(InvestigationHandle handle, string? callerBearerName)
     {
         // Handles minted without an owner (stdio attach, framework calls that had
         // no session id) are reachable by every authenticated caller — this is
         // intentional to preserve dev-time stdio ergonomics, where there is only
         // ever one human driving the orchestrator. In HTTP deployments every
-        // attach happens through a session-bearing transport, so the owner is
-        // always populated and per-session isolation applies.
-        if (handle.OwnerSessionId is null) return true;
-        return string.Equals(handle.OwnerSessionId, callerSessionId, StringComparison.Ordinal);
+        // attach happens through a bearer-authenticated transport, so the owner is
+        // always populated and per-bearer isolation applies.
+        if (handle.OwnerBearerName is null) return true;
+        return string.Equals(handle.OwnerBearerName, callerBearerName, StringComparison.Ordinal);
     }
 
     private static bool IsTerminalState(InvestigationState state)

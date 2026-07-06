@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Mcp.Observability;
+using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 using DotnetDiagnostics.Mcp.Security;
 using Microsoft.Extensions.Logging;
@@ -17,8 +18,9 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// MCP CallTool filter that auto-routes diagnostic tool calls from an MCP session bound
-/// to an active <see cref="InvestigationHandle"/> through the in-Pod diagnostics MCP
+/// MCP CallTool filter that auto-routes diagnostic tool calls from an explicit
+/// investigation handle (or, as a compatibility fallback, an MCP session bound
+/// to an active <see cref="InvestigationHandle"/>) through the in-Pod diagnostics MCP
 /// instead of executing them locally on the orchestrator. Closes the loop on P3b
 /// (issue #153) so clients don't have to rewrite URLs to <c>/proxy/{handleId}/…</c>
 /// after calling <c>attach_to_pod</c>.
@@ -28,7 +30,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// Short-circuit rules (any miss falls through to local execution via <c>next</c>):
 /// </para>
 /// <list type="number">
-///   <item><description>The MCP session must have an <see cref="IInvestigationSessionBinder"/> binding.</description></item>
+///   <item><description>The call carries an explicit <c>investigationHandleId</c> argument, or the MCP session has an <see cref="IInvestigationSessionBinder"/> binding.</description></item>
 ///   <item><description>The tool name is not in the orchestrator-management bypass list
 ///     (<c>list_pods</c>, <c>attach_to_pod</c>, …). Forwarding these would loop the request
 ///     back into a child orchestrator surface that doesn't know about Kubernetes.</description></item>
@@ -62,6 +64,7 @@ internal static class InvestigationProxyCallToolFilter
         IInvestigationSessionBinder sessionBinder,
         IInvestigationStore investigationStore,
         IInvestigationProxyClient proxyClient,
+        OrchestratorOptions orchestratorOptions,
         IPrincipalAccessor principalAccessor,
         OrchestratorObservability observability,
         Func<ILogger?> loggerAccessor,
@@ -70,6 +73,7 @@ internal static class InvestigationProxyCallToolFilter
         ArgumentNullException.ThrowIfNull(sessionBinder);
         ArgumentNullException.ThrowIfNull(investigationStore);
         ArgumentNullException.ThrowIfNull(proxyClient);
+        ArgumentNullException.ThrowIfNull(orchestratorOptions);
         ArgumentNullException.ThrowIfNull(principalAccessor);
         ArgumentNullException.ThrowIfNull(observability);
         ArgumentNullException.ThrowIfNull(loggerAccessor);
@@ -86,6 +90,7 @@ internal static class InvestigationProxyCallToolFilter
                 sessionBinder,
                 investigationStore,
                 proxyClient,
+                orchestratorOptions,
                 principalAccessor,
                 observability,
                 loggerAccessor,
@@ -106,15 +111,17 @@ internal static class InvestigationProxyCallToolFilter
         IInvestigationSessionBinder sessionBinder,
         IInvestigationStore investigationStore,
         IInvestigationProxyClient proxyClient,
+        OrchestratorOptions orchestratorOptions,
         IPrincipalAccessor principalAccessor,
         OrchestratorObservability observability,
         Func<ILogger?> loggerAccessor,
         CancellationToken cancellationToken)
     {
         var toolName = requestParams?.Name;
+        var sanitizedRequest = InvestigationRoutingArguments.StripRoutingArguments(requestParams);
         if (string.IsNullOrEmpty(toolName) || BypassToolNames.Contains(toolName))
         {
-            return await next(requestParams, cancellationToken).ConfigureAwait(false);
+            return await next(sanitizedRequest, cancellationToken).ConfigureAwait(false);
         }
 
         // #437 / #448 — collect_events(kind="distributed_trace"|"replica_counters") is an
@@ -127,30 +134,51 @@ internal static class InvestigationProxyCallToolFilter
             return await next(requestParams, cancellationToken).ConfigureAwait(false);
         }
 
-        if (string.IsNullOrEmpty(sessionId))
+        var explicitHandleId = InvestigationRoutingArguments.TryGetExplicitHandleId(requestParams?.Arguments);
+        var usedExplicitHandle = !string.IsNullOrEmpty(explicitHandleId);
+        var handleId = explicitHandleId;
+        if (!usedExplicitHandle && !string.IsNullOrEmpty(sessionId))
         {
-            return await next(requestParams, cancellationToken).ConfigureAwait(false);
+            handleId = sessionBinder.TryGetHandleId(sessionId);
         }
-
-        var handleId = sessionBinder.TryGetHandleId(sessionId);
         if (string.IsNullOrEmpty(handleId))
         {
-            return await next(requestParams, cancellationToken).ConfigureAwait(false);
+            return await next(sanitizedRequest, cancellationToken).ConfigureAwait(false);
         }
 
         if (HasExplicitProcessId(requestParams?.Arguments))
         {
             // Explicit > binding (P2 IProcessContextResolver precedence).
-            return await next(requestParams, cancellationToken).ConfigureAwait(false);
+            return await next(sanitizedRequest, cancellationToken).ConfigureAwait(false);
         }
 
         var handle = investigationStore.GetById(handleId);
         if (handle is null || handle.State != InvestigationState.Active)
         {
+            if (usedExplicitHandle)
+            {
+                loggerAccessor()?.LogWarning(
+                    "Refusing to forward '{ToolName}' via explicit investigation {HandleId}: route is {State}.",
+                    toolName, handleId, handle?.State.ToString() ?? "missing");
+                observability.RecordProxyCall(principalAccessor.Current, handleId, MetricToolLabel(toolName), "failure");
+                return new CallToolResult
+                {
+                    IsError = true,
+                    Content = new List<ContentBlock>
+                    {
+                        new TextContentBlock
+                        {
+                            Text = $"Cannot forward '{toolName}' via investigation {handleId}: the handle is unknown or no longer active. " +
+                                   "Use a current handle returned by attach_to_pod, or call the tool locally with an explicit processId.",
+                        },
+                    },
+                };
+            }
+
             loggerAccessor()?.LogDebug(
-                "Session {SessionId} bound to handle {HandleId} but handle is {State} — running '{ToolName}' locally.",
-                sessionId, handleId, handle?.State.ToString() ?? "missing", toolName);
-            return await next(requestParams, cancellationToken).ConfigureAwait(false);
+                "Investigation route for handle {HandleId} is {State} — running '{ToolName}' locally.",
+                handleId, handle?.State.ToString() ?? "missing", toolName);
+            return await next(sanitizedRequest, cancellationToken).ConfigureAwait(false);
         }
 
         // H6 / B3 review (issue #164): defense-in-depth owner check. The binder
@@ -160,12 +188,15 @@ internal static class InvestigationProxyCallToolFilter
         // the handle has an owner and it doesn't match the caller, surface a
         // structured error rather than silently widening access. Un-owned
         // handles (stdio / framework) remain forward-able by anyone.
-        if (handle.OwnerSessionId is not null &&
-            !string.Equals(handle.OwnerSessionId, sessionId, StringComparison.Ordinal))
+        var callerBearerName = principalAccessor.Current?.Name;
+        var adminBypass = OrchestratorAdminBypassPolicy.IsBypassAllowed(principalAccessor.Current, orchestratorOptions, loggerAccessor() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        if (handle.OwnerBearerName is not null &&
+            !string.Equals(handle.OwnerBearerName, callerBearerName, StringComparison.Ordinal) &&
+            !adminBypass)
         {
             loggerAccessor()?.LogWarning(
-                "Refusing to forward '{ToolName}' from session {SessionId} via investigation {HandleId}: handle is owned by a different session.",
-                toolName, sessionId, handle.HandleId);
+                "Refusing to forward '{ToolName}' via investigation {HandleId}: handle is owned by a different bearer.",
+                toolName, handle.HandleId);
             observability.RecordProxyCall(principalAccessor.Current, handle.HandleId, MetricToolLabel(toolName), "failure");
             return new CallToolResult
             {
@@ -174,8 +205,8 @@ internal static class InvestigationProxyCallToolFilter
                 {
                     new TextContentBlock
                     {
-                        Text = $"Cannot forward '{toolName}' via investigation {handle.HandleId}: it is owned by a different MCP session. " +
-                               "Re-attach to the pod in this session or call the tool locally with an explicit processId.",
+                        Text = $"Cannot forward '{toolName}' via investigation {handle.HandleId}: it is owned by a different bearer identity. " +
+                               "Use the handle returned by your own attach_to_pod call, or call the tool locally with an explicit processId.",
                     },
                 },
             };
@@ -191,8 +222,8 @@ internal static class InvestigationProxyCallToolFilter
         if (!InvestigationProxyToolAllowlist.IsAllowed(toolName))
         {
             loggerAccessor()?.LogWarning(
-                "Refusing to forward '{ToolName}' from session {SessionId} via investigation {HandleId}: tool is not on the proxy allowlist.",
-                toolName, sessionId, handle.HandleId);
+                "Refusing to forward '{ToolName}' via investigation {HandleId}: tool is not on the proxy allowlist.",
+                toolName, handle.HandleId);
             observability.RecordProxyCall(principalAccessor.Current, handle.HandleId, MetricToolLabel(toolName), "failure");
             activity?.SetTag("event.outcome", "failure");
             activity?.SetTag("error.type", "ToolNotAllowed");
@@ -202,9 +233,9 @@ internal static class InvestigationProxyCallToolFilter
         try
         {
             loggerAccessor()?.LogDebug(
-                "Forwarding '{ToolName}' from session {SessionId} via investigation {HandleId} ({Namespace}/{Pod}).",
-                toolName, sessionId, handle.HandleId, handle.Namespace, handle.PodName);
-            var result = await proxyClient.CallToolAsync(handle, requestParams!, cancellationToken).ConfigureAwait(false);
+                "Forwarding '{ToolName}' via investigation {HandleId} ({Namespace}/{Pod}).",
+                toolName, handle.HandleId, handle.Namespace, handle.PodName);
+            var result = await proxyClient.CallToolAsync(handle, sanitizedRequest!, cancellationToken).ConfigureAwait(false);
             observability.RecordProxyCall(principalAccessor.Current, handle.HandleId, toolName, result.IsError == true ? "failure" : "success");
             activity?.SetTag("event.outcome", result.IsError == true ? "failure" : "success");
             return result;
