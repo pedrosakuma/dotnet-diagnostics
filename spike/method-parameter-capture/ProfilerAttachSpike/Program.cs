@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Runtime.Loader;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.EventPipe;
@@ -140,7 +141,7 @@ try
         Console.WriteLine($"Profiler socket: {socketPath}");
 
         using var session = client.StartEventPipeSession(
-            new[] { new EventPipeProvider(ProviderName, EventLevel.Verbose, 0) },
+            new[] { new EventPipeProvider(ProviderName, EventLevel.Informational, (long)EventKeywords.All) },
             requestRundown: false,
             circularBufferMB: 256);
         using var source = new EventPipeEventSource(session.EventStream);
@@ -189,6 +190,28 @@ try
             TimeSpan.FromSeconds(15),
             "parameter capture result");
 
+        Console.WriteLine("Sending StopCapturingParameters...");
+        await SendProfilerMessageAsync(
+            socketPath,
+            commandSet: 2,
+            command: 1,
+            JsonSerializer.SerializeToUtf8Bytes(new StopCapturePayload { RequestId = requestId }),
+            CancellationToken.None);
+
+        if (!eventObserver.StoppedRequestIds.Contains(requestId))
+        {
+            try
+            {
+                await WaitUntilAsync(
+                    () => eventObserver.StoppedRequestIds.Contains(requestId) || eventObserver.FailureByRequestId.ContainsKey(requestId),
+                    TimeSpan.FromSeconds(5),
+                    "parameter capture stop");
+            }
+            catch (TimeoutException)
+            {
+            }
+        }
+
         Console.WriteLine();
         Console.WriteLine("=== OBSERVED EVENTS ===");
         foreach (var line in eventObserver.LogLines)
@@ -218,14 +241,6 @@ try
             Console.WriteLine("No parameter values captured before timeout.");
         }
 
-        Console.WriteLine("Sending StopCapturingParameters...");
-        await SendProfilerMessageAsync(
-            socketPath,
-            commandSet: 2,
-            command: 1,
-            JsonSerializer.SerializeToUtf8Bytes(new StopCapturePayload { RequestId = requestId }),
-            CancellationToken.None);
-
         try
         {
             session.Stop();
@@ -239,6 +254,15 @@ try
     catch (Exception ex)
     {
         Console.WriteLine($"Capture stage failed: {ex.GetType().Name}: {ex.Message}");
+        if (eventObserver.LogLines.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== OBSERVED EVENTS BEFORE FAILURE ===");
+            foreach (var line in eventObserver.LogLines)
+            {
+                Console.WriteLine(line);
+            }
+        }
     }
 }
 finally
@@ -567,21 +591,21 @@ sealed class ParameterCaptureObserver
             LogLines.Add(line);
         }
 
-        switch (traceEvent.ID)
+        switch (traceEvent.EventName)
         {
-            case (TraceEventID)2:
+            case "Capturing/Start":
                 if (TryGetGuid(traceEvent, 0, out var startedRequestId))
                 {
                     StartedRequestIds.Add(startedRequestId);
                 }
                 break;
-            case (TraceEventID)3:
+            case "Capturing/Stop":
                 if (TryGetGuid(traceEvent, 0, out var stoppedRequestId))
                 {
                     StoppedRequestIds.Add(stoppedRequestId);
                 }
                 break;
-            case (TraceEventID)4:
+            case "FailedToCapture":
                 if (TryGetGuid(traceEvent, 0, out var failedRequestId))
                 {
                     var reason = Payload(traceEvent, 1);
@@ -589,7 +613,7 @@ sealed class ParameterCaptureObserver
                     FailureByRequestId[failedRequestId] = $"{reason}: {details}";
                 }
                 break;
-            case (TraceEventID)8:
+            case "CapturedParameter":
                 ParameterValues.Add($"{Payload(traceEvent, 2)}={Payload(traceEvent, 5)}");
                 break;
         }
@@ -655,8 +679,13 @@ sealed class StopCapturePayload
 
 sealed class CaptureParametersConfiguration
 {
+    [JsonPropertyName("methods")]
     public MethodDescription[] Methods { get; set; } = Array.Empty<MethodDescription>();
+
+    [JsonPropertyName("useDebuggerDisplayAttribute")]
     public bool UseDebuggerDisplayAttribute { get; set; }
+
+    [JsonPropertyName("captureLimit")]
     public int? CaptureLimit { get; set; }
 }
 
