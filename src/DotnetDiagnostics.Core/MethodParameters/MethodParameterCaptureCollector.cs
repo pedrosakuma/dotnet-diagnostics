@@ -479,8 +479,12 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                 continue;
             }
 
-            var directoryInfo = Directory.CreateDirectory(candidate);
-            ApplyOwnerOnlyAcl(directoryInfo);
+            // Build the ACL first and pass it to CreateDirectory so the directory is created
+            // with the owner-only ACL atomically. Creating the directory first and applying the
+            // ACL as a separate step (SetAccessControl) would leave a window where the directory
+            // exists with the inherited (looser) ACL of %TEMP%, defeating the hardening.
+            var security = BuildOwnerOnlyAcl();
+            security.CreateDirectory(candidate);
             ValidateSharedDirectoryWindows(candidate);
             return candidate;
         }
@@ -489,7 +493,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
     }
 
     [SupportedOSPlatform("windows")]
-    private static void ApplyOwnerOnlyAcl(DirectoryInfo directoryInfo)
+    private static DirectorySecurity BuildOwnerOnlyAcl()
     {
         var currentUser = WindowsIdentity.GetCurrent().User
             ?? throw new InvalidOperationException("Could not resolve the current Windows user SID to secure the shared directory.");
@@ -503,7 +507,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
             PropagationFlags.None,
             AccessControlType.Allow));
-        directoryInfo.SetAccessControl(security);
+        return security;
     }
 
     [SupportedOSPlatform("windows")]
