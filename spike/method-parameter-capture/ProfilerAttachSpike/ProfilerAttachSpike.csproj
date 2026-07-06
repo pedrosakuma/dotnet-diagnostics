@@ -20,6 +20,10 @@
       <HintPath>..\vendor\managed\net10.0\Microsoft.Diagnostics.Tracing.TraceEvent.dll</HintPath>
       <Private>true</Private>
     </Reference>
+    <Reference Include="Microsoft.Diagnostics.FastSerialization">
+      <HintPath>..\vendor\managed\net10.0\Microsoft.Diagnostics.FastSerialization.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>

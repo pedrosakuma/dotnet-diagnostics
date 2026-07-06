@@ -1,6 +1,6 @@
 # Vendored dotnet-monitor profiler payloads (experimental spike only)
 
-This directory stages a minimal subset of the published `dotnet-monitor` .NET tool package for the method-parameter-capture spike tracked by issue #555.
+This directory stages a minimal subset of the published `dotnet-monitor` .NET tool package plus one required managed transitive dependency for the method-parameter-capture spike tracked by issue #555.
 
 ## Provenance
 
@@ -22,9 +22,11 @@ This directory stages a minimal subset of the published `dotnet-monitor` .NET to
   - SHA-256: `e2cc9e1f6c97b3c4ee45ebabaa92408eb9b2fc81cb08ceeb342fe48bf79db15f`
 - `managed/net10.0/Microsoft.Diagnostics.Tracing.TraceEvent.dll`
   - SHA-256: `7ad04f5abbd704e8bd9c7b29f9aeab951f20cdc5d5c8e701f256be52a6e8543e`
+- `managed/net10.0/Microsoft.Diagnostics.FastSerialization.dll`
+  - SHA-256: `4cce4b44f8e2dcfda8a67bc4e8131d22c63d06e38c23793728906bed51d34523`
 
 ## Scope warning
 
 These payloads are checked in only to support the throwaway implementation spike in issue #555. They are **not approved for production inclusion** and must not be treated as a shipping decision. Any production path still needs the security/legal/design review tracked separately by issue #556.
 
-The managed helper assemblies are staged only so the standalone spike app can compile against the same diagnostics client/EventPipe bits that shipped inside the inspected tool package, without changing the repository's central package management setup.
+The managed helper assemblies are staged only so the standalone spike app can compile and run against the same diagnostics client/EventPipe bits that shipped inside the inspected tool package, without changing the repository's central package management setup. `Microsoft.Diagnostics.FastSerialization.dll` is included because `Microsoft.Diagnostics.Tracing.TraceEvent.dll` depends on it transitively but direct file references do not copy transitive assemblies automatically.

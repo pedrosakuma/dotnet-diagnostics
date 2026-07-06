@@ -35,12 +35,14 @@ var method = DiscoverMethod(sampleDllPath);
 var port = 5181;
 var baseAddress = new Uri($"http://127.0.0.1:{port}/");
 var runtimeInstanceId = Guid.NewGuid();
-var sharedPath = Path.Combine(repoRoot, "spike", "method-parameter-capture", "run", $"shared-{runtimeInstanceId:D}");
+var sharedPath = Path.Combine(repoRoot, ".dm");
+var socketPath = Path.Combine(sharedPath, $"{runtimeInstanceId:D}.sock");
 Directory.CreateDirectory(sharedPath);
 
 Console.WriteLine($"Repo root: {repoRoot}");
 Console.WriteLine($"Target method: {method.ModuleName}!{method.TypeName}.{method.MethodName}");
 Console.WriteLine($"Shared path: {sharedPath}");
+Console.WriteLine($"Profiler socket path: {socketPath} ({socketPath.Length} chars)");
 
 using var process = StartSample(sampleDllPath, baseAddress);
 var stdoutPump = PumpAsync(process.StandardOutput, "sample:stdout");
@@ -134,7 +136,6 @@ try
 
     try
     {
-        var socketPath = Path.Combine(sharedPath, $"{runtimeInstanceId:D}.sock");
         await WaitForSocketAsync(socketPath, process);
         Console.WriteLine($"Profiler socket: {socketPath}");
 
