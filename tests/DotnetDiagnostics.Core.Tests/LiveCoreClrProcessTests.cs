@@ -120,13 +120,13 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         caps.CanReadEventCounters.Should().BeTrue();
     }
 
-    [LinuxOnlyFact(Timeout = 120_000)]
+    [LinuxOrWindowsOnlyFact(skipReason: "method-parameter capture V1 requires linux-x64 or win-x64 profiler payloads.", Timeout = 120_000)]
     public async Task MethodParameterCapture_CapturesCpuBurnArgument_EndToEnd()
     {
         EnsureSampleRunning();
         if (System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture != System.Runtime.InteropServices.Architecture.X64)
         {
-            throw SkipException.ForReason("method-parameter capture V1 currently ships linux-x64 profiler payloads only.");
+            throw SkipException.ForReason("method-parameter capture V1 currently ships linux-x64/win-x64 profiler payloads only.");
         }
 
         var handles = new MemoryDiagnosticHandleStore();

@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.Diagnostics.Tracing;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Runtime.Versioning;
@@ -72,19 +74,23 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                 new NextActionHint("collect_sample", "Use cpu or native-alloc sampling instead of parameter capture for NativeAOT targets.", new Dictionary<string, object?> { ["processId"] = processId, ["kind"] = "cpu" }));
         }
 
-        if (!OperatingSystem.IsLinux() || System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture != System.Runtime.InteropServices.Architecture.X64)
+        var isX64 = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.X64;
+        if (!isX64 || !(OperatingSystem.IsLinux() || OperatingSystem.IsWindows()))
         {
             return DiagnosticResult.Fail<MethodParameterCaptureArtifact>(
-                "`collect_sample(kind=\"method-params\")` is currently shipped only with linux-x64 profiler payloads. This build cannot stage the required dotnet-monitor native assets for the current RID.",
+                "`collect_sample(kind=\"method-params\")` is currently shipped only with linux-x64 and win-x64 profiler payloads. This build cannot stage the required dotnet-monitor native assets for the current RID.",
                 new DiagnosticError(
                     "NotSupported",
-                    "`collect_sample(kind=\"method-params\")` is currently shipped only with linux-x64 profiler payloads. This build cannot stage the required dotnet-monitor native assets for the current RID.",
+                    "`collect_sample(kind=\"method-params\")` is currently shipped only with linux-x64 and win-x64 profiler payloads. This build cannot stage the required dotnet-monitor native assets for the current RID.",
                     System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier));
         }
 
         var assetRoot = GetAssetRoot();
-        var notifyProfilerPath = Path.Combine(assetRoot, "linux-x64", "native", "libMonitorProfiler.so");
-        var mutatingProfilerPath = Path.Combine(assetRoot, "linux-x64", "native", "libMutatingMonitorProfiler.so");
+        var rid = OperatingSystem.IsWindows() ? "win-x64" : "linux-x64";
+        var notifyProfilerFileName = OperatingSystem.IsWindows() ? "MonitorProfiler.dll" : "libMonitorProfiler.so";
+        var mutatingProfilerFileName = OperatingSystem.IsWindows() ? "MutatingMonitorProfiler.dll" : "libMutatingMonitorProfiler.so";
+        var notifyProfilerPath = Path.Combine(assetRoot, rid, "native", notifyProfilerFileName);
+        var mutatingProfilerPath = Path.Combine(assetRoot, rid, "native", mutatingProfilerFileName);
         var startupHookPath = Path.Combine(assetRoot, "shared", "any", "net6.0", "Microsoft.Diagnostics.Monitoring.StartupHook.dll");
         if (!File.Exists(notifyProfilerPath) || !File.Exists(mutatingProfilerPath) || !File.Exists(startupHookPath))
         {
@@ -400,8 +406,23 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
     private static string GetAssetRoot()
         => Path.Combine(AppContext.BaseDirectory, "Vendor", "dotnet-monitor", "10.0.2");
 
-    [SupportedOSPlatform("linux")]
     private static string CreateSecureSharedDirectory()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return CreateSecureSharedDirectoryWindows();
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            return CreateSecureSharedDirectoryLinux();
+        }
+
+        throw new PlatformNotSupportedException("Method-parameter capture only supports linux-x64 and win-x64 hosts.");
+    }
+
+    [SupportedOSPlatform("linux")]
+    private static string CreateSecureSharedDirectoryLinux()
     {
         var tempRoot = Path.GetTempPath();
         for (var attempt = 0; attempt < 16; attempt++)
@@ -414,7 +435,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
 
             Directory.CreateDirectory(candidate, SecureSharedDirectoryMode);
             File.SetUnixFileMode(candidate, SecureSharedDirectoryMode);
-            ValidateSharedDirectory(candidate);
+            ValidateSharedDirectoryLinux(candidate);
             return candidate;
         }
 
@@ -422,7 +443,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
     }
 
     [SupportedOSPlatform("linux")]
-    private static void ValidateSharedDirectory(string path)
+    private static void ValidateSharedDirectoryLinux(string path)
     {
         var info = new DirectoryInfo(path);
         info.Refresh();
@@ -435,6 +456,81 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
         if (mode != SecureSharedDirectoryMode)
         {
             throw new InvalidOperationException($"Shared directory '{path}' must have Unix mode 0700; found '{mode}'.");
+        }
+    }
+
+    // Windows AF_UNIX sockets (afunix.sys, Windows 10 1803+) are used by dotnet-monitor's
+    // profiler for the exact same "<sharedPath>/<runtimeInstanceId>.sock" transport as Linux
+    // (see IpcCommServer::Bind, which builds a sockaddr_un regardless of TARGET_WINDOWS/TARGET_UNIX).
+    // .NET's System.Net.Sockets.UnixDomainSocketEndPoint works unmodified against that transport
+    // on Windows, so only directory hardening needs a platform-specific implementation here:
+    // Unix 0700 permission bits have no Windows equivalent, so we harden the shared directory with
+    // an explicit, non-inherited ACL granting FullControl to the current user only (owner-only),
+    // mirroring the Linux 0700 guarantee.
+    [SupportedOSPlatform("windows")]
+    private static string CreateSecureSharedDirectoryWindows()
+    {
+        var tempRoot = Path.GetTempPath();
+        for (var attempt = 0; attempt < 16; attempt++)
+        {
+            var candidate = Path.Combine(tempRoot, $"ddmp-{Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(4))}");
+            if (File.Exists(candidate) || Directory.Exists(candidate))
+            {
+                continue;
+            }
+
+            // Build the ACL first and pass it to CreateDirectory so the directory is created
+            // with the owner-only ACL atomically. Creating the directory first and applying the
+            // ACL as a separate step (SetAccessControl) would leave a window where the directory
+            // exists with the inherited (looser) ACL of %TEMP%, defeating the hardening.
+            var security = BuildOwnerOnlyAcl();
+            security.CreateDirectory(candidate);
+            ValidateSharedDirectoryWindows(candidate);
+            return candidate;
+        }
+
+        throw new InvalidOperationException("Could not allocate a secure short-path directory for method-parameter capture.");
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static DirectorySecurity BuildOwnerOnlyAcl()
+    {
+        var currentUser = WindowsIdentity.GetCurrent().User
+            ?? throw new InvalidOperationException("Could not resolve the current Windows user SID to secure the shared directory.");
+
+        var security = new DirectorySecurity();
+        security.SetOwner(currentUser);
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(
+            currentUser,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow));
+        return security;
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void ValidateSharedDirectoryWindows(string path)
+    {
+        var directoryInfo = new DirectoryInfo(path);
+        directoryInfo.Refresh();
+        if (directoryInfo.LinkTarget is not null)
+        {
+            throw new InvalidOperationException($"Refusing to use symlinked/reparse-point shared directory '{path}' for method-parameter capture.");
+        }
+
+        var security = directoryInfo.GetAccessControl();
+        var currentUser = WindowsIdentity.GetCurrent().User
+            ?? throw new InvalidOperationException("Could not resolve the current Windows user SID to validate the shared directory.");
+        var rules = security.GetAccessRules(includeExplicit: true, includeInherited: true, targetType: typeof(SecurityIdentifier));
+        foreach (FileSystemAccessRule rule in rules)
+        {
+            if (rule.AccessControlType == AccessControlType.Allow
+                && !rule.IdentityReference.Equals(currentUser))
+            {
+                throw new InvalidOperationException($"Shared directory '{path}' grants access to a principal other than the current user; refusing to use it for method-parameter capture.");
+            }
         }
     }
 
