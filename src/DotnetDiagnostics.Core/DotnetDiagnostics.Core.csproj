@@ -32,6 +32,8 @@
     <None Include="README.md" Pack="true" PackagePath="\" />
     <Content Include="Vendor\dotnet-monitor\10.0.2\linux-x64\native\libMonitorProfiler.so" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="contentFiles/any/any/Vendor/dotnet-monitor/10.0.2/linux-x64/native/" PackageCopyToOutput="true" />
     <Content Include="Vendor\dotnet-monitor\10.0.2\linux-x64\native\libMutatingMonitorProfiler.so" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="contentFiles/any/any/Vendor/dotnet-monitor/10.0.2/linux-x64/native/" PackageCopyToOutput="true" />
+    <Content Include="Vendor\dotnet-monitor\10.0.2\win-x64\native\MonitorProfiler.dll" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="contentFiles/any/any/Vendor/dotnet-monitor/10.0.2/win-x64/native/" PackageCopyToOutput="true" />
+    <Content Include="Vendor\dotnet-monitor\10.0.2\win-x64\native\MutatingMonitorProfiler.dll" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="contentFiles/any/any/Vendor/dotnet-monitor/10.0.2/win-x64/native/" PackageCopyToOutput="true" />
     <Content Include="Vendor\dotnet-monitor\10.0.2\shared\any\net6.0\Microsoft.Diagnostics.Monitoring.StartupHook.dll" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="contentFiles/any/any/Vendor/dotnet-monitor/10.0.2/shared/any/net6.0/" PackageCopyToOutput="true" />
     <None Include="Vendor\dotnet-monitor\10.0.2\README.md" Pack="true" PackagePath="contentFiles/any/any/Vendor/dotnet-monitor/10.0.2/" />
   </ItemGroup>

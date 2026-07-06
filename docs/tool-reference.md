@@ -1351,7 +1351,7 @@ access (Windows) instead surfaces as `PermissionDenied`.
 explicit allowlist of managed methods by temporarily enabling the vendored dotnet-monitor
 notify-only + mutating profilers plus the startup hook inside a **.NET 8+ CoreCLR**
 process, then listening to the `Microsoft.Diagnostics.Monitoring.ParameterCapturing`
-EventPipe provider. V1 ships **linux-x64** payloads only; NativeAOT, Hot Reload targets,
+EventPipe provider. V1 ships **linux-x64** and **win-x64** payloads; NativeAOT, Hot Reload targets,
 and processes already running a non-notify-only profiler return structured `NotSupported`
 or `Conflict` envelopes instead of a partial capture. The returned live handle kind is
 `method-params-capture` (10-minute TTL, evicted on process exit); drill into it with

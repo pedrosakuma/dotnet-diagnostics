@@ -25,3 +25,15 @@ public sealed class WindowsOnlyFactAttribute : FactAttribute
         }
     }
 }
+
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
+public sealed class LinuxOrWindowsOnlyFactAttribute : FactAttribute
+{
+    public LinuxOrWindowsOnlyFactAttribute(string skipReason = "Linux or Windows only test.")
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsWindows())
+        {
+            Skip = skipReason;
+        }
+    }
+}
