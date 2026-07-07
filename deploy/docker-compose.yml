@@ -38,7 +38,7 @@ name: dotnet-mcp
 
 services:
   diagnostics:
-    image: ghcr.io/pedrosakuma/dotnet-diagnostics:0.16.0
+    image: ghcr.io/pedrosakuma/dotnet-diagnostics:0.17.0
     container_name: dotnet-diagnostics-mcp
     restart: unless-stopped
     ports:
