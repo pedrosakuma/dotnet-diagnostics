@@ -2,6 +2,80 @@
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-07-07
+
+Highlights: **Two major additive waves.** (1) A new **findings / signal-grouping diagnostic
+layer** that turns raw collector output (exceptions, allocations/GC, thread wait-state,
+counter trends) into ranked, cross-signal-correlated groupings — a neutral vector layer, not
+an opinionated "diagnosis". (2) **Method-parameter live capture**
+(`collect_sample(kind="method-params")`) — the first vendored native-binary payload shipped
+by this repo (dotnet-monitor's ICorProfiler-based profilers), letting an LLM capture real
+parameter values from a live, unmodified .NET process for an explicit, scope-gated,
+time-boxed window. Both waves are fully additive: **no new MCP tools** (16-tool cap held,
+`method-params` is a new `kind` on the existing `collect_sample` tool), and every gate is
+fail-closed by default.
+
+### Added
+- **Findings / signal-grouping layer** (meta, multiple PRs) — neutral, ranked groupings
+  layered on top of existing collectors, with cross-signal correlation:
+  - Findings/diagnosis layer foundation (#515, #521).
+  - Reworked into a neutral signal-grouping ("vector") layer, not an opinionated diagnosis
+    (#523, #529).
+  - Exception signal groupings: by-type and by-throw-site (#524, #530).
+  - Allocation and GC signal groupings (#525, #531).
+  - Thread wait-state / wait-target signal groupings (#526, #532).
+  - Counter-trend signal grouping (#527, #533).
+  - Cross-signal correlation across the above groupings (#528, #534).
+- **CPU-sample self-time lead** — `collect_sample(kind="cpu")` now leads with self-time
+  (exclusive) in its summary and hint, ahead of inclusive time, for faster hotspot triage
+  (#513).
+- **Method-parameter live capture** — `collect_sample(kind="method-params")` (design: #556;
+  feasibility spike: #547; production implementation: #562/#563; win-x64 follow-up:
+  #564/#565):
+  - Live-captures rendered parameter values for an explicit allowlist of managed methods (1–10
+    method filters) by temporarily attaching the vendored dotnet-monitor notify-only +
+    mutating profilers plus a startup hook to an already-running **.NET 8+ CoreCLR** process,
+    then listening to the `ParameterCapturing` EventPipe provider — no target modification,
+    no restart.
+  - Ships **linux-x64 and win-x64** native profiler payloads (from the same, SHA-256-verified
+    `dotnet-monitor` 10.0.2 NuGet package); NativeAOT, pre-.NET 8, and Hot-Reload-active
+    targets get a structured `NotSupported`/`Conflict` response instead of a partial capture.
+  - Defense-in-depth for a genuinely sensitive capability: gated behind the primary
+    `eventpipe` scope **plus** a new non-bypassable literal modifier scope
+    (`sensitive-parameter-read`, wildcard/root tokens do not auto-grant it), a server-wide
+    opt-in flag (`Diagnostics:AllowMethodParameterCapture`, default `false`), and a required
+    per-call `includeSensitiveValues=true` acknowledgement — all three checked before any
+    profiler attach happens.
+  - Bounded by design: 30s max duration, 500 max captured events, object graph depth 2,
+    4 KiB stored / 256-char inline-preview value caps. Returns a `method-params-capture`
+    live handle (10-minute TTL, evicted on process exit) drillable via
+    `query_snapshot(view="summary"|"events")`.
+  - MCP-server-only in V1 (not the standalone CLI, not the BenchmarkDotNet diagnoser — see
+    `docs/design/method-parameter-capture-design.md` for the full threat model and rationale).
+- **Orchestrator investigation-handle routing redesign** — `investigationHandleId`/
+  `investigationHandleIds` explicit routing arguments across the relevant tools, with the
+  MCP session binder demoted to a compatibility fallback; proxy authorization now derives
+  from the validated bearer identity instead of the `Mcp-Session-Id` header (#554/#559).
+
+### Docs
+- `docs/tool-reference.md` fixed stale "15 tools" count to 16 (#543).
+- `tool-reference.md` fully synced with every documented tool + a parity guardrail test
+  (#508).
+- CLI docs: documented `--max-depth`/`--frames-to-hash`, dropped an unreachable
+  `--stack-rank` completion (#509); documented the signal-grouping layer + a gated-capture
+  documentation gap (#535).
+- Narrated diagnostic case studies (CLI + MCP) added (#511); signal-grouping postscript +
+  cross-signal correlation case study added (#536).
+- `docs/design/method-parameter-capture-design.md` — approved design doc for the
+  method-parameter capture feature (#556/#558).
+- `docs/research/method-parameter-capture.md` — original feasibility research (#547/#553).
+
+### Chore
+- CLI sampler and container parity follow-ups (#545).
+- Dependency bumps: ModelContextProtocol SDK 1.3.0 → 1.4.0 (#544); `actions/checkout`,
+  `actions/cache`, dotnet base images, and a grouped actions-minor-patch bump (#431, #432,
+  #433, #435, #510); deploy image pins bumped to 0.16.0 (#507).
+
 ## [0.16.0] — 2026-07-02
 
 Highlights: **Two parity waves** bringing the standalone CLI and the BenchmarkDotNet
