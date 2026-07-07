@@ -57,7 +57,7 @@ Kubernetes cluster, use [`../../k8s/`](../../k8s/).
    Pass its resource ID as `subnetId`. (Set `ipAddressType=Public` only if you
    accept an internet-facing diagnostic endpoint — discouraged.)
 4. **Container images reachable by ACI** — your app image plus the diagnostics
-   sidecar image (default `ghcr.io/pedrosakuma/dotnet-diagnostics:0.16.0`;
+   sidecar image (default `ghcr.io/pedrosakuma/dotnet-diagnostics:0.17.0`;
    pass `registryServer / registryUsername / registryPassword` for private
    registries such as ACR).
 5. **A bearer token** for the MCP HTTP transport:
@@ -110,7 +110,7 @@ az deployment group create \
   --parameters \
       name=diag-demo \
       appImage=$APP_IMAGE \
-      diagImage=ghcr.io/pedrosakuma/dotnet-diagnostics:0.16.0 \
+      diagImage=ghcr.io/pedrosakuma/dotnet-diagnostics:0.17.0 \
       diagBearerToken=$DIAG_TOKEN \
       subnetId=$SUBNET_ID
 ```
@@ -173,12 +173,12 @@ az container delete -n diag-demo -g diag-rg -y
 ## Production: pin to a digest
 
 The defaults use a released version tag
-(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.16.0`) rather than `:latest`. For
+(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.17.0`) rather than `:latest`. For
 production pin to a **content-addressable digest**:
 
 ```bash
 docker buildx imagetools inspect \
-  ghcr.io/pedrosakuma/dotnet-diagnostics:0.16.0 \
+  ghcr.io/pedrosakuma/dotnet-diagnostics:0.17.0 \
   --format '{{json .Manifest}}' | jq -r .digest
 # -> sha256:...
 # Use ghcr.io/pedrosakuma/dotnet-diagnostics@sha256:<digest> in your parameters.
