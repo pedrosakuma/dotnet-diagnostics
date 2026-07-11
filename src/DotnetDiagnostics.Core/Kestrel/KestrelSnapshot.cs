@@ -5,7 +5,8 @@ namespace DotnetDiagnostics.Core.Kestrel;
 /// EventPipe window: connection / request / TLS event counts, request and connection latency
 /// percentiles, the connection- and request-queue-length counter timeline (head-of-line blocking),
 /// and the live <c>KestrelServerOptions</c> JSON emitted by the Configuration event at session
-/// enable.
+/// enable. Each latency aggregate stays exact for the first few thousand samples, then switches
+/// to a bounded reservoir sample so p50/p95 become approximate while max remains exact.
 /// </summary>
 public sealed record KestrelSnapshot(
     int ProcessId,

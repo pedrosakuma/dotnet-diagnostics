@@ -6,7 +6,9 @@ namespace DotnetDiagnostics.Core.Networking;
 /// <c>System.Net.NameResolution</c> (DNS), <c>System.Net.Security</c> (TLS handshakes) and
 /// <c>System.Net.Sockets</c> (socket connects + byte volume), plus each provider's EventCounters.
 /// Latency percentiles are paired by EventSource activity id and are best-effort: when activity
-/// correlation is unavailable the counts are still reported and a note is added.
+/// correlation is unavailable the counts are still reported and a note is added. Each latency
+/// aggregate stays exact for the first few thousand samples, then switches to a bounded reservoir
+/// sample so p50/p95 become approximate while max remains exact.
 /// </summary>
 public sealed record NetworkingSnapshot(
     int ProcessId,

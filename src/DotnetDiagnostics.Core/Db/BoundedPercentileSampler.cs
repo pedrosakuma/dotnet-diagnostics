@@ -1,4 +1,4 @@
-namespace DotnetDiagnostics.Core.Db;
+namespace DotnetDiagnostics.Core.Internal;
 
 internal sealed class BoundedPercentileSampler
 {
@@ -32,7 +32,7 @@ internal sealed class BoundedPercentileSampler
         }
     }
 
-    public double GetPercentile95()
+    public double GetPercentile(double percentile)
     {
         if (_samples.Count == 0)
         {
@@ -40,7 +40,9 @@ internal sealed class BoundedPercentileSampler
         }
 
         _samples.Sort();
-        var percentileIndex = Math.Max(0, (int)Math.Ceiling(_samples.Count * 0.95) - 1);
+        var percentileIndex = Math.Max(0, (int)Math.Ceiling(_samples.Count * percentile) - 1);
         return _samples[percentileIndex];
     }
+
+    public double GetPercentile95() => GetPercentile(0.95);
 }

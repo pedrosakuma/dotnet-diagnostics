@@ -1,5 +1,7 @@
 using System.Globalization;
 
+using DotnetDiagnostics.Core.Internal;
+
 namespace DotnetDiagnostics.Core.Db;
 
 internal sealed class DbEventAggregationState
