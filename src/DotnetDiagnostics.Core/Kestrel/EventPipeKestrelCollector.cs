@@ -81,11 +81,11 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         var tlsProtocols = new HashSet<string>(StringComparer.Ordinal);
         string? configurationJson = null;
 
-        var processingTask = Task.Run(() =>
-        {
-            try
+        await EventPipeCollectionRunner.RunAsync(
+            session,
+            duration,
+            source =>
             {
-                using var source = new EventPipeEventSource(session.EventStream);
                 source.Dynamic.All += traceEvent =>
                 {
                     if (!string.Equals(traceEvent.ProviderName, KestrelProviderName, StringComparison.Ordinal))
@@ -180,25 +180,9 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
                         notes.Add($"Warning: failed to parse {traceEvent.EventName}: {ex.GetType().Name}.");
                     }
                 };
-
-                source.Process();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Kestrel EventPipe source ended for pid {Pid}.", processId);
-            }
-        }, cancellationToken);
-
-        try
-        {
-            await Task.Delay(duration, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
-            session.Dispose();
-        }
+            },
+            ex => _logger.LogDebug(ex, "Kestrel EventPipe source ended for pid {Pid}.", processId),
+            cancellationToken).ConfigureAwait(false);
 
         var totalEvents = connectionsStarted + requestsStarted + tlsStarted;
         if (totalEvents == 0 && counters.Count == 0)
