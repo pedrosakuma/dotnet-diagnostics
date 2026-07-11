@@ -596,7 +596,7 @@ public sealed class EventPipeDbCollector : IDbCollector
 
     private sealed class MutableCommandAggregate
     {
-        private readonly List<double> _durationsMs = new();
+        private readonly BoundedPercentileSampler _durationsMs = new();
         private readonly HashSet<string> _providers = new(StringComparer.Ordinal);
 
         public MutableCommandAggregate(
@@ -644,9 +644,6 @@ public sealed class EventPipeDbCollector : IDbCollector
 
         public DbCommandAggregate ToRecord()
         {
-            _durationsMs.Sort();
-            var percentileIndex = Math.Max(0, (int)Math.Ceiling(_durationsMs.Count * 0.95) - 1);
-            var p95Ms = _durationsMs.Count == 0 ? 0 : _durationsMs[percentileIndex];
             return new DbCommandAggregate(
                 CommandTextHash,
                 CommandTextSanitized,
@@ -655,7 +652,7 @@ public sealed class EventPipeDbCollector : IDbCollector
                 Count,
                 TotalMs,
                 MaxMs,
-                p95Ms,
+                _durationsMs.GetPercentile95(),
                 FirstSeenAt,
                 LastSeenAt);
         }
