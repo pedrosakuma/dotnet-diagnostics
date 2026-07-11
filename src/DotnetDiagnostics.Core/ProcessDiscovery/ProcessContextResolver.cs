@@ -20,6 +20,7 @@ namespace DotnetDiagnostics.Core.ProcessDiscovery;
 public sealed class ProcessContextResolver : IProcessContextResolver
 {
     public static readonly TimeSpan DefaultCacheTtl = TimeSpan.FromSeconds(60);
+    private const int TrimPeriod = 64;
 
     private readonly IProcessDiscovery _discovery;
     private readonly ICapabilityDetector _detector;
@@ -27,6 +28,7 @@ public sealed class ProcessContextResolver : IProcessContextResolver
     private readonly TimeProvider _clock;
     private readonly TimeSpan _ttl;
     private readonly ConcurrentDictionary<int, CacheEntry> _cache = new();
+    private int _resolveCountSinceTrim;
 
     public ProcessContextResolver(IProcessDiscovery discovery, ICapabilityDetector detector)
         : this(discovery, detector, bindings: null, TimeProvider.System, DefaultCacheTtl)
@@ -114,11 +116,9 @@ public sealed class ProcessContextResolver : IProcessContextResolver
 
     private async Task<ProcessContextResolution> ResolveExplicitAsync(int pid, bool autoResolved, string source, CancellationToken cancellationToken)
     {
-        if (_cache.TryGetValue(pid, out var entry) && _clock.GetUtcNow() < entry.ExpiresAt)
+        if (TryGetCachedContext(pid, autoResolved, source) is { } cached)
         {
-            return new ProcessContextResolution(
-                entry.Context with { AutoResolved = autoResolved, BindingSource = source },
-                Error: null);
+            return cached;
         }
 
         // Fail-fast for non-existent / non-.NET PIDs (#72): without this guard
@@ -179,11 +179,52 @@ public sealed class ProcessContextResolver : IProcessContextResolver
             BindingSource: source);
 
         _cache[pid] = new CacheEntry(context, _clock.GetUtcNow() + _ttl);
+        TrimExpiredEntriesIfNeeded();
         return new ProcessContextResolution(context, Error: null);
     }
 
     /// <summary>For tests: drops every cached entry.</summary>
     internal void ClearCache() => _cache.Clear();
+
+    /// <summary>For tests: reports the current cache size.</summary>
+    internal int CachedEntryCount => _cache.Count;
+
+    private ProcessContextResolution? TryGetCachedContext(int pid, bool autoResolved, string source)
+    {
+        if (!_cache.TryGetValue(pid, out var entry))
+        {
+            return null;
+        }
+
+        var now = _clock.GetUtcNow();
+        if (now >= entry.ExpiresAt)
+        {
+            _cache.TryRemove(pid, out _);
+            return null;
+        }
+
+        return new ProcessContextResolution(
+            entry.Context with { AutoResolved = autoResolved, BindingSource = source },
+            Error: null);
+    }
+
+    private void TrimExpiredEntriesIfNeeded()
+    {
+        if (Interlocked.Increment(ref _resolveCountSinceTrim) < TrimPeriod)
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _resolveCountSinceTrim, 0);
+        var now = _clock.GetUtcNow();
+        foreach (var pair in _cache)
+        {
+            if (now >= pair.Value.ExpiresAt)
+            {
+                _cache.TryRemove(pair.Key, out _);
+            }
+        }
+    }
 
     private sealed record CacheEntry(ProcessContext Context, DateTimeOffset ExpiresAt);
 }
