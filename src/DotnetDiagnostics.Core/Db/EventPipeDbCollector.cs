@@ -24,6 +24,7 @@ public sealed class EventPipeDbCollector : IDbCollector
     private const string MicrosoftSqlClientProviderName = "Microsoft.Data.SqlClient.EventSource";
     private const string SystemSqlClientProviderName = "System.Data.SqlClient.EventSource";
     private const int NPlusOneThreshold = 10;
+    private static readonly Regex s_tagPairRegex = new(@"\[(.*?)\]", RegexOptions.CultureInvariant | RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
 
     private readonly SensitiveDataRedactor _redactor;
     private readonly ILogger<EventPipeDbCollector> _logger;
@@ -486,7 +487,7 @@ public sealed class EventPipeDbCollector : IDbCollector
         }
 
         var tags = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (Match match in TagPairRegex().Matches(raw))
+        foreach (Match match in s_tagPairRegex.Matches(raw))
         {
             var content = match.Groups[1].Value;
             var separator = content.IndexOf(", ", StringComparison.Ordinal);
@@ -759,8 +760,6 @@ public sealed class EventPipeDbCollector : IDbCollector
             PoolExhaustedCount,
             _notes.OrderBy(static note => note, StringComparer.Ordinal).ToList());
     }
-
-    private static Regex TagPairRegex() => new(@"\[(.*?)\]", RegexOptions.CultureInvariant | RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
 
     private sealed record DbCounterPayload(string Name, double Value);
 
