@@ -466,24 +466,28 @@ public static class EventCollectionUseCases
             new HandledCollectionStrategy<GcDatasSnapshot>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxEvents, ct),
                 RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.GcDatas, snap),
-                BuildResult: (snapshot, handle, context) =>
+                BuildEarlyResult: (snapshot, context) =>
                 {
-                    if (!snapshot.HasData)
+                    if (snapshot.HasData)
                     {
-                        var parseStats = snapshot.ParseStats;
-                        var sawUnparseable = parseStats.MalformedPayloads > 0 || parseStats.UnsupportedVersion > 0;
-                        var message = sawUnparseable
-                            ? $"DATAS events were present but none could be decoded ({parseStats.UnsupportedVersion} unsupported-version, {parseStats.MalformedPayloads} malformed). The target runtime may emit a newer DATAS event version than this build understands."
-                            : $"No DATAS events observed in {context.DurationSeconds}s. DATAS tuning events require Server GC (default-on in .NET 9+; otherwise set DOTNET_GCDynamicAdaptationMode=1). Workstation GC, .NET < 9, or a quiet/short window all produce no events.";
-                        var code = sawUnparseable ? "UnsupportedDatasPayload" : "NoDatasEvents";
-                        return DiagnosticResult.Fail<GcDatasSnapshot>(
-                            message,
-                            new DiagnosticError(code, message),
-                            new NextActionHint("collect_events",
-                                "Confirm the target uses Server GC, then re-run kind=datas during sustained allocation.",
-                                new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["kind"] = "datas", ["durationSeconds"] = 20 }));
+                        return null;
                     }
 
+                    var parseStats = snapshot.ParseStats;
+                    var sawUnparseable = parseStats.MalformedPayloads > 0 || parseStats.UnsupportedVersion > 0;
+                    var message = sawUnparseable
+                        ? $"DATAS events were present but none could be decoded ({parseStats.UnsupportedVersion} unsupported-version, {parseStats.MalformedPayloads} malformed). The target runtime may emit a newer DATAS event version than this build understands."
+                        : $"No DATAS events observed in {context.DurationSeconds}s. DATAS tuning events require Server GC (default-on in .NET 9+; otherwise set DOTNET_GCDynamicAdaptationMode=1). Workstation GC, .NET < 9, or a quiet/short window all produce no events.";
+                    var code = sawUnparseable ? "UnsupportedDatasPayload" : "NoDatasEvents";
+                    return DiagnosticResult.Fail<GcDatasSnapshot>(
+                        message,
+                        new DiagnosticError(code, message),
+                        new NextActionHint("collect_events",
+                            "Confirm the target uses Server GC, then re-run kind=datas during sustained allocation.",
+                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["kind"] = "datas", ["durationSeconds"] = 20 }));
+                },
+                BuildResult: (snapshot, handle, context) =>
+                {
                     var changes = 0;
                     var ordered = snapshot.TuningEvents.OrderBy(t => t.Timestamp).ThenBy(t => t.GcIndex).ToList();
                     for (var i = 1; i < ordered.Count; i++)
@@ -1316,8 +1320,13 @@ public static class EventCollectionUseCases
         }
 
         var snapshot = await strategy.CollectAsync(resolved.ProcessId, cancellationToken).ConfigureAwait(false);
-        var handle = strategy.RegisterHandle(handles, resolved.ProcessId, snapshot);
         var context = new CollectionUseCaseContext(resolved.ProcessId, durationSeconds, depth);
+        if (strategy.BuildEarlyResult?.Invoke(snapshot, context) is { } earlyResult)
+        {
+            return WithContext(earlyResult, resolved.Context);
+        }
+
+        var handle = strategy.RegisterHandle(handles, resolved.ProcessId, snapshot);
         return WithContext(strategy.BuildResult(snapshot, handle, context), resolved.Context);
     }
 
@@ -1344,6 +1353,7 @@ public static class EventCollectionUseCases
     private sealed record HandledCollectionStrategy<T>(
         Func<int, CancellationToken, Task<T>> CollectAsync,
         Func<IDiagnosticHandleStore, int, T, DiagnosticHandle> RegisterHandle,
-        Func<T, DiagnosticHandle, CollectionUseCaseContext, DiagnosticResult<T>> BuildResult)
+        Func<T, DiagnosticHandle, CollectionUseCaseContext, DiagnosticResult<T>> BuildResult,
+        Func<T, CollectionUseCaseContext, DiagnosticResult<T>?>? BuildEarlyResult = null)
         where T : notnull;
 }
