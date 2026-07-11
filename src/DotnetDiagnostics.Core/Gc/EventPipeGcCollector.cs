@@ -57,11 +57,11 @@ public sealed class EventPipeGcCollector : IGcCollector
         var heapStats = new ConcurrentQueue<GcHeapStatsSample>();
         var pending = new ConcurrentDictionary<long, GCStartTraceData>();
 
-        var processingTask = Task.Run(() =>
-        {
-            try
+        await EventPipeCollectionRunner.RunAsync(
+            session,
+            duration,
+            source =>
             {
-                using var source = new EventPipeEventSource(session.EventStream);
                 source.Clr.GCStart += traceEvent =>
                 {
                     var data = (GCStartTraceData)traceEvent.Clone();
@@ -112,25 +112,9 @@ public sealed class EventPipeGcCollector : IGcCollector
                         PinnedObjectCount: traceEvent.PinnedObjectCount,
                         GcHandleCount: traceEvent.GCHandleCount));
                 };
-
-                source.Process();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "EventPipe GC source ended for pid {Pid}.", processId);
-            }
-        }, cancellationToken);
-
-        try
-        {
-            await Task.Delay(duration, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
-            session.Dispose();
-        }
+            },
+            ex => _logger.LogDebug(ex, "EventPipe GC source ended for pid {Pid}.", processId),
+            cancellationToken).ConfigureAwait(false);
 
         var collected = events.ToList();
         var totalPause = collected.Aggregate(TimeSpan.Zero, (acc, e) => acc + e.PauseDuration);

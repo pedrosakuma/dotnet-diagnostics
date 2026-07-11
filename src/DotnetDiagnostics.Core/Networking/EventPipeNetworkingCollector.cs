@@ -80,11 +80,11 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         var counters = new Dictionary<string, NetworkingCounterSample>(StringComparer.Ordinal);
         var tlsProtocols = new HashSet<string>(StringComparer.Ordinal);
 
-        var processingTask = Task.Run(() =>
-        {
-            try
+        await EventPipeCollectionRunner.RunAsync(
+            session,
+            duration,
+            source =>
             {
-                using var source = new EventPipeEventSource(session.EventStream);
                 source.Dynamic.All += traceEvent =>
                 {
                     var provider = traceEvent.ProviderName;
@@ -144,25 +144,9 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
                         notes.Add($"Warning: failed to parse {traceEvent.ProviderName}/{traceEvent.EventName}: {ex.GetType().Name}.");
                     }
                 };
-
-                source.Process();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Networking EventPipe source ended for pid {Pid}.", processId);
-            }
-        }, cancellationToken);
-
-        try
-        {
-            await Task.Delay(duration, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
-            session.Dispose();
-        }
+            },
+            ex => _logger.LogDebug(ex, "Networking EventPipe source ended for pid {Pid}.", processId),
+            cancellationToken).ConfigureAwait(false);
 
         var totalEvents = httpStarted + dnsStarted + tlsStarted + socketStarted;
         if (totalEvents == 0 && counters.Count == 0)

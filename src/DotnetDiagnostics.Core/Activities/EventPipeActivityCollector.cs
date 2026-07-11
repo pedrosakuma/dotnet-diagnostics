@@ -1,4 +1,3 @@
-using System.Collections;
 using System.Diagnostics.Tracing;
 using System.Globalization;
 using System.Text;
@@ -24,7 +23,6 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
     private const string FilterArgumentName = "FilterAndPayloadSpecs";
     private const string TransformSuffix = ":-TraceId;SpanId;ParentSpanId;StartTimeTicks=StartTimeUtc.Ticks;DurationTicks=Duration.Ticks;ActivitySourceName=Source.Name;Tags=TagObjects.*Enumerate";
 
-    private static readonly IReadOnlyDictionary<string, string> EmptyArguments = new Dictionary<string, string>(0, StringComparer.Ordinal);
     private static readonly Dictionary<string, Regex> WildcardRegexCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object WildcardRegexLock = new();
 
@@ -151,7 +149,7 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
             return false;
         }
 
-        var arguments = ExtractArguments(traceEvent.PayloadByName("Arguments"));
+        var arguments = DiagnosticSourcePayloadParser.ExtractArguments(traceEvent.PayloadByName("Arguments"));
         var traceId = NullIfEmpty(GetArgument(arguments, "TraceId"));
         var spanId = NullIfEmpty(GetArgument(arguments, "SpanId"));
         var parentSpanId = NormalizeParentSpanId(GetArgument(arguments, "ParentSpanId"));
@@ -174,7 +172,7 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
             StartedAt: new DateTimeOffset(startedAt, TimeSpan.Zero),
             StoppedAt: stoppedAt,
             Duration: duration,
-            Tags: ParseTagPairs(GetArgument(arguments, "Tags")));
+            Tags: DiagnosticSourcePayloadParser.ParseBracketedTagPairs(GetArgument(arguments, "Tags")));
         return true;
     }
 
@@ -215,99 +213,6 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
     private static bool IsActivityStopEvent(string eventName) =>
         eventName.EndsWith("Stop", StringComparison.OrdinalIgnoreCase);
 
-    private static IReadOnlyDictionary<string, string> ExtractArguments(object? payload)
-    {
-        if (payload is null)
-        {
-            return EmptyArguments;
-        }
-
-        var result = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (payload is IEnumerable enumerable && payload is not string)
-        {
-            foreach (var item in enumerable)
-            {
-                if (item is null)
-                {
-                    continue;
-                }
-
-                if (TryGetKeyValue(item, out var key, out var value))
-                {
-                    result[key] = FormatString(value);
-                }
-            }
-        }
-
-        return result;
-    }
-
-    private static bool TryGetKeyValue(object item, out string key, out object? value)
-    {
-        if (item is IDictionary<string, object> dictionary)
-        {
-            key = dictionary.TryGetValue("Key", out var dictionaryKey) ? FormatString(dictionaryKey) : string.Empty;
-            value = dictionary.TryGetValue("Value", out var dictionaryValue) ? dictionaryValue : null;
-            return !string.IsNullOrWhiteSpace(key);
-        }
-
-        if (item is DictionaryEntry entry)
-        {
-            key = FormatString(entry.Key);
-            value = entry.Value;
-            return !string.IsNullOrWhiteSpace(key);
-        }
-
-        if (item is IDictionary nonGenericDictionary)
-        {
-            key = nonGenericDictionary.Contains("Key") ? FormatString(nonGenericDictionary["Key"]) : string.Empty;
-            value = nonGenericDictionary.Contains("Value") ? nonGenericDictionary["Value"] : null;
-            return !string.IsNullOrWhiteSpace(key);
-        }
-
-        var type = item.GetType();
-        var keyProperty = type.GetProperty("Key");
-        var valueProperty = type.GetProperty("Value");
-        if (keyProperty is not null && valueProperty is not null)
-        {
-            key = FormatString(keyProperty.GetValue(item));
-            value = valueProperty.GetValue(item);
-            return !string.IsNullOrWhiteSpace(key);
-        }
-
-        key = string.Empty;
-        value = null;
-        return false;
-    }
-
-    private static IReadOnlyDictionary<string, string> ParseTagPairs(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return EmptyArguments;
-        }
-
-        var tags = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (Match match in TagPairRegex().Matches(raw))
-        {
-            var content = match.Groups[1].Value;
-            var separator = content.IndexOf(", ", StringComparison.Ordinal);
-            if (separator < 0)
-            {
-                continue;
-            }
-
-            var key = content[..separator];
-            var value = content[(separator + 2)..];
-            if (!string.IsNullOrWhiteSpace(key))
-            {
-                tags[key] = value;
-            }
-        }
-
-        return tags;
-    }
-
     private static TimeSpan? ParseDuration(IReadOnlyDictionary<string, string> arguments)
     {
         var rawTicks = GetArgument(arguments, "DurationTicks");
@@ -328,7 +233,7 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
     }
 
     private static string? GetArgument(IReadOnlyDictionary<string, string> arguments, string key) =>
-        arguments.TryGetValue(key, out var value) ? value : null;
+        DiagnosticSourcePayloadParser.GetArgument(arguments, key);
 
     private static string? NormalizeParentSpanId(string? value)
     {
@@ -359,12 +264,7 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
         return filters.Any(pattern => WildcardToRegex(pattern).IsMatch(sourceName));
     }
 
-    private static string FormatString(object? value) => value switch
-    {
-        null => string.Empty,
-        IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
-        _ => value.ToString() ?? string.Empty,
-    };
+    private static string FormatString(object? value) => DiagnosticSourcePayloadParser.ConvertToString(value);
 
     private static List<ActivitySourceSummary> BuildSourceSummary(IReadOnlyList<CapturedActivity> activities) =>
         activities
