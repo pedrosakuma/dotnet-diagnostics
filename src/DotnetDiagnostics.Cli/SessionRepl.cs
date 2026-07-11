@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text;
-using System.Text.Json;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.ProcessDiscovery;
@@ -33,12 +32,6 @@ namespace DotnetDiagnostics.Cli;
 /// </remarks>
 internal sealed class SessionRepl
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        WriteIndented = true,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-    };
-
     private static readonly TimeSpan SweepInterval = TimeSpan.FromSeconds(5);
 
     private readonly object _gate = new();
@@ -195,100 +188,13 @@ internal sealed class SessionRepl
         TextWriter stderr)
     {
         var tokens = Tokenize(line);
-        var options = CliOptions.Parse(tokens, out var parseError);
-        if (parseError is not null)
+        if (!CliCommandExecution.TryPrepareSession(tokens, _targetPid, out var prepared, out var response))
         {
-            await stderr.WriteLineAsync(parseError).ConfigureAwait(false);
+            await CliCommandExecution.WriteImmediateResponseAsync(response!, stdout, stderr).ConfigureAwait(false);
             return;
         }
 
-        if (options!.Help)
-        {
-            var helpText = options.Command is { } helpCommand
-                            && CliCommands.Commands.Contains(helpCommand, StringComparer.Ordinal)
-                ? CliHelp.ForCommand(helpCommand)
-                : SessionHelp;
-            await stdout.WriteLineAsync(helpText).ConfigureAwait(false);
-            return;
-        }
-
-        if (options.Command is null)
-        {
-            await stderr.WriteLineAsync("No command specified. Type 'help' for the command list, or 'exit' to leave.").ConfigureAwait(false);
-            return;
-        }
-
-        if (string.Equals(options.Command, "session", StringComparison.Ordinal))
-        {
-            await stderr.WriteLineAsync("Already in a session. Type 'exit' to leave.").ConfigureAwait(false);
-            return;
-        }
-
-        if (!CliCommands.Commands.Contains(options.Command, StringComparer.Ordinal))
-        {
-            await stderr.WriteLineAsync($"Unknown command '{options.Command}'. Type 'help' for the command list.").ConfigureAwait(false);
-            return;
-        }
-
-        if (options.Launch || options.LaunchArgs.Count > 0)
-        {
-            await stderr.WriteLineAsync("--launch is only available at session startup ('session --launch -- <app>'); inside a session the target is already live — use 'target <pid>' to switch.").ConfigureAwait(false);
-            return;
-        }
-
-        if (options.WatchIntervalSeconds is not null)
-        {
-            await stderr.WriteLineAsync("--watch is only available for one-shot commands outside a session. Re-run the command manually, or leave the session and use --watch there.").ConfigureAwait(false);
-            return;
-        }
-
-        // Apply the session-bound target pid to live-target commands that omitted --pid (strand C).
-        // We append the flag to the token list and re-parse rather than clone CliOptions (a class with
-        // ~30 init-only properties). Validation then runs against the effective options.
-        var inheritedTarget = false;
-        if (_targetPid is { } boundPid && !options.HasPid && ShouldInheritTarget(options))
-        {
-            tokens.Add("--pid");
-            tokens.Add(boundPid.ToString(CultureInfo.InvariantCulture));
-            var reparsed = CliOptions.Parse(tokens, out var reparseError);
-            if (reparseError is not null || reparsed is null)
-            {
-                await stderr.WriteLineAsync($"{options.Command}: internal error applying bound target pid {boundPid}.").ConfigureAwait(false);
-                return;
-            }
-
-            options = reparsed;
-            inheritedTarget = true;
-        }
-
-        if (!CliCommands.TryValidateCommand(options, out var validationError))
-        {
-            await stderr.WriteLineAsync(validationError).ConfigureAwait(false);
-            return;
-        }
-
-        if (!CliHost.TryResolveNamedPid(services, options, out var resolvedOptions, out var pidResolutionError))
-        {
-            await stderr.WriteLineAsync(pidResolutionError).ConfigureAwait(false);
-            return;
-        }
-
-        options = resolvedOptions;
-
-        // Issue #365: when the session launched the target and this command resolves to that pid, mark
-        // the options so the capability note reports descendant-attach availability instead of
-        // re-suggesting --launch.
-        if (_launchedTarget && options.Pid is { } resolvedPid && resolvedPid == _targetPid)
-        {
-            options = options with { LaunchedByCli = true };
-        }
-
-        if (inheritedTarget && !options.Json)
-        {
-            await stdout.WriteLineAsync(string.Create(
-                CultureInfo.InvariantCulture,
-                $"  · using bound target pid {options.Pid}")).ConfigureAwait(false);
-        }
+        var options = prepared!.Options;
 
         // Re-point the artifact sandbox at this command's resolved root (dump --out / get-bytes
         // --dump-file), or the per-session default temp root when no override applies.
@@ -308,15 +214,18 @@ internal sealed class SessionRepl
         {
             // `query` is handled by the session-aware path (it can honour --handle against the live
             // shared store); every other command runs the same use case the one-shot CLI does.
-            var result = string.Equals(options.Command, "query", StringComparison.Ordinal)
-                ? await CliCommands.QuerySession(services, options, commandCts.Token).ConfigureAwait(false)
-                : await CliCommands.RunAsync(services, options, commandCts.Token).ConfigureAwait(false);
+            var outcome = await CliCommandExecution.ExecuteAsync(
+                services,
+                prepared,
+                stdout,
+                stderr,
+                new CliExecutionOptions(CliExecutionContext.Session, CliAnsi.IsEnabled(stdout, forceAnsi: null), ShowProgress: false, LaunchedTargetPid: _launchedTarget ? _targetPid : null),
+                commandCts.Token)
+                .ConfigureAwait(false);
 
-            await RenderAsync(result, options.Json, stdout, stderr).ConfigureAwait(false);
-
-            if (result.Handle is { } handleId)
+            if (outcome.Result?.Handle is { } handleId)
             {
-                await SurfaceHandleAsync(store, handleId, result.HandleExpiresAt, stdout).ConfigureAwait(false);
+                await SurfaceHandleAsync(store, handleId, outcome.Result.HandleExpiresAt, stdout).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (commandCts.IsCancellationRequested && !_sessionCts.IsCancellationRequested)
@@ -461,25 +370,6 @@ internal sealed class SessionRepl
                 return string.Equals(options.Kind, "module", StringComparison.Ordinal);
             default:
                 return false;
-        }
-    }
-
-    private static async Task RenderAsync(CliCommandResult result, bool json, TextWriter stdout, TextWriter stderr)
-    {
-        if (json)
-        {
-            await stdout.WriteLineAsync(JsonSerializer.Serialize(result.Envelope, result.Envelope.GetType(), JsonOptions))
-                .ConfigureAwait(false);
-        }
-        else
-        {
-            await stdout.WriteLineAsync(CliAnsi.ColorizeHuman(result.Human, CliAnsi.IsEnabled(stdout, forceAnsi: null))).ConfigureAwait(false);
-        }
-
-        if (result.Cancelled)
-        {
-            await stderr.WriteLineAsync("(cancelled mid-window — diagnostic session stopped, temp files cleaned up; payload is partial)")
-                .ConfigureAwait(false);
         }
     }
 
@@ -675,4 +565,6 @@ internal sealed class SessionRepl
         A bound target (shown as 'diag(pid <id>)>') is overridden by an explicit --pid on any command.
         Ctrl-C cancels the running command and keeps the session alive; press it again to force-quit.
         """;
+
+    internal static string HelpText => SessionHelp;
 }

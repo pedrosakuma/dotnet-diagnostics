@@ -1,6 +1,4 @@
-using System.Diagnostics;
 using System.Globalization;
-using System.Text.Json;
 using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Hosting;
 using DotnetDiagnostics.Core.Launch;
@@ -33,12 +31,6 @@ namespace DotnetDiagnostics.Cli;
 /// </remarks>
 internal static class CliHost
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        WriteIndented = true,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-    };
-
     /// <summary>
     /// Production entry point (from <see cref="Program"/>). Owns the Ctrl-C handler and writes to the
     /// real console. Returns the process exit code.
@@ -129,53 +121,13 @@ internal static class CliHost
         CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
         CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
 
-        var options = CliOptions.Parse(args, out var parseError);
-        if (parseError is not null)
+        if (!CliCommandExecution.TryPrepareOneShot(args, out var prepared, out var response))
         {
-            return await WriteUsageErrorAsync(stderr, parseError!).ConfigureAwait(false);
+            await CliCommandExecution.WriteImmediateResponseAsync(response!, stdout, stderr).ConfigureAwait(false);
+            return response!.WriteToStdout ? 0 : 2;
         }
 
-        if (options!.Help)
-        {
-            var helpText = options.Command is { } helpCommand
-                            && CliCommands.Commands.Contains(helpCommand, StringComparer.Ordinal)
-                ? CliHelp.ForCommand(helpCommand)
-                : CliHelp.Global;
-            await stdout.WriteLineAsync(helpText).ConfigureAwait(false);
-            return 0;
-        }
-
-        if (options.Command is null)
-        {
-            return await WriteUsageErrorAsync(stderr, "No command specified.").ConfigureAwait(false);
-        }
-
-        if (!CliCommands.Commands.Contains(options.Command, StringComparer.Ordinal))
-        {
-            return await WriteUsageErrorAsync(stderr, $"Unknown command '{options.Command}'.").ConfigureAwait(false);
-        }
-
-        if (!CliCommands.TryValidateLaunch(options, out var launchValidationError))
-        {
-            return await WriteUsageErrorAsync(stderr, launchValidationError!).ConfigureAwait(false);
-        }
-
-        if (options.WatchIntervalSeconds is not null && !CliCommands.TryValidateWatch(options, out var watchError))
-        {
-            return await WriteUsageErrorAsync(stderr, watchError!).ConfigureAwait(false);
-        }
-
-        if (options.Command == "completion")
-        {
-            if (!CliCommands.TryValidateCompletion(options, out var completionError))
-            {
-                await stderr.WriteLineAsync(completionError).ConfigureAwait(false);
-                return 2;
-            }
-
-            await stdout.WriteLineAsync(CliCompletionScripts.ForShell(options.CompletionShell!)).ConfigureAwait(false);
-            return 0;
-        }
+        var options = prepared!.Options;
 
         // The stateful session REPL builds the host ONCE (shared singletons — the handle store that
         // makes drill-down possible must outlive every command) and reads commands from stdin until
@@ -228,11 +180,6 @@ internal static class CliHost
             }
         }
 
-        if (!CliCommands.TryValidateCommand(options, out var validationError))
-        {
-            return await WriteUsageErrorAsync(stderr, validationError!).ConfigureAwait(false);
-        }
-
         // Cold-start capture (issue #446): when --suspend-startup is set, the target is launched
         // SUSPENDED on a reverse-connect diagnostic port, the EventPipe session is armed before any
         // managed code runs, and only then resumed — so pre-attach events are recovered. This is a
@@ -269,21 +216,14 @@ internal static class CliHost
             }
 
             launchedTarget = target;
-            options = options with { Pid = pid, PidName = null, Launch = false, LaunchedByCli = true };
+            options = options with { Pid = pid, PidName = null, Launch = false };
+            prepared = prepared with { Options = options };
         }
 
         using var host = BuildHost(options);
 
         try
         {
-            if (!TryResolveNamedPid(host.Services, options, out var resolvedOptions, out var pidResolutionError))
-            {
-                await stderr.WriteLineAsync(pidResolutionError).ConfigureAwait(false);
-                return 2;
-            }
-
-            options = resolvedOptions;
-
             // #387: long collections (collect / inspect-heap / dump) run for several seconds with no
             // output. Show an elapsed-time spinner on stderr while the command runs — but ONLY on a
             // real interactive console (not --json, not when stderr is redirected/piped, and never in
@@ -301,7 +241,7 @@ internal static class CliHost
             {
                 return await RunWatchAsync(
                     host.Services,
-                    options,
+                    prepared,
                     stdout,
                     stderr,
                     showProgress,
@@ -310,10 +250,15 @@ internal static class CliHost
                     cancellationToken).ConfigureAwait(false);
             }
 
-            var result = await RunCommandAsync(host.Services, options, stderr, showProgress, cancellationToken).ConfigureAwait(false);
-            await RenderAsync(result, options.Json, ansiEnabled, stdout).ConfigureAwait(false);
-
-            return await ToExitCodeAsync(result, options.Command, stderr).ConfigureAwait(false);
+            var outcome = await CliCommandExecution.ExecuteAsync(
+                host.Services,
+                prepared,
+                stdout,
+                stderr,
+                new CliExecutionOptions(CliExecutionContext.OneShot, ansiEnabled, showProgress, options.Launch ? null : launchedTarget?.ProcessId),
+                cancellationToken)
+                .ConfigureAwait(false);
+            return outcome.ExitCode;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -330,50 +275,9 @@ internal static class CliHost
         }
     }
 
-    private static async Task<CliCommandResult> RunCommandAsync(
-        IServiceProvider services,
-        CliOptions options,
-        TextWriter stderr,
-        bool showProgress,
-        CancellationToken cancellationToken)
-        => await WithProgressAsync(
-            stderr,
-            showProgress,
-            options.Command!,
-            () => CliCommands.RunAsync(services, options, cancellationToken),
-            cancellationToken).ConfigureAwait(false);
-
-    private static async Task RenderAsync(CliCommandResult result, bool json, bool ansiEnabled, TextWriter stdout)
-    {
-        if (json)
-        {
-            await stdout.WriteLineAsync(JsonSerializer.Serialize(result.Envelope, result.Envelope.GetType(), JsonOptions))
-                .ConfigureAwait(false);
-        }
-        else
-        {
-            var human = result.RawHuman ? result.Human : CliAnsi.ColorizeHuman(result.Human, ansiEnabled);
-            await stdout.WriteLineAsync(human).ConfigureAwait(false);
-        }
-    }
-
-    private static async Task<int> ToExitCodeAsync(CliCommandResult result, string? command, TextWriter stderr)
-    {
-        // A use case that swallows OperationCanceledException returns a partial envelope flagged
-        // Cancelled (no Error) — surface it as the cancelled exit code, not success.
-        if (result.Cancelled)
-        {
-            await stderr.WriteLineAsync($"dotnet-diagnostics-cli {command}: cancelled mid-window — diagnostic session stopped and temp files cleaned up. Payload is partial.")
-                .ConfigureAwait(false);
-            return 130;
-        }
-
-        return result.IsError ? 1 : 0;
-    }
-
     private static async Task<int> RunWatchAsync(
         IServiceProvider services,
-        CliOptions options,
+        CliPreparedCommand prepared,
         TextWriter stdout,
         TextWriter stderr,
         bool showProgress,
@@ -381,6 +285,7 @@ internal static class CliHost
         CliRuntimeOptions runtimeOptions,
         CancellationToken cancellationToken)
     {
+        var options = prepared.Options;
         var maxIterations = runtimeOptions.MaxWatchIterations;
         var delay = runtimeOptions.WatchDelay ?? TimeSpan.FromSeconds(options.WatchIntervalSeconds!.Value);
         var iteration = 0;
@@ -399,9 +304,15 @@ internal static class CliHost
                 }
             }
 
-            var result = await RunCommandAsync(services, options, stderr, showProgress, cancellationToken).ConfigureAwait(false);
-            await RenderAsync(result, json: false, ansiEnabled, stdout).ConfigureAwait(false);
-            lastExitCode = await ToExitCodeAsync(result, options.Command, stderr).ConfigureAwait(false);
+            var outcome = await CliCommandExecution.ExecuteAsync(
+                services,
+                prepared,
+                stdout,
+                stderr,
+                new CliExecutionOptions(CliExecutionContext.OneShot, ansiEnabled, showProgress),
+                cancellationToken)
+                .ConfigureAwait(false);
+            lastExitCode = outcome.ExitCode;
             if (lastExitCode == 130)
             {
                 return lastExitCode;
@@ -616,8 +527,13 @@ internal static class CliHost
             using var host = BuildHost(options);
             var ansiEnabled = !options.Json && CliAnsi.IsEnabled(stdout, forceAnsi: null);
             var result = await CliCommands.RunColdStartStartupAsync(host.Services, options, target, coldCts.Token).ConfigureAwait(false);
-            await RenderAsync(result, options.Json, ansiEnabled, stdout).ConfigureAwait(false);
-            return await ToExitCodeAsync(result, options.Command, stderr).ConfigureAwait(false);
+            return await CliCommandExecution.WriteCompletedResultAsync(
+                result,
+                options,
+                stdout,
+                stderr,
+                new CliExecutionOptions(CliExecutionContext.OneShot, ansiEnabled, ShowProgress: false))
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (coldCts.IsCancellationRequested)
         {
@@ -649,74 +565,7 @@ internal static class CliHost
         }
     }
 
-    /// <summary>
-    /// One-shot commands long enough to warrant a live progress spinner (they open an EventPipe /
-    /// ptrace session or write a dump over several seconds). Discovery commands (<c>processes</c>,
-    /// <c>capabilities</c>) return immediately and need none.
-    /// </summary>
     private static readonly string[] ProgressCommands = ["collect", "inspect-heap", "dump"];
-
-    /// <summary>
-    /// Runs <paramref name="run"/> while, when <paramref name="enabled"/>, ticking an elapsed-time
-    /// spinner to <paramref name="stderr"/> every ~500 ms. The spinner line is cleared before this
-    /// method returns so it never bleeds into the command's stdout/stderr output. When disabled this
-    /// is a transparent pass-through (used by tests and piped/--json invocations).
-    /// </summary>
-    private static async Task<T> WithProgressAsync<T>(
-        TextWriter stderr,
-        bool enabled,
-        string command,
-        Func<Task<T>> run,
-        CancellationToken cancellationToken)
-    {
-        if (!enabled)
-        {
-            return await run().ConfigureAwait(false);
-        }
-
-        using var tickerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var ticker = RunSpinnerAsync(stderr, command, tickerCts.Token);
-        try
-        {
-            return await run().ConfigureAwait(false);
-        }
-        finally
-        {
-            await tickerCts.CancelAsync().ConfigureAwait(false);
-            try
-            {
-                await ticker.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-
-            // Erase the spinner line so the result starts on a clean line.
-            await stderr.WriteAsync($"\r{new string(' ', 48)}\r").ConfigureAwait(false);
-            await stderr.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-    }
-
-    private static async Task RunSpinnerAsync(TextWriter stderr, string command, CancellationToken cancellationToken)
-    {
-        var frames = new[] { '|', '/', '-', '\\' };
-        var stopwatch = Stopwatch.StartNew();
-        var i = 0;
-        try
-        {
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                await stderr.WriteAsync(
-                    string.Create(CultureInfo.InvariantCulture, $"\r{frames[i++ % frames.Length]} {command}… {stopwatch.Elapsed.TotalSeconds:F0}s (Ctrl-C to cancel)"))
-                    .ConfigureAwait(false);
-                await stderr.FlushAsync(cancellationToken).ConfigureAwait(false);
-                await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-    }
 
     private static IHost BuildHost(CliOptions options)
     {
