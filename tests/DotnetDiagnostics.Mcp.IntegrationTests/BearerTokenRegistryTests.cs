@@ -226,6 +226,43 @@ public sealed class BearerTokenRegistryTests
     }
 
     [Fact]
+    public void TryResolve_ExactMatch_RemainsCorrect_ForSharedPrefixesAndDifferentLengths()
+    {
+        using var env = EnvScope.Clear("MCP_BEARER_TOKEN");
+        var config = ConfigFrom(new()
+        {
+            ["Auth:BearerTokens:0:Name"] = "short",
+            ["Auth:BearerTokens:0:Token"] = "prefix-token",
+            ["Auth:BearerTokens:0:Scopes:0"] = "read-counters",
+            ["Auth:BearerTokens:1:Name"] = "long",
+            ["Auth:BearerTokens:1:Token"] = "prefix-token-with-suffix",
+            ["Auth:BearerTokens:1:Scopes:0"] = "read-counters",
+        });
+        var registry = BearerTokenRegistry.Build(config, NullLogger.Instance, true);
+
+        registry.TryResolve("prefix-token")!.Name.Should().Be("short");
+        registry.TryResolve("prefix-token-with-suffix")!.Name.Should().Be("long");
+        registry.TryResolve("prefix-token-with-suffiy").Should().BeNull();
+    }
+
+    [Fact]
+    public void TryResolve_LongUtf8Token_UsesIndexedLookupWithoutChangingSemantics()
+    {
+        using var env = EnvScope.Clear("MCP_BEARER_TOKEN");
+        var longUtf8Token = string.Concat(Enumerable.Repeat("ã-token-", 40));
+        var config = ConfigFrom(new()
+        {
+            ["Auth:BearerTokens:0:Name"] = "utf8",
+            ["Auth:BearerTokens:0:Token"] = longUtf8Token,
+            ["Auth:BearerTokens:0:Scopes:0"] = "read-counters",
+        });
+        var registry = BearerTokenRegistry.Build(config, NullLogger.Instance, true);
+
+        registry.TryResolve(longUtf8Token)!.Name.Should().Be("utf8");
+        registry.TryResolve(longUtf8Token + "!").Should().BeNull();
+    }
+
+    [Fact]
     public void BearerPrincipal_HasScope_HonoursRootWildcard()
     {
         var p = new BearerPrincipal("root-holder", ImmutableHashSet.Create("root"));

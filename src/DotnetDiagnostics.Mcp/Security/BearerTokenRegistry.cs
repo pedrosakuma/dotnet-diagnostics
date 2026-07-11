@@ -1,4 +1,6 @@
 using System.Collections.Immutable;
+using System.Buffers;
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Configuration;
@@ -12,26 +14,30 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// </summary>
 /// <remarks>
 /// Construction is the only validation path: duplicates, empty fields, and missing scopes
-/// fail loudly at startup rather than at request time. Lookup is constant-time per
-/// registered entry and never short-circuits on a hit — both properties are important to
-/// avoid leaking which slot a token occupies via response timing.
+/// fail loudly at startup rather than at request time. Lookup is indexed by the presented
+/// token's UTF-8 length + SHA-256 digest so the server does not linearly scan every
+/// configured token per request, but comparisons within the matched candidate bucket remain
+/// constant-time and never short-circuit on a hit.
 /// </remarks>
 internal sealed class BearerTokenRegistry : IPrincipalResolver
 {
-    // Stored as (utf8 bytes, principal) so we never re-encode per request and so the raw
-    // string can be discarded after construction. Iteration order is fixed at build time.
-    private readonly IReadOnlyList<(byte[] TokenBytes, BearerPrincipal Principal)> _entries;
+    // Stored as (utf8 bytes, principal) so the raw string can be discarded after construction.
+    // The index key is the token's exact UTF-8 length plus its full SHA-256 digest; collisions
+    // still fall back to constant-time byte comparisons within the matched bucket.
+    private readonly Dictionary<TokenIndexKey, Entry[]> _entriesByIndex;
+    private readonly int _count;
 
-    public static readonly BearerTokenRegistry Empty = new(Array.Empty<(byte[] TokenBytes, BearerPrincipal Principal)>());
+    public static readonly BearerTokenRegistry Empty = new(Array.Empty<Entry>());
 
-    private BearerTokenRegistry(IReadOnlyList<(byte[] TokenBytes, BearerPrincipal Principal)> entries)
+    private BearerTokenRegistry(IReadOnlyList<Entry> entries)
     {
-        _entries = entries;
+        _count = entries.Count;
+        _entriesByIndex = BuildIndex(entries);
     }
 
     /// <summary>Count of registered tokens. Used by startup diagnostics; the values
     /// themselves are never enumerated.</summary>
-    public int Count => _entries.Count;
+    public int Count => _count;
 
     public BearerPrincipal? TryResolve(string presentedBearer)
     {
@@ -40,25 +46,43 @@ internal sealed class BearerTokenRegistry : IPrincipalResolver
             return null;
         }
 
-        var presentedBytes = Encoding.UTF8.GetBytes(presentedBearer);
-        BearerPrincipal? match = null;
+        var byteCount = Encoding.UTF8.GetByteCount(presentedBearer);
+        byte[]? rented = null;
+        Span<byte> presentedBytes = byteCount <= 256
+            ? stackalloc byte[byteCount]
+            : (rented = ArrayPool<byte>.Shared.Rent(byteCount)).AsSpan(0, byteCount);
+        Span<byte> hashBytes = stackalloc byte[32];
 
-        // Iterate every entry even after a hit. FixedTimeEquals is constant-time
-        // *within* a length class; different-length presentations short-circuit inside
-        // the framework call but every registered token is still compared. This avoids
-        // a timing oracle on slot position without claiming length-hiding semantics
-        // (acceptable trade-off documented in docs/authorization.md#bearer-tokens-config).
-        foreach (var (tokenBytes, principal) in _entries)
+        try
         {
-            var equal = CryptographicOperations.FixedTimeEquals(tokenBytes, presentedBytes);
-            if (equal)
+            Encoding.UTF8.GetBytes(presentedBearer.AsSpan(), presentedBytes);
+            SHA256.HashData(presentedBytes, hashBytes);
+
+            if (!_entriesByIndex.TryGetValue(TokenIndexKey.Create(byteCount, hashBytes), out var candidates))
             {
-                match = principal;
+                return null;
+            }
+
+            BearerPrincipal? match = null;
+            foreach (var entry in candidates)
+            {
+                if (CryptographicOperations.FixedTimeEquals(entry.TokenBytes, presentedBytes))
+                {
+                    match = entry.Principal;
+                }
+            }
+
+            return match;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(presentedBytes);
+            CryptographicOperations.ZeroMemory(hashBytes);
+            if (rented is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rented, clearArray: true);
             }
         }
-
-        CryptographicOperations.ZeroMemory(presentedBytes);
-        return match;
     }
 
     /// <summary>Builds a registry from <paramref name="configuration"/> plus the legacy
@@ -133,25 +157,46 @@ internal sealed class BearerTokenRegistry : IPrincipalResolver
         return new BearerTokenRegistry(BuildLegacyEntries(ephemeral));
     }
 
-    private static (byte[] TokenBytes, BearerPrincipal Principal)[] BuildEntries(
+    private static Entry[] BuildEntries(
         IReadOnlyList<ScopedTokenEntry> source)
     {
-        var arr = new (byte[], BearerPrincipal)[source.Count];
+        var arr = new Entry[source.Count];
         for (var i = 0; i < source.Count; i++)
         {
             var entry = source[i];
             var principal = new BearerPrincipal(entry.Name, entry.Scopes);
-            arr[i] = (Encoding.UTF8.GetBytes(entry.Token), principal);
+            arr[i] = new Entry(Encoding.UTF8.GetBytes(entry.Token), principal);
         }
         return arr;
     }
 
-    private static (byte[] TokenBytes, BearerPrincipal Principal)[] BuildLegacyEntries(string token)
+    private static Entry[] BuildLegacyEntries(string token)
     {
         var principal = new BearerPrincipal(
             BearerPrincipal.LegacyRootName,
             ImmutableHashSet.Create(BearerPrincipal.RootScope));
-        return new[] { (Encoding.UTF8.GetBytes(token), principal) };
+        return new[] { new Entry(Encoding.UTF8.GetBytes(token), principal) };
+    }
+
+    private static Dictionary<TokenIndexKey, Entry[]> BuildIndex(IReadOnlyList<Entry> entries)
+    {
+        var buckets = new Dictionary<TokenIndexKey, List<Entry>>();
+        foreach (var entry in entries)
+        {
+            var hashBytes = SHA256.HashData(entry.TokenBytes);
+            var key = TokenIndexKey.Create(entry.TokenBytes.Length, hashBytes);
+            if (!buckets.TryGetValue(key, out var bucket))
+            {
+                bucket = new List<Entry>();
+                buckets[key] = bucket;
+            }
+
+            bucket.Add(entry);
+        }
+
+        return buckets.ToDictionary(
+            static pair => pair.Key,
+            static pair => pair.Value.ToArray());
     }
 
     /// <summary>Parses <c>Auth:BearerTokens</c> with strict validation. Errors are raised
@@ -223,5 +268,29 @@ internal sealed class BearerTokenRegistry : IPrincipalResolver
         return result;
     }
 
+    private sealed record Entry(byte[] TokenBytes, BearerPrincipal Principal);
     private sealed record ScopedTokenEntry(string Name, string Token, ImmutableHashSet<string> Scopes);
+
+    private readonly record struct TokenIndexKey(
+        int Length,
+        ulong Hash0,
+        ulong Hash1,
+        ulong Hash2,
+        ulong Hash3)
+    {
+        public static TokenIndexKey Create(int length, ReadOnlySpan<byte> hashBytes)
+        {
+            if (hashBytes.Length != 32)
+            {
+                throw new ArgumentOutOfRangeException(nameof(hashBytes), "SHA-256 hashes must be 32 bytes.");
+            }
+
+            return new TokenIndexKey(
+                length,
+                BinaryPrimitives.ReadUInt64LittleEndian(hashBytes[..8]),
+                BinaryPrimitives.ReadUInt64LittleEndian(hashBytes.Slice(8, 8)),
+                BinaryPrimitives.ReadUInt64LittleEndian(hashBytes.Slice(16, 8)),
+                BinaryPrimitives.ReadUInt64LittleEndian(hashBytes.Slice(24, 8)));
+        }
+    }
 }
