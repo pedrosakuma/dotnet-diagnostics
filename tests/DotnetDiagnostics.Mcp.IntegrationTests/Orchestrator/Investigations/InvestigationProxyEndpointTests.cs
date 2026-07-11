@@ -595,6 +595,40 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.LastRequest.Should().BeNull();
     }
 
+    [Fact]
+    public async Task Proxy_AllowsBody_Exactly_At_Configured_Limit()
+    {
+        await DisposeAsync();
+        await InitializeAsync(proxyBytesCap: 1025);
+
+        _store.Add(NewHandle("inv_exact_limit", InvestigationState.Active, "pod-token"));
+        _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var payload = new string('x', 1025);
+        var response = await _client.PostAsync("/proxy/inv_exact_limit/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await response.Content.ReadAsStringAsync()).Should().Be("ok");
+        _upstream.LastRequestBody.Should().Be(payload);
+    }
+
+    [Fact]
+    public async Task Proxy_AllowsBody_Exactly_At_BucketAligned_Configured_Limit()
+    {
+        await DisposeAsync();
+        await InitializeAsync(proxyBytesCap: 1024);
+
+        _store.Add(NewHandle("inv_exact_aligned_limit", InvestigationState.Active, "pod-token"));
+        _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var payload = new string('x', 1024);
+        var response = await _client.PostAsync("/proxy/inv_exact_aligned_limit/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await response.Content.ReadAsStringAsync()).Should().Be("ok");
+        _upstream.LastRequestBody.Should().Be(payload);
+    }
+
     private static InvestigationHandle NewHandle(string id, InvestigationState state, string podToken = "pod") => new(
         HandleId: id,
         Namespace: "ns",

@@ -371,22 +371,34 @@ internal static class InvestigationProxyEndpoints
             {
                 if (length == buffer.Length)
                 {
-                    if (length >= maxLength)
+                    if (length < maxLength)
                     {
-                        throw new RequestBodyTooLargeException();
+                        var newSize = Math.Min(Math.Max(buffer.Length * 2, DefaultBufferSize), maxLength);
+                        var expanded = ArrayPool<byte>.Shared.Rent(newSize);
+                        Buffer.BlockCopy(buffer, 0, expanded, 0, length);
+                        ArrayPool<byte>.Shared.Return(buffer);
+                        buffer = expanded;
                     }
-
-                    var newSize = Math.Min(Math.Max(buffer.Length * 2, DefaultBufferSize), maxLength);
-                    var expanded = ArrayPool<byte>.Shared.Rent(newSize);
-                    Buffer.BlockCopy(buffer, 0, expanded, 0, length);
-                    ArrayPool<byte>.Shared.Return(buffer);
-                    buffer = expanded;
                 }
 
                 var writable = Math.Min(buffer.Length - length, maxLength - length);
                 if (writable == 0)
                 {
-                    throw new RequestBodyTooLargeException();
+                    var overflowProbe = ArrayPool<byte>.Shared.Rent(1);
+                    try
+                    {
+                        var overflowRead = await source.ReadAsync(overflowProbe.AsMemory(0, 1), cancellationToken).ConfigureAwait(false);
+                        if (overflowRead == 0)
+                        {
+                            return new PooledRequestBodyBuffer(buffer, length);
+                        }
+
+                        throw new RequestBodyTooLargeException();
+                    }
+                    finally
+                    {
+                        ArrayPool<byte>.Shared.Return(overflowProbe);
+                    }
                 }
 
                 var read = await source.ReadAsync(buffer.AsMemory(length, writable), cancellationToken).ConfigureAwait(false);
