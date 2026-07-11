@@ -2653,7 +2653,7 @@ public sealed class DiagnosticTools
         "Streams a PE or PDB for a loaded managed module in repeated CallTool chunks so sibling MCPs can materialise pod-local binaries through the orchestrator proxy. " +
         "Resolve the module by ModuleVersionId (GUID 'D'); asset defaults to 'pe'. For PDBs the tool prefers a sibling .pdb next to the module, then falls back to an embedded portable PDB inside the PE. " +
         "processId is optional — when omitted the server auto-selects a live .NET process via the usual resolver. maxBytes defaults to 4 MiB and is capped at 16 MiB per response; total artifact size is capped at 256 MiB.")]
-    public static async Task<DiagnosticResult<ByteFetchEnvelope>> GetModuleBytes(
+    public static Task<DiagnosticResult<ByteFetchEnvelope>> GetModuleBytes(
         IModuleByteSource moduleByteSource,
         IProcessContextResolver resolver,
         IPrincipalAccessor principalAccessor,
@@ -2664,51 +2664,22 @@ public sealed class DiagnosticTools
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
         ILoggerFactory? loggerFactory = null,
         CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(moduleVersionId)) return InvalidArg<ByteFetchEnvelope>(nameof(moduleVersionId), "is required");
-        if (!Guid.TryParse(moduleVersionId, out var mvid)) return InvalidArg<ByteFetchEnvelope>(nameof(moduleVersionId), "must be a GUID in 'D' format");
-        if (offset < 0) return InvalidArg<ByteFetchEnvelope>(nameof(offset), "must be >= 0");
-        if (maxBytes <= 0) return InvalidArg<ByteFetchEnvelope>(nameof(maxBytes), "must be > 0");
-
-        var logger = loggerFactory?.CreateLogger("DotnetDiagnostics.Mcp.Tools.GetModuleBytes");
-        var explicitScopeFailure = RequireLiteralScope<ByteFetchEnvelope>(
+        => DiagnosticToolByteStreaming.GetModuleBytes(
+            moduleByteSource,
+            resolver,
             principalAccessor,
-            logger,
-            "get_module_bytes",
-            identifierName: "mvid",
-            identifierValue: mvid.ToString("D"),
-            offset);
-        if (explicitScopeFailure is not null)
-        {
-            return explicitScopeFailure;
-        }
-
-        var resolved = await ResolveContextAsync<ByteFetchEnvelope>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-
-        return await GuardAttachAsync("get_module_bytes", resolved.ProcessId, async () =>
-        {
-            try
-            {
-                var envelope = await moduleByteSource.FetchAsync(resolved.ProcessId, mvid, asset, offset, maxBytes, cancellationToken).ConfigureAwait(false);
-                AuditByteFetch(logger, principalAccessor.Current, "get_module_bytes", envelope.Identifier, null, envelope.Offset, envelope.ChunkSize, envelope.TotalSize);
-                var result = BuildByteFetchResult(
-                    envelope,
-                    BuildByteFetchSummary(envelope),
-                    BuildModuleByteFetchHint(envelope, resolved.ProcessId, asset, maxBytes));
-                return WithContext(result, resolved.Context);
-            }
-            catch (FileNotFoundException ex)
-            {
-                return ArtifactNotFound<ByteFetchEnvelope>("get_module_bytes", ex.Message, ex.FileName ?? mvid.ToString("D"));
-            }
-        }, cancellationToken).ConfigureAwait(false);
-    }
+            moduleVersionId,
+            asset,
+            offset,
+            maxBytes,
+            processId,
+            loggerFactory,
+            cancellationToken);
 
     [Description(
         "Streams a dump file under the artifact root in repeated CallTool chunks so sibling MCPs can materialise pod-local dumps through the orchestrator proxy. dumpFilePath may be relative to MCP_ARTIFACT_ROOT or absolute when it still resolves under that root after symlink resolution. " +
         "Path hints are untrusted: the tool re-validates every call through the artifact-root sandbox. maxBytes defaults to 4 MiB and is capped at 16 MiB per response; total artifact size is capped at 256 MiB.")]
-    public static async Task<DiagnosticResult<ByteFetchEnvelope>> GetDumpBytes(
+    public static Task<DiagnosticResult<ByteFetchEnvelope>> GetDumpBytes(
         IDumpByteSource dumpByteSource,
         IPrincipalAccessor principalAccessor,
         [Description("Dump path to stream. Relative paths are resolved under the artifact root; absolute paths are allowed only when they still resolve under that root. Required.")] string dumpFilePath,
@@ -2716,54 +2687,19 @@ public sealed class DiagnosticTools
         [Description("Maximum bytes to return in this response. Defaults to 4 MiB and is capped at 16 MiB.")] int maxBytes = FileChunkReader.DefaultChunkBytes,
         ILoggerFactory? loggerFactory = null,
         CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(dumpFilePath)) return InvalidArg<ByteFetchEnvelope>(nameof(dumpFilePath), "is required");
-        if (offset < 0) return InvalidArg<ByteFetchEnvelope>(nameof(offset), "must be >= 0");
-        if (maxBytes <= 0) return InvalidArg<ByteFetchEnvelope>(nameof(maxBytes), "must be > 0");
-
-        var logger = loggerFactory?.CreateLogger("DotnetDiagnostics.Mcp.Tools.GetDumpBytes");
-        var explicitScopeFailure = RequireLiteralScope<ByteFetchEnvelope>(
+        => DiagnosticToolByteStreaming.GetDumpBytes(
+            dumpByteSource,
             principalAccessor,
-            logger,
-            "get_dump_bytes",
-            identifierName: "dumpPath",
-            identifierValue: dumpFilePath,
-            offset);
-        if (explicitScopeFailure is not null)
-        {
-            return explicitScopeFailure;
-        }
-
-        try
-        {
-            var envelope = await dumpByteSource.FetchAsync(dumpFilePath, offset, maxBytes, cancellationToken).ConfigureAwait(false);
-            AuditByteFetch(logger, principalAccessor.Current, "get_dump_bytes", null, envelope.Identifier, envelope.Offset, envelope.ChunkSize, envelope.TotalSize);
-            return BuildByteFetchResult(envelope, BuildByteFetchSummary(envelope), BuildDumpByteFetchHint(envelope, maxBytes));
-        }
-        catch (DotnetDiagnostics.Core.Artifacts.ArtifactPathException artifactEx)
-        {
-            return DiagnosticResult.Fail<ByteFetchEnvelope>(
-                $"get_dump_bytes rejected the request: {artifactEx.Message}",
-                new DiagnosticError("InvalidArtifactPath", artifactEx.Message, artifactEx.ParameterName),
-                new NextActionHint("get_bytes",
-                    "Re-issue with a path under the artifact root; absolute paths must still resolve under that root after symlink resolution."));
-        }
-        catch (FileNotFoundException ex)
-        {
-            return ArtifactNotFound<ByteFetchEnvelope>("get_dump_bytes", ex.Message, ex.FileName ?? dumpFilePath);
-        }
-        catch (InvalidOperationException ex)
-        {
-            return DiagnosticResult.Fail<ByteFetchEnvelope>(
-                $"get_dump_bytes rejected the request: {ex.Message}",
-                new DiagnosticError("InvalidArgument", ex.Message, ex.GetType().FullName));
-        }
-    }
+            dumpFilePath,
+            offset,
+            maxBytes,
+            loggerFactory,
+            cancellationToken);
 
     [Description(
         "Streams a raw trace file (.nettrace) under the artifact root in repeated CallTool chunks so a sibling MCP / human can materialise an exported CPU or GC trace for offline PerfView/Speedscope/Perfetto analysis. traceFilePath may be relative to MCP_ARTIFACT_ROOT or absolute when it still resolves under that root after symlink resolution. " +
         "Path hints are untrusted: the tool re-validates every call through the artifact-root sandbox. maxBytes defaults to 4 MiB and is capped at 16 MiB per response; total artifact size is capped at 256 MiB.")]
-    public static async Task<DiagnosticResult<ByteFetchEnvelope>> GetTraceBytes(
+    public static Task<DiagnosticResult<ByteFetchEnvelope>> GetTraceBytes(
         IDumpByteSource traceByteSource,
         IPrincipalAccessor principalAccessor,
         [Description("Trace path to stream. Relative paths are resolved under the artifact root; absolute paths are allowed only when they still resolve under that root. Required.")] string traceFilePath,
@@ -2771,50 +2707,14 @@ public sealed class DiagnosticTools
         [Description("Maximum bytes to return in this response. Defaults to 4 MiB and is capped at 16 MiB.")] int maxBytes = FileChunkReader.DefaultChunkBytes,
         ILoggerFactory? loggerFactory = null,
         CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(traceFilePath)) return InvalidArg<ByteFetchEnvelope>(nameof(traceFilePath), "is required");
-        if (offset < 0) return InvalidArg<ByteFetchEnvelope>(nameof(offset), "must be >= 0");
-        if (maxBytes <= 0) return InvalidArg<ByteFetchEnvelope>(nameof(maxBytes), "must be > 0");
-
-        var logger = loggerFactory?.CreateLogger("DotnetDiagnostics.Mcp.Tools.GetTraceBytes");
-        var explicitScopeFailure = RequireLiteralScope<ByteFetchEnvelope>(
+        => DiagnosticToolByteStreaming.GetTraceBytes(
+            traceByteSource,
             principalAccessor,
-            logger,
-            "get_trace_bytes",
-            identifierName: "tracePath",
-            identifierValue: traceFilePath,
-            offset);
-        if (explicitScopeFailure is not null)
-        {
-            return explicitScopeFailure;
-        }
-
-        try
-        {
-            var fetched = await traceByteSource.FetchAsync(traceFilePath, offset, maxBytes, cancellationToken).ConfigureAwait(false);
-            var envelope = fetched with { Kind = "trace", Asset = "trace" };
-            AuditByteFetch(logger, principalAccessor.Current, "get_trace_bytes", null, envelope.Identifier, envelope.Offset, envelope.ChunkSize, envelope.TotalSize);
-            return BuildByteFetchResult(envelope, BuildByteFetchSummary(envelope), BuildTraceByteFetchHint(envelope, maxBytes));
-        }
-        catch (DotnetDiagnostics.Core.Artifacts.ArtifactPathException artifactEx)
-        {
-            return DiagnosticResult.Fail<ByteFetchEnvelope>(
-                $"get_trace_bytes rejected the request: {artifactEx.Message}",
-                new DiagnosticError("InvalidArtifactPath", artifactEx.Message, artifactEx.ParameterName),
-                new NextActionHint("get_bytes",
-                    "Re-issue with a path under the artifact root; absolute paths must still resolve under that root after symlink resolution."));
-        }
-        catch (FileNotFoundException ex)
-        {
-            return ArtifactNotFound<ByteFetchEnvelope>("get_trace_bytes", ex.Message, ex.FileName ?? traceFilePath);
-        }
-        catch (InvalidOperationException ex)
-        {
-            return DiagnosticResult.Fail<ByteFetchEnvelope>(
-                $"get_trace_bytes rejected the request: {ex.Message}",
-                new DiagnosticError("InvalidArgument", ex.Message, ex.GetType().FullName));
-        }
-    }
+            traceFilePath,
+            offset,
+            maxBytes,
+            loggerFactory,
+            cancellationToken);
 
     private static bool TryParseHexOrInt(string value, out int result)
     {
@@ -3037,621 +2937,22 @@ public sealed class DiagnosticTools
         [Description("ComparableSnapshot journey only: `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers.")] string? mode = null,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null)
-    {
-        if (!JourneyModeParser.TryParse(mode, out var journeyMode))
-        {
-            return InvalidArg<object>(nameof(mode), "must be either 'trend' or 'dispersion'");
-        }
-
-        if (snapshotsJson is { Length: > 0 })
-        {
-            return CompareSnapshotBodies(comparer, handles, snapshotsJson, topN, depth, journeyMode);
-        }
-
-        if (string.IsNullOrWhiteSpace(baselineSummaryJson)) return InvalidArg<object>(nameof(baselineSummaryJson), "is required when snapshotsJson is omitted");
-        if (string.IsNullOrWhiteSpace(currentSummaryJson)) return InvalidArg<object>(nameof(currentSummaryJson), "is required when snapshotsJson is omitted");
-
-        return CompareInvestigationSummaries(comparer, baselineSummaryJson, currentSummaryJson);
-    }
-
-    private static DiagnosticResult<object> CompareSnapshotBodies(ISummaryComparer comparer, IDiagnosticHandleStore handles, string[] snapshotsJson, int topN, string depth, JourneyMode mode)
-    {
-        var schemas = new List<string>(snapshotsJson.Length);
-        for (var i = 0; i < snapshotsJson.Length; i++)
-        {
-            var json = snapshotsJson[i];
-            if (string.IsNullOrWhiteSpace(json))
-            {
-                return DiagnosticResult.Fail<object>(
-                    "Snapshot JSON body is empty.",
-                    new DiagnosticError("InvalidSnapshotJson", $"snapshotsJson[{i}] is empty.", $"snapshotsJson[{i}]"),
-                    new NextActionHint("compare_to_baseline", "Pass persisted ComparableSnapshot JSON bodies, not file paths or empty strings."));
-            }
-
-            if (!TryReadSchema(json, out var schema, out var error))
-            {
-                return DiagnosticResult.Fail<object>(
-                    "Could not read the Schema field from one of the supplied JSON documents.",
-                    new DiagnosticError("InvalidSnapshotJson", error ?? "Schema field is missing or invalid.", $"snapshotsJson[{i}]"),
-                    new NextActionHint("compare_to_baseline", "Re-supply JSON exported by the current server or CLI."));
-            }
-
-            schemas.Add(schema!);
-        }
-
-        if (topN < 1)
-        {
-            return InvalidArg<object>(nameof(topN), "must be >= 1 when snapshotsJson is supplied");
-        }
-
-        if (!JourneyDiffPresentation.TryParseDepth(depth, out var journeyDepth))
-        {
-            return InvalidArg<object>(nameof(depth), "must be either 'compact' or 'full' when snapshotsJson is supplied");
-        }
-
-        var distinctSchemas = schemas.Distinct(StringComparer.Ordinal).ToArray();
-        if (distinctSchemas.Length > 1)
-        {
-            return DiagnosticResult.Fail<object>(
-                "Mixed comparison schemas are not supported in one compare_to_baseline call.",
-                new DiagnosticError("MixedSchemas", $"schemas='{string.Join(", ", distinctSchemas)}'"),
-                new NextActionHint("compare_to_baseline", "Compare either InvestigationSummary documents or ComparableSnapshot documents, not both."));
-        }
-
-        return distinctSchemas[0] switch
-        {
-            InvestigationSummary.SchemaV1 => snapshotsJson.Length == 2
-                ? CompareInvestigationSummaries(comparer, snapshotsJson[0], snapshotsJson[1])
-                : DiagnosticResult.Fail<object>(
-                    "InvestigationSummary comparison requires exactly two JSON documents.",
-                    new DiagnosticError("InvalidArgument", $"Received {snapshotsJson.Length} InvestigationSummary documents.", nameof(snapshotsJson)),
-                    new NextActionHint("compare_to_baseline", "Pass exactly two InvestigationSummary JSON documents, or pass 2..N ComparableSnapshot documents.")),
-            ComparableSnapshot.SchemaV1 => snapshotsJson.Length >= 2
-                ? CompareComparableSnapshots(handles, snapshotsJson, topN, journeyDepth, mode)
-                : DiagnosticResult.Fail<object>(
-                    "ComparableSnapshot comparison requires at least two JSON documents.",
-                    new DiagnosticError("InvalidArgument", $"Received {snapshotsJson.Length} ComparableSnapshot document.", nameof(snapshotsJson)),
-                    new NextActionHint("compare_to_baseline", "Pass 2..N ComparableSnapshot JSON documents for a journey comparison.")),
-            _ => DiagnosticResult.Fail<object>(
-                "Unsupported comparison schema.",
-                new DiagnosticError("UnsupportedSchema", $"schema='{distinctSchemas[0]}'"),
-                new NextActionHint("compare_to_baseline", "Re-export snapshots or summaries with the current server version.")),
-        };
-    }
-
-    private static DiagnosticResult<object> CompareInvestigationSummaries(
-        ISummaryComparer comparer,
-        string baselineSummaryJson,
-        string currentSummaryJson)
-    {
-        InvestigationSummary baseline, current;
-        try
-        {
-            baseline = JsonSerializer.Deserialize(
-                    baselineSummaryJson,
-                    InvestigationSummaryJsonContext.Default.InvestigationSummary)
-                ?? throw new InvalidOperationException("baseline summary deserialized to null");
-            current = JsonSerializer.Deserialize(
-                    currentSummaryJson,
-                    InvestigationSummaryJsonContext.Default.InvestigationSummary)
-                ?? throw new InvalidOperationException("current summary deserialized to null");
-        }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
-        {
-            return DiagnosticResult.Fail<object>(
-                "Could not parse one of the supplied summary JSON documents.",
-                new DiagnosticError("InvalidSummaryJson", ex.Message),
-                new NextActionHint("export_investigation_summary", "Re-export the baseline and current summaries and try again."));
-        }
-
-        if (!string.Equals(baseline.Schema, InvestigationSummary.SchemaV1, StringComparison.Ordinal) ||
-            !string.Equals(current.Schema, InvestigationSummary.SchemaV1, StringComparison.Ordinal))
-        {
-            return DiagnosticResult.Fail<object>(
-                $"Unsupported schema. Expected '{InvestigationSummary.SchemaV1}'.",
-                new DiagnosticError("UnsupportedSchema", $"baseline='{baseline.Schema}' current='{current.Schema}'"),
-                new NextActionHint("export_investigation_summary", "Re-export both summaries with the current server version."));
-        }
-
-        if (baseline.Provenance is null || baseline.Findings is null || baseline.Findings.TopHotspots is null ||
-            current.Provenance is null || current.Findings is null || current.Findings.TopHotspots is null)
-        {
-            return DiagnosticResult.Fail<object>(
-                "Summary JSON is missing required fields (Provenance / Findings / Findings.TopHotspots).",
-                new DiagnosticError("InvalidSummaryJson", "Required fields are null after deserialization."),
-                new NextActionHint("export_investigation_summary", "Re-export the summaries from a fresh investigation."));
-        }
-
-        var diff = comparer.Compare(baseline, current);
-        var summaryLine = $"Verdict: {diff.Verdict}. {diff.NewHotspots.Count} new, " +
-                          $"{diff.RemovedHotspots.Count} removed, {diff.ChangedHotspots.Count} changed hotspots. " +
-                          $"Provenance: {diff.Provenance.Summary}.";
-
-        return DiagnosticResult.Ok<object>(diff, summaryLine,
-            new NextActionHint("collect_sample",
-                diff.Verdict.StartsWith("regression", StringComparison.Ordinal)
-                    ? "Re-sample the regressing process and drill into the new top frame."
-                    : "Optional: capture a fresh sample to confirm the improvement is stable.",
-                new Dictionary<string, object?> { ["durationSeconds"] = 20 }));
-    }
-
-    private static DiagnosticResult<object> CompareComparableSnapshots(IDiagnosticHandleStore handles, string[] snapshotsJson, int topN, JourneyDiffDepth depth, JourneyMode mode)
-    {
-        var snapshots = new List<ComparableSnapshot>(snapshotsJson.Length);
-        try
-        {
-            for (var i = 0; i < snapshotsJson.Length; i++)
-            {
-                var json = snapshotsJson[i];
-                if (!TryValidateComparableSnapshotJson(json, i, out var detail, out var path))
-                {
-                    return DiagnosticResult.Fail<object>(
-                        "ComparableSnapshot JSON is missing required fields.",
-                        new DiagnosticError("InvalidSnapshotJson", detail ?? "Required JSON fields are absent before deserialization.", path),
-                        new NextActionHint("compare_to_baseline", "Re-export snapshots from a current comparable-snapshot producer."));
-                }
-
-                var snapshot = JsonSerializer.Deserialize(
-                        json,
-                        ComparableSnapshotJsonContext.Default.ComparableSnapshot)
-                    ?? throw new InvalidOperationException("snapshot deserialized to null");
-                snapshots.Add(snapshot);
-            }
-        }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
-        {
-            return DiagnosticResult.Fail<object>(
-                "Could not parse one of the supplied comparable snapshot JSON documents.",
-                new DiagnosticError("InvalidSnapshotJson", ex.Message),
-                new NextActionHint("compare_to_baseline", "Re-export the comparable snapshots and try again."));
-        }
-
-        for (var i = 0; i < snapshots.Count; i++)
-        {
-            if (!TryValidateComparableSnapshot(snapshots[i], i, out var detail, out var path))
-            {
-                return DiagnosticResult.Fail<object>(
-                    "ComparableSnapshot JSON is missing required fields.",
-                    new DiagnosticError("InvalidSnapshotJson", detail ?? "Required fields are null or empty after deserialization.", path),
-                    new NextActionHint("compare_to_baseline", "Re-export snapshots from a current comparable-snapshot producer."));
-            }
-        }
-
-        var diff = SnapshotDiffer.Compare(snapshots, mode, topN: topN);
-        var headline = diff.Pairwise?.Headline;
-        var headlineText = headline is null
-            ? "No pairwise headline."
-            : string.Create(
-                CultureInfo.InvariantCulture,
-                $"{headline.Relation}: {headline.Verdict} ({diff.Labels[headline.FromIndex]} → {diff.Labels[headline.ToIndex]}).");
-        var summaryLine = string.Create(
-            CultureInfo.InvariantCulture,
-            $"Verdict: {diff.Verdict}. {headlineText} Metrics: {diff.MetricSeries.Count}; rows: {diff.KeyMatrix.Count}.");
-
-        return JourneyDiffPresentation.BuildResult(
-            diff,
+        => DiagnosticToolBaselineComparison.CompareToBaseline(
+            comparer,
             handles,
-            snapshots[^1].ProcessId,
+            baselineSummaryJson,
+            currentSummaryJson,
+            snapshotsJson,
             topN,
             depth,
-            summaryLine,
-            evictWhenProcessExits: false,
-            HandleOrigin.Imported,
-            new NextActionHint("compare_to_baseline", "Optional: compare another persisted snapshot journey with the same kind."));
-    }
-
-    private static bool TryValidateComparableSnapshotJson(
-        string json,
-        int snapshotIndex,
-        out string? detail,
-        out string? path)
-    {
-        detail = null;
-        path = null;
-
-        using var document = JsonDocument.Parse(json);
-        var root = document.RootElement;
-        if (!RequireString(root, "Schema", $"snapshotsJson[{snapshotIndex}].Schema", out detail, out path) ||
-            !RequireString(root, "Kind", $"snapshotsJson[{snapshotIndex}].Kind", out detail, out path) ||
-            !RequireString(root, "Label", $"snapshotsJson[{snapshotIndex}].Label", out detail, out path) ||
-            !RequireProperty(root, "CapturedAt", $"snapshotsJson[{snapshotIndex}].CapturedAt", out detail, out path) ||
-            !RequireProperty(root, "ProcessId", $"snapshotsJson[{snapshotIndex}].ProcessId", out detail, out path) ||
-            !RequireArray(root, "Metrics", $"snapshotsJson[{snapshotIndex}].Metrics", out var metrics, out detail, out path) ||
-            !RequireArray(root, "Rows", $"snapshotsJson[{snapshotIndex}].Rows", out var rows, out detail, out path))
-        {
-            return false;
-        }
-
-        var metricIndex = 0;
-        foreach (var metric in metrics.EnumerateArray())
-        {
-            if (!TryValidateMetricJson(metric, $"snapshotsJson[{snapshotIndex}].Metrics[{metricIndex}]", out detail, out path))
-            {
-                return false;
-            }
-
-            metricIndex++;
-        }
-
-        var rowIndex = 0;
-        foreach (var row in rows.EnumerateArray())
-        {
-            var rowPath = $"snapshotsJson[{snapshotIndex}].Rows[{rowIndex}]";
-            if (row.ValueKind != JsonValueKind.Object)
-            {
-                detail = "Each row must be a JSON object.";
-                path = rowPath;
-                return false;
-            }
-
-            if (!RequireString(row, "DisplayName", $"{rowPath}.DisplayName", out detail, out path) ||
-                !RequireObject(row, "Key", $"{rowPath}.Key", out var key, out detail, out path) ||
-                !RequireString(key, "Kind", $"{rowPath}.Key.Kind", out detail, out path) ||
-                !RequireString(key, "StableId", $"{rowPath}.Key.StableId", out detail, out path) ||
-                !RequireArray(row, "Metrics", $"{rowPath}.Metrics", out var rowMetrics, out detail, out path))
-            {
-                return false;
-            }
-
-            var rowMetricIndex = 0;
-            foreach (var metric in rowMetrics.EnumerateArray())
-            {
-                if (!TryValidateMetricJson(metric, $"{rowPath}.Metrics[{rowMetricIndex}]", out detail, out path))
-                {
-                    return false;
-                }
-
-                rowMetricIndex++;
-            }
-
-            rowIndex++;
-        }
-
-        return true;
-    }
-
-    private static bool TryValidateMetricJson(JsonElement metric, string metricPath, out string? detail, out string? path)
-    {
-        detail = null;
-        path = null;
-        if (metric.ValueKind != JsonValueKind.Object)
-        {
-            detail = "Each metric must be a JSON object.";
-            path = metricPath;
-            return false;
-        }
-
-        if (!RequireObject(metric, "Definition", $"{metricPath}.Definition", out var definition, out detail, out path) ||
-            !RequireProperty(metric, "Value", $"{metricPath}.Value", out detail, out path) ||
-            !RequireString(definition, "Name", $"{metricPath}.Definition.Name", out detail, out path) ||
-            !RequireProperty(definition, "Role", $"{metricPath}.Definition.Role", out detail, out path) ||
-            !RequireProperty(definition, "BetterDirection", $"{metricPath}.Definition.BetterDirection", out detail, out path) ||
-            !RequireProperty(definition, "Aggregation", $"{metricPath}.Definition.Aggregation", out detail, out path))
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    private static bool RequireProperty(JsonElement parent, string propertyName, string propertyPath, out string? detail, out string? path)
-    {
-        detail = null;
-        path = null;
-        if (parent.ValueKind == JsonValueKind.Object && parent.TryGetProperty(propertyName, out _))
-        {
-            return true;
-        }
-
-        detail = $"Required property '{propertyName}' is missing.";
-        path = propertyPath;
-        return false;
-    }
-
-    private static bool RequireString(JsonElement parent, string propertyName, string propertyPath, out string? detail, out string? path)
-    {
-        detail = null;
-        path = null;
-        if (parent.ValueKind == JsonValueKind.Object &&
-            parent.TryGetProperty(propertyName, out var value) &&
-            value.ValueKind == JsonValueKind.String &&
-            !string.IsNullOrWhiteSpace(value.GetString()))
-        {
-            return true;
-        }
-
-        detail = $"Required property '{propertyName}' must be a non-empty string.";
-        path = propertyPath;
-        return false;
-    }
-
-    private static bool RequireObject(
-        JsonElement parent,
-        string propertyName,
-        string propertyPath,
-        out JsonElement value,
-        out string? detail,
-        out string? path)
-    {
-        detail = null;
-        path = null;
-        if (parent.ValueKind == JsonValueKind.Object &&
-            parent.TryGetProperty(propertyName, out value) &&
-            value.ValueKind == JsonValueKind.Object)
-        {
-            return true;
-        }
-
-        value = default;
-        detail = $"Required property '{propertyName}' must be an object.";
-        path = propertyPath;
-        return false;
-    }
-
-    private static bool RequireArray(
-        JsonElement parent,
-        string propertyName,
-        string propertyPath,
-        out JsonElement value,
-        out string? detail,
-        out string? path)
-    {
-        detail = null;
-        path = null;
-        if (parent.ValueKind == JsonValueKind.Object &&
-            parent.TryGetProperty(propertyName, out value) &&
-            value.ValueKind == JsonValueKind.Array)
-        {
-            return true;
-        }
-
-        value = default;
-        detail = $"Required property '{propertyName}' must be an array.";
-        path = propertyPath;
-        return false;
-    }
-
-    private static bool TryValidateComparableSnapshot(
-        ComparableSnapshot snapshot,
-        int snapshotIndex,
-        out string? detail,
-        out string? path)
-    {
-        detail = null;
-        path = null;
-
-        if (string.IsNullOrWhiteSpace(snapshot.Schema) ||
-            string.IsNullOrWhiteSpace(snapshot.Kind) ||
-            string.IsNullOrWhiteSpace(snapshot.Label) ||
-            snapshot.Metrics is null ||
-            snapshot.Rows is null)
-        {
-            detail = "Schema, Kind, Label, Metrics and Rows are required.";
-            path = $"snapshotsJson[{snapshotIndex}]";
-            return false;
-        }
-
-        for (var metricIndex = 0; metricIndex < snapshot.Metrics.Count; metricIndex++)
-        {
-            var metric = snapshot.Metrics[metricIndex];
-            if (metric is null || metric.Definition is null || string.IsNullOrWhiteSpace(metric.Definition.Name))
-            {
-                detail = "Each metric must include a definition with a non-empty name.";
-                path = $"snapshotsJson[{snapshotIndex}].Metrics[{metricIndex}]";
-                return false;
-            }
-        }
-
-        for (var rowIndex = 0; rowIndex < snapshot.Rows.Count; rowIndex++)
-        {
-            var row = snapshot.Rows[rowIndex];
-            if (row is null || row.Key is null || row.Metrics is null ||
-                string.IsNullOrWhiteSpace(row.DisplayName) ||
-                string.IsNullOrWhiteSpace(row.Key.Kind) ||
-                string.IsNullOrWhiteSpace(row.Key.StableId))
-            {
-                detail = "Each row must include a key, display name and metrics list.";
-                path = $"snapshotsJson[{snapshotIndex}].Rows[{rowIndex}]";
-                return false;
-            }
-
-            for (var metricIndex = 0; metricIndex < row.Metrics.Count; metricIndex++)
-            {
-                var metric = row.Metrics[metricIndex];
-                if (metric is null || metric.Definition is null || string.IsNullOrWhiteSpace(metric.Definition.Name))
-                {
-                    detail = "Each row metric must include a definition with a non-empty name.";
-                    path = $"snapshotsJson[{snapshotIndex}].Rows[{rowIndex}].Metrics[{metricIndex}]";
-                    return false;
-                }
-            }
-        }
-
-        return true;
-    }
-
-    private static bool TryReadSchema(string json, out string? schema, out string? error)
-    {
-        schema = null;
-        error = null;
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                error = "Root JSON value must be an object.";
-                return false;
-            }
-
-            if (!document.RootElement.TryGetProperty("Schema", out var schemaElement) ||
-                schemaElement.ValueKind != JsonValueKind.String)
-            {
-                error = "Schema field is missing or not a string.";
-                return false;
-            }
-
-            schema = schemaElement.GetString();
-            if (string.IsNullOrWhiteSpace(schema))
-            {
-                error = "Schema field is empty.";
-                return false;
-            }
-
-            return true;
-        }
-        catch (JsonException ex)
-        {
-            error = ex.Message;
-            return false;
-        }
-    }
+            mode,
+            investigationHandleId);
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)
         => DiagnosticResult.Fail<T>(
             $"Argument '{parameterName}' {requirement}.",
             new DiagnosticError("InvalidArgument", $"Argument '{parameterName}' {requirement}.", parameterName),
             new NextActionHint("inspect_process", "Re-issue with valid arguments. See tool schema for ranges and defaults."));
-
-    private static DiagnosticResult<T>? RequireLiteralScope<T>(
-        IPrincipalAccessor principalAccessor,
-        Microsoft.Extensions.Logging.ILogger? logger,
-        string tool,
-        string identifierName,
-        string identifierValue,
-        long offset)
-    {
-        var principal = principalAccessor.Current;
-        if (principal?.HasExplicitScope("module-bytes-read") == true)
-        {
-            return null;
-        }
-
-        logger?.LogWarning(
-            "{Tool} denied: explicit module-bytes-read scope required. tokenName={TokenName} {IdentifierName}={IdentifierValue} offset={Offset} chunkSize={ChunkSize} totalSize={TotalSize}",
-            tool,
-            principal?.Name ?? "(none)",
-            identifierName,
-            identifierValue,
-            offset,
-            0,
-            0);
-
-        return DiagnosticResult.Fail<T>(
-            $"{tool} requires the literal scope 'module-bytes-read'. Root or wildcard tokens do not auto-grant this modifier scope.",
-            new DiagnosticError(
-                "Forbidden",
-                "Grant the bearer principal the literal scope 'module-bytes-read'. Root ('*') is intentionally insufficient for this modifier scope.",
-                principal?.Name),
-            new NextActionHint(
-                tool,
-                "Retry with a bearer token that explicitly includes 'module-bytes-read'."));
-    }
-
-    private static void AuditByteFetch(
-        Microsoft.Extensions.Logging.ILogger? logger,
-        BearerPrincipal? principal,
-        string tool,
-        string? mvid,
-        string? dumpPath,
-        long offset,
-        int chunkSize,
-        long totalSize)
-    {
-        if (logger is null)
-        {
-            return;
-        }
-
-        if (mvid is not null)
-        {
-            logger.LogInformation(
-                "{Tool} streamed bytes. tokenName={TokenName} mvid={Mvid} offset={Offset} chunkSize={ChunkSize} totalSize={TotalSize}",
-                tool,
-                principal?.Name ?? "(none)",
-                mvid,
-                offset,
-                chunkSize,
-                totalSize);
-            return;
-        }
-
-        logger.LogInformation(
-            "{Tool} streamed bytes. tokenName={TokenName} dumpPath={DumpPath} offset={Offset} chunkSize={ChunkSize} totalSize={TotalSize}",
-            tool,
-            principal?.Name ?? "(none)",
-            dumpPath ?? "(none)",
-            offset,
-            chunkSize,
-            totalSize);
-    }
-
-    private static DiagnosticResult<ByteFetchEnvelope> BuildByteFetchResult(
-        ByteFetchEnvelope envelope,
-        string summary,
-        NextActionHint? hint)
-        => hint is null
-            ? DiagnosticResult.Ok(envelope, summary)
-            : DiagnosticResult.Ok(envelope, summary, hint);
-
-    private static string BuildByteFetchSummary(ByteFetchEnvelope envelope)
-    {
-        var streamed = envelope.ChunkSize == 0
-            ? $"No bytes remain at offset {envelope.Offset:N0}"
-            : $"Streamed {envelope.ChunkSize:N0} byte(s) from offset {envelope.Offset:N0}";
-        var more = envelope.NextOffset is long next
-            ? $" Next chunk starts at offset {next:N0}."
-            : " Stream complete.";
-        return $"{streamed} of {envelope.TotalSize:N0} total byte(s) for {envelope.Kind} {envelope.Identifier} ({envelope.Asset}).{more}";
-    }
-
-    private static NextActionHint? BuildModuleByteFetchHint(ByteFetchEnvelope envelope, int processId, string asset, int maxBytes)
-        => envelope.NextOffset is long next
-            ? new NextActionHint(
-                "get_bytes",
-                "Continue streaming the next chunk from the same module asset.",
-                new Dictionary<string, object?>
-                {
-                    ["kind"] = "module",
-                    ["moduleVersionId"] = envelope.Identifier,
-                    ["asset"] = string.IsNullOrWhiteSpace(asset) ? envelope.Asset : asset,
-                    ["offset"] = next,
-                    ["maxBytes"] = maxBytes,
-                    ["processId"] = processId,
-                })
-            : null;
-
-    private static NextActionHint? BuildDumpByteFetchHint(ByteFetchEnvelope envelope, int maxBytes)
-        => envelope.NextOffset is long next
-            ? new NextActionHint(
-                "get_bytes",
-                "Continue streaming the next chunk from the same dump artifact.",
-                new Dictionary<string, object?>
-                {
-                    ["kind"] = "dump",
-                    ["dumpFilePath"] = envelope.Identifier,
-                    ["offset"] = next,
-                    ["maxBytes"] = maxBytes,
-                })
-            : null;
-
-    private static NextActionHint? BuildTraceByteFetchHint(ByteFetchEnvelope envelope, int maxBytes)
-        => envelope.NextOffset is long next
-            ? new NextActionHint(
-                "get_bytes",
-                "Continue streaming the next chunk from the same trace artifact.",
-                new Dictionary<string, object?>
-                {
-                    ["kind"] = "trace",
-                    ["traceFilePath"] = envelope.Identifier,
-                    ["offset"] = next,
-                    ["maxBytes"] = maxBytes,
-                })
-            : null;
-
-    private static DiagnosticResult<T> ArtifactNotFound<T>(string tool, string message, string detail)
-        => DiagnosticResult.Fail<T>(
-            $"{tool} could not locate the requested artifact: {message}",
-            new DiagnosticError("ArtifactNotFound", message, detail));
 
     /// <summary>
     /// B4 / issue #165 / M3 helper: returns a denial envelope when the caller-supplied

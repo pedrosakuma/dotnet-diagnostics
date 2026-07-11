@@ -140,32 +140,27 @@ public sealed class InspectProcessTool
         string? investigationHandleId = null,
         CancellationToken cancellationToken = default)
     {
-        if (!DiscriminatorDispatch.TryValidate<InspectProcessReport>(
+        if (!ToolDispatchGuards.TryValidateDiscriminator<InspectProcessReport>(
                 view, AllowedViews, parameterName: "view", out var canonical, out var failure))
         {
             return failure!;
         }
 
-        var principal = principalAccessor.Current;
-        if (principal is not null)
-        {
-            var requiredScope = canonical == RequestsNowView ? "ptrace" : "read-counters";
-            if (!principal.HasScope(requiredScope))
-            {
-                var message =
+        if (!ToolDispatchGuards.RequireScope(
+                principalAccessor.Current,
+                canonical == RequestsNowView ? "ptrace" : "read-counters",
+                () => canonical == RequestsNowView
+                    ? $"view='{canonical}' requires the 'ptrace' scope because it captures a live thread snapshot."
+                    : $"view='{canonical}' requires the 'read-counters' scope. inspect_process preserves the legacy authorization boundary of its bootstrap views.",
+                out DiagnosticResult<InspectProcessReport>? scopeFailure,
+                new NextActionHint(
+                    "inspect_process",
                     canonical == RequestsNowView
-                        ? $"view='{canonical}' requires the '{requiredScope}' scope because it captures a live thread snapshot."
-                        : $"view='{canonical}' requires the '{requiredScope}' scope. inspect_process preserves the legacy authorization boundary of its bootstrap views.";
-                return DiagnosticResult.Fail<InspectProcessReport>(
-                    message,
-                    new DiagnosticError("Forbidden", message, requiredScope),
-                    new NextActionHint(
-                        "inspect_process",
-                        canonical == RequestsNowView
-                            ? "Retry with a bearer that also grants 'ptrace', or use one of the read-only bootstrap views."
-                            : "Retry with a bearer that grants 'read-counters', or use view='requests-now' with a ptrace-scoped bearer.",
-                        new Dictionary<string, object?> { ["view"] = canonical }));
-            }
+                        ? "Retry with a bearer that also grants 'ptrace', or use one of the read-only bootstrap views."
+                        : "Retry with a bearer that grants 'read-counters', or use view='requests-now' with a ptrace-scoped bearer.",
+                    new Dictionary<string, object?> { ["view"] = canonical })))
+        {
+            return scopeFailure!;
         }
 
         return canonical switch

@@ -100,7 +100,7 @@ public sealed class InspectHeapTool
         RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
     {
-        if (!DiscriminatorDispatch.TryValidate<object>(
+        if (!ToolDispatchGuards.TryValidateDiscriminator<object>(
                 source, AllowedSources, nameof(source), out var canonical, out var discriminatorFailure))
         {
             return discriminatorFailure!;
@@ -121,21 +121,20 @@ public sealed class InspectHeapTool
             // the canonical entry point's static gate is `heap-read` only (see class comment).
             // We use HasScope (which honours the wildcard / root principal) so root tokens still
             // work locally; dedicated bearers must hold the literal `ptrace` scope.
-            var principal = principalAccessor.Current;
-            if (principal is not null && !principal.HasScope("ptrace"))
-            {
-                return DiagnosticResult.Fail<object>(
-                    $"forbidden: tool '{ToolName}' with source='live' requires scope 'ptrace'.",
-                    new DiagnosticError(
-                        "Forbidden",
-                        $"tool '{ToolName}' with source='live' requires scope 'ptrace'.",
-                        "ptrace"),
+            if (!ToolDispatchGuards.RequireScope(
+                    principalAccessor.Current,
+                    "ptrace",
+                    () => $"forbidden: tool '{ToolName}' with source='live' requires scope 'ptrace'.",
+                    out DiagnosticResult<object>? scopeFailure,
                     new NextActionHint(ToolName,
                         "Either retry with source='dump' (offline; needs only 'heap-read'), or have the operator issue a bearer that also grants 'ptrace'.",
                         new Dictionary<string, object?>
                         {
                             ["source"] = SourceDump,
-                        }));
+                        }),
+                    errorDetailFactory: () => $"tool '{ToolName}' with source='live' requires scope 'ptrace'."))
+            {
+                return scopeFailure!;
             }
         }
         else if (canonical == SourceGcDump)

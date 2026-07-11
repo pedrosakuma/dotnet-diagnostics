@@ -44,7 +44,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// legacy tools emit — never a 500.</para>
 /// </remarks>
 [McpServerToolType]
-public sealed class QuerySnapshotTool
+public sealed partial class QuerySnapshotTool
 {
     internal const string ToolName = "query_snapshot";
 
@@ -181,315 +181,50 @@ public sealed class QuerySnapshotTool
             return InvalidArgument(nameof(mode), "must be either 'trend' or 'dispersion' when view='diff'");
         }
 
-        switch (kind)
+        if (!KindHandlers.TryGetValue(kind, out var handler))
         {
-            case DiagnosticTools.HeapSnapshotKind:
-                {
-                    if (!RequireScope(principal, ScopeHeapRead, out var forbidden))
-                    {
-                        return forbidden!;
-                    }
-                    if (isDiffView)
-                    {
-                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN, depth, journeyMode);
-                    }
-                    if (IsGrowthView(view))
-                    {
-                        return TryBuildHeapGrowth(handles, handle, lookup.Value, baselineHandle, rankBy, minDeltaPct, topN);
-                    }
-                    var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultHeapView : view!;
-                    var heap = await DiagnosticTools.QueryHeapSnapshot(
-                        handles,
-                        inspector,
-                        redactor,
-                        sensitiveGate,
-                        principalAccessor,
-                        handle,
-                        resolvedView,
-                        topN ?? 50,
-                        rankBy,
-                        typeFullName,
-                        address,
-                        includeSensitiveValues,
-                        deprecation,
-                        cancellationToken).ConfigureAwait(false);
-                    return AsObjectEnvelope(heap);
-                }
-
-
-            case DiagnosticTools.ThreadSnapshotKind:
-                {
-                    if (!RequireScope(principal, ScopePtrace, out var forbidden))
-                    {
-                        return forbidden!;
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(view) && view!.Trim().Equals(ResolveAddressView, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return await ResolveThreadAddressesAsync(
-                            handles, addressResolver, handle, address, cancellationToken).ConfigureAwait(false);
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(view) && view!.Trim().Equals(FrameVarsView, StringComparison.OrdinalIgnoreCase))
-                    {
-                        // frame-vars re-opens the origin via ClrMD (same ptrace/dump-read footprint as
-                        // inspect_heap live/dump) and may surface sensitive string values; gate it on
-                        // heap-read in addition to the kind-wide ptrace scope.
-                        if (!RequireScope(principal, ScopeHeapRead, out var heapForbidden))
-                        {
-                            return heapForbidden!;
-                        }
-                        return await ResolveFrameVariablesAsync(
-                            handles, frameVariableResolver, sensitiveGate, principalAccessor, handle, threadId, includeSensitiveValues, cancellationToken).ConfigureAwait(false);
-                    }
-
-                    var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultThreadView : view!;
-                    var thread = DiagnosticTools.QueryThreadSnapshot(
-                        handles,
-                        handle,
-                        resolvedView,
-                        threadId,
-                        topN ?? 50,
-                        framesToHash,
-                        minCount);
-                    return AsObjectEnvelope(thread);
-                }
-
-            case DiagnosticTools.OffCpuHandleKind:
-                {
-                    if (!RequireScope(principal, ScopeEventPipe, out var forbidden))
-                    {
-                        return forbidden!;
-                    }
-                    var resolvedView = string.IsNullOrWhiteSpace(view) ? DefaultOffCpuView : view!;
-                    var offCpu = DiagnosticTools.QueryOffCpuSnapshot(
-                        handles,
-                        handle,
-                        resolvedView,
-                        topN ?? 25,
-                        stackRank);
-                    return AsObjectEnvelope(offCpu);
-                }
-
-            case "cpu-sample":
-            case "allocation-sample":
-            case DiagnosticTools.NativeAllocHandleKind:
-                {
-                    if (!RequireScope(principal, ScopeInvestigationExport, out var forbidden))
-                    {
-                        return forbidden!;
-                    }
-                    if (isDiffView)
-                    {
-                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN, depth, journeyMode);
-                    }
-
-                    // Analytics views (top-methods / by-module / by-namespace / hot-path / caller-callee,
-                    // issue #313) render from the same merged trace as call-tree via the host-neutral
-                    // CpuSampleQueryDispatcher (shared with the CLI `session` REPL).
-                    var cpuView = string.IsNullOrWhiteSpace(view) ? CpuSampleQueryDispatcher.CallTreeView : view!;
-                    if (!string.Equals(cpuView, CpuSampleQueryDispatcher.CallTreeView, StringComparison.Ordinal)
-                        && CpuSampleQueryDispatcher.IsKnownView(cpuView))
-                    {
-                        var trace = CpuSampleQueryDispatcher.ResolveTrace(lookup.Value.Artifact);
-                        if (trace is null)
-                        {
-                            return HandleExpiredError(null, handle);
-                        }
-
-                        var cpuTopN = topN ?? CpuSampleQueryDispatcher.DefaultTopN;
-                        return cpuView switch
-                        {
-                            CpuSampleQueryDispatcher.TopMethodsView => AsObjectEnvelope(
-                                CpuSampleQueryDispatcher.RenderTopMethods(trace, handle,
-                                    string.Equals(rankBy, "inclusive", StringComparison.OrdinalIgnoreCase) ? "inclusive" : "exclusive", cpuTopN)),
-                            CpuSampleQueryDispatcher.ByModuleView => AsObjectEnvelope(
-                                CpuSampleQueryDispatcher.RenderByModule(trace, handle, cpuTopN)),
-                            CpuSampleQueryDispatcher.ByNamespaceView => AsObjectEnvelope(
-                                CpuSampleQueryDispatcher.RenderByNamespace(trace, handle, cpuTopN)),
-                            CpuSampleQueryDispatcher.HotPathView => AsObjectEnvelope(
-                                CpuSampleQueryDispatcher.RenderHotPath(trace, handle, hotPathThresholdPercent)),
-                            CpuSampleQueryDispatcher.CallerCalleeView => AsObjectEnvelope(
-                                CpuSampleQueryDispatcher.RenderCallerCallee(trace, handle, rootMethodFilter, cpuTopN)),
-                            _ => UnknownView(cpuView, kind, CpuViewNames),
-                        };
-                    }
-
-                    // get_call_tree exposes a single projection; require either the canonical
-                    // `call-tree` view or an omitted value, and reject anything else with a
-                    // structured InvalidArgument envelope so a confused caller sees the same
-                    // shape it would see from any other kind/view mismatch.
-                    if (!string.IsNullOrWhiteSpace(view)
-                        && !string.Equals(view, CallTreeView, StringComparison.Ordinal))
-                    {
-                        return UnknownView(view!, kind, CpuViewNames);
-                    }
-                    var callTree = DiagnosticTools.GetCallTree(
-                        handles,
-                        handle,
-                        rootMethodFilter,
-                        maxDepth,
-                        maxNodes);
-                    return AsObjectEnvelope(callTree);
-                }
-
-
-            case CollectionHandleKinds.Counters:
-                {
-                    if (!RequireAnyOfScope(principal, ScopeReadCounters, ScopeEventPipe, out var forbidden))
-                    {
-                        return forbidden!;
-                    }
-                    if (isDiffView)
-                    {
-                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN, depth, journeyMode);
-                    }
-                    var resolvedView = string.IsNullOrWhiteSpace(view) ? null : view;
-                    var collection = DiagnosticTools.QueryCollection(
-                        handles,
-                        principalAccessor,
-                        handle,
-                        resolvedView,
-                        topN ?? 50);
-                    return AsObjectEnvelope(collection);
-                }
-
-                case CollectionHandleKinds.EventCatalog:
-                {
-                    if (!RequireScope(principal, ScopeEventPipe, out var forbidden))
-                    {
-                        return forbidden!;
-                    }
-
-                    var snapshot = handles.TryGet<EventCatalogSnapshot>(handle);
-                    if (snapshot is null)
-                    {
-                        return HandleExpiredError(null, handle);
-                    }
-
-                    var result = EventCatalogQueryDispatcher.Render(
-                        snapshot,
-                        handle,
-                        view,
-                        topN ?? EventCatalogQueryDispatcher.DefaultTopN,
-                        providerFilter,
-                        rootMethodFilter);
-                    return AsObjectEnvelope(result);
-                }
-
-                case CollectionHandleKinds.GcDatas:
-                {
-                    if (!RequireScope(principal, ScopeEventPipe, out var forbidden))
-                    {
-                        return forbidden!;
-                    }
-                    if (isDiffView)
-                    {
-                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN, depth, journeyMode);
-                    }
-
-                    var snapshot = handles.TryGet<GcDatasSnapshot>(handle);
-                    if (snapshot is null)
-                    {
-                        return HandleExpiredError(null, handle);
-                    }
-
-                    var result = GcDatasQueryDispatcher.Render(
-                        snapshot,
-                        handle,
-                        view,
-                        topN ?? GcDatasQueryDispatcher.DefaultTopN,
-                        changesOnly);
-                    return AsObjectEnvelope(result);
-                }
-
-                case CollectionHandleKinds.ExceptionSnapshot:
-                case CollectionHandleKinds.CrashGuardSnapshot:
-                case CollectionHandleKinds.GcEvents:
-                case CollectionHandleKinds.EventSource:
-                case CollectionHandleKinds.Activities:
-                case CollectionHandleKinds.LogSnapshot:
-                case CollectionHandleKinds.JitSnapshot:
-                case CollectionHandleKinds.ThreadPoolSnapshot:
-                case CollectionHandleKinds.ContentionSnapshot:
-                case CollectionHandleKinds.DbSnapshot:
-                case CollectionHandleKinds.KestrelSnapshot:
-                case CollectionHandleKinds.NetworkingSnapshot:
-                case CollectionHandleKinds.StartupSnapshot:
-                {
-                    if (!RequireScope(principal, ScopeEventPipe, out var forbidden))
-                    {
-                        return forbidden!;
-                    }
-                    if (isDiffView && IsComparableDiffKind(kind))
-                    {
-                        return TryBuildDiff(handles, handle, lookup.Value, baselineHandle, comparisonHandles, minDeltaPct, topN, depth, journeyMode);
-                    }
-                    // Forward null/empty unchanged so query_collection's own default
-                    // (`summary`) kicks in — guarantees byte-equal envelopes with the legacy
-                    // call when the caller omits view.
-                    var resolvedView = string.IsNullOrWhiteSpace(view) ? null : view;
-                    var collection = DiagnosticTools.QueryCollection(
-                        handles,
-                        principalAccessor,
-                        handle,
-                        resolvedView,
-                        topN ?? 50);
-                    return AsObjectEnvelope(collection);
-                }
-
-            case MethodParameterCaptureUseCases.HandleKind:
-                {
-                    if (!RequireScope(principal, ScopeEventPipe, out var eventPipeForbidden))
-                    {
-                        return eventPipeForbidden!;
-                    }
-
-                    var artifact = handles.TryGet<MethodParameterCaptureArtifact>(handle);
-                    if (artifact is null)
-                    {
-                        return HandleExpiredError(null, handle);
-                    }
-
-                    var resolvedView = string.IsNullOrWhiteSpace(view) ? MethodParameterCaptureQueryDispatcher.SummaryView : view!;
-                    if (string.Equals(resolvedView, MethodParameterCaptureQueryDispatcher.EventsView, StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (!RequireExplicitScope(principal, ScopeSensitiveParameterRead, out var modifierForbidden))
-                        {
-                            return modifierForbidden!;
-                        }
-
-                        if (!securityOptions.AllowMethodParameterCapture)
-                        {
-                            return DiagnosticResult.Fail<object>(
-                                "Method parameter capture is disabled by server policy. Set `Diagnostics:AllowMethodParameterCapture=true` (env `Diagnostics__AllowMethodParameterCapture=true`) to enable it.",
-                                new DiagnosticError(
-                                    "MethodParameterCaptureDisabled",
-                                    "Method parameter capture is disabled by server policy. Set `Diagnostics:AllowMethodParameterCapture=true` (env `Diagnostics__AllowMethodParameterCapture=true`) to enable it."));
-                        }
-
-                        if (!includeSensitiveValues)
-                        {
-                            return InvalidArgument(nameof(includeSensitiveValues), "must be true when view='events' for a method-parameter capture handle");
-                        }
-                    }
-
-                    var effectiveTopN = topN ?? Math.Max(artifact.CaptureCount, 1);
-                    var methodParams = MethodParameterCaptureQueryDispatcher.Render(artifact, handle, resolvedView, effectiveTopN);
-                    return AsObjectEnvelope(methodParams);
-                }
-
-            default:
-                return DiagnosticResult.Fail<object>(
-                    $"Handle '{handle}' is of kind '{kind}' which query_snapshot does not support.",
-                    new DiagnosticError(
-                        "UnsupportedHandleKind",
-                        $"query_snapshot dispatches over kinds: {string.Join(", ", SupportedKinds)}.",
-                        kind),
-                    new NextActionHint(ToolName,
-                        "Use a handle issued by inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, or any of the EventPipe collectors.",
-                        null));
+            return UnsupportedHandleKind(handle, kind);
         }
+
+        var context = new QuerySnapshotDispatchContext
+        {
+            Handles = handles,
+            Inspector = inspector,
+            Redactor = redactor,
+            SensitiveGate = sensitiveGate,
+            SecurityOptions = securityOptions,
+            PrincipalAccessor = principalAccessor,
+            AddressResolver = addressResolver,
+            FrameVariableResolver = frameVariableResolver,
+            Lookup = lookup.Value,
+            Handle = handle,
+            View = view,
+            TopN = topN,
+            RankBy = rankBy,
+            TypeFullName = typeFullName,
+            Address = address,
+            IncludeSensitiveValues = includeSensitiveValues,
+            ThreadId = threadId,
+            FramesToHash = framesToHash,
+            MinCount = minCount,
+            StackRank = stackRank,
+            RootMethodFilter = rootMethodFilter,
+            ProviderFilter = providerFilter,
+            ChangesOnly = changesOnly,
+            MaxDepth = maxDepth,
+            MaxNodes = maxNodes,
+            BaselineHandle = baselineHandle,
+            ComparisonHandles = comparisonHandles,
+            MinDeltaPct = minDeltaPct,
+            Depth = depth,
+            JourneyMode = journeyMode,
+            HotPathThresholdPercent = hotPathThresholdPercent,
+            Deprecation = deprecation,
+            Principal = principal,
+            CancellationToken = cancellationToken,
+        };
+
+        return await handler(context).ConfigureAwait(false);
     }
 
 
