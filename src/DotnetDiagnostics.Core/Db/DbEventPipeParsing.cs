@@ -1,17 +1,14 @@
-using System.Collections;
 using System.Diagnostics.Tracing;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.RegularExpressions;
+using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.Tracing;
 
 namespace DotnetDiagnostics.Core.Db;
 
 internal static class DbEventPipeParsing
 {
-    private static readonly Regex s_tagPairRegex = new(@"\[(.*?)\]", RegexOptions.CultureInvariant | RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
-
     public static DbCounterPayload? ExtractCounterPayload(TraceEvent traceEvent)
     {
         if (traceEvent.PayloadValue(0) is not IDictionary<string, object> outer)
@@ -97,72 +94,19 @@ internal static class DbEventPipeParsing
         => values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value));
 
     public static IReadOnlyDictionary<string, string> ExtractArguments(object? payload)
-    {
-        if (payload is null)
-        {
-            return EmptyArguments.Instance;
-        }
+        => DiagnosticSourcePayloadParser.ExtractArguments(payload);
 
-        var result = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (payload is IEnumerable enumerable && payload is not string)
-        {
-            foreach (var item in enumerable)
-            {
-                if (item is null)
-                {
-                    continue;
-                }
-
-                if (TryGetKeyValue(item, out var key, out var value))
-                {
-                    result[key] = value;
-                }
-            }
-        }
-
-        return result;
-    }
-
-    public static string ConvertToString(object? value) => value switch
-    {
-        null => string.Empty,
-        IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
-        _ => value.ToString() ?? string.Empty,
-    };
+    public static string ConvertToString(object? value)
+        => DiagnosticSourcePayloadParser.ConvertToString(value);
 
     public static string? GetArgument(IReadOnlyDictionary<string, string> arguments, string key)
-        => arguments.TryGetValue(key, out var value) ? value : null;
+        => DiagnosticSourcePayloadParser.GetArgument(arguments, key);
 
     public static string? GetTag(IReadOnlyDictionary<string, string> tags, string key)
         => tags.TryGetValue(key, out var value) ? value : null;
 
     public static IReadOnlyDictionary<string, string> ParseTagPairs(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return EmptyArguments.Instance;
-        }
-
-        var tags = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (Match match in s_tagPairRegex.Matches(raw))
-        {
-            var content = match.Groups[1].Value;
-            var separator = content.IndexOf(", ", StringComparison.Ordinal);
-            if (separator < 0)
-            {
-                continue;
-            }
-
-            var key = content[..separator];
-            var value = content[(separator + 2)..];
-            if (!string.IsNullOrWhiteSpace(key))
-            {
-                tags[key] = value;
-            }
-        }
-
-        return tags;
-    }
+        => DiagnosticSourcePayloadParser.ParseBracketedTagPairs(raw);
 
     public static TimeSpan? ParseDuration(IReadOnlyDictionary<string, string> arguments)
     {
@@ -215,39 +159,6 @@ internal static class DbEventPipeParsing
     private static string AsString(IDictionary<string, object> data, string key)
         => data.TryGetValue(key, out var value) && value is string s ? s : string.Empty;
 
-    private static bool TryGetKeyValue(object item, out string key, out string value)
-    {
-        switch (item)
-        {
-            case IDictionary<string, object> dictionary:
-                key = dictionary.TryGetValue("Key", out var dictionaryKey) ? ConvertToString(dictionaryKey) : string.Empty;
-                value = dictionary.TryGetValue("Value", out var dictionaryValue) ? ConvertToString(dictionaryValue) : string.Empty;
-                return !string.IsNullOrWhiteSpace(key);
-            case DictionaryEntry entry:
-                key = ConvertToString(entry.Key);
-                value = ConvertToString(entry.Value);
-                return !string.IsNullOrWhiteSpace(key);
-            case IDictionary nonGenericDictionary:
-                key = nonGenericDictionary.Contains("Key") ? ConvertToString(nonGenericDictionary["Key"]) : string.Empty;
-                value = nonGenericDictionary.Contains("Value") ? ConvertToString(nonGenericDictionary["Value"]) : string.Empty;
-                return !string.IsNullOrWhiteSpace(key);
-            default:
-                var type = item.GetType();
-                var keyProperty = type.GetProperty("Key");
-                var valueProperty = type.GetProperty("Value");
-                if (keyProperty is not null && valueProperty is not null)
-                {
-                    key = ConvertToString(keyProperty.GetValue(item));
-                    value = ConvertToString(valueProperty.GetValue(item));
-                    return !string.IsNullOrWhiteSpace(key);
-                }
-
-                key = string.Empty;
-                value = string.Empty;
-                return false;
-        }
-    }
-
     private static double ToDouble(object value) => value switch
     {
         double d => d,
@@ -259,8 +170,3 @@ internal static class DbEventPipeParsing
 }
 
 internal sealed record DbCounterPayload(string Name, double Value);
-
-internal sealed class EmptyArguments : Dictionary<string, string>
-{
-    public static EmptyArguments Instance { get; } = new();
-}
