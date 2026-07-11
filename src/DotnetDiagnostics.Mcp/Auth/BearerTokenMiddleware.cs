@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Primitives;
+using System.Collections.Immutable;
 
 namespace DotnetDiagnostics.Mcp.Auth;
 
@@ -69,11 +70,26 @@ internal sealed class BearerTokenMiddleware
         if (_oidcJwtAuthOptions.IsEnabled && LooksLikeJwt(presented))
         {
             var authenticationService = context.RequestServices.GetRequiredService<IAuthenticationService>();
+            var candidateSchemes = OidcJwtAuthExtensions.TryGetMatchingProviderSchemes(
+                presented,
+                _oidcJwtAuthOptions,
+                out var matchingSchemes)
+                ? matchingSchemes
+                : _oidcJwtAuthOptions.Providers.Select(static provider => provider.SchemeName).ToImmutableArray();
 
-            foreach (var provider in _oidcJwtAuthOptions.Providers)
+            if (candidateSchemes.Length == 0)
+            {
+                _logger.LogWarning(
+                    "****** denied: JWT issuer/audience did not match any configured provider. remoteIp={RemoteIp} missingHeader=false",
+                    context.Connection.RemoteIpAddress?.ToString() ?? "unknown");
+                await WriteUnauthorizedAsync(context).ConfigureAwait(false);
+                return;
+            }
+
+            foreach (var scheme in candidateSchemes)
             {
                 var authResult = await authenticationService
-                    .AuthenticateAsync(context, provider.SchemeName)
+                    .AuthenticateAsync(context, scheme)
                     .ConfigureAwait(false);
 
                 if (!authResult.Succeeded || authResult.Principal is null)

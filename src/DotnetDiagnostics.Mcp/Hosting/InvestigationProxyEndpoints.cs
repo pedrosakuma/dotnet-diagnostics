@@ -1,7 +1,9 @@
 using System;
+using System.Buffers;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Mcp.Orchestrator;
@@ -221,102 +223,109 @@ internal static class InvestigationProxyEndpoints
         upstream.VersionPolicy = HttpVersionPolicy.RequestVersionExact;
         CopyRequestHeaders(context.Request, upstream, handle.PodLocalBearerToken);
 
-        if (HasBody(context.Request))
-        {
-            // M5: enforce the body cap pre-buffer. Kestrel's MaxRequestBodySize
-            // (set via the endpoint metadata) is the primary gate; we also bound
-            // the copy here so a chunked-encoded body that lies about its length
-            // can't outgrow the cap during the CopyToAsync.
-            var options = context.RequestServices.GetRequiredService<OrchestratorOptions>();
-            using var ms = new MemoryStream();
-            try
-            {
-                await CopyBoundedAsync(context.Request.Body, ms, options.ProxyRequestSizeLimitBytes, context.RequestAborted)
-                    .ConfigureAwait(false);
-            }
-            catch (RequestBodyTooLargeException)
-            {
-                await WriteProblemAsync(context, StatusCodes.Status413PayloadTooLarge,
-                    "ProxyBodyTooLarge",
-                    $"Request body exceeds the configured proxy limit of {options.ProxyRequestSizeLimitBytes} bytes.")
-                    .ConfigureAwait(false);
-                return;
-            }
-
-            var bytes = ms.ToArray();
-
-            // H7: even though the route is /mcp only, a direct POST to the proxy
-            // bypasses the in-process call-tool filter's allowlist. Apply the same
-            // gate here on the JSON-RPC envelope so disallowed tool names never
-            // reach the pod-local MCP regardless of how the body arrived.
-            var disallowed = FindDisallowedToolName(bytes);
-            if (disallowed is not null)
-            {
-                logger.LogWarning(
-                    "Proxy rejected disallowed tool name '{Tool}' for handle {HandleId}.",
-                    disallowed, handleId);
-                await WriteProblemAsync(context, StatusCodes.Status403Forbidden,
-                    "ProxyToolNotAllowed",
-                    $"Tool '{disallowed}' is not in the diagnostic proxy allowlist. " +
-                    "Only the read-only diagnostic tools published by DiagnosticTools may traverse the proxy.")
-                    .ConfigureAwait(false);
-                return;
-            }
-
-            upstream.Content = new ByteArrayContent(bytes);
-            foreach (var h in context.Request.Headers)
-            {
-                if (!h.Key.StartsWith("Content-", StringComparison.OrdinalIgnoreCase)) continue;
-                if (string.Equals(h.Key, "Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
-                upstream.Content.Headers.TryAddWithoutValidation(h.Key, (IEnumerable<string>)h.Value!);
-            }
-        }
-
-        HttpResponseMessage response;
-        var swSend = System.Diagnostics.Stopwatch.StartNew();
-        logger.LogInformation(
-            "Proxy upstream send begin: handle={HandleId} method={Method} path={Path} bodyLen={BodyLen}",
-            handleId, context.Request.Method, targetPath, upstream.Content?.Headers.ContentLength);
+        PooledRequestBodyBuffer? bufferedBody = null;
         try
         {
-            response = await client.SendAsync(upstream, HttpCompletionOption.ResponseHeadersRead, context.RequestAborted)
-                .ConfigureAwait(false);
+            if (HasBody(context.Request))
+            {
+                // M5: enforce the body cap pre-buffer. Kestrel's MaxRequestBodySize
+                // (set via the endpoint metadata) is the primary gate; we also bound
+                // the read here so a chunked-encoded body that lies about its length
+                // can't outgrow the cap before forwarding.
+                var options = context.RequestServices.GetRequiredService<OrchestratorOptions>();
+                try
+                {
+                    bufferedBody = await ReadBoundedAsync(
+                        context.Request.Body,
+                        options.ProxyRequestSizeLimitBytes,
+                        context.RequestAborted).ConfigureAwait(false);
+                }
+                catch (RequestBodyTooLargeException)
+                {
+                    await WriteProblemAsync(context, StatusCodes.Status413PayloadTooLarge,
+                        "ProxyBodyTooLarge",
+                        $"Request body exceeds the configured proxy limit of {options.ProxyRequestSizeLimitBytes} bytes.")
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                // H7: even though the route is /mcp only, a direct POST to the proxy
+                // bypasses the in-process call-tool filter's allowlist. Apply the same
+                // gate here on the JSON-RPC envelope so disallowed tool names never
+                // reach the pod-local MCP regardless of how the body arrived.
+                var disallowed = FindDisallowedToolName(bufferedBody.WrittenSpan);
+                if (disallowed is not null)
+                {
+                    logger.LogWarning(
+                        "Proxy rejected disallowed tool name '{Tool}' for handle {HandleId}.",
+                        disallowed, handleId);
+                    await WriteProblemAsync(context, StatusCodes.Status403Forbidden,
+                        "ProxyToolNotAllowed",
+                        $"Tool '{disallowed}' is not in the diagnostic proxy allowlist. " +
+                        "Only the read-only diagnostic tools published by DiagnosticTools may traverse the proxy.")
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                upstream.Content = new ByteArrayContent(bufferedBody.Buffer, 0, bufferedBody.Length);
+                foreach (var h in context.Request.Headers)
+                {
+                    if (!h.Key.StartsWith("Content-", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (string.Equals(h.Key, "Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
+                    upstream.Content.Headers.TryAddWithoutValidation(h.Key, (IEnumerable<string>)h.Value!);
+                }
+            }
+
+            HttpResponseMessage response;
+            var swSend = System.Diagnostics.Stopwatch.StartNew();
             logger.LogInformation(
-                "Proxy upstream send end: handle={HandleId} status={Status} elapsedMs={Elapsed}",
-                handleId, (int)response.StatusCode, swSend.ElapsedMilliseconds);
-        }
-        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
-        {
-            return;
-        }
-        catch (HttpRequestException ex)
-        {
-            logger.LogWarning(ex, "Upstream request failed for {HandleId} → {Path}.", handleId, targetPath);
-            await WriteProblemAsync(context, StatusCodes.Status502BadGateway,
-                "ProxyUpstreamFailed",
-                $"Pod-local diagnostics MCP did not respond: {ex.Message}").ConfigureAwait(false);
-            return;
-        }
+                "Proxy upstream send begin: handle={HandleId} method={Method} path={Path} bodyLen={BodyLen}",
+                handleId, context.Request.Method, targetPath, upstream.Content?.Headers.ContentLength);
+            try
+            {
+                response = await client.SendAsync(upstream, HttpCompletionOption.ResponseHeadersRead, context.RequestAborted)
+                    .ConfigureAwait(false);
+                logger.LogInformation(
+                    "Proxy upstream send end: handle={HandleId} status={Status} elapsedMs={Elapsed}",
+                    handleId, (int)response.StatusCode, swSend.ElapsedMilliseconds);
+            }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (HttpRequestException ex)
+            {
+                logger.LogWarning(ex, "Upstream request failed for {HandleId} → {Path}.", handleId, targetPath);
+                await WriteProblemAsync(context, StatusCodes.Status502BadGateway,
+                    "ProxyUpstreamFailed",
+                    $"Pod-local diagnostics MCP did not respond: {ex.Message}").ConfigureAwait(false);
+                return;
+            }
 
-        using (response)
-        {
-            context.Response.StatusCode = (int)response.StatusCode;
-            CopyResponseHeaders(response, context.Response);
+            using (response)
+            {
+                context.Response.StatusCode = (int)response.StatusCode;
+                CopyResponseHeaders(response, context.Response);
 
-            // The pod-local MCP server uses Streamable HTTP semantics: the response to
-            // the initial POST is often a long-lived text/event-stream where each
-            // SSE event is a discrete chunk that the client must observe immediately
-            // to complete its initialize handshake. ASP.NET Core's default response
-            // body pipeline buffers writes until a threshold is hit or the request
-            // completes; with CopyToAsync that means the first SSE event sits in the
-            // buffer until the upstream stream closes — which for keep-alive sessions
-            // never happens, and the client trips its 100s HttpClient.Timeout. Disable
-            // buffering on the response body feature and stream chunks ourselves with
-            // an explicit flush after every read so the SSE event reaches the wire as
-            // soon as the upstream produces it.
-            context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
-            await StreamWithFlushAsync(response.Content, context.Response.Body, context.RequestAborted)
-                .ConfigureAwait(false);
+                // The pod-local MCP server uses Streamable HTTP semantics: the response to
+                // the initial POST is often a long-lived text/event-stream where each
+                // SSE event is a discrete chunk that the client must observe immediately
+                // to complete its initialize handshake. ASP.NET Core's default response
+                // body pipeline buffers writes until a threshold is hit or the request
+                // completes; with CopyToAsync that means the first SSE event sits in the
+                // buffer until the upstream stream closes — which for keep-alive sessions
+                // never happens, and the client trips its 100s HttpClient.Timeout. Disable
+                // buffering on the response body feature and stream chunks ourselves with
+                // an explicit flush after every read so the SSE event reaches the wire as
+                // soon as the upstream produces it.
+                context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+                await StreamWithFlushAsync(response.Content, context.Response.Body, context.RequestAborted)
+                    .ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            bufferedBody?.Dispose();
         }
     }
 
@@ -341,33 +350,70 @@ internal static class InvestigationProxyEndpoints
     }
 
     /// <summary>
-    /// M5: copy <paramref name="source"/> into <paramref name="destination"/> up to
+    /// M5: copy <paramref name="source"/> into a pooled byte buffer up to
     /// <paramref name="limit"/> bytes. Throws <see cref="RequestBodyTooLargeException"/>
     /// when the source produces more than the limit. Pass <c>limit &lt;= 0</c> to disable.
     /// </summary>
-    private static async Task CopyBoundedAsync(Stream source, Stream destination, long limit, CancellationToken cancellationToken)
+    private static async Task<PooledRequestBodyBuffer> ReadBoundedAsync(Stream source, long limit, CancellationToken cancellationToken)
     {
+        const int DefaultBufferSize = 8 * 1024;
         if (limit <= 0)
         {
-            await source.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
-            return;
+            limit = int.MaxValue;
         }
-        var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(8 * 1024);
-        long total = 0;
+
+        var maxLength = limit > int.MaxValue ? int.MaxValue : (int)limit;
+        var buffer = ArrayPool<byte>.Shared.Rent(Math.Min(maxLength, DefaultBufferSize));
+        var length = 0;
         try
         {
             while (true)
             {
-                var read = await source.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
-                if (read == 0) return;
-                total += read;
-                if (total > limit) throw new RequestBodyTooLargeException();
-                await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                if (length == buffer.Length)
+                {
+                    if (length < maxLength)
+                    {
+                        var newSize = Math.Min(Math.Max(buffer.Length * 2, DefaultBufferSize), maxLength);
+                        var expanded = ArrayPool<byte>.Shared.Rent(newSize);
+                        Buffer.BlockCopy(buffer, 0, expanded, 0, length);
+                        ArrayPool<byte>.Shared.Return(buffer);
+                        buffer = expanded;
+                    }
+                }
+
+                var writable = Math.Min(buffer.Length - length, maxLength - length);
+                if (writable == 0)
+                {
+                    var overflowProbe = ArrayPool<byte>.Shared.Rent(1);
+                    try
+                    {
+                        var overflowRead = await source.ReadAsync(overflowProbe.AsMemory(0, 1), cancellationToken).ConfigureAwait(false);
+                        if (overflowRead == 0)
+                        {
+                            return new PooledRequestBodyBuffer(buffer, length);
+                        }
+
+                        throw new RequestBodyTooLargeException();
+                    }
+                    finally
+                    {
+                        ArrayPool<byte>.Shared.Return(overflowProbe);
+                    }
+                }
+
+                var read = await source.ReadAsync(buffer.AsMemory(length, writable), cancellationToken).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    return new PooledRequestBodyBuffer(buffer, length);
+                }
+
+                length += read;
             }
         }
-        finally
+        catch
         {
-            System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+            ArrayPool<byte>.Shared.Return(buffer);
+            throw;
         }
     }
 
@@ -433,15 +479,25 @@ internal static class InvestigationProxyEndpoints
     /// the SDK handshake keeps working — only tool invocation is gated. Returns
     /// the disallowed tool name when rejection is required, else null.
     /// </summary>
-    private static string? FindDisallowedToolName(byte[] body)
+    private static string? FindDisallowedToolName(ReadOnlySpan<byte> body)
     {
-        if (body.Length == 0) return null;
+        if (body.IsEmpty) return null;
         try
         {
-            using var doc = System.Text.Json.JsonDocument.Parse(body);
-            return FindDisallowedToolNameInElement(doc.RootElement);
+            var reader = new Utf8JsonReader(body, isFinalBlock: true, state: default);
+            if (!reader.Read())
+            {
+                return null;
+            }
+
+            return reader.TokenType switch
+            {
+                JsonTokenType.StartArray => FindDisallowedToolNameInArray(ref reader),
+                JsonTokenType.StartObject => FindDisallowedToolNameInObject(ref reader),
+                _ => null,
+            };
         }
-        catch (System.Text.Json.JsonException)
+        catch (JsonException)
         {
             // Non-JSON body — let the upstream MCP handle it; the allowlist is
             // a tool-invocation gate and non-JSON bodies are not invocations.
@@ -449,41 +505,149 @@ internal static class InvestigationProxyEndpoints
         }
     }
 
-    private static string? FindDisallowedToolNameInElement(System.Text.Json.JsonElement element)
+    private static string? FindDisallowedToolNameInArray(ref Utf8JsonReader reader)
     {
-        switch (element.ValueKind)
+        while (reader.Read())
         {
-            case System.Text.Json.JsonValueKind.Array:
-                foreach (var item in element.EnumerateArray())
-                {
-                    var found = FindDisallowedToolNameInElement(item);
-                    if (found is not null) return found;
-                }
-                return null;
-            case System.Text.Json.JsonValueKind.Object:
-                if (!element.TryGetProperty("method", out var methodEl) ||
-                    methodEl.ValueKind != System.Text.Json.JsonValueKind.String ||
-                    methodEl.GetString() != "tools/call")
+            switch (reader.TokenType)
+            {
+                case JsonTokenType.EndArray:
+                    return null;
+                case JsonTokenType.StartObject:
+                    var found = FindDisallowedToolNameInObject(ref reader);
+                    if (found is not null)
+                    {
+                        return found;
+                    }
+
+                    break;
+                default:
+                    if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
+                    {
+                        reader.Skip();
+                    }
+
+                    break;
+            }
+        }
+
+        throw new JsonException("Incomplete JSON array.");
+    }
+
+    private static string? FindDisallowedToolNameInObject(ref Utf8JsonReader reader)
+    {
+        string? method = null;
+        string? toolName = null;
+        var hasParamsObject = false;
+        var hasName = false;
+
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndObject)
+            {
+                if (!string.Equals(method, "tools/call", StringComparison.Ordinal))
                 {
                     return null;
                 }
-                if (!element.TryGetProperty("params", out var paramsEl) ||
-                    paramsEl.ValueKind != System.Text.Json.JsonValueKind.Object ||
-                    !paramsEl.TryGetProperty("name", out var nameEl) ||
-                    nameEl.ValueKind != System.Text.Json.JsonValueKind.String)
+
+                if (!hasParamsObject || !hasName)
                 {
                     // Malformed tools/call — reject by returning a sentinel that
                     // hits the structured 403 path; clients should send a
                     // well-formed envelope.
                     return "<missing-name>";
                 }
-                var toolName = nameEl.GetString();
-                return Orchestrator.Investigations.InvestigationProxyToolAllowlist.IsAllowed(toolName)
+
+                return InvestigationProxyToolAllowlist.IsAllowed(toolName)
                     ? null
-                    : (toolName ?? "<null>");
-            default:
-                return null;
+                    : toolName ?? "<null>";
+            }
+
+            if (reader.TokenType != JsonTokenType.PropertyName)
+            {
+                throw new JsonException("Expected object property.");
+            }
+
+            var propertyName = reader.GetString();
+            if (!reader.Read())
+            {
+                throw new JsonException("Incomplete JSON object.");
+            }
+
+            if (string.Equals(propertyName, "method", StringComparison.Ordinal))
+            {
+                if (reader.TokenType == JsonTokenType.String)
+                {
+                    method = reader.GetString();
+                }
+
+                if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
+                {
+                    reader.Skip();
+                }
+
+                continue;
+            }
+
+            if (string.Equals(propertyName, "params", StringComparison.Ordinal))
+            {
+                if (reader.TokenType == JsonTokenType.StartObject)
+                {
+                    hasParamsObject = true;
+                    toolName = FindToolNameInParamsObject(ref reader, ref hasName);
+                }
+                else if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
+                {
+                    reader.Skip();
+                }
+
+                continue;
+            }
+
+            if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
+            {
+                reader.Skip();
+            }
         }
+
+        throw new JsonException("Incomplete JSON object.");
+    }
+
+    private static string? FindToolNameInParamsObject(ref Utf8JsonReader reader, ref bool hasName)
+    {
+        string? toolName = null;
+
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndObject)
+            {
+                return toolName;
+            }
+
+            if (reader.TokenType != JsonTokenType.PropertyName)
+            {
+                throw new JsonException("Expected params property.");
+            }
+
+            var propertyName = reader.GetString();
+            if (!reader.Read())
+            {
+                throw new JsonException("Incomplete params object.");
+            }
+
+            if (string.Equals(propertyName, "name", StringComparison.Ordinal))
+            {
+                hasName = reader.TokenType == JsonTokenType.String;
+                toolName = hasName ? reader.GetString() : null;
+            }
+
+            if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
+            {
+                reader.Skip();
+            }
+        }
+
+        throw new JsonException("Incomplete params object.");
     }
 
     private static Task WriteProblemAsync(HttpContext context, int status, string detail)
@@ -502,6 +666,28 @@ internal static class InvestigationProxyEndpoints
 
     private sealed class RequestBodyTooLargeException : Exception
     {
+    }
+
+    private sealed class PooledRequestBodyBuffer(byte[] buffer, int length) : IDisposable
+    {
+        private byte[]? _buffer = buffer;
+
+        public byte[] Buffer => _buffer ?? throw new ObjectDisposedException(nameof(PooledRequestBodyBuffer));
+
+        public int Length { get; } = length;
+
+        public ReadOnlySpan<byte> WrittenSpan => Buffer.AsSpan(0, Length);
+
+        public void Dispose()
+        {
+            if (_buffer is null)
+            {
+                return;
+            }
+
+            ArrayPool<byte>.Shared.Return(_buffer);
+            _buffer = null;
+        }
     }
 }
 

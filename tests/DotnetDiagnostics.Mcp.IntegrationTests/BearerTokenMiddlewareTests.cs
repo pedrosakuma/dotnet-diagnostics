@@ -1,15 +1,18 @@
 using System.Collections.Immutable;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using DotnetDiagnostics.Mcp.Auth;
 using DotnetDiagnostics.Mcp.Hosting;
 using DotnetDiagnostics.Mcp.Security;
 using FluentAssertions;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -46,19 +49,22 @@ public sealed class BearerTokenMiddlewareTests
         IPrincipalResolver resolver,
         string? authorization,
         ILogger<BearerTokenMiddleware>? logger = null,
-        string path = "/mcp")
+        string path = "/mcp",
+        OidcJwtAuthOptions? oidcOptions = null,
+        IServiceProvider? requestServices = null)
     {
         var nextCalled = false;
         var middleware = new BearerTokenMiddleware(
             ctx => { nextCalled = true; return Task.CompletedTask; },
             resolver,
-            OidcJwtAuthOptions.Disabled,
+            oidcOptions ?? OidcJwtAuthOptions.Disabled,
             logger ?? NullLogger<BearerTokenMiddleware>.Instance,
             new OrchestratorObservabilityOptions());
 
         var ctx = new DefaultHttpContext();
         ctx.Request.Path = path;
         ctx.Response.Body = new MemoryStream();
+        ctx.RequestServices = requestServices ?? new ServiceCollection().BuildServiceProvider();
         if (authorization is not null)
         {
             ctx.Request.Headers.Authorization = authorization;
@@ -70,6 +76,53 @@ public sealed class BearerTokenMiddlewareTests
         ctx.Response.Body.Position = 0;
         return ctx;
     }
+
+    private static OidcJwtAuthOptions OidcOptionsWithProviders(params (string Issuer, string Audience)[] providers)
+    {
+        var settings = new Dictionary<string, string?>();
+        if (providers.Length > 0)
+        {
+            settings["MCP_OIDC_ISSUER"] = providers[0].Issuer;
+            settings["MCP_OIDC_AUDIENCE"] = providers[0].Audience;
+        }
+
+        if (providers.Length > 1)
+        {
+            var extras = providers
+                .Skip(1)
+                .Select(provider => new Dictionary<string, string>
+                {
+                    ["issuer"] = provider.Issuer,
+                    ["audience"] = provider.Audience,
+                });
+            settings["MCP_OIDC_PROVIDERS_JSON"] = JsonSerializer.Serialize(extras);
+        }
+
+        return OidcJwtAuthOptions.FromConfiguration(
+            new ConfigurationBuilder().AddInMemoryCollection(settings).Build());
+    }
+
+    private static string CreateUnsignedJwt(string issuer, params string[] audiences)
+    {
+        object audienceValue = audiences.Length == 1 ? audiences[0] : audiences;
+        var payload = JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["iss"] = issuer,
+            ["aud"] = audienceValue,
+        });
+
+        return string.Concat(
+            Base64UrlEncode("{\"alg\":\"none\",\"typ\":\"JWT\"}"),
+            ".",
+            Base64UrlEncode(payload),
+            ".signature");
+    }
+
+    private static string Base64UrlEncode(string value)
+        => Convert.ToBase64String(Encoding.UTF8.GetBytes(value))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
 
     [Fact]
     public async Task ValidToken_StampsPrincipal_AndCallsNext()
@@ -230,6 +283,67 @@ public sealed class BearerTokenMiddlewareTests
     }
 
     [Fact]
+    public async Task JwtMultiIssuer_Routes_Directly_To_Matching_Scheme()
+    {
+        var oidcOptions = OidcOptionsWithProviders(
+            ("https://entra.example.test", "api://dotnet-diagnostics-mcp"),
+            ("https://kubernetes.default.svc.cluster.local", "dotnet-diagnostics-mcp"));
+        var authService = new CountingAuthenticationService(new Dictionary<string, AuthenticateResult>(StringComparer.Ordinal)
+        {
+            [OidcJwtAuthOptions.DefaultSchemeName] = AuthenticateResult.Fail("should not be called"),
+            [$"{OidcJwtAuthOptions.DefaultSchemeName}-1"] = AuthenticateResult.Success(
+                new AuthenticationTicket(
+                    new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, "k8s") }, "Bearer")),
+                    $"{OidcJwtAuthOptions.DefaultSchemeName}-1")),
+        });
+        var services = new ServiceCollection()
+            .AddSingleton<IAuthenticationService>(authService)
+            .BuildServiceProvider();
+
+        var authorization = string.Concat(
+            "Bearer ",
+            CreateUnsignedJwt("https://kubernetes.default.svc.cluster.local", "dotnet-diagnostics-mcp"));
+        var ctx = await RunAsync(
+            RegistryWith(),
+            authorization,
+            oidcOptions: oidcOptions,
+            requestServices: services);
+
+        ((bool)ctx.Items["__nextCalled"]!).Should().BeTrue();
+        authService.InvokedSchemes.Should().Equal($"{OidcJwtAuthOptions.DefaultSchemeName}-1");
+        ctx.GetBearerPrincipal()!.Name.Should().Be("k8s");
+    }
+
+    [Fact]
+    public async Task JwtMultiIssuer_Prefilter_Ignores_Trailing_Slash_In_Audience()
+    {
+        var oidcOptions = OidcOptionsWithProviders(("https://issuer.example.test", "api://dotnet-diagnostics-mcp"));
+        var authService = new CountingAuthenticationService(new Dictionary<string, AuthenticateResult>(StringComparer.Ordinal)
+        {
+            [OidcJwtAuthOptions.DefaultSchemeName] = AuthenticateResult.Success(
+                new AuthenticationTicket(
+                    new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, "entra") }, "Bearer")),
+                    OidcJwtAuthOptions.DefaultSchemeName)),
+        });
+        var services = new ServiceCollection()
+            .AddSingleton<IAuthenticationService>(authService)
+            .BuildServiceProvider();
+
+        var authorization = string.Concat(
+            "Bearer ",
+            CreateUnsignedJwt("https://issuer.example.test", "api://dotnet-diagnostics-mcp/"));
+        var ctx = await RunAsync(
+            RegistryWith(),
+            authorization,
+            oidcOptions: oidcOptions,
+            requestServices: services);
+
+        ((bool)ctx.Items["__nextCalled"]!).Should().BeTrue();
+        authService.InvokedSchemes.Should().Equal(OidcJwtAuthOptions.DefaultSchemeName);
+        ctx.GetBearerPrincipal()!.Name.Should().Be("entra");
+    }
+
+    [Fact]
     public void LegacyPrincipal_HasRootName_AndRootScope()
     {
         using var env = EnvScope.Set("MCP_BEARER_TOKEN", "legacy-secret");
@@ -239,5 +353,36 @@ public sealed class BearerTokenMiddlewareTests
         var p = registry.TryResolve("legacy-secret")!;
         p.Name.Should().Be(BearerPrincipal.LegacyRootName);
         p.Scopes.Should().Equal(new[] { BearerPrincipal.RootScope });
+    }
+
+    private sealed class CountingAuthenticationService(IReadOnlyDictionary<string, AuthenticateResult> results)
+        : IAuthenticationService
+    {
+        public List<string> InvokedSchemes { get; } = new();
+
+        public Task<AuthenticateResult> AuthenticateAsync(HttpContext context, string? scheme)
+        {
+            scheme.Should().NotBeNull();
+            InvokedSchemes.Add(scheme!);
+            var result = results[scheme!];
+            if (result.Succeeded && result.Principal is not null)
+            {
+                context.SetBearerPrincipal(new BearerPrincipal(result.Principal.Identity?.Name ?? scheme!, ImmutableHashSet.Create("read-counters")));
+            }
+
+            return Task.FromResult(result);
+        }
+
+        public Task ChallengeAsync(HttpContext context, string? scheme, AuthenticationProperties? properties)
+            => throw new NotSupportedException();
+
+        public Task ForbidAsync(HttpContext context, string? scheme, AuthenticationProperties? properties)
+            => throw new NotSupportedException();
+
+        public Task SignInAsync(HttpContext context, string? scheme, ClaimsPrincipal principal, AuthenticationProperties? properties)
+            => throw new NotSupportedException();
+
+        public Task SignOutAsync(HttpContext context, string? scheme, AuthenticationProperties? properties)
+            => throw new NotSupportedException();
     }
 }

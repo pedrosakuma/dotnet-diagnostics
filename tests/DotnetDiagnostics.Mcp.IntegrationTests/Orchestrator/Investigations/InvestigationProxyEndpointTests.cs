@@ -508,6 +508,26 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Proxy_RejectsDisallowedJsonRpcTool_InBatch_With403()
+    {
+        _store.Add(NewHandle("inv_jrpc_batch_bad", InvestigationState.Active, "pod-token"));
+        _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK);
+
+        var allowed = InvestigationProxyToolAllowlist.AllowedToolNames.First();
+        var payload =
+            "[" +
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"" + allowed + "\",\"arguments\":{}}}," +
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"totally_not_a_real_tool\",\"arguments\":{}}}" +
+            "]";
+        var response = await _client.PostAsync("/proxy/inv_jrpc_batch_bad/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("ProxyToolNotAllowed");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Proxy_AllowsJsonRpcInitialize_Passthrough()
     {
         // Non-tools/call methods must pass through unaltered — the allowlist
@@ -555,6 +575,58 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         var body = await response.Content.ReadAsStringAsync();
         body.Should().Contain("ProxyBodyTooLarge");
         _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsOversizedBody_WhenLimitDoesNotMatchPoolBucket()
+    {
+        await DisposeAsync();
+        await InitializeAsync(proxyBytesCap: 1025);
+
+        _store.Add(NewHandle("inv_big_odd", InvestigationState.Active, "pod-token"));
+        _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK);
+
+        var payload = new string('x', 1026);
+        var response = await _client.PostAsync("/proxy/inv_big_odd/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("ProxyBodyTooLarge");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_AllowsBody_Exactly_At_Configured_Limit()
+    {
+        await DisposeAsync();
+        await InitializeAsync(proxyBytesCap: 1025);
+
+        _store.Add(NewHandle("inv_exact_limit", InvestigationState.Active, "pod-token"));
+        _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var payload = new string('x', 1025);
+        var response = await _client.PostAsync("/proxy/inv_exact_limit/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await response.Content.ReadAsStringAsync()).Should().Be("ok");
+        _upstream.LastRequestBody.Should().Be(payload);
+    }
+
+    [Fact]
+    public async Task Proxy_AllowsBody_Exactly_At_BucketAligned_Configured_Limit()
+    {
+        await DisposeAsync();
+        await InitializeAsync(proxyBytesCap: 1024);
+
+        _store.Add(NewHandle("inv_exact_aligned_limit", InvestigationState.Active, "pod-token"));
+        _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var payload = new string('x', 1024);
+        var response = await _client.PostAsync("/proxy/inv_exact_aligned_limit/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await response.Content.ReadAsStringAsync()).Should().Be("ok");
+        _upstream.LastRequestBody.Should().Be(payload);
     }
 
     private static InvestigationHandle NewHandle(string id, InvestigationState state, string podToken = "pod") => new(
