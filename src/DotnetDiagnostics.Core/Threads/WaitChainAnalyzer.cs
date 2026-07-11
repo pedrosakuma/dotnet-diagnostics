@@ -48,10 +48,8 @@ public static class WaitChainAnalyzer
         ArgumentException.ThrowIfNullOrEmpty(handle);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxChains);
 
-        var threadsById = snapshot.Threads
-            .Where(t => t.ManagedThreadId > 0)
-            .GroupBy(t => t.ManagedThreadId)
-            .ToDictionary(g => g.Key, g => g.First());
+        var threadsById = MonitorWaitGraph.BuildThreadsById(snapshot);
+        var monitorEdgesByWaiter = MonitorWaitGraph.GroupByWaiter(MonitorWaitGraph.BuildEdges(snapshot, threadsById));
 
         var threadPoolStarved = IsThreadPoolStarved(snapshot.ThreadPool);
 
@@ -65,7 +63,7 @@ public static class WaitChainAnalyzer
 
         foreach (var thread in threadsById.Values.OrderBy(t => t.ManagedThreadId))
         {
-            var monitorEdge = BuildMonitorEdge(thread.ManagedThreadId, snapshot, threadsById);
+            var monitorEdge = BuildMonitorEdge(thread.ManagedThreadId, threadsById, monitorEdgesByWaiter);
             if (monitorEdge is not null)
             {
                 edges[thread.ManagedThreadId] = monitorEdge;
@@ -236,31 +234,20 @@ public static class WaitChainAnalyzer
 
     private static WaitEdge? BuildMonitorEdge(
         int waiterId,
-        ThreadSnapshotArtifact snapshot,
-        Dictionary<int, ManagedThread> threadsById)
+        Dictionary<int, ManagedThread> threadsById,
+        Dictionary<int, MonitorWaitEdge[]> monitorEdgesByWaiter)
     {
-        // Mirror ThreadDeadlockDetector's edge model: pick the contended lock this thread waits on
-        // whose owner is a distinct, known thread. Deterministic tie-break (owner id, then address)
-        // keeps the functional-graph successor stable across runs.
-        var candidate = snapshot.Locks
-            .Where(l => l.OwnerManagedThreadId > 0
-                && l.OwnerManagedThreadId != waiterId
-                && threadsById.ContainsKey(l.OwnerManagedThreadId)
-                && l.WaitingManagedThreadIds.Contains(waiterId))
-            .OrderBy(l => l.OwnerManagedThreadId)
-            .ThenBy(l => l.ObjectAddress)
-            .FirstOrDefault();
-
-        if (candidate is null)
+        if (!monitorEdgesByWaiter.TryGetValue(waiterId, out var candidates) || candidates.Length == 0)
         {
             return null;
         }
 
-        var owner = threadsById[candidate.OwnerManagedThreadId];
-        var typeLabel = candidate.ObjectTypeFullName ?? "<unknown>";
+        var candidate = candidates[0];
+        var owner = threadsById[candidate.OwnerThreadId];
+        var typeLabel = candidate.LockObjectTypeFullName ?? "<unknown>";
         var reason = string.Create(
             CultureInfo.InvariantCulture,
-            $"waiting to acquire {candidate.LockKind} on object 0x{candidate.ObjectAddress:x} ({typeLabel}) held by managed thread {owner.ManagedThreadId}");
+            $"waiting to acquire {candidate.LockKind} on object 0x{candidate.LockObjectAddress:x} ({typeLabel}) held by managed thread {owner.ManagedThreadId}");
 
         return new WaitEdge(
             EdgeKind: MonitorEdge,
@@ -268,8 +255,8 @@ public static class WaitChainAnalyzer
             TargetKind: TargetThread,
             TargetLabel: string.Create(CultureInfo.InvariantCulture, $"managed thread {owner.ManagedThreadId}"),
             OwnerThreadId: owner.ManagedThreadId,
-            LockObjectAddress: candidate.ObjectAddress,
-            LockObjectTypeFullName: candidate.ObjectTypeFullName,
+            LockObjectAddress: candidate.LockObjectAddress,
+            LockObjectTypeFullName: candidate.LockObjectTypeFullName,
             Note: null);
     }
 
