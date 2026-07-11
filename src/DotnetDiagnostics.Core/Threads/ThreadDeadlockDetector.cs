@@ -15,28 +15,15 @@ public static class ThreadDeadlockDetector
         ArgumentException.ThrowIfNullOrEmpty(handle);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxCycles);
 
-        var threadsById = snapshot.Threads
-            .Where(t => t.ManagedThreadId > 0)
-            .ToDictionary(t => t.ManagedThreadId);
-
-        var edges = snapshot.Locks
-            .Where(l => l.OwnerManagedThreadId > 0 && l.WaitingManagedThreadIds.Count > 0)
-            .SelectMany(l => l.WaitingManagedThreadIds
-                .Where(waiterId => waiterId > 0 && waiterId != l.OwnerManagedThreadId)
-                .Where(waiterId => threadsById.ContainsKey(waiterId) && threadsById.ContainsKey(l.OwnerManagedThreadId))
-                .Distinct()
-                .Select(waiterId => new WaitForEdge(waiterId, l.OwnerManagedThreadId, l.ObjectAddress, l.ObjectTypeFullName, l.LockKind)))
-            .Distinct()
-            .ToArray();
+        var threadsById = MonitorWaitGraph.BuildThreadsById(snapshot);
+        var edges = MonitorWaitGraph.BuildEdges(snapshot, threadsById);
 
         if (edges.Length == 0)
         {
             return Array.Empty<ThreadDeadlockCycle>();
         }
 
-        var edgesByWaiter = edges
-            .GroupBy(edge => edge.WaitingThreadId)
-            .ToDictionary(group => group.Key, group => group.OrderBy(edge => edge.OwnerThreadId).ThenBy(edge => edge.LockObjectAddress).ToArray());
+        var edgesByWaiter = MonitorWaitGraph.GroupByWaiter(edges);
 
         var cycles = new List<ThreadDeadlockCycle>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -44,7 +31,7 @@ public static class ThreadDeadlockDetector
         foreach (var startThreadId in edgesByWaiter.Keys.OrderBy(id => id))
         {
             var visited = new HashSet<int> { startThreadId };
-            var path = new List<WaitForEdge>();
+            var path = new List<MonitorWaitEdge>();
             Explore(startThreadId, startThreadId, visited, path);
             if (cycles.Count >= maxCycles)
             {
@@ -54,7 +41,7 @@ public static class ThreadDeadlockDetector
 
         return cycles;
 
-        void Explore(int startThreadId, int currentThreadId, HashSet<int> visited, List<WaitForEdge> path)
+        void Explore(int startThreadId, int currentThreadId, HashSet<int> visited, List<MonitorWaitEdge> path)
         {
             if (cycles.Count >= maxCycles || !edgesByWaiter.TryGetValue(currentThreadId, out var outgoing))
             {
@@ -99,7 +86,7 @@ public static class ThreadDeadlockDetector
     }
 
     private static ThreadDeadlockCycle BuildCycle(
-        IReadOnlyList<WaitForEdge> cycleEdges,
+        IReadOnlyList<MonitorWaitEdge> cycleEdges,
         Dictionary<int, ManagedThread> threadsById,
         string handle)
     {
@@ -138,7 +125,7 @@ public static class ThreadDeadlockDetector
         return new ThreadDeadlockCycle(members, lockChain, commands);
     }
 
-    private static string BuildCanonicalKey(IReadOnlyList<WaitForEdge> cycleEdges)
+    private static string BuildCanonicalKey(List<MonitorWaitEdge> cycleEdges)
     {
         var representations = new List<string>(cycleEdges.Count);
         for (var rotation = 0; rotation < cycleEdges.Count; rotation++)
@@ -158,11 +145,4 @@ public static class ThreadDeadlockDetector
         representations.Sort(StringComparer.Ordinal);
         return representations[0];
     }
-
-    private sealed record WaitForEdge(
-        int WaitingThreadId,
-        int OwnerThreadId,
-        ulong LockObjectAddress,
-        string? LockObjectTypeFullName,
-        string LockKind);
 }

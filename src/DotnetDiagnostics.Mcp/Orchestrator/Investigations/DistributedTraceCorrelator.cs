@@ -54,35 +54,18 @@ internal static class DistributedTraceCorrelator
 
         var arguments = BuildActivitiesArguments(durationSeconds, maxActivities, sources);
 
-        foreach (var handle in handles)
+        var tasks = handles.Select(handle => CollectAsync(proxy, handle, arguments, cancellationToken)).ToArray();
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        foreach (var (handle, capture, failure) in results)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
+            if (capture is null)
             {
-                var request = new CallToolRequestParams
-                {
-                    Name = "collect_events",
-                    Arguments = arguments,
-                };
+                errors.Add($"Pod '{handle.PodName}' (handle {handle.HandleId}): {failure}");
+                continue;
+            }
 
-                var result = await proxy.CallToolAsync(handle, request, cancellationToken).ConfigureAwait(false);
-                var capture = TryExtractCapture(result, out var failure);
-                if (capture is null)
-                {
-                    errors.Add($"Pod '{handle.PodName}' (handle {handle.HandleId}): {failure}");
-                    continue;
-                }
-
-                captures.Add((handle.PodName, capture));
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                errors.Add($"Pod '{handle.PodName}' (handle {handle.HandleId}): {ex.Message}");
-            }
+            captures.Add((handle.PodName, capture));
         }
 
         if (captures.Count == 0)
@@ -112,6 +95,35 @@ internal static class DistributedTraceCorrelator
         }
 
         return args;
+    }
+
+    private static async Task<(InvestigationHandle Handle, ActivityCapture? Capture, string Failure)> CollectAsync(
+        IInvestigationProxyClient proxy,
+        InvestigationHandle handle,
+        Dictionary<string, JsonElement> arguments,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            var request = new CallToolRequestParams
+            {
+                Name = "collect_events",
+                Arguments = arguments,
+            };
+
+            var result = await proxy.CallToolAsync(handle, request, cancellationToken).ConfigureAwait(false);
+            var capture = TryExtractCapture(result, out var failure);
+            return (handle, capture, failure);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return (handle, null, ex.Message);
+        }
     }
 
     private static ActivityCapture? TryExtractCapture(CallToolResult result, out string failure)

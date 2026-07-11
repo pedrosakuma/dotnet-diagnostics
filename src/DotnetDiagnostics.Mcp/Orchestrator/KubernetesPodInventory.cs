@@ -107,34 +107,12 @@ internal sealed class KubernetesPodInventory : IPodInventory
     }
 
     private string? ResolveAndValidateNamespace(string? requestedNamespace)
-    {
-        var ns = string.IsNullOrWhiteSpace(requestedNamespace)
-            ? _options.DefaultNamespace
-            : requestedNamespace;
-
-        var allowlist = _options.NamespaceAllowlist;
-        var wildcard = allowlist.Count == 1 && allowlist[0] == "*";
-
-        if (string.IsNullOrWhiteSpace(ns))
-        {
-            if (wildcard) return null;
-            throw new OrchestratorException(
-                OrchestratorErrorKinds.NamespaceNotAllowed,
-                "No namespace supplied and no DefaultNamespace configured. " +
-                "Pass a namespace explicitly or configure Orchestrator:DefaultNamespace.");
-        }
-
-        if (wildcard) return ns;
-        if (!allowlist.Contains(ns, StringComparer.Ordinal))
-        {
-            throw new OrchestratorException(
-                OrchestratorErrorKinds.NamespaceNotAllowed,
-                $"Namespace '{ns}' is not in the orchestrator's NamespaceAllowlist. " +
-                $"Allowed: [{string.Join(", ", allowlist)}].");
-        }
-
-        return ns;
-    }
+        => NamespaceAllowlistPolicy.ResolveAndValidate(
+            requestedNamespace,
+            _options,
+            allowEmptyWhenWildcard: true,
+            "No namespace supplied and no DefaultNamespace configured. " +
+            "Pass a namespace explicitly or configure Orchestrator:DefaultNamespace.");
 
     private void ValidateLabelSelector(string? labelSelector)
     {

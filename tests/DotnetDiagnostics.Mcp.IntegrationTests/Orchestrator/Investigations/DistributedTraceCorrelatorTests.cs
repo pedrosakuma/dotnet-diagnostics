@@ -185,6 +185,55 @@ public sealed class DistributedTraceCorrelatorTests
         fanout.Timeline.Should().BeNull();
     }
 
+    [Fact]
+    public async Task CorrelateAsync_FansOutToPodsConcurrently()
+    {
+        var store = new MemoryInvestigationStore();
+        store.Add(ActiveHandle("inv-a", "pod-a"));
+        store.Add(ActiveHandle("inv-b", "pod-b"));
+
+        using var release = new SemaphoreSlim(0, 2);
+        var entered = 0;
+        var maxConcurrent = 0;
+        var start = DateTimeOffset.UtcNow;
+        var proxy = new StubProxyClient
+        {
+            Gate = async cancellationToken =>
+            {
+                var concurrent = Interlocked.Increment(ref entered);
+                while (true)
+                {
+                    var snapshot = Volatile.Read(ref maxConcurrent);
+                    if (concurrent <= snapshot ||
+                        Interlocked.CompareExchange(ref maxConcurrent, concurrent, snapshot) == snapshot)
+                    {
+                        break;
+                    }
+                }
+
+                await release.WaitAsync(cancellationToken).ConfigureAwait(false);
+                Interlocked.Decrement(ref entered);
+            },
+            ["pod-a"] = ActivitiesResult(CaptureWith(
+                Span("svc", "op-a", spanId: "aaaaaaaaaaaaaaaa", parentSpanId: null, start, TimeSpan.FromMilliseconds(10))),
+            "pod-a"),
+            ["pod-b"] = ActivitiesResult(CaptureWith(
+                Span("svc", "op-b", spanId: "bbbbbbbbbbbbbbbb", parentSpanId: null, start, TimeSpan.FromMilliseconds(10))),
+            "pod-b"),
+        };
+
+        var fanoutTask = DistributedTraceCorrelator.CorrelateAsync(
+            store, proxy, callerBearerName: null, investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
+            sources: null, CancellationToken.None);
+
+        await Task.Delay(50);
+        maxConcurrent.Should().BeGreaterThan(1);
+        release.Release(2);
+
+        var fanout = await fanoutTask;
+        fanout.PodErrors.Should().BeEmpty();
+    }
+
     private static InvestigationHandle ActiveHandle(string handleId, string podName, string? ownerBearerName = null) => new(
         HandleId: handleId,
         Namespace: "ns",
@@ -245,21 +294,27 @@ public sealed class DistributedTraceCorrelatorTests
 
         public Dictionary<string, Exception> Throw { get; } = new(StringComparer.Ordinal);
         public List<string> Calls { get; } = new();
+        public Func<CancellationToken, Task>? Gate { get; init; }
 
         public CallToolResult this[string podName]
         {
             set => _byPod[podName] = value;
         }
 
-        public Task<CallToolResult> CallToolAsync(InvestigationHandle handle, CallToolRequestParams request, CancellationToken cancellationToken)
+        public async Task<CallToolResult> CallToolAsync(InvestigationHandle handle, CallToolRequestParams request, CancellationToken cancellationToken)
         {
             Calls.Add(handle.PodName);
-            if (Throw.TryGetValue(handle.PodName, out var ex))
+            if (Gate is not null)
             {
-                return Task.FromException<CallToolResult>(ex);
+                await Gate(cancellationToken);
             }
 
-            return Task.FromResult(_byPod[handle.PodName]);
+            if (Throw.TryGetValue(handle.PodName, out var ex))
+            {
+                throw ex;
+            }
+
+            return _byPod[handle.PodName];
         }
 
         public Task DisposeForHandleAsync(string handleId) => Task.CompletedTask;

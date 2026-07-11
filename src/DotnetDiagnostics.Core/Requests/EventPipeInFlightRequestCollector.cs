@@ -1,4 +1,3 @@
-using System.Collections;
 using System.Diagnostics.Tracing;
 using System.Globalization;
 using DotnetDiagnostics.Core.Internal;
@@ -47,8 +46,6 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
     private const string StopSpec =
         "Microsoft.AspNetCore/Microsoft.AspNetCore.Hosting.HttpRequestIn.Stop@Activity1Stop:-" +
         "ActivityId=*Activity.Id;ActivitySpanId=*Activity.SpanId;ActivityTraceId=*Activity.TraceId";
-
-    private static readonly IReadOnlyDictionary<string, string> EmptyArguments = new Dictionary<string, string>(0, StringComparer.Ordinal);
 
     private readonly ILogger<EventPipeInFlightRequestCollector> _logger;
 
@@ -217,7 +214,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
             return false;
         }
 
-        var arguments = ExtractArguments(traceEvent.PayloadByName("Arguments"));
+        var arguments = DiagnosticSourcePayloadParser.ExtractArguments(traceEvent.PayloadByName("Arguments"));
         if (arguments.Count == 0)
         {
             return false;
@@ -261,71 +258,6 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         return composed.Length == 0 ? "(unknown)" : composed;
     }
 
-    private static IReadOnlyDictionary<string, string> ExtractArguments(object? payload)
-    {
-        if (payload is null)
-        {
-            return EmptyArguments;
-        }
-
-        var result = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (payload is IEnumerable enumerable && payload is not string)
-        {
-            foreach (var item in enumerable)
-            {
-                if (item is null)
-                {
-                    continue;
-                }
-
-                if (TryGetKeyValue(item, out var key, out var value))
-                {
-                    result[key] = FormatString(value);
-                }
-            }
-        }
-
-        return result;
-    }
-
-    private static bool TryGetKeyValue(object item, out string key, out object? value)
-    {
-        if (item is IDictionary<string, object> dictionary)
-        {
-            key = dictionary.TryGetValue("Key", out var dictionaryKey) ? FormatString(dictionaryKey) : string.Empty;
-            value = dictionary.TryGetValue("Value", out var dictionaryValue) ? dictionaryValue : null;
-            return !string.IsNullOrWhiteSpace(key);
-        }
-
-        if (item is DictionaryEntry entry)
-        {
-            key = FormatString(entry.Key);
-            value = entry.Value;
-            return !string.IsNullOrWhiteSpace(key);
-        }
-
-        if (item is IDictionary nonGenericDictionary)
-        {
-            key = nonGenericDictionary.Contains("Key") ? FormatString(nonGenericDictionary["Key"]) : string.Empty;
-            value = nonGenericDictionary.Contains("Value") ? nonGenericDictionary["Value"] : null;
-            return !string.IsNullOrWhiteSpace(key);
-        }
-
-        var type = item.GetType();
-        var keyProperty = type.GetProperty("Key");
-        var valueProperty = type.GetProperty("Value");
-        if (keyProperty is not null && valueProperty is not null)
-        {
-            key = FormatString(keyProperty.GetValue(item));
-            value = valueProperty.GetValue(item);
-            return !string.IsNullOrWhiteSpace(key);
-        }
-
-        key = string.Empty;
-        value = null;
-        return false;
-    }
-
     private static DateTimeOffset? ParseStartedAt(IReadOnlyDictionary<string, string> arguments)
     {
         var raw = GetArgument(arguments, "ActivityStartTime");
@@ -335,7 +267,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
     }
 
     private static string? GetArgument(IReadOnlyDictionary<string, string> arguments, string key) =>
-        arguments.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+        DiagnosticSourcePayloadParser.GetArgument(arguments, key) is { } value && !string.IsNullOrWhiteSpace(value)
             ? value
             : null;
 
@@ -347,12 +279,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
     private static string FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
 
-    private static string FormatString(object? value) => value switch
-    {
-        null => string.Empty,
-        IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
-        _ => value.ToString() ?? string.Empty,
-    };
+    private static string FormatString(object? value) => DiagnosticSourcePayloadParser.ConvertToString(value);
 
     private sealed record PendingRequest(
         string TraceId,

@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -70,17 +71,24 @@ internal static partial class CliCommands
     /// <summary>The commands wired in this slice (#288 PR1), in help-listing order.</summary>
     public static readonly IReadOnlyList<string> Commands = CliCommandCatalog.CommandNames;
 
+
+    internal static readonly FrozenSet<string> CommandSet = Commands.ToFrozenSet(StringComparer.Ordinal);
+
     /// <summary>Heap-snapshot sources accepted by the <c>inspect-heap</c> command (issue #288 PR3b).</summary>
     public static readonly IReadOnlyList<string> HeapSources = CliCommandCatalog.HeapSources;
+    internal static readonly FrozenSet<string> HeapSourceSet = HeapSources.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>Views accepted by the <c>inspect</c> command (issue #486).</summary>
     public static readonly IReadOnlyList<string> InspectViews = CliCommandCatalog.InspectViews;
+    internal static readonly FrozenSet<string> InspectViewSet = InspectViews.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>Artifact kinds accepted by the <c>get-bytes</c> command (issue #288 PR4).</summary>
     public static readonly IReadOnlyList<string> ByteKinds = CliCommandCatalog.ByteKinds;
+    internal static readonly FrozenSet<string> ByteKindSet = ByteKinds.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>Module assets accepted by <c>get-bytes --kind module</c> (issue #288 PR4).</summary>
     public static readonly IReadOnlyList<string> ByteAssets = CliCommandCatalog.ByteAssets;
+    internal static readonly FrozenSet<string> ByteAssetSet = ByteAssets.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>Dump types accepted by the <c>dump</c> command (mirrors <see cref="ProcessDumpType"/>).</summary>
     public static readonly IReadOnlyList<string> DumpTypes = CliCommandCatalog.DumpTypes;
@@ -93,12 +101,15 @@ internal static partial class CliCommands
     /// pid-less and reject <c>--launch</c>.
     /// </summary>
     public static readonly IReadOnlyList<string> LaunchableCommands = CliCommandCatalog.LaunchableCommands;
+    internal static readonly FrozenSet<string> LaunchableCommandSet = LaunchableCommands.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>
     /// EventPipe collection kinds accepted by the <c>collect</c> command (issue #288 PR2). Mirrors
     /// the MCP <c>collect_events</c> discriminator set so both front-ends accept the same kinds.
     /// </summary>
     public static readonly IReadOnlyList<string> CollectKinds = CliCommandCatalog.CollectKinds;
+
+    internal static readonly FrozenSet<string> CollectKindSet = CollectKinds.ToFrozenSet(StringComparer.Ordinal);
 
     private static readonly IComparableProjector[] ComparableProjectors =
     {

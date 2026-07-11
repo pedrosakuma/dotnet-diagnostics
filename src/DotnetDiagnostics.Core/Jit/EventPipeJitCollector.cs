@@ -71,11 +71,11 @@ public sealed class EventPipeJitCollector : IJitCollector
         var osrCount = 0;
         var ilMapCount = 0;
 
-        var processingTask = Task.Run(() =>
-        {
-            try
+        await EventPipeCollectionRunner.RunAsync(
+            session,
+            duration,
+            source =>
             {
-                using var source = new EventPipeEventSource(session.EventStream);
                 source.Clr.MethodJittingStarted += data =>
                 {
                     jitStarts++;
@@ -171,25 +171,9 @@ public sealed class EventPipeJitCollector : IJitCollector
                         r2rMissedMethods.Add(data.MethodID);
                     }
                 };
-
-                source.Process();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "EventPipe JIT source ended for pid {Pid}.", processId);
-            }
-        }, cancellationToken);
-
-        try
-        {
-            await Task.Delay(duration, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
-            session.Dispose();
-        }
+            },
+            ex => _logger.LogDebug(ex, "EventPipe JIT source ended for pid {Pid}.", processId),
+            cancellationToken).ConfigureAwait(false);
 
         var orderedMethods = methods.Values
             .Select(static accumulator => accumulator.ToRecord())

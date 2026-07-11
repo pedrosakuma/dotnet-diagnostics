@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+using System.Diagnostics;
 using System.Globalization;
 using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Hosting;
@@ -230,7 +232,7 @@ internal static class CliHost
             // tests, which pass a StringWriter rather than Console.Error). This keeps stdout clean and
             // leaves every existing test's captured stderr empty.
             var showProgress = !options.Json
-                && ProgressCommands.Contains(options.Command, StringComparer.Ordinal)
+                && ProgressCommandSet.Contains(options.Command!)
                 && ReferenceEquals(stderr, Console.Error)
                 && !Console.IsErrorRedirected;
 
@@ -575,6 +577,7 @@ internal static class CliHost
     }
 
     private static readonly string[] ProgressCommands = ["collect", "inspect-heap", "dump"];
+    private static readonly FrozenSet<string> ProgressCommandSet = ProgressCommands.ToFrozenSet(StringComparer.Ordinal);
 
     private static IHost BuildHost(CliOptions options)
     {

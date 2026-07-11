@@ -72,20 +72,20 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         var pendingRequests = new Dictionary<string, PendingRequest>(StringComparer.Ordinal);
         var pendingTls = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
 
-        var connectionDurations = new List<TimeSpan>();
-        var tlsDurations = new List<TimeSpan>();
+        var connectionDurations = new BoundedDurationSampler();
+        var tlsDurations = new BoundedDurationSampler();
         var byOperation = new Dictionary<string, MutableRequestGroup>(StringComparer.Ordinal);
-        var requestDurations = new List<TimeSpan>();
+        var requestDurations = new BoundedDurationSampler();
         var queuePoints = new List<KestrelQueuePoint>();
         var counters = new Dictionary<string, KestrelCounterSample>(StringComparer.Ordinal);
         var tlsProtocols = new HashSet<string>(StringComparer.Ordinal);
         string? configurationJson = null;
 
-        var processingTask = Task.Run(() =>
-        {
-            try
+        await EventPipeCollectionRunner.RunAsync(
+            session,
+            duration,
+            source =>
             {
-                using var source = new EventPipeEventSource(session.EventStream);
                 source.Dynamic.All += traceEvent =>
                 {
                     if (!string.Equals(traceEvent.ProviderName, KestrelProviderName, StringComparison.Ordinal))
@@ -180,25 +180,9 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
                         notes.Add($"Warning: failed to parse {traceEvent.EventName}: {ex.GetType().Name}.");
                     }
                 };
-
-                source.Process();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Kestrel EventPipe source ended for pid {Pid}.", processId);
-            }
-        }, cancellationToken);
-
-        try
-        {
-            await Task.Delay(duration, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
-            session.Dispose();
-        }
+            },
+            ex => _logger.LogDebug(ex, "Kestrel EventPipe source ended for pid {Pid}.", processId),
+            cancellationToken).ConfigureAwait(false);
 
         var totalEvents = connectionsStarted + requestsStarted + tlsStarted;
         if (totalEvents == 0 && counters.Count == 0)
@@ -211,9 +195,13 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
             notes.Add("No Configuration event was observed; KestrelServerOptions JSON is unavailable (the event fires at session enable for each registered server — the target may not have an active Kestrel server).");
         }
 
-        var requestSorted = requestDurations.OrderBy(static d => d).ToList();
-        var tlsSorted = tlsDurations.OrderBy(static d => d).ToList();
-        var connSorted = connectionDurations.OrderBy(static d => d).ToList();
+        if (requestDurations.IsApproximate
+            || tlsDurations.IsApproximate
+            || connectionDurations.IsApproximate
+            || byOperation.Values.Any(static g => g.IsApproximate))
+        {
+            notes.Add($"Latency percentiles are exact up to {BoundedPercentileSampler.ExactSampleCapacity} samples per aggregate and become reservoir-sampled approximations above that cap; max values remain exact.");
+        }
 
         var operations = byOperation.Values
             .Select(static g => g.ToRecord())
@@ -236,15 +224,15 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
             TlsHandshakesFailed: tlsFailed,
             PeakConnectionQueueLength: peakConnectionQueue,
             PeakRequestQueueLength: peakRequestQueue,
-            RequestP50: Percentile(requestSorted, 0.50),
-            RequestP95: Percentile(requestSorted, 0.95),
-            RequestMax: requestSorted.Count > 0 ? requestSorted[^1] : TimeSpan.Zero,
-            TlsHandshakeP50: Percentile(tlsSorted, 0.50),
-            TlsHandshakeP95: Percentile(tlsSorted, 0.95),
-            TlsHandshakeMax: tlsSorted.Count > 0 ? tlsSorted[^1] : TimeSpan.Zero,
-            ConnectionDurationP50: Percentile(connSorted, 0.50),
-            ConnectionDurationP95: Percentile(connSorted, 0.95),
-            ConnectionDurationMax: connSorted.Count > 0 ? connSorted[^1] : TimeSpan.Zero,
+            RequestP50: requestDurations.GetPercentile(0.50),
+            RequestP95: requestDurations.GetPercentile(0.95),
+            RequestMax: requestDurations.Max,
+            TlsHandshakeP50: tlsDurations.GetPercentile(0.50),
+            TlsHandshakeP95: tlsDurations.GetPercentile(0.95),
+            TlsHandshakeMax: tlsDurations.Max,
+            ConnectionDurationP50: connectionDurations.GetPercentile(0.50),
+            ConnectionDurationP95: connectionDurations.GetPercentile(0.95),
+            ConnectionDurationMax: connectionDurations.Max,
             Counters: counters.Values.OrderBy(static c => c.Name, StringComparer.Ordinal).ToList(),
             QueuePoints: queuePoints,
             ByOperation: operations,
@@ -258,7 +246,7 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         DateTimeOffset timestamp,
         Dictionary<string, PendingRequest> pendingRequests,
         Dictionary<string, MutableRequestGroup> byOperation,
-        List<TimeSpan> requestDurations)
+        BoundedDurationSampler requestDurations)
     {
         var key = RequestKey(traceEvent);
         if (!pendingRequests.Remove(key, out var pending))
@@ -344,15 +332,14 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         Dictionary<string, DateTimeOffset> pending,
         string key,
         DateTimeOffset stoppedAt,
-        List<TimeSpan> durations)
+        BoundedDurationSampler durations)
     {
         if (string.IsNullOrEmpty(key) || !pending.Remove(key, out var startedAt))
         {
             return;
         }
 
-        var elapsed = stoppedAt - startedAt;
-        durations.Add(elapsed < TimeSpan.Zero ? TimeSpan.Zero : elapsed);
+        durations.Add(stoppedAt - startedAt);
     }
 
     private static string RequestKey(TraceEvent traceEvent)
@@ -360,18 +347,6 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
 
     private static DateTimeOffset ToUtcOffset(DateTime timestamp) =>
         new(timestamp.ToUniversalTime(), TimeSpan.Zero);
-
-    private static TimeSpan Percentile(List<TimeSpan> orderedDurations, double percentile)
-    {
-        if (orderedDurations.Count == 0)
-        {
-            return TimeSpan.Zero;
-        }
-
-        var index = (int)Math.Ceiling((orderedDurations.Count * percentile) - 1);
-        index = Math.Clamp(index, 0, orderedDurations.Count - 1);
-        return orderedDurations[index];
-    }
 
     private static string PayloadString(TraceEvent traceEvent, string name)
     {
@@ -403,7 +378,7 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
 
     private sealed class MutableRequestGroup
     {
-        private readonly List<TimeSpan> _durations = new();
+        private readonly BoundedDurationSampler _durations = new();
 
         public MutableRequestGroup(string method, string path, string httpVersion)
         {
@@ -418,20 +393,27 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
 
         public string HttpVersion { get; }
 
-        public void Add(TimeSpan duration) => _durations.Add(duration);
+        public bool IsApproximate => _durations.IsApproximate;
+        public int Count { get; private set; }
+        public TimeSpan TotalDuration { get; private set; }
+
+        public void Add(TimeSpan duration)
+        {
+            _durations.Add(duration);
+            Count++;
+            TotalDuration += duration < TimeSpan.Zero ? TimeSpan.Zero : duration;
+        }
 
         public KestrelRequestGroup ToRecord()
         {
-            var sorted = _durations.OrderBy(static d => d).ToList();
-            var total = sorted.Aggregate(TimeSpan.Zero, static (sum, d) => sum + d);
             return new KestrelRequestGroup(
                 Method,
                 Path,
                 HttpVersion,
-                sorted.Count,
-                total,
-                Percentile(sorted, 0.95),
-                sorted.Count > 0 ? sorted[^1] : TimeSpan.Zero);
+                Count,
+                TotalDuration,
+                _durations.GetPercentile(0.95),
+                _durations.Max);
         }
     }
 }

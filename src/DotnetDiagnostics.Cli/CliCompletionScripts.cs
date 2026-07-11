@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Text;
 
 namespace DotnetDiagnostics.Cli;
@@ -5,6 +6,7 @@ namespace DotnetDiagnostics.Cli;
 internal static class CliCompletionScripts
 {
     public static readonly IReadOnlyList<string> Shells = CliCommandCatalog.Shells;
+    internal static readonly FrozenSet<string> ShellSet = Shells.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>
     /// Every long option flag (<c>--foo</c>) advertised by the completion catalog — both the global

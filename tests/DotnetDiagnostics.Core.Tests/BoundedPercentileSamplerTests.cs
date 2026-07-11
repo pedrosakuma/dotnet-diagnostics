@@ -1,4 +1,4 @@
-using DotnetDiagnostics.Core.Db;
+using DotnetDiagnostics.Core.Internal;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.Core.Tests;

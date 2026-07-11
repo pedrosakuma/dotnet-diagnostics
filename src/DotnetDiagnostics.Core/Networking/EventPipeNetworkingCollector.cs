@@ -72,19 +72,19 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         var pendingDns = new Dictionary<Guid, DateTimeOffset>();
         var pendingTls = new Dictionary<Guid, DateTimeOffset>();
 
-        var httpDurations = new List<TimeSpan>();
-        var queueTimes = new List<TimeSpan>();
-        var dnsDurations = new List<TimeSpan>();
-        var tlsDurations = new List<TimeSpan>();
+        var httpDurations = new BoundedDurationSampler();
+        var queueTimes = new BoundedDurationSampler();
+        var dnsDurations = new BoundedDurationSampler();
+        var tlsDurations = new BoundedDurationSampler();
         var byOperation = new Dictionary<string, MutableHttpGroup>(StringComparer.Ordinal);
         var counters = new Dictionary<string, NetworkingCounterSample>(StringComparer.Ordinal);
         var tlsProtocols = new HashSet<string>(StringComparer.Ordinal);
 
-        var processingTask = Task.Run(() =>
-        {
-            try
+        await EventPipeCollectionRunner.RunAsync(
+            session,
+            duration,
+            source =>
             {
-                using var source = new EventPipeEventSource(session.EventStream);
                 source.Dynamic.All += traceEvent =>
                 {
                     var provider = traceEvent.ProviderName;
@@ -144,25 +144,9 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
                         notes.Add($"Warning: failed to parse {traceEvent.ProviderName}/{traceEvent.EventName}: {ex.GetType().Name}.");
                     }
                 };
-
-                source.Process();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Networking EventPipe source ended for pid {Pid}.", processId);
-            }
-        }, cancellationToken);
-
-        try
-        {
-            await Task.Delay(duration, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
-            session.Dispose();
-        }
+            },
+            ex => _logger.LogDebug(ex, "Networking EventPipe source ended for pid {Pid}.", processId),
+            cancellationToken).ConfigureAwait(false);
 
         var totalEvents = httpStarted + dnsStarted + tlsStarted + socketStarted;
         if (totalEvents == 0 && counters.Count == 0)
@@ -175,10 +159,14 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             notes.Add("HTTP request latency is unavailable: Start/Stop events could not be correlated by activity id in this window.");
         }
 
-        var httpSorted = httpDurations.OrderBy(static d => d).ToList();
-        var queueSorted = queueTimes.OrderBy(static d => d).ToList();
-        var dnsSorted = dnsDurations.OrderBy(static d => d).ToList();
-        var tlsSorted = tlsDurations.OrderBy(static d => d).ToList();
+        if (httpDurations.IsApproximate
+            || queueTimes.IsApproximate
+            || dnsDurations.IsApproximate
+            || tlsDurations.IsApproximate
+            || byOperation.Values.Any(static g => g.IsApproximate))
+        {
+            notes.Add($"Latency percentiles are exact up to {BoundedPercentileSampler.ExactSampleCapacity} samples per aggregate and become reservoir-sampled approximations above that cap; max values remain exact.");
+        }
 
         var operations = byOperation.Values
             .Select(static g => g.ToRecord())
@@ -197,24 +185,24 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             HttpConnectionsEstablished: connEstablished,
             HttpConnectionsClosed: connClosed,
             HttpRequestsLeftQueue: leftQueue,
-            HttpRequestP50: Percentile(httpSorted, 0.50),
-            HttpRequestP95: Percentile(httpSorted, 0.95),
-            HttpRequestMax: httpSorted.Count > 0 ? httpSorted[^1] : TimeSpan.Zero,
-            TimeInQueueP50: Percentile(queueSorted, 0.50),
-            TimeInQueueP95: Percentile(queueSorted, 0.95),
-            TimeInQueueMax: queueSorted.Count > 0 ? queueSorted[^1] : TimeSpan.Zero,
+            HttpRequestP50: httpDurations.GetPercentile(0.50),
+            HttpRequestP95: httpDurations.GetPercentile(0.95),
+            HttpRequestMax: httpDurations.Max,
+            TimeInQueueP50: queueTimes.GetPercentile(0.50),
+            TimeInQueueP95: queueTimes.GetPercentile(0.95),
+            TimeInQueueMax: queueTimes.Max,
             DnsLookupsStarted: dnsStarted,
             DnsLookupsStopped: dnsStopped,
             DnsLookupsFailed: dnsFailed,
-            DnsP50: Percentile(dnsSorted, 0.50),
-            DnsP95: Percentile(dnsSorted, 0.95),
-            DnsMax: dnsSorted.Count > 0 ? dnsSorted[^1] : TimeSpan.Zero,
+            DnsP50: dnsDurations.GetPercentile(0.50),
+            DnsP95: dnsDurations.GetPercentile(0.95),
+            DnsMax: dnsDurations.Max,
             TlsHandshakesStarted: tlsStarted,
             TlsHandshakesStopped: tlsStopped,
             TlsHandshakesFailed: tlsFailed,
-            TlsP50: Percentile(tlsSorted, 0.50),
-            TlsP95: Percentile(tlsSorted, 0.95),
-            TlsMax: tlsSorted.Count > 0 ? tlsSorted[^1] : TimeSpan.Zero,
+            TlsP50: tlsDurations.GetPercentile(0.50),
+            TlsP95: tlsDurations.GetPercentile(0.95),
+            TlsMax: tlsDurations.Max,
             SocketConnectsStarted: socketStarted,
             SocketConnectsStopped: socketStopped,
             SocketConnectsFailed: socketFailed,
@@ -230,8 +218,8 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         DateTimeOffset timestamp,
         Dictionary<Guid, PendingHttp> pending,
         Dictionary<string, MutableHttpGroup> byOperation,
-        List<TimeSpan> httpDurations,
-        List<TimeSpan> queueTimes,
+        BoundedDurationSampler httpDurations,
+        BoundedDurationSampler queueTimes,
         ref long started,
         ref long stopped,
         ref long failed,
@@ -310,7 +298,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         Guid activityId,
         DateTimeOffset timestamp,
         Dictionary<Guid, DateTimeOffset> pending,
-        List<TimeSpan> durations,
+        BoundedDurationSampler durations,
         ref long started,
         ref long stopped,
         ref long failed)
@@ -328,7 +316,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             if (pending.Remove(activityId, out var start))
             {
                 var elapsed = timestamp - start;
-                durations.Add(elapsed < TimeSpan.Zero ? TimeSpan.Zero : elapsed);
+                durations.Add(elapsed);
             }
 
             return true;
@@ -423,18 +411,6 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
     private static DateTimeOffset ToUtcOffset(DateTime timestamp) =>
         new(timestamp.ToUniversalTime(), TimeSpan.Zero);
 
-    private static TimeSpan Percentile(List<TimeSpan> orderedDurations, double percentile)
-    {
-        if (orderedDurations.Count == 0)
-        {
-            return TimeSpan.Zero;
-        }
-
-        var index = (int)Math.Ceiling((orderedDurations.Count * percentile) - 1);
-        index = Math.Clamp(index, 0, orderedDurations.Count - 1);
-        return orderedDurations[index];
-    }
-
     private static string PayloadString(TraceEvent traceEvent, string name)
     {
         try
@@ -479,7 +455,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
 
     private sealed class MutableHttpGroup
     {
-        private readonly List<TimeSpan> _durations = new();
+        private readonly BoundedDurationSampler _durations = new();
 
         public MutableHttpGroup(string host, string path)
         {
@@ -491,19 +467,26 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
 
         public string Path { get; }
 
-        public void Add(TimeSpan duration) => _durations.Add(duration);
+        public bool IsApproximate => _durations.IsApproximate;
+        public int Count { get; private set; }
+        public TimeSpan TotalDuration { get; private set; }
+
+        public void Add(TimeSpan duration)
+        {
+            _durations.Add(duration);
+            Count++;
+            TotalDuration += duration < TimeSpan.Zero ? TimeSpan.Zero : duration;
+        }
 
         public NetworkingHttpGroup ToRecord()
         {
-            var sorted = _durations.OrderBy(static d => d).ToList();
-            var total = sorted.Aggregate(TimeSpan.Zero, static (sum, d) => sum + d);
             return new NetworkingHttpGroup(
                 Host,
                 Path,
-                sorted.Count,
-                total,
-                Percentile(sorted, 0.95),
-                sorted.Count > 0 ? sorted[^1] : TimeSpan.Zero);
+                Count,
+                TotalDuration,
+                _durations.GetPercentile(0.95),
+                _durations.Max);
         }
     }
 }
