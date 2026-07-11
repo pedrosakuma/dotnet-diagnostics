@@ -205,7 +205,7 @@ internal sealed class SessionRepl
         if (options!.Help)
         {
             var helpText = options.Command is { } helpCommand
-                            && CliCommands.Commands.Contains(helpCommand, StringComparer.Ordinal)
+                            && CliCommands.CommandSet.Contains(helpCommand)
                 ? CliHelp.ForCommand(helpCommand)
                 : SessionHelp;
             await stdout.WriteLineAsync(helpText).ConfigureAwait(false);
@@ -224,7 +224,7 @@ internal sealed class SessionRepl
             return;
         }
 
-        if (!CliCommands.Commands.Contains(options.Command, StringComparer.Ordinal))
+        if (!CliCommands.CommandSet.Contains(options.Command))
         {
             await stderr.WriteLineAsync($"Unknown command '{options.Command}'. Type 'help' for the command list.").ConfigureAwait(false);
             return;

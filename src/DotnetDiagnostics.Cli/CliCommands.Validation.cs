@@ -85,7 +85,7 @@ internal static partial class CliCommands
             return false;
         }
 
-        if (!CollectKinds.Contains(options.Kind, StringComparer.Ordinal))
+        if (!CollectKindSet.Contains(options.Kind))
         {
             error = $"Unknown collect kind '{options.Kind}'. Valid kinds: {string.Join(", ", CollectKinds)}.";
             return false;
@@ -226,7 +226,7 @@ internal static partial class CliCommands
         if (options.Sources.Count == 1)
         {
             source = options.Sources[0];
-            if (!HeapSources.Contains(source, StringComparer.Ordinal))
+            if (!HeapSourceSet.Contains(source))
             {
                 error = $"Unknown --source '{source}'. Valid values: live, dump, gcdump.";
                 return false;
@@ -302,7 +302,7 @@ internal static partial class CliCommands
             return false;
         }
 
-        if (!LaunchableCommands.Contains(options.Command, StringComparer.Ordinal))
+        if (!LaunchableCommandSet.Contains(options.Command!))
         {
             error = $"--launch is not supported by '{options.Command}'. Supported: {string.Join(", ", LaunchableCommands)}.";
             return false;
@@ -346,7 +346,7 @@ internal static partial class CliCommands
             return false;
         }
 
-        if (!InspectViews.Contains(options.View, StringComparer.Ordinal))
+        if (!InspectViewSet.Contains(options.View))
         {
             error = $"Unknown --view '{options.View}'. Valid views: {string.Join(", ", InspectViews)}.";
             return false;
@@ -405,7 +405,7 @@ internal static partial class CliCommands
             return false;
         }
 
-        if (!ByteKinds.Contains(options.Kind, StringComparer.Ordinal))
+        if (!ByteKindSet.Contains(options.Kind))
         {
             error = $"Unknown get-bytes kind '{options.Kind}'. Valid kinds: {string.Join(", ", ByteKinds)}.";
             return false;
@@ -431,7 +431,7 @@ internal static partial class CliCommands
                 return false;
             }
 
-            if (options.Asset is not null && !ByteAssets.Contains(options.Asset, StringComparer.Ordinal))
+            if (options.Asset is not null && !ByteAssetSet.Contains(options.Asset))
             {
                 error = $"Unknown --asset '{options.Asset}'. Valid values: {string.Join(", ", ByteAssets)}.";
                 return false;
@@ -549,7 +549,7 @@ internal static partial class CliCommands
             return false;
         }
 
-        if (!CliCompletionScripts.Shells.Contains(options.CompletionShell, StringComparer.Ordinal))
+        if (!CliCompletionScripts.ShellSet.Contains(options.CompletionShell))
         {
             error = $"Unknown completion shell '{options.CompletionShell}'. Valid shells: {string.Join(", ", CliCompletionScripts.Shells)}.";
             return false;
