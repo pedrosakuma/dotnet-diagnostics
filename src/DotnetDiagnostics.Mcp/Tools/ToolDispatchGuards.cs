@@ -23,6 +23,7 @@ internal static class ToolDispatchGuards
         NextActionHint? hint = null,
         string errorKind = "Forbidden",
         string? errorTarget = null,
+        bool defaultErrorTargetToScope = true,
         Func<string>? errorDetailFactory = null)
         where TResult : class
         => Require(
@@ -32,7 +33,7 @@ internal static class ToolDispatchGuards
             out failure,
             hint,
             errorKind,
-            errorTarget ?? requiredScope);
+            defaultErrorTargetToScope ? errorTarget ?? requiredScope : errorTarget);
 
     public static bool RequireExplicitScope<TResult>(
         BearerPrincipal? principal,
@@ -42,6 +43,7 @@ internal static class ToolDispatchGuards
         NextActionHint? hint = null,
         string errorKind = "Forbidden",
         string? errorTarget = null,
+        bool defaultErrorTargetToScope = true,
         Func<string>? errorDetailFactory = null)
         where TResult : class
         => Require(
@@ -51,7 +53,7 @@ internal static class ToolDispatchGuards
             out failure,
             hint,
             errorKind,
-            errorTarget ?? requiredScope);
+            defaultErrorTargetToScope ? errorTarget ?? requiredScope : errorTarget);
 
     private static bool Require<TResult>(
         bool condition,
@@ -60,7 +62,7 @@ internal static class ToolDispatchGuards
         out DiagnosticResult<TResult>? failure,
         NextActionHint? hint,
         string errorKind,
-        string errorTarget)
+        string? errorTarget)
         where TResult : class
     {
         if (condition)

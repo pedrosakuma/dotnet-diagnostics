@@ -125,7 +125,8 @@ public sealed class ListOrchestratorTool
                         "list_orchestrator",
                         "Use kind='pods' (orchestrator-list scope) or grant the token 'orchestrator-attach'.",
                         new Dictionary<string, object?> { ["kind"] = KindPods }),
-                    errorKind: OrchestratorErrorKinds.PermissionDenied))
+                    errorKind: OrchestratorErrorKinds.PermissionDenied,
+                    defaultErrorTargetToScope: false))
             {
                 return scopeFailure!;
             }
@@ -141,7 +142,8 @@ public sealed class ListOrchestratorTool
                         "list_orchestrator",
                         "Grant the token 'orchestrator-list', or use kind='investigations' (orchestrator-attach scope).",
                         new Dictionary<string, object?> { ["kind"] = KindInvestigations }),
-                    errorKind: OrchestratorErrorKinds.PermissionDenied))
+                    errorKind: OrchestratorErrorKinds.PermissionDenied,
+                    defaultErrorTargetToScope: false))
             {
                 return scopeFailure!;
             }
