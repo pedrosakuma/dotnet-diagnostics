@@ -148,8 +148,8 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         {
             var aggregator = new GcDumpTypeAggregator();
             var gcNum = -1;
-            var dumpComplete = false;
-            var dataSeen = false;
+            var dataSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var dumpComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
             var processing = Task.Run(() =>
             {
@@ -169,7 +169,7 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
 
                     source.Clr.GCStart += data =>
                     {
-                        dataSeen = true;
+                        dataSeen.TrySetResult();
                         if (gcNum < 0 && data.Depth == 2 && data.Type != GCType.BackgroundGC)
                         {
                             gcNum = data.Count;
@@ -182,7 +182,7 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
                             // Mark completion only — do NOT StopProcessing here. GCStop proves the induced
                             // GC finished, but tail GCBulkNode/TypeBulkType events may still be buffered.
                             // The control path stops the session, letting Process() drain to EOF naturally.
-                            dumpComplete = true;
+                            dumpComplete.TrySetResult();
                         }
                     };
                     source.Clr.TypeBulkType += data =>
@@ -195,7 +195,7 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
                     };
                     source.Clr.GCBulkNode += data =>
                     {
-                        dataSeen = true;
+                        dataSeen.TrySetResult();
                         for (var i = 0; i < data.Count; i++)
                         {
                             var v = data.Values(i);
@@ -213,24 +213,35 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
                 }
             }, CancellationToken.None);
 
-            var deadline = Stopwatch.StartNew();
             var cancelled = false;
-            while (!processing.Wait(100, CancellationToken.None))
+            var cancellationTask = Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            var noDataTask = Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None);
+            var timeoutTask = Task.Delay(timeout, CancellationToken.None);
+
+            var initialCompletion = await Task.WhenAny(
+                processing,
+                dataSeen.Task,
+                dumpComplete.Task,
+                noDataTask,
+                timeoutTask,
+                cancellationTask).ConfigureAwait(false);
+
+            if (initialCompletion == cancellationTask)
             {
-                if (ct.IsCancellationRequested)
-                {
-                    cancelled = true;
-                    break;
-                }
-                if (!dataSeen && deadline.Elapsed.TotalSeconds > 5)
-                {
-                    _logger.LogWarning("No EventPipe heap data within 5s for PID {Pid}; assuming no managed heap.", processId);
-                    break;
-                }
-                if (dumpComplete || deadline.Elapsed > timeout)
-                {
-                    break;
-                }
+                cancelled = true;
+            }
+            else if (initialCompletion == noDataTask && !dataSeen.Task.IsCompleted)
+            {
+                _logger.LogWarning("No EventPipe heap data within 5s for PID {Pid}; assuming no managed heap.", processId);
+            }
+            else if (initialCompletion == dataSeen.Task)
+            {
+                var terminalCompletion = await Task.WhenAny(
+                    processing,
+                    dumpComplete.Task,
+                    timeoutTask,
+                    cancellationTask).ConfigureAwait(false);
+                cancelled = terminalCompletion == cancellationTask;
             }
 
             try
