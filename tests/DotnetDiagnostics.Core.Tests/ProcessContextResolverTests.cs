@@ -144,6 +144,52 @@ public sealed class ProcessContextResolverTests
         detector.CallCount.Should().Be(2);
     }
 
+    [Fact]
+    public async Task ResolveAsync_ExpiredEntry_IsRemovedWhenPidIsRevisited()
+    {
+        var discovery = new StubDiscovery(new DotnetProcess(42, "/x", "linux", "x64", "10.0.0", "x"));
+        var detector = new StubDetector(_ => DefaultCaps);
+        var clock = new FakeTimeProvider();
+        var resolver = new ProcessContextResolver(discovery, detector, clock, TimeSpan.FromSeconds(60));
+
+        await resolver.ResolveAsync(42, default);
+        resolver.CachedEntryCount.Should().Be(1);
+
+        clock.Advance(TimeSpan.FromSeconds(61));
+        await resolver.ResolveAsync(42, default);
+
+        resolver.CachedEntryCount.Should().Be(1, "the expired entry should be removed before the refreshed value is stored");
+        detector.CallCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_PeriodicallyTrimsExpiredEntriesFromOtherPids()
+    {
+        var processes = Enumerable.Range(1, 80)
+            .Select(pid => new DotnetProcess(pid, $"/app{pid}", "linux", "x64", "10.0.0", $"app{pid}"))
+            .ToArray();
+        var discovery = new StubDiscovery(processes);
+        var detector = new StubDetector(pid => DefaultCaps with { ProcessId = pid });
+        var clock = new FakeTimeProvider();
+        var resolver = new ProcessContextResolver(discovery, detector, clock, TimeSpan.FromSeconds(60));
+
+        for (var pid = 1; pid <= 2; pid++)
+        {
+            await resolver.ResolveAsync(pid, default);
+        }
+
+        resolver.CachedEntryCount.Should().Be(2);
+        clock.Advance(TimeSpan.FromSeconds(61));
+
+        for (var pid = 3; pid <= 65; pid++)
+        {
+            await resolver.ResolveAsync(pid, default);
+        }
+
+        resolver.CachedEntryCount.Should().BeLessThan(65, "periodic trimming should evict expired entries instead of letting the dictionary grow forever");
+        resolver.CachedEntryCount.Should().Be(63, "only the currently-live pid entries should remain after the trim pass runs");
+    }
+
     private sealed class StubDiscovery : IProcessDiscovery
     {
         private readonly IReadOnlyList<DotnetProcess> _processes;
