@@ -114,6 +114,7 @@ public sealed class EventPipeCounterCollector : ICounterCollector
         var instrumentMetadata = new ConcurrentDictionary<int, InstrumentMetadata>();
         var latestMeters = new ConcurrentDictionary<string, MeterInstrumentValue>(StringComparer.Ordinal);
         var notes = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+        var acceptedMeterSeriesCount = 0;
 
         var processingTask = Task.Run(() =>
         {
@@ -130,6 +131,7 @@ public sealed class EventPipeCounterCollector : ICounterCollector
                             maxInstrumentTimeSeries,
                             instrumentMetadata,
                             latestMeters,
+                            ref acceptedMeterSeriesCount,
                             notes);
                         return;
                     }
@@ -216,6 +218,7 @@ public sealed class EventPipeCounterCollector : ICounterCollector
         int maxInstrumentTimeSeries,
         ConcurrentDictionary<int, InstrumentMetadata> instrumentMetadata,
         ConcurrentDictionary<string, MeterInstrumentValue> latestMeters,
+        ref int acceptedMeterSeriesCount,
         ConcurrentDictionary<string, byte> notes)
     {
         if (metricsSessionId is null || !BelongsToMetricsSession(traceEvent, metricsSessionId))
@@ -238,8 +241,15 @@ public sealed class EventPipeCounterCollector : ICounterCollector
             case "HistogramValuePublished":
                 if (TryExtractMeterValue(traceEvent, instrumentMetadata, out var key, out var meterValue))
                 {
-                    if (!latestMeters.ContainsKey(key) && latestMeters.Count >= maxInstrumentTimeSeries)
+                    if (latestMeters.TryAdd(key, meterValue))
                     {
+                        if (acceptedMeterSeriesCount < maxInstrumentTimeSeries)
+                        {
+                            acceptedMeterSeriesCount++;
+                            return;
+                        }
+
+                        latestMeters.TryRemove(key, out _);
                         notes.TryAdd($"TimeSeriesLimitReached: capped at {maxInstrumentTimeSeries} series.", 0);
                         return;
                     }
