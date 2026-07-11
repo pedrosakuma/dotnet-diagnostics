@@ -315,6 +315,35 @@ public sealed class BearerTokenMiddlewareTests
     }
 
     [Fact]
+    public async Task JwtMultiIssuer_Prefilter_Ignores_Trailing_Slash_In_Audience()
+    {
+        var oidcOptions = OidcOptionsWithProviders(("https://issuer.example.test", "api://dotnet-diagnostics-mcp"));
+        var authService = new CountingAuthenticationService(new Dictionary<string, AuthenticateResult>(StringComparer.Ordinal)
+        {
+            [OidcJwtAuthOptions.DefaultSchemeName] = AuthenticateResult.Success(
+                new AuthenticationTicket(
+                    new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, "entra") }, "Bearer")),
+                    OidcJwtAuthOptions.DefaultSchemeName)),
+        });
+        var services = new ServiceCollection()
+            .AddSingleton<IAuthenticationService>(authService)
+            .BuildServiceProvider();
+
+        var authorization = string.Concat(
+            "Bearer ",
+            CreateUnsignedJwt("https://issuer.example.test", "api://dotnet-diagnostics-mcp/"));
+        var ctx = await RunAsync(
+            RegistryWith(),
+            authorization,
+            oidcOptions: oidcOptions,
+            requestServices: services);
+
+        ((bool)ctx.Items["__nextCalled"]!).Should().BeTrue();
+        authService.InvokedSchemes.Should().Equal(OidcJwtAuthOptions.DefaultSchemeName);
+        ctx.GetBearerPrincipal()!.Name.Should().Be("entra");
+    }
+
+    [Fact]
     public void LegacyPrincipal_HasRootName_AndRootScope()
     {
         using var env = EnvScope.Set("MCP_BEARER_TOKEN", "legacy-secret");

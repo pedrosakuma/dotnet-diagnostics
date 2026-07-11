@@ -577,6 +577,24 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.LastRequest.Should().BeNull();
     }
 
+    [Fact]
+    public async Task Proxy_RejectsOversizedBody_WhenLimitDoesNotMatchPoolBucket()
+    {
+        await DisposeAsync();
+        await InitializeAsync(proxyBytesCap: 1025);
+
+        _store.Add(NewHandle("inv_big_odd", InvestigationState.Active, "pod-token"));
+        _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK);
+
+        var payload = new string('x', 1026);
+        var response = await _client.PostAsync("/proxy/inv_big_odd/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("ProxyBodyTooLarge");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
     private static InvestigationHandle NewHandle(string id, InvestigationState state, string podToken = "pod") => new(
         HandleId: id,
         Namespace: "ns",

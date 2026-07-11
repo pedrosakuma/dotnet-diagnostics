@@ -57,7 +57,7 @@ internal static class OidcJwtAuthExtensions
 
             foreach (var audience in audiences)
             {
-                if (!string.Equals(provider.Audience, audience, StringComparison.Ordinal))
+                if (!AudiencesMatch(provider.Audience, audience))
                 {
                     continue;
                 }
@@ -229,4 +229,10 @@ internal static class OidcJwtAuthExtensions
             return false;
         }
     }
+
+    private static bool AudiencesMatch(string configuredAudience, string tokenAudience)
+        => string.Equals(
+            configuredAudience.TrimEnd('/'),
+            tokenAudience.TrimEnd('/'),
+            StringComparison.Ordinal);
 }

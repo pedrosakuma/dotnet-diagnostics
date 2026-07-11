@@ -383,7 +383,13 @@ internal static class InvestigationProxyEndpoints
                     buffer = expanded;
                 }
 
-                var read = await source.ReadAsync(buffer.AsMemory(length), cancellationToken).ConfigureAwait(false);
+                var writable = Math.Min(buffer.Length - length, maxLength - length);
+                if (writable == 0)
+                {
+                    throw new RequestBodyTooLargeException();
+                }
+
+                var read = await source.ReadAsync(buffer.AsMemory(length, writable), cancellationToken).ConfigureAwait(false);
                 if (read == 0)
                 {
                     return new PooledRequestBodyBuffer(buffer, length);
