@@ -20,12 +20,6 @@ namespace DotnetDiagnostics.Core.Dump;
 /// </remarks>
 public sealed class ClrMdDumpInspector : IDumpInspector
 {
-    private const int MaxArraySampleCount = 8;
-    private const int MaxStringPreviewLength = 256;
-    private const int MaxFieldDepth = 3;
-    private const int MaxFieldCount = 256;
-    private const int GcRootDepthLimit = 64;
-    private const int MaxRetainedGraphObjects = 250_000;
     private readonly ILogger<ClrMdDumpInspector> _logger;
     private readonly MvidReader _mvidReader = new();
 
@@ -251,24 +245,10 @@ public sealed class ClrMdDumpInspector : IDumpInspector
     private RuntimeSummary SummarizeRuntime(
         ClrRuntime runtime, DumpInspectionOptions opts, List<string> warnings, CancellationToken ct)
     {
-        var (typeStats, totalBytes, segments, delegateAgg, stringAgg, taskTimerAgg, alcAgg) = WalkHeap(runtime, opts, warnings, ct);
-        var heapSummary = SummarizeHeapFromSegments(segments);
-
-        // The snapshot retains a richer top-N so follow-up drilldown queries (e.g. ask for top-100
-        // when the tool returned top-20 inline) don't pay the walk cost a second time.
-        var snapshotTopN = Math.Max(opts.TopTypes, opts.SnapshotTopTypes);
-
-        var byBytes = typeStats.Values
-            .OrderByDescending(s => s.Bytes)
-            .Take(snapshotTopN)
-            .Select(s => ToTypeStat(s, totalBytes))
-            .ToArray();
-
-        var byInstances = typeStats.Values
-            .OrderByDescending(s => s.Count)
-            .Take(snapshotTopN)
-            .Select(s => ToTypeStat(s, totalBytes))
-            .ToArray();
+        var walk = ClrMdHeapWalker.Walk(runtime, opts, warnings, BuildTypeIdentity, TryReadMvid, ct);
+        var heapSummary = SummarizeHeapFromSegments(walk.Segments);
+        var byBytes = walk.ByBytes;
+        var byInstances = walk.ByInstances;
 
         IReadOnlyList<RetentionPath>? retention = null;
         if (opts.IncludeRetentionPaths)
@@ -285,24 +265,15 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             statics = WalkStaticFields(runtime, opts.SnapshotStaticFieldTopN, warnings, ct);
         }
 
-        IReadOnlyList<DelegateTargetStat>? delegates = null;
-        if (opts.IncludeDelegateTargets && delegateAgg is not null)
-        {
-            delegates = BuildDelegateStats(delegateAgg, opts.SnapshotDelegateTargetTopN);
-        }
-
-        IReadOnlyList<DuplicateStringStat>? duplicates = null;
-        if (opts.IncludeDuplicateStrings && stringAgg is not null)
-        {
-            duplicates = BuildDuplicateStringStats(stringAgg, opts.SnapshotDuplicateStringTopN, opts.DuplicateStringPreviewLength);
-        }
+        var delegates = walk.DelegateTargets;
+        var duplicates = walk.DuplicateStrings;
 
         var gcHandles = WalkGcHandles(runtime, ct);
         var asyncOperations = ClrMdAsyncStateMachineWalker.WalkPendingAsyncOperations(runtime, warnings, ct);
-        var timers = ClrMdTaskTimerAnalyzer.BuildView(taskTimerAgg, opts.SnapshotTopTypes, BuildTypeIdentity, TryReadMvid);
-        var assemblyLoadContexts = ClrMdAssemblyLoadContextAnalyzer.BuildView(runtime, alcAgg, warnings, ct);
+        var timers = ClrMdTaskTimerAnalyzer.BuildView(walk.TaskTimers, opts.SnapshotTopTypes, BuildTypeIdentity, TryReadMvid);
+        var assemblyLoadContexts = ClrMdAssemblyLoadContextAnalyzer.BuildView(runtime, walk.AssemblyLoadContexts, warnings, ct);
 
-        return new RuntimeSummary(byBytes, byInstances, heapSummary, retention, roots, finalizable, segments, statics, delegates, duplicates, gcHandles, asyncOperations, timers, assemblyLoadContexts);
+        return new RuntimeSummary(byBytes, byInstances, heapSummary, retention, roots, finalizable, walk.Segments, statics, delegates, duplicates, gcHandles, asyncOperations, timers, assemblyLoadContexts);
     }
 
     private readonly record struct RuntimeSummary(
@@ -320,159 +291,6 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         IReadOnlyList<AsyncOperationStat> AsyncOperations,
         TaskTimerLeakView Timers,
         AssemblyLoadContextLeakView AssemblyLoadContexts);
-
-    private static (Dictionary<TypeKey, RawTypeStat> Stats, long TotalBytes, IReadOnlyList<SegmentStat> Segments, Dictionary<DelegateKey, RawDelegateStat>? Delegates, Dictionary<string, RawStringStat>? Strings, ClrMdTaskTimerAnalyzer.RawTaskTimerAggregation TaskTimers, ClrMdAssemblyLoadContextAnalyzer.RawAssemblyLoadContextAggregation AssemblyLoadContexts) WalkHeap(
-        ClrRuntime runtime, DumpInspectionOptions opts, List<string> warnings, CancellationToken ct)
-    {
-        var stats = new Dictionary<TypeKey, RawTypeStat>();
-        long total = 0;
-        var segmentStats = new List<SegmentStat>(runtime.Heap.Segments.Length);
-        Dictionary<DelegateKey, RawDelegateStat>? delegates = opts.IncludeDelegateTargets ? new() : null;
-        Dictionary<string, RawStringStat>? strings = opts.IncludeDuplicateStrings ? new(StringComparer.Ordinal) : null;
-        var taskTimers = new ClrMdTaskTimerAnalyzer.RawTaskTimerAggregation();
-        var assemblyLoadContexts = new ClrMdAssemblyLoadContextAnalyzer.RawAssemblyLoadContextAggregation();
-        // Wall-clock safety net on a per-object basis: a runaway delegate/string walk on a multi-GB
-        // heap could grow these dictionaries unbounded. We accept the dictionaries and cap their
-        // size to (snapshot top-N * 32) entries — far above the top-N we'll surface but bounded.
-        var delegateCap = opts.IncludeDelegateTargets ? Math.Max(opts.SnapshotDelegateTargetTopN * 32, 4096) : 0;
-        var stringCap = opts.IncludeDuplicateStrings ? Math.Max(opts.SnapshotDuplicateStringTopN * 32, 4096) : 0;
-        // Independent hard cap on the number of string OBJECTS scanned (vs unique entries). Without
-        // this, a heap holding millions of identical strings collapses to a single dictionary entry
-        // but still pays AsString(maxLength) per object — under the live suspend window that's
-        // unbounded. 1M objects is enough to surface duplicates while keeping the worst case bounded.
-        var stringObjectScanCap = opts.IncludeDuplicateStrings ? Math.Max(stringCap * 64L, 1_000_000L) : 0L;
-        long stringObjectsScanned = 0;
-        var delegateCapHit = false;
-        var stringCapHit = false;
-        var stringObjectCapHit = false;
-
-        foreach (var segment in runtime.Heap.Segments)
-        {
-            ct.ThrowIfCancellationRequested();
-            long segUsed = 0, segFree = 0, segObjs = 0, segFreeObjs = 0;
-
-            foreach (var obj in segment.EnumerateObjects())
-            {
-                ct.ThrowIfCancellationRequested();
-                if (obj.Type is null) continue;
-                var size = (long)obj.Size;
-                segObjs++;
-
-                if (obj.IsFree)
-                {
-                    segFree += size;
-                    segFreeObjs++;
-                    continue;
-                }
-
-                segUsed += size;
-                total += size;
-
-                var key = new TypeKey(obj.Type.Name ?? "<unknown>", obj.Type.Module?.Name);
-                if (!stats.TryGetValue(key, out var s))
-                {
-                    s = new RawTypeStat(key.TypeName, key.ModuleName, obj.Type);
-                    stats[key] = s;
-                }
-                s.Count++;
-                s.Bytes += size;
-
-                if (delegates is not null && obj.IsDelegate && !delegateCapHit)
-                {
-                    AggregateDelegate(obj, delegates);
-                    if (delegates.Count > delegateCap) delegateCapHit = true;
-                }
-
-                if (strings is not null && obj.Type.IsString && !stringCapHit && !stringObjectCapHit)
-                {
-                    AggregateString(obj, size, strings);
-                    stringObjectsScanned++;
-                    if (strings.Count > stringCap) stringCapHit = true;
-                    if (stringObjectsScanned > stringObjectScanCap) stringObjectCapHit = true;
-                }
-
-                ClrMdTaskTimerAnalyzer.Aggregate(obj, size, taskTimers);
-                ClrMdAssemblyLoadContextAnalyzer.Aggregate(obj, size, assemblyLoadContexts);
-            }
-
-            var length = (long)segment.Length;
-            var committed = (long)(segment.CommittedMemory.End - segment.CommittedMemory.Start);
-            var reserved = (long)(segment.ReservedMemory.End - segment.ReservedMemory.Start);
-            var freePct = length > 0 ? Math.Round(100.0 * segFree / length, 2) : 0.0;
-
-            segmentStats.Add(new SegmentStat(
-                LogicalHeap: segment.SubHeap.Index,
-                Kind: segment.Kind.ToString(),
-                Generation: ClassifySegmentGeneration(segment),
-                Start: segment.Start,
-                End: segment.End,
-                Length: length,
-                CommittedBytes: committed,
-                ReservedBytes: reserved,
-                UsedBytes: segUsed,
-                FreeBytes: segFree,
-                ObjectCount: segObjs - segFreeObjs,
-                FreeObjectCount: segFreeObjs)
-            {
-                FreePercent = freePct,
-            });
-        }
-
-        if (delegateCapHit) warnings.Add($"Delegate-target aggregation hit cap of {delegateCap} unique entries — results are truncated to the busiest entries seen so far.");
-        if (stringCapHit) warnings.Add($"Duplicate-string aggregation hit cap of {stringCap} unique entries — results are truncated.");
-        if (stringObjectCapHit) warnings.Add($"Duplicate-string aggregation hit object-scan cap of {stringObjectScanCap:N0} string instances — results reflect only the strings encountered before the cap.");
-
-        return (stats, total, segmentStats, delegates, strings, taskTimers, assemblyLoadContexts);
-    }
-
-    private static void AggregateDelegate(ClrObject obj, Dictionary<DelegateKey, RawDelegateStat> sink)
-    {
-        try
-        {
-            var del = obj.AsDelegate();
-            foreach (var target in del.EnumerateDelegateTargets())
-            {
-                var method = target.Method;
-                if (method is null) continue;
-                var declaring = method.Type?.Name ?? "<unknown>";
-                var targetObj = target.TargetObject;
-                var targetType = targetObj.IsNull ? null : targetObj.Type?.Name;
-                var modulePath = method.Type?.Module?.Name;
-                var key = new DelegateKey(targetType, declaring, method.Name ?? "<unknown>", method.Signature, modulePath, (int)method.MetadataToken);
-                if (!sink.TryGetValue(key, out var entry))
-                {
-                    entry = new RawDelegateStat(key, method, targetObj.IsNull);
-                    sink[key] = entry;
-                }
-                entry.SubscriberCount++;
-            }
-        }
-        catch
-        {
-            // ClrMD can throw on corrupt delegate instances; skip without polluting warnings on every miss.
-        }
-    }
-
-    private static void AggregateString(ClrObject obj, long objSize, Dictionary<string, RawStringStat> sink)
-    {
-        try
-        {
-            // Bound the read length so a single oversized string can't dominate aggregation cost.
-            var content = obj.AsString(maxLength: 4096);
-            if (content is null) return;
-            if (!sink.TryGetValue(content, out var entry))
-            {
-                entry = new RawStringStat(content, content.Length, objSize);
-                sink[content] = entry;
-            }
-            entry.Count++;
-            entry.TotalBytes += objSize;
-        }
-        catch
-        {
-            // Ignore malformed strings.
-        }
-    }
 
     private StaticFieldStat[] WalkStaticFields(
         ClrRuntime runtime, int topN, List<string> warnings, CancellationToken ct)
@@ -541,74 +359,6 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             .Take(topN)
             .ToArray();
     }
-
-    private DelegateTargetStat[] BuildDelegateStats(Dictionary<DelegateKey, RawDelegateStat> agg, int topN)
-    {
-        return agg.Values
-            .OrderByDescending(d => d.SubscriberCount)
-            .Take(topN)
-            .Select(d =>
-            {
-                var moduleFile = d.Key.ModulePath is { } mp ? Path.GetFileName(mp) : null;
-                Memory.MethodIdentity? method = null;
-                if (d.Method is not null && d.Key.MetadataToken != 0)
-                {
-                    method = new Memory.MethodIdentity(
-                        ModuleName: moduleFile,
-                        ModulePath: d.Key.ModulePath,
-                        ModuleVersionId: TryReadMvid(d.Key.ModulePath),
-                        MetadataToken: d.Key.MetadataToken,
-                        TypeFullName: d.Key.DeclaringTypeFullName,
-                        MethodName: d.Key.MethodName,
-                        GenericArity: 0);
-                }
-                return new DelegateTargetStat(
-                    TargetTypeFullName: d.Key.TargetTypeFullName,
-                    DeclaringTypeFullName: d.Key.DeclaringTypeFullName,
-                    MethodName: d.Key.MethodName,
-                    MethodSignature: d.Key.MethodSignature,
-                    ModuleName: moduleFile,
-                    SubscriberCount: d.SubscriberCount)
-                {
-                    Method = method,
-                    IsStaticTarget = d.IsStaticTarget,
-                };
-            })
-            .ToArray();
-    }
-
-    private static DuplicateStringStat[] BuildDuplicateStringStats(
-        Dictionary<string, RawStringStat> agg, int topN, int previewLength)
-    {
-        return agg.Values
-            .Where(s => s.Count > 1)
-            .OrderByDescending(s => s.TotalBytes)
-            .Take(topN)
-            .Select(s =>
-            {
-                var truncated = s.Content.Length > previewLength;
-                var preview = truncated ? s.Content[..previewLength] : s.Content;
-                return new DuplicateStringStat(
-                    Preview: preview,
-                    StringLength: s.Length,
-                    InstanceCount: s.Count,
-                    TotalBytes: s.TotalBytes,
-                    PreviewTruncated: truncated);
-            })
-            .ToArray();
-    }
-
-    private static string ClassifySegmentGeneration(ClrSegment segment) => segment.Kind switch
-    {
-        GCSegmentKind.Generation0 => "Gen0",
-        GCSegmentKind.Generation1 => "Gen1",
-        GCSegmentKind.Generation2 => "Gen2",
-        GCSegmentKind.Large => "LOH",
-        GCSegmentKind.Pinned => "POH",
-        GCSegmentKind.Ephemeral => "Ephemeral",
-        GCSegmentKind.Frozen => "Frozen",
-        _ => segment.Kind.ToString(),
-    };
 
     private static RootKindStat[] WalkRoots(ClrRuntime runtime, List<string> warnings, CancellationToken ct)
     {
@@ -743,18 +493,6 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         };
     }
 
-    private TypeStat ToTypeStat(RawTypeStat raw, long totalBytes)
-    {
-        var pct = totalBytes > 0 ? Math.Round(100.0 * raw.Bytes / totalBytes, 2) : 0.0;
-        return new TypeStat(
-            TypeFullName: raw.TypeName,
-            ModuleName: raw.ModuleName is { } mn ? Path.GetFileName(mn) : null,
-            InstanceCount: raw.Count,
-            TotalBytes: raw.Bytes,
-            TotalBytesPercent: pct,
-            Identity: BuildTypeIdentity(raw.ClrType));
-    }
-
     private TypeIdentity? BuildTypeIdentity(ClrType? clrType)
     {
         if (clrType is null) return null;
@@ -841,43 +579,6 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         public ClrType ClrType { get; }
         public long Count;
         public long Bytes;
-    }
-
-    private readonly record struct DelegateKey(
-        string? TargetTypeFullName,
-        string DeclaringTypeFullName,
-        string MethodName,
-        string? MethodSignature,
-        string? ModulePath,
-        int MetadataToken);
-
-    private sealed class RawDelegateStat
-    {
-        public RawDelegateStat(DelegateKey key, ClrMethod? method, bool isStaticTarget)
-        {
-            Key = key;
-            Method = method;
-            IsStaticTarget = isStaticTarget;
-        }
-        public DelegateKey Key { get; }
-        public ClrMethod? Method { get; }
-        public bool IsStaticTarget { get; }
-        public long SubscriberCount;
-    }
-
-    private sealed class RawStringStat
-    {
-        public RawStringStat(string content, int length, long firstObjBytes)
-        {
-            Content = content;
-            Length = length;
-            TotalBytes = 0;
-            _ = firstObjBytes; // consumed by AggregateString incrementally
-        }
-        public string Content { get; }
-        public int Length { get; }
-        public long Count;
-        public long TotalBytes;
     }
 
 }
