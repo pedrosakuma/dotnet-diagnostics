@@ -234,7 +234,7 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
             {
                 _logger.LogWarning("No EventPipe heap data within 5s for PID {Pid}; assuming no managed heap.", processId);
             }
-            else if (initialCompletion == dataSeen.Task)
+            else if (initialCompletion == dataSeen.Task || (initialCompletion == noDataTask && dataSeen.Task.IsCompleted))
             {
                 var terminalCompletion = await Task.WhenAny(
                     processing,
