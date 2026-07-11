@@ -53,10 +53,7 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
         }
 
         var normalizedSourceFilters = NormalizeSourceFilters(sources);
-        var providerArguments = new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            [FilterArgumentName] = BuildFilterSpec(["*"]),
-        };
+        var providerArguments = BuildProviderArguments(normalizedSourceFilters);
 
         var client = new DiagnosticsClient(processId);
         var session = await client
@@ -196,6 +193,21 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
 
         return normalized.Count == 0 ? null : normalized;
     }
+
+    internal static IDictionary<string, string> BuildProviderArguments(IReadOnlyList<string>? normalizedSourceFilters)
+    {
+        var providerFilters = CanApplyProviderSideFilters(normalizedSourceFilters) ? normalizedSourceFilters! : ["*"];
+        return new Dictionary<string, string>(1, StringComparer.Ordinal)
+        {
+            [FilterArgumentName] = BuildFilterSpec(providerFilters),
+        };
+    }
+
+    private static bool CanApplyProviderSideFilters(IReadOnlyList<string>? normalizedSourceFilters) =>
+        normalizedSourceFilters is { Count: > 0 } && normalizedSourceFilters.All(static filter => IsProviderSafeExactFilter(filter));
+
+    private static bool IsProviderSafeExactFilter(string filter) =>
+        filter == "*" || (filter.IndexOfAny(['*', '?', '+', '/', ':']) < 0);
 
     private static string BuildFilterSpec(IReadOnlyList<string> providerFilters) =>
         string.Join('\n', providerFilters.Select(static filter => $"[AS]{filter}/Stop{TransformSuffix}"));

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Security.Cryptography;
@@ -11,20 +12,91 @@ namespace DotnetDiagnostics.Core.Bytes;
 
 public sealed class ClrMdModuleByteSource : IModuleByteSource
 {
+    internal const int DefaultModuleResolutionCacheEntries = 128;
+    internal const long DefaultEmbeddedPdbCacheBytes = 64L * 1024 * 1024;
+    internal static readonly TimeSpan DefaultModuleResolutionCacheTtl = TimeSpan.FromMinutes(5);
+    internal static readonly TimeSpan DefaultEmbeddedPdbCacheTtl = TimeSpan.FromMinutes(10);
+
     private readonly FileChunkReader _chunkReader;
     private readonly MvidReader _mvidReader;
     private readonly ILogger<ClrMdModuleByteSource> _logger;
+    private readonly TimeProvider _clock;
+    private readonly Func<int, Guid, CancellationToken, string> _modulePathResolver;
+    private readonly Func<int, long?> _processStartTimeResolver;
+    private readonly ConcurrentDictionary<ModuleCacheKey, ModuleResolutionCacheEntry> _moduleResolutionCache = new();
     private readonly ConcurrentDictionary<Guid, EmbeddedPdbCacheEntry> _embeddedPdbCache = new();
+    private readonly object _embeddedPdbCacheLock = new();
+    private readonly int _maxModuleResolutionCacheEntries;
+    private readonly TimeSpan _moduleResolutionCacheTtl;
+    private readonly long _maxEmbeddedPdbCacheBytes;
+    private readonly TimeSpan _embeddedPdbCacheTtl;
+    private long _embeddedPdbCacheBytes;
 
     public ClrMdModuleByteSource(
         FileChunkReader? chunkReader = null,
         MvidReader? mvidReader = null,
         ILogger<ClrMdModuleByteSource>? logger = null)
+        : this(
+            chunkReader,
+            mvidReader,
+            logger,
+            TimeProvider.System,
+            modulePathResolver: null,
+            DefaultModuleResolutionCacheEntries,
+            DefaultModuleResolutionCacheTtl,
+            DefaultEmbeddedPdbCacheBytes,
+            DefaultEmbeddedPdbCacheTtl,
+            processStartTimeResolver: null)
     {
+    }
+
+    internal ClrMdModuleByteSource(
+        FileChunkReader? chunkReader,
+        MvidReader? mvidReader,
+        ILogger<ClrMdModuleByteSource>? logger,
+        TimeProvider clock,
+        Func<int, Guid, CancellationToken, string>? modulePathResolver,
+        int maxModuleResolutionCacheEntries,
+        TimeSpan moduleResolutionCacheTtl,
+        long maxEmbeddedPdbCacheBytes,
+        TimeSpan embeddedPdbCacheTtl,
+        Func<int, long?>? processStartTimeResolver)
+    {
+        ArgumentNullException.ThrowIfNull(clock);
+        if (maxModuleResolutionCacheEntries < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxModuleResolutionCacheEntries), "Must be >= 1.");
+        }
+
+        if (moduleResolutionCacheTtl <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(moduleResolutionCacheTtl), "TTL must be positive.");
+        }
+
+        if (maxEmbeddedPdbCacheBytes < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxEmbeddedPdbCacheBytes), "Must be positive.");
+        }
+
+        if (embeddedPdbCacheTtl <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(embeddedPdbCacheTtl), "TTL must be positive.");
+        }
+
         _chunkReader = chunkReader ?? new FileChunkReader();
         _mvidReader = mvidReader ?? new MvidReader();
         _logger = logger ?? NullLogger<ClrMdModuleByteSource>.Instance;
+        _clock = clock;
+        _modulePathResolver = modulePathResolver ?? ResolveModulePath;
+        _processStartTimeResolver = processStartTimeResolver ?? TryGetProcessStartTimeUtcTicks;
+        _maxModuleResolutionCacheEntries = maxModuleResolutionCacheEntries;
+        _moduleResolutionCacheTtl = moduleResolutionCacheTtl;
+        _maxEmbeddedPdbCacheBytes = maxEmbeddedPdbCacheBytes;
+        _embeddedPdbCacheTtl = embeddedPdbCacheTtl;
     }
+
+    internal int ModuleResolutionCacheCount => _moduleResolutionCache.Count;
+    internal int EmbeddedPdbCacheCount => _embeddedPdbCache.Count;
 
     public async Task<ByteFetchEnvelope> FetchAsync(
         int processId,
@@ -39,8 +111,12 @@ public sealed class ClrMdModuleByteSource : IModuleByteSource
         if (maxBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxBytes), "maxBytes must be > 0.");
 
         var normalizedAsset = NormalizeAsset(asset);
-        var assemblyPath = await Task.Run(() => ResolveModulePath(processId, moduleVersionId, cancellationToken), cancellationToken).ConfigureAwait(false);
-        var pdbAvailability = ProbePdbAvailability(assemblyPath);
+        var module = await Task.Run(
+                () => ResolveModuleMetadataCached(processId, moduleVersionId, cancellationToken),
+                cancellationToken)
+            .ConfigureAwait(false);
+        var assemblyPath = module.AssemblyPath;
+        var pdbAvailability = module.PdbAvailability;
 
         if (normalizedAsset == "pe")
         {
@@ -109,6 +185,114 @@ public sealed class ClrMdModuleByteSource : IModuleByteSource
         };
     }
 
+    private ModuleResolutionCacheEntry ResolveModuleMetadataCached(int processId, Guid moduleVersionId, CancellationToken cancellationToken)
+    {
+        var key = new ModuleCacheKey(processId, moduleVersionId);
+        var now = _clock.GetUtcNow();
+        var processStartTimeUtcTicks = _processStartTimeResolver(processId);
+        EvictExpiredModuleEntries(now);
+        if (TryGetCachedModuleResolution(key, processStartTimeUtcTicks, now, out var cached))
+        {
+            return cached;
+        }
+
+        var assemblyPath = NormalizePath(_modulePathResolver(processId, moduleVersionId, cancellationToken));
+        var resolved = CreateModuleResolutionCacheEntry(assemblyPath, processStartTimeUtcTicks, now);
+        _moduleResolutionCache[key] = resolved;
+        EnforceModuleResolutionCacheCapacity();
+        return resolved;
+    }
+
+    private bool TryGetCachedModuleResolution(ModuleCacheKey key, long? processStartTimeUtcTicks, DateTimeOffset now, out ModuleResolutionCacheEntry cached)
+    {
+        if (!_moduleResolutionCache.TryGetValue(key, out var existing))
+        {
+            cached = default!;
+            return false;
+        }
+
+        cached = existing;
+
+        if (cached.ExpiresAt <= now || !ProcessStillMatches(cached, processStartTimeUtcTicks) || !AssemblyStillMatches(cached) || !SiblingPdbStillMatches(cached))
+        {
+            _moduleResolutionCache.TryRemove(key, out _);
+            cached = default!;
+            return false;
+        }
+
+        cached = cached with
+        {
+            ExpiresAt = now + _moduleResolutionCacheTtl,
+            LastAccessUtc = now,
+        };
+        _moduleResolutionCache[key] = cached;
+        return true;
+    }
+
+    private ModuleResolutionCacheEntry CreateModuleResolutionCacheEntry(string assemblyPath, long? processStartTimeUtcTicks, DateTimeOffset now)
+    {
+        var info = new FileInfo(assemblyPath);
+        if (!info.Exists)
+        {
+            throw new FileNotFoundException("Resolved module file not found.", assemblyPath);
+        }
+
+        return new ModuleResolutionCacheEntry(
+            assemblyPath,
+            ProbePdbAvailability(assemblyPath),
+            processStartTimeUtcTicks,
+            info.LastWriteTimeUtc.Ticks,
+            info.Length,
+            now + _moduleResolutionCacheTtl,
+            now);
+    }
+
+    private void EvictExpiredModuleEntries(DateTimeOffset now)
+    {
+        foreach (var kv in _moduleResolutionCache)
+        {
+            if (kv.Value.ExpiresAt <= now)
+            {
+                _moduleResolutionCache.TryRemove(kv.Key, out _);
+            }
+        }
+    }
+
+    private void EnforceModuleResolutionCacheCapacity()
+    {
+        while (_moduleResolutionCache.Count > _maxModuleResolutionCacheEntries)
+        {
+            var oldest = _moduleResolutionCache
+                .OrderBy(kv => kv.Value.LastAccessUtc)
+                .FirstOrDefault();
+            if (oldest.Key.ProcessId == 0 || !_moduleResolutionCache.TryRemove(oldest.Key, out _))
+            {
+                return;
+            }
+        }
+    }
+
+    private static bool AssemblyStillMatches(ModuleResolutionCacheEntry entry)
+    {
+        var info = new FileInfo(entry.AssemblyPath);
+        return info.Exists &&
+            info.LastWriteTimeUtc.Ticks == entry.LastWriteTimeUtcTicks &&
+            info.Length == entry.AssemblyLength;
+    }
+
+    private static bool ProcessStillMatches(ModuleResolutionCacheEntry entry, long? processStartTimeUtcTicks) =>
+        entry.ProcessStartTimeUtcTicks is not null && processStartTimeUtcTicks == entry.ProcessStartTimeUtcTicks;
+
+    private static bool SiblingPdbStillMatches(ModuleResolutionCacheEntry entry)
+    {
+        if (entry.PdbAvailability.SiblingPdbPath is { } siblingPdbPath)
+        {
+            return File.Exists(siblingPdbPath);
+        }
+
+        return !File.Exists(Path.ChangeExtension(entry.AssemblyPath, ".pdb"));
+    }
+
     private string ResolveModulePath(int processId, Guid moduleVersionId, CancellationToken cancellationToken)
     {
         using var target = DataTarget.AttachToProcess(processId, suspend: true);
@@ -163,20 +347,110 @@ public sealed class ClrMdModuleByteSource : IModuleByteSource
     {
         var info = new FileInfo(assemblyPath);
         var normalizedPath = NormalizePath(assemblyPath);
-        if (_embeddedPdbCache.TryGetValue(moduleVersionId, out var cached) &&
-            cached.AssemblyPath == normalizedPath &&
-            cached.LastWriteTimeUtcTicks == info.LastWriteTimeUtc.Ticks &&
-            cached.AssemblyLength == info.Length)
+        var now = _clock.GetUtcNow();
+
+        lock (_embeddedPdbCacheLock)
         {
-            return cached;
+            EvictExpiredEmbeddedPdbEntries(now);
+            if (TryGetCachedEmbeddedPdb(moduleVersionId, normalizedPath, info, now, out var cached))
+            {
+                return cached;
+            }
         }
 
-        var extracted = ExtractEmbeddedPdb(normalizedPath, info.LastWriteTimeUtc.Ticks, info.Length);
-        _embeddedPdbCache[moduleVersionId] = extracted;
-        return extracted;
+        var extracted = ExtractEmbeddedPdb(normalizedPath, info.LastWriteTimeUtc.Ticks, info.Length, now + _embeddedPdbCacheTtl, now);
+
+        lock (_embeddedPdbCacheLock)
+        {
+            EvictExpiredEmbeddedPdbEntries(now);
+            if (TryGetCachedEmbeddedPdb(moduleVersionId, normalizedPath, info, now, out var cached))
+            {
+                return cached;
+            }
+
+            if (_embeddedPdbCache.TryGetValue(moduleVersionId, out var replaced))
+            {
+                _embeddedPdbCacheBytes -= replaced.Bytes.LongLength;
+            }
+
+            _embeddedPdbCache[moduleVersionId] = extracted;
+            _embeddedPdbCacheBytes += extracted.Bytes.LongLength;
+            EnforceEmbeddedPdbCacheCapacity();
+            return extracted;
+        }
     }
 
-    private static EmbeddedPdbCacheEntry ExtractEmbeddedPdb(string assemblyPath, long lastWriteTimeUtcTicks, long assemblyLength)
+    private bool TryGetCachedEmbeddedPdb(
+        Guid moduleVersionId,
+        string normalizedPath,
+        FileInfo info,
+        DateTimeOffset now,
+        out EmbeddedPdbCacheEntry cached)
+    {
+        if (!_embeddedPdbCache.TryGetValue(moduleVersionId, out var existing))
+        {
+            cached = default!;
+            return false;
+        }
+
+        cached = existing;
+
+        if (cached.ExpiresAt <= now ||
+            cached.AssemblyPath != normalizedPath ||
+            cached.LastWriteTimeUtcTicks != info.LastWriteTimeUtc.Ticks ||
+            cached.AssemblyLength != info.Length)
+        {
+            if (_embeddedPdbCache.TryRemove(moduleVersionId, out var removed))
+            {
+                _embeddedPdbCacheBytes -= removed.Bytes.LongLength;
+            }
+
+            cached = default!;
+            return false;
+        }
+
+        cached = cached with
+        {
+            ExpiresAt = now + _embeddedPdbCacheTtl,
+            LastAccessUtc = now,
+        };
+        _embeddedPdbCache[moduleVersionId] = cached;
+        return true;
+    }
+
+    private void EvictExpiredEmbeddedPdbEntries(DateTimeOffset now)
+    {
+        foreach (var kv in _embeddedPdbCache)
+        {
+            if (kv.Value.ExpiresAt <= now && _embeddedPdbCache.TryRemove(kv.Key, out var removed))
+            {
+                _embeddedPdbCacheBytes -= removed.Bytes.LongLength;
+            }
+        }
+    }
+
+    private void EnforceEmbeddedPdbCacheCapacity()
+    {
+        while (_embeddedPdbCacheBytes > _maxEmbeddedPdbCacheBytes)
+        {
+            var oldest = _embeddedPdbCache
+                .OrderBy(kv => kv.Value.LastAccessUtc)
+                .FirstOrDefault();
+            if (oldest.Key == Guid.Empty || !_embeddedPdbCache.TryRemove(oldest.Key, out var removed))
+            {
+                return;
+            }
+
+            _embeddedPdbCacheBytes -= removed.Bytes.LongLength;
+        }
+    }
+
+    private static EmbeddedPdbCacheEntry ExtractEmbeddedPdb(
+        string assemblyPath,
+        long lastWriteTimeUtcTicks,
+        long assemblyLength,
+        DateTimeOffset expiresAt,
+        DateTimeOffset lastAccessUtc)
     {
         using var stream = File.OpenRead(assemblyPath);
         using var peReader = new PEReader(stream);
@@ -190,7 +464,7 @@ public sealed class ClrMdModuleByteSource : IModuleByteSource
         var reader = provider.GetMetadataReader();
         var bytes = CopyMetadataBytes(reader);
         var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-        return new EmbeddedPdbCacheEntry(assemblyPath, lastWriteTimeUtcTicks, assemblyLength, bytes, sha256);
+        return new EmbeddedPdbCacheEntry(assemblyPath, lastWriteTimeUtcTicks, assemblyLength, bytes, sha256, expiresAt, lastAccessUtc);
     }
 
     private static unsafe byte[] CopyMetadataBytes(MetadataReader reader)
@@ -257,12 +531,38 @@ public sealed class ClrMdModuleByteSource : IModuleByteSource
         return OperatingSystem.IsWindows() ? fullPath.ToUpperInvariant() : fullPath;
     }
 
+    private static long? TryGetProcessStartTimeUtcTicks(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return process.StartTime.ToUniversalTime().Ticks;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private readonly record struct ModuleCacheKey(int ProcessId, Guid ModuleVersionId);
+
     private sealed record PdbAvailability(string? SiblingPdbPath, bool HasEmbeddedPortablePdb);
+
+    private sealed record ModuleResolutionCacheEntry(
+        string AssemblyPath,
+        PdbAvailability PdbAvailability,
+        long? ProcessStartTimeUtcTicks,
+        long LastWriteTimeUtcTicks,
+        long AssemblyLength,
+        DateTimeOffset ExpiresAt,
+        DateTimeOffset LastAccessUtc);
 
     private sealed record EmbeddedPdbCacheEntry(
         string AssemblyPath,
         long LastWriteTimeUtcTicks,
         long AssemblyLength,
         byte[] Bytes,
-        string Sha256);
+        string Sha256,
+        DateTimeOffset ExpiresAt,
+        DateTimeOffset LastAccessUtc);
 }
