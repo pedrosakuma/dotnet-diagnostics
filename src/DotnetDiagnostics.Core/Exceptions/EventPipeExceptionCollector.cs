@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics.Tracing;
 using System.Globalization;
 using DotnetDiagnostics.Core.Internal;
@@ -52,8 +51,10 @@ public sealed class EventPipeExceptionCollector : IExceptionCollector
             .ConfigureAwait(false);
 
         var startedAt = DateTimeOffset.UtcNow;
-        var recent = new ConcurrentQueue<ManagedExceptionEvent>();
-        var counts = new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
+        // EventPipeEventSource invokes these callbacks on the single source.Process() thread, so
+        // plain collections are sufficient and avoid unnecessary synchronization on the hot path.
+        var recent = new List<ManagedExceptionEvent>(Math.Min(maxRecent, 128));
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
         var total = 0;
 
         var processingTask = Task.Run(() =>
@@ -63,13 +64,13 @@ public sealed class EventPipeExceptionCollector : IExceptionCollector
                 using var source = new EventPipeEventSource(session.EventStream);
                 source.Clr.ExceptionStart += traceEvent =>
                 {
-                    Interlocked.Increment(ref total);
+                    total++;
                     var type = traceEvent.ExceptionType ?? "(unknown)";
-                    counts.AddOrUpdate(type, 1, static (_, v) => v + 1);
+                    counts[type] = counts.TryGetValue(type, out var current) ? current + 1 : 1;
 
                     if (recent.Count < maxRecent)
                     {
-                        recent.Enqueue(new ManagedExceptionEvent(
+                        recent.Add(new ManagedExceptionEvent(
                             Timestamp: new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
                             ExceptionType: type,
                             ExceptionMessage: traceEvent.ExceptionMessage ?? string.Empty,
@@ -107,8 +108,8 @@ public sealed class EventPipeExceptionCollector : IExceptionCollector
             ProcessId: processId,
             StartedAt: startedAt,
             Duration: duration,
-            TotalExceptions: Volatile.Read(ref total),
+            TotalExceptions: total,
             ByType: byType,
-            Recent: recent.ToList()) { RecentCap = maxRecent };
+            Recent: recent) { RecentCap = maxRecent };
     }
 }

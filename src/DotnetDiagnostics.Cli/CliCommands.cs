@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -86,17 +87,24 @@ internal static partial class CliCommands
         "completion",
     };
 
+
+    internal static readonly FrozenSet<string> CommandSet = Commands.ToFrozenSet(StringComparer.Ordinal);
+
     /// <summary>Heap-snapshot sources accepted by the <c>inspect-heap</c> command (issue #288 PR3b).</summary>
     public static readonly IReadOnlyList<string> HeapSources = new[] { "live", "dump", "gcdump" };
+    internal static readonly FrozenSet<string> HeapSourceSet = HeapSources.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>Views accepted by the <c>inspect</c> command (issue #486).</summary>
     public static readonly IReadOnlyList<string> InspectViews = new[] { "triage", "runtime-config", "container" };
+    internal static readonly FrozenSet<string> InspectViewSet = InspectViews.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>Artifact kinds accepted by the <c>get-bytes</c> command (issue #288 PR4).</summary>
     public static readonly IReadOnlyList<string> ByteKinds = new[] { "module", "dump", "trace" };
+    internal static readonly FrozenSet<string> ByteKindSet = ByteKinds.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>Module assets accepted by <c>get-bytes --kind module</c> (issue #288 PR4).</summary>
     public static readonly IReadOnlyList<string> ByteAssets = new[] { "pe", "pdb" };
+    internal static readonly FrozenSet<string> ByteAssetSet = ByteAssets.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>Dump types accepted by the <c>dump</c> command (mirrors <see cref="ProcessDumpType"/>).</summary>
     public static readonly IReadOnlyList<string> DumpTypes = new[] { "Mini", "Triage", "WithHeap", "Full" };
@@ -118,6 +126,8 @@ internal static partial class CliCommands
         "inspect-heap",
         "get-bytes",
     };
+    internal static readonly FrozenSet<string> LaunchableCommandSet = LaunchableCommands.ToFrozenSet(StringComparer.Ordinal);
+
 
     /// <summary>
     /// EventPipe collection kinds accepted by the <c>collect</c> command (issue #288 PR2). Mirrors
@@ -150,6 +160,8 @@ internal static partial class CliCommands
         "native-alloc",
         "thread-snapshot",
     };
+
+    internal static readonly FrozenSet<string> CollectKindSet = CollectKinds.ToFrozenSet(StringComparer.Ordinal);
 
     private static readonly IComparableProjector[] ComparableProjectors =
     {

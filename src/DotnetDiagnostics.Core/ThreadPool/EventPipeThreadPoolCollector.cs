@@ -355,10 +355,27 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         var normalized = new List<ThreadPoolHillClimbingSample>(samples.Count);
         var inferredAny = false;
         var syntheticWorkerCount = workerSamples.Count > 0 ? workerSamples[0].Count : 0;
+        var beforeIndex = -1;
+        var afterIndex = 0;
         foreach (var sample in samples)
         {
-            var oldCount = sample.OldCount ?? FindWorkerCount(workerSamples, sample.Timestamp, before: true);
-            var newCount = sample.NewCount ?? FindWorkerCount(workerSamples, sample.Timestamp, before: false);
+            while (beforeIndex + 1 < workerSamples.Count && workerSamples[beforeIndex + 1].Timestamp <= sample.Timestamp)
+            {
+                beforeIndex++;
+            }
+
+            if (afterIndex < beforeIndex)
+            {
+                afterIndex = beforeIndex;
+            }
+
+            while (afterIndex < workerSamples.Count && workerSamples[afterIndex].Timestamp < sample.Timestamp)
+            {
+                afterIndex++;
+            }
+
+            var oldCount = sample.OldCount ?? ResolvePreviousWorkerCount(workerSamples, beforeIndex);
+            var newCount = sample.NewCount ?? ResolveNextWorkerCount(workerSamples, afterIndex);
             var reason = sample.Reason;
             if (string.Equals(reason, "Unknown", StringComparison.OrdinalIgnoreCase))
             {
@@ -409,35 +426,28 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         return normalized;
     }
 
-    private static int? FindWorkerCount(IReadOnlyList<CountSample> workerSamples, DateTimeOffset timestamp, bool before)
+    private static int? ResolvePreviousWorkerCount(IReadOnlyList<CountSample> workerSamples, int beforeIndex)
     {
         if (workerSamples.Count == 0)
         {
             return null;
         }
 
-        if (before)
-        {
-            for (var i = workerSamples.Count - 1; i >= 0; i--)
-            {
-                if (workerSamples[i].Timestamp <= timestamp)
-                {
-                    return workerSamples[i].Count;
-                }
-            }
+        return beforeIndex >= 0
+            ? workerSamples[beforeIndex].Count
+            : workerSamples[0].Count;
+    }
 
-            return workerSamples[0].Count;
+    private static int? ResolveNextWorkerCount(IReadOnlyList<CountSample> workerSamples, int afterIndex)
+    {
+        if (workerSamples.Count == 0)
+        {
+            return null;
         }
 
-        foreach (var sample in workerSamples)
-        {
-            if (sample.Timestamp >= timestamp)
-            {
-                return sample.Count;
-            }
-        }
-
-        return workerSamples[^1].Count;
+        return afterIndex < workerSamples.Count
+            ? workerSamples[afterIndex].Count
+            : workerSamples[^1].Count;
     }
 
     private static bool TryReadWorkerCount(TraceEvent traceEvent, out int workerCount)

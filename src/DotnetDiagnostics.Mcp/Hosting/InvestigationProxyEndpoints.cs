@@ -278,14 +278,14 @@ internal static class InvestigationProxyEndpoints
 
             HttpResponseMessage response;
             var swSend = System.Diagnostics.Stopwatch.StartNew();
-            logger.LogInformation(
+            logger.LogDebug(
                 "Proxy upstream send begin: handle={HandleId} method={Method} path={Path} bodyLen={BodyLen}",
                 handleId, context.Request.Method, targetPath, upstream.Content?.Headers.ContentLength);
             try
             {
                 response = await client.SendAsync(upstream, HttpCompletionOption.ResponseHeadersRead, context.RequestAborted)
                     .ConfigureAwait(false);
-                logger.LogInformation(
+                logger.LogDebug(
                     "Proxy upstream send end: handle={HandleId} status={Status} elapsedMs={Elapsed}",
                     handleId, (int)response.StatusCode, swSend.ElapsedMilliseconds);
             }

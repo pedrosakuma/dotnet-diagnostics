@@ -200,16 +200,16 @@ public sealed class BearerTokenMiddlewareTests
     }
 
     [Fact]
-    public async Task AllowPath_LogsTokenName_AtInformation()
+    public async Task AllowPath_LogsTokenName_AtDebug()
     {
         var registry = RegistryWith(("ops-viewer", "tok-aaa", new[] { "read-counters" }));
         var capture = new ListLoggerProvider();
-        using var lf = LoggerFactory.Create(b => b.AddProvider(capture).SetMinimumLevel(LogLevel.Information));
+        using var lf = LoggerFactory.Create(b => b.AddProvider(capture).SetMinimumLevel(LogLevel.Debug));
 
         await RunAsync(registry, "Bearer tok-aaa", lf.CreateLogger<BearerTokenMiddleware>());
 
         capture.Records.Should().ContainSingle(r =>
-            r.Level == LogLevel.Information && r.Message.Contains("ops-viewer", StringComparison.Ordinal));
+            r.Level == LogLevel.Debug && r.Message.Contains("ops-viewer", StringComparison.Ordinal));
     }
 
     [Fact]

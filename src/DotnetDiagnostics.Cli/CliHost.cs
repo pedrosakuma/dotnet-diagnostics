@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
@@ -138,7 +139,7 @@ internal static class CliHost
         if (options!.Help)
         {
             var helpText = options.Command is { } helpCommand
-                            && CliCommands.Commands.Contains(helpCommand, StringComparer.Ordinal)
+                            && CliCommands.CommandSet.Contains(helpCommand)
                 ? CliHelp.ForCommand(helpCommand)
                 : CliHelp.Global;
             await stdout.WriteLineAsync(helpText).ConfigureAwait(false);
@@ -150,7 +151,7 @@ internal static class CliHost
             return await WriteUsageErrorAsync(stderr, "No command specified.").ConfigureAwait(false);
         }
 
-        if (!CliCommands.Commands.Contains(options.Command, StringComparer.Ordinal))
+        if (!CliCommands.CommandSet.Contains(options.Command))
         {
             return await WriteUsageErrorAsync(stderr, $"Unknown command '{options.Command}'.").ConfigureAwait(false);
         }
@@ -290,7 +291,7 @@ internal static class CliHost
             // tests, which pass a StringWriter rather than Console.Error). This keeps stdout clean and
             // leaves every existing test's captured stderr empty.
             var showProgress = !options.Json
-                && ProgressCommands.Contains(options.Command, StringComparer.Ordinal)
+                && ProgressCommandSet.Contains(options.Command!)
                 && ReferenceEquals(stderr, Console.Error)
                 && !Console.IsErrorRedirected;
 
@@ -655,6 +656,7 @@ internal static class CliHost
     /// <c>capabilities</c>) return immediately and need none.
     /// </summary>
     private static readonly string[] ProgressCommands = ["collect", "inspect-heap", "dump"];
+    private static readonly FrozenSet<string> ProgressCommandSet = ProgressCommands.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>
     /// Runs <paramref name="run"/> while, when <paramref name="enabled"/>, ticking an elapsed-time

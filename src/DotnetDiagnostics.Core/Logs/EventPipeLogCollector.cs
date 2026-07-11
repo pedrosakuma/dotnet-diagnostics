@@ -79,7 +79,7 @@ public sealed partial class EventPipeLogCollector : ILogCollector
         var categoryCounts = new Dictionary<string, CategoryAccumulator>(StringComparer.Ordinal);
         var scopeFrames = new Dictionary<Guid, ScopeFrame>();
         var activeScopes = new List<IReadOnlyDictionary<string, string>>();
-        var recent = new List<MutableLogEntry>(Math.Min(maxEvents, 256));
+        var recent = new Queue<MutableLogEntry>(Math.Min(maxEvents, 256));
         MutableLogEntry? lastEntry = null;
         var totalEvents = 0L;
         var truncated = false;
@@ -332,15 +332,15 @@ public sealed partial class EventPipeLogCollector : ILogCollector
         }
     }
 
-    private static void AppendRecent(List<MutableLogEntry> recent, MutableLogEntry entry, int maxEvents, ref bool truncated)
+    private static void AppendRecent(Queue<MutableLogEntry> recent, MutableLogEntry entry, int maxEvents, ref bool truncated)
     {
         if (recent.Count >= maxEvents)
         {
-            recent.RemoveAt(0);
+            _ = recent.Dequeue();
             truncated = true;
         }
 
-        recent.Add(entry);
+        recent.Enqueue(entry);
     }
 
     private IReadOnlyDictionary<string, string> ResolveScopes(Guid activityId, IReadOnlyDictionary<Guid, ScopeFrame> scopeFrames, IReadOnlyList<IReadOnlyDictionary<string, string>> activeScopes, int maxMessageBytes)

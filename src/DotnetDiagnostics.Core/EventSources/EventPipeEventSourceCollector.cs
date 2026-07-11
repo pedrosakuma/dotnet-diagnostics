@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics.Tracing;
 using System.Globalization;
 using DotnetDiagnostics.Core.Internal;
@@ -59,7 +58,9 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
             .ConfigureAwait(false);
 
         var startedAt = DateTimeOffset.UtcNow;
-        var captured = new ConcurrentQueue<CapturedEvent>();
+        // EventPipeEventSource invokes these callbacks on the single source.Process() thread, so
+        // plain collections are sufficient and avoid unnecessary synchronization on the hot path.
+        var captured = new List<CapturedEvent>(Math.Min(maxEvents, 128));
         var total = 0;
 
         var processingTask = Task.Run(() =>
@@ -74,7 +75,7 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
                         return;
                     }
 
-                    Interlocked.Increment(ref total);
+                    total++;
                     if (captured.Count >= maxEvents)
                     {
                         return;
@@ -99,7 +100,7 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
                         }
                     }
 
-                    captured.Enqueue(new CapturedEvent(
+                    captured.Add(new CapturedEvent(
                         Timestamp: new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
                         Provider: traceEvent.ProviderName,
                         EventName: traceEvent.EventName,
@@ -131,7 +132,7 @@ public sealed class EventPipeEventSourceCollector : IEventSourceCollector
             Provider: providerName,
             StartedAt: startedAt,
             Duration: duration,
-            TotalEvents: Volatile.Read(ref total),
-            Events: captured.ToList());
+            TotalEvents: total,
+            Events: captured);
     }
 }

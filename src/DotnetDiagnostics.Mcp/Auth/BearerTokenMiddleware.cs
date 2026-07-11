@@ -108,7 +108,7 @@ internal sealed class BearerTokenMiddleware
                     return;
                 }
 
-                _logger.LogInformation("Bearer auth allowed for principal {TokenName}.", jwtPrincipal.Name);
+                _logger.LogDebug("Bearer auth allowed for principal {TokenName}.", jwtPrincipal.Name);
                 await _next(context).ConfigureAwait(false);
                 return;
             }
@@ -131,7 +131,7 @@ internal sealed class BearerTokenMiddleware
         }
 
         context.SetBearerPrincipal(principal);
-        _logger.LogInformation("Bearer auth allowed for principal {TokenName}.", principal.Name);
+        _logger.LogDebug("Bearer auth allowed for principal {TokenName}.", principal.Name);
 
         await _next(context).ConfigureAwait(false);
     }

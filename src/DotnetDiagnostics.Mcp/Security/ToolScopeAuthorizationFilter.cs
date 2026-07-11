@@ -62,7 +62,7 @@ internal static class ToolScopeAuthorizationFilter
             var logger = loggerAccessor();
             if (decision.IsAllowed)
             {
-                logger?.LogInformation(
+                logger?.LogDebug(
                     "Tool {Tool} authorized for principal {TokenName} (scopes {RequiredScopes}).",
                     toolName,
                     principal?.Name ?? "(none)",
