@@ -180,26 +180,11 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
     }
 
     private string ResolveAndValidateNamespace(string? requested)
-    {
-        var ns = string.IsNullOrWhiteSpace(requested) ? _options.DefaultNamespace : requested;
-        var allowlist = _options.NamespaceAllowlist;
-        var wildcard = allowlist.Count == 1 && allowlist[0] == "*";
-
-        if (string.IsNullOrWhiteSpace(ns))
-        {
-            throw new OrchestratorException(
-                OrchestratorErrorKinds.NamespaceNotAllowed,
-                "No namespace supplied and no DefaultNamespace configured.");
-        }
-        if (!wildcard && !allowlist.Contains(ns, StringComparer.Ordinal))
-        {
-            throw new OrchestratorException(
-                OrchestratorErrorKinds.NamespaceNotAllowed,
-                $"Namespace '{ns}' is not in the orchestrator's NamespaceAllowlist. " +
-                $"Allowed: [{string.Join(", ", allowlist)}].");
-        }
-        return ns!;
-    }
+        => NamespaceAllowlistPolicy.ResolveAndValidate(
+            requested,
+            _options,
+            allowEmptyWhenWildcard: false,
+            "No namespace supplied and no DefaultNamespace configured.")!;
 
     private async Task<V1Pod> ReadPodOrThrowAsync(string ns, string name, CancellationToken cancellationToken)
     {
