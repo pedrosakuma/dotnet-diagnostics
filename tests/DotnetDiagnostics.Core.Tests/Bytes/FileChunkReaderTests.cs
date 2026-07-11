@@ -80,6 +80,36 @@ public sealed class FileChunkReaderTests : IDisposable
             .WithMessage("*256 MiB streaming ceiling*");
     }
 
+
+    [Fact]
+    public async Task ReadAsync_ComputesSha256ForTheEntireFile()
+    {
+        var bytes = Enumerable.Range(0, 256 * 1024).Select(static i => (byte)(i % 251)).ToArray();
+        var path = WriteBytes("digest.bin", bytes);
+        var reader = new FileChunkReader();
+
+        var chunk = await reader.ReadAsync(path, offset: 128, maxBytes: 4096);
+
+        chunk.Sha256.Should().Be(Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant());
+    }
+
+    [Fact]
+    public async Task ReadAsync_EvictsShaCacheEntriesWhenCapacityIsExceeded()
+    {
+        var clock = new FakeTimeProvider();
+        var reader = new FileChunkReader(clock, maxShaCacheEntries: 1, shaCacheTtl: TimeSpan.FromMinutes(5));
+        var first = WriteBytes("first.bin", new byte[] { 1, 2, 3 });
+        var second = WriteBytes("second.bin", new byte[] { 4, 5, 6 });
+
+        await reader.ReadAsync(first, offset: 0, maxBytes: 3);
+        reader.ShaCacheEntryCount.Should().Be(1);
+
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await reader.ReadAsync(second, offset: 0, maxBytes: 3);
+
+        reader.ShaCacheEntryCount.Should().Be(1);
+    }
+
     [Fact]
     public async Task ReadAsync_InvalidatesShaCacheWhenLastWriteChanges()
     {
@@ -133,5 +163,14 @@ public sealed class FileChunkReaderTests : IDisposable
         var path = Path.Combine(_root, name);
         File.WriteAllBytes(path, bytes);
         return path;
+    }
+
+    private sealed class FakeTimeProvider : TimeProvider
+    {
+        private DateTimeOffset _utcNow = DateTimeOffset.UtcNow;
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
+
+        public void Advance(TimeSpan delta) => _utcNow += delta;
     }
 }
