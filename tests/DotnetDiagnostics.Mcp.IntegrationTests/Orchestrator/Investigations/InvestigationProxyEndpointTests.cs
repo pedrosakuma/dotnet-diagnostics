@@ -508,6 +508,26 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Proxy_RejectsDisallowedJsonRpcTool_InBatch_With403()
+    {
+        _store.Add(NewHandle("inv_jrpc_batch_bad", InvestigationState.Active, "pod-token"));
+        _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK);
+
+        var allowed = InvestigationProxyToolAllowlist.AllowedToolNames.First();
+        var payload =
+            "[" +
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"" + allowed + "\",\"arguments\":{}}}," +
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"totally_not_a_real_tool\",\"arguments\":{}}}" +
+            "]";
+        var response = await _client.PostAsync("/proxy/inv_jrpc_batch_bad/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("ProxyToolNotAllowed");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Proxy_AllowsJsonRpcInitialize_Passthrough()
     {
         // Non-tools/call methods must pass through unaltered — the allowlist
