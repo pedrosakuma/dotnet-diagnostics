@@ -71,7 +71,7 @@ public sealed class GetBytesTool
         ILoggerFactory? loggerFactory = null,
         CancellationToken cancellationToken = default)
     {
-        if (!DiscriminatorDispatch.TryValidate<object>(
+        if (!ToolDispatchGuards.TryValidateDiscriminator<object>(
                 kind,
                 AllowedKinds,
                 nameof(kind),
@@ -158,15 +158,18 @@ public sealed class GetBytesTool
                 new DiagnosticError("InvalidArgument", "Argument 'artifactPath' is required when kind='delete'.", nameof(artifactPath)));
         }
 
-        var principal = principalAccessor.Current;
-        if (principal is not null && !principal.HasExplicitScope(DeleteArtifactScope))
+        if (!ToolDispatchGuards.RequireExplicitScope(
+                principalAccessor.Current,
+                DeleteArtifactScope,
+                () => $"get_bytes(delete) requires the literal scope '{DeleteArtifactScope}'. Root or wildcard tokens do not auto-grant this scope.",
+                out DiagnosticResult<object>? scopeFailure,
+                new NextActionHint("get_bytes", $"Retry with a bearer token that explicitly includes '{DeleteArtifactScope}'."), 
+                errorTarget: principalAccessor.Current?.Name,
+                errorDetailFactory: () => $"Grant the bearer principal the literal scope '{DeleteArtifactScope}'."))
         {
             logger?.LogWarning("get_bytes(delete) denied: explicit '{Scope}' scope required. tokenName={TokenName} path={Path}",
-                DeleteArtifactScope, principal.Name, artifactPath);
-            return DiagnosticResult.Fail<object>(
-                $"get_bytes(delete) requires the literal scope '{DeleteArtifactScope}'. Root or wildcard tokens do not auto-grant this scope.",
-                new DiagnosticError("Forbidden", $"Grant the bearer principal the literal scope '{DeleteArtifactScope}'.", principal.Name),
-                new NextActionHint("get_bytes", $"Retry with a bearer token that explicitly includes '{DeleteArtifactScope}'."));
+                DeleteArtifactScope, principalAccessor.Current?.Name, artifactPath);
+            return scopeFailure!;
         }
 
         try

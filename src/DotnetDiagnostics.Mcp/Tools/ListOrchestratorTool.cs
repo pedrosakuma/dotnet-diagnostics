@@ -90,7 +90,7 @@ public sealed class ListOrchestratorTool
         bool includeAllSessions = false,
         CancellationToken cancellationToken = default)
     {
-        if (!DiscriminatorDispatch.TryValidate<ListOrchestratorResult>(
+        if (!ToolDispatchGuards.TryValidateDiscriminator<ListOrchestratorResult>(
                 kind, AllowedKinds, parameterName: "kind",
                 out var canonicalKind, out var failure))
         {
@@ -116,32 +116,34 @@ public sealed class ListOrchestratorTool
         // becomes a back-door to the other's data by switching the discriminator.
         if (canonicalKind == KindInvestigations)
         {
-            var principal = principalAccessor.Current;
-            if (principal is not null && !principal.HasScope("orchestrator-attach"))
-            {
-                var msg = "list_orchestrator(kind=investigations) requires the 'orchestrator-attach' scope.";
-                return DiagnosticResult.Fail<ListOrchestratorResult>(
-                    msg,
-                    new DiagnosticError(OrchestratorErrorKinds.PermissionDenied, msg),
+            if (!ToolDispatchGuards.RequireScope(
+                    principalAccessor.Current,
+                    "orchestrator-attach",
+                    () => "list_orchestrator(kind=investigations) requires the 'orchestrator-attach' scope.",
+                    out DiagnosticResult<ListOrchestratorResult>? scopeFailure,
                     new NextActionHint(
                         "list_orchestrator",
                         "Use kind='pods' (orchestrator-list scope) or grant the token 'orchestrator-attach'.",
-                        new Dictionary<string, object?> { ["kind"] = KindPods }));
+                        new Dictionary<string, object?> { ["kind"] = KindPods }),
+                    errorKind: OrchestratorErrorKinds.PermissionDenied))
+            {
+                return scopeFailure!;
             }
         }
         else if (canonicalKind == KindPods)
         {
-            var principal = principalAccessor.Current;
-            if (principal is not null && !principal.HasScope("orchestrator-list"))
-            {
-                var msg = "list_orchestrator(kind=pods) requires the 'orchestrator-list' scope.";
-                return DiagnosticResult.Fail<ListOrchestratorResult>(
-                    msg,
-                    new DiagnosticError(OrchestratorErrorKinds.PermissionDenied, msg),
+            if (!ToolDispatchGuards.RequireScope(
+                    principalAccessor.Current,
+                    "orchestrator-list",
+                    () => "list_orchestrator(kind=pods) requires the 'orchestrator-list' scope.",
+                    out DiagnosticResult<ListOrchestratorResult>? scopeFailure,
                     new NextActionHint(
                         "list_orchestrator",
                         "Grant the token 'orchestrator-list', or use kind='investigations' (orchestrator-attach scope).",
-                        new Dictionary<string, object?> { ["kind"] = KindInvestigations }));
+                        new Dictionary<string, object?> { ["kind"] = KindInvestigations }),
+                    errorKind: OrchestratorErrorKinds.PermissionDenied))
+            {
+                return scopeFailure!;
             }
         }
 

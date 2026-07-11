@@ -52,7 +52,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// removal wave; this is now the sole entry point for the EventPipe collector family.</para>
 /// </remarks>
 [McpServerToolType]
-public sealed class CollectEventsTool
+public sealed partial class CollectEventsTool
 {
     /// <summary>Allowed values for the <c>kind</c> discriminator. Order is preserved when
     /// rendered by <see cref="DiscriminatorDispatch"/> in failure envelopes so the LLM sees a
@@ -221,248 +221,98 @@ public sealed class CollectEventsTool
         RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
     {
-        if (!DiscriminatorDispatch.TryValidate<CollectEventsEnvelope>(
+        if (!ToolDispatchGuards.TryValidateDiscriminator<CollectEventsEnvelope>(
                 kind, AllowedKinds, nameof(kind), out var canonicalKind, out var dispatchFailure))
         {
             return dispatchFailure!;
         }
 
-        // Per-kind authorization re-check. The dispatch-time gate only proved the caller holds
-        // one of {read-counters, eventpipe}; we now enforce the precise legacy scope so this
-        // unified entry-point cannot widen a narrower bearer's reach. Skipped when no principal
-        // is materialized (stdio root accessor returns null — treated as root by the filter).
         var principal = principalAccessor.Current;
-        if (principal is not null)
+        if (!KindHandlers.TryGetValue(canonicalKind, out var handler))
         {
-            var requiredScope = canonicalKind is "counters" or "replica_counters" ? "read-counters" : "eventpipe";
-            if (!principal.HasScope(requiredScope))
-            {
-                var message =
-                    $"kind='{canonicalKind}' requires the '{requiredScope}' scope. " +
-                    "collect_events preserves the per-kind authorization boundary of its legacy collectors.";
-                return DiagnosticResult.Fail<CollectEventsEnvelope>(
-                    message,
-                    new DiagnosticError("InsufficientScope", message, requiredScope));
-            }
+            return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                $"Unhandled kind '{canonicalKind}'.",
+                new DiagnosticError("InvalidArgument", $"Unhandled kind '{canonicalKind}'.", nameof(kind)));
         }
 
-        // Distributed trace correlation (#437): orchestrator fan-out across attached Pods. Handled
-        // before the gated-capture + single-process EventPipe paths because it neither targets a
-        // single pid nor opens a local EventPipe session — it proxies collect_events(kind=activities)
-        // to each attached Pod and stitches the results. Requires orchestrator services (only present
-        // when Orchestrator:Enabled=true) which are resolved optionally from the request scope.
-        if (canonicalKind == "distributed_trace")
+        if (!ToolDispatchGuards.RequireScope(
+                principal,
+                handler.RequiredScope,
+                () => $"kind='{canonicalKind}' requires the '{handler.RequiredScope}' scope. " +
+                      "collect_events preserves the per-kind authorization boundary of its legacy collectors.",
+                out DiagnosticResult<CollectEventsEnvelope>? scopeFailure,
+                errorKind: "InsufficientScope"))
         {
-            return await RunDistributedTraceAsync(
-                requestContext, principal, traceId, investigationHandleIds, durationSeconds, maxActivities, sources, cancellationToken)
-                .ConfigureAwait(false);
+            return scopeFailure!;
         }
 
-        // Replica counter skew fan-out (#448): orchestrator simultaneous fan-out across attached Pods.
-        // Like distributed_trace it neither targets a single pid nor opens a local EventPipe session —
-        // it proxies collect_events(kind=counters) to each attached Pod in parallel and compares them.
-        if (canonicalKind == "replica_counters")
+        var context = new CollectEventsDispatchContext
         {
-            return await RunReplicaCountersAsync(
-                requestContext, principal, investigationHandleIds, durationSeconds, intervalSeconds, cancellationToken)
-                .ConfigureAwait(false);
-        }
+            CounterCollector = counterCollector,
+            ExceptionCollector = exceptionCollector,
+            CrashGuardCollector = crashGuardCollector,
+            GcCollector = gcCollector,
+            GcDatasCollector = gcDatasCollector,
+            ActivityCollector = activityCollector,
+            EventSourceCollector = eventSourceCollector,
+            EventCatalogCollector = eventCatalogCollector,
+            LogCollector = logCollector,
+            JitCollector = jitCollector,
+            ThreadPoolCollector = threadPoolCollector,
+            ContentionCollector = contentionCollector,
+            DbCollector = dbCollector,
+            KestrelCollector = kestrelCollector,
+            NetworkingCollector = networkingCollector,
+            InFlightRequestCollector = inFlightRequestCollector,
+            StartupCollector = startupCollector,
+            ProcessResourcesCollector = processResourcesCollector,
+            GatedCaptureCollector = gatedCaptureCollector,
+            CpuSampler = cpuSampler,
+            ThreadSnapshotInspector = threadSnapshotInspector,
+            DumpInspector = dumpInspector,
+            ProcessDumper = processDumper,
+            Resolver = resolver,
+            Handles = handles,
+            Allowlist = allowlist,
+            SensitiveGate = sensitiveGate,
+            PrincipalAccessor = principalAccessor,
+            CanonicalKind = canonicalKind,
+            ProcessId = processId,
+            DurationSeconds = durationSeconds,
+            Depth = depth,
+            Providers = providers,
+            Meters = meters,
+            IntervalSeconds = intervalSeconds,
+            MaxInstrumentTimeSeries = maxInstrumentTimeSeries,
+            MaxRecent = maxRecent,
+            MaxEvents = maxEvents,
+            ProviderName = providerName,
+            Keywords = keywords,
+            EventLevel = eventLevel,
+            UnsafeProvider = unsafeProvider,
+            Sources = sources,
+            MaxActivities = maxActivities,
+            LongRunningThresholdMs = longRunningThresholdMs,
+            MaxRequests = maxRequests,
+            TraceId = traceId,
+            InvestigationHandleId = investigationHandleId,
+            InvestigationHandleIds = investigationHandleIds,
+            Categories = categories,
+            MinLevel = minLevel,
+            MaxMessageBytes = maxMessageBytes,
+            TriggerWhen = triggerWhen,
+            CaptureKind = captureKind,
+            WindowSeconds = windowSeconds,
+            MaxCaptures = maxCaptures,
+            SampleIntervalSeconds = sampleIntervalSeconds,
+            ConfirmDump = confirmDump,
+            Deprecation = deprecation,
+            RequestContext = requestContext,
+            Principal = principal,
+        };
 
-        // Bounded threshold-gated capture (#419): when triggerWhen + captureKind are supplied, the
-        // call arms a bounded watch instead of a fixed-window collection. Requires kind=counters
-        // (the metric source) and re-checks the per-captureKind scope on top of read-counters.
-        var gatingRequested = !string.IsNullOrWhiteSpace(triggerWhen) || !string.IsNullOrWhiteSpace(captureKind);
-        if (gatingRequested)
-        {
-            return await RunGatedCaptureAsync(
-                gatedCaptureCollector, resolver, handles, cpuSampler, threadSnapshotInspector, dumpInspector, processDumper,
-                principal, canonicalKind, triggerWhen, captureKind, windowSeconds, maxCaptures, sampleIntervalSeconds,
-                confirmDump, processId, cancellationToken).ConfigureAwait(false);
-        }
-
-        // Default durationSeconds per kind matches the legacy tool defaults so callers omitting
-        // the parameter see no behavioral change.
-        var effectiveDuration = durationSeconds ?? (canonicalKind == "counters" ? 5 : canonicalKind == "datas" ? 15 : canonicalKind == "sweep" ? SweepUseCase.MinimumDurationSeconds : 10);
-
-        // Stage A of issue #211: emit MCP notifications/progress while the
-        // EventPipe session is open, and translate MCP notifications/cancelled into a partial
-        // envelope so spec-compliant clients no longer need the legacy job-polling bridge.
-        try
-        {
-            return await CollectionProgressTicker.RunAsync(
-                requestContext,
-                $"collect_events:{canonicalKind}",
-                TimeSpan.FromSeconds(effectiveDuration),
-                TimeSpan.FromSeconds(1),
-                async ct => canonicalKind switch
-                {
-                    "counters" => Project(
-                        await DiagnosticTools.SnapshotCounters(
-                            counterCollector, resolver, handles,
-                            processId, effectiveDuration, providers, meters, intervalSeconds, maxInstrumentTimeSeries, depth,
-                            ct).ConfigureAwait(false),
-                        "counters",
-                        (env, data) => env with { Counters = data }),
-
-                    "exceptions" => Project(
-                        await DiagnosticTools.CollectExceptions(
-                            exceptionCollector, resolver, handles,
-                            processId, effectiveDuration, maxRecent, depth,
-                            ct).ConfigureAwait(false),
-                        "exceptions",
-                        (env, data) => env with { Exceptions = data }),
-
-                    "crash-guard" => Project(
-                        await DiagnosticTools.CollectCrashGuard(
-                            crashGuardCollector, resolver, handles,
-                            processId, effectiveDuration, maxRecent, depth,
-                            ct).ConfigureAwait(false),
-                        "crash-guard",
-                        (env, data) => env with { CrashGuard = data }),
-
-                    "gc" => Project(
-                        await DiagnosticTools.CollectGcEvents(
-                            gcCollector, resolver, handles,
-                            processId, effectiveDuration, maxEvents ?? 200, depth,
-                            ct).ConfigureAwait(false),
-                        "gc",
-                        (env, data) => env with { Gc = data }),
-
-                    "datas" => Project(
-                        await DiagnosticTools.CollectGcDatas(
-                            gcDatasCollector, resolver, handles,
-                            processId, effectiveDuration, maxEvents ?? 1000,
-                            ct).ConfigureAwait(false),
-                        "datas",
-                        (env, data) => env with { Datas = data }),
-
-                    "catalog" => Project(
-                        await DiagnosticTools.CollectEventCatalog(
-                            eventCatalogCollector, resolver, handles,
-                            processId, effectiveDuration, providers, maxEvents ?? 200, depth,
-                            ct).ConfigureAwait(false),
-                        "catalog",
-                        (env, data) => env with { Catalog = data }),
-
-                    "event_source" => Project(
-                        await DiagnosticTools.CollectEventSource(
-                            eventSourceCollector, resolver, handles,
-                            allowlist, sensitiveGate, principalAccessor,
-                            providerName ?? string.Empty,
-                            processId, effectiveDuration, keywords, eventLevel, maxEvents ?? 200, depth,
-                            unsafeProvider, deprecation,
-                            ct).ConfigureAwait(false),
-                        "event_source",
-                        (env, data) => env with { EventSource = data }),
-
-                    "activities" => Project(
-                        await DiagnosticTools.CollectActivities(
-                            activityCollector, resolver, handles,
-                            processId, sources, effectiveDuration, maxActivities,
-                            ct).ConfigureAwait(false),
-                        "activities",
-                        (env, data) => env with { Activities = data }),
-
-                    "logs" => Project(
-                        await DiagnosticTools.CollectLogs(
-                            logCollector, resolver, handles,
-                            processId, effectiveDuration, categories, minLevel,
-                            maxEvents ?? 500, maxMessageBytes, depth,
-                            ct).ConfigureAwait(false),
-                        "logs",
-                        (env, data) => env with { Logs = data }),
-
-                    "jit" => Project(
-                        await DiagnosticTools.CollectJit(
-                            jitCollector, resolver, handles,
-                            processId, effectiveDuration, depth,
-                            ct).ConfigureAwait(false),
-                        "jit",
-                        (env, data) => env with { Jit = data }),
-
-                    "threadpool" => Project(
-                        await DiagnosticTools.CollectThreadPool(
-                            threadPoolCollector, resolver, handles,
-                            processId, effectiveDuration, depth,
-                            ct).ConfigureAwait(false),
-                        "threadpool",
-                        (env, data) => env with { ThreadPool = data }),
-
-                    "contention" => Project(
-                        await DiagnosticTools.CollectContention(
-                            contentionCollector, resolver, handles,
-                            processId, effectiveDuration, depth,
-                            ct).ConfigureAwait(false),
-                        "contention",
-                        (env, data) => env with { Contention = data }),
- 
-                    "db" => Project(
-                        await DiagnosticTools.CollectDb(
-                            dbCollector, resolver, handles,
-                            processId, effectiveDuration, intervalSeconds, depth,
-                            ct).ConfigureAwait(false),
-                        "db",
-                        (env, data) => env with { Db = data }),
-
-                    "kestrel" => Project(
-                        await DiagnosticTools.CollectKestrel(
-                            kestrelCollector, resolver, handles,
-                            processId, effectiveDuration, intervalSeconds, depth,
-                            ct).ConfigureAwait(false),
-                        "kestrel",
-                        (env, data) => env with { Kestrel = data }),
-
-                    "networking" => Project(
-                        await DiagnosticTools.CollectNetworking(
-                            networkingCollector, resolver, handles,
-                            processId, effectiveDuration, intervalSeconds, depth,
-                            ct).ConfigureAwait(false),
-                        "networking",
-                        (env, data) => env with { Networking = data }),
-
-                    "requests" => Project(
-                        await DiagnosticTools.CollectInFlightRequests(
-                            inFlightRequestCollector, resolver, handles,
-                            processId, effectiveDuration, longRunningThresholdMs, maxRequests, depth,
-                            ct).ConfigureAwait(false),
-                        "requests",
-                        (env, data) => env with { Requests = data }),
-
-                    "startup" => Project(
-                        await DiagnosticTools.CollectStartup(
-                            startupCollector, resolver, handles,
-                            processId, effectiveDuration, depth,
-                            ct).ConfigureAwait(false),
-                        "startup",
-                        (env, data) => env with { Startup = data }),
-
-                    "sweep" => Project(
-                        await SweepUseCase.RunSweep(
-                            counterCollector, gcCollector, exceptionCollector, threadPoolCollector, processResourcesCollector,
-                            resolver, handles,
-                            processId, effectiveDuration, maxRecent, maxEvents ?? 200, depth,
-                            ct).ConfigureAwait(false),
-                        "sweep",
-                        (env, data) => env with { Sweep = data }),
- 
-                    // Unreachable — TryValidate narrowed canonicalKind to the AllowedKinds set above.
-                    _ => DiagnosticResult.Fail<CollectEventsEnvelope>(
-                        $"Unhandled kind '{canonicalKind}'.",
-                        new DiagnosticError("InvalidArgument", $"Unhandled kind '{canonicalKind}'.", nameof(kind))),
-                },
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return new DiagnosticResult<CollectEventsEnvelope>(
-                $"collect_events(kind='{canonicalKind}') cancelled by the client before the {effectiveDuration}s window elapsed. " +
-                "No payload was retained — restart the collection to capture data.",
-                Array.Empty<NextActionHint>())
-            {
-                Data = new CollectEventsEnvelope(canonicalKind),
-                Cancelled = true,
-            };
-        }
+        var effectiveDuration = durationSeconds ?? handler.DefaultDurationSeconds(context);
+        return await handler.ExecuteAsync(context, effectiveDuration, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
