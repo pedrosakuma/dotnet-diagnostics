@@ -44,6 +44,7 @@ public sealed partial class QuerySnapshotTool
             [CollectionHandleKinds.KestrelSnapshot] = HandleEventPipeCollectionAsync,
             [CollectionHandleKinds.NetworkingSnapshot] = HandleEventPipeCollectionAsync,
             [CollectionHandleKinds.StartupSnapshot] = HandleEventPipeCollectionAsync,
+            [CollectionHandleKinds.InFlightRequests] = HandleEventPipeCollectionAsync,
             [MethodParameterCaptureUseCases.HandleKind] = HandleMethodParameterCaptureAsync,
         };
 
