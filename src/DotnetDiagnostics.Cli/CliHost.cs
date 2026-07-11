@@ -56,10 +56,7 @@ internal static class CliHost
         {
             if (!CliCommands.TryValidateWatch(peek, out var watchError))
             {
-                await Console.Error.WriteLineAsync(watchError).ConfigureAwait(false);
-                await Console.Error.WriteLineAsync().ConfigureAwait(false);
-                await Console.Error.WriteLineAsync(Usage).ConfigureAwait(false);
-                return 2;
+                return await WriteUsageErrorAsync(Console.Error, watchError!).ConfigureAwait(false);
             }
 
             return await RunAsync(args, Console.In, Console.Out, Console.Error, CancellationToken.None).ConfigureAwait(false);
@@ -135,10 +132,7 @@ internal static class CliHost
         var options = CliOptions.Parse(args, out var parseError);
         if (parseError is not null)
         {
-            await stderr.WriteLineAsync(parseError).ConfigureAwait(false);
-            await stderr.WriteLineAsync().ConfigureAwait(false);
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
-            return 2;
+            return await WriteUsageErrorAsync(stderr, parseError!).ConfigureAwait(false);
         }
 
         if (options!.Help)
@@ -153,34 +147,22 @@ internal static class CliHost
 
         if (options.Command is null)
         {
-            await stderr.WriteLineAsync("No command specified.").ConfigureAwait(false);
-            await stderr.WriteLineAsync().ConfigureAwait(false);
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
-            return 2;
+            return await WriteUsageErrorAsync(stderr, "No command specified.").ConfigureAwait(false);
         }
 
         if (!CliCommands.Commands.Contains(options.Command, StringComparer.Ordinal))
         {
-            await stderr.WriteLineAsync($"Unknown command '{options.Command}'.").ConfigureAwait(false);
-            await stderr.WriteLineAsync().ConfigureAwait(false);
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
-            return 2;
+            return await WriteUsageErrorAsync(stderr, $"Unknown command '{options.Command}'.").ConfigureAwait(false);
         }
 
         if (!CliCommands.TryValidateLaunch(options, out var launchValidationError))
         {
-            await stderr.WriteLineAsync(launchValidationError).ConfigureAwait(false);
-            await stderr.WriteLineAsync().ConfigureAwait(false);
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
-            return 2;
+            return await WriteUsageErrorAsync(stderr, launchValidationError!).ConfigureAwait(false);
         }
 
         if (options.WatchIntervalSeconds is not null && !CliCommands.TryValidateWatch(options, out var watchError))
         {
-            await stderr.WriteLineAsync(watchError).ConfigureAwait(false);
-            await stderr.WriteLineAsync().ConfigureAwait(false);
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
-            return 2;
+            return await WriteUsageErrorAsync(stderr, watchError!).ConfigureAwait(false);
         }
 
         if (options.Command == "completion")
@@ -246,68 +228,9 @@ internal static class CliHost
             }
         }
 
-        if (options.Command == "collect" && !CliCommands.TryValidateCollect(options, out var collectError))
+        if (!CliCommands.TryValidateCommand(options, out var validationError))
         {
-            await stderr.WriteLineAsync(collectError).ConfigureAwait(false);
-            await stderr.WriteLineAsync().ConfigureAwait(false);
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
-            return 2;
-        }
-
-        if (options.Command == "inspect" && !CliCommands.TryValidateInspect(options, out var inspectError))
-        {
-            await stderr.WriteLineAsync(inspectError).ConfigureAwait(false);
-            await stderr.WriteLineAsync().ConfigureAwait(false);
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
-            return 2;
-        }
-
-        if (options.Command == "inspect-heap" && !CliCommands.TryValidateInspectHeap(options, out var heapError))
-        {
-            await stderr.WriteLineAsync(heapError).ConfigureAwait(false);
-            await stderr.WriteLineAsync().ConfigureAwait(false);
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
-            return 2;
-        }
-
-        if (options.Command == "dump" && !CliCommands.TryValidateDump(options, out var dumpError))
-        {
-            await stderr.WriteLineAsync(dumpError).ConfigureAwait(false);
-            await stderr.WriteLineAsync().ConfigureAwait(false);
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
-            return 2;
-        }
-
-        if (options.Command == "get-bytes" && !CliCommands.TryValidateGetBytes(options, out var getBytesError))
-        {
-            await stderr.WriteLineAsync(getBytesError).ConfigureAwait(false);
-            await stderr.WriteLineAsync().ConfigureAwait(false);
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
-            return 2;
-        }
-
-        if (options.Command == "compare" && !CliCommands.TryValidateCompare(options, out var compareError))
-        {
-            await stderr.WriteLineAsync(compareError).ConfigureAwait(false);
-            await stderr.WriteLineAsync().ConfigureAwait(false);
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
-            return 2;
-        }
-
-        if (options.Command == "investigate" && !CliCommands.TryValidateInvestigate(options, out var investigateError))
-        {
-            await stderr.WriteLineAsync(investigateError).ConfigureAwait(false);
-            await stderr.WriteLineAsync().ConfigureAwait(false);
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
-            return 2;
-        }
-
-        if (options.Command == "export-summary" && !CliCommands.TryValidateExportSummary(options, out var exportSummaryError))
-        {
-            await stderr.WriteLineAsync(exportSummaryError).ConfigureAwait(false);
-            await stderr.WriteLineAsync().ConfigureAwait(false);
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
-            return 2;
+            return await WriteUsageErrorAsync(stderr, validationError!).ConfigureAwait(false);
         }
 
         // Cold-start capture (issue #446): when --suspend-startup is set, the target is launched
@@ -624,6 +547,17 @@ internal static class CliHost
 
     /// <summary>Maximum time to wait for a suspended cold-start child to reverse-connect.</summary>
     private static readonly TimeSpan ColdStartConnectTimeout = TimeSpan.FromSeconds(30);
+
+    private static async Task<int> WriteUsageErrorAsync(TextWriter stderr, string message)
+    {
+        ArgumentNullException.ThrowIfNull(stderr);
+        ArgumentException.ThrowIfNullOrWhiteSpace(message);
+
+        await stderr.WriteLineAsync(message).ConfigureAwait(false);
+        await stderr.WriteLineAsync().ConfigureAwait(false);
+        await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+        return 2;
+    }
 
     /// <summary>
     /// Cold-start capture flow (issue #446): launch the target SUSPENDED on a reverse-connect diagnostic
