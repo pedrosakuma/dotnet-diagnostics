@@ -262,6 +262,8 @@ internal sealed record CliOptions
     /// </summary>
     public bool SuspendStartup { get; init; }
 
+    private static readonly Dictionary<string, OptionDescriptor> OptionLookup = CreateOptionLookup();
+
     /// <summary>
     /// Parses <paramref name="args"/>. Returns a populated <see cref="CliOptions"/> on success, or
     /// <c>null</c> with a non-null <paramref name="error"/> describing the first usage problem.
@@ -271,76 +273,7 @@ internal sealed record CliOptions
         ArgumentNullException.ThrowIfNull(args);
         error = null;
 
-        string? command = null;
-        int? pid = null;
-        string? pidName = null;
-        var json = false;
-        var help = false;
-        string? savePath = null;
-        var comparePaths = new List<string>();
-        string? completionShell = null;
-        string? mode = null;
-        string? kind = null;
-        int? durationSeconds = null;
-        var providers = new List<string>();
-        var meters = new List<string>();
-        var sources = new List<string>();
-        var categories = new List<string>();
-        int? intervalSeconds = null;
-        int? maxEvents = null;
-        int? watchIntervalSeconds = null;
-        string? minLevel = null;
-        string? depth = null;
-        var unsafeProvider = false;
-        var exportTrace = false;
-        string? dumpFile = null;
-        int? topTypes = null;
-        var includeRetentionPaths = false;
-        int? retentionPathLimit = null;
-        var includeStaticFields = false;
-        var includeDelegateTargets = false;
-        var includeDuplicateStrings = false;
-        string? symbolPath = null;
-        string? nativeAotMapFile = null;
-        bool? resolveSourceLines = null;
-        var resolveMethodInstantiations = false;
-        long? nativeAllocSamplePeriod = null;
-        int? maxFramesPerThread = null;
-        var includeRuntimeFrames = false;
-        var includeNativeFrames = false;
-        string? dumpType = null;
-        string? outDir = null;
-        var confirm = false;
-        var changesOnly = false;
-        string? mvid = null;
-        string? asset = null;
-        string? handle = null;
-        string? view = null;
-        string? rankBy = null;
-        string? typeFilter = null;
-        string? address = null;
-        string? rootMethodFilter = null;
-        string? providerFilter = null;
-        int? maxDepth = null;
-        int? maxNodes = null;
-        int? threadId = null;
-        int? stackRank = null;
-        int? framesToHash = null;
-        int? minCount = null;
-        int? top = null;
-        int? threshold = null;
-        string? captureWhen = null;
-        string? captureKind = null;
-        int? maxCaptures = null;
-        int? windowSeconds = null;
-        string? symptom = null;
-        string? hypothesis = null;
-        int? maxToolCalls = null;
-        int? topHotspots = null;
-        var launch = false;
-        var suspendStartup = false;
-        List<string>? launchArgs = null;
-
+        var state = new ParseState();
         for (var i = 0; i < args.Count; i++)
         {
             var token = args[i];
@@ -348,574 +281,54 @@ internal sealed record CliOptions
             // Everything after a bare `--` is the launch argv (program + its args); stop option parsing.
             if (token == "--")
             {
-                launchArgs = new List<string>(args.Count - i - 1);
+                state.LaunchArgs = new List<string>(args.Count - i - 1);
                 for (var j = i + 1; j < args.Count; j++)
                 {
-                    launchArgs.Add(args[j]);
+                    state.LaunchArgs.Add(args[j]);
                 }
 
                 break;
             }
 
-            switch (token)
+            if (OptionLookup.TryGetValue(token, out var descriptor))
             {
-                case "--help":
-                case "-h":
-                    help = true;
-                    break;
-                case "--json":
-                    json = true;
-                    break;
-                case "--save":
-                    if (!TryTakeString(args, ref i, token, out var saveValue, out error))
-                    {
-                        return null;
-                    }
+                if (!descriptor.TryApply(args, ref i, state, out error))
+                {
+                    return null;
+                }
 
-                    savePath = saveValue;
-                    break;
-                case "--unsafe-provider":
-                    unsafeProvider = true;
-                    break;
-                case "--export-trace":
-                    exportTrace = true;
-                    break;
-                case "--include-retention-paths":
-                    includeRetentionPaths = true;
-                    break;
-                case "--include-static-fields":
-                    includeStaticFields = true;
-                    break;
-                case "--include-delegate-targets":
-                    includeDelegateTargets = true;
-                    break;
-                case "--include-duplicate-strings":
-                    includeDuplicateStrings = true;
-                    break;
-                case "--confirm":
-                    confirm = true;
-                    break;
-                case "--changes-only":
-                    changesOnly = true;
-                    break;
-                case "--launch":
-                    launch = true;
-                    break;
-                case "--suspend-startup":
-                    suspendStartup = true;
-                    break;
-                case "--pid":
-                case "-p":
-                    if (!TryTakeString(args, ref i, token, out var pidValue, out error))
-                    {
-                        return null;
-                    }
-
-                    if (string.IsNullOrWhiteSpace(pidValue))
-                    {
-                        error = $"Option '{token}' requires a non-empty pid or process name.";
-                        return null;
-                    }
-
-                    if (int.TryParse(pidValue, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var numericPid))
-                    {
-                        pid = numericPid;
-                        pidName = null;
-                    }
-                    else
-                    {
-                        pid = null;
-                        pidName = pidValue;
-                    }
-
-                    break;
-                case "--kind":
-                    if (!TryTakeString(args, ref i, token, out var kindValue, out error))
-                    {
-                        return null;
-                    }
-
-                    kind = kindValue;
-                    break;
-                case "--duration":
-                case "-d":
-                    if (!TryTakeInt(args, ref i, token, out var durationValue, out error))
-                    {
-                        return null;
-                    }
-
-                    durationSeconds = durationValue;
-                    break;
-                case "--interval":
-                    if (!TryTakeInt(args, ref i, token, out var intervalValue, out error))
-                    {
-                        return null;
-                    }
-
-                    intervalSeconds = intervalValue;
-                    break;
-                case "--max-events":
-                    if (!TryTakeInt(args, ref i, token, out var maxEventsValue, out error))
-                    {
-                        return null;
-                    }
-
-                    maxEvents = maxEventsValue;
-                    break;
-                case "--watch":
-                    if (!TryTakeInt(args, ref i, token, out var watchValue, out error))
-                    {
-                        return null;
-                    }
-
-                    watchIntervalSeconds = watchValue;
-                    break;
-                case "--capture-when":
-                    if (!TryTakeString(args, ref i, token, out var captureWhenValue, out error))
-                    {
-                        return null;
-                    }
-
-                    captureWhen = captureWhenValue;
-                    break;
-                case "--capture":
-                    if (!TryTakeString(args, ref i, token, out var captureKindValue, out error))
-                    {
-                        return null;
-                    }
-
-                    captureKind = captureKindValue;
-                    break;
-                case "--max-captures":
-                    if (!TryTakeInt(args, ref i, token, out var maxCapturesValue, out error))
-                    {
-                        return null;
-                    }
-
-                    maxCaptures = maxCapturesValue;
-                    break;
-                case "--window":
-                    if (!TryTakeInt(args, ref i, token, out var windowValue, out error))
-                    {
-                        return null;
-                    }
-
-                    windowSeconds = windowValue;
-                    break;
-                case "--symptom":
-                    if (!TryTakeString(args, ref i, token, out var symptomValue, out error))
-                    {
-                        return null;
-                    }
-
-                    symptom = symptomValue;
-                    break;
-                case "--hypothesis":
-                    if (!TryTakeString(args, ref i, token, out var hypothesisValue, out error))
-                    {
-                        return null;
-                    }
-
-                    hypothesis = hypothesisValue;
-                    break;
-                case "--max-tool-calls":
-                    if (!TryTakeInt(args, ref i, token, out var maxToolCallsValue, out error))
-                    {
-                        return null;
-                    }
-
-                    maxToolCalls = maxToolCallsValue;
-                    break;
-                case "--top-hotspots":
-                    if (!TryTakeInt(args, ref i, token, out var topHotspotsValue, out error))
-                    {
-                        return null;
-                    }
-
-                    topHotspots = topHotspotsValue;
-                    break;
-                case "--top-types":
-                    if (!TryTakeInt(args, ref i, token, out var topTypesValue, out error))
-                    {
-                        return null;
-                    }
-
-                    topTypes = topTypesValue;
-                    break;
-                case "--retention-path-limit":
-                    if (!TryTakeInt(args, ref i, token, out var retentionLimitValue, out error))
-                    {
-                        return null;
-                    }
-
-                    retentionPathLimit = retentionLimitValue;
-                    break;
-                case "--provider":
-                    if (!TryTakeString(args, ref i, token, out var providerValue, out error))
-                    {
-                        return null;
-                    }
-
-                    providers.Add(providerValue);
-                    break;
-                case "--meter":
-                    if (!TryTakeString(args, ref i, token, out var meterValue, out error))
-                    {
-                        return null;
-                    }
-
-                    meters.Add(meterValue);
-                    break;
-                case "--source":
-                    if (!TryTakeString(args, ref i, token, out var sourceValue, out error))
-                    {
-                        return null;
-                    }
-
-                    sources.Add(sourceValue);
-                    break;
-                case "--category":
-                    if (!TryTakeString(args, ref i, token, out var categoryValue, out error))
-                    {
-                        return null;
-                    }
-
-                    categories.Add(categoryValue);
-                    break;
-                case "--min-level":
-                    if (!TryTakeString(args, ref i, token, out var minLevelValue, out error))
-                    {
-                        return null;
-                    }
-
-                    minLevel = minLevelValue;
-                    break;
-                case "--depth":
-                    if (!TryTakeString(args, ref i, token, out var depthValue, out error))
-                    {
-                        return null;
-                    }
-
-                    depth = depthValue;
-                    break;
-                case "--mode":
-                    if (!TryTakeString(args, ref i, token, out var modeValue, out error))
-                    {
-                        return null;
-                    }
-
-                    mode = modeValue;
-                    break;
-                case "--dump-file":
-                    if (!TryTakeString(args, ref i, token, out var dumpFileValue, out error))
-                    {
-                        return null;
-                    }
-
-                    dumpFile = dumpFileValue;
-                    break;
-                case "--symbol-path":
-                    if (!TryTakeString(args, ref i, token, out var symbolPathValue, out error))
-                    {
-                        return null;
-                    }
-
-                    symbolPath = symbolPathValue;
-                    break;
-                case "--native-aot-map":
-                    if (!TryTakeString(args, ref i, token, out var nativeAotMapValue, out error))
-                    {
-                        return null;
-                    }
-
-                    nativeAotMapFile = nativeAotMapValue;
-                    break;
-                case "--resolve-source-lines":
-                    resolveSourceLines = true;
-                    break;
-                case "--no-resolve-source-lines":
-                    resolveSourceLines = false;
-                    break;
-                case "--resolve-method-instantiations":
-                    resolveMethodInstantiations = true;
-                    break;
-                case "--native-alloc-sample-period":
-                    if (!TryTakeLong(args, ref i, token, out var nativeAllocSamplePeriodValue, out error))
-                    {
-                        return null;
-                    }
-
-                    nativeAllocSamplePeriod = nativeAllocSamplePeriodValue;
-                    break;
-                case "--max-frames-per-thread":
-                    if (!TryTakeInt(args, ref i, token, out var maxFramesPerThreadValue, out error))
-                    {
-                        return null;
-                    }
-
-                    maxFramesPerThread = maxFramesPerThreadValue;
-                    break;
-                case "--include-runtime-frames":
-                    includeRuntimeFrames = true;
-                    break;
-                case "--include-native-frames":
-                    includeNativeFrames = true;
-                    break;
-                case "--dump-type":
-                    if (!TryTakeString(args, ref i, token, out var dumpTypeValue, out error))
-                    {
-                        return null;
-                    }
-
-                    dumpType = dumpTypeValue;
-                    break;
-                case "--out":
-                    if (!TryTakeString(args, ref i, token, out var outValue, out error))
-                    {
-                        return null;
-                    }
-
-                    outDir = outValue;
-                    break;
-                case "--mvid":
-                    if (!TryTakeString(args, ref i, token, out var mvidValue, out error))
-                    {
-                        return null;
-                    }
-
-                    mvid = mvidValue;
-                    break;
-                case "--asset":
-                    if (!TryTakeString(args, ref i, token, out var assetValue, out error))
-                    {
-                        return null;
-                    }
-
-                    asset = assetValue;
-                    break;
-                case "--handle":
-                    if (!TryTakeString(args, ref i, token, out var handleValue, out error))
-                    {
-                        return null;
-                    }
-
-                    handle = handleValue;
-                    break;
-                case "--view":
-                    if (!TryTakeString(args, ref i, token, out var viewValue, out error))
-                    {
-                        return null;
-                    }
-
-                    view = viewValue;
-                    break;
-                case "--rank-by":
-                    if (!TryTakeString(args, ref i, token, out var rankByValue, out error))
-                    {
-                        return null;
-                    }
-
-                    rankBy = rankByValue;
-                    break;
-                case "--type-filter":
-                    if (!TryTakeString(args, ref i, token, out var typeFilterValue, out error))
-                    {
-                        return null;
-                    }
-
-                    typeFilter = typeFilterValue;
-                    break;
-                case "--address":
-                    if (!TryTakeString(args, ref i, token, out var addressValue, out error))
-                    {
-                        return null;
-                    }
-
-                    address = addressValue;
-                    break;
-                case "--root-method-filter":
-                    if (!TryTakeString(args, ref i, token, out var rootMethodFilterValue, out error))
-                    {
-                        return null;
-                    }
-
-                    rootMethodFilter = rootMethodFilterValue;
-                    break;
-                case "--provider-filter":
-                    if (!TryTakeString(args, ref i, token, out var providerFilterValue, out error))
-                    {
-                        return null;
-                    }
-
-                    providerFilter = providerFilterValue;
-                    break;
-                case "--max-depth":
-                    if (!TryTakeInt(args, ref i, token, out var maxDepthValue, out error))
-                    {
-                        return null;
-                    }
-
-                    maxDepth = maxDepthValue;
-                    break;
-                case "--max-nodes":
-                    if (!TryTakeInt(args, ref i, token, out var maxNodesValue, out error))
-                    {
-                        return null;
-                    }
-
-                    maxNodes = maxNodesValue;
-                    break;
-                case "--top":
-                    if (!TryTakeInt(args, ref i, token, out var topValue, out error))
-                    {
-                        return null;
-                    }
-
-                    top = topValue;
-                    break;
-                case "--threshold":
-                    if (!TryTakeInt(args, ref i, token, out var thresholdValue, out error))
-                    {
-                        return null;
-                    }
-
-                    threshold = thresholdValue;
-                    break;
-                case "--thread-id":
-                    if (!TryTakeInt(args, ref i, token, out var threadIdValue, out error))
-                    {
-                        return null;
-                    }
-
-                    threadId = threadIdValue;
-                    break;
-                case "--stack-rank":
-                    if (!TryTakeInt(args, ref i, token, out var stackRankValue, out error))
-                    {
-                        return null;
-                    }
-
-                    stackRank = stackRankValue;
-                    break;
-                case "--frames-to-hash":
-                    if (!TryTakeInt(args, ref i, token, out var framesToHashValue, out error))
-                    {
-                        return null;
-                    }
-
-                    framesToHash = framesToHashValue;
-                    break;
-                case "--min-count":
-                    if (!TryTakeInt(args, ref i, token, out var minCountValue, out error))
-                    {
-                        return null;
-                    }
-
-                    minCount = minCountValue;
-                    break;
-                default:
-                    if (token.StartsWith('-'))
-                    {
-                        error = $"Unknown option '{token}'.";
-                        return null;
-                    }
-
-                    if (command is not null)
-                    {
-                        if (string.Equals(command, "compare", StringComparison.Ordinal))
-                        {
-                            comparePaths.Add(token);
-                            break;
-                        }
-
-                        if (string.Equals(command, "completion", StringComparison.Ordinal)
-                            && completionShell is null)
-                        {
-                            completionShell = token;
-                            break;
-                        }
-
-                        error = $"Unexpected argument '{token}'. Only one command is accepted.";
-                        return null;
-                    }
-
-                    command = token;
-                    break;
+                continue;
             }
+
+            if (token.StartsWith('-'))
+            {
+                error = $"Unknown option '{token}'.";
+                return null;
+            }
+
+            if (state.Command is not null)
+            {
+                if (string.Equals(state.Command, "compare", StringComparison.Ordinal))
+                {
+                    state.ComparePaths.Add(token);
+                    continue;
+                }
+
+                if (string.Equals(state.Command, "completion", StringComparison.Ordinal)
+                    && state.CompletionShell is null)
+                {
+                    state.CompletionShell = token;
+                    continue;
+                }
+
+                error = $"Unexpected argument '{token}'. Only one command is accepted.";
+                return null;
+            }
+
+            state.Command = token;
         }
 
-        return new CliOptions
-        {
-            Command = command,
-            Pid = pid,
-            PidName = pidName,
-            Json = json,
-            SavePath = savePath,
-            ComparePaths = comparePaths,
-            CompletionShell = completionShell,
-            Mode = mode,
-            Help = help,
-            Kind = kind,
-            DurationSeconds = durationSeconds,
-            Providers = providers,
-            Meters = meters,
-            Sources = sources,
-            Categories = categories,
-            IntervalSeconds = intervalSeconds,
-            WatchIntervalSeconds = watchIntervalSeconds,
-            MaxEvents = maxEvents,
-            MinLevel = minLevel,
-            Depth = depth,
-            UnsafeProvider = unsafeProvider,
-            ExportTrace = exportTrace,
-            DumpFile = dumpFile,
-            TopTypes = topTypes,
-            IncludeRetentionPaths = includeRetentionPaths,
-            RetentionPathLimit = retentionPathLimit,
-            IncludeStaticFields = includeStaticFields,
-            IncludeDelegateTargets = includeDelegateTargets,
-            IncludeDuplicateStrings = includeDuplicateStrings,
-            SymbolPath = symbolPath,
-            NativeAotMapFile = nativeAotMapFile,
-            ResolveSourceLines = resolveSourceLines,
-            ResolveMethodInstantiations = resolveMethodInstantiations,
-            NativeAllocSamplePeriod = nativeAllocSamplePeriod,
-            MaxFramesPerThread = maxFramesPerThread,
-            IncludeRuntimeFrames = includeRuntimeFrames,
-            IncludeNativeFrames = includeNativeFrames,
-            DumpType = dumpType,
-            OutDir = outDir,
-            Confirm = confirm,
-            Mvid = mvid,
-            Asset = asset,
-            Handle = handle,
-            View = view,
-            RankBy = rankBy,
-            TypeFilter = typeFilter,
-            Address = address,
-            RootMethodFilter = rootMethodFilter,
-            ProviderFilter = providerFilter,
-            ChangesOnly = changesOnly,
-            MaxDepth = maxDepth,
-            MaxNodes = maxNodes,
-            ThreadId = threadId,
-            StackRank = stackRank,
-            FramesToHash = framesToHash,
-            MinCount = minCount,
-            Top = top,
-            Threshold = threshold,
-            CaptureWhen = captureWhen,
-            CaptureKind = captureKind,
-            MaxCaptures = maxCaptures,
-            WindowSeconds = windowSeconds,
-            Symptom = symptom,
-            Hypothesis = hypothesis,
-            MaxToolCalls = maxToolCalls,
-            TopHotspots = topHotspots,
-            Launch = launch,
-            SuspendStartup = suspendStartup,
-            LaunchArgs = launchArgs ?? (IReadOnlyList<string>)Array.Empty<string>(),
-        };
+        return state.Build();
     }
 
     private static bool TryTakeInt(IReadOnlyList<string> args, ref int i, string flag, out int value, out string? error)
@@ -970,5 +383,434 @@ internal sealed record CliOptions
         }
 
         return true;
+    }
+
+    private static Dictionary<string, OptionDescriptor> CreateOptionLookup()
+    {
+        var descriptors = new OptionDescriptor[]
+        {
+            new FlagOptionDescriptor(state => state.Help = true, "--help", "-h"),
+            new FlagOptionDescriptor(state => state.Json = true, "--json"),
+            new StringOptionDescriptor((state, value) => state.SavePath = value, "--save"),
+            new FlagOptionDescriptor(state => state.UnsafeProvider = true, "--unsafe-provider"),
+            new FlagOptionDescriptor(state => state.ExportTrace = true, "--export-trace"),
+            new FlagOptionDescriptor(state => state.IncludeRetentionPaths = true, "--include-retention-paths"),
+            new FlagOptionDescriptor(state => state.IncludeStaticFields = true, "--include-static-fields"),
+            new FlagOptionDescriptor(state => state.IncludeDelegateTargets = true, "--include-delegate-targets"),
+            new FlagOptionDescriptor(state => state.IncludeDuplicateStrings = true, "--include-duplicate-strings"),
+            new FlagOptionDescriptor(state => state.Confirm = true, "--confirm"),
+            new FlagOptionDescriptor(state => state.ChangesOnly = true, "--changes-only"),
+            new FlagOptionDescriptor(state => state.Launch = true, "--launch"),
+            new FlagOptionDescriptor(state => state.SuspendStartup = true, "--suspend-startup"),
+            new PidOptionDescriptor("--pid", "-p"),
+            new StringOptionDescriptor((state, value) => state.Kind = value, "--kind"),
+            new IntOptionDescriptor((state, value) => state.DurationSeconds = value, "--duration", "-d"),
+            new IntOptionDescriptor((state, value) => state.IntervalSeconds = value, "--interval"),
+            new IntOptionDescriptor((state, value) => state.MaxEvents = value, "--max-events"),
+            new IntOptionDescriptor((state, value) => state.WatchIntervalSeconds = value, "--watch"),
+            new StringOptionDescriptor((state, value) => state.CaptureWhen = value, "--capture-when"),
+            new StringOptionDescriptor((state, value) => state.CaptureKind = value, "--capture"),
+            new IntOptionDescriptor((state, value) => state.MaxCaptures = value, "--max-captures"),
+            new IntOptionDescriptor((state, value) => state.WindowSeconds = value, "--window"),
+            new StringOptionDescriptor((state, value) => state.Symptom = value, "--symptom"),
+            new StringOptionDescriptor((state, value) => state.Hypothesis = value, "--hypothesis"),
+            new IntOptionDescriptor((state, value) => state.MaxToolCalls = value, "--max-tool-calls"),
+            new IntOptionDescriptor((state, value) => state.TopHotspots = value, "--top-hotspots"),
+            new IntOptionDescriptor((state, value) => state.TopTypes = value, "--top-types"),
+            new IntOptionDescriptor((state, value) => state.RetentionPathLimit = value, "--retention-path-limit"),
+            new StringOptionDescriptor((state, value) => state.Providers.Add(value), "--provider"),
+            new StringOptionDescriptor((state, value) => state.Meters.Add(value), "--meter"),
+            new StringOptionDescriptor((state, value) => state.Sources.Add(value), "--source"),
+            new StringOptionDescriptor((state, value) => state.Categories.Add(value), "--category"),
+            new StringOptionDescriptor((state, value) => state.MinLevel = value, "--min-level"),
+            new StringOptionDescriptor((state, value) => state.Depth = value, "--depth"),
+            new StringOptionDescriptor((state, value) => state.Mode = value, "--mode"),
+            new StringOptionDescriptor((state, value) => state.DumpFile = value, "--dump-file"),
+            new StringOptionDescriptor((state, value) => state.SymbolPath = value, "--symbol-path"),
+            new StringOptionDescriptor((state, value) => state.NativeAotMapFile = value, "--native-aot-map"),
+            new FlagOptionDescriptor(state => state.ResolveSourceLines = true, "--resolve-source-lines"),
+            new FlagOptionDescriptor(state => state.ResolveSourceLines = false, "--no-resolve-source-lines"),
+            new FlagOptionDescriptor(state => state.ResolveMethodInstantiations = true, "--resolve-method-instantiations"),
+            new LongOptionDescriptor((state, value) => state.NativeAllocSamplePeriod = value, "--native-alloc-sample-period"),
+            new IntOptionDescriptor((state, value) => state.MaxFramesPerThread = value, "--max-frames-per-thread"),
+            new FlagOptionDescriptor(state => state.IncludeRuntimeFrames = true, "--include-runtime-frames"),
+            new FlagOptionDescriptor(state => state.IncludeNativeFrames = true, "--include-native-frames"),
+            new StringOptionDescriptor((state, value) => state.DumpType = value, "--dump-type"),
+            new StringOptionDescriptor((state, value) => state.OutDir = value, "--out"),
+            new StringOptionDescriptor((state, value) => state.Mvid = value, "--mvid"),
+            new StringOptionDescriptor((state, value) => state.Asset = value, "--asset"),
+            new StringOptionDescriptor((state, value) => state.Handle = value, "--handle"),
+            new StringOptionDescriptor((state, value) => state.View = value, "--view"),
+            new StringOptionDescriptor((state, value) => state.RankBy = value, "--rank-by"),
+            new StringOptionDescriptor((state, value) => state.TypeFilter = value, "--type-filter"),
+            new StringOptionDescriptor((state, value) => state.Address = value, "--address"),
+            new StringOptionDescriptor((state, value) => state.RootMethodFilter = value, "--root-method-filter"),
+            new StringOptionDescriptor((state, value) => state.ProviderFilter = value, "--provider-filter"),
+            new IntOptionDescriptor((state, value) => state.MaxDepth = value, "--max-depth"),
+            new IntOptionDescriptor((state, value) => state.MaxNodes = value, "--max-nodes"),
+            new IntOptionDescriptor((state, value) => state.Top = value, "--top"),
+            new IntOptionDescriptor((state, value) => state.Threshold = value, "--threshold"),
+            new IntOptionDescriptor((state, value) => state.ThreadId = value, "--thread-id"),
+            new IntOptionDescriptor((state, value) => state.StackRank = value, "--stack-rank"),
+            new IntOptionDescriptor((state, value) => state.FramesToHash = value, "--frames-to-hash"),
+            new IntOptionDescriptor((state, value) => state.MinCount = value, "--min-count"),
+        };
+
+        var lookup = new Dictionary<string, OptionDescriptor>(StringComparer.Ordinal);
+        foreach (var descriptor in descriptors)
+        {
+            foreach (var alias in descriptor.Aliases)
+            {
+                lookup.Add(alias, descriptor);
+            }
+        }
+
+        return lookup;
+    }
+
+    private sealed class ParseState
+    {
+        public string? Command { get; set; }
+
+        public int? Pid { get; set; }
+
+        public string? PidName { get; set; }
+
+        public bool Json { get; set; }
+
+        public string? SavePath { get; set; }
+
+        public List<string> ComparePaths { get; } = new();
+
+        public string? CompletionShell { get; set; }
+
+        public string? Mode { get; set; }
+
+        public bool Help { get; set; }
+
+        public string? Kind { get; set; }
+
+        public int? DurationSeconds { get; set; }
+
+        public List<string> Providers { get; } = new();
+
+        public List<string> Meters { get; } = new();
+
+        public List<string> Sources { get; } = new();
+
+        public List<string> Categories { get; } = new();
+
+        public int? IntervalSeconds { get; set; }
+
+        public int? WatchIntervalSeconds { get; set; }
+
+        public int? MaxEvents { get; set; }
+
+        public string? MinLevel { get; set; }
+
+        public string? Depth { get; set; }
+
+        public bool UnsafeProvider { get; set; }
+
+        public string? DumpFile { get; set; }
+
+        public bool ExportTrace { get; set; }
+
+        public int? TopTypes { get; set; }
+
+        public bool IncludeRetentionPaths { get; set; }
+
+        public int? RetentionPathLimit { get; set; }
+
+        public bool IncludeStaticFields { get; set; }
+
+        public bool IncludeDelegateTargets { get; set; }
+
+        public bool IncludeDuplicateStrings { get; set; }
+
+        public string? SymbolPath { get; set; }
+
+        public string? NativeAotMapFile { get; set; }
+
+        public bool? ResolveSourceLines { get; set; }
+
+        public bool ResolveMethodInstantiations { get; set; }
+
+        public long? NativeAllocSamplePeriod { get; set; }
+
+        public int? MaxFramesPerThread { get; set; }
+
+        public bool IncludeRuntimeFrames { get; set; }
+
+        public bool IncludeNativeFrames { get; set; }
+
+        public string? DumpType { get; set; }
+
+        public string? OutDir { get; set; }
+
+        public bool Confirm { get; set; }
+
+        public string? Mvid { get; set; }
+
+        public string? Asset { get; set; }
+
+        public string? Handle { get; set; }
+
+        public string? View { get; set; }
+
+        public string? RankBy { get; set; }
+
+        public string? TypeFilter { get; set; }
+
+        public string? Address { get; set; }
+
+        public string? RootMethodFilter { get; set; }
+
+        public string? ProviderFilter { get; set; }
+
+        public bool ChangesOnly { get; set; }
+
+        public int? MaxDepth { get; set; }
+
+        public int? MaxNodes { get; set; }
+
+        public int? ThreadId { get; set; }
+
+        public int? StackRank { get; set; }
+
+        public int? FramesToHash { get; set; }
+
+        public int? MinCount { get; set; }
+
+        public int? Top { get; set; }
+
+        public int? Threshold { get; set; }
+
+        public string? CaptureWhen { get; set; }
+
+        public string? CaptureKind { get; set; }
+
+        public int? MaxCaptures { get; set; }
+
+        public int? WindowSeconds { get; set; }
+
+        public string? Symptom { get; set; }
+
+        public string? Hypothesis { get; set; }
+
+        public int? MaxToolCalls { get; set; }
+
+        public int? TopHotspots { get; set; }
+
+        public bool Launch { get; set; }
+
+        public bool SuspendStartup { get; set; }
+
+        public List<string>? LaunchArgs { get; set; }
+
+        public CliOptions Build() =>
+            new()
+            {
+                Command = Command,
+                Pid = Pid,
+                PidName = PidName,
+                Json = Json,
+                SavePath = SavePath,
+                ComparePaths = ComparePaths,
+                CompletionShell = CompletionShell,
+                Mode = Mode,
+                Help = Help,
+                Kind = Kind,
+                DurationSeconds = DurationSeconds,
+                Providers = Providers,
+                Meters = Meters,
+                Sources = Sources,
+                Categories = Categories,
+                IntervalSeconds = IntervalSeconds,
+                WatchIntervalSeconds = WatchIntervalSeconds,
+                MaxEvents = MaxEvents,
+                MinLevel = MinLevel,
+                Depth = Depth,
+                UnsafeProvider = UnsafeProvider,
+                ExportTrace = ExportTrace,
+                DumpFile = DumpFile,
+                TopTypes = TopTypes,
+                IncludeRetentionPaths = IncludeRetentionPaths,
+                RetentionPathLimit = RetentionPathLimit,
+                IncludeStaticFields = IncludeStaticFields,
+                IncludeDelegateTargets = IncludeDelegateTargets,
+                IncludeDuplicateStrings = IncludeDuplicateStrings,
+                SymbolPath = SymbolPath,
+                NativeAotMapFile = NativeAotMapFile,
+                ResolveSourceLines = ResolveSourceLines,
+                ResolveMethodInstantiations = ResolveMethodInstantiations,
+                NativeAllocSamplePeriod = NativeAllocSamplePeriod,
+                MaxFramesPerThread = MaxFramesPerThread,
+                IncludeRuntimeFrames = IncludeRuntimeFrames,
+                IncludeNativeFrames = IncludeNativeFrames,
+                DumpType = DumpType,
+                OutDir = OutDir,
+                Confirm = Confirm,
+                Mvid = Mvid,
+                Asset = Asset,
+                Handle = Handle,
+                View = View,
+                RankBy = RankBy,
+                TypeFilter = TypeFilter,
+                Address = Address,
+                RootMethodFilter = RootMethodFilter,
+                ProviderFilter = ProviderFilter,
+                ChangesOnly = ChangesOnly,
+                MaxDepth = MaxDepth,
+                MaxNodes = MaxNodes,
+                ThreadId = ThreadId,
+                StackRank = StackRank,
+                FramesToHash = FramesToHash,
+                MinCount = MinCount,
+                Top = Top,
+                Threshold = Threshold,
+                CaptureWhen = CaptureWhen,
+                CaptureKind = CaptureKind,
+                MaxCaptures = MaxCaptures,
+                WindowSeconds = WindowSeconds,
+                Symptom = Symptom,
+                Hypothesis = Hypothesis,
+                MaxToolCalls = MaxToolCalls,
+                TopHotspots = TopHotspots,
+                Launch = Launch,
+                SuspendStartup = SuspendStartup,
+                LaunchArgs = LaunchArgs ?? (IReadOnlyList<string>)Array.Empty<string>(),
+            };
+    }
+
+    private abstract class OptionDescriptor
+    {
+        protected OptionDescriptor(params string[] aliases)
+        {
+            Aliases = aliases;
+        }
+
+        public IReadOnlyList<string> Aliases { get; }
+
+        public abstract bool TryApply(IReadOnlyList<string> args, ref int index, ParseState state, out string? error);
+    }
+
+    private sealed class FlagOptionDescriptor : OptionDescriptor
+    {
+        private readonly Action<ParseState> _apply;
+
+        public FlagOptionDescriptor(Action<ParseState> apply, params string[] aliases)
+            : base(aliases)
+        {
+            _apply = apply;
+        }
+
+        public override bool TryApply(IReadOnlyList<string> args, ref int index, ParseState state, out string? error)
+        {
+            _apply(state);
+            error = null;
+            return true;
+        }
+    }
+
+    private sealed class StringOptionDescriptor : OptionDescriptor
+    {
+        private readonly Action<ParseState, string> _apply;
+
+        public StringOptionDescriptor(Action<ParseState, string> apply, params string[] aliases)
+            : base(aliases)
+        {
+            _apply = apply;
+        }
+
+        public override bool TryApply(IReadOnlyList<string> args, ref int index, ParseState state, out string? error)
+        {
+            if (!TryTakeString(args, ref index, args[index], out var value, out error))
+            {
+                return false;
+            }
+
+            _apply(state, value);
+            return true;
+        }
+    }
+
+    private sealed class IntOptionDescriptor : OptionDescriptor
+    {
+        private readonly Action<ParseState, int> _apply;
+
+        public IntOptionDescriptor(Action<ParseState, int> apply, params string[] aliases)
+            : base(aliases)
+        {
+            _apply = apply;
+        }
+
+        public override bool TryApply(IReadOnlyList<string> args, ref int index, ParseState state, out string? error)
+        {
+            if (!TryTakeInt(args, ref index, args[index], out var value, out error))
+            {
+                return false;
+            }
+
+            _apply(state, value);
+            return true;
+        }
+    }
+
+    private sealed class LongOptionDescriptor : OptionDescriptor
+    {
+        private readonly Action<ParseState, long> _apply;
+
+        public LongOptionDescriptor(Action<ParseState, long> apply, params string[] aliases)
+            : base(aliases)
+        {
+            _apply = apply;
+        }
+
+        public override bool TryApply(IReadOnlyList<string> args, ref int index, ParseState state, out string? error)
+        {
+            if (!TryTakeLong(args, ref index, args[index], out var value, out error))
+            {
+                return false;
+            }
+
+            _apply(state, value);
+            return true;
+        }
+    }
+
+    private sealed class PidOptionDescriptor : OptionDescriptor
+    {
+        public PidOptionDescriptor(params string[] aliases)
+            : base(aliases)
+        {
+        }
+
+        public override bool TryApply(IReadOnlyList<string> args, ref int index, ParseState state, out string? error)
+        {
+            if (!TryTakeString(args, ref index, args[index], out var pidValue, out error))
+            {
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(pidValue))
+            {
+                error = $"Option '{args[index - 1]}' requires a non-empty pid or process name.";
+                return false;
+            }
+
+            if (int.TryParse(pidValue, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var numericPid))
+            {
+                state.Pid = numericPid;
+                state.PidName = null;
+            }
+            else
+            {
+                state.Pid = null;
+                state.PidName = pidValue;
+            }
+
+            return true;
+        }
     }
 }
