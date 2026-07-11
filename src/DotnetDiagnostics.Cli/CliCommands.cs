@@ -68,38 +68,22 @@ internal sealed record CliCommandResult(bool IsError, bool Cancelled, object Env
 internal static partial class CliCommands
 {
     /// <summary>The commands wired in this slice (#288 PR1), in help-listing order.</summary>
-    public static readonly IReadOnlyList<string> Commands = new[]
-    {
-        "processes",
-        "capabilities",
-        "doctor",
-        "collect",
-        "inspect",
-        "inspect-heap",
-        "dump",
-        "query",
-        "get-bytes",
-        "compare",
-        "investigate",
-        "export-summary",
-        "session",
-        "completion",
-    };
+    public static readonly IReadOnlyList<string> Commands = CliCommandCatalog.CommandNames;
 
     /// <summary>Heap-snapshot sources accepted by the <c>inspect-heap</c> command (issue #288 PR3b).</summary>
-    public static readonly IReadOnlyList<string> HeapSources = new[] { "live", "dump", "gcdump" };
+    public static readonly IReadOnlyList<string> HeapSources = CliCommandCatalog.HeapSources;
 
     /// <summary>Views accepted by the <c>inspect</c> command (issue #486).</summary>
-    public static readonly IReadOnlyList<string> InspectViews = new[] { "triage", "runtime-config", "container" };
+    public static readonly IReadOnlyList<string> InspectViews = CliCommandCatalog.InspectViews;
 
     /// <summary>Artifact kinds accepted by the <c>get-bytes</c> command (issue #288 PR4).</summary>
-    public static readonly IReadOnlyList<string> ByteKinds = new[] { "module", "dump", "trace" };
+    public static readonly IReadOnlyList<string> ByteKinds = CliCommandCatalog.ByteKinds;
 
     /// <summary>Module assets accepted by <c>get-bytes --kind module</c> (issue #288 PR4).</summary>
-    public static readonly IReadOnlyList<string> ByteAssets = new[] { "pe", "pdb" };
+    public static readonly IReadOnlyList<string> ByteAssets = CliCommandCatalog.ByteAssets;
 
     /// <summary>Dump types accepted by the <c>dump</c> command (mirrors <see cref="ProcessDumpType"/>).</summary>
-    public static readonly IReadOnlyList<string> DumpTypes = new[] { "Mini", "Triage", "WithHeap", "Full" };
+    public static readonly IReadOnlyList<string> DumpTypes = CliCommandCatalog.DumpTypes;
 
     /// <summary>
     /// Commands the opt-in <c>--launch</c> dev mode (issue #365) supports: the live-target commands
@@ -108,48 +92,13 @@ internal static partial class CliCommands
     /// <c>get-bytes --kind dump</c>, <c>processes</c>, <c>query</c> and <c>compare</c> are offline /
     /// pid-less and reject <c>--launch</c>.
     /// </summary>
-    public static readonly IReadOnlyList<string> LaunchableCommands = new[]
-    {
-        "session",
-        "capabilities",
-        "collect",
-        "inspect",
-        "dump",
-        "inspect-heap",
-        "get-bytes",
-    };
+    public static readonly IReadOnlyList<string> LaunchableCommands = CliCommandCatalog.LaunchableCommands;
 
     /// <summary>
     /// EventPipe collection kinds accepted by the <c>collect</c> command (issue #288 PR2). Mirrors
     /// the MCP <c>collect_events</c> discriminator set so both front-ends accept the same kinds.
     /// </summary>
-    public static readonly IReadOnlyList<string> CollectKinds = new[]
-    {
-        "counters",
-        "exceptions",
-        "crash-guard",
-        "gc",
-        "datas",
-        "catalog",
-        "event_source",
-        "activities",
-        "logs",
-        "jit",
-        "threadpool",
-        "contention",
-        "db",
-        "kestrel",
-        "networking",
-        "requests",
-        "startup",
-        "sweep",
-        "cpu",
-        "off_cpu",
-        "off-cpu",
-        "allocation",
-        "native-alloc",
-        "thread-snapshot",
-    };
+    public static readonly IReadOnlyList<string> CollectKinds = CliCommandCatalog.CollectKinds;
 
     private static readonly IComparableProjector[] ComparableProjectors =
     {

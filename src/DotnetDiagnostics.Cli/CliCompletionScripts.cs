@@ -4,7 +4,7 @@ namespace DotnetDiagnostics.Cli;
 
 internal static class CliCompletionScripts
 {
-    public static readonly IReadOnlyList<string> Shells = new[] { "bash", "zsh", "pwsh" };
+    public static readonly IReadOnlyList<string> Shells = CliCommandCatalog.Shells;
 
     /// <summary>
     /// Every long option flag (<c>--foo</c>) advertised by the completion catalog — both the global
@@ -12,112 +12,12 @@ internal static class CliCompletionScripts
     /// so completion can never advertise a flag that is absent from <c>docs/cli-reference.md</c>.
     /// </summary>
     internal static IReadOnlyList<string> AllCommandOptionFlags =>
-        GlobalOptions
-            .Concat(CommandOptions.Values.SelectMany(static options => options))
+        CliCommandCatalog.GlobalOptions
+            .Concat(CliCommandCatalog.CommandDescriptors.SelectMany(static descriptor => descriptor.CompletionOptions))
             .Where(static flag => flag.StartsWith("--", StringComparison.Ordinal))
             .Distinct(StringComparer.Ordinal)
             .OrderBy(static flag => flag, StringComparer.Ordinal)
             .ToArray();
-
-    private static readonly IReadOnlyList<string> GlobalOptions = new[]
-    {
-        "-p",
-        "--pid",
-        "--json",
-        "--launch",
-        "-h",
-        "--help",
-    };
-
-    private static readonly IReadOnlyList<string> ValueFlags = new[]
-    {
-        "-p", "--pid", "--kind", "-d", "--duration", "--depth", "--max-events", "--interval",
-        "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
-        "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--dump-type", "--out", "--mvid",
-        "--asset", "--handle", "--view", "--provider-filter", "--root-method-filter", "--rank-by",
-        "--type-filter", "--address", "--max-depth", "--max-nodes", "--thread-id",
-        "--native-alloc-sample-period", "--max-frames-per-thread",
-        "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode",
-        "--symptom", "--hypothesis", "--max-tool-calls", "--top-hotspots",
-    };
-
-    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> CommandOptions =
-        new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
-        {
-            ["processes"] = Array.Empty<string>(),
-            ["capabilities"] = Array.Empty<string>(),
-            ["doctor"] = Array.Empty<string>(),
-            ["collect"] = new[]
-            {
-                "--kind",
-                "-d",
-                "--duration",
-                "--depth",
-                "--top",
-                "--max-events",
-                "--interval",
-                "--symbol-path",
-                "--export-trace",
-                "--resolve-source-lines",
-                "--no-resolve-source-lines",
-                "--resolve-method-instantiations",
-                "--native-alloc-sample-period",
-                "--dump-file",
-                "--max-frames-per-thread",
-                "--include-runtime-frames",
-                "--include-native-frames",
-                "--provider",
-                "--meter",
-                "--source",
-                "--category",
-                "--min-level",
-                "--unsafe-provider",
-                "--save",
-                "--capture-when",
-                "--capture",
-                "--window",
-                "--max-captures",
-                "--native-aot-map",
-            },
-            ["inspect"] = new[] { "--view", "-d", "--duration" },
-            ["inspect-heap"] = new[]
-            {
-                "--source",
-                "--dump-file",
-                "--top-types",
-                "--include-retention-paths",
-                "--retention-path-limit",
-                "--include-static-fields",
-                "--include-delegate-targets",
-                "--include-duplicate-strings",
-                "--symbol-path",
-            },
-            ["dump"] = new[] { "--dump-type", "--out", "--confirm" },
-            ["query"] = new[]
-            {
-                "--handle",
-                "--view",
-                "--provider-filter",
-                "--changes-only",
-                "--root-method-filter",
-                "--rank-by",
-                "--type-filter",
-                "--address",
-                "--max-depth",
-                "--max-nodes",
-                "--thread-id",
-                "--frames-to-hash",
-                "--min-count",
-                "--top",
-                "--threshold",
-            },
-            ["get-bytes"] = new[] { "--kind", "--out", "--mvid", "--asset", "--dump-file" },
-            ["compare"] = new[] { "--json", "--save", "--mode" },
-            ["investigate"] = new[] { "--symptom", "--hypothesis", "--max-tool-calls" },
-            ["export-summary"] = new[] { "--handle", "--out", "--top-hotspots" },
-            ["session"] = Array.Empty<string>(),
-            ["completion"] = Array.Empty<string>(),
-        };
 
     public static string ForShell(string shell)
     {
@@ -134,15 +34,15 @@ internal static class CliCompletionScripts
 
     private static string Bash()
     {
-        var commands = BashWords(CliCommands.Commands);
-        var globalOptions = BashWords(GlobalOptions);
+        var commands = BashWords(CliCommandCatalog.CommandNames);
+        var globalOptions = BashWords(CliCommandCatalog.GlobalOptions);
         var collectKinds = BashWords(CliCommands.CollectKinds);
         var heapSources = BashWords(CliCommands.HeapSources);
         var byteKinds = BashWords(CliCommands.ByteKinds);
         var byteAssets = BashWords(CliCommands.ByteAssets);
         var dumpTypes = BashWords(CliCommands.DumpTypes);
         var shells = BashWords(Shells);
-        var valueFlags = BashWords(ValueFlags);
+        var valueFlags = BashWords(CliCommandCatalog.ValueFlags);
 
         return $$"""
         # bash completion for dotnet-diagnostics.
@@ -195,11 +95,11 @@ internal static class CliCompletionScripts
                     return 0
                     ;;
                 --depth)
-                    COMPREPLY=( $(compgen -W "summary detail raw" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "{{BashWords(CliCommandCatalog.DepthValues)}}" -- "$cur") )
                     return 0
                     ;;
                 --mode)
-                    COMPREPLY=( $(compgen -W "trend dispersion" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "{{BashWords(CliCommandCatalog.CompareModes)}}" -- "$cur") )
                     return 0
                     ;;
             esac
@@ -246,15 +146,15 @@ internal static class CliCompletionScripts
         _dotnet_diagnostics()
         {
             local -a cli_commands global_options collect_kinds heap_sources byte_kinds byte_assets dump_types shells value_flags
-            cli_commands=({{ZshWords(CliCommands.Commands)}})
-            global_options=({{ZshWords(GlobalOptions)}})
+            cli_commands=({{ZshWords(CliCommandCatalog.CommandNames)}})
+            global_options=({{ZshWords(CliCommandCatalog.GlobalOptions)}})
             collect_kinds=({{ZshWords(CliCommands.CollectKinds)}})
             heap_sources=({{ZshWords(CliCommands.HeapSources)}})
             byte_kinds=({{ZshWords(CliCommands.ByteKinds)}})
             byte_assets=({{ZshWords(CliCommands.ByteAssets)}})
             dump_types=({{ZshWords(CliCommands.DumpTypes)}})
             shells=({{ZshWords(Shells)}})
-            value_flags=({{ZshWords(ValueFlags)}})
+            value_flags=({{ZshWords(CliCommandCatalog.ValueFlags)}})
 
             case ${words[CURRENT-1]} in
                 --kind)
@@ -280,11 +180,11 @@ internal static class CliCompletionScripts
                     return
                     ;;
                 --depth)
-                    _describe -t depths 'depth' '(summary detail raw)'
+                    _describe -t depths 'depth' '({{string.Join(' ', CliCommandCatalog.DepthValues)}})'
                     return
                     ;;
                 --mode)
-                    _describe -t modes 'mode' '(trend dispersion)'
+                    _describe -t modes 'mode' '({{string.Join(' ', CliCommandCatalog.CompareModes)}})'
                     return
                     ;;
             esac
@@ -336,15 +236,15 @@ internal static class CliCompletionScripts
         Register-ArgumentCompleter -Native -CommandName 'dotnet-diagnostics', 'dotnet-diagnostics-cli' -ScriptBlock {
             param($wordToComplete, $commandAst, $cursorPosition)
 
-            $commands = {{PwshArray(CliCommands.Commands)}}
-            $globalOptions = {{PwshArray(GlobalOptions)}}
+            $commands = {{PwshArray(CliCommandCatalog.CommandNames)}}
+            $globalOptions = {{PwshArray(CliCommandCatalog.GlobalOptions)}}
             $collectKinds = {{PwshArray(CliCommands.CollectKinds)}}
             $heapSources = {{PwshArray(CliCommands.HeapSources)}}
             $byteKinds = {{PwshArray(CliCommands.ByteKinds)}}
             $byteAssets = {{PwshArray(CliCommands.ByteAssets)}}
             $dumpTypes = {{PwshArray(CliCommands.DumpTypes)}}
             $shells = {{PwshArray(Shells)}}
-            $valueFlags = {{PwshArray(ValueFlags)}}
+            $valueFlags = {{PwshArray(CliCommandCatalog.ValueFlags)}}
             $tokens = @($commandAst.CommandElements | ForEach-Object { $_.Extent.Text })
             $command = $null
             $skipNext = $false
@@ -375,8 +275,8 @@ internal static class CliCompletionScripts
                 }
                 '--dump-type' { $dumpTypes; break }
                 '--asset' { $byteAssets; break }
-                '--depth' { @('summary', 'detail', 'raw'); break }
-                '--mode' { @('trend', 'dispersion'); break }
+                '--depth' { {{PwshArray(CliCommandCatalog.DepthValues)}}; break }
+                '--mode' { {{PwshArray(CliCommandCatalog.CompareModes)}}; break }
                 default {
                     if ($valueFlags -contains $previous) {
                         # A value-taking flag with no enum candidates; offer file paths for
@@ -404,12 +304,12 @@ internal static class CliCompletionScripts
     private static string BashCommandCases()
     {
         var sb = new StringBuilder();
-        foreach (var (command, options) in CommandOptions)
+        foreach (var descriptor in CliCommandCatalog.CommandDescriptors)
         {
             sb.Append("        ")
-                .Append(command)
+                .Append(descriptor.Name)
                 .Append(") opts=\"")
-                .Append(BashWords(options))
+                .Append(BashWords(descriptor.CompletionOptions))
                 .AppendLine("\" ;;");
         }
 
@@ -419,12 +319,12 @@ internal static class CliCompletionScripts
     private static string ZshCommandCases()
     {
         var sb = new StringBuilder();
-        foreach (var (command, options) in CommandOptions)
+        foreach (var descriptor in CliCommandCatalog.CommandDescriptors)
         {
             sb.Append("        ")
-                .Append(command)
+                .Append(descriptor.Name)
                 .Append(") opts=(")
-                .Append(ZshWords(options))
+                .Append(ZshWords(descriptor.CompletionOptions))
                 .AppendLine(") ;;");
         }
 
@@ -434,12 +334,12 @@ internal static class CliCompletionScripts
     private static string PwshCommandMap()
     {
         var sb = new StringBuilder("@{");
-        foreach (var (command, options) in CommandOptions)
+        foreach (var descriptor in CliCommandCatalog.CommandDescriptors)
         {
             sb.Append('\'')
-                .Append(command)
+                .Append(descriptor.Name)
                 .Append("' = ")
-                .Append(PwshArray(options))
+                .Append(PwshArray(descriptor.CompletionOptions))
                 .Append("; ");
         }
 
