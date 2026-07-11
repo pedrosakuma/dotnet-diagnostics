@@ -1,7 +1,6 @@
 using System.Globalization;
 using System.IO;
-using System.Reflection.Metadata;
-using System.Reflection.PortableExecutable;
+using DotnetDiagnostics.Core.CpuSampling;
 using Microsoft.Diagnostics.Runtime;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -33,6 +32,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
     private const int AssemblyLoadContextRetentionHintLimit = 16;
 
     private readonly ILogger<ClrMdDumpInspector> _logger;
+    private readonly MvidReader _mvidReader = new();
 
     public ClrMdDumpInspector(ILogger<ClrMdDumpInspector>? logger = null)
     {
@@ -1497,32 +1497,16 @@ public sealed class ClrMdDumpInspector : IDumpInspector
 
     private Guid? TryReadMvid(string? assemblyPath)
     {
-        if (string.IsNullOrEmpty(assemblyPath)) return null;
-        if (!File.Exists(assemblyPath)) return null;
-        if (_mvidCache.TryGetValue(assemblyPath, out var cached)) return cached;
         try
         {
-            using var stream = File.OpenRead(assemblyPath);
-            using var peReader = new PEReader(stream);
-            if (!peReader.HasMetadata)
-            {
-                _mvidCache[assemblyPath] = null;
-                return null;
-            }
-            var metadata = peReader.GetMetadataReader();
-            var mvid = metadata.GetGuid(metadata.GetModuleDefinition().Mvid);
-            _mvidCache[assemblyPath] = mvid;
-            return mvid;
+            return _mvidReader.TryRead(assemblyPath);
         }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "MVID read failed for {Path}", assemblyPath);
-            _mvidCache[assemblyPath] = null;
             return null;
         }
     }
-
-    private readonly Dictionary<string, Guid?> _mvidCache = new(StringComparer.Ordinal);
 
     private static DumpHeapSummary SummarizeHeapFromSegments(IReadOnlyList<SegmentStat> segments)
     {

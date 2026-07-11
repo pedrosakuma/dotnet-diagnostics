@@ -1,7 +1,5 @@
-using System.Collections.Concurrent;
 using System.IO;
-using System.Reflection.Metadata;
-using System.Reflection.PortableExecutable;
+using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.Symbols;
 using Microsoft.Diagnostics.Runtime;
@@ -18,7 +16,7 @@ namespace DotnetDiagnostics.Core.Threads;
 public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
 {
     private readonly ILogger<ClrMdThreadSnapshotInspector> _logger;
-    private readonly ConcurrentDictionary<string, Guid?> _mvidCache = new(StringComparer.Ordinal);
+    private readonly MvidReader _mvidReader = new();
 
     /// <summary>Hard upper bound on captured frames per thread regardless of the caller's request.
     /// Bounds the live-attach suspend window + allocation footprint (review wave-2 finding).</summary>
@@ -1205,27 +1203,13 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
 
     private Guid? TryReadMvid(string? assemblyPath)
     {
-        if (string.IsNullOrEmpty(assemblyPath)) return null;
-        if (!File.Exists(assemblyPath)) return null;
-        if (_mvidCache.TryGetValue(assemblyPath, out var cached)) return cached;
         try
         {
-            using var stream = File.OpenRead(assemblyPath);
-            using var peReader = new PEReader(stream);
-            if (!peReader.HasMetadata)
-            {
-                _mvidCache[assemblyPath] = null;
-                return null;
-            }
-            var metadata = peReader.GetMetadataReader();
-            var mvid = metadata.GetGuid(metadata.GetModuleDefinition().Mvid);
-            _mvidCache[assemblyPath] = mvid;
-            return mvid;
+            return _mvidReader.TryRead(assemblyPath);
         }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "MVID read failed for {Path}", assemblyPath);
-            _mvidCache[assemblyPath] = null;
             return null;
         }
     }
