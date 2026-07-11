@@ -242,6 +242,7 @@ internal static class CliHost
                 return await RunWatchAsync(
                     host.Services,
                     prepared,
+                    launchedTarget?.ProcessId,
                     stdout,
                     stderr,
                     showProgress,
@@ -278,6 +279,7 @@ internal static class CliHost
     private static async Task<int> RunWatchAsync(
         IServiceProvider services,
         CliPreparedCommand prepared,
+        int? launchedTargetPid,
         TextWriter stdout,
         TextWriter stderr,
         bool showProgress,
@@ -285,6 +287,13 @@ internal static class CliHost
         CliRuntimeOptions runtimeOptions,
         CancellationToken cancellationToken)
     {
+        if (!TryResolveNamedPid(services, prepared.Options, out var resolvedOptions, out var pidResolutionError))
+        {
+            await stderr.WriteLineAsync(pidResolutionError).ConfigureAwait(false);
+            return 2;
+        }
+
+        prepared = prepared with { Options = resolvedOptions };
         var options = prepared.Options;
         var maxIterations = runtimeOptions.MaxWatchIterations;
         var delay = runtimeOptions.WatchDelay ?? TimeSpan.FromSeconds(options.WatchIntervalSeconds!.Value);
@@ -309,7 +318,7 @@ internal static class CliHost
                 prepared,
                 stdout,
                 stderr,
-                new CliExecutionOptions(CliExecutionContext.OneShot, ansiEnabled, showProgress),
+                new CliExecutionOptions(CliExecutionContext.OneShot, ansiEnabled, showProgress, launchedTargetPid),
                 cancellationToken)
                 .ConfigureAwait(false);
             lastExitCode = outcome.ExitCode;
