@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics.Tracing;
 using DotnetDiagnostics.Core.Internal;
 using Microsoft.Diagnostics.NETCore.Client;
@@ -53,9 +52,11 @@ public sealed class EventPipeGcCollector : IGcCollector
             .ConfigureAwait(false);
 
         var startedAt = DateTimeOffset.UtcNow;
-        var events = new ConcurrentQueue<GcEvent>();
-        var heapStats = new ConcurrentQueue<GcHeapStatsSample>();
-        var pending = new ConcurrentDictionary<long, GCStartTraceData>();
+        // EventPipeEventSource invokes these callbacks on the single source.Process() thread, so
+        // plain collections are sufficient and avoid unnecessary synchronization on the hot path.
+        var events = new List<GcEvent>(Math.Min(maxEvents, 128));
+        var heapStats = new List<GcHeapStatsSample>(Math.Min(maxEvents, 128));
+        var pending = new Dictionary<long, GCStartTraceData>();
 
         var processingTask = Task.Run(() =>
         {
@@ -70,7 +71,7 @@ public sealed class EventPipeGcCollector : IGcCollector
 
                 source.Clr.GCStop += traceEvent =>
                 {
-                    if (!pending.TryRemove(traceEvent.Count, out var start))
+                    if (!pending.Remove(traceEvent.Count, out var start))
                     {
                         return;
                     }
@@ -81,7 +82,7 @@ public sealed class EventPipeGcCollector : IGcCollector
                     }
 
                     var pause = traceEvent.TimeStamp - start.TimeStamp;
-                    events.Enqueue(new GcEvent(
+                    events.Add(new GcEvent(
                         Timestamp: new DateTimeOffset(start.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
                         Generation: start.Depth,
                         Reason: start.Reason.ToString(),
@@ -96,7 +97,7 @@ public sealed class EventPipeGcCollector : IGcCollector
                         return;
                     }
 
-                    heapStats.Enqueue(new GcHeapStatsSample(
+                    heapStats.Add(new GcHeapStatsSample(
                         Timestamp: new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
                         Gen0SizeBytes: traceEvent.GenerationSize0,
                         Gen1SizeBytes: traceEvent.GenerationSize1,
@@ -132,7 +133,7 @@ public sealed class EventPipeGcCollector : IGcCollector
             session.Dispose();
         }
 
-        var collected = events.ToList();
+        var collected = events;
         var totalPause = collected.Aggregate(TimeSpan.Zero, (acc, e) => acc + e.PauseDuration);
         var maxPause = collected.Count == 0 ? TimeSpan.Zero : collected.Max(e => e.PauseDuration);
         var perGen = collected
