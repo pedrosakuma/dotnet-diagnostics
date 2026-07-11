@@ -214,7 +214,7 @@ public static class EventCollectionUseCases
     }
 
     /// <summary>Captures the managed exception stream for the window.</summary>
-    public static async Task<DiagnosticResult<ExceptionSnapshot>> CollectExceptions(
+    public static Task<DiagnosticResult<ExceptionSnapshot>> CollectExceptions(
         IExceptionCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -223,58 +223,58 @@ public static class EventCollectionUseCases
         int maxRecent = 100,
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
-    {
-        if (durationSeconds < 1) return InvalidArg<ExceptionSnapshot>(nameof(durationSeconds), "must be >= 1");
-        if (maxRecent < 1) return InvalidArg<ExceptionSnapshot>(nameof(maxRecent), "must be >= 1");
+        => ExecuteCollectionAsync(
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            depth,
+            new HandledCollectionStrategy<ExceptionSnapshot>(
+                CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxRecent, ct),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.ExceptionSnapshot, snap),
+                BuildResult: (snap, handle, context) =>
+                {
+                    var topType = snap.ByType.OrderByDescending(c => c.Count).FirstOrDefault();
+                    var inlineSnap = snap;
+                    var droppedRecent = 0;
+                    if (context.Depth == SamplingDepth.Summary && snap.Recent.Count > 0)
+                    {
+                        droppedRecent = snap.Recent.Count;
+                        inlineSnap = snap with { Recent = Array.Empty<ManagedExceptionEvent>() };
+                    }
 
-        var resolved = await ResolveContextAsync<ExceptionSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
+                    var summary = snap.TotalExceptions == 0
+                        ? $"No managed exceptions thrown in {context.DurationSeconds}s. If you expected some, ensure the collection started before the workload."
+                        : (context.Depth == SamplingDepth.Summary && droppedRecent > 0
+                            ? $"{snap.TotalExceptions} exception(s) over {context.DurationSeconds}s; most common: {topType?.ExceptionType} ({topType?.Count}). Dropped {droppedRecent} Recent entry(ies) from inline (handle has all)."
+                            : $"{snap.TotalExceptions} exception(s) over {context.DurationSeconds}s; most common: {topType?.ExceptionType} ({topType?.Count}).");
 
-        var snap = await collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxRecent, cancellationToken).ConfigureAwait(false);
-        var topType = snap.ByType.OrderByDescending(c => c.Count).FirstOrDefault();
+                    var primaryHint = snap.TotalExceptions > 0
+                        ? new NextActionHint("collect_events", "Subscribe to a domain-specific EventSource to correlate with the exception spikes.",
+                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["providerName"] = "System.Net.Http", ["durationSeconds"] = 10 })
+                        : new NextActionHint("collect_events", "No exception pressure — sweep GC events next.",
+                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["durationSeconds"] = 10 });
 
-        var inlineSnap = snap;
-        var droppedRecent = 0;
-        if (depth == SamplingDepth.Summary && snap.Recent.Count > 0)
-        {
-            droppedRecent = snap.Recent.Count;
-            inlineSnap = snap with { Recent = Array.Empty<ManagedExceptionEvent>() };
-        }
-
-        var summary = snap.TotalExceptions == 0
-            ? $"No managed exceptions thrown in {durationSeconds}s. If you expected some, ensure the collection started before the workload."
-            : (depth == SamplingDepth.Summary && droppedRecent > 0
-                ? $"{snap.TotalExceptions} exception(s) over {durationSeconds}s; most common: {topType?.ExceptionType} ({topType?.Count}). Dropped {droppedRecent} Recent entry(ies) from inline (handle has all)."
-                : $"{snap.TotalExceptions} exception(s) over {durationSeconds}s; most common: {topType?.ExceptionType} ({topType?.Count}).");
-
-        var primaryHint = snap.TotalExceptions > 0
-            ? new NextActionHint("collect_events", "Subscribe to a domain-specific EventSource to correlate with the exception spikes.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["providerName"] = "System.Net.Http", ["durationSeconds"] = 10 })
-            : new NextActionHint("collect_events", "No exception pressure — sweep GC events next.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 });
-
-        var handle = handles.Register(pid, CollectionHandleKinds.ExceptionSnapshot, snap, CollectionHandleTtl);
-        var signals = ExceptionSignals.Detect(snap, handle.Id);
-        var result = DiagnosticResult.OkWithHandle(
-            inlineSnap,
-            summary,
-            handle.Id,
-            handle.ExpiresAt,
-            primaryHint,
-            new NextActionHint("query_snapshot",
-                "Drill into this exception snapshot without re-collecting (views: summary, byType, recent).",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byType", ["topN"] = 20 }));
-        if (signals.Count > 0)
-        {
-            result = result with { Signals = signals };
-        }
-
-        return WithContext(result, resolved.Context);
-    }
+                    var signals = ExceptionSignals.Detect(snap, handle.Id);
+                    var result = DiagnosticResult.OkWithHandle(
+                        inlineSnap,
+                        summary,
+                        handle.Id,
+                        handle.ExpiresAt,
+                        primaryHint,
+                        new NextActionHint("query_snapshot",
+                            "Drill into this exception snapshot without re-collecting (views: summary, byType, recent).",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byType", ["topN"] = 20 }));
+                    return signals.Count > 0 ? result with { Signals = signals } : result;
+                }),
+            [
+                new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
+                new ValidationRule(nameof(maxRecent), maxRecent >= 1, "must be >= 1"),
+            ],
+            cancellationToken);
 
     /// <summary>Captures exception/crash signals and returns early if the target exits.</summary>
-    public static async Task<DiagnosticResult<CrashGuardSnapshot>> CollectCrashGuard(
+    public static Task<DiagnosticResult<CrashGuardSnapshot>> CollectCrashGuard(
         ICrashGuardCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -283,59 +283,52 @@ public static class EventCollectionUseCases
         int maxRecent = 100,
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
-    {
-        if (durationSeconds < 1) return InvalidArg<CrashGuardSnapshot>(nameof(durationSeconds), "must be >= 1");
-        if (maxRecent < 1) return InvalidArg<CrashGuardSnapshot>(nameof(maxRecent), "must be >= 1");
+        => ExecuteCollectionAsync(
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            depth,
+            new HandledCollectionStrategy<CrashGuardSnapshot>(
+                CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxRecent, ct),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.CrashGuardSnapshot, snap, evictWhenProcessExits: false),
+                BuildResult: (snap, handle, context) =>
+                {
+                    var inlineSnap = context.Depth == SamplingDepth.Summary
+                        ? snap with { Exceptions = Array.Empty<CrashGuardExceptionEvent>() }
+                        : snap;
+                    var hints = new List<NextActionHint>
+                    {
+                        new("query_snapshot",
+                            "Drill into this crash-guard snapshot without re-collecting (views: summary, exceptions, stack).",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = snap.FinalException is not null ? "stack" : "exceptions", ["topN"] = 25 }),
+                    };
 
-        var resolved = await ResolveContextAsync<CrashGuardSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
+                    if (snap.UnhandledExceptionObserved)
+                    {
+                        hints.Insert(0, new NextActionHint("collect_process_dump",
+                            "An unhandled exception was observed; collect or inspect the crash dump for heap/native context while correlating with this exception stream.",
+                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["dumpType"] = "Mini" }));
+                    }
 
-        var snap = await collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxRecent, cancellationToken).ConfigureAwait(false);
-        var inlineSnap = snap;
-        if (depth == SamplingDepth.Summary)
-        {
-            inlineSnap = snap with { Exceptions = Array.Empty<CrashGuardExceptionEvent>() };
-        }
+                    var summary = snap.UnhandledExceptionObserved && snap.FinalException is { } final
+                        ? $"Crash guard observed an unhandled {final.ExceptionType} after {snap.Duration.TotalSeconds:F1}s: {final.ExceptionMessage}"
+                        : snap.ProcessExited
+                            ? $"Crash guard observed process exit after {snap.Duration.TotalSeconds:F1}s (exitCode={snap.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}) and {snap.TotalExceptions} exception(s)."
+                            : $"Crash guard captured {snap.TotalExceptions} exception(s) over {context.DurationSeconds}s; no unhandled exception or process exit observed.";
 
-        var handle = handles.Register(pid, CollectionHandleKinds.CrashGuardSnapshot, snap, CollectionHandleTtl, evictWhenProcessExits: false, origin: HandleOrigin.Live);
-        var hints = new List<NextActionHint>
-        {
-            new("query_snapshot",
-                "Drill into this crash-guard snapshot without re-collecting (views: summary, exceptions, stack).",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = snap.FinalException is not null ? "stack" : "exceptions", ["topN"] = 25 }),
-        };
-
-        if (snap.UnhandledExceptionObserved)
-        {
-            hints.Insert(0, new NextActionHint("collect_process_dump",
-                "An unhandled exception was observed; collect or inspect the crash dump for heap/native context while correlating with this exception stream.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["dumpType"] = "Mini" }));
-        }
-
-        var summary = snap.UnhandledExceptionObserved && snap.FinalException is { } final
-            ? $"Crash guard observed an unhandled {final.ExceptionType} after {snap.Duration.TotalSeconds:F1}s: {final.ExceptionMessage}"
-            : snap.ProcessExited
-                ? $"Crash guard observed process exit after {snap.Duration.TotalSeconds:F1}s (exitCode={snap.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}) and {snap.TotalExceptions} exception(s)."
-                : $"Crash guard captured {snap.TotalExceptions} exception(s) over {durationSeconds}s; no unhandled exception or process exit observed.";
-
-        var signals = ExceptionSignals.Detect(snap, handle.Id);
-        var result = DiagnosticResult.OkWithHandle(
-            inlineSnap,
-            summary,
-            handle.Id,
-            handle.ExpiresAt,
-            hints.ToArray());
-        if (signals.Count > 0)
-        {
-            result = result with { Signals = signals };
-        }
-
-        return WithContext(result, resolved.Context);
-    }
+                    var signals = ExceptionSignals.Detect(snap, handle.Id);
+                    var result = DiagnosticResult.OkWithHandle(inlineSnap, summary, handle.Id, handle.ExpiresAt, hints.ToArray());
+                    return signals.Count > 0 ? result with { Signals = signals } : result;
+                }),
+            [
+                new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
+                new ValidationRule(nameof(maxRecent), maxRecent >= 1, "must be >= 1"),
+            ],
+            cancellationToken);
 
     /// <summary>Pairs GCStart/GCStop events into pause durations and per-generation counts.</summary>
-    public static async Task<DiagnosticResult<GcSummary>> CollectGcEvents(
+    public static Task<DiagnosticResult<GcSummary>> CollectGcEvents(
         IGcCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -344,61 +337,61 @@ public static class EventCollectionUseCases
         int maxEvents = 200,
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
-    {
-        if (durationSeconds < 1) return InvalidArg<GcSummary>(nameof(durationSeconds), "must be >= 1");
-        if (maxEvents < 1) return InvalidArg<GcSummary>(nameof(maxEvents), "must be >= 1");
+        => ExecuteCollectionAsync(
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            depth,
+            new HandledCollectionStrategy<GcSummary>(
+                CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxEvents, ct),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.GcEvents, snap),
+                BuildResult: (gc, handle, context) =>
+                {
+                    var inlineGc = gc;
+                    var droppedEvents = 0;
+                    if (context.Depth == SamplingDepth.Summary && gc.Events.Count > 0)
+                    {
+                        droppedEvents = gc.Events.Count;
+                        inlineGc = gc with { Events = Array.Empty<GcEvent>() };
+                    }
 
-        var resolved = await ResolveContextAsync<GcSummary>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
+                    var summary = gc.TotalCollections == 0
+                        ? $"No GC activity in {context.DurationSeconds}s — heap is quiet or the workload is idle."
+                        : (context.Depth == SamplingDepth.Summary && droppedEvents > 0
+                            ? $"{gc.TotalCollections} collection(s), max pause {gc.MaxPauseTime.TotalMilliseconds:F1}ms, total pause {gc.TotalPauseTime.TotalMilliseconds:F1}ms. Dropped {droppedEvents} Event(s) from inline (handle has all)."
+                            : $"{gc.TotalCollections} collection(s), max pause {gc.MaxPauseTime.TotalMilliseconds:F1}ms, total pause {gc.TotalPauseTime.TotalMilliseconds:F1}ms.");
 
-        var gc = await collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxEvents, cancellationToken).ConfigureAwait(false);
+                    var primaryHint = gc.MaxPauseTime.TotalMilliseconds > 100
+                        ? new NextActionHint("collect_process_dump",
+                            $"Max GC pause {gc.MaxPauseTime.TotalMilliseconds:F0}ms is high — capture a WithHeap dump for offline heap analysis.",
+                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["dumpType"] = "WithHeap" })
+                        : new NextActionHint("collect_events", "GC looks healthy — pivot to a domain EventSource (e.g. System.Net.Http) for application-level signal.",
+                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["providerName"] = "System.Net.Http", ["durationSeconds"] = 10 });
 
-        var inlineGc = gc;
-        var droppedEvents = 0;
-        if (depth == SamplingDepth.Summary && gc.Events.Count > 0)
-        {
-            droppedEvents = gc.Events.Count;
-            inlineGc = gc with { Events = Array.Empty<GcEvent>() };
-        }
-
-        var summary = gc.TotalCollections == 0
-            ? $"No GC activity in {durationSeconds}s — heap is quiet or the workload is idle."
-            : (depth == SamplingDepth.Summary && droppedEvents > 0
-                ? $"{gc.TotalCollections} collection(s), max pause {gc.MaxPauseTime.TotalMilliseconds:F1}ms, total pause {gc.TotalPauseTime.TotalMilliseconds:F1}ms. Dropped {droppedEvents} Event(s) from inline (handle has all)."
-                : $"{gc.TotalCollections} collection(s), max pause {gc.MaxPauseTime.TotalMilliseconds:F1}ms, total pause {gc.TotalPauseTime.TotalMilliseconds:F1}ms.");
-
-        var primaryHint = gc.MaxPauseTime.TotalMilliseconds > 100
-            ? new NextActionHint("collect_process_dump",
-                $"Max GC pause {gc.MaxPauseTime.TotalMilliseconds:F0}ms is high — capture a WithHeap dump for offline heap analysis.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["dumpType"] = "WithHeap" })
-            : new NextActionHint("collect_events", "GC looks healthy — pivot to a domain EventSource (e.g. System.Net.Http) for application-level signal.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["providerName"] = "System.Net.Http", ["durationSeconds"] = 10 });
-
-        var handle = handles.Register(pid, CollectionHandleKinds.GcEvents, gc, CollectionHandleTtl);
-        var signals = GcSignals.Detect(gc, handle.Id);
-        var result = DiagnosticResult.OkWithHandle(
-            inlineGc,
-            summary,
-            handle.Id,
-            handle.ExpiresAt,
-            primaryHint,
-            new NextActionHint("query_snapshot",
-                "Drill into these GC events without re-collecting (views: summary, events, pauseHistogram, timeline, longestPauses, byGeneration).",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "pauseHistogram" }));
-        if (signals.Count > 0)
-        {
-            result = result with { Signals = signals };
-        }
-
-        return WithContext(result, resolved.Context);
-    }
+                    var signals = GcSignals.Detect(gc, handle.Id);
+                    var result = DiagnosticResult.OkWithHandle(
+                        inlineGc,
+                        summary,
+                        handle.Id,
+                        handle.ExpiresAt,
+                        primaryHint,
+                        new NextActionHint("query_snapshot",
+                            "Drill into these GC events without re-collecting (views: summary, events, pauseHistogram, timeline, longestPauses, byGeneration).",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "pauseHistogram" }));
+                    return signals.Count > 0 ? result with { Signals = signals } : result;
+                }),
+            [
+                new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
+                new ValidationRule(nameof(maxEvents), maxEvents >= 1, "must be >= 1"),
+            ],
+            cancellationToken);
 
     /// <summary>
     /// Captures a broad metadata-only EventPipe catalog: provider, event name, level and timestamp.
     /// Payload values are intentionally omitted; use CollectEventSource for targeted payload capture.
     /// </summary>
-    public static async Task<DiagnosticResult<EventCatalogSnapshot>> CollectEventCatalog(
+    public static Task<DiagnosticResult<EventCatalogSnapshot>> CollectEventCatalog(
         IEventCatalogCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -408,52 +401,55 @@ public static class EventCollectionUseCases
         int maxEvents = 200,
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
-    {
-        if (durationSeconds < 1) return InvalidArg<EventCatalogSnapshot>(nameof(durationSeconds), "must be >= 1");
-        if (maxEvents < 1) return InvalidArg<EventCatalogSnapshot>(nameof(maxEvents), "must be >= 1");
+        => ExecuteCollectionAsync(
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            depth,
+            new HandledCollectionStrategy<EventCatalogSnapshot>(
+                CollectAsync: (pid, ct) => collector.CaptureAsync(pid, TimeSpan.FromSeconds(durationSeconds), providers, maxEvents, ct),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.EventCatalog, snap),
+                BuildResult: (snapshot, handle, context) =>
+                {
+                    var inlineSnapshot = snapshot;
+                    var droppedSample = 0;
+                    if (context.Depth == SamplingDepth.Summary && snapshot.Sample.Count > 0)
+                    {
+                        droppedSample = snapshot.Sample.Count;
+                        inlineSnapshot = snapshot with { Sample = Array.Empty<CatalogEventOccurrence>() };
+                    }
 
-        var resolved = await ResolveContextAsync<EventCatalogSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
+                    var summary = snapshot.TotalEvents == 0
+                        ? $"No catalog events captured in {context.DurationSeconds}s. EventPipe requires explicit provider names; pass providers to target custom EventSources."
+                        : (context.Depth == SamplingDepth.Summary && droppedSample > 0
+                            ? $"Cataloged {snapshot.TotalEvents} metadata-only event(s) across {snapshot.DistinctEventTypes} event type(s) over {context.DurationSeconds}s. Dropped {droppedSample} sampled occurrence(s) from inline (handle has all)."
+                            : $"Cataloged {snapshot.TotalEvents} metadata-only event(s) across {snapshot.DistinctEventTypes} event type(s) over {context.DurationSeconds}s.");
 
-        var snapshot = await collector.CaptureAsync(
-            pid, TimeSpan.FromSeconds(durationSeconds), providers, maxEvents, cancellationToken).ConfigureAwait(false);
-
-        var inlineSnapshot = snapshot;
-        var droppedSample = 0;
-        if (depth == SamplingDepth.Summary && snapshot.Sample.Count > 0)
-        {
-            droppedSample = snapshot.Sample.Count;
-            inlineSnapshot = snapshot with { Sample = Array.Empty<CatalogEventOccurrence>() };
-        }
-
-        var summary = snapshot.TotalEvents == 0
-            ? $"No catalog events captured in {durationSeconds}s. EventPipe requires explicit provider names; pass providers to target custom EventSources."
-            : (depth == SamplingDepth.Summary && droppedSample > 0
-                ? $"Cataloged {snapshot.TotalEvents} metadata-only event(s) across {snapshot.DistinctEventTypes} event type(s) over {durationSeconds}s. Dropped {droppedSample} sampled occurrence(s) from inline (handle has all)."
-                : $"Cataloged {snapshot.TotalEvents} metadata-only event(s) across {snapshot.DistinctEventTypes} event type(s) over {durationSeconds}s.");
-
-        var handle = handles.Register(pid, CollectionHandleKinds.EventCatalog, snapshot, CollectionHandleTtl);
-        return WithContext(DiagnosticResult.OkWithHandle(
-            inlineSnapshot,
-            summary,
-            handle.Id,
-            handle.ExpiresAt,
-            new NextActionHint("query_snapshot",
-                "Drill into this metadata-only event catalog (views: catalog, byProvider, events).",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = EventCatalogQueryDispatcher.CatalogView }),
-            new NextActionHint("collect_events",
-                "Use kind=event_source for targeted payload capture when you know the provider and have the required allowlist/scope.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "event_source", ["providerName"] = "<provider>" })),
-            resolved.Context);
-    }
+                    return DiagnosticResult.OkWithHandle(
+                        inlineSnapshot,
+                        summary,
+                        handle.Id,
+                        handle.ExpiresAt,
+                        new NextActionHint("query_snapshot",
+                            "Drill into this metadata-only event catalog (views: catalog, byProvider, events).",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = EventCatalogQueryDispatcher.CatalogView }),
+                        new NextActionHint("collect_events",
+                            "Use kind=event_source for targeted payload capture when you know the provider and have the required allowlist/scope.",
+                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["kind"] = "event_source", ["providerName"] = "<provider>" }));
+                }),
+            [
+                new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
+                new ValidationRule(nameof(maxEvents), maxEvents >= 1, "must be >= 1"),
+            ],
+            cancellationToken);
 
     /// <summary>
     /// Captures DATAS (Dynamic Adaptation To Application Sizes) GC tuning events. Populated only on
     /// Server GC with DATAS enabled (default-on in .NET 9+); Workstation GC emits no DATAS events,
     /// in which case this returns a graceful <c>NoDatasEvents</c> result.
     /// </summary>
-    public static async Task<DiagnosticResult<GcDatasSnapshot>> CollectGcDatas(
+    public static Task<DiagnosticResult<GcDatasSnapshot>> CollectGcDatas(
         IGcDatasCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -461,62 +457,63 @@ public static class EventCollectionUseCases
         int durationSeconds = 15,
         int maxEvents = 1000,
         CancellationToken cancellationToken = default)
-    {
-        if (durationSeconds < 1) return InvalidArg<GcDatasSnapshot>(nameof(durationSeconds), "must be >= 1");
-        if (maxEvents < 1) return InvalidArg<GcDatasSnapshot>(nameof(maxEvents), "must be >= 1");
+        => ExecuteCollectionAsync(
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            SamplingDepth.Detail,
+            new HandledCollectionStrategy<GcDatasSnapshot>(
+                CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxEvents, ct),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.GcDatas, snap),
+                BuildResult: (snapshot, handle, context) =>
+                {
+                    if (!snapshot.HasData)
+                    {
+                        var parseStats = snapshot.ParseStats;
+                        var sawUnparseable = parseStats.MalformedPayloads > 0 || parseStats.UnsupportedVersion > 0;
+                        var message = sawUnparseable
+                            ? $"DATAS events were present but none could be decoded ({parseStats.UnsupportedVersion} unsupported-version, {parseStats.MalformedPayloads} malformed). The target runtime may emit a newer DATAS event version than this build understands."
+                            : $"No DATAS events observed in {context.DurationSeconds}s. DATAS tuning events require Server GC (default-on in .NET 9+; otherwise set DOTNET_GCDynamicAdaptationMode=1). Workstation GC, .NET < 9, or a quiet/short window all produce no events.";
+                        var code = sawUnparseable ? "UnsupportedDatasPayload" : "NoDatasEvents";
+                        return DiagnosticResult.Fail<GcDatasSnapshot>(
+                            message,
+                            new DiagnosticError(code, message),
+                            new NextActionHint("collect_events",
+                                "Confirm the target uses Server GC, then re-run kind=datas during sustained allocation.",
+                                new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["kind"] = "datas", ["durationSeconds"] = 20 }));
+                    }
 
-        var resolved = await ResolveContextAsync<GcDatasSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
+                    var changes = 0;
+                    var ordered = snapshot.TuningEvents.OrderBy(t => t.Timestamp).ThenBy(t => t.GcIndex).ToList();
+                    for (var i = 1; i < ordered.Count; i++)
+                    {
+                        if (ordered[i].NewHeapCount != ordered[i - 1].NewHeapCount) changes++;
+                    }
 
-        var snapshot = await collector.CollectAsync(
-            pid, TimeSpan.FromSeconds(durationSeconds), maxEvents, cancellationToken).ConfigureAwait(false);
+                    var hcRange = ordered.Count == 0
+                        ? "n/a"
+                        : $"{ordered.Min(t => t.NewHeapCount)}–{ordered.Max(t => t.NewHeapCount)}";
+                    var summary =
+                        $"DATAS over {context.DurationSeconds}s: {snapshot.Samples.Count} sample(s), {snapshot.TuningEvents.Count} tuning event(s) (heap count {hcRange}, {changes} change(s)), {snapshot.FullGcTuningEvents.Count} gen2 backstop event(s).";
 
-        if (!snapshot.HasData)
-        {
-            var parseStats = snapshot.ParseStats;
-            var sawUnparseable = parseStats.MalformedPayloads > 0 || parseStats.UnsupportedVersion > 0;
-            var message = sawUnparseable
-                ? $"DATAS events were present but none could be decoded ({parseStats.UnsupportedVersion} unsupported-version, {parseStats.MalformedPayloads} malformed). The target runtime may emit a newer DATAS event version than this build understands."
-                : $"No DATAS events observed in {durationSeconds}s. DATAS tuning events require Server GC (default-on in .NET 9+; otherwise set DOTNET_GCDynamicAdaptationMode=1). Workstation GC, .NET < 9, or a quiet/short window all produce no events.";
-            var code = sawUnparseable ? "UnsupportedDatasPayload" : "NoDatasEvents";
-            return WithContext(
-                DiagnosticResult.Fail<GcDatasSnapshot>(
-                    message,
-                    new DiagnosticError(code, message),
-                    new NextActionHint("collect_events",
-                        "Confirm the target uses Server GC, then re-run kind=datas during sustained allocation.",
-                        new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "datas", ["durationSeconds"] = 20 })),
-                resolved.Context);
-        }
-
-        var changes = 0;
-        var ordered = snapshot.TuningEvents.OrderBy(t => t.Timestamp).ThenBy(t => t.GcIndex).ToList();
-        for (var i = 1; i < ordered.Count; i++)
-        {
-            if (ordered[i].NewHeapCount != ordered[i - 1].NewHeapCount) changes++;
-        }
-
-        var hcRange = ordered.Count == 0
-            ? "n/a"
-            : $"{ordered.Min(t => t.NewHeapCount)}–{ordered.Max(t => t.NewHeapCount)}";
-        var summary =
-            $"DATAS over {durationSeconds}s: {snapshot.Samples.Count} sample(s), {snapshot.TuningEvents.Count} tuning event(s) (heap count {hcRange}, {changes} change(s)), {snapshot.FullGcTuningEvents.Count} gen2 backstop event(s).";
-
-        var handle = handles.Register(pid, CollectionHandleKinds.GcDatas, snapshot, CollectionHandleTtl);
-        return WithContext(DiagnosticResult.OkWithHandle(
-            snapshot,
-            summary,
-            handle.Id,
-            handle.ExpiresAt,
-            new NextActionHint("query_snapshot",
-                "Drill into DATAS tuning (views: overview, tuning, samples, gen2; tuning supports changesOnly).",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = GcDatasQueryDispatcher.OverviewView })),
-            resolved.Context);
-    }
+                    return DiagnosticResult.OkWithHandle(
+                        snapshot,
+                        summary,
+                        handle.Id,
+                        handle.ExpiresAt,
+                        new NextActionHint("query_snapshot",
+                            "Drill into DATAS tuning (views: overview, tuning, samples, gen2; tuning supports changesOnly).",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = GcDatasQueryDispatcher.OverviewView }));
+                }),
+            [
+                new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
+                new ValidationRule(nameof(maxEvents), maxEvents >= 1, "must be >= 1"),
+            ],
+            cancellationToken);
 
     /// <summary>Curates the Microsoft-Extensions-Logging EventSource into an ILogger view.</summary>
-    public static async Task<DiagnosticResult<LogSnapshot>> CollectLogs(
+    public static Task<DiagnosticResult<LogSnapshot>> CollectLogs(
         ILogCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -529,66 +526,68 @@ public static class EventCollectionUseCases
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
     {
-        if (durationSeconds < 1) return InvalidArg<LogSnapshot>(nameof(durationSeconds), "must be >= 1");
-        if (maxEvents < 1) return InvalidArg<LogSnapshot>(nameof(maxEvents), "must be >= 1");
-        if (maxMessageBytes < 16) return InvalidArg<LogSnapshot>(nameof(maxMessageBytes), "must be >= 16");
-        if (!Enum.TryParse<LogLevel>(minLevel, ignoreCase: true, out var parsedMinLevel)
-            || parsedMinLevel is LogLevel.None or < LogLevel.Trace or > LogLevel.Critical)
-        {
-            return InvalidArg<LogSnapshot>(nameof(minLevel), "must be one of Trace|Debug|Information|Warning|Error|Critical");
-        }
+        var hasValidMinLevel = Enum.TryParse<LogLevel>(minLevel, ignoreCase: true, out var parsedMinLevel)
+            && parsedMinLevel is not LogLevel.None and >= LogLevel.Trace and <= LogLevel.Critical;
+        return ExecuteCollectionAsync(
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            depth,
+            new HandledCollectionStrategy<LogSnapshot>(
+                CollectAsync: (pid, ct) => collector.CollectAsync(
+                    pid,
+                    TimeSpan.FromSeconds(durationSeconds),
+                    categories,
+                    parsedMinLevel,
+                    maxEvents,
+                    maxMessageBytes,
+                    includeJsonPayload: depth != SamplingDepth.Summary,
+                    ct),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.LogSnapshot, snap),
+                BuildResult: (snapshot, handle, context) =>
+                {
+                    var inlineSnapshot = snapshot;
+                    var droppedRecent = 0;
+                    if (context.Depth == SamplingDepth.Summary && snapshot.Recent.Count > 0)
+                    {
+                        droppedRecent = snapshot.Recent.Count;
+                        inlineSnapshot = snapshot with { Recent = Array.Empty<LogEntry>() };
+                    }
 
-        var resolved = await ResolveContextAsync<LogSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
+                    var topCategory = snapshot.ByCategory.Count > 0 ? snapshot.ByCategory[0] : null;
+                    var warningPlus = snapshot.EventsByLevelWarning + snapshot.EventsByLevelError + snapshot.EventsByLevelCritical;
+                    var summary = snapshot.TotalEvents == 0
+                        ? $"No ILogger events captured in {context.DurationSeconds}s. Widen categories or lower minLevel if you expected logs."
+                        : (context.Depth == SamplingDepth.Summary && droppedRecent > 0
+                            ? $"Captured {snapshot.TotalEvents} ILogger event(s) over {context.DurationSeconds}s at minLevel={snapshot.MinimumLevel}; warning+={warningPlus}. Top category: {topCategory?.Category} ({topCategory?.Count}). Dropped {droppedRecent} Recent entry(ies) from inline (handle has all)."
+                            : $"Captured {snapshot.TotalEvents} ILogger event(s) over {context.DurationSeconds}s at minLevel={snapshot.MinimumLevel}; warning+={warningPlus}. Top category: {topCategory?.Category} ({topCategory?.Count}).");
 
-        var snapshot = await collector
-            .CollectAsync(
-                pid,
-                TimeSpan.FromSeconds(durationSeconds),
-                categories,
-                parsedMinLevel,
-                maxEvents,
-                maxMessageBytes,
-                includeJsonPayload: depth != SamplingDepth.Summary,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        var inlineSnapshot = snapshot;
-        var droppedRecent = 0;
-        if (depth == SamplingDepth.Summary && snapshot.Recent.Count > 0)
-        {
-            droppedRecent = snapshot.Recent.Count;
-            inlineSnapshot = snapshot with { Recent = Array.Empty<LogEntry>() };
-        }
-
-        var topCategory = snapshot.ByCategory.Count > 0 ? snapshot.ByCategory[0] : null;
-        var warningPlus = snapshot.EventsByLevelWarning + snapshot.EventsByLevelError + snapshot.EventsByLevelCritical;
-        var summary = snapshot.TotalEvents == 0
-            ? $"No ILogger events captured in {durationSeconds}s. Widen categories or lower minLevel if you expected logs."
-            : (depth == SamplingDepth.Summary && droppedRecent > 0
-                ? $"Captured {snapshot.TotalEvents} ILogger event(s) over {durationSeconds}s at minLevel={snapshot.MinimumLevel}; warning+={warningPlus}. Top category: {topCategory?.Category} ({topCategory?.Count}). Dropped {droppedRecent} Recent entry(ies) from inline (handle has all)."
-                : $"Captured {snapshot.TotalEvents} ILogger event(s) over {durationSeconds}s at minLevel={snapshot.MinimumLevel}; warning+={warningPlus}. Top category: {topCategory?.Category} ({topCategory?.Count}).");
-
-        var handle = handles.Register(pid, CollectionHandleKinds.LogSnapshot, snapshot, CollectionHandleTtl);
-        return WithContext(DiagnosticResult.OkWithHandle(
-            inlineSnapshot,
-            summary,
-            handle.Id,
-            handle.ExpiresAt,
-            new NextActionHint("query_snapshot",
-                "Drill into this log snapshot without re-collecting (views: summary, byCategory, byLevel, recent, errors).",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "errors", ["topN"] = 25 }),
-            new NextActionHint("collect_sample",
-                warningPlus > 0
-                    ? "Correlate warning/error spikes with CPU hotspots from the same window."
-                    : "If the app was slow without warning/error logs, pivot to CPU sampling for the same process.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 })),
-            resolved.Context);
+                    return DiagnosticResult.OkWithHandle(
+                        inlineSnapshot,
+                        summary,
+                        handle.Id,
+                        handle.ExpiresAt,
+                        new NextActionHint("query_snapshot",
+                            "Drill into this log snapshot without re-collecting (views: summary, byCategory, byLevel, recent, errors).",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "errors", ["topN"] = 25 }),
+                        new NextActionHint("collect_sample",
+                            warningPlus > 0
+                                ? "Correlate warning/error spikes with CPU hotspots from the same window."
+                                : "If the app was slow without warning/error logs, pivot to CPU sampling for the same process.",
+                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["durationSeconds"] = 10 }));
+                }),
+            [
+                new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
+                new ValidationRule(nameof(maxEvents), maxEvents >= 1, "must be >= 1"),
+                new ValidationRule(nameof(maxMessageBytes), maxMessageBytes >= 16, "must be >= 16"),
+                new ValidationRule(nameof(minLevel), hasValidMinLevel, "must be one of Trace|Debug|Information|Warning|Error|Critical"),
+            ],
+            cancellationToken);
     }
 
     /// <summary>Reconstructs JIT / tiered-compilation activity from the runtime provider.</summary>
-    public static async Task<DiagnosticResult<JitSnapshot>> CollectJit(
+    public static Task<DiagnosticResult<JitSnapshot>> CollectJit(
         IJitCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -596,55 +595,57 @@ public static class EventCollectionUseCases
         int durationSeconds = 10,
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
-    {
-        if (durationSeconds < 1) return InvalidArg<JitSnapshot>(nameof(durationSeconds), "must be >= 1");
+        => ExecuteCollectionAsync(
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            depth,
+            new HandledCollectionStrategy<JitSnapshot>(
+                CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), ct),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.JitSnapshot, snap),
+                BuildResult: (snapshot, handle, context) =>
+                {
+                    var inlineSnapshot = snapshot;
+                    var droppedMethods = 0;
+                    if (context.Depth == SamplingDepth.Summary && snapshot.Methods.Count > 10)
+                    {
+                        droppedMethods = snapshot.Methods.Count - 10;
+                        var inlineNotes = snapshot.Notes
+                            .Append($"{droppedMethods} additional method(s) omitted from the inline payload (handle has all).")
+                            .ToList();
+                        inlineSnapshot = snapshot with
+                        {
+                            Methods = snapshot.Methods.Take(10).ToList(),
+                            Notes = inlineNotes,
+                        };
+                    }
 
-        var resolved = await ResolveContextAsync<JitSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
+                    var summary = snapshot.CompletedCompilations == 0 && snapshot.R2RLookupCount == 0
+                        ? $"No JIT or ReadyToRun activity captured in {context.DurationSeconds}s. Trigger a cold path during the window and retry."
+                        : (context.Depth == SamplingDepth.Summary && droppedMethods > 0
+                            ? $"Observed {snapshot.CompletedCompilations} completed JIT compilation(s) across {snapshot.UniqueMethods} method(s) in {context.DurationSeconds}s. {snapshot.HealthCheck} ReJIT={snapshot.ReJitCount}, OSR={snapshot.OsrCount}. Dropped {droppedMethods} method row(s) from inline (handle has all)."
+                            : $"Observed {snapshot.CompletedCompilations} completed JIT compilation(s) across {snapshot.UniqueMethods} method(s) in {context.DurationSeconds}s. {snapshot.HealthCheck} ReJIT={snapshot.ReJitCount}, OSR={snapshot.OsrCount}.");
 
-        var snapshot = await collector
-            .CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), cancellationToken)
-            .ConfigureAwait(false);
-
-        var inlineSnapshot = snapshot;
-        var droppedMethods = 0;
-        if (depth == SamplingDepth.Summary && snapshot.Methods.Count > 10)
-        {
-            droppedMethods = snapshot.Methods.Count - 10;
-            var inlineNotes = snapshot.Notes
-                .Append($"{droppedMethods} additional method(s) omitted from the inline payload (handle has all).")
-                .ToList();
-            inlineSnapshot = snapshot with
-            {
-                Methods = snapshot.Methods.Take(10).ToList(),
-                Notes = inlineNotes,
-            };
-        }
-
-        var summary = snapshot.CompletedCompilations == 0 && snapshot.R2RLookupCount == 0
-            ? $"No JIT or ReadyToRun activity captured in {durationSeconds}s. Trigger a cold path during the window and retry."
-            : (depth == SamplingDepth.Summary && droppedMethods > 0
-                ? $"Observed {snapshot.CompletedCompilations} completed JIT compilation(s) across {snapshot.UniqueMethods} method(s) in {durationSeconds}s. {snapshot.HealthCheck} ReJIT={snapshot.ReJitCount}, OSR={snapshot.OsrCount}. Dropped {droppedMethods} method row(s) from inline (handle has all)."
-                : $"Observed {snapshot.CompletedCompilations} completed JIT compilation(s) across {snapshot.UniqueMethods} method(s) in {durationSeconds}s. {snapshot.HealthCheck} ReJIT={snapshot.ReJitCount}, OSR={snapshot.OsrCount}.");
-
-        var handle = handles.Register(pid, CollectionHandleKinds.JitSnapshot, snapshot, CollectionHandleTtl);
-        return WithContext(DiagnosticResult.OkWithHandle(
-            inlineSnapshot,
-            summary,
-            handle.Id,
-            handle.ExpiresAt,
-            new NextActionHint("query_snapshot",
-                "Drill into this JIT snapshot without re-collecting (views: summary, topMethods, tierDistribution, reJIT).",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "topMethods", ["topN"] = 25 }),
-            new NextActionHint("collect_sample",
-                "If cold-start JIT pressure lines up with latency, correlate it with CPU hotspots from the same process.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "cpu", ["durationSeconds"] = 10 })),
-            resolved.Context);
-    }
+                    return DiagnosticResult.OkWithHandle(
+                        inlineSnapshot,
+                        summary,
+                        handle.Id,
+                        handle.ExpiresAt,
+                        new NextActionHint("query_snapshot",
+                            "Drill into this JIT snapshot without re-collecting (views: summary, topMethods, tierDistribution, reJIT).",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "topMethods", ["topN"] = 25 }),
+                        new NextActionHint("collect_sample",
+                            "If cold-start JIT pressure lines up with latency, correlate it with CPU hotspots from the same process.",
+                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["kind"] = "cpu", ["durationSeconds"] = 10 }));
+                }),
+            [
+                new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
+            ],
+            cancellationToken);
 
     /// <summary>Curates the runtime ThreadingKeyword into a ThreadPool starvation view.</summary>
-    public static async Task<DiagnosticResult<ThreadPoolEventSnapshot>> CollectThreadPool(
+    public static Task<DiagnosticResult<ThreadPoolEventSnapshot>> CollectThreadPool(
         IThreadPoolCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -652,54 +653,58 @@ public static class EventCollectionUseCases
         int durationSeconds = 10,
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
-    {
-        if (durationSeconds < 1) return InvalidArg<ThreadPoolEventSnapshot>(nameof(durationSeconds), "must be >= 1");
+        => ExecuteCollectionAsync(
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            depth,
+            new HandledCollectionStrategy<ThreadPoolEventSnapshot>(
+                CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), ct),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.ThreadPoolSnapshot, snap),
+                BuildResult: (snapshot, handle, context) =>
+                {
+                    var inlineSnapshot = snapshot;
+                    if (context.Depth == SamplingDepth.Summary)
+                    {
+                        inlineSnapshot = snapshot with
+                        {
+                            WorkerThreadTimeline = Array.Empty<ThreadPoolCountBucket>(),
+                            IocpThreadTimeline = Array.Empty<ThreadPoolCountBucket>(),
+                            HillClimbing = Array.Empty<ThreadPoolHillClimbingSample>(),
+                            WorkItemOrigins = snapshot.WorkItemOrigins.Take(5).ToList(),
+                        };
+                    }
 
-        var resolved = await ResolveContextAsync<ThreadPoolEventSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
+                    var peakWorkers = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline.Max(static bucket => bucket.Count) : 0;
+                    var latestWorkers = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline[^1].Count : 0;
+                    var starvationEvents = snapshot.HillClimbing.Count(static sample => string.Equals(sample.Reason, "Starvation", StringComparison.OrdinalIgnoreCase));
+                    var summary = snapshot.HillClimbing.Count == 0 && snapshot.TotalEnqueueEvents == 0
+                        ? $"No ThreadPool starvation signals were captured in {context.DurationSeconds}s. Start the workload after collection begins if you expected queue growth."
+                        : $"Captured ThreadPool activity over {context.DurationSeconds}s: workers latest/peak={latestWorkers}/{peakWorkers}, hill-climbing events={snapshot.HillClimbing.Count}, starvation reasons={starvationEvents}, enqueue/dequeue={snapshot.TotalEnqueueEvents}/{snapshot.TotalDequeueEvents}.";
 
-        var snapshot = await collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), cancellationToken).ConfigureAwait(false);
-
-        var inlineSnapshot = snapshot;
-        if (depth == SamplingDepth.Summary)
-        {
-            inlineSnapshot = snapshot with
-            {
-                WorkerThreadTimeline = Array.Empty<ThreadPoolCountBucket>(),
-                IocpThreadTimeline = Array.Empty<ThreadPoolCountBucket>(),
-                HillClimbing = Array.Empty<ThreadPoolHillClimbingSample>(),
-                WorkItemOrigins = snapshot.WorkItemOrigins.Take(5).ToList(),
-            };
-        }
-
-        var peakWorkers = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline.Max(static bucket => bucket.Count) : 0;
-        var latestWorkers = snapshot.WorkerThreadTimeline.Count > 0 ? snapshot.WorkerThreadTimeline[^1].Count : 0;
-        var starvationEvents = snapshot.HillClimbing.Count(static sample => string.Equals(sample.Reason, "Starvation", StringComparison.OrdinalIgnoreCase));
-        var summary = snapshot.HillClimbing.Count == 0 && snapshot.TotalEnqueueEvents == 0
-            ? $"No ThreadPool starvation signals were captured in {durationSeconds}s. Start the workload after collection begins if you expected queue growth."
-            : $"Captured ThreadPool activity over {durationSeconds}s: workers latest/peak={latestWorkers}/{peakWorkers}, hill-climbing events={snapshot.HillClimbing.Count}, starvation reasons={starvationEvents}, enqueue/dequeue={snapshot.TotalEnqueueEvents}/{snapshot.TotalDequeueEvents}.";
-
-        var handle = handles.Register(pid, CollectionHandleKinds.ThreadPoolSnapshot, snapshot, CollectionHandleTtl);
-        return WithContext(DiagnosticResult.OkWithHandle(
-            inlineSnapshot,
-            summary,
-            handle.Id,
-            handle.ExpiresAt,
-            new NextActionHint("query_snapshot",
-                "Drill into the worker + IOCP timelines for this ThreadPool snapshot.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "timeline" }),
-            new NextActionHint("query_snapshot",
-                "Inspect hill-climbing transitions and starvation reasons without re-collecting.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "hillClimbing" }),
-            new NextActionHint("query_snapshot",
-                "Inspect top work-item origins without re-collecting.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "workItemOrigins", ["topN"] = 20 })),
-            resolved.Context);
-    }
+                    return DiagnosticResult.OkWithHandle(
+                        inlineSnapshot,
+                        summary,
+                        handle.Id,
+                        handle.ExpiresAt,
+                        new NextActionHint("query_snapshot",
+                            "Drill into the worker + IOCP timelines for this ThreadPool snapshot.",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "timeline" }),
+                        new NextActionHint("query_snapshot",
+                            "Inspect hill-climbing transitions and starvation reasons without re-collecting.",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "hillClimbing" }),
+                        new NextActionHint("query_snapshot",
+                            "Inspect top work-item origins without re-collecting.",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "workItemOrigins", ["topN"] = 20 }));
+                }),
+            [
+                new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
+            ],
+            cancellationToken);
 
     /// <summary>Aggregates the runtime Contention keyword by call site and owner thread.</summary>
-    public static async Task<DiagnosticResult<ContentionSnapshot>> CollectContention(
+    public static Task<DiagnosticResult<ContentionSnapshot>> CollectContention(
         IContentionCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -707,77 +712,61 @@ public static class EventCollectionUseCases
         int durationSeconds = 10,
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
-    {
-        if (durationSeconds < 1) return InvalidArg<ContentionSnapshot>(nameof(durationSeconds), "must be >= 1");
+        => ExecuteCollectionAsync(
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            depth,
+            new HandledCollectionStrategy<ContentionSnapshot>(
+                CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), ct),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.ContentionSnapshot, snap),
+                BuildResult: (snapshot, handle, context) =>
+                {
+                    var inlineSnapshot = context.Depth == SamplingDepth.Summary
+                        ? snapshot with { Events = Array.Empty<ContentionEventSample>() }
+                        : snapshot;
+                    var hints = new List<NextActionHint>();
+                    string summary;
+                    if (snapshot.TotalEvents == 0)
+                    {
+                        if (OperatingSystem.IsLinux())
+                        {
+                            summary = $"No lock contention events were captured in {context.DurationSeconds}s. Linux runtimes do not emit ContentionStart/Stop over EventPipe (known limitation). Use alternative signals: 'monitor-lock-contention-count' counter + thread snapshots to identify blocked threads.";
+                            hints.Add(new NextActionHint(
+                                "collect_events",
+                                "Collect counters to see if monitor-lock-contention-count is rising (confirms contention exists even without events).",
+                                new Dictionary<string, object?> { ["kind"] = "counters", ["processId"] = context.ProcessId, ["durationSeconds"] = 5, ["providers"] = (IReadOnlyList<string>)["System.Runtime"] }));
+                            hints.Add(new NextActionHint(
+                                "collect_thread_snapshot",
+                                "Take a thread snapshot then use query_snapshot(view='lock-graph') to see contended SyncBlocks with waiter counts.",
+                                new Dictionary<string, object?> { ["processId"] = context.ProcessId }));
+                        }
+                        else
+                        {
+                            summary = $"No lock contention events were captured in {context.DurationSeconds}s. Start the collection before the workload and retry if you expected waits.";
+                        }
+                    }
+                    else
+                    {
+                        summary = $"Captured {snapshot.TotalEvents} lock-contention event(s) over {context.DurationSeconds}s across {snapshot.DistinctMonitors} contended monitor(s). Total wait={snapshot.TotalContentionDuration.TotalMilliseconds:F1}ms, p95={snapshot.P95ContentionDuration.TotalMilliseconds:F1}ms, max={snapshot.MaxContentionDuration.TotalMilliseconds:F1}ms.";
+                        hints.Add(new NextActionHint("query_snapshot",
+                            "Group this contention window by call site without re-collecting.",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byCallSite", ["topN"] = 20 }));
+                        hints.Add(new NextActionHint("query_snapshot",
+                            "Group this contention window by owner thread without re-collecting.",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byOwner", ["topN"] = 20 }));
+                    }
 
-        var resolved = await ResolveContextAsync<ContentionSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
-
-        var snapshot = await collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), cancellationToken).ConfigureAwait(false);
-
-        var inlineSnapshot = snapshot;
-        if (depth == SamplingDepth.Summary)
-        {
-            inlineSnapshot = snapshot with
-            {
-                Events = Array.Empty<ContentionEventSample>(),
-            };
-        }
-
-        var handle = handles.Register(pid, CollectionHandleKinds.ContentionSnapshot, snapshot, CollectionHandleTtl);
-        var hints = new List<NextActionHint>();
-
-        string summary;
-        if (snapshot.TotalEvents == 0)
-        {
-            if (OperatingSystem.IsLinux())
-            {
-                // Linux doesn't emit ContentionStart/Stop via EventPipe (nomac exclusion in runtime).
-                // Guide the LLM toward alternative diagnostic paths that DO work.
-                summary = $"No lock contention events were captured in {durationSeconds}s. " +
-                          "Linux runtimes do not emit ContentionStart/Stop over EventPipe (known limitation). " +
-                          "Use alternative signals: 'monitor-lock-contention-count' counter + thread snapshots to identify blocked threads.";
-
-                hints.Add(new NextActionHint(
-                    "collect_events",
-                    "Collect counters to see if monitor-lock-contention-count is rising (confirms contention exists even without events).",
-                    new Dictionary<string, object?> { ["kind"] = "counters", ["processId"] = pid, ["durationSeconds"] = 5, ["providers"] = (IReadOnlyList<string>)["System.Runtime"] }));
-
-                hints.Add(new NextActionHint(
-                    "collect_thread_snapshot",
-                    "Take a thread snapshot then use query_snapshot(view='lock-graph') to see contended SyncBlocks with waiter counts.",
-                    new Dictionary<string, object?> { ["processId"] = pid }));
-            }
-            else
-            {
-                summary = $"No lock contention events were captured in {durationSeconds}s. Start the collection before the workload and retry if you expected waits.";
-            }
-        }
-        else
-        {
-            summary = $"Captured {snapshot.TotalEvents} lock-contention event(s) over {durationSeconds}s across {snapshot.DistinctMonitors} contended monitor(s). " +
-                      $"Total wait={snapshot.TotalContentionDuration.TotalMilliseconds:F1}ms, p95={snapshot.P95ContentionDuration.TotalMilliseconds:F1}ms, max={snapshot.MaxContentionDuration.TotalMilliseconds:F1}ms.";
-
-            hints.Add(new NextActionHint("query_snapshot",
-                "Group this contention window by call site without re-collecting.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byCallSite", ["topN"] = 20 }));
-            hints.Add(new NextActionHint("query_snapshot",
-                "Group this contention window by owner thread without re-collecting.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byOwner", ["topN"] = 20 }));
-        }
-
-        return WithContext(DiagnosticResult.OkWithHandle(
-            inlineSnapshot,
-            summary,
-            handle.Id,
-            handle.ExpiresAt,
-            hints.ToArray()),
-            resolved.Context);
-    }
+                    return DiagnosticResult.OkWithHandle(inlineSnapshot, summary, handle.Id, handle.ExpiresAt, hints.ToArray());
+                }),
+            [
+                new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
+            ],
+            cancellationToken);
 
     /// <summary>Curates EF Core / SqlClient command + pool diagnostics into a DB view.</summary>
-    public static async Task<DiagnosticResult<DbSnapshot>> CollectDb(
+    public static Task<DiagnosticResult<DbSnapshot>> CollectDb(
         IDbCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -786,54 +775,49 @@ public static class EventCollectionUseCases
         int intervalSeconds = 1,
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
-    {
-        if (durationSeconds < 1) return InvalidArg<DbSnapshot>(nameof(durationSeconds), "must be >= 1");
-        if (intervalSeconds < 1) return InvalidArg<DbSnapshot>(nameof(intervalSeconds), "must be >= 1");
+        => ExecuteCollectionAsync(
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            depth,
+            new HandledCollectionStrategy<DbSnapshot>(
+                CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), intervalSeconds, ct),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.DbSnapshot, snap),
+                BuildResult: (snapshot, handle, context) =>
+                {
+                    var inlineSnapshot = context.Depth == SamplingDepth.Summary
+                        ? snapshot with
+                        {
+                            ByCommand = snapshot.ByCommand.Take(5).ToList(),
+                            NPlusOne = snapshot.NPlusOne.Take(5).ToList(),
+                        }
+                        : snapshot;
+                    var topCommand = snapshot.ByCommand.Count > 0 ? snapshot.ByCommand[0] : null;
+                    var poolExhaustedCount = snapshot.ConnectionPool.Sum(static stats => stats.PoolExhaustedCount);
+                    var summary = snapshot.TotalCommands == 0
+                        ? $"No DB commands captured in {context.DurationSeconds}s. Start the collection before the workload and ensure the target emits EF Core or SqlClient diagnostics."
+                        : $"Captured {snapshot.TotalCommands} DB command(s) over {context.DurationSeconds}s across {snapshot.ByCommand.Count} distinct command shape(s). Top command: {topCommand?.CommandTextHash} ({topCommand?.Count} call(s), p95={topCommand?.P95Ms:F1}ms). N+1 incidents: {snapshot.NPlusOne.Count}. Pool exhaustion signals: {poolExhaustedCount}.";
 
-        var resolved = await ResolveContextAsync<DbSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
-
-        var snapshot = await collector.CollectAsync(
-            pid,
-            TimeSpan.FromSeconds(durationSeconds),
-            intervalSeconds,
-            cancellationToken).ConfigureAwait(false);
-
-        var inlineSnapshot = snapshot;
-        if (depth == SamplingDepth.Summary)
-        {
-            inlineSnapshot = snapshot with
-            {
-                ByCommand = snapshot.ByCommand.Take(5).ToList(),
-                NPlusOne = snapshot.NPlusOne.Take(5).ToList(),
-            };
-        }
-
-        var topCommand = snapshot.ByCommand.Count > 0 ? snapshot.ByCommand[0] : null;
-        var poolExhaustedCount = snapshot.ConnectionPool.Sum(static stats => stats.PoolExhaustedCount);
-        var summary = snapshot.TotalCommands == 0
-            ? $"No DB commands captured in {durationSeconds}s. Start the collection before the workload and ensure the target emits EF Core or SqlClient diagnostics."
-            : $"Captured {snapshot.TotalCommands} DB command(s) over {durationSeconds}s across {snapshot.ByCommand.Count} distinct command shape(s). " +
-              $"Top command: {topCommand?.CommandTextHash} ({topCommand?.Count} call(s), p95={topCommand?.P95Ms:F1}ms). " +
-              $"N+1 incidents: {snapshot.NPlusOne.Count}. Pool exhaustion signals: {poolExhaustedCount}.";
-
-        var handle = handles.Register(pid, CollectionHandleKinds.DbSnapshot, snapshot, CollectionHandleTtl);
-        return WithContext(DiagnosticResult.OkWithHandle(
-            inlineSnapshot,
-            summary,
-            handle.Id,
-            handle.ExpiresAt,
-            new NextActionHint("query_snapshot",
-                "Drill into this DB snapshot without re-collecting (views: summary, byCommand, n+1, connectionPool).",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "n+1", ["topN"] = 25 }),
-            new NextActionHint("collect_sample",
-                snapshot.NPlusOne.Count > 0 || snapshot.ByCommand.Any(static command => command.P95Ms > 50)
-                    ? "Correlate slow-query hotspots with CPU stacks from the same process."
-                    : "If DB latency looks healthy, pivot to CPU sampling or logs for the same process.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 })),
-            resolved.Context);
-    }
+                    return DiagnosticResult.OkWithHandle(
+                        inlineSnapshot,
+                        summary,
+                        handle.Id,
+                        handle.ExpiresAt,
+                        new NextActionHint("query_snapshot",
+                            "Drill into this DB snapshot without re-collecting (views: summary, byCommand, n+1, connectionPool).",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "n+1", ["topN"] = 25 }),
+                        new NextActionHint("collect_sample",
+                            snapshot.NPlusOne.Count > 0 || snapshot.ByCommand.Any(static command => command.P95Ms > 50)
+                                ? "Correlate slow-query hotspots with CPU stacks from the same process."
+                                : "If DB latency looks healthy, pivot to CPU sampling or logs for the same process.",
+                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["durationSeconds"] = 10 }));
+                }),
+            [
+                new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
+                new ValidationRule(nameof(intervalSeconds), intervalSeconds >= 1, "must be >= 1"),
+            ],
+            cancellationToken);
 
     /// <summary>Curates the Kestrel request pipeline (connections, requests, TLS, queue lengths, live config) into a snapshot.</summary>
     public static async Task<DiagnosticResult<KestrelSnapshot>> CollectKestrel(
@@ -991,7 +975,7 @@ public static class EventCollectionUseCases
     }
 
     /// <summary>Curates the stable .NET networking EventSources (HTTP / DNS / TLS / sockets) into a snapshot.</summary>
-    public static async Task<DiagnosticResult<NetworkingSnapshot>> CollectNetworking(
+    public static Task<DiagnosticResult<NetworkingSnapshot>> CollectNetworking(
         INetworkingCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -1000,69 +984,52 @@ public static class EventCollectionUseCases
         int intervalSeconds = 1,
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
-    {
-        if (durationSeconds < 1) return InvalidArg<NetworkingSnapshot>(nameof(durationSeconds), "must be >= 1");
-        if (intervalSeconds < 1) return InvalidArg<NetworkingSnapshot>(nameof(intervalSeconds), "must be >= 1");
+        => ExecuteCollectionAsync(
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            depth,
+            new HandledCollectionStrategy<NetworkingSnapshot>(
+                CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), intervalSeconds, ct),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.NetworkingSnapshot, snap),
+                BuildResult: (snapshot, handle, context) =>
+                {
+                    var inlineSnapshot = context.Depth == SamplingDepth.Summary
+                        ? snapshot with { ByOperation = snapshot.ByOperation.Take(5).ToList() }
+                        : snapshot;
+                    var hints = new List<NextActionHint>();
+                    string summary;
+                    if (snapshot.HttpRequestsStarted == 0 && snapshot.DnsLookupsStarted == 0
+                        && snapshot.SocketConnectsStarted == 0 && snapshot.Counters.Count == 0)
+                    {
+                        summary = $"No networking activity captured in {context.DurationSeconds}s. Confirm the target makes outbound HTTP / DNS / socket calls during collection (start the session before the load).";
+                    }
+                    else
+                    {
+                        summary = $"Captured {snapshot.HttpRequestsStarted} HTTP request(s) ({snapshot.HttpRequestsFailed} failed) over {context.DurationSeconds}s. Request p95={snapshot.HttpRequestP95.TotalMilliseconds:F1}ms, time-in-queue p95={snapshot.TimeInQueueP95.TotalMilliseconds:F1}ms. DNS: {snapshot.DnsLookupsStarted} lookup(s), {snapshot.DnsLookupsFailed} failed. TLS: {snapshot.TlsHandshakesStarted} handshake(s), {snapshot.TlsHandshakesFailed} failed. Sockets: {snapshot.SocketConnectsStarted} connect(s), {snapshot.SocketConnectsFailed} failed.";
+                        if (snapshot.TimeInQueueP95 > TimeSpan.Zero || snapshot.HttpRequestsLeftQueue > 0)
+                        {
+                            hints.Add(new NextActionHint("query_snapshot",
+                                "Inspect HttpClient connection-pool time-in-queue — rising queue time is the #1 outbound-HTTP saturation signal.",
+                                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "queue" }));
+                        }
 
-        var resolved = await ResolveContextAsync<NetworkingSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
+                        hints.Add(new NextActionHint("query_snapshot",
+                            "Group outbound HTTP latency by host without re-collecting.",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byOperation", ["topN"] = 25 }));
+                    }
 
-        var snapshot = await collector.CollectAsync(
-            pid,
-            TimeSpan.FromSeconds(durationSeconds),
-            intervalSeconds,
-            cancellationToken).ConfigureAwait(false);
-
-        var inlineSnapshot = snapshot;
-        if (depth == SamplingDepth.Summary)
-        {
-            inlineSnapshot = snapshot with
-            {
-                ByOperation = snapshot.ByOperation.Take(5).ToList(),
-            };
-        }
-
-        var handle = handles.Register(pid, CollectionHandleKinds.NetworkingSnapshot, snapshot, CollectionHandleTtl);
-        var hints = new List<NextActionHint>();
-
-        string summary;
-        if (snapshot.HttpRequestsStarted == 0 && snapshot.DnsLookupsStarted == 0
-            && snapshot.SocketConnectsStarted == 0 && snapshot.Counters.Count == 0)
-        {
-            summary = $"No networking activity captured in {durationSeconds}s. Confirm the target makes outbound HTTP / DNS / socket calls during collection (start the session before the load).";
-        }
-        else
-        {
-            summary = $"Captured {snapshot.HttpRequestsStarted} HTTP request(s) ({snapshot.HttpRequestsFailed} failed) over {durationSeconds}s. " +
-                      $"Request p95={snapshot.HttpRequestP95.TotalMilliseconds:F1}ms, time-in-queue p95={snapshot.TimeInQueueP95.TotalMilliseconds:F1}ms. " +
-                      $"DNS: {snapshot.DnsLookupsStarted} lookup(s), {snapshot.DnsLookupsFailed} failed. " +
-                      $"TLS: {snapshot.TlsHandshakesStarted} handshake(s), {snapshot.TlsHandshakesFailed} failed. " +
-                      $"Sockets: {snapshot.SocketConnectsStarted} connect(s), {snapshot.SocketConnectsFailed} failed.";
-
-            if (snapshot.TimeInQueueP95 > TimeSpan.Zero || snapshot.HttpRequestsLeftQueue > 0)
-            {
-                hints.Add(new NextActionHint("query_snapshot",
-                    "Inspect HttpClient connection-pool time-in-queue — rising queue time is the #1 outbound-HTTP saturation signal.",
-                    new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "queue" }));
-            }
-
-            hints.Add(new NextActionHint("query_snapshot",
-                "Group outbound HTTP latency by host without re-collecting.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byOperation", ["topN"] = 25 }));
-        }
-
-        return WithContext(DiagnosticResult.OkWithHandle(
-            inlineSnapshot,
-            summary,
-            handle.Id,
-            handle.ExpiresAt,
-            hints.ToArray()),
-            resolved.Context);
-    }
+                    return DiagnosticResult.OkWithHandle(inlineSnapshot, summary, handle.Id, handle.ExpiresAt, hints.ToArray());
+                }),
+            [
+                new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
+                new ValidationRule(nameof(intervalSeconds), intervalSeconds >= 1, "must be >= 1"),
+            ],
+            cancellationToken);
 
     /// <summary>Captures startup-related assembly/module loader and DependencyInjection EventPipe activity.</summary>
-    public static async Task<DiagnosticResult<StartupSnapshot>> CollectStartup(
+    public static Task<DiagnosticResult<StartupSnapshot>> CollectStartup(
         IStartupCollector collector,
         IProcessContextResolver resolver,
         IDiagnosticHandleStore handles,
@@ -1070,45 +1037,45 @@ public static class EventCollectionUseCases
         int durationSeconds = 10,
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
-    {
-        if (durationSeconds < 1) return InvalidArg<StartupSnapshot>(nameof(durationSeconds), "must be >= 1");
-
-        var resolved = await ResolveContextAsync<StartupSnapshot>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
-
-        var snapshot = await collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), cancellationToken).ConfigureAwait(false);
-
-        var inlineSnapshot = snapshot;
-        if (depth == SamplingDepth.Summary)
-        {
-            inlineSnapshot = snapshot with
-            {
-                AssemblyLoads = snapshot.AssemblyLoads.Take(5).ToList(),
-                ModuleLoads = snapshot.ModuleLoads.Take(5).ToList(),
-                DiEvents = snapshot.DiEvents.Take(5).ToList(),
-                Timeline = snapshot.Timeline.Take(20).ToList(),
-            };
-        }
-
-        var summary = snapshot.TotalAssemblyLoads == 0 && snapshot.TotalModuleLoads == 0 && snapshot.TotalDiEvents == 0
-            ? $"No startup loader/DI events captured in {durationSeconds}s. Attaching to an already-running process misses events emitted before attach; true cold-start capture requires starting EventPipe before or at process launch."
-            : $"Captured startup activity over {durationSeconds}s: assemblies={snapshot.TotalAssemblyLoads}, modules={snapshot.TotalModuleLoads}, DI events={snapshot.TotalDiEvents}, service providers built={snapshot.DiServiceProviderBuiltCount}, observed DI span={snapshot.ObservedDiActivityDuration.TotalMilliseconds:F1}ms.";
-
-        var handle = handles.Register(pid, CollectionHandleKinds.StartupSnapshot, snapshot, CollectionHandleTtl);
-        return WithContext(DiagnosticResult.OkWithHandle(
-            inlineSnapshot,
-            summary,
-            handle.Id,
-            handle.ExpiresAt,
-            new NextActionHint("query_snapshot",
-                "Drill into the startup timeline without re-collecting (views: summary, assemblies, modules, di, timeline).",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "timeline", ["topN"] = 50 }),
-            new NextActionHint("collect_events",
-                "Use kind='jit' separately if JIT-at-startup is suspected; startup does not duplicate JIT events.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "jit", ["durationSeconds"] = durationSeconds })),
-            resolved.Context);
-    }
+        => ExecuteCollectionAsync(
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            depth,
+            new HandledCollectionStrategy<StartupSnapshot>(
+                CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), ct),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.StartupSnapshot, snap),
+                BuildResult: (snapshot, handle, context) =>
+                {
+                    var inlineSnapshot = context.Depth == SamplingDepth.Summary
+                        ? snapshot with
+                        {
+                            AssemblyLoads = snapshot.AssemblyLoads.Take(5).ToList(),
+                            ModuleLoads = snapshot.ModuleLoads.Take(5).ToList(),
+                            DiEvents = snapshot.DiEvents.Take(5).ToList(),
+                            Timeline = snapshot.Timeline.Take(20).ToList(),
+                        }
+                        : snapshot;
+                    var summary = snapshot.TotalAssemblyLoads == 0 && snapshot.TotalModuleLoads == 0 && snapshot.TotalDiEvents == 0
+                        ? $"No startup loader/DI events captured in {context.DurationSeconds}s. Attaching to an already-running process misses events emitted before attach; true cold-start capture requires starting EventPipe before or at process launch."
+                        : $"Captured startup activity over {context.DurationSeconds}s: assemblies={snapshot.TotalAssemblyLoads}, modules={snapshot.TotalModuleLoads}, DI events={snapshot.TotalDiEvents}, service providers built={snapshot.DiServiceProviderBuiltCount}, observed DI span={snapshot.ObservedDiActivityDuration.TotalMilliseconds:F1}ms.";
+                    return DiagnosticResult.OkWithHandle(
+                        inlineSnapshot,
+                        summary,
+                        handle.Id,
+                        handle.ExpiresAt,
+                        new NextActionHint("query_snapshot",
+                            "Drill into the startup timeline without re-collecting (views: summary, assemblies, modules, di, timeline).",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "timeline", ["topN"] = 50 }),
+                        new NextActionHint("collect_events",
+                            "Use kind='jit' separately if JIT-at-startup is suspected; startup does not duplicate JIT events.",
+                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["kind"] = "jit", ["durationSeconds"] = context.DurationSeconds }));
+                }),
+            [
+                new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
+            ],
+            cancellationToken);
 
     /// <summary>
     /// Cold-start variant of <see cref="CollectStartup"/> (issue #446): arms the session on a suspended
@@ -1323,9 +1290,60 @@ public static class EventCollectionUseCases
             resolved.Context);
     }
 
+    private static async Task<DiagnosticResult<T>> ExecuteCollectionAsync<T>(
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        int? processId,
+        int durationSeconds,
+        SamplingDepth depth,
+        HandledCollectionStrategy<T> strategy,
+        IReadOnlyList<ValidationRule> validations,
+        CancellationToken cancellationToken)
+        where T : notnull
+    {
+        foreach (var validation in validations)
+        {
+            if (!validation.IsValid)
+            {
+                return InvalidArg<T>(validation.ParameterName, validation.Requirement);
+            }
+        }
+
+        var resolved = await ResolveContextAsync<T>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null)
+        {
+            return resolved.Failure;
+        }
+
+        var snapshot = await strategy.CollectAsync(resolved.ProcessId, cancellationToken).ConfigureAwait(false);
+        var handle = strategy.RegisterHandle(handles, resolved.ProcessId, snapshot);
+        var context = new CollectionUseCaseContext(resolved.ProcessId, durationSeconds, depth);
+        return WithContext(strategy.BuildResult(snapshot, handle, context), resolved.Context);
+    }
+
+    private static DiagnosticHandle RegisterHandle<T>(
+        IDiagnosticHandleStore handles,
+        int processId,
+        string kind,
+        T snapshot,
+        bool evictWhenProcessExits = true,
+        HandleOrigin origin = HandleOrigin.Live)
+        where T : notnull
+        => handles.Register(processId, kind, snapshot, CollectionHandleTtl, evictWhenProcessExits, origin);
+
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)
         => DiagnosticResult.Fail<T>(
             $"Argument '{parameterName}' {requirement}.",
             new DiagnosticError("InvalidArgument", $"Argument '{parameterName}' {requirement}.", parameterName),
             new NextActionHint("inspect_process", "Re-issue with valid arguments. See tool schema for ranges and defaults."));
+
+    private sealed record ValidationRule(string ParameterName, bool IsValid, string Requirement);
+
+    private sealed record CollectionUseCaseContext(int ProcessId, int DurationSeconds, SamplingDepth Depth);
+
+    private sealed record HandledCollectionStrategy<T>(
+        Func<int, CancellationToken, Task<T>> CollectAsync,
+        Func<IDiagnosticHandleStore, int, T, DiagnosticHandle> RegisterHandle,
+        Func<T, DiagnosticHandle, CollectionUseCaseContext, DiagnosticResult<T>> BuildResult)
+        where T : notnull;
 }
