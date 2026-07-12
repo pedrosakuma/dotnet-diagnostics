@@ -315,9 +315,11 @@ internal static partial class CliCommands
             return false;
         }
 
-        if (options.Command == "get-bytes" && string.Equals(options.Kind, "dump", StringComparison.Ordinal))
+        if (options.Command == "get-bytes"
+            && (string.Equals(options.Kind, "dump", StringComparison.Ordinal)
+                || string.Equals(options.Kind, "trace", StringComparison.Ordinal)))
         {
-            error = "--launch applies to a live target; it cannot be combined with get-bytes --kind dump.";
+            error = $"--launch applies to a live target; it cannot be combined with get-bytes --kind {options.Kind}.";
             return false;
         }
 
@@ -401,7 +403,7 @@ internal static partial class CliCommands
 
         if (string.IsNullOrWhiteSpace(options.Kind))
         {
-            error = "The 'get-bytes' command requires --kind <module|dump>.";
+            error = $"The 'get-bytes' command requires --kind <{string.Join("|", ByteKinds)}>.";
             return false;
         }
 
