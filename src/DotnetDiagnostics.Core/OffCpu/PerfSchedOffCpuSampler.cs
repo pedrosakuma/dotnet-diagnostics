@@ -224,6 +224,8 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         };
 
         process.Start();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = process.StandardError.ReadToEndAsync(ct);
         try
         {
             await process.WaitForExitAsync(ct).ConfigureAwait(false);
@@ -234,9 +236,10 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
             throw;
         }
 
+        await stdoutTask.ConfigureAwait(false);
+        var stderr = await stderrTask.ConfigureAwait(false);
         if (process.ExitCode != 0)
         {
-            var stderr = await process.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
             throw new InvalidOperationException(
                 $"perf record (sched) exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
         }

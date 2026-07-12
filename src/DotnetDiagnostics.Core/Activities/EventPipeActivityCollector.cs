@@ -23,8 +23,8 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
     private const string FilterArgumentName = "FilterAndPayloadSpecs";
     private const string TransformSuffix = ":-TraceId;SpanId;ParentSpanId;StartTimeTicks=StartTimeUtc.Ticks;DurationTicks=Duration.Ticks;ActivitySourceName=Source.Name;Tags=TagObjects.*Enumerate";
 
-    private static readonly Dictionary<string, Regex> WildcardRegexCache = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly object WildcardRegexLock = new();
+    private static readonly BoundedWildcardRegexCache WildcardRegexCache = new();
+
 
     private readonly ILogger<EventPipeActivityCollector> _logger;
 
@@ -269,12 +269,16 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
     private static List<ActivitySourceSummary> BuildSourceSummary(IReadOnlyList<CapturedActivity> activities) =>
         activities
             .GroupBy(activity => activity.SourceName, StringComparer.Ordinal)
-            .Select(group => new ActivitySourceSummary(
-                SourceName: group.Key,
-                Count: group.Count(),
-                CompletedCount: group.Count(activity => activity.Duration is not null),
-                AverageDurationMs: AverageDurationMs(group.Select(activity => activity.Duration)),
-                MaxDurationMs: MaxDurationMs(group.Select(activity => activity.Duration))))
+            .Select(group =>
+            {
+                var (count, completedCount, averageMs, maxMs) = AggregateDurations(group);
+                return new ActivitySourceSummary(
+                    SourceName: group.Key,
+                    Count: count,
+                    CompletedCount: completedCount,
+                    AverageDurationMs: averageMs,
+                    MaxDurationMs: maxMs);
+            })
             .OrderByDescending(summary => summary.Count)
             .ThenByDescending(summary => summary.MaxDurationMs)
             .ThenBy(summary => summary.SourceName, StringComparer.Ordinal)
@@ -283,61 +287,72 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
     private static List<ActivityOperationSummary> BuildOperationSummary(IReadOnlyList<CapturedActivity> activities) =>
         activities
             .GroupBy(activity => (activity.SourceName, activity.OperationName))
-            .Select(group => new ActivityOperationSummary(
-                SourceName: group.Key.SourceName,
-                OperationName: group.Key.OperationName,
-                Count: group.Count(),
-                CompletedCount: group.Count(activity => activity.Duration is not null),
-                AverageDurationMs: AverageDurationMs(group.Select(activity => activity.Duration)),
-                MaxDurationMs: MaxDurationMs(group.Select(activity => activity.Duration))))
+            .Select(group =>
+            {
+                var (count, completedCount, averageMs, maxMs) = AggregateDurations(group);
+                return new ActivityOperationSummary(
+                    SourceName: group.Key.SourceName,
+                    OperationName: group.Key.OperationName,
+                    Count: count,
+                    CompletedCount: completedCount,
+                    AverageDurationMs: averageMs,
+                    MaxDurationMs: maxMs);
+            })
             .OrderByDescending(summary => summary.Count)
             .ThenByDescending(summary => summary.MaxDurationMs)
             .ThenBy(summary => summary.SourceName, StringComparer.Ordinal)
             .ThenBy(summary => summary.OperationName, StringComparer.Ordinal)
             .ToList();
 
-    private static double AverageDurationMs(IEnumerable<TimeSpan?> durations)
+    /// <summary>
+    /// Computes count, completed count, average duration (ms) and max duration (ms) for a group
+    /// of activities in a single pass, avoiding the repeated LINQ enumerations and the
+    /// intermediate <see cref="List{T}"/> that a per-metric approach would require.
+    /// </summary>
+    private static (int Count, int CompletedCount, double AverageDurationMs, double MaxDurationMs) AggregateDurations(
+        IEnumerable<CapturedActivity> group)
     {
-        var values = durations
-            .Where(static duration => duration is not null)
-            .Select(static duration => duration!.Value.TotalMilliseconds)
-            .ToList();
-        return values.Count == 0 ? 0 : values.Average();
-    }
+        var count = 0;
+        var completedCount = 0;
+        var sumMs = 0d;
+        double? maxMs = null;
 
-    private static double MaxDurationMs(IEnumerable<TimeSpan?> durations) =>
-        durations.Where(static duration => duration is not null)
-            .Select(static duration => duration!.Value.TotalMilliseconds)
-            .DefaultIfEmpty(0)
-            .Max();
-
-    private static Regex WildcardToRegex(string pattern)
-    {
-        lock (WildcardRegexLock)
+        foreach (var activity in group)
         {
-            if (WildcardRegexCache.TryGetValue(pattern, out var cached))
+            count++;
+            if (activity.Duration is { } duration)
             {
-                return cached;
-            }
-
-            var builder = new StringBuilder(pattern.Length * 2);
-            builder.Append('^');
-            foreach (var ch in pattern)
-            {
-                builder.Append(ch switch
+                completedCount++;
+                var durationMs = duration.TotalMilliseconds;
+                sumMs += durationMs;
+                if (maxMs is null || durationMs > maxMs)
                 {
-                    '*' => ".*",
-                    '?' => ".",
-                    _ => Regex.Escape(ch.ToString()),
-                });
+                    maxMs = durationMs;
+                }
             }
-
-            builder.Append('$');
-            cached = new Regex(builder.ToString(), RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.Compiled);
-            WildcardRegexCache[pattern] = cached;
-            return cached;
         }
+
+        var averageMs = completedCount == 0 ? 0 : sumMs / completedCount;
+        return (count, completedCount, averageMs, maxMs ?? 0);
     }
+
+    private static Regex WildcardToRegex(string pattern) => WildcardRegexCache.GetOrAdd(pattern, static wildcardPattern =>
+    {
+        var builder = new StringBuilder(wildcardPattern.Length * 2);
+        builder.Append('^');
+        foreach (var ch in wildcardPattern)
+        {
+            builder.Append(ch switch
+            {
+                '*' => ".*",
+                '?' => ".",
+                _ => Regex.Escape(ch.ToString()),
+            });
+        }
+
+        builder.Append('$');
+        return new Regex(builder.ToString(), RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    });
 
     [GeneratedRegex("\\[(.*?)\\]", RegexOptions.CultureInvariant)]
     private static partial Regex TagPairRegex();

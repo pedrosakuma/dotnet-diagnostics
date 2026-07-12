@@ -214,7 +214,7 @@ public sealed partial class MemoryTrendCollector : IMemoryTrendCollector
         bool hasRss = false;
         try
         {
-            foreach (var line in File.ReadAllLines(path))
+            foreach (var line in File.ReadLines(path))
             {
                 ParseSmapsLine(line.AsSpan(), ref rss, ref pss, ref anon, ref hasRss, accumulate: true);
             }

@@ -294,36 +294,36 @@ public sealed partial class ProcessResourcesCollector : IProcessResourcesCollect
                         continue;
                     }
 
-                    var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    if (parts.Length < 10)
+                    if (!TryParseTcpStateAndInode(line, out var state, out var inode))
                     {
                         continue;
                     }
 
                     anyFileRead = true;
-                    var inode = parts[9];
-                    if (!socketInodes.Contains(inode))
+                    if (!socketInodes.Contains(inode.ToString()))
                     {
                         continue;
                     }
 
-                    switch (parts[3])
+                    if (state.SequenceEqual("01"))
                     {
-                        case "01":
-                            established++;
-                            break;
-                        case "06":
-                            timeWait++;
-                            break;
-                        case "08":
-                            closeWait++;
-                            break;
-                        case "0A":
-                            listen++;
-                            break;
-                        default:
-                            other++;
-                            break;
+                        established++;
+                    }
+                    else if (state.SequenceEqual("06"))
+                    {
+                        timeWait++;
+                    }
+                    else if (state.SequenceEqual("08"))
+                    {
+                        closeWait++;
+                    }
+                    else if (state.SequenceEqual("0A"))
+                    {
+                        listen++;
+                    }
+                    else
+                    {
+                        other++;
                     }
                 }
             }
@@ -340,6 +340,53 @@ public sealed partial class ProcessResourcesCollector : IProcessResourcesCollect
         }
 
         return new SocketBreakdown(established, timeWait, closeWait, listen, other);
+    }
+
+    /// <summary>
+    /// Parses the <c>st</c> (field 3) and <c>inode</c> (field 9) columns of a
+    /// <c>/proc/net/tcp[6]</c> data row without allocating an array/string for every
+    /// whitespace-separated column, since only those two fields are used.
+    /// </summary>
+    private static bool TryParseTcpStateAndInode(ReadOnlySpan<char> line, out ReadOnlySpan<char> state, out ReadOnlySpan<char> inode)
+    {
+        state = default;
+        inode = default;
+
+        var fieldIndex = 0;
+        var position = 0;
+        while (position < line.Length)
+        {
+            while (position < line.Length && line[position] == ' ')
+            {
+                position++;
+            }
+
+            if (position >= line.Length)
+            {
+                break;
+            }
+
+            var start = position;
+            while (position < line.Length && line[position] != ' ')
+            {
+                position++;
+            }
+
+            var field = line[start..position];
+            if (fieldIndex == 3)
+            {
+                state = field;
+            }
+            else if (fieldIndex == 9)
+            {
+                inode = field;
+                return true;
+            }
+
+            fieldIndex++;
+        }
+
+        return false;
     }
 
     private static RLimits? ReadLimits(int processId, string limitsPath, int? fdCount, List<string> notes)
