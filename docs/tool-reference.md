@@ -1273,8 +1273,8 @@ unchanged.
 
 **Authorization.** The dispatcher is gated by `RequireAnyScope("read-counters","eventpipe")`
 and re-checks the per-kind scope inside the call so the scope boundaries
-are preserved: `kind="counters"` requires `read-counters`, every other
-kind requires `eventpipe` (`event_source` additionally honors the existing
+are preserved: `kind="counters"` and `kind="replica_counters"` require `read-counters`,
+every other kind requires `eventpipe` (`event_source` additionally honors the existing
 `eventsource-any` modifier).
 
 ---
@@ -1299,7 +1299,7 @@ each carries a `DEPRECATED` notice and will be removed in `0.9.0`.
 | `previewCount` | `int` | `10` | `method-params` only. Inline preview rows returned directly from `collect_sample`. 1–25. |
 | `includeSensitiveValues` | `bool` | `false` | `method-params` only. **Required to be `true`** as an explicit acknowledgement that parameter values may contain secrets / PII. |
 | `methods` | `MethodFilter[]?` | `null` | `method-params` only. Explicit filters (`moduleName`, `typeName`, `methodName`, optional `genericArity`, `signature`, `moduleVersionId`). 1–10 filters. |
-| `depth` | `SamplingDepth` | `Summary` | Verbosity; applies to `cpu` / `off_cpu`. Ignored by `allocation`. |
+| `depth` | `SamplingDepth` | `Summary` | Verbosity; applies to `cpu` / `off_cpu`. Ignored by `allocation`, `native-alloc`, and `method-params`. |
 | `symbolPath` | `string?` | `null` | `cpu` / `off_cpu` only. Symbol search path; remote `srv*http(s)://…` segments are denied unless allowlisted (issue #165 / M3). |
 | `resolveSourceLines` | `bool` | `true` | `cpu` only. Same as [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")). |
 | `maxResolvedSources` | `int?` | `topN` | `cpu` only. |
