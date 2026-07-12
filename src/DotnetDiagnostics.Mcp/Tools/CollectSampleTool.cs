@@ -98,7 +98,7 @@ public sealed class CollectSampleTool
         bool includeSensitiveValues = false,
         [Description("kind='method-params' only. Explicit method filters to instrument. Each filter requires moduleName, typeName, methodName, and may optionally add genericArity, signature, and moduleVersionId. Between 1 and 10 filters are allowed.")]
         IReadOnlyList<MethodFilter>? methods = null,
-        [Description("Verbosity (summary|detail|raw). Applies to kind='cpu' and kind='off_cpu' — see the legacy collectors for semantics. Ignored by kind='allocation'.")]
+        [Description("Verbosity (summary|detail|raw). Applies to kind='cpu' and kind='off_cpu' — see the legacy collectors for semantics. Ignored by kind='allocation', kind='native-alloc', and kind='method-params'.")]
         SamplingDepth depth = SamplingDepth.Summary,
         // kind=cpu / kind=off_cpu
         [Description("kind='cpu' or kind='off_cpu'. Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`. Ignored by kind='allocation' and by kind='cpu' when resolveSourceLines=false.")]

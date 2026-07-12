@@ -98,46 +98,58 @@ internal sealed class OidcJwtProvider
     {
         foreach (var rule in RequiredClaims)
         {
-            var values = principal.FindAll(rule.ClaimType)
-                .Select(c => c.Value)
-                .Where(v => !string.IsNullOrWhiteSpace(v))
-                .ToArray();
+            var hasValue = false;
+            var matchedAllowedValue = rule.AllowedValues.Count == 0;
 
-            if (values.Length == 0)
+            foreach (var claim in principal.FindAll(rule.ClaimType))
+            {
+                if (string.IsNullOrWhiteSpace(claim.Value))
+                {
+                    continue;
+                }
+
+                hasValue = true;
+
+                if (!matchedAllowedValue && rule.AllowedValues.Contains(claim.Value))
+                {
+                    matchedAllowedValue = true;
+                }
+
+                if (hasValue && matchedAllowedValue)
+                {
+                    break;
+                }
+            }
+
+            if (!hasValue)
             {
                 failureMessage = $"JWT is missing required claim '{rule.ClaimType}'.";
                 return false;
             }
 
-            if (rule.AllowedValues.Count == 0)
+            if (!matchedAllowedValue)
             {
-                continue;
+                failureMessage =
+                    $"JWT claim '{rule.ClaimType}' did not match any configured allowed value.";
+                return false;
             }
-
-            if (values.Any(rule.AllowedValues.Contains))
-            {
-                continue;
-            }
-
-            failureMessage =
-                $"JWT claim '{rule.ClaimType}' did not match any configured allowed value.";
-            return false;
         }
 
         failureMessage = null;
         return true;
     }
 
+    // Static readonly to avoid re-allocating this lookup array on every successful JWT mapping.
+    private static readonly string[] PrincipalNameClaimTypes = { "preferred_username", "client_id", "azp", "appid", "sub" };
+
     private static string ResolvePrincipalName(ClaimsPrincipal principal)
     {
-        foreach (var claimType in new[] { "preferred_username", "client_id", "azp", "appid", "sub" })
+        foreach (var claimType in PrincipalNameClaimTypes)
         {
-            var value = string.IsNullOrWhiteSpace(principal.FindFirst(claimType)?.Value)
-                ? null
-                : principal.FindFirst(claimType)!.Value.Trim();
-            if (value is not null)
+            var claim = principal.FindFirst(claimType);
+            if (claim is not null && !string.IsNullOrWhiteSpace(claim.Value))
             {
-                return value;
+                return claim.Value.Trim();
             }
         }
 
