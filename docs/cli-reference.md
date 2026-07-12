@@ -75,7 +75,7 @@ These apply to every command:
 |---|---|
 | `-p, --pid <pid\|name>` | Target OS process id, or a case-insensitive prefix of the visible .NET process entrypoint/name. Purely numeric values are always treated as literal PIDs. **Auto-resolved** when exactly one .NET process is visible and `--pid` is omitted. |
 | `--json` | Emit the raw `DiagnosticResult<T>` envelope as JSON instead of the human table. JSON is never colorized. |
-| `--launch -- <app> [args]` | **Dev mode.** Launch `<app>` as a child of the CLI so live attach works under `kernel.yama.ptrace_scope=1` with no privilege — see the [Linux note](#linux-ptrace-note). Supported by `capabilities`, `collect`, `dump`, `inspect-heap` (live), `get-bytes` (module) and `session`. Mutually exclusive with `--pid`; the child is terminated on exit. |
+| `--launch -- <app> [args]` | **Dev mode.** Launch `<app>` as a child of the CLI so live attach works under `kernel.yama.ptrace_scope=1` with no privilege — see the [Linux note](#linux-ptrace-note). Supported by `capabilities`, `collect`, `dump`, `inspect`, `inspect-heap` (live), `get-bytes` (module) and `session`. Mutually exclusive with `--pid`; the child is terminated on exit. |
 | `--suspend-startup` | **Cold-start capture (#446).** With `--launch`, launches the target *suspended* on a reverse-connect `DOTNET_DiagnosticPorts=…,suspend` port, arms the EventPipe session **before any managed code runs**, then resumes — capturing static constructors, DI container build, module-init exceptions and startup timings that the post-attach path always misses. Applies to `collect --kind startup`. CLI-only (the MCP server only attaches to existing pids). Default off. |
 | `-h, --help` | Show the global usage screen, or a focused screen for `<command> --help`. |
 
@@ -160,7 +160,7 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 | Option | Meaning |
 |---|---|
 | `--kind <kind>` | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`, `sweep`, `cpu`, `allocation`, `off_cpu` (alias `off-cpu`), `native-alloc`, `thread-snapshot`. |
-| `-d, --duration <int>` | Window in seconds (default: `counters` 5, `datas` 15, others 10). |
+| `-d, --duration <int>` | Window in seconds (default: `counters` 5, `datas` 15, `sweep` 6, others 10). |
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
 | `--top <n>` | Top-N cap for sampler kinds: `cpu`, `allocation`, `off_cpu`, `native-alloc`. |
 | `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |

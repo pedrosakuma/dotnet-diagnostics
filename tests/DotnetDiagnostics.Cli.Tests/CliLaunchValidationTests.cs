@@ -81,6 +81,7 @@ public sealed class CliLaunchValidationTests
     [InlineData("dump")]
     [InlineData("inspect-heap")]
     [InlineData("get-bytes")]
+    [InlineData("inspect")]
     public void Validate_LaunchOnSupportedLiveCommand_Succeeds(string command)
     {
         var options = CliOptions.Parse(
@@ -107,6 +108,17 @@ public sealed class CliLaunchValidationTests
     {
         var options = CliOptions.Parse(
             new[] { "get-bytes", "--kind", "dump", "--launch", "--", "dotnet", "App.dll" },
+            out _)!;
+
+        CliCommands.TryValidateLaunch(options, out var error).Should().BeFalse();
+        error.Should().Contain("live target");
+    }
+
+    [Fact]
+    public void Validate_LaunchWithGetBytesTrace_Fails()
+    {
+        var options = CliOptions.Parse(
+            new[] { "get-bytes", "--kind", "trace", "--launch", "--", "dotnet", "App.dll" },
             out _)!;
 
         CliCommands.TryValidateLaunch(options, out var error).Should().BeFalse();

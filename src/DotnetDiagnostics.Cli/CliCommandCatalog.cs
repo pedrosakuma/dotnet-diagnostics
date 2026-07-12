@@ -31,6 +31,7 @@ internal static class CliCommandCatalog
         "--native-alloc-sample-period", "--max-frames-per-thread", "--watch",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
         "--symptom", "--hypothesis", "--max-tool-calls", "--top-hotspots",
+        "--capture-when", "--capture", "--window", "--max-captures",
     ];
 
     public static readonly IReadOnlyList<string> DepthValues = ["summary", "detail", "raw"];
@@ -141,7 +142,7 @@ collect options:
       --depth <level>           Verbosity: summary, detail (default), raw.
       --top <int>               Top-N rows / hotspots for cpu, allocation, off_cpu, native-alloc.
       --max-events <int>        Per-kind cap (events / exceptions / activities).
-      --interval <int>          Refresh interval in seconds (counters, db). Default 1.
+      --interval <int>          Refresh interval in seconds (counters, db, kestrel, networking). Default 1.
       --symbol-path <path>      NT_SYMBOL_PATH-style search path for cpu, off_cpu and
                                 thread-snapshot symbol resolution.
       --export-trace            cpu: persist the raw .nettrace under the artifact root.
@@ -286,6 +287,7 @@ inspect-heap options:
                 "--include-delegate-targets",
                 "--include-duplicate-strings",
                 "--symbol-path",
+                "--export-trace",
             ]),
         new(
             "dump",
