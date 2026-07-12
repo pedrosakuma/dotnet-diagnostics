@@ -1,4 +1,3 @@
-using System.Collections;
 using System.Collections.Concurrent;
 using System.Diagnostics.Tracing;
 using System.Threading.Channels;
@@ -27,8 +26,6 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
     private const string AspNetCoreSource = "Microsoft.AspNetCore";
     private const string AspNetCoreHostingSource = "Microsoft.AspNetCore.Hosting";
     private const string HttpRequestInOperation = "HttpRequestIn";
-
-    private static readonly IReadOnlyDictionary<string, string> EmptyArguments = new Dictionary<string, string>(0, StringComparer.Ordinal);
 
     private readonly IThreadSnapshotInspector _threadSnapshotInspector;
     private readonly ILogger<RequestsNowCollector> _logger;
@@ -181,8 +178,8 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
         requestEvent = default;
 
         var sourceName = FirstNonEmpty(
-            FormatString(traceEvent.PayloadByName("ActivitySourceName")),
-            FormatString(traceEvent.PayloadByName("SourceName")));
+            DiagnosticSourcePayloadParser.ConvertToString(traceEvent.PayloadByName("ActivitySourceName")),
+            DiagnosticSourcePayloadParser.ConvertToString(traceEvent.PayloadByName("SourceName")));
         if (!IsAspNetCoreRequestSource(sourceName))
         {
             return false;
@@ -197,18 +194,18 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
         }
 
         var operationName = FirstNonEmpty(
-            FormatString(traceEvent.PayloadByName("ActivityName")),
-            FormatString(traceEvent.PayloadByName("EventName")));
+            DiagnosticSourcePayloadParser.ConvertToString(traceEvent.PayloadByName("ActivityName")),
+            DiagnosticSourcePayloadParser.ConvertToString(traceEvent.PayloadByName("EventName")));
         if (!operationName.Contains(HttpRequestInOperation, StringComparison.Ordinal))
         {
             return false;
         }
 
-        var arguments = ExtractArguments(traceEvent.PayloadByName("Arguments"));
-        var tags = ParseTagPairs(GetArgument(arguments, "Tags"));
+        var arguments = DiagnosticSourcePayloadParser.ExtractArguments(traceEvent.PayloadByName("Arguments"));
+        var tags = DiagnosticSourcePayloadParser.ParseBracketedTagPairs(GetArgument(arguments, "Tags"));
         var startedAt = ParseStartedAt(arguments) ?? new DateTimeOffset(traceEvent.TimeStamp.ToUniversalTime(), TimeSpan.Zero);
-        var traceId = FirstNonEmpty(GetArgument(arguments, "TraceId"), FormatString(traceEvent.PayloadByName("TraceId")));
-        var spanId = FirstNonEmpty(GetArgument(arguments, "SpanId"), FormatString(traceEvent.PayloadByName("SpanId")));
+        var traceId = FirstNonEmpty(GetArgument(arguments, "TraceId"), DiagnosticSourcePayloadParser.ConvertToString(traceEvent.PayloadByName("TraceId")));
+        var spanId = FirstNonEmpty(GetArgument(arguments, "SpanId"), DiagnosticSourcePayloadParser.ConvertToString(traceEvent.PayloadByName("SpanId")));
         var key = ComposeActivityId(traceId, spanId) ?? ComposeFallbackId(startedAt, traceEvent.ThreadID);
 
         requestEvent = new RequestEvent(
@@ -299,99 +296,6 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
         return method.Length == 0 || endpoint.Length == 0 ? default : (method, endpoint);
     }
 
-    private static IReadOnlyDictionary<string, string> ExtractArguments(object? payload)
-    {
-        if (payload is null)
-        {
-            return EmptyArguments;
-        }
-
-        var result = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (payload is IEnumerable enumerable && payload is not string)
-        {
-            foreach (var item in enumerable)
-            {
-                if (item is null)
-                {
-                    continue;
-                }
-
-                if (TryGetKeyValue(item, out var key, out var value))
-                {
-                    result[key] = FormatString(value);
-                }
-            }
-        }
-
-        return result;
-    }
-
-    private static bool TryGetKeyValue(object item, out string key, out object? value)
-    {
-        if (item is IDictionary<string, object> dictionary)
-        {
-            key = dictionary.TryGetValue("Key", out var dictionaryKey) ? FormatString(dictionaryKey) : string.Empty;
-            value = dictionary.TryGetValue("Value", out var dictionaryValue) ? dictionaryValue : null;
-            return !string.IsNullOrWhiteSpace(key);
-        }
-
-        if (item is DictionaryEntry entry)
-        {
-            key = FormatString(entry.Key);
-            value = entry.Value;
-            return !string.IsNullOrWhiteSpace(key);
-        }
-
-        if (item is IDictionary nonGenericDictionary)
-        {
-            key = nonGenericDictionary.Contains("Key") ? FormatString(nonGenericDictionary["Key"]) : string.Empty;
-            value = nonGenericDictionary.Contains("Value") ? nonGenericDictionary["Value"] : null;
-            return !string.IsNullOrWhiteSpace(key);
-        }
-
-        var type = item.GetType();
-        var keyProperty = type.GetProperty("Key");
-        var valueProperty = type.GetProperty("Value");
-        if (keyProperty is not null && valueProperty is not null)
-        {
-            key = FormatString(keyProperty.GetValue(item));
-            value = valueProperty.GetValue(item);
-            return !string.IsNullOrWhiteSpace(key);
-        }
-
-        key = string.Empty;
-        value = null;
-        return false;
-    }
-
-    private static IReadOnlyDictionary<string, string> ParseTagPairs(string? serialized)
-    {
-        if (string.IsNullOrWhiteSpace(serialized))
-        {
-            return EmptyArguments;
-        }
-
-        var result = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var rawPair in serialized.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var separator = rawPair.IndexOf('=');
-            if (separator <= 0)
-            {
-                continue;
-            }
-
-            var key = rawPair[..separator].Trim();
-            if (key.Length == 0)
-            {
-                continue;
-            }
-
-            result[key] = rawPair[(separator + 1)..].Trim();
-        }
-
-        return result;
-    }
-
     private static DateTimeOffset? ParseStartedAt(IReadOnlyDictionary<string, string> arguments)
     {
         var raw = GetArgument(arguments, "StartTimeTicks");
@@ -415,13 +319,6 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
 
     private static string FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
-
-    private static string FormatString(object? value) => value switch
-    {
-        null => string.Empty,
-        IFormattable formattable => formattable.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
-        _ => value.ToString() ?? string.Empty,
-    };
 
     private sealed record PendingRequest(
         string TraceId,
