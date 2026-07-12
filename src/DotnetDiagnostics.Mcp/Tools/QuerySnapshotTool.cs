@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Linq;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Comparison;
@@ -724,32 +725,14 @@ public sealed partial class QuerySnapshotTool
             deprecation,
             cancellationToken);
 
-    private static readonly string[] SupportedKinds =
-    {
-        DiagnosticTools.HeapSnapshotKind,
-        DiagnosticTools.ThreadSnapshotKind,
-        DiagnosticTools.OffCpuHandleKind,
-        "cpu-sample",
-        "allocation-sample",
-        DiagnosticTools.NativeAllocHandleKind,
-        CollectionHandleKinds.Counters,
-        CollectionHandleKinds.ExceptionSnapshot,
-        CollectionHandleKinds.CrashGuardSnapshot,
-        CollectionHandleKinds.GcEvents,
-        CollectionHandleKinds.GcDatas,
-        CollectionHandleKinds.EventCatalog,
-        CollectionHandleKinds.EventSource,
-        CollectionHandleKinds.Activities,
-        CollectionHandleKinds.LogSnapshot,
-        CollectionHandleKinds.JitSnapshot,
-        CollectionHandleKinds.ThreadPoolSnapshot,
-        CollectionHandleKinds.ContentionSnapshot,
-        CollectionHandleKinds.DbSnapshot,
-        CollectionHandleKinds.KestrelSnapshot,
-        CollectionHandleKinds.NetworkingSnapshot,
-        CollectionHandleKinds.StartupSnapshot,
-        MethodParameterCaptureUseCases.HandleKind,
-    };
+    // Derived from KindHandlers (QuerySnapshotTool.Dispatch.cs) so the two lists can never drift —
+    // a kind registered for dispatch is automatically reflected in the "supported kinds" error text
+    // and the RegisteredKinds parity surface used by tests. Computed on demand (not a field
+    // initializer) since static field init order across partial-class files is not guaranteed.
+    private static string[] SupportedKinds => KindHandlers.Keys.ToArray();
+
+    /// <summary>Test-visible parity surface: every collection handle kind query_snapshot can dispatch.</summary>
+    internal static IReadOnlyCollection<string> RegisteredKinds => KindHandlers.Keys;
 
     /// <summary>
     /// Projects a typed <see cref="DiagnosticResult{T}"/> into the polymorphic

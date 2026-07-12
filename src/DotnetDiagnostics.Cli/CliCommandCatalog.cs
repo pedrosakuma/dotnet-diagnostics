@@ -28,8 +28,8 @@ internal static class CliCommandCatalog
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--dump-type", "--out", "--mvid",
         "--asset", "--handle", "--view", "--provider-filter", "--root-method-filter", "--rank-by",
         "--type-filter", "--address", "--max-depth", "--max-nodes", "--thread-id",
-        "--native-alloc-sample-period", "--max-frames-per-thread",
-        "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode",
+        "--native-alloc-sample-period", "--max-frames-per-thread", "--watch",
+        "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
         "--symptom", "--hypothesis", "--max-tool-calls", "--top-hotspots",
     ];
 
@@ -215,6 +215,8 @@ collect options:
                 "--max-frames-per-thread",
                 "--include-runtime-frames",
                 "--include-native-frames",
+                "--watch",
+                "--suspend-startup",
                 "--provider",
                 "--meter",
                 "--source",
@@ -310,6 +312,7 @@ query options:
       --changes-only            Session query: DATAS 'tuning' view; show only heap-count changes.
       --root-method-filter <t>  Session query: CPU method filter; event-catalog event-name filter.
       --thread-id <int>         Session query: ManagedThreadId; required for thread-snapshot 'frame-vars' view.
+      --stack-rank <int>        Session query: 1-based rank for the off-CPU 'stack' view.
   Note: drill-down handles are MCP-session scoped; the one-shot CLI emits its full result
   inline on the originating command (use --depth detail / --json). 'query' always returns a
   NotSupported envelope (exit 1).
@@ -343,6 +346,7 @@ query options:
                 "--min-count",
                 "--top",
                 "--threshold",
+                "--stack-rank",
             ]),
         new(
             "get-bytes",
