@@ -20,8 +20,7 @@ public sealed partial class EventPipeLogCollector : ILogCollector
     private const string TruncatedSuffix = "…[truncated]";
 
     private static readonly IReadOnlyDictionary<string, string> EmptyScopes = new Dictionary<string, string>(0, StringComparer.Ordinal);
-    private static readonly Dictionary<string, Regex> WildcardRegexCache = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly object WildcardRegexLock = new();
+    private static readonly BoundedWildcardRegexCache WildcardRegexCache = new();
 
     private readonly SensitiveDataRedactor _redactor;
     private readonly ILogger<EventPipeLogCollector> _logger;
@@ -618,20 +617,11 @@ public sealed partial class EventPipeLogCollector : ILogCollector
         return false;
     }
 
-    private static Regex GetWildcardRegex(string pattern)
+    private static Regex GetWildcardRegex(string pattern) => WildcardRegexCache.GetOrAdd(pattern, static filterPattern =>
     {
-        lock (WildcardRegexLock)
-        {
-            if (!WildcardRegexCache.TryGetValue(pattern, out var regex))
-            {
-                var escaped = Regex.Escape(pattern).Replace(@"\*", ".*").Replace(@"\?", ".");
-                regex = new Regex($"^{escaped}$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-                WildcardRegexCache[pattern] = regex;
-            }
-
-            return regex;
-        }
-    }
+        var escaped = Regex.Escape(filterPattern).Replace(@"\*", ".*").Replace(@"\?", ".");
+        return new Regex($"^{escaped}$", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    });
 
     private static List<string> BuildNotes(bool includeJsonPayload, IReadOnlyList<string> categoryFilters, bool truncated, int maxEvents, int maxMessageBytes)
     {

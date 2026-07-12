@@ -203,6 +203,8 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         };
 
         process.Start();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = process.StandardError.ReadToEndAsync(ct);
         try
         {
             await process.WaitForExitAsync(ct).ConfigureAwait(false);
@@ -213,9 +215,10 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             throw;
         }
 
+        await stdoutTask.ConfigureAwait(false);
+        var stderr = await stderrTask.ConfigureAwait(false);
         if (process.ExitCode != 0)
         {
-            var stderr = await process.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
             throw new InvalidOperationException(
                 $"perf record exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
         }
