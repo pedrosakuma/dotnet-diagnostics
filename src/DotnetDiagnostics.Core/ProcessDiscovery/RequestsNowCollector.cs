@@ -21,6 +21,8 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
     private const long MessagesKeyword = 0x1;
     private const long EventsKeyword = 0x2;
     private const long ProviderKeywords = MessagesKeyword | EventsKeyword;
+    private static readonly TimeSpan WorkerDrainBudget = TimeSpan.FromSeconds(2);
+    private const int SnapshotQueueCapacity = 256;
     private const string FilterArgumentName = "FilterAndPayloadSpecs";
     private const string TransformSuffix = ":-TraceId;SpanId;ParentSpanId;StartTimeTicks=StartTimeUtc.Ticks;DurationTicks=Duration.Ticks;ActivitySourceName=Source.Name;DisplayName;Tags=TagObjects.*Enumerate";
     private const string AspNetCoreSource = "Microsoft.AspNetCore";
@@ -75,36 +77,48 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
             .ConfigureAwait(false);
 
         var requests = new ConcurrentDictionary<string, PendingRequest>(StringComparer.Ordinal);
-        var snapshotRequests = Channel.CreateUnbounded<SnapshotCaptureRequest>(new UnboundedChannelOptions
+        using var snapshotCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var snapshotRequests = Channel.CreateBounded<SnapshotCaptureRequest>(new BoundedChannelOptions(SnapshotQueueCapacity)
         {
             SingleReader = true,
             SingleWriter = false,
+            FullMode = BoundedChannelFullMode.Wait,
         });
         var snapshotOptions = new ThreadSnapshotOptions(MaxFramesPerThread: Math.Max(16, topFrames));
 
         var snapshotTask = Task.Run(async () =>
         {
-            await foreach (var snapshotRequest in snapshotRequests.Reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
+            try
             {
-                try
+                await foreach (var snapshotRequest in snapshotRequests.Reader.ReadAllAsync(snapshotCancellation.Token).ConfigureAwait(false))
                 {
-                    var threadSnapshot = await _threadSnapshotInspector
-                        .InspectLiveAsync(processId, snapshotOptions, CancellationToken.None)
-                        .ConfigureAwait(false);
-                    var frames = FindFramesForThread(threadSnapshot, snapshotRequest.ThreadId, topFrames);
-                    if (requests.TryGetValue(snapshotRequest.Key, out var existing))
+                    try
                     {
-                        requests.TryUpdate(snapshotRequest.Key, existing with { TopFrames = frames }, existing);
+                        var threadSnapshot = await _threadSnapshotInspector
+                            .InspectLiveAsync(processId, snapshotOptions, snapshotCancellation.Token)
+                            .ConfigureAwait(false);
+                        var frames = FindFramesForThread(threadSnapshot, snapshotRequest.ThreadId, topFrames);
+                        if (requests.TryGetValue(snapshotRequest.Key, out var existing))
+                        {
+                            requests.TryUpdate(snapshotRequest.Key, existing with { TopFrames = frames }, existing);
+                        }
+                    }
+                    catch (OperationCanceledException) when (snapshotCancellation.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(
+                            ex,
+                            "Requests-now failed to capture immediate stack for pid {Pid} thread {ThreadId}.",
+                            processId,
+                            snapshotRequest.ThreadId);
                     }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(
-                        ex,
-                        "Requests-now failed to capture immediate stack for pid {Pid} thread {ThreadId}.",
-                        processId,
-                        snapshotRequest.ThreadId);
-                }
+            }
+            catch (OperationCanceledException) when (snapshotCancellation.IsCancellationRequested)
+            {
             }
         }, CancellationToken.None);
 
@@ -124,7 +138,14 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
                     if (requestEvent.IsStart)
                     {
                         requests[requestEvent.Key] = requestEvent.PendingRequest!;
-                        snapshotRequests.Writer.TryWrite(new SnapshotCaptureRequest(requestEvent.Key, requestEvent.PendingRequest!.ThreadId));
+                        if (!snapshotRequests.Writer.TryWrite(new SnapshotCaptureRequest(requestEvent.Key, requestEvent.PendingRequest!.ThreadId)))
+                        {
+                            requests.TryRemove(requestEvent.Key, out _);
+                            _logger.LogDebug(
+                                "Requests-now dropped a thread snapshot request for pid {Pid} thread {ThreadId} because the bounded queue is full.",
+                                processId,
+                                requestEvent.PendingRequest!.ThreadId);
+                        }
                     }
                     else
                     {
@@ -147,9 +168,26 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
         finally
         {
             try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
+            try { await processingTask.WaitAsync(WorkerDrainBudget, CancellationToken.None).ConfigureAwait(false); } catch (TimeoutException) { _logger.LogDebug("Requests-now processing task did not drain within {DrainBudget} for pid {Pid}.", WorkerDrainBudget, processId); } catch (Exception) { }
             snapshotRequests.Writer.TryComplete();
-            try { await snapshotTask.ConfigureAwait(false); } catch (Exception) { }
+            if (cancellationToken.IsCancellationRequested)
+            {
+                snapshotCancellation.Cancel();
+            }
+
+            try
+            {
+                await snapshotTask.WaitAsync(WorkerDrainBudget, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogDebug("Requests-now snapshot task did not drain within {DrainBudget} for pid {Pid}.", WorkerDrainBudget, processId);
+                snapshotCancellation.Cancel();
+                try { await snapshotTask.WaitAsync(WorkerDrainBudget, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
+            }
+            catch (Exception)
+            {
+            }
             session.Dispose();
         }
 
