@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.IO;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
@@ -13,7 +12,28 @@ namespace DotnetDiagnostics.Core.CpuSampling;
 /// </summary>
 public sealed class MvidReader
 {
-    private readonly ConcurrentDictionary<CacheKey, Guid?> _cache = new();
+    private const int DefaultCapacity = 128;
+
+    private readonly int _capacity;
+    private readonly Dictionary<CacheKey, Guid?> _cache = [];
+    private readonly Queue<CacheKey> _insertionOrder = new();
+    private readonly object _lock = new();
+
+    public MvidReader(int capacity = DefaultCapacity)
+    {
+        _capacity = capacity > 0 ? capacity : DefaultCapacity;
+    }
+
+    internal int CacheEntryCount
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _cache.Count;
+            }
+        }
+    }
 
     public Guid? TryRead(string? assemblyPath)
     {
@@ -26,7 +46,24 @@ public sealed class MvidReader
             if (!info.Exists) return null;
             var normalizedPath = OperatingSystem.IsWindows() ? fullPath.ToUpperInvariant() : fullPath;
             var key = new CacheKey(normalizedPath, info.LastWriteTimeUtc.Ticks, info.Length);
-            return _cache.GetOrAdd(key, static k => ReadFromDisk(k.Path));
+
+            lock (_lock)
+            {
+                if (_cache.TryGetValue(key, out var cached))
+                {
+                    return cached;
+                }
+
+                var value = ReadFromDisk(key.Path);
+                _cache[key] = value;
+                _insertionOrder.Enqueue(key);
+                while (_cache.Count > _capacity && _insertionOrder.TryDequeue(out var oldest))
+                {
+                    _cache.Remove(oldest);
+                }
+
+                return value;
+            }
         }
         catch (Exception)
         {
