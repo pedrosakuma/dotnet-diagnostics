@@ -19,6 +19,7 @@
     <ProjectReference Include="../../src/DotnetDiagnostics.BenchmarkDotNet/DotnetDiagnostics.BenchmarkDotNet.csproj" />
     <ProjectReference Include="../../src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj" />
     <ProjectReference Include="../../tests/DotnetDiagnostics.TestSupport/DotnetDiagnostics.TestSupport.csproj" />
+    <ProjectReference Include="../../samples/CoreClrSample/CoreClrSample.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

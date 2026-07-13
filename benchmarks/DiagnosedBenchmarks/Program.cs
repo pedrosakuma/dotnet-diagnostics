@@ -24,8 +24,26 @@ if (args.Length >= 2 && string.Equals(args[0], "--list-nettrace-processes", Stri
     return NettraceSelfTimeAnalyzer.ListProcessesToConsole(args[1]);
 }
 
+if (args.Length >= 2 && string.Equals(args[0], "--analyze-trace", StringComparison.Ordinal))
+{
+    var report = GroupCHotpathTraceAnalyzer.Analyze(args[1]);
+    Console.WriteLine($"{report.TracePath} | pid {report.ProcessId} | samples {report.TotalSamples}");
+    foreach (var method in report.Methods)
+    {
+        Console.WriteLine($"{method.ExclusivePercent,5:0.0}% {method.Method}");
+    }
+
+    return 0;
+}
+
+var runStartedUtc = DateTimeOffset.UtcNow;
+
 BenchmarkSwitcher
     .FromAssembly(typeof(WorkloadBenchmarks).Assembly)
     .Run(args, new DiagnosedConfig());
+
+GroupCHotpathTraceAnalyzer.PrintRecentReports(
+    Path.Combine(Directory.GetCurrentDirectory(), "BenchmarkDotNet.Artifacts"),
+    runStartedUtc);
 
 return 0;
