@@ -72,7 +72,7 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<ISessionTargetBindingStore, MemorySessionTargetBindingStore>();
         services.AddSingleton<IProcessContextResolver, ProcessContextResolver>();
         services.AddSingleton<ICounterCollector, EventPipeCounterCollector>();
-        services.AddSingleton<MvidReader>();
+        services.AddSingleton(_ => new MvidReader(capacity: 128));
         services.AddSingleton<FileChunkReader>();
         services.AddSingleton<ClrMdMethodInstantiationEnricher>();
         services.AddSingleton<EventPipeCpuSampler>();
