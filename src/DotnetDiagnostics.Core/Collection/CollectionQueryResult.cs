@@ -569,6 +569,7 @@ public sealed record NetworkingDnsView(
 public sealed record StartupSummaryView(
     int TotalAssemblyLoads,
     int TotalModuleLoads,
+    bool Truncated,
     Startup.StartupDiAggregate Di,
     IReadOnlyList<Startup.StartupLoadAggregate> TopAssemblies,
     IReadOnlyList<Startup.StartupLoadAggregate> TopModules,
@@ -576,23 +577,27 @@ public sealed record StartupSummaryView(
 
 public sealed record StartupAssembliesView(
     int TotalAssemblyLoads,
+    bool Truncated,
     int Returned,
     IReadOnlyList<Startup.StartupAssemblyLoad> Loads,
     IReadOnlyList<Startup.StartupLoadAggregate> ByAssembly);
 
 public sealed record StartupModulesView(
     int TotalModuleLoads,
+    bool Truncated,
     int Returned,
     IReadOnlyList<Startup.StartupModuleLoad> Loads,
     IReadOnlyList<Startup.StartupLoadAggregate> ByModule);
 
 public sealed record StartupDiView(
     Startup.StartupDiAggregate Aggregate,
+    bool Truncated,
     int Returned,
     IReadOnlyList<Startup.StartupDiEvent> Events,
     IReadOnlyList<string> Notes);
 
 public sealed record StartupTimelineView(
     int TotalEvents,
+    bool Truncated,
     int Returned,
     IReadOnlyList<Startup.StartupTimelineEvent> Events);

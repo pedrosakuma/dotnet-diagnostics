@@ -804,16 +804,6 @@ public static class CollectionQueryDispatcher
 
     private static CollectionQueryResult Render(StartupSnapshot snapshot, string view, int topN)
     {
-        var topAssemblies = BuildLoadAggregates(
-            snapshot.AssemblyLoads,
-            static item => item.AssemblyName,
-            static item => item.Timestamp,
-            topN);
-        var topModules = BuildLoadAggregates(
-            snapshot.ModuleLoads,
-            static item => item.ModuleName,
-            static item => item.Timestamp,
-            topN);
         var diAggregate = new StartupDiAggregate(
             snapshot.TotalDiEvents,
             snapshot.DiServiceProviderBuiltCount,
@@ -829,52 +819,38 @@ public static class CollectionQueryDispatcher
         {
             "assemblies" => new StartupAssembliesView(
                 snapshot.TotalAssemblyLoads,
+                snapshot.Truncated,
                 Math.Min(topN, snapshot.AssemblyLoads.Count),
                 snapshot.AssemblyLoads.Take(topN).ToList(),
-                topAssemblies),
+                snapshot.AssemblyAggregates.Take(topN).ToList()),
             "modules" => new StartupModulesView(
                 snapshot.TotalModuleLoads,
+                snapshot.Truncated,
                 Math.Min(topN, snapshot.ModuleLoads.Count),
                 snapshot.ModuleLoads.Take(topN).ToList(),
-                topModules),
+                snapshot.ModuleAggregates.Take(topN).ToList()),
             "di" => new StartupDiView(
                 diAggregate,
+                snapshot.Truncated,
                 Math.Min(topN, snapshot.DiEvents.Count),
                 snapshot.DiEvents.Take(topN).ToList(),
                 snapshot.Notes),
             "timeline" => new StartupTimelineView(
-                snapshot.Timeline.Count,
+                snapshot.TotalTimelineEvents,
+                snapshot.Truncated,
                 Math.Min(topN, snapshot.Timeline.Count),
                 snapshot.Timeline.Take(topN).ToList()),
             _ => new StartupSummaryView(
                 snapshot.TotalAssemblyLoads,
                 snapshot.TotalModuleLoads,
+                snapshot.Truncated,
                 diAggregate,
-                topAssemblies,
-                topModules,
+                snapshot.AssemblyAggregates.Take(topN).ToList(),
+                snapshot.ModuleAggregates.Take(topN).ToList(),
                 snapshot.Notes),
         };
 
         return new CollectionQueryResult(
             CollectionHandleKinds.StartupSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
-    }
-
-    private static List<StartupLoadAggregate> BuildLoadAggregates<T>(
-        IReadOnlyList<T> items,
-        Func<T, string> nameSelector,
-        Func<T, DateTimeOffset> timestampSelector,
-        int topN)
-    {
-        return items
-            .GroupBy(nameSelector)
-            .Select(group => new StartupLoadAggregate(
-                group.Key,
-                group.Count(),
-                group.Min(timestampSelector),
-                group.Max(timestampSelector)))
-            .OrderByDescending(static group => group.Count)
-            .ThenBy(static group => group.Name, StringComparer.Ordinal)
-            .Take(topN)
-            .ToList();
     }
 }

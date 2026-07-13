@@ -43,6 +43,7 @@ namespace DotnetDiagnostics.Core.UseCases;
 public static class EventCollectionUseCases
 {
     private static readonly TimeSpan CollectionHandleTtl = TimeSpan.FromMinutes(10);
+    internal const int MaxStartupDurationSeconds = 30;
 
     /// <summary>
     /// Snapshots EventCounters / Meters and curates a headline summary with threshold-driven hints.
@@ -1063,7 +1064,8 @@ public static class EventCollectionUseCases
                         : snapshot;
                     var summary = snapshot.TotalAssemblyLoads == 0 && snapshot.TotalModuleLoads == 0 && snapshot.TotalDiEvents == 0
                         ? $"No startup loader/DI events captured in {context.DurationSeconds}s. Attaching to an already-running process misses events emitted before attach; true cold-start capture requires starting EventPipe before or at process launch."
-                        : $"Captured startup activity over {context.DurationSeconds}s: assemblies={snapshot.TotalAssemblyLoads}, modules={snapshot.TotalModuleLoads}, DI events={snapshot.TotalDiEvents}, service providers built={snapshot.DiServiceProviderBuiltCount}, observed DI span={snapshot.ObservedDiActivityDuration.TotalMilliseconds:F1}ms.";
+                        : $"Captured startup activity over {context.DurationSeconds}s: assemblies={snapshot.TotalAssemblyLoads}, modules={snapshot.TotalModuleLoads}, DI events={snapshot.TotalDiEvents}, service providers built={snapshot.DiServiceProviderBuiltCount}, observed DI span={snapshot.ObservedDiActivityDuration.TotalMilliseconds:F1}ms." +
+                          (snapshot.Truncated ? " Retained startup event lists were truncated by collector safety caps; totals remain exact." : string.Empty);
                     return DiagnosticResult.OkWithHandle(
                         inlineSnapshot,
                         summary,
@@ -1078,6 +1080,7 @@ public static class EventCollectionUseCases
                 }),
             [
                 new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
+                new ValidationRule(nameof(durationSeconds), durationSeconds <= MaxStartupDurationSeconds, $"must be <= {MaxStartupDurationSeconds}"),
             ],
             cancellationToken);
 
@@ -1099,6 +1102,7 @@ public static class EventCollectionUseCases
         ArgumentNullException.ThrowIfNull(handles);
         ArgumentNullException.ThrowIfNull(target);
         if (durationSeconds < 1) return InvalidArg<StartupSnapshot>(nameof(durationSeconds), "must be >= 1");
+        if (durationSeconds > MaxStartupDurationSeconds) return InvalidArg<StartupSnapshot>(nameof(durationSeconds), $"must be <= {MaxStartupDurationSeconds}");
 
         var pid = target.ProcessId;
         var snapshot = await collector.CollectColdStartAsync(target, TimeSpan.FromSeconds(durationSeconds), cancellationToken).ConfigureAwait(false);
@@ -1115,7 +1119,8 @@ public static class EventCollectionUseCases
             };
         }
 
-        var summary = $"Cold-start capture over {durationSeconds}s (suspended reverse-connect; pre-attach events included): assemblies={snapshot.TotalAssemblyLoads}, modules={snapshot.TotalModuleLoads}, DI events={snapshot.TotalDiEvents}, service providers built={snapshot.DiServiceProviderBuiltCount}, observed DI span={snapshot.ObservedDiActivityDuration.TotalMilliseconds:F1}ms.";
+        var summary = $"Cold-start capture over {durationSeconds}s (suspended reverse-connect; pre-attach events included): assemblies={snapshot.TotalAssemblyLoads}, modules={snapshot.TotalModuleLoads}, DI events={snapshot.TotalDiEvents}, service providers built={snapshot.DiServiceProviderBuiltCount}, observed DI span={snapshot.ObservedDiActivityDuration.TotalMilliseconds:F1}ms." +
+                      (snapshot.Truncated ? " Retained startup event lists were truncated by collector safety caps; totals remain exact." : string.Empty);
 
         var handle = handles.Register(pid, CollectionHandleKinds.StartupSnapshot, snapshot, CollectionHandleTtl);
         return DiagnosticResult.OkWithHandle(

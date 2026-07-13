@@ -14,8 +14,13 @@ public sealed class EventPipeStartupCollector : IStartupCollector
     private const string RuntimeProvider = "Microsoft-Windows-DotNETRuntime";
     private const string DependencyInjectionProvider = "Microsoft-Extensions-DependencyInjection";
     private const long LoaderKeyword = 0x8;
+    internal const int MaxRetainedAssemblyLoads = 1_000;
+    internal const int MaxRetainedModuleLoads = 1_000;
+    internal const int MaxRetainedDiEvents = 1_000;
+    internal const int MaxRetainedTimelineEvents = 2_000;
     private const string UnknownAssembly = "(unknown assembly)";
     private const string UnknownModule = "(unknown module)";
+    private static readonly TimeSpan ProcessingDrainBudget = TimeSpan.FromSeconds(5);
 
     private static readonly string[] AssemblyNamePayloads =
     [
@@ -130,10 +135,8 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         notes.Add("Static constructor timing is not exposed as a clean EventPipe event by this collector; no static-constructor duration is inferred.");
         notes.Add("JIT-at-startup is covered by collect_events(kind=\"jit\"); startup does not duplicate JIT events.");
         notes.Add("DependencyInjection ServiceProviderBuilt can be replayed when the provider is enabled for already-built providers; observed DI activity duration is the span between captured DI events, not an exact container-build stopwatch.");
-        var assemblies = new List<StartupAssemblyLoad>();
-        var modules = new List<StartupModuleLoad>();
-        var diEvents = new List<StartupDiEvent>();
-        var timeline = new List<StartupTimelineEvent>();
+        var capture = new StartupCaptureBuffer();
+        var sync = new object();
 
         var processingTask = Task.Run(() =>
         {
@@ -142,21 +145,24 @@ public sealed class EventPipeStartupCollector : IStartupCollector
                 using var source = new EventPipeEventSource(session.EventStream);
                 source.Dynamic.All += traceEvent =>
                 {
-                    try
+                    lock (sync)
                     {
-                        switch (traceEvent.ProviderName)
+                        try
                         {
-                            case RuntimeProvider:
-                                HandleRuntimeEvent(traceEvent, assemblies, modules, timeline);
-                                break;
-                            case DependencyInjectionProvider:
-                                HandleDependencyInjectionEvent(traceEvent, diEvents, timeline);
-                                break;
+                            switch (traceEvent.ProviderName)
+                            {
+                                case RuntimeProvider:
+                                    HandleRuntimeEvent(traceEvent, capture);
+                                    break;
+                                case DependencyInjectionProvider:
+                                    HandleDependencyInjectionEvent(traceEvent, capture);
+                                    break;
+                            }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        notes.Add($"Warning: failed to parse {traceEvent.ProviderName}/{traceEvent.EventName}: {ex.GetType().Name}.");
+                        catch (Exception ex)
+                        {
+                            notes.Add($"Warning: failed to parse {traceEvent.ProviderName}/{traceEvent.EventName}: {ex.GetType().Name}.");
+                        }
                     }
                 };
 
@@ -175,41 +181,100 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         finally
         {
             try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
+            try
+            {
+                await processingTask.WaitAsync(ProcessingDrainBudget, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogDebug(
+                    "Startup EventPipe processing did not drain within {DrainBudget} for pid {Pid}; returning captured data so far.",
+                    ProcessingDrainBudget,
+                    processId);
+                _ = processingTask.ContinueWith(
+                    static task => _ = task.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+            catch (Exception)
+            {
+            }
             session.Dispose();
         }
 
-        if (assemblies.Count == 0 && modules.Count == 0)
+        List<StartupAssemblyLoad> orderedAssemblies;
+        List<StartupModuleLoad> orderedModules;
+        List<StartupDiEvent> orderedDiEvents;
+        List<StartupTimelineEvent> orderedTimeline;
+        List<StartupLoadAggregate> assemblyAggregates;
+        List<StartupLoadAggregate> moduleAggregates;
+        List<string> snapshotNotes;
+        int totalAssemblyLoads;
+        int totalModuleLoads;
+        int totalTimelineEvents;
+        int totalDiEvents;
+        int diServiceProviderBuiltCount;
+        int diServiceProviderDescriptorsCount;
+        int diCallSiteBuiltCount;
+        int diServiceResolvedCount;
+        int diExpressionTreeGeneratedCount;
+        int diDynamicMethodBuiltCount;
+        int diServiceRealizationFailedCount;
+        bool truncated;
+        TimeSpan observedDiActivityDuration;
+        lock (sync)
         {
-            notes.Add("No assembly or module load events were observed in the collection window.");
+            totalAssemblyLoads = capture.TotalAssemblyLoads;
+            totalModuleLoads = capture.TotalModuleLoads;
+            totalTimelineEvents = capture.TotalTimelineEvents;
+            totalDiEvents = capture.TotalDiEvents;
+            diServiceProviderBuiltCount = capture.DiServiceProviderBuiltCount;
+            diServiceProviderDescriptorsCount = capture.DiServiceProviderDescriptorsCount;
+            diCallSiteBuiltCount = capture.DiCallSiteBuiltCount;
+            diServiceResolvedCount = capture.DiServiceResolvedCount;
+            diExpressionTreeGeneratedCount = capture.DiExpressionTreeGeneratedCount;
+            diDynamicMethodBuiltCount = capture.DiDynamicMethodBuiltCount;
+            diServiceRealizationFailedCount = capture.DiServiceRealizationFailedCount;
+            truncated = capture.Truncated;
+            observedDiActivityDuration = capture.ObservedDiActivityDuration;
+            orderedAssemblies = capture.AssemblyLoads
+                .OrderBy(static item => item.Timestamp)
+                .ThenBy(static item => item.AssemblyName, StringComparer.Ordinal)
+                .ToList();
+            orderedModules = capture.ModuleLoads
+                .OrderBy(static item => item.Timestamp)
+                .ThenBy(static item => item.ModuleName, StringComparer.Ordinal)
+                .ToList();
+            orderedDiEvents = capture.DiEvents
+                .OrderBy(static item => item.Timestamp)
+                .ThenBy(static item => item.EventName, StringComparer.Ordinal)
+                .ToList();
+            orderedTimeline = capture.Timeline
+                .OrderBy(static item => item.Timestamp)
+                .ThenBy(static item => item.Category, StringComparer.Ordinal)
+                .ThenBy(static item => item.Name, StringComparer.Ordinal)
+                .ToList();
+            assemblyAggregates = capture.BuildAssemblyAggregates();
+            moduleAggregates = capture.BuildModuleAggregates();
+            snapshotNotes = notes.ToList();
         }
 
-        if (diEvents.Count == 0)
+        if (totalAssemblyLoads == 0 && totalModuleLoads == 0)
         {
-            notes.Add("No Microsoft-Extensions-DependencyInjection events were observed in the collection window.");
+            snapshotNotes.Add("No assembly or module load events were observed in the collection window.");
         }
 
-        var orderedAssemblies = assemblies
-            .OrderBy(static item => item.Timestamp)
-            .ThenBy(static item => item.AssemblyName, StringComparer.Ordinal)
-            .ToList();
-        var orderedModules = modules
-            .OrderBy(static item => item.Timestamp)
-            .ThenBy(static item => item.ModuleName, StringComparer.Ordinal)
-            .ToList();
-        var orderedDiEvents = diEvents
-            .OrderBy(static item => item.Timestamp)
-            .ThenBy(static item => item.EventName, StringComparer.Ordinal)
-            .ToList();
-        var orderedTimeline = timeline
-            .OrderBy(static item => item.Timestamp)
-            .ThenBy(static item => item.Category, StringComparer.Ordinal)
-            .ThenBy(static item => item.Name, StringComparer.Ordinal)
-            .ToList();
+        if (totalDiEvents == 0)
+        {
+            snapshotNotes.Add("No Microsoft-Extensions-DependencyInjection events were observed in the collection window.");
+        }
 
-        var observedDiActivityDuration = orderedDiEvents.Count > 1
-            ? orderedDiEvents[^1].Timestamp - orderedDiEvents[0].Timestamp
-            : TimeSpan.Zero;
+        if (truncated)
+        {
+            snapshotNotes.Add(
+                $"Startup capture hit retention caps (assemblies={MaxRetainedAssemblyLoads}, modules={MaxRetainedModuleLoads}, di={MaxRetainedDiEvents}, timeline={MaxRetainedTimelineEvents}). Totals remain exact, but retained event lists/timeline are bounded samples.");
+        }
         if (observedDiActivityDuration < TimeSpan.Zero)
         {
             observedDiActivityDuration = TimeSpan.Zero;
@@ -219,41 +284,41 @@ public sealed class EventPipeStartupCollector : IStartupCollector
             ProcessId: processId,
             StartedAt: startedAt,
             Duration: duration,
-            TotalAssemblyLoads: orderedAssemblies.Count,
-            TotalModuleLoads: orderedModules.Count,
-            TotalDiEvents: orderedDiEvents.Count,
-            DiServiceProviderBuiltCount: CountEvents(orderedDiEvents, "ServiceProviderBuilt"),
-            DiServiceProviderDescriptorsCount: CountEvents(orderedDiEvents, "ServiceProviderDescriptors"),
-            DiCallSiteBuiltCount: CountEvents(orderedDiEvents, "CallSiteBuilt"),
-            DiServiceResolvedCount: CountEvents(orderedDiEvents, "ServiceResolved") + CountEvents(orderedDiEvents, "ServiceRealized"),
-            DiExpressionTreeGeneratedCount: CountEvents(orderedDiEvents, "ExpressionTreeGenerated"),
-            DiDynamicMethodBuiltCount: CountEvents(orderedDiEvents, "DynamicMethodBuilt"),
-            DiServiceRealizationFailedCount: CountEvents(orderedDiEvents, "ServiceRealizationFailed"),
+            TotalAssemblyLoads: totalAssemblyLoads,
+            TotalModuleLoads: totalModuleLoads,
+            TotalTimelineEvents: totalTimelineEvents,
+            TotalDiEvents: totalDiEvents,
+            DiServiceProviderBuiltCount: diServiceProviderBuiltCount,
+            DiServiceProviderDescriptorsCount: diServiceProviderDescriptorsCount,
+            DiCallSiteBuiltCount: diCallSiteBuiltCount,
+            DiServiceResolvedCount: diServiceResolvedCount,
+            DiExpressionTreeGeneratedCount: diExpressionTreeGeneratedCount,
+            DiDynamicMethodBuiltCount: diDynamicMethodBuiltCount,
+            DiServiceRealizationFailedCount: diServiceRealizationFailedCount,
             ObservedDiActivityDuration: observedDiActivityDuration,
             AssemblyLoads: orderedAssemblies,
+            AssemblyAggregates: assemblyAggregates,
             ModuleLoads: orderedModules,
+            ModuleAggregates: moduleAggregates,
             DiEvents: orderedDiEvents,
             Timeline: orderedTimeline,
-            Notes: notes.OrderBy(static note => note, StringComparer.Ordinal).ToList());
+            Truncated: truncated,
+            Notes: snapshotNotes.OrderBy(static note => note, StringComparer.Ordinal).ToList());
     }
 
     private static void HandleRuntimeEvent(
         TraceEvent traceEvent,
-        List<StartupAssemblyLoad> assemblies,
-        List<StartupModuleLoad> modules,
-        List<StartupTimelineEvent> timeline)
+        StartupCaptureBuffer capture)
     {
         if (IsAssemblyLoadEvent(traceEvent.EventName))
         {
             var timestamp = ToUtcOffset(traceEvent.TimeStamp);
             var assemblyName = FirstNonEmpty(PayloadString(traceEvent, AssemblyNamePayloads), FirstStringPayload(traceEvent)) ?? UnknownAssembly;
-            var assembly = new StartupAssemblyLoad(
+            capture.AddAssembly(new StartupAssemblyLoad(
                 timestamp,
                 traceEvent.EventName,
                 assemblyName,
-                PayloadInt64(traceEvent, "AssemblyID"));
-            assemblies.Add(assembly);
-            timeline.Add(new StartupTimelineEvent(timestamp, "assembly", traceEvent.EventName, assembly.AssemblyName));
+                PayloadInt64(traceEvent, "AssemblyID")));
             return;
         }
 
@@ -265,22 +330,19 @@ public sealed class EventPipeStartupCollector : IStartupCollector
                 PayloadString(traceEvent, ModuleNamePayloads),
                 string.IsNullOrWhiteSpace(modulePath) ? null : Path.GetFileName(modulePath),
                 FirstStringPayload(traceEvent)) ?? UnknownModule;
-            var module = new StartupModuleLoad(
+            capture.AddModule(new StartupModuleLoad(
                 timestamp,
                 traceEvent.EventName,
                 moduleName,
                 modulePath,
                 PayloadInt64(traceEvent, "ModuleID"),
-                PayloadInt64(traceEvent, "AssemblyID"));
-            modules.Add(module);
-            timeline.Add(new StartupTimelineEvent(timestamp, "module", traceEvent.EventName, module.ModuleName));
+                PayloadInt64(traceEvent, "AssemblyID")));
         }
     }
 
     private static void HandleDependencyInjectionEvent(
         TraceEvent traceEvent,
-        List<StartupDiEvent> diEvents,
-        List<StartupTimelineEvent> timeline)
+        StartupCaptureBuffer capture)
     {
         if (!IsDependencyInjectionBuildEvent(traceEvent.EventName))
         {
@@ -290,7 +352,7 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         var timestamp = ToUtcOffset(traceEvent.TimeStamp);
         var serviceType = PayloadString(traceEvent, ServiceTypePayloads);
         var serviceProviderHashCode = PayloadInt32(traceEvent, "serviceProviderHashCode") ?? PayloadInt32(traceEvent, "ServiceProviderHashCode");
-        var diEvent = new StartupDiEvent(
+        capture.AddDiEvent(new StartupDiEvent(
             timestamp,
             traceEvent.EventName,
             serviceProviderHashCode,
@@ -303,11 +365,7 @@ public sealed class EventPipeStartupCollector : IStartupCollector
             PayloadInt32(traceEvent, "nodeCount"),
             PayloadInt32(traceEvent, "methodSize"),
             PayloadInt32(traceEvent, "chunkIndex"),
-            PayloadInt32(traceEvent, "chunkCount"));
-        diEvents.Add(diEvent);
-
-        var name = FirstNonEmpty(serviceType, serviceProviderHashCode?.ToString(CultureInfo.InvariantCulture)) ?? traceEvent.EventName;
-        timeline.Add(new StartupTimelineEvent(timestamp, "di", traceEvent.EventName, name));
+            PayloadInt32(traceEvent, "chunkCount")));
     }
 
     private static bool IsAssemblyLoadEvent(string eventName) =>
@@ -328,9 +386,6 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         || eventName.Equals("ExpressionTreeGenerated", StringComparison.OrdinalIgnoreCase)
         || eventName.Equals("DynamicMethodBuilt", StringComparison.OrdinalIgnoreCase)
         || eventName.Equals("ServiceRealizationFailed", StringComparison.OrdinalIgnoreCase);
-
-    private static int CountEvents(IReadOnlyList<StartupDiEvent> events, string eventName) =>
-        events.Count(item => item.EventName.Equals(eventName, StringComparison.OrdinalIgnoreCase));
 
     private static DateTimeOffset ToUtcOffset(DateTime timestamp) =>
         new(timestamp.ToUniversalTime(), TimeSpan.Zero);
@@ -437,5 +492,158 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         }
 
         return null;
+    }
+
+    internal sealed class StartupCaptureBuffer
+    {
+        private readonly Dictionary<string, RawLoadAggregate> _assembliesByName = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, RawLoadAggregate> _modulesByName = new(StringComparer.Ordinal);
+        private DateTimeOffset? _firstDiEventAt;
+        private DateTimeOffset? _lastDiEventAt;
+
+        public List<StartupAssemblyLoad> AssemblyLoads { get; } = new(capacity: MaxRetainedAssemblyLoads);
+        public List<StartupModuleLoad> ModuleLoads { get; } = new(capacity: MaxRetainedModuleLoads);
+        public List<StartupDiEvent> DiEvents { get; } = new(capacity: MaxRetainedDiEvents);
+        public List<StartupTimelineEvent> Timeline { get; } = new(capacity: MaxRetainedTimelineEvents);
+
+        public int TotalAssemblyLoads { get; private set; }
+        public int TotalModuleLoads { get; private set; }
+        public int TotalTimelineEvents { get; private set; }
+        public int TotalDiEvents { get; private set; }
+        public int DiServiceProviderBuiltCount { get; private set; }
+        public int DiServiceProviderDescriptorsCount { get; private set; }
+        public int DiCallSiteBuiltCount { get; private set; }
+        public int DiServiceResolvedCount { get; private set; }
+        public int DiExpressionTreeGeneratedCount { get; private set; }
+        public int DiDynamicMethodBuiltCount { get; private set; }
+        public int DiServiceRealizationFailedCount { get; private set; }
+        public bool Truncated { get; private set; }
+
+        public TimeSpan ObservedDiActivityDuration =>
+            _firstDiEventAt.HasValue && _lastDiEventAt.HasValue
+                ? _lastDiEventAt.Value - _firstDiEventAt.Value
+                : TimeSpan.Zero;
+
+        public void AddAssembly(StartupAssemblyLoad load)
+        {
+            TotalAssemblyLoads++;
+            RecordAggregate(_assembliesByName, load.AssemblyName, load.Timestamp);
+            TryCapture(AssemblyLoads, MaxRetainedAssemblyLoads, load);
+            AddTimeline(new StartupTimelineEvent(load.Timestamp, "assembly", load.EventName, load.AssemblyName));
+        }
+
+        public void AddModule(StartupModuleLoad load)
+        {
+            TotalModuleLoads++;
+            RecordAggregate(_modulesByName, load.ModuleName, load.Timestamp);
+            TryCapture(ModuleLoads, MaxRetainedModuleLoads, load);
+            AddTimeline(new StartupTimelineEvent(load.Timestamp, "module", load.EventName, load.ModuleName));
+        }
+
+        public void AddDiEvent(StartupDiEvent diEvent)
+        {
+            TotalDiEvents++;
+            _firstDiEventAt ??= diEvent.Timestamp;
+            _lastDiEventAt = diEvent.Timestamp;
+            switch (diEvent.EventName)
+            {
+                case "ServiceProviderBuilt":
+                    DiServiceProviderBuiltCount++;
+                    break;
+                case "ServiceProviderDescriptors":
+                    DiServiceProviderDescriptorsCount++;
+                    break;
+                case "CallSiteBuilt":
+                    DiCallSiteBuiltCount++;
+                    break;
+                case "ServiceResolved":
+                case "ServiceRealized":
+                    DiServiceResolvedCount++;
+                    break;
+                case "ExpressionTreeGenerated":
+                    DiExpressionTreeGeneratedCount++;
+                    break;
+                case "DynamicMethodBuilt":
+                    DiDynamicMethodBuiltCount++;
+                    break;
+                case "ServiceRealizationFailed":
+                    DiServiceRealizationFailedCount++;
+                    break;
+            }
+
+            TryCapture(DiEvents, MaxRetainedDiEvents, diEvent);
+            var name = FirstNonEmpty(diEvent.ServiceType, diEvent.ServiceProviderHashCode?.ToString(CultureInfo.InvariantCulture)) ?? diEvent.EventName;
+            AddTimeline(new StartupTimelineEvent(diEvent.Timestamp, "di", diEvent.EventName, name));
+        }
+
+        public List<StartupLoadAggregate> BuildAssemblyAggregates() => BuildAggregates(_assembliesByName);
+
+        public List<StartupLoadAggregate> BuildModuleAggregates() => BuildAggregates(_modulesByName);
+
+        private void AddTimeline(StartupTimelineEvent timelineEvent)
+        {
+            TotalTimelineEvents++;
+            TryCapture(Timeline, MaxRetainedTimelineEvents, timelineEvent);
+        }
+
+        private void TryCapture<T>(List<T> items, int maxCount, T item)
+        {
+            if (items.Count >= maxCount)
+            {
+                Truncated = true;
+                return;
+            }
+
+            items.Add(item);
+        }
+
+        private static void RecordAggregate(
+            Dictionary<string, RawLoadAggregate> aggregates,
+            string name,
+            DateTimeOffset timestamp)
+        {
+            if (!aggregates.TryGetValue(name, out var aggregate))
+            {
+                aggregate = new RawLoadAggregate(name, timestamp, timestamp);
+                aggregates[name] = aggregate;
+            }
+
+            aggregate.Count++;
+            if (timestamp < aggregate.FirstSeenAt)
+            {
+                aggregate.FirstSeenAt = timestamp;
+            }
+
+            if (timestamp > aggregate.LastSeenAt)
+            {
+                aggregate.LastSeenAt = timestamp;
+            }
+        }
+
+        private static List<StartupLoadAggregate> BuildAggregates(Dictionary<string, RawLoadAggregate> aggregates) =>
+            aggregates.Values
+                .Select(static aggregate => new StartupLoadAggregate(
+                    aggregate.Name,
+                    aggregate.Count,
+                    aggregate.FirstSeenAt,
+                    aggregate.LastSeenAt))
+                .OrderByDescending(static aggregate => aggregate.Count)
+                .ThenBy(static aggregate => aggregate.Name, StringComparer.Ordinal)
+                .ToList();
+
+        private sealed class RawLoadAggregate
+        {
+            public RawLoadAggregate(string name, DateTimeOffset firstSeenAt, DateTimeOffset lastSeenAt)
+            {
+                Name = name;
+                FirstSeenAt = firstSeenAt;
+                LastSeenAt = lastSeenAt;
+            }
+
+            public string Name { get; }
+            public int Count;
+            public DateTimeOffset FirstSeenAt;
+            public DateTimeOffset LastSeenAt;
+        }
     }
 }
