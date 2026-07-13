@@ -12,13 +12,12 @@
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" />
   </ItemGroup>
 
-  <!-- Consume the published diagnoser package, exactly as an external benchmark
-       project would: no shell-out, no CLI on disk. The package pulls in
-       dotnet-diagnostics-core transitively. -->
   <ItemGroup>
-    <PackageReference Include="dotnet-diagnostics-benchmarkdotnet" />
+    <ProjectReference Include="../../src/DotnetDiagnostics.BenchmarkDotNet/DotnetDiagnostics.BenchmarkDotNet.csproj" />
+    <ProjectReference Include="../../src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj" />
   </ItemGroup>
 
 </Project>
