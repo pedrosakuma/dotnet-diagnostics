@@ -33,7 +33,7 @@ deploy/
 docs/
   README.md, tool-reference.md, cli-reference.md, investigation-playbooks.md,
   bad-code-scenarios.md, local-docker-sidecar.md, client-setup.md,
-  resource-boundedness.md
+  resource-boundedness.md, hotpaths/ (CPU/allocation hotpath profiling per collector)
 ```
 
 ## Build, test, run
@@ -195,6 +195,16 @@ the full per-collector reference (caps, retention strategy, what's traded
 away) from the audit in issues [#604](https://github.com/pedrosakuma/dotnet-diagnostics/issues/604)/[#605](https://github.com/pedrosakuma/dotnet-diagnostics/issues/605)/[#606](https://github.com/pedrosakuma/dotnet-diagnostics/issues/606)
 (PRs #607–#614) — read it before adding a new bounded structure or extending
 an existing one.
+
+### 🔥 CPU/allocation hotpath profiling per collector
+
+Complementary to the boundedness audit above: [`docs/hotpaths/README.md`](./docs/hotpaths/README.md)
+profiles where CPU cycles and allocations actually go **inside** each collector's own code (not just
+whether memory is bounded), via BenchmarkDotNet + `EventPipeProfiler` against real live sample
+processes. From the audit in issue [#616](https://github.com/pedrosakuma/dotnet-diagnostics/issues/616)
+(PRs #617–#619): almost every collector's exclusive CPU time is dominated by runtime wait/parking
+frames, not avoidable managed work — no speculative micro-optimization was applied. Read it before
+assuming a collector needs CPU tuning; add a new benchmark there instead of guessing at a hotpath.
 
 ### 🎯 One MCP tool per concept (16 tools)
 
