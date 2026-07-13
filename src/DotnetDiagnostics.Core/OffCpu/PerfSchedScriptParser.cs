@@ -56,53 +56,94 @@ internal static class PerfSchedScriptParser
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(targetTids);
 
-        var lines = output.Split('\n');
-        // Per-TID pending OUT awaiting a matching IN.
-        var pending = new Dictionary<int, (double Ts, string State, List<OffCpuFrame> Stack, string Comm)>();
         var spans = new List<OffCpuSpan>();
+        using var reader = new StringReader(output);
+        var switches = ParseAsync(
+            reader,
+            targetTids,
+            span => spans.Add(span),
+            flushPending,
+            addressResolver,
+            CancellationToken.None).GetAwaiter().GetResult();
+        return (spans, switches);
+    }
+
+    public static async Task<long> ParseAsync(
+        TextReader reader,
+        HashSet<int> targetTids,
+        Action<OffCpuSpan> onSpan,
+        bool flushPending = false,
+        Func<ulong, DotnetDiagnostics.Core.Memory.MethodIdentity?>? addressResolver = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(targetTids);
+        ArgumentNullException.ThrowIfNull(onSpan);
+
+        var pending = new Dictionary<int, (double Ts, string State, List<OffCpuFrame> Stack, string Comm)>();
         long switches = 0;
         double maxTs = double.MinValue;
+        string? pendingHeader = null;
 
-        var i = 0;
-        while (i < lines.Length)
+        while (true)
         {
-            var raw = lines[i].TrimEnd('\r');
-            if (raw.Length == 0 || raw.StartsWith('#'))
+            var raw = pendingHeader ?? await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+            pendingHeader = null;
+            if (raw is null)
             {
-                i++;
+                break;
+            }
+
+            var line = raw.TrimEnd('\r');
+            if (line.Length == 0 || line.StartsWith('#'))
+            {
                 continue;
             }
 
-            var ev = TryParseHeader(raw);
+            var ev = TryParseHeader(line);
             if (ev is null)
             {
-                i++;
                 continue;
             }
 
-            // Collect stack frames (indented) until blank line or next event header.
-            i++;
-            while (i < lines.Length)
+            while (true)
             {
-                var line = lines[i].TrimEnd('\r');
-                if (line.Length == 0) { i++; break; }
-                // A line containing the sched_switch marker is the next event — let outer loop handle it.
-                if (line.Contains(" sched:sched_switch:", StringComparison.Ordinal)) break;
-                if (!char.IsWhiteSpace(line[0])) break;
-                var frame = ParseFrame(line, addressResolver);
-                if (frame is not null) ev.Stack.Add(frame);
-                i++;
+                var rawFrameLine = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                if (rawFrameLine is null)
+                {
+                    break;
+                }
+
+                var frameLine = rawFrameLine.TrimEnd('\r');
+                if (frameLine.Length == 0)
+                {
+                    break;
+                }
+
+                if (frameLine.Contains(" sched:sched_switch:", StringComparison.Ordinal) || !char.IsWhiteSpace(frameLine[0]))
+                {
+                    pendingHeader = frameLine;
+                    break;
+                }
+
+                var frame = ParseFrame(frameLine, addressResolver);
+                if (frame is not null)
+                {
+                    ev.Stack.Add(frame);
+                }
             }
 
             var prevIsTarget = targetTids.Contains(ev.PrevTid);
             var nextIsTarget = targetTids.Contains(ev.NextTid);
-            if (ev.TimestampSeconds > maxTs) maxTs = ev.TimestampSeconds;
+            if (ev.TimestampSeconds > maxTs)
+            {
+                maxTs = ev.TimestampSeconds;
+            }
 
-            // IN side: close any pending OUT for the next task.
             if (nextIsTarget && pending.Remove(ev.NextTid, out var pendingOut))
             {
                 var durMicros = (long)Math.Max(0, Math.Round((ev.TimestampSeconds - pendingOut.Ts) * 1_000_000.0));
-                spans.Add(new OffCpuSpan(
+                onSpan(new OffCpuSpan(
                     Tid: ev.NextTid,
                     Comm: pendingOut.Comm,
                     DurationMicros: durMicros,
@@ -110,7 +151,6 @@ internal static class PerfSchedScriptParser
                     BlockingStack: pendingOut.Stack));
             }
 
-            // OUT side: register a new pending OUT for the prev task.
             if (prevIsTarget)
             {
                 switches++;
@@ -118,27 +158,33 @@ internal static class PerfSchedScriptParser
             }
         }
 
-        // Flush pending target-OUTs as censored spans (lower-bound duration up to capture end).
-        // Without this, threads blocked for nearly the entire window disappear from the report.
         if (flushPending && maxTs > double.MinValue)
         {
             foreach (var kv in pending)
             {
-                if (!targetTids.Contains(kv.Key)) continue;
-                var p = kv.Value;
-                var durMicros = (long)Math.Max(0, Math.Round((maxTs - p.Ts) * 1_000_000.0));
-                if (durMicros <= 0) continue;
-                spans.Add(new OffCpuSpan(
+                if (!targetTids.Contains(kv.Key))
+                {
+                    continue;
+                }
+
+                var pendingOut = kv.Value;
+                var durMicros = (long)Math.Max(0, Math.Round((maxTs - pendingOut.Ts) * 1_000_000.0));
+                if (durMicros <= 0)
+                {
+                    continue;
+                }
+
+                onSpan(new OffCpuSpan(
                     Tid: kv.Key,
-                    Comm: p.Comm,
+                    Comm: pendingOut.Comm,
                     DurationMicros: durMicros,
-                    PrevState: p.State,
-                    BlockingStack: p.Stack,
+                    PrevState: pendingOut.State,
+                    BlockingStack: pendingOut.Stack,
                     IsCensored: true));
             }
         }
 
-        return (spans, switches);
+        return switches;
     }
 
     /// <summary>
@@ -201,24 +247,18 @@ internal static class PerfSchedScriptParser
 
     private static string NormalizeState(string s)
     {
-        // Strip suffixes like "+", "|", multiple flags. Keep just first state letter.
         if (string.IsNullOrEmpty(s)) return "?";
         return s[0].ToString();
     }
 
     private static SchedEvent? TryParseHeader(string line)
     {
-        // Header skeleton:
-        //   <comm padded>  <tid> [cpu]  <timestamp>: sched:sched_switch: <payload>
-        // We anchor on the literal " sched:sched_switch:" so any prefix variance is tolerated.
         const string Marker = " sched:sched_switch:";
         var markerIdx = line.IndexOf(Marker, StringComparison.Ordinal);
         if (markerIdx < 0) return null;
 
         var prefix = line[..markerIdx];
         var payload = line[(markerIdx + Marker.Length)..].Trim();
-
-        // Timestamp is the last numeric token in the prefix ending with ':'. Walk back.
         var colonIdx = prefix.LastIndexOf(':');
         if (colonIdx < 0) return null;
         var beforeColon = prefix[..colonIdx];
@@ -236,7 +276,7 @@ internal static class PerfSchedScriptParser
             return null;
         }
 
-        return new SchedEvent(ts, prevComm, prevTid, prevState, nextComm, nextTid, new List<OffCpuFrame>());
+        return new SchedEvent(ts, prevComm, prevTid, prevState, nextComm, nextTid, []);
     }
 
     private static bool TryParsePayload(string payload, out string prevComm, out int prevTid, out string prevState,
@@ -245,7 +285,6 @@ internal static class PerfSchedScriptParser
         prevComm = string.Empty; prevTid = 0; prevState = "?";
         nextComm = string.Empty; nextTid = 0;
 
-        // Long form: prev_comm=X prev_pid=N prev_prio=P prev_state=S ==> next_comm=Y next_pid=M next_prio=Q
         if (payload.Contains("prev_pid=", StringComparison.Ordinal))
         {
             prevComm = ExtractKv(payload, "prev_comm=");
@@ -256,7 +295,6 @@ internal static class PerfSchedScriptParser
             return prevTid != 0 || nextTid != 0;
         }
 
-        // Compact form: X:N [P] S ==> Y:M [Q]
         var arrow = payload.IndexOf("==>", StringComparison.Ordinal);
         if (arrow < 0) return false;
         var left = payload[..arrow].Trim();
@@ -269,8 +307,6 @@ internal static class PerfSchedScriptParser
     private static bool TryParseCompactSide(string s, out string comm, out int tid, out string state)
     {
         comm = string.Empty; tid = 0; state = "?";
-        // Form: <comm>:<tid> [<prio>] [<state>]
-        // State letter is optional on the next-side.
         var colon = s.LastIndexOf(':');
         if (colon < 0) return false;
         comm = s[..colon];
@@ -279,7 +315,6 @@ internal static class PerfSchedScriptParser
         var tidToken = firstSpace > 0 ? rest[..firstSpace] : rest;
         if (!int.TryParse(tidToken, NumberStyles.Integer, CultureInfo.InvariantCulture, out tid)) return false;
 
-        // Scan remaining tokens for a single-letter state outside brackets.
         if (firstSpace > 0)
         {
             foreach (var token in rest[(firstSpace + 1)..].Split(' ', StringSplitOptions.RemoveEmptyEntries))
@@ -312,7 +347,6 @@ internal static class PerfSchedScriptParser
         string line,
         Func<ulong, DotnetDiagnostics.Core.Memory.MethodIdentity?>? addressResolver = null)
     {
-        // Indented: "    <hex addr> <symbol+offset> (<module>)" — same shape as the on-CPU parser.
         var trimmed = line.TrimStart();
         if (trimmed.Length == 0) return null;
 
@@ -353,10 +387,6 @@ internal static class PerfSchedScriptParser
 
         if (symbol.Length == 0) return null;
         DotnetDiagnostics.Core.Memory.MethodIdentity? identity = null;
-        // Address-based lookup is authoritative: two overloads share the rendered symbol
-        // string ("MyApp.OrderService.Checkout") but live at distinct addresses with distinct
-        // metadata tokens. Resolving by address picks the right overload; resolving by symbol
-        // name would silently pick whichever the rundown happened to write last.
         if (address.HasValue && addressResolver is not null)
         {
             identity = addressResolver(address.Value);

@@ -29,6 +29,8 @@ namespace DotnetDiagnostics.Core.CpuSampling;
 /// </remarks>
 public sealed class PerfNativeAotCpuSampler : ICpuSampler
 {
+    private const long PerfDataMaxBytes = 512L * 1024 * 1024;
+
     private readonly ILogger<PerfNativeAotCpuSampler> _logger;
     private readonly string _configuredPath;
     private readonly int _samplingFrequencyHz;
@@ -127,19 +129,25 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         try
         {
             await RecordAsync(processId, perfDataPath, duration, cancellationToken).ConfigureAwait(false);
-            var script = await RunScriptAsync(perfDataPath, cancellationToken).ConfigureAwait(false);
-            // Trust perf record -p <pid> for process scoping. Passing processId=0 here avoids
-            // a /proc/<pid>/task post-hoc race that would discard samples from threadpool /
-            // GC workers that exited between recording and parsing.
-            var (total, hotspots, root, symbolSource, identities) = Aggregate(
-                script, processId: 0, topN, methodMap, moduleName, modulePath);
-            var stampedRoot = CallTreeIdentityProjector.Stamp(root, identities);
+            var aggregate = await RunScriptAsync(
+                perfDataPath,
+                processId: 0,
+                topN,
+                methodMap,
+                moduleName,
+                modulePath,
+                cancellationToken).ConfigureAwait(false);
+            var stampedRoot = CallTreeIdentityProjector.Stamp(aggregate.Root, aggregate.Identities);
             // Compute the global self-time leader from the SAME (identity-stamped) tree the artifact
             // stores, so the inline signals match the signals:// Resource path.
-            var topSelfTime = CpuSampleAnalytics.TopSelfTime(stampedRoot, total);
-            var summary = new CpuSample(processId, startedAt, duration, total, hotspots) { SymbolSource = symbolSource, TopSelfTime = topSelfTime };
+            var topSelfTime = CpuSampleAnalytics.TopSelfTime(stampedRoot, aggregate.Total);
+            var summary = new CpuSample(processId, startedAt, duration, aggregate.Total, aggregate.Hotspots)
+            {
+                SymbolSource = aggregate.SymbolSource,
+                TopSelfTime = topSelfTime,
+            };
             var artifact = new CpuSampleTraceArtifact(
-                processId, startedAt, duration, total, stampedRoot, null, identities, symbolSource);
+                processId, startedAt, duration, aggregate.Total, stampedRoot, null, aggregate.Identities, aggregate.SymbolSource);
             return new CpuSampleResult(summary, artifact);
         }
         finally
@@ -183,10 +191,10 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
     {
         var seconds = Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
         // NativeAOT binaries may not always emit frame pointers; dwarf unwinding is required
-        // for reliable callstacks. The trade-off is larger perf.data files, but the cap is
-        // implicit in the sampling window. See https://github.com/pedrosakuma/dotnet-diagnostics
+        // for reliable callstacks. The trade-off is larger perf.data files, so we pair
+        // the sampling window with an explicit perf.data size cap. See https://github.com/pedrosakuma/dotnet-diagnostics
         // notes on NativeAOT validation for the bug history.
-        var args = $"record -F {_samplingFrequencyHz} --call-graph dwarf -p {pid} -o \"{outputPath}\" -- sleep {seconds}";
+        var args = $"record -F {_samplingFrequencyHz} --call-graph dwarf --max-size={PerfDataMaxBytes} -p {pid} -o \"{outputPath}\" -- sleep {seconds}";
         _logger.LogDebug("Spawning perf: {Bin} {Args}", ResolvePerfPath()!, args);
 
         using var process = new Process
@@ -224,7 +232,14 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         }
     }
 
-    private async Task<string> RunScriptAsync(string perfDataPath, CancellationToken ct)
+    private async Task<PerfScriptAggregationResult> RunScriptAsync(
+        string perfDataPath,
+        int processId,
+        int topN,
+        NativeAotMethodMap? methodMap,
+        string? moduleName,
+        string? modulePath,
+        CancellationToken ct)
     {
         // --no-inline keeps line cost predictable; symbols are already demangled by default.
         var args = $"script -i \"{perfDataPath}\" --no-inline";
@@ -242,132 +257,71 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         };
 
         process.Start();
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = process.StandardError.ReadToEndAsync(ct);
         try
         {
+            var aggregate = await AggregateAsync(
+                process.StandardOutput,
+                processId,
+                topN,
+                methodMap,
+                moduleName,
+                modulePath,
+                cancellationToken: ct).ConfigureAwait(false);
             await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            var stderr = await stderrTask.ConfigureAwait(false);
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"perf script exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
+            }
+
+            return aggregate;
         }
         catch (OperationCanceledException)
         {
             try { process.Kill(true); } catch { /* best effort */ }
             throw;
         }
-
-        var stdout = await stdoutTask.ConfigureAwait(false);
-        if (process.ExitCode != 0)
+        catch
         {
-            var stderr = await process.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
-            throw new InvalidOperationException(
-                $"perf script exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
+            try { if (!process.HasExited) process.Kill(true); } catch { /* best effort */ }
+            throw;
         }
-
-        return stdout;
     }
 
     internal static (long Total, IReadOnlyList<Hotspot> Hotspots, CallTreeNode Root, NativeAotSymbolDemangler.SymbolSource SymbolSource, IReadOnlyDictionary<SymbolRef, MethodIdentity> Identities) Aggregate(
         string perfScriptOutput, int processId, int topN,
         NativeAotMethodMap? methodMap = null, string? moduleName = null, string? modulePath = null)
     {
-        var samples = PerfScriptParser.Parse(perfScriptOutput, processId);
-        var inclusive = new Dictionary<string, long>(StringComparer.Ordinal);
-        var exclusive = new Dictionary<string, long>(StringComparer.Ordinal);
-        var modules = new Dictionary<string, string>(StringComparer.Ordinal);
-        var displayCache = new Dictionary<string, string>(StringComparer.Ordinal);
-        var identities = new Dictionary<SymbolRef, MethodIdentity>();
-        var builder = new CallTreeBuilder();
-        long total = 0;
-        var aggregatedSource = NativeAotSymbolDemangler.SymbolSource.Unknown;
-        var anyMangledFrameDemangled = false;
+        using var reader = new StringReader(perfScriptOutput);
+        var aggregate = AggregateAsync(reader, processId, topN, methodMap, moduleName, modulePath)
+            .GetAwaiter()
+            .GetResult();
+        return (aggregate.Total, aggregate.Hotspots, aggregate.Root, aggregate.SymbolSource, aggregate.Identities);
+    }
 
-        foreach (var sample in samples)
-        {
-            if (sample.Frames.Count == 0) continue;
-            total++;
-
-            // perf prints leaf→root; reverse to root→leaf for tree traversal. Demangle each
-            // symbol once and cache so the hotspot map + call tree share identical display strings.
-            var rootToLeaf = new List<(string Key, string Module, string Display)>(sample.Frames.Count);
-            for (var i = sample.Frames.Count - 1; i >= 0; i--)
+    internal static async Task<PerfScriptAggregationResult> AggregateAsync(
+        TextReader reader,
+        int processId,
+        int topN,
+        NativeAotMethodMap? methodMap = null,
+        string? moduleName = null,
+        string? modulePath = null,
+        long? sampleBudget = null,
+        CancellationToken cancellationToken = default)
+    {
+        var builder = new PerfScriptAggregationBuilder(methodMap, moduleName, modulePath);
+        var parseResult = await PerfScriptParser.ParseAsync(
+            reader,
+            processId,
+            sample =>
             {
-                var f = sample.Frames[i];
-                var classification = NativeAotSymbolDemangler.Classify(f.Symbol);
-                aggregatedSource = NativeAotSymbolDemangler.Combine(aggregatedSource, classification);
-                if (!displayCache.TryGetValue(f.Symbol, out var demangled))
-                {
-                    demangled = NativeAotSymbolDemangler.Demangle(f.Symbol);
-                    displayCache[f.Symbol] = demangled;
-                    if (classification == NativeAotSymbolDemangler.SymbolSource.ElfMangled &&
-                        !ReferenceEquals(demangled, f.Symbol) &&
-                        !string.Equals(demangled, f.Symbol, StringComparison.Ordinal))
-                    {
-                        anyMangledFrameDemangled = true;
-                    }
-                }
-                var key = string.IsNullOrEmpty(f.Module) ? demangled : f.Module + "!" + demangled;
-                rootToLeaf.Add((key, f.Module, demangled));
-                modules.TryAdd(key, f.Module);
-
-                // #395: gate MethodIdentity emission on the map. The raw perf symbol (f.Symbol,
-                // mangled, offset already stripped) matches the map's MethodCode Name byte-for-byte;
-                // only genuine managed method bodies get a name-based handoff identity.
-                if (methodMap is not null && methodMap.ContainsMethod(f.Symbol))
-                {
-                    var symbolRef = new SymbolRef(f.Module, demangled);
-                    if (!identities.ContainsKey(symbolRef))
-                    {
-                        identities[symbolRef] = BuildAotIdentity(f.Symbol, demangled, moduleName, modulePath);
-                    }
-                }
-            }
-
-            var leafKey = rootToLeaf[^1].Key;
-            exclusive[leafKey] = exclusive.GetValueOrDefault(leafKey) + 1;
-
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var (k, _, _) in rootToLeaf)
-            {
-                if (seen.Add(k))
-                {
-                    inclusive[k] = inclusive.GetValueOrDefault(k) + 1;
-                }
-            }
-
-            builder.AddStack(rootToLeaf, leafKey);
-        }
-
-        var ranked = inclusive
-            .OrderByDescending(kv => kv.Value)
-            .Take(topN)
-            .ToArray();
-
-        var hotspots = ranked
-            .Select(kv =>
-            {
-                var module = modules.GetValueOrDefault(kv.Key, string.Empty);
-                var display = !string.IsNullOrEmpty(module) && kv.Key.StartsWith(module + "!", StringComparison.Ordinal)
-                    ? kv.Key[(module.Length + 1)..]
-                    : kv.Key;
-                identities.TryGetValue(new SymbolRef(module, display), out var identity);
-                return new Hotspot(
-                    Frame: new SampledFrame(Module: module, Method: display),
-                    InclusiveSamples: kv.Value,
-                    ExclusiveSamples: exclusive.GetValueOrDefault(kv.Key),
-                    Identity: identity);
-            })
-            .ToList();
-
-        // Promote ElfMangled → ElfDemangled only when at least one mangled frame was actually
-        // rewritten by the demangler (review-fix: previous "any cached display changed" check
-        // could promote on the back of an unrelated non-mangled frame).
-        if (anyMangledFrameDemangled)
-        {
-            aggregatedSource = NativeAotSymbolDemangler.Combine(
-                aggregatedSource,
-                NativeAotSymbolDemangler.SymbolSource.ElfDemangled);
-        }
-
-        IReadOnlyDictionary<SymbolRef, MethodIdentity> identityView = identities;
-        return (total, hotspots, builder.Build(), aggregatedSource, identityView);
+                builder.AddSample(sample);
+                return sampleBudget is null || builder.TotalSamples < sampleBudget.Value;
+            },
+            cancellationToken).ConfigureAwait(false);
+        return builder.Build(topN, truncated: !parseResult.Completed);
     }
 
     /// <summary>

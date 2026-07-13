@@ -151,12 +151,19 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
             }
             catch { /* best effort */ }
 
-            var script = await RunScriptAsync(perfDataPath, cancellationToken).ConfigureAwait(false);
             Func<ulong, DotnetDiagnostics.Core.Memory.MethodIdentity?>? resolver = jitMap is null
                 ? null
                 : jitMap.Resolve;
-            var (spans, switches) = PerfSchedScriptParser.Parse(script, targetTids, flushPending: true, addressResolver: resolver);
-            return OffCpuAggregator.Aggregate(processId, startedAt, duration, spans, switches, topN, symbolSource: "perf-sched-dwarf", notes);
+            return await RunScriptAsync(
+                perfDataPath,
+                processId,
+                startedAt,
+                duration,
+                topN,
+                targetTids,
+                resolver,
+                notes,
+                cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -245,7 +252,16 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         }
     }
 
-    private async Task<string> RunScriptAsync(string perfDataPath, CancellationToken ct)
+    private async Task<OffCpuSampleResult> RunScriptAsync(
+        string perfDataPath,
+        int processId,
+        DateTimeOffset startedAt,
+        TimeSpan duration,
+        int topN,
+        HashSet<int> targetTids,
+        Func<ulong, DotnetDiagnostics.Core.Memory.MethodIdentity?>? addressResolver,
+        IReadOnlyList<string>? notes,
+        CancellationToken ct)
     {
         var args = $"script -i \"{perfDataPath}\" --no-inline";
         using var process = new Process
@@ -261,24 +277,61 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         };
 
         process.Start();
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = process.StandardError.ReadToEndAsync(ct);
         try
         {
+            var result = await AggregateScriptAsync(
+                process.StandardOutput,
+                processId,
+                startedAt,
+                duration,
+                topN,
+                targetTids,
+                addressResolver,
+                notes,
+                ct).ConfigureAwait(false);
             await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            var stderr = await stderrTask.ConfigureAwait(false);
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"perf script exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
+            }
+
+            return result;
         }
         catch (OperationCanceledException)
         {
             try { process.Kill(true); } catch { /* best effort */ }
             throw;
         }
-        var stdout = await stdoutTask.ConfigureAwait(false);
-        if (process.ExitCode != 0)
+        catch
         {
-            var stderr = await process.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
-            throw new InvalidOperationException(
-                $"perf script exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
+            try { if (!process.HasExited) process.Kill(true); } catch { /* best effort */ }
+            throw;
         }
-        return stdout;
+    }
+
+    internal static async Task<OffCpuSampleResult> AggregateScriptAsync(
+        TextReader reader,
+        int processId,
+        DateTimeOffset startedAt,
+        TimeSpan duration,
+        int topN,
+        HashSet<int> targetTids,
+        Func<ulong, DotnetDiagnostics.Core.Memory.MethodIdentity?>? addressResolver = null,
+        IReadOnlyList<string>? notes = null,
+        CancellationToken cancellationToken = default)
+    {
+        var builder = OffCpuAggregator.CreateBuilder();
+        var switches = await PerfSchedScriptParser.ParseAsync(
+            reader,
+            targetTids,
+            builder.AddSpan,
+            flushPending: true,
+            addressResolver: addressResolver,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return builder.Build(processId, startedAt, duration, switches, topN, "perf-sched-dwarf", notes);
     }
 
     /// <summary>

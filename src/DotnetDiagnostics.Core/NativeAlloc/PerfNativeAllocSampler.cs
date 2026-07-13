@@ -33,6 +33,7 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
 
     // 512 MiB cap mirrors the off-CPU sampler: bounds disaster on an allocator-hot multi-minute run.
     private const long PerfDataMaxBytes = 512L * 1024 * 1024;
+    private const long PerfScriptSampleBudget = 250_000;
 
     private readonly ILogger<PerfNativeAllocSampler> _logger;
     private readonly JitMapEmitter _jitMapEmitter;
@@ -198,28 +199,29 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
             }
             catch { /* best effort */ }
 
-            var script = await RunScriptAsync(perfDataPath, cancellationToken).ConfigureAwait(false);
-            // processId: 0 — trust perf record -p <pid> for scoping (mirrors the CPU sampler:
-            // avoids dropping samples from worker threads that exited before parsing).
-            var (total, hotspots, root, symbolSource, _) = PerfNativeAotCpuSampler.Aggregate(script, processId: 0, topN);
+            var aggregate = await RunScriptAsync(perfDataPath, topN, cancellationToken).ConfigureAwait(false);
+            if (aggregate.Truncated)
+            {
+                notes.Add($"Stopped parsing perf script after {PerfScriptSampleBudget:N0} samples to keep allocator-hot captures bounded; hotspots reflect the processed prefix only.");
+            }
 
-            if (total == 0)
+            if (aggregate.Total == 0)
             {
                 notes.Add("No allocator-call samples landed in the window — the workload may not have " +
                           "allocated natively, or samplePeriod is too high for a quiet process.");
             }
 
-            var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, null, null, symbolSource);
+            var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, aggregate.Total, aggregate.Root, null, null, aggregate.SymbolSource);
             var summary = new NativeAllocSample(
                 processId,
                 startedAt,
                 duration,
-                total,
-                hotspots,
+                aggregate.Total,
+                aggregate.Hotspots,
                 probedFunctions,
                 libc.InNamespacePath,
                 samplePeriod,
-                symbolSource.ToString(),
+                aggregate.SymbolSource.ToString(),
                 notes);
             return new NativeAllocSampleResult(summary, artifact);
         }
@@ -310,16 +312,58 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
         }
     }
 
-    private async Task<string> RunScriptAsync(string perfDataPath, CancellationToken ct)
+    private async Task<PerfScriptAggregationResult> RunScriptAsync(string perfDataPath, int topN, CancellationToken ct)
     {
-        var (exit, stdout, stderr) = await RunPerfAsync(
-            new[] { "script", "-i", perfDataPath, "--no-inline" }, ct).ConfigureAwait(false);
-        if (exit != 0)
+        var startInfo = new ProcessStartInfo
         {
-            throw new InvalidOperationException(
-                $"perf script exited with code {exit}. stderr: {stderr.Trim()}");
+            FileName = ResolvePerfPath()!,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add("script");
+        startInfo.ArgumentList.Add("-i");
+        startInfo.ArgumentList.Add(perfDataPath);
+        startInfo.ArgumentList.Add("--no-inline");
+
+        _logger.LogDebug("Spawning perf: {Bin} script -i {PerfDataPath} --no-inline", startInfo.FileName, perfDataPath);
+
+        using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+        process.Start();
+        var stderrTask = process.StandardError.ReadToEndAsync(ct);
+        try
+        {
+            var aggregate = await PerfNativeAotCpuSampler.AggregateAsync(
+                process.StandardOutput,
+                processId: 0,
+                topN: topN,
+                sampleBudget: PerfScriptSampleBudget,
+                cancellationToken: ct).ConfigureAwait(false);
+            if (aggregate.Truncated && !process.HasExited)
+            {
+                try { process.Kill(true); } catch { /* best effort */ }
+            }
+
+            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            var stderr = await stderrTask.ConfigureAwait(false);
+            if (process.ExitCode != 0 && !aggregate.Truncated)
+            {
+                throw new InvalidOperationException(
+                    $"perf script exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
+            }
+
+            return aggregate;
         }
-        return stdout;
+        catch (OperationCanceledException)
+        {
+            try { process.Kill(true); } catch { /* best effort */ }
+            throw;
+        }
+        catch
+        {
+            try { if (!process.HasExited) process.Kill(true); } catch { /* best effort */ }
+            throw;
+        }
     }
 
     private async Task<(int ExitCode, string Stdout, string Stderr)> RunPerfAsync(
