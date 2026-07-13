@@ -15,8 +15,18 @@ public static class GcActivityCorrelator
     {
         ArgumentNullException.ThrowIfNull(activities);
         ArgumentNullException.ThrowIfNull(gcSummary);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(topN);
 
-        var impacted = new List<ImpactedActivity>();
+        var sortedGcEvents = gcSummary.Events
+            .OrderBy(static gc => gc.Timestamp)
+            .ToArray();
+        var maxPauseDuration = gcSummary.MaxPauseTime > TimeSpan.Zero
+            ? gcSummary.MaxPauseTime
+            : TimeSpan.Zero;
+        var topImpacted = new PriorityQueue<ImpactedActivity, ImpactedActivity>(
+            Comparer<ImpactedActivity>.Create(static (left, right) => CompareImpactedAscending(left, right)));
+        var impactedCount = 0;
+        var totalGcOverlapMs = 0.0;
 
         foreach (var activity in activities.Activities)
         {
@@ -27,9 +37,13 @@ public static class GcActivityCorrelator
 
             var overlappingGcEvents = new List<GcOverlapEvent>();
             var totalOverlapMs = 0.0;
+            var windowStart = activityStart - maxPauseDuration;
+            var lowerBound = LowerBound(sortedGcEvents, windowStart);
+            var upperBound = LowerBound(sortedGcEvents, activityEnd);
 
-            foreach (var gc in gcSummary.Events)
+            for (var gcIndex = lowerBound; gcIndex < upperBound; gcIndex++)
             {
+                var gc = sortedGcEvents[gcIndex];
                 var gcStart = gc.Timestamp;
                 var gcEnd = gc.Timestamp + gc.PauseDuration;
 
@@ -58,8 +72,7 @@ public static class GcActivityCorrelator
             {
                 var durationMs = activity.Duration.Value.TotalMilliseconds;
                 var gcPausePercent = durationMs > 0 ? (totalOverlapMs / durationMs) * 100 : 0;
-
-                impacted.Add(new ImpactedActivity(
+                var impactedActivity = new ImpactedActivity(
                     activity.SourceName,
                     activity.OperationName,
                     activity.Id,
@@ -68,27 +81,84 @@ public static class GcActivityCorrelator
                     durationMs,
                     totalOverlapMs,
                     gcPausePercent,
-                    overlappingGcEvents));
+                    overlappingGcEvents);
+                impactedCount++;
+                totalGcOverlapMs += impactedActivity.GcPauseMs;
+                topImpacted.Enqueue(impactedActivity, impactedActivity);
+                if (topImpacted.Count > topN)
+                {
+                    topImpacted.Dequeue();
+                }
             }
         }
 
-        // Sort by GC impact (highest pause percent first) and take topN
-        var topImpacted = impacted
-            .OrderByDescending(i => i.GcPausePercent)
-            .Take(topN)
+        var orderedTopImpacted = topImpacted.UnorderedItems
+            .Select(static item => item.Element)
+            .OrderByDescending(static item => item.GcPausePercent)
+            .ThenByDescending(static item => item.GcPauseMs)
+            .ThenBy(static item => item.SourceName, StringComparer.Ordinal)
+            .ThenBy(static item => item.OperationName, StringComparer.Ordinal)
+            .ThenBy(static item => item.ActivityId, StringComparer.Ordinal)
             .ToList();
-
-        var totalGcOverlapMs = impacted.Sum(i => i.GcPauseMs);
 
         return new GcOverlayResult(
             activities.TotalActivities,
             activities.CompletedActivities,
-            impacted.Count,
-            topImpacted.Count,
+            impactedCount,
+            orderedTopImpacted.Count,
             totalGcOverlapMs,
             gcSummary.TotalCollections,
             gcSummary.TotalPauseTime.TotalMilliseconds,
-            topImpacted);
+            orderedTopImpacted);
+    }
+
+    private static int LowerBound(GcEvent[] events, DateTimeOffset timestamp)
+    {
+        var low = 0;
+        var high = events.Length;
+        while (low < high)
+        {
+            var mid = low + ((high - low) / 2);
+            if (events[mid].Timestamp < timestamp)
+            {
+                low = mid + 1;
+            }
+            else
+            {
+                high = mid;
+            }
+        }
+
+        return low;
+    }
+
+    private static int CompareImpactedAscending(ImpactedActivity left, ImpactedActivity right)
+    {
+        var byPercent = left.GcPausePercent.CompareTo(right.GcPausePercent);
+        if (byPercent != 0)
+        {
+            return byPercent;
+        }
+
+        var byPause = left.GcPauseMs.CompareTo(right.GcPauseMs);
+        if (byPause != 0)
+        {
+            return byPause;
+        }
+
+        var bySource = string.CompareOrdinal(right.SourceName, left.SourceName);
+        if (bySource != 0)
+        {
+            return bySource;
+        }
+
+        var byOperation = string.CompareOrdinal(right.OperationName, left.OperationName);
+        if (byOperation != 0)
+        {
+            return byOperation;
+        }
+
+        return string.CompareOrdinal(right.ActivityId, left.ActivityId);
     }
 }
 
