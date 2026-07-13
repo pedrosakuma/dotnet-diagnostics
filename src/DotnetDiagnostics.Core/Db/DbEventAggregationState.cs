@@ -7,20 +7,48 @@ namespace DotnetDiagnostics.Core.Db;
 internal sealed class DbEventAggregationState
 {
     private const int NPlusOneThreshold = 10;
+    internal const int MaxTrackedPendingCommands = 2048;
+    internal const int MaxTrackedCommandAggregates = 256;
+    internal const int MaxTrackedNPlusOneIncidents = 256;
+    private static readonly TimeSpan PendingCommandTtl = TimeSpan.FromMinutes(2);
+    internal const string OverflowCommandTextHash = "(overflow)";
+    private const string OverflowCommandText = "(overflow: additional distinct command shapes omitted)";
+    private const string OverflowConnectionString = "(multiple)";
 
     private readonly Dictionary<string, PendingCommand> _pendingCommandsByProviderAndObjectId = new(StringComparer.Ordinal);
     private readonly Dictionary<string, MutableCommandAggregate> _aggregates = new(StringComparer.Ordinal);
     private readonly Dictionary<string, MutableNPlusOne> _nPlusOne = new(StringComparer.Ordinal);
     private readonly Dictionary<string, MutableConnectionPoolStats> _connectionPools = new(StringComparer.Ordinal);
     private readonly HashSet<string> _notes = new(StringComparer.Ordinal);
+    private MutableCommandAggregate? _overflowAggregate;
+    private int _expiredPendingCommands;
+    private int _evictedPendingCommands;
+    private int _overflowedCommandShapes;
+    private int _overflowedNPlusOneKeys;
 
     public long TotalCommands { get; private set; }
+    internal int TrackedPendingCommandCount => _pendingCommandsByProviderAndObjectId.Count;
+    internal int TrackedAggregateCount => _aggregates.Count;
+    internal int TrackedNPlusOneCount => _nPlusOne.Count;
 
     public void SetPendingCommand(string providerObjectKey, PendingCommand pending)
-        => _pendingCommandsByProviderAndObjectId[providerObjectKey] = pending;
+    {
+        ExpirePendingCommands(pending.StartedAt);
+        if (!_pendingCommandsByProviderAndObjectId.ContainsKey(providerObjectKey))
+        {
+            while (_pendingCommandsByProviderAndObjectId.Count >= MaxTrackedPendingCommands)
+            {
+                RemoveOldestPendingCommand();
+                _evictedPendingCommands++;
+            }
+        }
+
+        _pendingCommandsByProviderAndObjectId[providerObjectKey] = pending;
+    }
 
     public bool TryCompletePendingCommand(string providerObjectKey, DateTimeOffset stoppedAt)
     {
+        ExpirePendingCommands(stoppedAt);
         if (!_pendingCommandsByProviderAndObjectId.Remove(providerObjectKey, out var pending))
         {
             return false;
@@ -34,35 +62,12 @@ internal sealed class DbEventAggregationState
     {
         TotalCommands++;
 
-        if (!_aggregates.TryGetValue(pending.Key, out var aggregate))
-        {
-            aggregate = new MutableCommandAggregate(
-                pending.CommandTextHash,
-                pending.CommandTextSanitized,
-                pending.ConnectionStringSanitized,
-                pending.Provider,
-                pending.StartedAt,
-                stoppedAt);
-            _aggregates[pending.Key] = aggregate;
-        }
-
+        var aggregate = GetOrCreateAggregate(pending, stoppedAt);
         aggregate.AddObservation(pending.Provider, durationMs, pending.StartedAt, stoppedAt);
 
         var nPlusOneKey = string.Create(CultureInfo.InvariantCulture, $"{pending.ScopeId}\u001f{pending.CommandTextHash}\u001f{pending.ConnectionStringSanitized}");
-        if (!_nPlusOne.TryGetValue(nPlusOneKey, out var incident))
-        {
-            incident = new MutableNPlusOne(
-                pending.ScopeId,
-                pending.CommandTextHash,
-                pending.CommandTextSanitized,
-                pending.ConnectionStringSanitized,
-                pending.Provider,
-                pending.StartedAt,
-                stoppedAt);
-            _nPlusOne[nPlusOneKey] = incident;
-        }
-
-        incident.AddObservation(pending.Provider, pending.StartedAt, stoppedAt);
+        var incident = GetOrCreateNPlusOne(nPlusOneKey, pending, stoppedAt);
+        incident?.AddObservation(pending.Provider, pending.StartedAt, stoppedAt);
     }
 
     public MutableConnectionPoolStats GetOrAddPoolStats(string providerName)
@@ -80,8 +85,11 @@ internal sealed class DbEventAggregationState
 
     public DbSnapshot BuildSnapshot(int processId, DateTimeOffset startedAt, TimeSpan duration)
     {
+        ExpirePendingCommands(startedAt + duration);
+
         var byCommand = _aggregates.Values
             .Select(static aggregate => aggregate.ToRecord())
+            .Concat(_overflowAggregate is null ? Array.Empty<DbCommandAggregate>() : [_overflowAggregate.ToRecord()])
             .OrderByDescending(static aggregate => aggregate.TotalMs)
             .ThenByDescending(static aggregate => aggregate.Count)
             .ThenBy(static aggregate => aggregate.CommandTextHash, StringComparer.Ordinal)
@@ -99,6 +107,26 @@ internal sealed class DbEventAggregationState
             .OrderBy(static stats => stats.Provider, StringComparer.Ordinal)
             .ToList();
 
+        if (_overflowedCommandShapes > 0)
+        {
+            _notes.Add($"Aggregated {_overflowedCommandShapes} additional distinct DB command shape(s) into the overflow bucket after reaching the cap of {MaxTrackedCommandAggregates}.");
+        }
+
+        if (_overflowedNPlusOneKeys > 0)
+        {
+            _notes.Add($"Dropped {_overflowedNPlusOneKeys} distinct N+1 scope/command key(s) after reaching the cap of {MaxTrackedNPlusOneIncidents}.");
+        }
+
+        if (_expiredPendingCommands > 0)
+        {
+            _notes.Add($"Expired {_expiredPendingCommands} pending SqlClient command(s) that exceeded the {PendingCommandTtl.TotalMinutes:F0}-minute completion TTL.");
+        }
+
+        if (_evictedPendingCommands > 0)
+        {
+            _notes.Add($"Evicted {_evictedPendingCommands} oldest pending SqlClient command(s) after reaching the cap of {MaxTrackedPendingCommands} in-flight commands.");
+        }
+
         if (byCommand.Count == 0)
         {
             _notes.Add("No EF Core or SqlClient commands were observed in the collection window.");
@@ -113,6 +141,86 @@ internal sealed class DbEventAggregationState
             NPlusOne: nPlusOneIncidents,
             ConnectionPool: connectionPool,
             Notes: _notes.OrderBy(static note => note, StringComparer.Ordinal).ToList());
+    }
+
+    private MutableCommandAggregate GetOrCreateAggregate(PendingCommand pending, DateTimeOffset stoppedAt)
+    {
+        if (_aggregates.TryGetValue(pending.Key, out var aggregate))
+        {
+            return aggregate;
+        }
+
+        if (_aggregates.Count >= MaxTrackedCommandAggregates)
+        {
+            _overflowedCommandShapes++;
+            _overflowAggregate ??= new MutableCommandAggregate(
+                OverflowCommandTextHash,
+                OverflowCommandText,
+                OverflowConnectionString,
+                pending.Provider,
+                pending.StartedAt,
+                stoppedAt);
+            return _overflowAggregate;
+        }
+
+        aggregate = new MutableCommandAggregate(
+            pending.CommandTextHash,
+            pending.CommandTextSanitized,
+            pending.ConnectionStringSanitized,
+            pending.Provider,
+            pending.StartedAt,
+            stoppedAt);
+        _aggregates[pending.Key] = aggregate;
+        return aggregate;
+    }
+
+    private MutableNPlusOne? GetOrCreateNPlusOne(string nPlusOneKey, PendingCommand pending, DateTimeOffset stoppedAt)
+    {
+        if (_nPlusOne.TryGetValue(nPlusOneKey, out var incident))
+        {
+            return incident;
+        }
+
+        if (_nPlusOne.Count >= MaxTrackedNPlusOneIncidents)
+        {
+            _overflowedNPlusOneKeys++;
+            return null;
+        }
+
+        incident = new MutableNPlusOne(
+            pending.ScopeId,
+            pending.CommandTextHash,
+            pending.CommandTextSanitized,
+            pending.ConnectionStringSanitized,
+            pending.Provider,
+            pending.StartedAt,
+            stoppedAt);
+        _nPlusOne[nPlusOneKey] = incident;
+        return incident;
+    }
+
+    private void ExpirePendingCommands(DateTimeOffset now)
+    {
+        if (_pendingCommandsByProviderAndObjectId.Count == 0)
+        {
+            return;
+        }
+
+        var cutoff = now - PendingCommandTtl;
+        foreach (var key in _pendingCommandsByProviderAndObjectId
+                     .Where(entry => entry.Value.StartedAt <= cutoff)
+                     .Select(static entry => entry.Key)
+                     .ToArray())
+        {
+            _pendingCommandsByProviderAndObjectId.Remove(key);
+            _expiredPendingCommands++;
+        }
+    }
+
+    private void RemoveOldestPendingCommand()
+    {
+        var oldest = _pendingCommandsByProviderAndObjectId.MinBy(static entry => entry.Value.StartedAt);
+        _pendingCommandsByProviderAndObjectId.Remove(oldest.Key);
     }
 }
 

@@ -43,6 +43,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         [62] = "ThreadPoolDequeue",
         [85] = "ThreadPoolMinMaxThreadsChanged",
     };
+    internal const int MaxTimelineSamples = 4096;
 
     private readonly ILogger<EventPipeThreadPoolCollector> _logger;
 
@@ -74,9 +75,9 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         var startedAt = DateTimeOffset.UtcNow;
         var notes = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var observedEventNames = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
-        var workerSamples = new ConcurrentQueue<CountSample>();
-        var iocpSamples = new ConcurrentQueue<CountSample>();
-        var hillClimbing = new ConcurrentQueue<ThreadPoolHillClimbingSample>();
+        var workerSamples = new FixedCapacityQueue<CountSample>(MaxTimelineSamples);
+        var iocpSamples = new FixedCapacityQueue<CountSample>(MaxTimelineSamples);
+        var hillClimbing = new FixedCapacityQueue<ThreadPoolHillClimbingSample>(MaxTimelineSamples);
         var workItemOrigins = new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
         ThreadPoolEffectiveSettings? effectiveSettings = null;
         double? latestThroughput = null;
@@ -250,9 +251,24 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
             session.Dispose();
         }
 
-        var orderedWorkerSamples = workerSamples.OrderBy(static sample => sample.Timestamp).ToList();
-        var normalizedHillClimbing = NormalizeHillClimbing(hillClimbing.OrderBy(static sample => sample.Timestamp).ToList(), orderedWorkerSamples, startedAt, notes);
-        var orderedIocpSamples = iocpSamples.OrderBy(static sample => sample.Timestamp).ToList();
+        if (workerSamples.DroppedCount > 0)
+        {
+            notes.TryAdd($"Dropped {workerSamples.DroppedCount} worker-thread timeline sample(s) after reaching the in-memory cap of {MaxTimelineSamples}.", 0);
+        }
+
+        if (iocpSamples.DroppedCount > 0)
+        {
+            notes.TryAdd($"Dropped {iocpSamples.DroppedCount} IOCP timeline sample(s) after reaching the in-memory cap of {MaxTimelineSamples}.", 0);
+        }
+
+        if (hillClimbing.DroppedCount > 0)
+        {
+            notes.TryAdd($"Dropped {hillClimbing.DroppedCount} hill-climbing sample(s) after reaching the in-memory cap of {MaxTimelineSamples}.", 0);
+        }
+
+        var orderedWorkerSamples = workerSamples.Items.OrderBy(static sample => sample.Timestamp).ToList();
+        var normalizedHillClimbing = NormalizeHillClimbing(hillClimbing.Items.OrderBy(static sample => sample.Timestamp).ToList(), orderedWorkerSamples, startedAt, notes);
+        var orderedIocpSamples = iocpSamples.Items.OrderBy(static sample => sample.Timestamp).ToList();
         if (orderedWorkerSamples.Count == 0 && normalizedHillClimbing.Count > 0)
         {
             orderedWorkerSamples = new List<CountSample>(normalizedHillClimbing.Count);
@@ -858,6 +874,33 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         catch (Exception)
         {
             return false;
+        }
+    }
+
+    internal sealed class FixedCapacityQueue<T>
+    {
+        private readonly int _capacity;
+        private readonly Queue<T> _items;
+
+        public FixedCapacityQueue(int capacity)
+        {
+            _capacity = capacity;
+            _items = new Queue<T>(capacity);
+        }
+
+        public int DroppedCount { get; private set; }
+
+        public IReadOnlyCollection<T> Items => _items;
+
+        public void Enqueue(T item)
+        {
+            if (_items.Count >= _capacity)
+            {
+                _items.Dequeue();
+                DroppedCount++;
+            }
+
+            _items.Enqueue(item);
         }
     }
 

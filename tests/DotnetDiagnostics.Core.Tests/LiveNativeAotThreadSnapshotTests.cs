@@ -25,7 +25,7 @@ public sealed class LiveNativeAotThreadSnapshotTests : IAsyncLifetime
             return;
         }
 
-        var publishDir = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-nativeaot-{Guid.NewGuid():N}");
+        var publishDir = Path.Combine(AppContext.BaseDirectory, "test-artifacts", nameof(LiveNativeAotThreadSnapshotTests), Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(publishDir);
 
         try
@@ -35,6 +35,11 @@ public sealed class LiveNativeAotThreadSnapshotTests : IAsyncLifetime
                 "..", "..", "..", "..", "samples", "NativeAotSample", "NativeAotSample.csproj"));
             await PublishAsync(sampleProject, publishDir, CancellationToken.None);
             _publishDir = publishDir;
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("dotnet publish failed", StringComparison.Ordinal))
+        {
+            try { Directory.Delete(publishDir, recursive: true); } catch { /* best effort */ }
+            return;
         }
         catch
         {

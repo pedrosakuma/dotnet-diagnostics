@@ -100,7 +100,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         var notes = new HashSet<string>(StringComparer.Ordinal);
 
         long requestsStarted = 0, requestsCompleted = 0;
-        var pending = new Dictionary<string, PendingRequest>(StringComparer.Ordinal);
+        var pending = new OldestPendingRequestTracker(maxRequests);
 
         var processingTask = Task.Run(() =>
         {
@@ -120,7 +120,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
                         if (requestEvent.IsStart)
                         {
                             requestsStarted++;
-                            pending[requestEvent.Key] = requestEvent.PendingRequest!;
+                            pending.Track(requestEvent.Key, requestEvent.PendingRequest!);
                         }
                         else if (pending.Remove(requestEvent.Key))
                         {
@@ -153,7 +153,8 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         }
 
         var capturedAt = DateTimeOffset.UtcNow;
-        var inFlight = pending.Values
+        var inFlight = pending
+            .GetPending()
             .Select(request =>
             {
                 var elapsedMs = Math.Max(0, (capturedAt - request.StartedAt).TotalMilliseconds);
@@ -178,7 +179,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         {
             notes.Add("No ASP.NET Core requests started during the window. Confirm the target hosts an ASP.NET Core app and that traffic flows during collection — EventPipe sessions take ~500 ms–1 s to start, so begin collection before (or while) the load runs.");
         }
-        else if (inFlight.Count == 0)
+        else if (inFlight.Count == 0 && pending.DroppedCount == 0)
         {
             notes.Add("All requests that started during the window also completed within it — nothing is in-flight. If the app appears hung, lengthen the window or capture during the stall.");
         }
@@ -186,6 +187,15 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         if (inFlight.Count > trimmed.Count)
         {
             notes.Add($"Showing the {trimmed.Count} oldest of {inFlight.Count} in-flight requests (maxRequests={maxRequests}).");
+        }
+
+        if (pending.DroppedCount > 0)
+        {
+            notes.Add($"Dropped {pending.DroppedCount} newer in-flight request start event(s) after reaching maxRequests={maxRequests}; Requests and InFlightCount are lower bounds once the cap is hit, and the reported requests are the oldest tracked subset.");
+            if (inFlight.Count == 0)
+            {
+                notes.Add("No tracked in-flight requests remained at window close, but additional newer requests may still be in-flight because the maxRequests cap was reached during collection.");
+            }
         }
 
         return new InFlightRequestSnapshot(
@@ -281,7 +291,7 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
 
     private static string FormatString(object? value) => DiagnosticSourcePayloadParser.ConvertToString(value);
 
-    private sealed record PendingRequest(
+    internal sealed record PendingRequest(
         string TraceId,
         string? SpanId,
         string Path,
@@ -292,4 +302,47 @@ public sealed class EventPipeInFlightRequestCollector : IInFlightRequestCollecto
         string Key,
         bool IsStart,
         PendingRequest? PendingRequest);
+
+    internal sealed class OldestPendingRequestTracker
+    {
+        private readonly int _capacity;
+        private readonly Dictionary<string, PendingRequest> _pending = new(StringComparer.Ordinal);
+
+        public OldestPendingRequestTracker(int capacity)
+        {
+            _capacity = capacity;
+        }
+
+        public int DroppedCount { get; private set; }
+
+        public void Track(string key, PendingRequest request)
+        {
+            if (_pending.ContainsKey(key))
+            {
+                _pending[key] = request;
+                return;
+            }
+
+            if (_pending.Count < _capacity)
+            {
+                _pending[key] = request;
+                return;
+            }
+
+            var newest = _pending.MaxBy(static entry => entry.Value.StartedAt);
+            if (newest.Value.StartedAt <= request.StartedAt)
+            {
+                DroppedCount++;
+                return;
+            }
+
+            _pending.Remove(newest.Key);
+            _pending[key] = request;
+            DroppedCount++;
+        }
+
+        public bool Remove(string key) => _pending.Remove(key);
+
+        public IReadOnlyCollection<PendingRequest> GetPending() => _pending.Values;
+    }
 }

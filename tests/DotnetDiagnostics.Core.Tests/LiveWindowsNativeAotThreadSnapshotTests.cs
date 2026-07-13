@@ -26,7 +26,7 @@ public sealed class LiveWindowsNativeAotThreadSnapshotTests : IAsyncLifetime
             return;
         }
 
-        var publishDir = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-nativeaot-win-{Guid.NewGuid():N}");
+        var publishDir = Path.Combine(AppContext.BaseDirectory, "test-artifacts", nameof(LiveWindowsNativeAotThreadSnapshotTests), Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(publishDir);
 
         try

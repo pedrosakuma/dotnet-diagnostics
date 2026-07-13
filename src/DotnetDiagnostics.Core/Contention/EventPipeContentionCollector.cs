@@ -14,6 +14,8 @@ public sealed class EventPipeContentionCollector : IContentionCollector
     private const long ContentionKeyword = 0x4000;
     private const string UnknownCallSite = "(unknown)";
     private const string UnknownModule = "(unknown)";
+    internal const int MaxTrackedEvents = 200;
+    private const int MaxTrackedMonitorIds = 4096;
 
     private readonly ILogger<EventPipeContentionCollector> _logger;
 
@@ -44,8 +46,13 @@ public sealed class EventPipeContentionCollector : IContentionCollector
 
         var startedAt = DateTimeOffset.UtcNow;
         var notes = new HashSet<string>(StringComparer.Ordinal);
-        var events = new List<ContentionEventSample>();
+        var topEvents = new TopContentionEvents(MaxTrackedEvents);
         var pendingByThread = new Dictionary<int, Stack<PendingContention>>();
+        var durations = new BoundedDurationSampler();
+        var distinctMonitorIds = new HashSet<ulong>();
+        var distinctMonitorOverflow = 0;
+        var totalDuration = TimeSpan.Zero;
+        var totalEvents = 0;
 
         var processingTask = Task.Run(() =>
         {
@@ -87,7 +94,23 @@ public sealed class EventPipeContentionCollector : IContentionCollector
                         : stoppedAt - pending.StartedAt;
                     var waitDuration = durationFromStop >= TimeSpan.Zero ? durationFromStop : TimeSpan.Zero;
 
-                    events.Add(new ContentionEventSample(
+                    totalEvents++;
+                    totalDuration += waitDuration;
+                    durations.Add(waitDuration);
+
+                    if (pending.LockId != 0)
+                    {
+                        if (distinctMonitorIds.Count < MaxTrackedMonitorIds || distinctMonitorIds.Contains(pending.LockId))
+                        {
+                            distinctMonitorIds.Add(pending.LockId);
+                        }
+                        else
+                        {
+                            distinctMonitorOverflow++;
+                        }
+                    }
+
+                    topEvents.Add(new ContentionEventSample(
                         StartedAt: pending.StartedAt,
                         StoppedAt: stoppedAt,
                         Duration: waitDuration,
@@ -124,12 +147,9 @@ public sealed class EventPipeContentionCollector : IContentionCollector
             notes.Add($"{unfinishedStarts} ContentionStart event(s) did not observe a matching stop before the window ended.");
         }
 
-        var orderedEvents = events
-            .OrderByDescending(static item => item.Duration)
-            .ThenBy(static item => item.CallSiteMethod, StringComparer.Ordinal)
-            .ToList();
+        var orderedEvents = topEvents.GetOrdered();
 
-        if (orderedEvents.Count == 0)
+        if (totalEvents == 0)
         {
             if (OperatingSystem.IsLinux())
             {
@@ -141,45 +161,37 @@ public sealed class EventPipeContentionCollector : IContentionCollector
             }
         }
 
-        var durations = orderedEvents
-            .Select(static item => item.Duration)
-            .OrderBy(static item => item)
-            .ToList();
-        var distinctMonitors = orderedEvents
-            .Where(static item => item.LockId != 0)
-            .Select(static item => item.LockId)
-            .Distinct()
-            .Count();
-        var totalDuration = orderedEvents.Aggregate(TimeSpan.Zero, static (sum, item) => sum + item.Duration);
+        if (topEvents.DroppedCount > 0)
+        {
+            notes.Add($"Retained the {orderedEvents.Count} longest contention event(s) after reaching the in-memory cap of {MaxTrackedEvents}; {topEvents.DroppedCount} shorter event(s) were dropped.");
+        }
+
+        if (durations.IsApproximate)
+        {
+            notes.Add($"Contention duration percentiles are exact up to {BoundedPercentileSampler.ExactSampleCapacity} samples and become reservoir-sampled approximations above that cap; max remains exact.");
+        }
+
+        if (distinctMonitorOverflow > 0)
+        {
+            notes.Add($"Tracked up to {MaxTrackedMonitorIds} distinct monitor ids; {distinctMonitorOverflow} additional contention event(s) used untracked monitor ids, so DistinctMonitors is a lower bound.");
+        }
 
         return new ContentionSnapshot(
             ProcessId: processId,
             StartedAt: startedAt,
             Duration: duration,
-            TotalEvents: orderedEvents.Count,
-            DistinctMonitors: distinctMonitors,
+            TotalEvents: totalEvents,
+            DistinctMonitors: distinctMonitorIds.Count,
             TotalContentionDuration: totalDuration,
-            P50ContentionDuration: Percentile(durations, 0.50),
-            P95ContentionDuration: Percentile(durations, 0.95),
-            MaxContentionDuration: durations.Count > 0 ? durations[^1] : TimeSpan.Zero,
+            P50ContentionDuration: durations.GetPercentile(0.50),
+            P95ContentionDuration: durations.GetPercentile(0.95),
+            MaxContentionDuration: durations.Max,
             Events: orderedEvents,
             Notes: notes.OrderBy(static note => note, StringComparer.Ordinal).ToList());
     }
 
     private static DateTimeOffset ToUtcOffset(DateTime timestamp) =>
         new(timestamp.ToUniversalTime(), TimeSpan.Zero);
-
-    private static TimeSpan Percentile(List<TimeSpan> orderedDurations, double percentile)
-    {
-        if (orderedDurations.Count == 0)
-        {
-            return TimeSpan.Zero;
-        }
-
-        var index = (int)Math.Ceiling((orderedDurations.Count * percentile) - 1);
-        index = Math.Clamp(index, 0, orderedDurations.Count - 1);
-        return orderedDurations[index];
-    }
 
     private static CallSite ExtractCallSite(ContentionStartTraceData data, HashSet<string> notes)
     {
@@ -275,4 +287,50 @@ public sealed class EventPipeContentionCollector : IContentionCollector
         CallSite CallSite);
 
     private sealed record CallSite(string Method, string Module);
+
+    internal sealed class TopContentionEvents
+    {
+        private readonly int _capacity;
+        private readonly List<ContentionEventSample> _events;
+
+        public TopContentionEvents(int capacity)
+        {
+            _capacity = capacity;
+            _events = new List<ContentionEventSample>(capacity);
+        }
+
+        public int DroppedCount { get; private set; }
+
+        public void Add(ContentionEventSample sample)
+        {
+            if (_events.Count < _capacity)
+            {
+                _events.Add(sample);
+                return;
+            }
+
+            var shortestIndex = 0;
+            for (var i = 1; i < _events.Count; i++)
+            {
+                if (_events[i].Duration < _events[shortestIndex].Duration)
+                {
+                    shortestIndex = i;
+                }
+            }
+
+            if (_events[shortestIndex].Duration >= sample.Duration)
+            {
+                DroppedCount++;
+                return;
+            }
+
+            _events[shortestIndex] = sample;
+            DroppedCount++;
+        }
+
+        public IReadOnlyList<ContentionEventSample> GetOrdered() => _events
+            .OrderByDescending(static item => item.Duration)
+            .ThenBy(static item => item.CallSiteMethod, StringComparer.Ordinal)
+            .ToList();
+    }
 }

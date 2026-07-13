@@ -23,6 +23,12 @@ public sealed class EventPipeJitCollector : IJitCollector
         JitTracingKeyword |
         JittedMethodILToNativeMapKeyword |
         CompilationDiagnosticKeyword;
+    internal const int MaxTrackedMethods = 2048;
+    private const int MaxPendingMethodIds = 4096;
+    private const int MaxQueuedStartsPerMethodId = 8;
+    private const int MaxTrackedMethodIdMappings = 4096;
+    private const int MaxTrackedIlMapMethodIds = 4096;
+    private const int MaxTrackedR2rMisses = 4096;
 
     private readonly ILogger<EventPipeJitCollector> _logger;
 
@@ -58,7 +64,6 @@ public sealed class EventPipeJitCollector : IJitCollector
         var methodKeyById = new Dictionary<long, string>();
         var methodIdsWithIlMap = new HashSet<long>();
         var r2rMissedMethods = new HashSet<long>();
-        var r2rMissThenJittedMethods = new HashSet<long>();
 
         var jitStarts = 0;
         var completedCompilations = 0;
@@ -70,6 +75,12 @@ public sealed class EventPipeJitCollector : IJitCollector
         var reJitCount = 0;
         var osrCount = 0;
         var ilMapCount = 0;
+        var r2rMissThenJittedCount = 0;
+        var droppedPendingStarts = 0;
+        var droppedMethods = 0;
+        var droppedMethodIdMappings = 0;
+        var droppedIlMapMethodIds = 0;
+        var droppedR2rMisses = 0;
 
         await EventPipeCollectionRunner.RunAsync(
             session,
@@ -81,8 +92,20 @@ public sealed class EventPipeJitCollector : IJitCollector
                     jitStarts++;
                     if (!pendingStarts.TryGetValue(data.MethodID, out var queue))
                     {
+                        if (pendingStarts.Count >= MaxPendingMethodIds)
+                        {
+                            droppedPendingStarts++;
+                            return;
+                        }
+
                         queue = new Queue<DateTimeOffset>();
                         pendingStarts[data.MethodID] = queue;
+                    }
+
+                    if (queue.Count >= MaxQueuedStartsPerMethodId)
+                    {
+                        droppedPendingStarts++;
+                        return;
                     }
 
                     queue.Enqueue(ToUtcOffset(data.TimeStamp));
@@ -101,18 +124,45 @@ public sealed class EventPipeJitCollector : IJitCollector
                     {
                         notes.Add("Some MethodLoadVerbose events arrived without a preceding MethodJittingStarted event; their inclusive JIT time was recorded as 0ms.");
                     }
+                    if (queue is { Count: 0 })
+                    {
+                        pendingStarts.Remove(data.MethodID);
+                    }
 
                     var inclusiveMs = Math.Max(0, (completedAt - started).TotalMilliseconds);
                     var key = BuildMethodKey(data.MethodNamespace, data.MethodName, data.MethodSignature);
                     if (!methods.TryGetValue(key, out var accumulator))
                     {
-                        accumulator = new JitMethodAccumulator(data.MethodNamespace ?? string.Empty, data.MethodName ?? "(unknown)", data.MethodSignature ?? string.Empty);
-                        methods[key] = accumulator;
+                        if (methods.Count >= MaxTrackedMethods)
+                        {
+                            droppedMethods++;
+                        }
+                        else
+                        {
+                            accumulator = new JitMethodAccumulator(data.MethodNamespace ?? string.Empty, data.MethodName ?? "(unknown)", data.MethodSignature ?? string.Empty);
+                            methods[key] = accumulator;
+                        }
                     }
 
                     var hasIlMap = methodIdsWithIlMap.Contains(data.MethodID);
-                    accumulator.Record(inclusiveMs, data.OptimizationTier, data.ReJITID, hasIlMap);
-                    methodKeyById[data.MethodID] = key;
+                    if (accumulator is not null)
+                    {
+                        accumulator.Record(inclusiveMs, data.OptimizationTier, data.ReJITID, hasIlMap);
+
+                        if (methodKeyById.Count < MaxTrackedMethodIdMappings || methodKeyById.ContainsKey(data.MethodID))
+                        {
+                            methodKeyById[data.MethodID] = key;
+                        }
+                        else
+                        {
+                            droppedMethodIdMappings++;
+                        }
+                    }
+
+                    if (hasIlMap)
+                    {
+                        methodIdsWithIlMap.Remove(data.MethodID);
+                    }
 
                     switch (ClassifyTier(data.OptimizationTier))
                     {
@@ -137,19 +187,29 @@ public sealed class EventPipeJitCollector : IJitCollector
                         osrCount++;
                     }
 
-                    if (r2rMissedMethods.Contains(data.MethodID))
+                    if (r2rMissedMethods.Remove(data.MethodID))
                     {
-                        r2rMissThenJittedMethods.Add(data.MethodID);
+                        r2rMissThenJittedCount++;
                     }
                 };
 
                 source.Clr.MethodILToNativeMap += data =>
                 {
                     ilMapCount++;
-                    methodIdsWithIlMap.Add(data.MethodID);
+                    if (methodIdsWithIlMap.Count < MaxTrackedIlMapMethodIds || methodIdsWithIlMap.Contains(data.MethodID))
+                    {
+                        methodIdsWithIlMap.Add(data.MethodID);
+                    }
+                    else
+                    {
+                        droppedIlMapMethodIds++;
+                    }
+
                     if (methodKeyById.TryGetValue(data.MethodID, out var key) && methods.TryGetValue(key, out var accumulator))
                     {
                         accumulator.MarkIlMap();
+                        methodKeyById.Remove(data.MethodID);
+                        methodIdsWithIlMap.Remove(data.MethodID);
                     }
                 };
 
@@ -166,9 +226,13 @@ public sealed class EventPipeJitCollector : IJitCollector
                     {
                         r2rHits++;
                     }
-                    else
+                    else if (r2rMissedMethods.Count < MaxTrackedR2rMisses || r2rMissedMethods.Contains(data.MethodID))
                     {
                         r2rMissedMethods.Add(data.MethodID);
+                    }
+                    else
+                    {
+                        droppedR2rMisses++;
                     }
                 };
             },
@@ -198,7 +262,7 @@ public sealed class EventPipeJitCollector : IJitCollector
             Tier1: tier1Count,
             ReadyToRun: readyToRunCount,
             R2RHit: r2rHits,
-            R2RMissThenJit: r2rMissThenJittedMethods.Count);
+            R2RMissThenJit: r2rMissThenJittedCount);
 
         var tierDenominator = Math.Max(1, completedCompilations);
         var tier1Percent = completedCompilations == 0
@@ -210,6 +274,31 @@ public sealed class EventPipeJitCollector : IJitCollector
         var healthCheck = completedCompilations == 0 && r2rLookups == 0
             ? "No JIT or ReadyToRun lookups were captured in the window."
             : $"{tier1Percent:F0}% of completed methods reached Tier1; R2R hit rate {(r2rHitRatePercent.HasValue ? $"{r2rHitRatePercent.Value:F0}%" : "n/a")}.";
+
+        if (droppedPendingStarts > 0)
+        {
+            notes.Add($"Dropped {droppedPendingStarts} MethodJittingStarted event(s) after reaching the pending-start cap ({MaxPendingMethodIds} method ids, {MaxQueuedStartsPerMethodId} start(s) per id).");
+        }
+
+        if (droppedMethods > 0)
+        {
+            notes.Add($"Tracked up to {MaxTrackedMethods} unique methods; {droppedMethods} additional method completion(s) were aggregated only in the top-line counters.");
+        }
+
+        if (droppedMethodIdMappings > 0)
+        {
+            notes.Add($"Dropped {droppedMethodIdMappings} completed-method id mapping(s) after reaching the IL-map correlation cap of {MaxTrackedMethodIdMappings}.");
+        }
+
+        if (droppedIlMapMethodIds > 0)
+        {
+            notes.Add($"Dropped {droppedIlMapMethodIds} MethodILToNativeMap method id(s) after reaching the cap of {MaxTrackedIlMapMethodIds}.");
+        }
+
+        if (droppedR2rMisses > 0)
+        {
+            notes.Add($"Dropped {droppedR2rMisses} ReadyToRun miss method id(s) after reaching the cap of {MaxTrackedR2rMisses}.");
+        }
 
         return new JitSnapshot(
             ProcessId: processId,

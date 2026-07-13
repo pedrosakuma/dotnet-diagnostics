@@ -20,6 +20,11 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
     private const string DnsProvider = "System.Net.NameResolution";
     private const string TlsProvider = "System.Net.Security";
     private const string SocketsProvider = "System.Net.Sockets";
+    internal const int MaxTrackedOperationGroups = 256;
+    private const int MaxPendingActivities = 4096;
+    private static readonly TimeSpan PendingActivityTtl = TimeSpan.FromMinutes(2);
+    private const string OverflowHost = "(other)";
+    private const string OverflowPath = "(overflow)";
 
     private static readonly string[] Providers = { HttpProvider, DnsProvider, TlsProvider, SocketsProvider };
 
@@ -77,8 +82,19 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         var dnsDurations = new BoundedDurationSampler();
         var tlsDurations = new BoundedDurationSampler();
         var byOperation = new Dictionary<string, MutableHttpGroup>(StringComparer.Ordinal);
+        var overflowOperation = new MutableHttpGroup(OverflowHost, OverflowPath);
         var counters = new Dictionary<string, NetworkingCounterSample>(StringComparer.Ordinal);
         var tlsProtocols = new HashSet<string>(StringComparer.Ordinal);
+        var overflowedOperations = 0;
+        var unmatchedHttpFailures = 0;
+        var unmatchedDnsFailures = 0;
+        var unmatchedTlsFailures = 0;
+        var expiredHttpActivities = 0;
+        var expiredDnsActivities = 0;
+        var expiredTlsActivities = 0;
+        var evictedHttpActivities = 0;
+        var evictedDnsActivities = 0;
+        var evictedTlsActivities = 0;
 
         await EventPipeCollectionRunner.RunAsync(
             session,
@@ -108,22 +124,25 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
                         {
                             case HttpProvider:
                                 HandleHttp(
-                                    traceEvent, name, timestamp, pendingHttp, byOperation, httpDurations, queueTimes,
-                                    ref httpStarted, ref httpStopped, ref httpFailed, ref connEstablished, ref connClosed, ref leftQueue);
+                                    traceEvent, name, timestamp, pendingHttp, byOperation, overflowOperation, httpDurations, queueTimes,
+                                    ref httpStarted, ref httpStopped, ref httpFailed, ref connEstablished, ref connClosed, ref leftQueue,
+                                    ref overflowedOperations, ref unmatchedHttpFailures, ref expiredHttpActivities, ref evictedHttpActivities);
                                 break;
 
                             case DnsProvider:
                                 HandlePaired(
                                     name, "ResolutionStart", "Resolution/Start", "ResolutionStop", "Resolution/Stop",
                                     "ResolutionFailed", "Resolution/Failed", traceEvent.ActivityID, timestamp,
-                                    pendingDns, dnsDurations, ref dnsStarted, ref dnsStopped, ref dnsFailed);
+                                    pendingDns, dnsDurations, ref dnsStarted, ref dnsStopped, ref dnsFailed, ref unmatchedDnsFailures,
+                                    ref expiredDnsActivities, ref evictedDnsActivities);
                                 break;
 
                             case TlsProvider:
                                 if (HandlePaired(
                                     name, "HandshakeStart", "Handshake/Start", "HandshakeStop", "Handshake/Stop",
                                     "HandshakeFailed", "Handshake/Failed", traceEvent.ActivityID, timestamp,
-                                    pendingTls, tlsDurations, ref tlsStarted, ref tlsStopped, ref tlsFailed))
+                                    pendingTls, tlsDurations, ref tlsStarted, ref tlsStopped, ref tlsFailed, ref unmatchedTlsFailures,
+                                    ref expiredTlsActivities, ref evictedTlsActivities))
                                 {
                                     var protocol = PayloadString(traceEvent, "protocol");
                                     if (!string.IsNullOrWhiteSpace(protocol))
@@ -169,11 +188,47 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         }
 
         var operations = byOperation.Values
+            .Concat(overflowOperation.Count == 0 ? Array.Empty<MutableHttpGroup>() : [overflowOperation])
             .Select(static g => g.ToRecord())
             .OrderByDescending(static g => g.TotalDuration)
             .ThenByDescending(static g => g.Count)
             .ThenBy(static g => g.Host, StringComparer.Ordinal)
             .ToList();
+
+        if (overflowedOperations > 0)
+        {
+            notes.Add($"Grouped HTTP requests into at most {MaxTrackedOperationGroups} host/path buckets; {overflowedOperations} request(s) were aggregated into {OverflowHost} {OverflowPath}.");
+        }
+
+        if (unmatchedHttpFailures > 0)
+        {
+            notes.Add($"Observed {unmatchedHttpFailures} HTTP failure event(s) without a tracked RequestStart activity id.");
+        }
+
+        if (unmatchedDnsFailures > 0)
+        {
+            notes.Add($"Observed {unmatchedDnsFailures} DNS failure event(s) without a tracked ResolutionStart activity id.");
+        }
+
+        if (unmatchedTlsFailures > 0)
+        {
+            notes.Add($"Observed {unmatchedTlsFailures} TLS failure event(s) without a tracked HandshakeStart activity id.");
+        }
+
+        if (expiredHttpActivities > 0 || evictedHttpActivities > 0)
+        {
+            notes.Add($"HTTP correlation expired {expiredHttpActivities} pending activit(ies) beyond {PendingActivityTtl.TotalMinutes:F0} minute(s) and evicted {evictedHttpActivities} oldest activit(ies) after reaching the cap of {MaxPendingActivities}.");
+        }
+
+        if (expiredDnsActivities > 0 || evictedDnsActivities > 0)
+        {
+            notes.Add($"DNS correlation expired {expiredDnsActivities} pending activit(ies) beyond {PendingActivityTtl.TotalMinutes:F0} minute(s) and evicted {evictedDnsActivities} oldest activit(ies) after reaching the cap of {MaxPendingActivities}.");
+        }
+
+        if (expiredTlsActivities > 0 || evictedTlsActivities > 0)
+        {
+            notes.Add($"TLS correlation expired {expiredTlsActivities} pending activit(ies) beyond {PendingActivityTtl.TotalMinutes:F0} minute(s) and evicted {evictedTlsActivities} oldest activit(ies) after reaching the cap of {MaxPendingActivities}.");
+        }
 
         return new NetworkingSnapshot(
             ProcessId: processId,
@@ -218,6 +273,7 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         DateTimeOffset timestamp,
         Dictionary<Guid, PendingHttp> pending,
         Dictionary<string, MutableHttpGroup> byOperation,
+        MutableHttpGroup overflowOperation,
         BoundedDurationSampler httpDurations,
         BoundedDurationSampler queueTimes,
         ref long started,
@@ -225,17 +281,23 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         ref long failed,
         ref long connEstablished,
         ref long connClosed,
-        ref long leftQueue)
+        ref long leftQueue,
+        ref int overflowedOperations,
+        ref int unmatchedFailures,
+        ref int expiredPendingActivities,
+        ref int evictedPendingActivities)
     {
+        ExpirePending(pending, timestamp, static entry => entry.StartedAt, ref expiredPendingActivities);
+
         switch (name)
         {
             case "RequestStart":
             case "Request/Start":
                 started++;
-                pending[traceEvent.ActivityID] = new PendingHttp(
+                AddPending(pending, traceEvent.ActivityID, new PendingHttp(
                     timestamp,
                     BuildHost(traceEvent),
-                    PayloadString(traceEvent, "pathAndQuery"));
+                    NormalizePath(PayloadString(traceEvent, "pathAndQuery"))), timestamp, static entry => entry.StartedAt, ref expiredPendingActivities, ref evictedPendingActivities);
                 break;
 
             case "RequestStop":
@@ -253,6 +315,13 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
                     var key = $"{p.Host} {p.Path}";
                     if (!byOperation.TryGetValue(key, out var group))
                     {
+                        if (byOperation.Count >= MaxTrackedOperationGroups)
+                        {
+                            overflowedOperations++;
+                            overflowOperation.Add(elapsed);
+                            break;
+                        }
+
                         group = new MutableHttpGroup(p.Host, p.Path);
                         byOperation[key] = group;
                     }
@@ -265,6 +334,10 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
             case "RequestFailed":
             case "Request/Failed":
                 failed++;
+                if (!pending.Remove(traceEvent.ActivityID))
+                {
+                    unmatchedFailures++;
+                }
                 break;
 
             case "ConnectionEstablished":
@@ -301,12 +374,17 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         BoundedDurationSampler durations,
         ref long started,
         ref long stopped,
-        ref long failed)
+        ref long failed,
+        ref int unmatchedFailures,
+        ref int expiredPendingActivities,
+        ref int evictedPendingActivities)
     {
+        ExpirePending(pending, timestamp, static entry => entry, ref expiredPendingActivities);
+
         if (name == startName || name == startSlash)
         {
             started++;
-            pending[activityId] = timestamp;
+            AddPending(pending, activityId, timestamp, timestamp, static entry => entry, ref expiredPendingActivities, ref evictedPendingActivities);
             return true;
         }
 
@@ -325,6 +403,10 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
         if (name == failedName || name == failedSlash)
         {
             failed++;
+            if (!pending.Remove(activityId))
+            {
+                unmatchedFailures++;
+            }
             return true;
         }
 
@@ -406,6 +488,73 @@ public sealed class EventPipeNetworkingCollector : INetworkingCollector
 
         var prefix = string.IsNullOrEmpty(scheme) ? string.Empty : $"{scheme}://";
         return string.IsNullOrEmpty(port) ? $"{prefix}{host}" : $"{prefix}{host}:{port}";
+    }
+
+    private static string NormalizePath(string pathAndQuery)
+    {
+        if (string.IsNullOrWhiteSpace(pathAndQuery))
+        {
+            return "/";
+        }
+
+        var trimmed = pathAndQuery.Trim();
+        var queryIndex = trimmed.IndexOf('?');
+        return queryIndex >= 0 ? trimmed[..queryIndex] : trimmed;
+    }
+
+    private static void AddPending<TKey, TValue>(
+        Dictionary<TKey, TValue> pending,
+        TKey key,
+        TValue value,
+        DateTimeOffset now,
+        Func<TValue, DateTimeOffset> startedAtSelector,
+        ref int expiredCount,
+        ref int evictedCount)
+        where TKey : notnull
+    {
+        ExpirePending(pending, now, startedAtSelector, ref expiredCount);
+        if (!pending.ContainsKey(key))
+        {
+            while (pending.Count >= MaxPendingActivities)
+            {
+                RemoveOldestPending(pending, startedAtSelector);
+                evictedCount++;
+            }
+        }
+
+        pending[key] = value;
+    }
+
+    private static void ExpirePending<TKey, TValue>(
+        Dictionary<TKey, TValue> pending,
+        DateTimeOffset now,
+        Func<TValue, DateTimeOffset> startedAtSelector,
+        ref int expiredCount)
+        where TKey : notnull
+    {
+        if (pending.Count == 0)
+        {
+            return;
+        }
+
+        var cutoff = now - PendingActivityTtl;
+        foreach (var key in pending
+                     .Where(entry => startedAtSelector(entry.Value) <= cutoff)
+                     .Select(static entry => entry.Key)
+                     .ToArray())
+        {
+            pending.Remove(key);
+            expiredCount++;
+        }
+    }
+
+    private static void RemoveOldestPending<TKey, TValue>(
+        Dictionary<TKey, TValue> pending,
+        Func<TValue, DateTimeOffset> startedAtSelector)
+        where TKey : notnull
+    {
+        var oldest = pending.MinBy(entry => startedAtSelector(entry.Value));
+        pending.Remove(oldest.Key);
     }
 
     private static DateTimeOffset ToUtcOffset(DateTime timestamp) =>
