@@ -250,6 +250,8 @@ public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
         process.StartInfo.ArgumentList.Add(seconds.ToString(CultureInfo.InvariantCulture));
 
         process.Start();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = process.StandardError.ReadToEndAsync(ct);
         try
         {
             await process.WaitForExitAsync(ct).ConfigureAwait(false);
@@ -260,9 +262,10 @@ public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
             throw;
         }
 
+        await stdoutTask.ConfigureAwait(false);
+        var stderr = await stderrTask.ConfigureAwait(false);
         if (process.ExitCode != 0)
         {
-            var stderr = await process.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
             if (LooksLikePerfPermissionFailure(stderr))
             {
                 throw new UnauthorizedAccessException(
