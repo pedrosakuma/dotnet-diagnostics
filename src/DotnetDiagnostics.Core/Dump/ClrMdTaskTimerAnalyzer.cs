@@ -4,6 +4,8 @@ namespace DotnetDiagnostics.Core.Dump;
 
 internal static class ClrMdTaskTimerAnalyzer
 {
+    internal const int DefaultMaxTrackedTimerAddresses = 200_000;
+
     public static void Aggregate(ClrObject obj, long objSize, RawTaskTimerAggregation sink)
     {
         var type = obj.Type;
@@ -22,7 +24,7 @@ internal static class ClrMdTaskTimerAnalyzer
             }
 
             var scheduledTimer = timerObject.Value;
-            if (!sink.SeenTimerAddresses.Add(scheduledTimer.Address))
+            if (!sink.TryTrackTimerAddress(scheduledTimer.Address))
             {
                 return;
             }
@@ -106,6 +108,12 @@ internal static class ClrMdTaskTimerAnalyzer
         if (agg.TotalTimers > timerRows.Sum(row => row.Count))
         {
             notes.Add("Timer callback rows are truncated to the top groups retained in the snapshot.");
+        }
+
+        if (agg.TimerAddressTrackingTruncated)
+        {
+            notes.Add(
+                $"Timer address de-duplication hit its safety cap ({agg.MaxTrackedTimerAddresses:N0}); totals may slightly over-count duplicate timer containers beyond that point.");
         }
 
         return new TaskTimerLeakView(
@@ -313,13 +321,38 @@ internal static class ClrMdTaskTimerAnalyzer
 
     internal sealed class RawTaskTimerAggregation
     {
+        public RawTaskTimerAggregation(int maxTrackedTimerAddresses = DefaultMaxTrackedTimerAddresses)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxTrackedTimerAddresses);
+            MaxTrackedTimerAddresses = maxTrackedTimerAddresses;
+        }
+
         public long TotalTimers;
         public long TotalTasks;
         public long TotalTaskCompletionSources;
+        public int MaxTrackedTimerAddresses { get; }
+        public bool TimerAddressTrackingTruncated { get; private set; }
         internal HashSet<ulong> SeenTimerAddresses { get; } = new();
         internal Dictionary<TimerCallbackKey, RawTimerCallbackStat> TimersByCallback { get; } = new();
         internal Dictionary<TypeKey, RawTypeStat> TasksByType { get; } = new();
         internal Dictionary<TypeKey, RawTypeStat> TaskCompletionSourcesByType { get; } = new();
+
+        public bool TryTrackTimerAddress(ulong address)
+        {
+            if (SeenTimerAddresses.Contains(address))
+            {
+                return false;
+            }
+
+            if (SeenTimerAddresses.Count < MaxTrackedTimerAddresses)
+            {
+                SeenTimerAddresses.Add(address);
+                return true;
+            }
+
+            TimerAddressTrackingTruncated = true;
+            return true;
+        }
     }
 
     internal readonly record struct TypeKey(string TypeName, string? ModuleName);
