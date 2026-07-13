@@ -295,7 +295,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
     private StaticFieldStat[] WalkStaticFields(
         ClrRuntime runtime, int topN, List<string> warnings, CancellationToken ct)
     {
-        var results = new List<StaticFieldStat>(capacity: Math.Min(topN * 4, 1024));
+        var results = new StaticFieldTopNAccumulator(topN);
         var visitedTypes = new HashSet<(int AppDomainId, ulong MethodTable)>();
         try
         {
@@ -354,10 +354,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             warnings.Add($"Static-field walk aborted partway through: {ex.GetType().Name} ({ex.Message}).");
         }
 
-        return results
-            .OrderByDescending(s => s.DirectlyReferencedBytes)
-            .Take(topN)
-            .ToArray();
+        return results.ToArray();
     }
 
     private static RootKindStat[] WalkRoots(ClrRuntime runtime, List<string> warnings, CancellationToken ct)
@@ -452,7 +449,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
 
     private GcHandlesView WalkGcHandles(ClrRuntime runtime, CancellationToken ct)
     {
-        var samples = new List<GcHandleAggregation.GcHandleSample>();
+        var aggregator = new GcHandleAggregation.Builder();
         var notes = new List<string>();
 
         try
@@ -469,7 +466,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
                     ? ClrHandleKind.Pinned
                     : handle.HandleKind;
 
-                samples.Add(new GcHandleAggregation.GcHandleSample(
+                aggregator.Add(new GcHandleAggregation.GcHandleSample(
                     kind,
                     typeName,
                     retainedBytes,
@@ -481,7 +478,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
             notes.Add($"GCHandle enumeration aborted partway through: {ex.GetType().Name} ({ex.Message}).");
         }
 
-        var aggregated = GcHandleAggregation.Aggregate(samples);
+        var aggregated = aggregator.BuildView();
         if (notes.Count == 0)
         {
             return aggregated;
@@ -548,6 +545,7 @@ public sealed class ClrMdDumpInspector : IDumpInspector
                     gen0 += s.Length;
                     break;
             }
+
         }
         return new DumpHeapSummary(total, gen0, gen1, gen2, loh, poh, committed);
     }
@@ -579,6 +577,70 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         public ClrType ClrType { get; }
         public long Count;
         public long Bytes;
+    }
+
+    internal sealed class StaticFieldTopNAccumulator
+    {
+        private static readonly IComparer<StaticFieldStat> Comparer = System.Collections.Generic.Comparer<StaticFieldStat>.Create(Compare);
+        private readonly int _capacity;
+        private readonly List<StaticFieldStat> _items;
+
+        public StaticFieldTopNAccumulator(int capacity)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+            _capacity = capacity;
+            _items = new List<StaticFieldStat>(capacity);
+        }
+
+        public void Add(StaticFieldStat item)
+        {
+            if (_capacity == 0)
+            {
+                return;
+            }
+
+            var insertAt = _items.BinarySearch(item, Comparer);
+            if (insertAt < 0)
+            {
+                insertAt = ~insertAt;
+            }
+
+            if (insertAt >= _capacity)
+            {
+                return;
+            }
+
+            _items.Insert(insertAt, item);
+            if (_items.Count > _capacity)
+            {
+                _items.RemoveAt(_capacity);
+            }
+        }
+
+        public StaticFieldStat[] ToArray() => _items.ToArray();
+
+        private static int Compare(StaticFieldStat left, StaticFieldStat right)
+        {
+            var byBytes = right.DirectlyReferencedBytes.CompareTo(left.DirectlyReferencedBytes);
+            if (byBytes != 0)
+            {
+                return byBytes;
+            }
+
+            var byType = string.Compare(left.ContainingTypeFullName, right.ContainingTypeFullName, StringComparison.Ordinal);
+            if (byType != 0)
+            {
+                return byType;
+            }
+
+            var byField = string.Compare(left.FieldName, right.FieldName, StringComparison.Ordinal);
+            if (byField != 0)
+            {
+                return byField;
+            }
+
+            return left.ValueAddress.CompareTo(right.ValueAddress);
+        }
     }
 
 }
