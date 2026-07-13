@@ -285,7 +285,7 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
         // Per-TID pending OUT awaiting a matching IN. Tracking by kernel TID (not process) so
         // a thread that briefly migrates between cores is still attributed to one off-CPU span.
         var pending = new Dictionary<int, (double Ts, string State, List<OffCpuFrame> Stack, string Comm)>();
-        var spans = new List<OffCpuSpan>();
+        var builder = OffCpuAggregator.CreateBuilder();
         long switches = 0;
         double maxTs = double.MinValue;
 
@@ -315,7 +315,7 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
                     var micros = (long)Math.Round((ts - p.Ts) * 1_000_000.0);
                     if (micros > 0)
                     {
-                        spans.Add(new OffCpuSpan(
+                        builder.AddSpan(new OffCpuSpan(
                             Tid: cs.NewThreadID,
                             Comm: p.Comm,
                             DurationMicros: micros,
@@ -334,7 +334,7 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
                 var micros = (long)Math.Round((maxTs - kv.Value.Ts) * 1_000_000.0);
                 if (micros > 0)
                 {
-                    spans.Add(new OffCpuSpan(
+                    builder.AddSpan(new OffCpuSpan(
                         Tid: kv.Key,
                         Comm: kv.Value.Comm,
                         DurationMicros: micros,
@@ -345,11 +345,10 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
             }
         }
 
-        return OffCpuAggregator.Aggregate(
+        return builder.Build(
             processId,
             startedAt,
             duration,
-            spans,
             switches,
             topN,
             symbolSource: "etw-cswitch-pdb",

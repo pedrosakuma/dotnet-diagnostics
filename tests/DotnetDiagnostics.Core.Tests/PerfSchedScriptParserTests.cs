@@ -1,3 +1,4 @@
+using System.IO;
 using DotnetDiagnostics.Core.OffCpu;
 using FluentAssertions;
 
@@ -38,6 +39,44 @@ public sealed class PerfSchedScriptParserTests
         span.BlockingStack.Should().HaveCount(3);
         span.BlockingStack[0].Method.Should().Be("schedule");
         span.BlockingStack[2].Method.Should().Be("pthread_cond_wait");
+    }
+
+
+    [Fact]
+    public async Task AggregateScriptAsync_MatchesBufferedParserAndAggregator()
+    {
+        const string script = """
+                    target  1000 [001]   1.000000: sched:sched_switch: prev_comm=target prev_pid=1000 prev_prio=120 prev_state=S ==> next_comm=swapper/1 next_pid=0 next_prio=120
+                            ffffffff81234567 schedule+0x0 ([kernel.kallsyms])
+                            ffffffff81234890 futex_wait_queue+0x10 ([kernel.kallsyms])
+                            7f1234abcdef pthread_cond_wait+0x80 (/usr/lib/libc.so.6)
+
+                   swapper     0 [001]   1.250000: sched:sched_switch: prev_comm=swapper/1 prev_pid=0 prev_prio=120 prev_state=R ==> next_comm=target next_pid=1000 next_prio=120
+
+            """;
+        var tids = new HashSet<int> { 1000 };
+        var startedAt = DateTimeOffset.UtcNow;
+        var duration = TimeSpan.FromSeconds(5);
+        var (spans, switches) = PerfSchedScriptParser.Parse(script, tids, flushPending: true);
+        var buffered = PerfSchedOffCpuSampler.Aggregate(
+            processId: 4242,
+            startedAt: startedAt,
+            duration: duration,
+            spans: spans,
+            schedSwitches: switches,
+            topN: 10);
+
+        using var reader = new StringReader(script);
+        var streamed = await PerfSchedOffCpuSampler.AggregateScriptAsync(
+            reader,
+            processId: 4242,
+            startedAt: startedAt,
+            duration: duration,
+            topN: 10,
+            targetTids: new HashSet<int> { 1000 });
+
+        streamed.Summary.Should().BeEquivalentTo(buffered.Summary);
+        streamed.Artifact.Should().BeEquivalentTo(buffered.Artifact);
     }
 
     [Fact]

@@ -33,52 +33,81 @@ internal static class OffCpuAggregator
         string symbolSource,
         IReadOnlyList<string>? notes = null)
     {
-        var byStack = new Dictionary<string, (long Micros, long Count, Dictionary<string, long> States, List<OffCpuFrame> Frames)>(StringComparer.Ordinal);
-        var byThread = new Dictionary<int, (string Comm, long Micros, long Switches, Dictionary<string, long> LeafCounts)>();
-        long totalMicros = 0;
-        long censoredCount = 0;
-        long censoredMicros = 0;
-
+        var builder = new OffCpuAggregationBuilder();
         foreach (var span in spans)
         {
-            totalMicros += span.DurationMicros;
-            if (span.IsCensored)
-            {
-                censoredCount++;
-                censoredMicros += span.DurationMicros;
-            }
-
-            // perf prints leaf→root; reverse for human-friendly root→leaf in the rollup.
-            var frames = new List<OffCpuFrame>(span.BlockingStack.Count);
-            for (var i = span.BlockingStack.Count - 1; i >= 0; i--) frames.Add(span.BlockingStack[i]);
-            var leaf = frames.Count > 0 ? frames[^1] : new OffCpuFrame("", "[no-stack]");
-            var key = string.Join('|', frames.Select(f => string.IsNullOrEmpty(f.Module) ? f.Method : $"{f.Module}!{f.Method}"));
-
-            if (!byStack.TryGetValue(key, out var agg))
-            {
-                agg = (0, 0, new Dictionary<string, long>(StringComparer.Ordinal), frames);
-            }
-            agg.Micros += span.DurationMicros;
-            agg.Count += 1;
-            agg.States[span.PrevState] = agg.States.GetValueOrDefault(span.PrevState) + 1;
-            byStack[key] = agg;
-
-            if (!byThread.TryGetValue(span.Tid, out var tagg))
-            {
-                tagg = (span.Comm, 0, 0, new Dictionary<string, long>(StringComparer.Ordinal));
-            }
-            tagg.Micros += span.DurationMicros;
-            tagg.Switches += 1;
-            var leafKey = string.IsNullOrEmpty(leaf.Module) ? leaf.Method : $"{leaf.Module}!{leaf.Method}";
-            tagg.LeafCounts[leafKey] = tagg.LeafCounts.GetValueOrDefault(leafKey) + 1;
-            byThread[span.Tid] = tagg;
+            builder.AddSpan(span);
         }
 
-        var stacks = byStack
+        return builder.Build(processId, startedAt, duration, schedSwitches, topN, symbolSource, notes);
+    }
+
+    public static OffCpuAggregationBuilder CreateBuilder() => new();
+}
+
+internal sealed class OffCpuAggregationBuilder
+{
+    private readonly Dictionary<string, (long Micros, long Count, Dictionary<string, long> States, List<OffCpuFrame> Frames)> _byStack
+        = new(StringComparer.Ordinal);
+    private readonly Dictionary<int, (string Comm, long Micros, long Switches, Dictionary<string, long> LeafCounts)> _byThread = [];
+    private long _totalMicros;
+    private long _censoredCount;
+    private long _censoredMicros;
+
+    public void AddSpan(OffCpuSpan span)
+    {
+        _totalMicros += span.DurationMicros;
+        if (span.IsCensored)
+        {
+            _censoredCount++;
+            _censoredMicros += span.DurationMicros;
+        }
+
+        var frames = new List<OffCpuFrame>(span.BlockingStack.Count);
+        for (var i = span.BlockingStack.Count - 1; i >= 0; i--)
+        {
+            frames.Add(span.BlockingStack[i]);
+        }
+
+        var leaf = frames.Count > 0 ? frames[^1] : new OffCpuFrame(string.Empty, "[no-stack]");
+        var key = string.Join('|', frames.Select(f => string.IsNullOrEmpty(f.Module) ? f.Method : $"{f.Module}!{f.Method}"));
+
+        if (!_byStack.TryGetValue(key, out var agg))
+        {
+            agg = (0, 0, new Dictionary<string, long>(StringComparer.Ordinal), frames);
+        }
+
+        agg.Micros += span.DurationMicros;
+        agg.Count += 1;
+        agg.States[span.PrevState] = agg.States.GetValueOrDefault(span.PrevState) + 1;
+        _byStack[key] = agg;
+
+        if (!_byThread.TryGetValue(span.Tid, out var threadAgg))
+        {
+            threadAgg = (span.Comm, 0, 0, new Dictionary<string, long>(StringComparer.Ordinal));
+        }
+
+        threadAgg.Micros += span.DurationMicros;
+        threadAgg.Switches += 1;
+        var leafKey = string.IsNullOrEmpty(leaf.Module) ? leaf.Method : $"{leaf.Module}!{leaf.Method}";
+        threadAgg.LeafCounts[leafKey] = threadAgg.LeafCounts.GetValueOrDefault(leafKey) + 1;
+        _byThread[span.Tid] = threadAgg;
+    }
+
+    public OffCpuSampleResult Build(
+        int processId,
+        DateTimeOffset startedAt,
+        TimeSpan duration,
+        long schedSwitches,
+        int topN,
+        string symbolSource,
+        IReadOnlyList<string>? notes = null)
+    {
+        var stacks = _byStack
             .Select(kv =>
             {
                 var dominant = kv.Value.States.OrderByDescending(s => s.Value).FirstOrDefault().Key ?? "?";
-                var leaf = kv.Value.Frames.Count > 0 ? kv.Value.Frames[^1] : new OffCpuFrame("", "[no-stack]");
+                var leaf = kv.Value.Frames.Count > 0 ? kv.Value.Frames[^1] : new OffCpuFrame(string.Empty, "[no-stack]");
                 return new OffCpuStackHotspot(
                     LeafFrame: string.IsNullOrEmpty(leaf.Module) ? leaf.Method : $"{leaf.Module}!{leaf.Method}",
                     OffCpuMicros: kv.Value.Micros,
@@ -89,7 +118,7 @@ internal static class OffCpuAggregator
             .OrderByDescending(s => s.OffCpuMicros)
             .ToList();
 
-        var threads = byThread
+        var threads = _byThread
             .Select(kv =>
             {
                 var topLeaf = kv.Value.LeafCounts.OrderByDescending(p => p.Value).FirstOrDefault().Key ?? "[no-stack]";
@@ -104,37 +133,37 @@ internal static class OffCpuAggregator
             .ToList();
 
         var notesList = notes is { Count: > 0 } ? notes : null;
-        if (censoredCount > 0)
+        if (_censoredCount > 0)
         {
-            var n = new List<string>(notesList ?? Array.Empty<string>());
-            n.Add($"{censoredCount} span(s) ({censoredMicros} µs) were censored: the thread was still blocked when the capture window ended, so the duration is a lower bound.");
-            notesList = n;
+            var merged = new List<string>(notesList ?? Array.Empty<string>());
+            merged.Add($"{_censoredCount} span(s) ({_censoredMicros} µs) were censored: the thread was still blocked when the capture window ended, so the duration is a lower bound.");
+            notesList = merged;
         }
 
         var summary = new OffCpuSnapshot(
             ProcessId: processId,
             StartedAt: startedAt,
             Duration: duration,
-            TotalOffCpuMicros: totalMicros,
-            DistinctThreads: byThread.Count,
+            TotalOffCpuMicros: _totalMicros,
+            DistinctThreads: _byThread.Count,
             TopBlockingStacks: stacks.Take(topN).ToList(),
             SchedSwitches: schedSwitches,
             SymbolSource: symbolSource,
-            CensoredSpans: censoredCount,
-            CensoredOffCpuMicros: censoredMicros,
+            CensoredSpans: _censoredCount,
+            CensoredOffCpuMicros: _censoredMicros,
             Notes: notesList);
 
         var artifact = new OffCpuSnapshotArtifact(
             ProcessId: processId,
             StartedAt: startedAt,
             Duration: duration,
-            TotalOffCpuMicros: totalMicros,
+            TotalOffCpuMicros: _totalMicros,
             SchedSwitches: schedSwitches,
             Stacks: stacks,
             Threads: threads,
             SymbolSource: symbolSource,
-            CensoredSpans: censoredCount,
-            CensoredOffCpuMicros: censoredMicros,
+            CensoredSpans: _censoredCount,
+            CensoredOffCpuMicros: _censoredMicros,
             Notes: notesList);
 
         return new OffCpuSampleResult(summary, artifact);

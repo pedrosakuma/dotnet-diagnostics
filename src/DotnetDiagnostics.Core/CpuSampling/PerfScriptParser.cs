@@ -32,99 +32,124 @@ internal static class PerfScriptParser
     {
         ArgumentNullException.ThrowIfNull(output);
 
-        // Optionally restrict to a single OS process. `perf record -p <pid>` records all
-        // tasks (threads) of <pid>; the textual header that `perf script` produces, however,
-        // reports the per-thread TID, NOT the parent PID. Filtering with samplePid != processId
-        // therefore dropped every threadpool/GC/network worker sample and only kept frames that
-        // happened to be running on the thread whose TID equals the PID (typically just the
-        // main thread). To preserve correctness when the caller passes a non-zero processId
-        // we compare against the set of TIDs currently belonging to that process — read once
-        // at parse start from /proc/<pid>/task. When that lookup is unavailable (non-Linux,
-        // or the process already exited), fall back to exact PID matching so replayed fixtures
-        // behave consistently across OSes.
+        var samples = new List<PerfSample>();
+        using var reader = new StringReader(output);
+        ParseAsync(
+            reader,
+            processId,
+            sample =>
+            {
+                samples.Add(sample);
+                return true;
+            },
+            CancellationToken.None).GetAwaiter().GetResult();
+        return samples;
+    }
+
+    public static async Task<PerfScriptParseResult> ParseAsync(
+        TextReader reader,
+        int processId,
+        Func<PerfSample, bool> onSample,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(onSample);
+
         HashSet<int>? acceptedTids = null;
         if (processId != 0)
         {
             acceptedTids = TryReadProcessTids(processId);
         }
 
-        var samples = new List<PerfSample>();
-        var lines = output.Split('\n');
-        var i = 0;
-        while (i < lines.Length)
+        long samplesEmitted = 0;
+        string? pendingHeader = null;
+
+        while (true)
         {
-            var header = lines[i].TrimEnd('\r');
-            if (string.IsNullOrWhiteSpace(header))
+            var rawHeader = pendingHeader ?? await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+            pendingHeader = null;
+            if (rawHeader is null)
             {
-                i++;
+                break;
+            }
+
+            var header = rawHeader.TrimEnd('\r');
+            if (string.IsNullOrWhiteSpace(header) || header.StartsWith('#'))
+            {
                 continue;
             }
 
-            if (header.StartsWith('#'))
-            {
-                i++;
-                continue;
-            }
-
-            // Header line is the sample preamble; the frames follow until a blank line.
-            // Header doesn't start with whitespace; frames are indented.
             if (char.IsWhiteSpace(header[0]))
             {
-                // Frame line without a preceding header — treat as orphan and skip.
-                i++;
                 continue;
             }
 
             var samplePid = TryExtractPid(header);
-            if (samplePid != 0)
-            {
-                var shouldSkip = acceptedTids is { } tids
+            var shouldSkip = samplePid != 0 &&
+                (acceptedTids is { } tids
                     ? !tids.Contains(samplePid)
-                    : processId != 0 && samplePid != processId;
-                if (shouldSkip)
+                    : processId != 0 && samplePid != processId);
+            var frames = shouldSkip ? null : new List<PerfFrame>();
+
+            while (true)
+            {
+                var rawLine = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                if (rawLine is null)
                 {
-                    // Skip this sample's frames.
-                    i = SkipToBlank(lines, i + 1);
+                    break;
+                }
+
+                var line = rawLine.TrimEnd('\r');
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    break;
+                }
+
+                if (!char.IsWhiteSpace(line[0]))
+                {
+                    pendingHeader = line;
+                    break;
+                }
+
+                if (frames is null)
+                {
                     continue;
+                }
+
+                var frame = ParseFrame(line);
+                if (frame is not null)
+                {
+                    frames.Add(frame);
                 }
             }
 
-            var frames = new List<PerfFrame>();
-            i++;
-            while (i < lines.Length)
+            if (frames is not { Count: > 0 })
             {
-                var line = lines[i].TrimEnd('\r');
-                if (string.IsNullOrWhiteSpace(line)) break;
-                if (!char.IsWhiteSpace(line[0])) break;
-
-                var frame = ParseFrame(line);
-                if (frame is not null) frames.Add(frame);
-                i++;
+                continue;
             }
 
-            if (frames.Count > 0) samples.Add(new PerfSample(samplePid, frames));
+            samplesEmitted++;
+            if (!onSample(new PerfSample(samplePid, frames)))
+            {
+                return new PerfScriptParseResult(samplesEmitted, Completed: false);
+            }
         }
 
-        return samples;
+        return new PerfScriptParseResult(samplesEmitted, Completed: true);
     }
 
-    private static int SkipToBlank(string[] lines, int start)
-    {
-        for (var k = start; k < lines.Length; k++)
-        {
-            if (string.IsNullOrWhiteSpace(lines[k])) return k + 1;
-        }
-        return lines.Length;
-    }
-
-    private static readonly char[] HeaderSeparators = new[] { ' ', '\t' };
+    private static readonly char[] HeaderSeparators = [' ', '\t'];
 
     private static HashSet<int>? TryReadProcessTids(int processId)
     {
         try
         {
             var taskDir = $"/proc/{processId}/task";
-            if (!Directory.Exists(taskDir)) return null;
+            if (!Directory.Exists(taskDir))
+            {
+                return null;
+            }
+
             var set = new HashSet<int>();
             foreach (var dir in Directory.EnumerateDirectories(taskDir))
             {
@@ -135,7 +160,6 @@ internal static class PerfScriptParser
                 }
             }
 
-            // Always accept the PID itself even if the task directory was racing.
             set.Add(processId);
             return set;
         }
@@ -147,11 +171,6 @@ internal static class PerfScriptParser
 
     private static int TryExtractPid(string header)
     {
-        // perf-script default header has the form:
-        //   sample-target  1234 [001]  12345.678901:    cpu-clock:
-        // The PID is the second whitespace-delimited token. The first token (the command
-        // name) may itself contain spaces but is left-padded to a fixed width, so the PID
-        // is always the first token that parses as int.
         foreach (var token in header.Split(HeaderSeparators, StringSplitOptions.RemoveEmptyEntries))
         {
             if (int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var pid))
@@ -165,11 +184,11 @@ internal static class PerfScriptParser
 
     private static PerfFrame? ParseFrame(string line)
     {
-        // Indented frame: "    <hex address> <symbol+offset> (<module>)"
-        // The module is the last parenthesised token; the symbol is everything between
-        // the first non-whitespace, non-address token and the opening paren of the module.
         var trimmed = line.TrimStart();
-        if (trimmed.Length == 0) return null;
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
 
         var lastOpen = trimmed.LastIndexOf('(');
         var lastClose = trimmed.LastIndexOf(')');
@@ -186,19 +205,19 @@ internal static class PerfScriptParser
             symbolPart = trimmed;
         }
 
-        // Drop the leading hex address token.
         var firstSpace = symbolPart.IndexOf(' ');
         var symbol = firstSpace > 0 ? symbolPart[(firstSpace + 1)..].TrimStart() : symbolPart;
-
-        // Strip the trailing "+0x..." offset to make the symbol stable across samples
-        // at different instruction offsets within the same function.
         var plus = symbol.LastIndexOf("+0x", StringComparison.Ordinal);
-        if (plus > 0) symbol = symbol[..plus];
+        if (plus > 0)
+        {
+            symbol = symbol[..plus];
+        }
 
-        if (symbol.Length == 0) return null;
-        return new PerfFrame(Module: module, Symbol: symbol);
+        return symbol.Length == 0 ? null : new PerfFrame(Module: module, Symbol: symbol);
     }
 }
+
+internal readonly record struct PerfScriptParseResult(long SamplesEmitted, bool Completed);
 
 internal sealed record PerfSample(int ProcessId, IReadOnlyList<PerfFrame> Frames);
 

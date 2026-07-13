@@ -1,3 +1,4 @@
+using System.IO;
 using System.Linq;
 using DotnetDiagnostics.Core.CpuSampling;
 using FluentAssertions;
@@ -70,6 +71,34 @@ public class PerfScriptParserTests
         var firstRealFrame = root.Children[0];
         firstRealFrame.Frame.Method.Should().Be("__libc_start_main");
         firstRealFrame.InclusiveSamples.Should().Be(2);
+    }
+
+
+    [Fact]
+    public async Task AggregateAsync_MatchesBufferedAggregate()
+    {
+        var script = CreateTwoSamplesFromPid1("\n", "  ");
+        var buffered = PerfNativeAotCpuSampler.Aggregate(script, processId: 1, topN: 5);
+        using var reader = new StringReader(script);
+        var streamed = await PerfNativeAotCpuSampler.AggregateAsync(reader, processId: 1, topN: 5);
+
+        streamed.Truncated.Should().BeFalse();
+        streamed.Total.Should().Be(buffered.Total);
+        streamed.Hotspots.Should().BeEquivalentTo(buffered.Hotspots);
+        streamed.Root.Should().BeEquivalentTo(buffered.Root);
+        streamed.SymbolSource.Should().Be(buffered.SymbolSource);
+        streamed.Identities.Should().BeEquivalentTo(buffered.Identities);
+    }
+
+    [Fact]
+    public async Task AggregateAsync_StopsAtSampleBudget_AndMarksResultTruncated()
+    {
+        using var reader = new StringReader(CreateTwoSamplesFromPid1("\n", "  "));
+        var streamed = await PerfNativeAotCpuSampler.AggregateAsync(reader, processId: 1, topN: 5, sampleBudget: 1);
+
+        streamed.Truncated.Should().BeTrue();
+        streamed.Total.Should().Be(1);
+        streamed.Hotspots.Should().NotBeEmpty();
     }
 
     [Fact]
