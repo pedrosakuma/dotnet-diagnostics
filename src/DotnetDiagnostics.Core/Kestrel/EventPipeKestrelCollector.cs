@@ -19,6 +19,13 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
     private const string KestrelProviderName = "Microsoft-AspNetCore-Server-Kestrel";
     private const string ConnectionQueueLengthCounter = "connection-queue-length";
     private const string RequestQueueLengthCounter = "request-queue-length";
+    internal const int MaxTrackedOperationGroups = 256;
+    private const int MaxPendingActivities = 4096;
+    private const int MaxQueuePoints = 4096;
+    private static readonly TimeSpan PendingActivityTtl = TimeSpan.FromMinutes(2);
+    private const string OverflowMethod = "(other)";
+    private const string OverflowPath = "(overflow)";
+    private const string OverflowHttpVersion = "";
 
     private readonly ILogger<EventPipeKestrelCollector> _logger;
 
@@ -75,11 +82,20 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         var connectionDurations = new BoundedDurationSampler();
         var tlsDurations = new BoundedDurationSampler();
         var byOperation = new Dictionary<string, MutableRequestGroup>(StringComparer.Ordinal);
+        var overflowOperation = new MutableRequestGroup(OverflowMethod, OverflowPath, OverflowHttpVersion);
         var requestDurations = new BoundedDurationSampler();
         var queuePoints = new List<KestrelQueuePoint>();
         var counters = new Dictionary<string, KestrelCounterSample>(StringComparer.Ordinal);
         var tlsProtocols = new HashSet<string>(StringComparer.Ordinal);
         string? configurationJson = null;
+        var overflowedOperations = 0;
+        var expiredConnections = 0;
+        var expiredRequests = 0;
+        var expiredTls = 0;
+        var evictedConnections = 0;
+        var evictedRequests = 0;
+        var evictedTls = 0;
+        var droppedQueuePoints = 0;
 
         await EventPipeCollectionRunner.RunAsync(
             session,
@@ -99,18 +115,26 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
                         switch (traceEvent.EventName)
                         {
                             case "EventCounters":
-                                HandleCounter(traceEvent, timestamp, counters, queuePoints, ref peakConnectionQueue, ref peakRequestQueue);
+                                HandleCounter(traceEvent, timestamp, counters, queuePoints, ref peakConnectionQueue, ref peakRequestQueue, ref droppedQueuePoints);
                                 break;
 
                             case "ConnectionStart":
                             case "Connection/Start":
                                 connectionsStarted++;
-                                pendingConnections[PayloadString(traceEvent, "connectionId")] = timestamp;
+                                AddPending(
+                                    pendingConnections,
+                                    PayloadString(traceEvent, "connectionId"),
+                                    timestamp,
+                                    timestamp,
+                                    static entry => entry,
+                                    ref expiredConnections,
+                                    ref evictedConnections);
                                 break;
 
                             case "ConnectionStop":
                             case "Connection/Stop":
                                 connectionsStopped++;
+                                ExpirePending(pendingConnections, timestamp, static entry => entry, ref expiredConnections);
                                 RecordPairedDuration(pendingConnections, PayloadString(traceEvent, "connectionId"), timestamp, connectionDurations);
                                 break;
 
@@ -122,23 +146,38 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
                             case "RequestStart":
                             case "Request/Start":
                                 requestsStarted++;
-                                pendingRequests[RequestKey(traceEvent)] = new PendingRequest(
+                                AddPending(
+                                    pendingRequests,
+                                    RequestKey(traceEvent),
+                                    new PendingRequest(
                                     timestamp,
                                     PayloadString(traceEvent, "method"),
-                                    PayloadString(traceEvent, "path"),
-                                    PayloadString(traceEvent, "httpVersion"));
+                                    NormalizePath(PayloadString(traceEvent, "path")),
+                                    PayloadString(traceEvent, "httpVersion")),
+                                    timestamp,
+                                    static entry => entry.StartedAt,
+                                    ref expiredRequests,
+                                    ref evictedRequests);
                                 break;
 
                             case "RequestStop":
                             case "Request/Stop":
                                 requestsStopped++;
-                                HandleRequestStop(traceEvent, timestamp, pendingRequests, byOperation, requestDurations);
+                                ExpirePending(pendingRequests, timestamp, static entry => entry.StartedAt, ref expiredRequests);
+                                HandleRequestStop(traceEvent, timestamp, pendingRequests, byOperation, overflowOperation, requestDurations, ref overflowedOperations);
                                 break;
 
                             case "TlsHandshakeStart":
                             case "TlsHandshake/Start":
                                 tlsStarted++;
-                                pendingTls[PayloadString(traceEvent, "connectionId")] = timestamp;
+                                AddPending(
+                                    pendingTls,
+                                    PayloadString(traceEvent, "connectionId"),
+                                    timestamp,
+                                    timestamp,
+                                    static entry => entry,
+                                    ref expiredTls,
+                                    ref evictedTls);
                                 var startProtocols = PayloadString(traceEvent, "sslProtocols");
                                 if (!string.IsNullOrWhiteSpace(startProtocols))
                                 {
@@ -150,6 +189,7 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
                             case "TlsHandshakeStop":
                             case "TlsHandshake/Stop":
                                 tlsStopped++;
+                                ExpirePending(pendingTls, timestamp, static entry => entry, ref expiredTls);
                                 RecordPairedDuration(pendingTls, PayloadString(traceEvent, "connectionId"), timestamp, tlsDurations);
                                 var stopProtocols = PayloadString(traceEvent, "sslProtocols");
                                 if (!string.IsNullOrWhiteSpace(stopProtocols))
@@ -162,6 +202,7 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
                             case "TlsHandshakeFailed":
                             case "TlsHandshake/Failed":
                                 tlsFailed++;
+                                ExpirePending(pendingTls, timestamp, static entry => entry, ref expiredTls);
                                 pendingTls.Remove(PayloadString(traceEvent, "connectionId"));
                                 break;
 
@@ -204,11 +245,37 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         }
 
         var operations = byOperation.Values
+            .Concat(overflowOperation.Count == 0 ? Array.Empty<MutableRequestGroup>() : [overflowOperation])
             .Select(static g => g.ToRecord())
             .OrderByDescending(static g => g.TotalDuration)
             .ThenByDescending(static g => g.Count)
             .ThenBy(static g => g.Path, StringComparer.Ordinal)
             .ToList();
+
+        if (overflowedOperations > 0)
+        {
+            notes.Add($"Grouped Kestrel requests into at most {MaxTrackedOperationGroups} method/path/version buckets; {overflowedOperations} request(s) were aggregated into {OverflowMethod} {OverflowPath}.");
+        }
+
+        if (expiredConnections > 0 || evictedConnections > 0)
+        {
+            notes.Add($"Kestrel connection correlation expired {expiredConnections} pending connection(s) beyond {PendingActivityTtl.TotalMinutes:F0} minute(s) and evicted {evictedConnections} oldest connection(s) after reaching the cap of {MaxPendingActivities}.");
+        }
+
+        if (expiredRequests > 0 || evictedRequests > 0)
+        {
+            notes.Add($"Kestrel request correlation expired {expiredRequests} pending request(s) beyond {PendingActivityTtl.TotalMinutes:F0} minute(s) and evicted {evictedRequests} oldest request(s) after reaching the cap of {MaxPendingActivities}.");
+        }
+
+        if (expiredTls > 0 || evictedTls > 0)
+        {
+            notes.Add($"Kestrel TLS correlation expired {expiredTls} pending handshake(s) beyond {PendingActivityTtl.TotalMinutes:F0} minute(s) and evicted {evictedTls} oldest handshake(s) after reaching the cap of {MaxPendingActivities}.");
+        }
+
+        if (droppedQueuePoints > 0)
+        {
+            notes.Add($"Dropped {droppedQueuePoints} queue-length sample point(s) after reaching the in-memory cap of {MaxQueuePoints}.");
+        }
 
         return new KestrelSnapshot(
             ProcessId: processId,
@@ -246,7 +313,9 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         DateTimeOffset timestamp,
         Dictionary<string, PendingRequest> pendingRequests,
         Dictionary<string, MutableRequestGroup> byOperation,
-        BoundedDurationSampler requestDurations)
+        MutableRequestGroup overflowOperation,
+        BoundedDurationSampler requestDurations,
+        ref int overflowedOperations)
     {
         var key = RequestKey(traceEvent);
         if (!pendingRequests.Remove(key, out var pending))
@@ -265,6 +334,13 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         var groupKey = $"{pending.Method} {pending.Path} {pending.HttpVersion}";
         if (!byOperation.TryGetValue(groupKey, out var group))
         {
+            if (byOperation.Count >= MaxTrackedOperationGroups)
+            {
+                overflowedOperations++;
+                overflowOperation.Add(elapsed);
+                return;
+            }
+
             group = new MutableRequestGroup(pending.Method, pending.Path, pending.HttpVersion);
             byOperation[groupKey] = group;
         }
@@ -278,7 +354,8 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
         Dictionary<string, KestrelCounterSample> counters,
         List<KestrelQueuePoint> queuePoints,
         ref long peakConnectionQueue,
-        ref long peakRequestQueue)
+        ref long peakRequestQueue,
+        ref int droppedQueuePoints)
     {
         if (traceEvent.PayloadValue(0) is not IDictionary<string, object> outer
             || !outer.TryGetValue("Payload", out var inner)
@@ -318,12 +395,12 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
 
         if (string.Equals(name, ConnectionQueueLengthCounter, StringComparison.Ordinal))
         {
-            queuePoints.Add(new KestrelQueuePoint(timestamp, name, value));
+            AddQueuePoint(queuePoints, new KestrelQueuePoint(timestamp, name, value), ref droppedQueuePoints);
             peakConnectionQueue = Math.Max(peakConnectionQueue, (long)Math.Round(value));
         }
         else if (string.Equals(name, RequestQueueLengthCounter, StringComparison.Ordinal))
         {
-            queuePoints.Add(new KestrelQueuePoint(timestamp, name, value));
+            AddQueuePoint(queuePoints, new KestrelQueuePoint(timestamp, name, value), ref droppedQueuePoints);
             peakRequestQueue = Math.Max(peakRequestQueue, (long)Math.Round(value));
         }
     }
@@ -344,6 +421,84 @@ public sealed class EventPipeKestrelCollector : IKestrelCollector
 
     private static string RequestKey(TraceEvent traceEvent)
         => $"{PayloadString(traceEvent, "connectionId")}:{PayloadString(traceEvent, "requestId")}";
+
+    private static string NormalizePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return "/";
+        }
+
+        var trimmed = path.Trim();
+        var queryIndex = trimmed.IndexOf('?');
+        return queryIndex >= 0 ? trimmed[..queryIndex] : trimmed;
+    }
+
+    private static void AddQueuePoint(List<KestrelQueuePoint> queuePoints, KestrelQueuePoint point, ref int droppedQueuePoints)
+    {
+        if (queuePoints.Count >= MaxQueuePoints)
+        {
+            queuePoints.RemoveAt(0);
+            droppedQueuePoints++;
+        }
+
+        queuePoints.Add(point);
+    }
+
+    private static void AddPending<TKey, TValue>(
+        Dictionary<TKey, TValue> pending,
+        TKey key,
+        TValue value,
+        DateTimeOffset now,
+        Func<TValue, DateTimeOffset> startedAtSelector,
+        ref int expiredCount,
+        ref int evictedCount)
+        where TKey : notnull
+    {
+        ExpirePending(pending, now, startedAtSelector, ref expiredCount);
+        if (!pending.ContainsKey(key))
+        {
+            while (pending.Count >= MaxPendingActivities)
+            {
+                RemoveOldestPending(pending, startedAtSelector);
+                evictedCount++;
+            }
+        }
+
+        pending[key] = value;
+    }
+
+    private static void ExpirePending<TKey, TValue>(
+        Dictionary<TKey, TValue> pending,
+        DateTimeOffset now,
+        Func<TValue, DateTimeOffset> startedAtSelector,
+        ref int expiredCount)
+        where TKey : notnull
+    {
+        if (pending.Count == 0)
+        {
+            return;
+        }
+
+        var cutoff = now - PendingActivityTtl;
+        foreach (var key in pending
+                     .Where(entry => startedAtSelector(entry.Value) <= cutoff)
+                     .Select(static entry => entry.Key)
+                     .ToArray())
+        {
+            pending.Remove(key);
+            expiredCount++;
+        }
+    }
+
+    private static void RemoveOldestPending<TKey, TValue>(
+        Dictionary<TKey, TValue> pending,
+        Func<TValue, DateTimeOffset> startedAtSelector)
+        where TKey : notnull
+    {
+        var oldest = pending.MinBy(entry => startedAtSelector(entry.Value));
+        pending.Remove(oldest.Key);
+    }
 
     private static DateTimeOffset ToUtcOffset(DateTime timestamp) =>
         new(timestamp.ToUniversalTime(), TimeSpan.Zero);

@@ -38,7 +38,7 @@ public sealed class LiveNativeAotGcDumpCapabilityTests : IAsyncLifetime
             return;
         }
 
-        var publishDir = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-nativeaot-gcdumpcap-{Guid.NewGuid():N}");
+        var publishDir = Path.Combine(AppContext.BaseDirectory, "test-artifacts", nameof(LiveNativeAotGcDumpCapabilityTests), Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(publishDir);
 
         try

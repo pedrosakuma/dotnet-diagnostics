@@ -187,7 +187,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                 requestRundown: false,
                 circularBufferMB: 256);
             using var source = new EventPipeEventSource(session.EventStream);
-            var observer = new ParameterCaptureObserver(_redactor, uniqueResolvedMethods);
+            var observer = new ParameterCaptureObserver(_redactor, uniqueResolvedMethods, request.MaxEvents);
             var processingTask = Task.Run(() =>
             {
                 source.Dynamic.All += traceEvent =>
@@ -632,7 +632,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                || ex.Message.Contains("loaded", StringComparison.OrdinalIgnoreCase)
                || ex.Message.Contains("attached", StringComparison.OrdinalIgnoreCase));
 
-    private sealed class ParameterCaptureObserver(SensitiveDataRedactor redactor, IReadOnlyList<ResolvedMethodIdentity> resolvedMethods)
+    private sealed class ParameterCaptureObserver(SensitiveDataRedactor redactor, IReadOnlyList<ResolvedMethodIdentity> resolvedMethods, int maxEvents)
     {
         private readonly object _gate = new();
         private readonly Dictionary<Guid, string> _failureByRequestId = new();
@@ -640,9 +640,12 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
         private readonly HashSet<Guid> _stopped = new();
         private readonly List<MethodParameterInvocation> _events = new();
         private readonly Dictionary<int, PendingInvocation> _pendingByThread = new();
+        private readonly int _maxEvents = maxEvents;
         private int _sequence;
         private int _truncatedCount;
         private int _redactedCount;
+        private int _droppedCount;
+        private bool _captureLimitReached;
 
         public bool Cancelled { get; private set; }
 
@@ -675,6 +678,13 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                         break;
                     case "CapturedParameter/Start":
                         FlushPending(traceEvent.ThreadID);
+                        if (HasReachedCaptureLimit())
+                        {
+                            _captureLimitReached = true;
+                            _droppedCount++;
+                            break;
+                        }
+
                         _pendingByThread[traceEvent.ThreadID] = new PendingInvocation(
                             Interlocked.Increment(ref _sequence),
                             DateTimeOffset.UtcNow,
@@ -749,7 +759,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
 
                 var stopReason = Cancelled
                     ? "cancelled"
-                    : _events.Count >= maxEvents
+                    : _captureLimitReached || _events.Count >= maxEvents
                         ? "max_events_reached"
                         : "duration_elapsed";
                 return new MethodParameterCaptureArtifact(
@@ -763,7 +773,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                     maxEvents,
                     previewCount,
                     _events.Count,
-                    0,
+                    _droppedCount,
                     _truncatedCount,
                     _redactedCount,
                     _truncatedCount > 0,
@@ -772,6 +782,8 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                     _events.ToArray());
             }
         }
+
+        private bool HasReachedCaptureLimit() => _events.Count + _pendingByThread.Count >= _maxEvents;
 
         private void FlushPending(int threadId)
         {
