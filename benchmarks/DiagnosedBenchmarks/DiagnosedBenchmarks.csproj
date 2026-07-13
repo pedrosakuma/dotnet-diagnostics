@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" />
   </ItemGroup>
 
   <!-- Consume the published diagnoser package, exactly as an external benchmark
@@ -19,6 +20,12 @@
        dotnet-diagnostics-core transitively. -->
   <ItemGroup>
     <PackageReference Include="dotnet-diagnostics-benchmarkdotnet" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DotnetDiagnostics.Core\DotnetDiagnostics.Core.csproj" />
+    <ProjectReference Include="..\..\tests\DotnetDiagnostics.TestSupport\DotnetDiagnostics.TestSupport.csproj" />
+    <ProjectReference Include="..\..\samples\CoreClrSample\CoreClrSample.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>
