@@ -36,30 +36,66 @@ internal static class GcHandleAggregation
     internal static GcHandlesView Aggregate(IEnumerable<GcHandleSample> handles, int topTypesPerBucket = 5)
     {
         ArgumentNullException.ThrowIfNull(handles);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(topTypesPerBucket);
-
-        var totalHandles = 0;
-        var buckets = BucketOrder.ToDictionary(kind => kind, static kind => new RawGcHandleBucket(kind), StringComparer.Ordinal);
-        var unsupportedKinds = new Dictionary<ClrHandleKind, RawUnsupportedHandleKind>();
+        var builder = new Builder(topTypesPerBucket);
 
         foreach (var handle in handles)
         {
-            totalHandles++;
+            builder.Add(handle);
+        }
+
+        return builder.BuildView();
+    }
+
+    private static string? MapBucketKind(ClrHandleKind kind) => kind switch
+    {
+        ClrHandleKind.Pinned => "Pinned",
+        ClrHandleKind.Strong => "Normal",
+        ClrHandleKind.WeakShort => "Weak",
+        ClrHandleKind.WeakLong => "WeakTrackResurrection",
+        ClrHandleKind.Dependent => "Dependent",
+        ClrHandleKind.AsyncPinned => "AsyncPinned",
+        _ => null,
+    };
+
+    internal readonly record struct GcHandleSample(
+        ClrHandleKind Kind,
+        string? TypeFullName,
+        long RetainedBytes,
+        TypeIdentity? Identity);
+
+    internal sealed class Builder
+    {
+        private readonly int _topTypesPerBucket;
+        private readonly Dictionary<string, RawGcHandleBucket> _buckets;
+        private readonly Dictionary<ClrHandleKind, RawUnsupportedHandleKind> _unsupportedKinds = new();
+
+        public Builder(int topTypesPerBucket = 5)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(topTypesPerBucket);
+            _topTypesPerBucket = topTypesPerBucket;
+            _buckets = BucketOrder.ToDictionary(kind => kind, static kind => new RawGcHandleBucket(kind), StringComparer.Ordinal);
+        }
+
+        public int TotalHandles { get; private set; }
+
+        public void Add(GcHandleSample handle)
+        {
+            TotalHandles++;
             var bucketKind = MapBucketKind(handle.Kind);
             if (bucketKind is null)
             {
-                if (!unsupportedKinds.TryGetValue(handle.Kind, out var unsupported))
+                if (!_unsupportedKinds.TryGetValue(handle.Kind, out var unsupported))
                 {
                     unsupported = new RawUnsupportedHandleKind();
-                    unsupportedKinds[handle.Kind] = unsupported;
+                    _unsupportedKinds[handle.Kind] = unsupported;
                 }
 
                 unsupported.Count++;
                 unsupported.RetainedBytes += handle.RetainedBytes;
-                continue;
+                return;
             }
 
-            var bucket = buckets[bucketKind];
+            var bucket = _buckets[bucketKind];
             bucket.Count++;
             bucket.RetainedBytes += handle.RetainedBytes;
 
@@ -83,48 +119,34 @@ internal static class GcHandleAggregation
             typeStat.RetainedBytes += handle.RetainedBytes;
         }
 
-        var byKind = BucketOrder
-            .Select(kind =>
-            {
-                var bucket = buckets[kind];
-                var topTypes = bucket.Types.Values
-                    .OrderByDescending(static stat => stat.Count)
-                    .ThenByDescending(static stat => stat.RetainedBytes)
-                    .ThenBy(static stat => stat.TypeFullName, StringComparer.Ordinal)
-                    .Take(topTypesPerBucket)
-                    .Select(static stat => new GcHandleTypeStat(stat.TypeFullName, stat.Count, stat.RetainedBytes, stat.Identity))
-                    .ToImmutableArray();
+        public GcHandlesView BuildView()
+        {
+            var byKind = BucketOrder
+                .Select(kind =>
+                {
+                    var bucket = _buckets[kind];
+                    var topTypes = bucket.Types.Values
+                        .OrderByDescending(static stat => stat.Count)
+                        .ThenByDescending(static stat => stat.RetainedBytes)
+                        .ThenBy(static stat => stat.TypeFullName, StringComparer.Ordinal)
+                        .Take(_topTypesPerBucket)
+                        .Select(static stat => new GcHandleTypeStat(stat.TypeFullName, stat.Count, stat.RetainedBytes, stat.Identity))
+                        .ToImmutableArray();
 
-                return new GcHandleBucket(kind, bucket.Count, bucket.RetainedBytes, topTypes);
-            })
-            .ToImmutableArray();
+                    return new GcHandleBucket(kind, bucket.Count, bucket.RetainedBytes, topTypes);
+                })
+                .ToImmutableArray();
 
-        var notes = unsupportedKinds.Count == 0
-            ? ImmutableArray<string>.Empty
-            :
-            [
-                $"Encountered {string.Join(", ", unsupportedKinds.OrderBy(static kvp => kvp.Key.ToString(), StringComparer.Ordinal).Select(static kvp => $"{kvp.Value.Count:N0} {kvp.Key} ({kvp.Value.RetainedBytes:N0} bytes)"))} handle(s). These ClrMD-internal kinds are counted in TotalHandles but are omitted from byKind because they do not map to public GCHandleType values."
-            ];
+            var notes = _unsupportedKinds.Count == 0
+                ? ImmutableArray<string>.Empty
+                :
+                [
+                    $"Encountered {string.Join(", ", _unsupportedKinds.OrderBy(static kvp => kvp.Key.ToString(), StringComparer.Ordinal).Select(static kvp => $"{kvp.Value.Count:N0} {kvp.Key} ({kvp.Value.RetainedBytes:N0} bytes)"))} handle(s). These ClrMD-internal kinds are counted in TotalHandles but are omitted from byKind because they do not map to public GCHandleType values."
+                ];
 
-        return new GcHandlesView(totalHandles, byKind, notes);
+            return new GcHandlesView(TotalHandles, byKind, notes);
+        }
     }
-
-    private static string? MapBucketKind(ClrHandleKind kind) => kind switch
-    {
-        ClrHandleKind.Pinned => "Pinned",
-        ClrHandleKind.Strong => "Normal",
-        ClrHandleKind.WeakShort => "Weak",
-        ClrHandleKind.WeakLong => "WeakTrackResurrection",
-        ClrHandleKind.Dependent => "Dependent",
-        ClrHandleKind.AsyncPinned => "AsyncPinned",
-        _ => null,
-    };
-
-    internal readonly record struct GcHandleSample(
-        ClrHandleKind Kind,
-        string? TypeFullName,
-        long RetainedBytes,
-        TypeIdentity? Identity);
 
     private readonly record struct GcHandleTypeKey(
         string TypeFullName,

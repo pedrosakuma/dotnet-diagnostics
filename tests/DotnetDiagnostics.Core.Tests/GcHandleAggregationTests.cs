@@ -89,4 +89,28 @@ public sealed class GcHandleAggregationTests
         normalBucket.TopTypes.Should().Contain(stat => stat.Identity == firstIdentity && stat.Count == 1 && stat.RetainedBytes == 10);
         normalBucket.TopTypes.Should().Contain(stat => stat.Identity == secondIdentity && stat.Count == 1 && stat.RetainedBytes == 20);
     }
+
+    [Fact]
+    public void Builder_MatchesAggregateWithoutMaterializingSamples()
+    {
+        var builder = new GcHandleAggregation.Builder(topTypesPerBucket: 2);
+        GcHandleAggregation.GcHandleSample[] samples =
+        [
+            new GcHandleAggregation.GcHandleSample(ClrHandleKind.Strong, "MyApp.Alpha", 128, null),
+            new GcHandleAggregation.GcHandleSample(ClrHandleKind.Strong, "MyApp.Alpha", 64, null),
+            new GcHandleAggregation.GcHandleSample(ClrHandleKind.Strong, "MyApp.Beta", 32, null),
+            new GcHandleAggregation.GcHandleSample(ClrHandleKind.Pinned, "System.Byte[]", 256, null),
+            new GcHandleAggregation.GcHandleSample(ClrHandleKind.RefCounted, "Internal", 16, null),
+        ];
+
+        foreach (var sample in samples)
+        {
+            builder.Add(sample);
+        }
+
+        var streaming = builder.BuildView();
+        var aggregate = GcHandleAggregation.Aggregate(samples, topTypesPerBucket: 2);
+
+        streaming.Should().BeEquivalentTo(aggregate);
+    }
 }
