@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using DotnetDiagnostics.Core.Memory;
 using Microsoft.Extensions.Logging;
@@ -194,7 +195,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         // for reliable callstacks. The trade-off is larger perf.data files, so we pair
         // the sampling window with an explicit perf.data size cap. See https://github.com/pedrosakuma/dotnet-diagnostics
         // notes on NativeAOT validation for the bug history.
-        var args = $"record -F {_samplingFrequencyHz} --call-graph dwarf --max-size={PerfDataMaxBytes} -p {pid} -o \"{outputPath}\" -- sleep {seconds}";
+        var args = $"record -F {_samplingFrequencyHz} --call-graph dwarf --max-size {FormatPerfFileSize(PerfDataMaxBytes)} -p {pid} -o \"{outputPath}\" -- sleep {seconds}";
         _logger.LogDebug("Spawning perf: {Bin} {Args}", ResolvePerfPath()!, args);
 
         using var process = new Process
@@ -230,6 +231,22 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             throw new InvalidOperationException(
                 $"perf record exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
         }
+    }
+
+    internal static string FormatPerfFileSize(long bytes)
+    {
+        if (bytes < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(bytes), "perf max-size must be non-negative.");
+        }
+
+        const long oneMiB = 1024 * 1024;
+        if (bytes % oneMiB == 0)
+        {
+            return (bytes / oneMiB).ToString(CultureInfo.InvariantCulture) + "M";
+        }
+
+        return bytes.ToString(CultureInfo.InvariantCulture);
     }
 
     private async Task<PerfScriptAggregationResult> RunScriptAsync(

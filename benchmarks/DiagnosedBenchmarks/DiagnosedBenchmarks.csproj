@@ -18,6 +18,11 @@
   <ItemGroup>
     <ProjectReference Include="../../src/DotnetDiagnostics.BenchmarkDotNet/DotnetDiagnostics.BenchmarkDotNet.csproj" />
     <ProjectReference Include="../../src/DotnetDiagnostics.Core/DotnetDiagnostics.Core.csproj" />
+    <ProjectReference Include="../../tests/DotnetDiagnostics.TestSupport/DotnetDiagnostics.TestSupport.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="DotnetDiagnostics.TestSupport" />
   </ItemGroup>
 
 </Project>
