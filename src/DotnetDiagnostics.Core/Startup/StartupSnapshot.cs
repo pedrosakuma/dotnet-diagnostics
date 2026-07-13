@@ -6,6 +6,7 @@ public sealed record StartupSnapshot(
     TimeSpan Duration,
     int TotalAssemblyLoads,
     int TotalModuleLoads,
+    int TotalTimelineEvents,
     int TotalDiEvents,
     int DiServiceProviderBuiltCount,
     int DiServiceProviderDescriptorsCount,
@@ -16,9 +17,12 @@ public sealed record StartupSnapshot(
     int DiServiceRealizationFailedCount,
     TimeSpan ObservedDiActivityDuration,
     IReadOnlyList<StartupAssemblyLoad> AssemblyLoads,
+    IReadOnlyList<StartupLoadAggregate> AssemblyAggregates,
     IReadOnlyList<StartupModuleLoad> ModuleLoads,
+    IReadOnlyList<StartupLoadAggregate> ModuleAggregates,
     IReadOnlyList<StartupDiEvent> DiEvents,
     IReadOnlyList<StartupTimelineEvent> Timeline,
+    bool Truncated,
     IReadOnlyList<string> Notes);
 
 public sealed record StartupAssemblyLoad(
