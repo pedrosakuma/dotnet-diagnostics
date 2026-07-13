@@ -25,6 +25,20 @@ public class PerfScriptParserTests
     private static string TwoSamplesFromPid1 => CreateTwoSamplesFromPid1(DefaultLineEnding, DefaultPidSpacing);
 
     [Fact]
+    public void FormatPerfFileSize_UsesPerfAcceptedMiBSuffix_ForExactMiBCounts()
+    {
+        PerfNativeAotCpuSampler.FormatPerfFileSize(512L * 1024 * 1024)
+            .Should().Be("512M");
+    }
+
+    [Fact]
+    public void FormatPerfFileSize_FallsBackToRawBytes_ForNonMiBCounts()
+    {
+        PerfNativeAotCpuSampler.FormatPerfFileSize(12345)
+            .Should().Be("12345");
+    }
+
+    [Fact]
     public void Parser_AcceptsStandardPerfScriptShape()
     {
         var samples = PerfScriptParser.Parse(TwoSamplesFromPid1);

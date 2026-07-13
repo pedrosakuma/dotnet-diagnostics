@@ -266,7 +266,7 @@ public class GroupCRemainingBenchmarks : IAsyncDisposable
     }
 }
 
-internal static class HotpathTraceAnalyzer
+internal static class GroupCHotpathTraceAnalyzer
 {
     public static void PrintRecentReports(string artifactsRoot, DateTimeOffset runStartedUtc)
     {
@@ -286,7 +286,7 @@ internal static class HotpathTraceAnalyzer
         }
 
         Console.WriteLine();
-        Console.WriteLine("// * HotpathTraceAnalyzer *");
+        Console.WriteLine("// * GroupCHotpathTraceAnalyzer *");
         foreach (var tracePath in traces)
         {
             var report = Analyze(tracePath);
