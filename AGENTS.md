@@ -32,7 +32,8 @@ deploy/
   k8s/sample-sidecar.yaml — reference K8s topology
 docs/
   README.md, tool-reference.md, cli-reference.md, investigation-playbooks.md,
-  bad-code-scenarios.md, local-docker-sidecar.md, client-setup.md
+  bad-code-scenarios.md, local-docker-sidecar.md, client-setup.md,
+  resource-boundedness.md
 ```
 
 ## Build, test, run
@@ -179,6 +180,21 @@ Two manual/nightly repro jobs un-quarantine those tests via `DOTNET_DBG_MCP_RUN_
 - **`.github/workflows/linux-crash-repro.yml`** (older `strace -f` harness). `strace` (not `LD_AUDIT`) because the fault address is **not** file-backed — only `strace` sees anonymous/JIT mappings. But `strace -f`'s per-process ptrace tracer changes timing and breaks the ClrMD/ptrace live tests, so the dump+EventPipe load that triggers the crash is **not** faithfully reproduced — this harness largely masks the flake; prefer the preload job.
 
 Findings so far are posted on dotnet/runtime#128525 (issuecomment-4672447353, -4672792762). Re-run a job until a dump appears, then hand the gzipped mmap log + dump + crashreport + blame sequence upstream.
+
+### 🧯 Resource-boundedness of long/high-volume captures
+
+A capture must not scale unboundedly with duration or event volume — no OOM,
+no hang, regardless of raw speed. Collectors enforce caps **at the point of
+insertion** (inside the EventPipe callback), never by accumulating everything
+and truncating at the end. Most collectors surface a cap hit via an explicit
+`notes` entry naming the constant and the drop/eviction count; a few (e.g.
+`RequestsNowCollector`'s snapshot-queue drops) currently only log at debug
+level — check [`docs/resource-boundedness.md`](./docs/resource-boundedness.md)
+per-collector before assuming a `notes` entry always exists. See that doc for
+the full per-collector reference (caps, retention strategy, what's traded
+away) from the audit in issues [#604](https://github.com/pedrosakuma/dotnet-diagnostics/issues/604)/[#605](https://github.com/pedrosakuma/dotnet-diagnostics/issues/605)/[#606](https://github.com/pedrosakuma/dotnet-diagnostics/issues/606)
+(PRs #607–#614) — read it before adding a new bounded structure or extending
+an existing one.
 
 ### 🎯 One MCP tool per concept (16 tools)
 
