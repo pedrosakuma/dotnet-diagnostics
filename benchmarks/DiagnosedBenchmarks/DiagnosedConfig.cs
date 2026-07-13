@@ -10,16 +10,9 @@ using DotnetDiagnostics.BenchmarkDotNet;
 namespace DiagnosedBenchmarks;
 
 /// <summary>
-/// A diagnostic-oriented BenchmarkDotNet config: a single <see cref="RunStrategy.Monitoring"/> job
-/// whose actual-run window is long enough for an EventPipe collection to observe real work, plus
-/// the <see cref="DotnetDiagnosticsDiagnoser"/> (in-process drill-down) and the native
-/// <see cref="MemoryDiagnoser"/> (clean allocation numbers) side by side.
-///
-/// <para>
-/// The monitoring job's timing is deliberately NOT publication-grade — it exists so the diagnostic
-/// collectors have a stable, multi-second window to attach to. For real measurement use the default
-/// config; for diagnosis, run with this one.
-/// </para>
+/// A diagnostic-oriented BenchmarkDotNet config: a short <see cref="RunStrategy.Monitoring"/> job
+/// whose actual-run window is long enough for collector hotpaths to do meaningful work, plus the
+/// reusable dotnet-diagnostics diagnoser and the native <see cref="MemoryDiagnoser"/> side by side.
 /// </summary>
 public sealed class DiagnosedConfig : ManualConfig
 {
@@ -28,7 +21,7 @@ public sealed class DiagnosedConfig : ManualConfig
         AddJob(Job.Default
             .WithStrategy(RunStrategy.Monitoring)
             .WithWarmupCount(1)
-            .WithIterationCount(2)
+            .WithIterationCount(1)
             .WithInvocationCount(1)
             .WithUnrollFactor(1)
             .WithId("Diagnose"));
