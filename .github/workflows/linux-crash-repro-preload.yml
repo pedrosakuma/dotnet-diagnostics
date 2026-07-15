@@ -21,10 +21,24 @@ name: Linux crash repro (LD_PRELOAD mmap trace)
 # process at crash time, so it neither perturbs the run nor collides with the
 # live tests (which attach to a different, CoreClrSample child process).
 #
+# Also loads tools/linux-crash-repro/audittrace.c via LD_AUDIT, per
+# https://github.com/dotnet/runtime/issues/128525#issuecomment-4729302419:
+# @noahfalk pointed out that mmaptrace.so's LD_PRELOAD interposition only sees
+# the *public* mmap()/munmap()/mprotect() symbols, while the dynamic loader's
+# own dlopen()/dlclose() path calls internal glibc symbols (__mmap/__munmap)
+# that never go through public interposition — confirmed empirically in this
+# repo (a plain dlopen()/dlclose() cycle under LD_PRELOAD-only produced ZERO
+# mmap/munmap lines, while the same run under LD_AUDIT produced a full
+# objopen/objclose/activity trace). audittrace.so closes that gap by hooking
+# la_objopen()/la_objclose() directly in ld.so, which fire for every module
+# load/unload regardless of whether it happened via dlopen/dlclose or the
+# initial link — again with no ptrace involved, so it composes cleanly with
+# LD_PRELOAD and leaves the crash's natural timing unperturbed.
+#
 # Like the strace job this is intentionally OFF the PR/push critical path: the
 # crash is probabilistic. Run it manually (workflow_dispatch) or let the nightly
 # schedule attempt a repro; re-run until a dump appears, then hand the gzipped
-# mmaptrace.log + dump + crashreport.json to the runtime team.
+# mmaptrace.log + audittrace.log + dump + crashreport.json to the runtime team.
 
 on:
   workflow_dispatch:
@@ -69,6 +83,13 @@ jobs:
             -o tools/linux-crash-repro/mmaptrace.so \
             tools/linux-crash-repro/mmaptrace.c
 
+      # LD_AUDIT companion shim: same contract (clean -Wall -Wextra compile).
+      - name: Build LD_AUDIT module trace shim
+        run: |
+          cc -shared -fPIC -O2 -Wall -Wextra \
+            -o tools/linux-crash-repro/audittrace.so \
+            tools/linux-crash-repro/audittrace.c
+
       - name: Restore
         run: dotnet restore
 
@@ -87,13 +108,19 @@ jobs:
       #                         <256-byte write(), so concurrent processes do not
       #                         interleave and the lines around the crash are on
       #                         disk even on a hard exit.
+      #   LD_AUDIT               inject the audittrace.so rtld-audit module so
+      #                         we also see every dlopen()/dlclose()-driven
+      #                         module load/unload (invisible to LD_PRELOAD —
+      #                         see the header comment on audittrace.c).
+      #   AUDITTRACE_LOG         same append-only, one-write()-per-event
+      #                         contract as MMAPTRACE_LOG.
       #   DOTNET_DbgEnableMiniDump / DbgMiniDumpType=1 (Mini) / DbgMiniDumpName
       #                         have the runtime write its own dump on the native
       #                         crash — carries the si_addr the team needs, with
       #                         no ptrace tracer of our own.
       #   DOTNET_EnableCrashReport   also emit the human-readable
       #                              <dump>.crashreport.json next to the dump.
-      - name: Test (Core) under mmap LD_PRELOAD shim
+      - name: Test (Core) under mmap LD_PRELOAD + module LD_AUDIT shims
         id: preload_run
         continue-on-error: true
         env:
@@ -101,6 +128,8 @@ jobs:
           DOTNET_DBG_MCP_RUN_QUARANTINED_LINUX_TESTS: "1"
           LD_PRELOAD: ${{ github.workspace }}/tools/linux-crash-repro/mmaptrace.so
           MMAPTRACE_LOG: ${{ github.workspace }}/mmaptrace.log
+          LD_AUDIT: ${{ github.workspace }}/tools/linux-crash-repro/audittrace.so
+          AUDITTRACE_LOG: ${{ github.workspace }}/audittrace.log
           DOTNET_DbgEnableMiniDump: "1"
           DOTNET_DbgMiniDumpType: "1"
           DOTNET_DbgMiniDumpName: ${{ github.workspace }}/dumps/coredump.%p.dmp
@@ -120,7 +149,7 @@ jobs:
             --logger "trx;LogFileName=core-crash-repro-preload.trx" \
             --results-directory TestResults
 
-      - name: Summarize mmap trace
+      - name: Summarize mmap and module-load traces
         if: always()
         run: |
           if [[ -f mmaptrace.log ]]; then
@@ -133,13 +162,25 @@ jobs:
           else
             echo "No mmaptrace.log produced (shim failed to load?)."
           fi
+          if [[ -f audittrace.log ]]; then
+            echo "audittrace.log size: $(du -h audittrace.log | cut -f1)"
+            echo "event counts (objopen / objclose / activity):"
+            grep -cE ' objopen ' audittrace.log || true
+            grep -cE ' objclose' audittrace.log || true
+            grep -cE ' activity' audittrace.log || true
+            gzip -9 audittrace.log
+          else
+            echo "No audittrace.log produced (LD_AUDIT module failed to load?)."
+          fi
           # A dump only exists if the runtime caught a fatal native signal, so
           # its presence is the clearest "crash reproduced" indicator.
           echo "Crash dumps / reports:"
           if compgen -G "dumps/*" > /dev/null; then
             ls -la dumps
             echo "CRASH REPRODUCED — correlate the dump's si_addr against the"
-            echo "mmap/munmap lines for the same pid in mmaptrace.log.gz."
+            echo "mmap/munmap lines in mmaptrace.log.gz AND the objopen/objclose"
+            echo "extents in audittrace.log.gz for the same pid (the latter"
+            echo "covers dlopen/dlclose-driven unmaps the former cannot see)."
             # Best-effort: surface anything address/signal-shaped from the report.
             for r in dumps/*.crashreport.json; do
               [[ -e "$r" ]] || continue
@@ -157,6 +198,7 @@ jobs:
           name: linux-crash-repro-preload
           path: |
             mmaptrace.log.gz
+            audittrace.log.gz
             dumps/**
             **/TestResults/**/Sequence_*.xml
             **/TestResults/*.trx
