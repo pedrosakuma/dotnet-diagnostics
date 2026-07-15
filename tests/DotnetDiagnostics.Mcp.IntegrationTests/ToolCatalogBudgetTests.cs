@@ -45,6 +45,41 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
             "tools/list growth consumes model context on every client catalog refresh; update the measurement report and justify any budget increase");
     }
 
+    [Fact]
+    public void ProsePartition_PreservesSchemaPropertiesNamedTitleOrDescription()
+    {
+        var schema = JsonNode.Parse(
+            """
+            {
+              "title": "Root annotation",
+              "description": "Root prose",
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "description": "Description of the title property"
+                },
+                "description": {
+                  "type": "string",
+                  "title": "Description field"
+                }
+              }
+            }
+            """)!;
+
+        ToolMeasurement.RemoveProseAnnotations(schema);
+
+        var root = schema.AsObject();
+        root.Should().NotContainKey("title");
+        root.Should().NotContainKey("description");
+
+        var properties = root["properties"]!.AsObject();
+        properties.Should().ContainKey("title");
+        properties.Should().ContainKey("description");
+        properties["title"]!.AsObject().Should().NotContainKey("description");
+        properties["description"]!.AsObject().Should().NotContainKey("title");
+    }
+
     private async Task<McpClient> ConnectAsync()
     {
         var httpClient = _factory.CreateClient();
@@ -213,7 +248,7 @@ internal sealed record ToolMeasurement(
         }
 
         var withoutProse = full.DeepClone().AsObject();
-        RemoveProseProperties(withoutProse);
+        RemoveProseAnnotations(withoutProse);
 
         var withoutProseOrSchemas = withoutProse.DeepClone().AsObject();
         withoutProseOrSchemas.Remove("inputSchema");
@@ -235,17 +270,17 @@ internal sealed record ToolMeasurement(
     private static int SerializedLength(JsonNode node)
         => Encoding.UTF8.GetByteCount(node.ToJsonString(McpJsonUtilities.DefaultOptions));
 
-    private static void RemoveProseProperties(JsonNode node)
+    internal static void RemoveProseAnnotations(JsonNode node)
     {
         if (node is JsonObject obj)
         {
-            obj.Remove("title");
-            obj.Remove("description");
+            RemoveStringAnnotation(obj, "title");
+            RemoveStringAnnotation(obj, "description");
             foreach (var property in obj.ToArray())
             {
                 if (property.Value is not null)
                 {
-                    RemoveProseProperties(property.Value);
+                    RemoveProseAnnotations(property.Value);
                 }
             }
         }
@@ -255,9 +290,18 @@ internal sealed record ToolMeasurement(
             {
                 if (item is not null)
                 {
-                    RemoveProseProperties(item);
+                    RemoveProseAnnotations(item);
                 }
             }
+        }
+    }
+
+    private static void RemoveStringAnnotation(JsonObject obj, string propertyName)
+    {
+        if (obj[propertyName] is JsonValue value &&
+            value.TryGetValue<string>(out _))
+        {
+            obj.Remove(propertyName);
         }
     }
 }

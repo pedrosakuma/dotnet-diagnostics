@@ -38,10 +38,10 @@ and prints this table:
 | `collect_events` | 63,351 | 10,940 | 51,417 | 9,818 | 53,261 | 272 |
 | `collect_sample` | 18,917 | 6,675 | 11,571 | 5,629 | 13,033 | 255 |
 | `collect_thread_snapshot` | 17,824 | 2,160 | 14,501 | 2,518 | 15,045 | 261 |
-| `inspect_process` | 17,625 | 2,729 | 14,194 | 2,760 | 14,596 | 269 |
+| `inspect_process` | 17,625 | 2,729 | 14,194 | 2,734 | 14,622 | 269 |
 | `query_snapshot` | 10,129 | 7,387 | 2,021 | 6,502 | 3,313 | 314 |
-| `start_investigation` | 9,514 | 1,843 | 6,187 | 2,271 | 6,973 | 270 |
-| `export_investigation_summary` | 8,408 | 1,573 | 5,677 | 1,894 | 6,274 | 240 |
+| `start_investigation` | 9,514 | 1,843 | 6,187 | 2,143 | 7,101 | 270 |
+| `export_investigation_summary` | 8,408 | 1,573 | 5,677 | 1,838 | 6,330 | 240 |
 | `inspect_heap` | 7,701 | 3,503 | 2,021 | 4,701 | 2,747 | 253 |
 | `capture_method_bytes` | 7,676 | 2,176 | 3,818 | 3,077 | 4,341 | 258 |
 | `list_orchestrator` | 7,571 | 2,339 | 4,097 | 2,490 | 4,794 | 287 |
@@ -51,7 +51,7 @@ and prints this table:
 | `attach_to_pod` | 4,731 | 978 | 2,656 | 1,408 | 3,059 | 264 |
 | `compare_to_baseline` | 4,703 | 1,814 | 2,021 | 1,972 | 2,500 | 231 |
 | `detach_from_pod` | 3,784 | 256 | 2,518 | 885 | 2,634 | 265 |
-| **All tools** | **199,733** | **48,979** | **131,837** | **52,400** | **143,106** | **4,227** |
+| **All tools** | **199,733** | **48,979** | **131,837** | **52,190** | **143,316** | **4,227** |
 
 The remaining 27 bytes are catalog framing and array separators.
 
@@ -62,14 +62,16 @@ descriptions, so they overlap the prose column.
 
 The exact, non-overlapping partition removes properties in a fixed order:
 
-1. remove every `title` and `description` recursively; the byte delta is prose;
+1. remove every string-valued `title` and `description` annotation recursively;
+   property schemas whose names happen to be `title` or `description` are
+   preserved; the byte delta is prose;
 2. remove `inputSchema` and `outputSchema`; the next delta is schema structure;
 3. the remainder is names, annotations, execution/auth metadata, and punctuation.
 
 This gives:
 
-- **143,106 bytes (71.6%) schema structure**
-- **52,400 bytes (26.2%) prose**
+- **143,316 bytes (71.7%) schema structure**
+- **52,190 bytes (26.1%) prose**
 - **4,227 bytes (2.1%) other per-tool metadata**
 - **27 bytes catalog framing**
 
