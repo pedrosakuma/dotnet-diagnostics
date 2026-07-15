@@ -50,9 +50,9 @@ jobs:
     runs-on: ubuntu-latest
     # Acceptance for issue #20 P6: stand up two CoreClrSample replicas on a
     # kind cluster, install the orchestrator Helm chart, port-forward and run
-    # the [Category=KindIntegration] xUnit fact. The test attaches by label
-    # and asserts list_dotnet_processes through the proxy returns exactly one
-    # PID — the chosen Pod's, not the sibling's.
+    # the [Category=KindIntegration] xUnit fact. The test attaches by label,
+    # identifies the chosen Pod's CoreClrSample PID, and collects real
+    # System.Runtime EventCounters through the complete proxy path.
     timeout-minutes: 25
     env:
       SAMPLE_IMAGE: coreclr-sample:p6
@@ -132,32 +132,25 @@ jobs:
 
       - name: Install orchestrator (Helm)
         if: needs.changes.outputs.code == 'true'
-        # TODO(#186 / B5.5): migrate orchestrator.allowCrossSessionAdmin=true below
-        # to a bearer token carrying the 'orchestrator-admin' scope (Auth:BearerTokens).
-        # The flag is deprecated as of B5.3 (#184) — it still works but the
-        # orchestrator logs a one-shot deprecation warning at the first bypass.
         run: |
           kubectl create namespace "${ORCH_NAMESPACE}"
-          # TODO(B5.3 / #184): swap `--set orchestrator.allowCrossSessionAdmin=true`
-          # below for a scoped admin token once the `orchestrator-admin` scope path
-          # has merged. The scoped equivalent is roughly:
-          #   --set 'bearerTokens[0].name=ci-admin' \
-          #   --set 'bearerTokens[0].valueFrom.secretKeyRef.name=ci-tokens' \
-          #   --set 'bearerTokens[0].valueFrom.secretKeyRef.key=admin' \
-          #   --set 'bearerTokens[0].scopes[0]=*'
-          # The current flag-based path is intentionally left intact in this PR
-          # (B5.5 / #186) so we don't risk breaking the kind-integration smoke
-          # test before B5.3 is in.
+          kubectl -n "${ORCH_NAMESPACE}" create secret generic kind-acceptance-token \
+            --from-literal=token="${BEARER_TOKEN}"
           helm install dotnet-dbg-mcp deploy/helm/dotnet-diagnostics-orchestrator \
             --namespace "${ORCH_NAMESPACE}" \
             --set image.repository=dotnet-diagnostics-mcp \
             --set image.tag=p6 \
             --set image.pullPolicy=IfNotPresent \
-            --set bearerToken.value="${BEARER_TOKEN}" \
+            --set 'bearerTokens[0].name=kind-acceptance' \
+            --set 'bearerTokens[0].valueFrom.secretKeyRef.name=kind-acceptance-token' \
+            --set 'bearerTokens[0].valueFrom.secretKeyRef.key=token' \
+            --set 'bearerTokens[0].scopes[0]=orchestrator-list' \
+            --set 'bearerTokens[0].scopes[1]=orchestrator-attach' \
+            --set 'bearerTokens[0].scopes[2]=read-counters' \
+            --set 'bearerTokens[0].scopes[3]=metrics-read' \
             --set orchestrator.enabled=true \
             --set orchestrator.ephemeralContainerImage="${ORCH_IMAGE}" \
             --set rbac.scope=cluster \
-            --set orchestrator.allowCrossSessionAdmin=true \
             --set 'orchestrator.allowedNamespaces[0]'="${SAMPLE_NAMESPACE}" \
             --set 'orchestrator.labelKeyAllowlist[0]'=diagnostics.dotnet.io/prepared \
             --set 'orchestrator.labelKeyAllowlist[1]'=app \
@@ -206,6 +199,7 @@ jobs:
           DOTNET_DBG_MCP_ORCH_TOKEN: kind-test-bearer-token
           DOTNET_DBG_MCP_KIND_NAMESPACE: p6-sample
           DOTNET_DBG_MCP_KIND_TARGET_LABEL: p6-target=a
+          DOTNET_DBG_MCP_KIND_RESPONSE_PATH: ${{ github.workspace }}/TestResults/kind-mcp-responses.jsonl
         run: |
           dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj \
             --no-build --configuration Release \
@@ -218,20 +212,24 @@ jobs:
       - name: Diagnostics on failure
         if: ${{ failure() && needs.changes.outputs.code == 'true' }}
         run: |
-          echo "===== orchestrator describe ====="
-          kubectl -n "${ORCH_NAMESPACE}" describe deploy || true
-          kubectl -n "${ORCH_NAMESPACE}" describe pods || true
-          echo "===== orchestrator logs ====="
-          kubectl -n "${ORCH_NAMESPACE}" logs -l app.kubernetes.io/instance=dotnet-dbg-mcp --all-containers --tail=500 || true
-          echo "===== sample describe ====="
-          kubectl -n "${SAMPLE_NAMESPACE}" describe pods || true
-          echo "===== sample logs ====="
-          for p in $(kubectl -n "${SAMPLE_NAMESPACE}" get pods -o name); do
-            echo "----- ${p} -----"
-            kubectl -n "${SAMPLE_NAMESPACE}" logs "${p}" --all-containers --tail=500 || true
-          done
-          echo "===== port-forward log ====="
-          cat port-forward.log || true
+          {
+            echo "===== orchestrator describe ====="
+            kubectl -n "${ORCH_NAMESPACE}" describe deploy || true
+            kubectl -n "${ORCH_NAMESPACE}" describe pods || true
+            echo "===== orchestrator logs ====="
+            kubectl -n "${ORCH_NAMESPACE}" logs -l app.kubernetes.io/instance=dotnet-dbg-mcp --all-containers --tail=500 || true
+            echo "===== sample pod YAML (includes ephemeralContainerStatuses) ====="
+            kubectl -n "${SAMPLE_NAMESPACE}" get pods -o yaml | tee kind-sample-pods.yaml || true
+            echo "===== sample describe ====="
+            kubectl -n "${SAMPLE_NAMESPACE}" describe pods || true
+            echo "===== sample logs ====="
+            for p in $(kubectl -n "${SAMPLE_NAMESPACE}" get pods -o name); do
+              echo "----- ${p} -----"
+              kubectl -n "${SAMPLE_NAMESPACE}" logs "${p}" --all-containers --tail=500 || true
+            done
+            echo "===== port-forward log ====="
+            cat port-forward.log || true
+          } 2>&1 | tee kind-diagnostics.log
 
       - name: Stop port-forward
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
@@ -247,5 +245,8 @@ jobs:
           name: kind-integration-results
           path: |
             TestResults/**/*.trx
+            TestResults/kind-mcp-responses.jsonl
+            kind-diagnostics.log
+            kind-sample-pods.yaml
             port-forward.log
           if-no-files-found: ignore

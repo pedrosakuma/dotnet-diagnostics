@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -7,6 +8,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Core;
+using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
@@ -19,12 +21,11 @@ using Xunit.Abstractions;
 namespace DotnetDiagnostics.Mcp.IntegrationTests.Orchestrator;
 
 /// <summary>
-/// End-to-end integration test for the central orchestrator (issue #20, last
-/// acceptance bullet — P6). Spins up two replicas of the CoreClrSample target,
-/// attaches to a specific one by label, runs <c>list_dotnet_processes</c>
-/// through the orchestrator's reverse proxy, and confirms exactly one PID is
-/// visible (the chosen Pod's) — proving the orchestrator forwarded the call
-/// into the right Pod's PID namespace and not its sibling's.
+/// End-to-end integration test for the central orchestrator (issues #20 and
+/// #624). Spins up two replicas of the CoreClrSample target,
+/// attaches to a specific one by label, identifies its CoreClrSample process,
+/// and collects real <c>System.Runtime</c> EventCounters through the
+/// orchestrator's reverse proxy.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -59,6 +60,7 @@ public sealed class KindIntegrationTests
     private const string OrchestratorTokenEnvVar = "DOTNET_DBG_MCP_ORCH_TOKEN";
     private const string KindNamespaceEnvVar = "DOTNET_DBG_MCP_KIND_NAMESPACE";
     private const string KindTargetLabelEnvVar = "DOTNET_DBG_MCP_KIND_TARGET_LABEL";
+    private const string ResponseArtifactEnvVar = "DOTNET_DBG_MCP_KIND_RESPONSE_PATH";
     private const string DefaultNamespace = "p6-sample";
 
     private readonly ITestOutputHelper _output;
@@ -69,7 +71,7 @@ public sealed class KindIntegrationTests
     }
 
     [Fact]
-    public async Task AttachToLabeledReplica_ListsExactlyOnePidThroughProxy()
+    public async Task AttachToLabeledReplica_CollectsCountersThroughProxy()
     {
         if (!IsGateEnabled())
         {
@@ -165,7 +167,7 @@ public sealed class KindIntegrationTests
         {
             // ------------------------------------------------------------
             // Step 4: open a second MCP client against the proxied URL and
-            // call list_dotnet_processes — it MUST see exactly one process
+            // call inspect_process(view=list) — it MUST see exactly one target
             // (the chosen Pod's CoreClrSample), proving the orchestrator
             // forwarded into the right Pod's PID namespace.
             // ------------------------------------------------------------
@@ -236,7 +238,65 @@ public sealed class KindIntegrationTests
                 "expected in the pod's PID namespace");
 
             // ------------------------------------------------------------
-            // Step 5: detach_from_pod and confirm the handle is Closed.
+            // Step 5: collect a real EventPipe counter window against the
+            // identified target PID, then drill into its retained handle.
+            // ------------------------------------------------------------
+            var targetProcess = procs.Single(p => p.ManagedEntrypointAssemblyName == "CoreClrSample");
+            var collectResult = await podClient.CallToolAsync(
+                "collect_events",
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "counters",
+                    ["processId"] = targetProcess.ProcessId,
+                    ["durationSeconds"] = 6,
+                    ["providers"] = new[] { "System.Runtime" },
+                    ["intervalSeconds"] = 1,
+                },
+                cancellationToken: ct).ConfigureAwait(false);
+
+            await RecordToolResponseAsync("collect_events(kind=counters)", collectResult, ct).ConfigureAwait(false);
+            collectResult.IsError.Should().NotBe(true,
+                "collect_events(kind=counters) must complete through the orchestrator proxy");
+
+            var collected = DeserializeResult<CollectEventsEnvelope>(collectResult);
+            collected.Error.Should().BeNull("the counters collector returned a structured error: " + collected.Summary);
+            collected.Handle.Should().NotBeNullOrWhiteSpace(
+                "windowed counter collections must retain a handle for query_snapshot");
+            collected.Data.Should().NotBeNull();
+            collected.Data!.Kind.Should().Be("counters");
+            collected.Data.Counters.Should().NotBeNull();
+            collected.Data.Counters!.ProcessId.Should().Be(targetProcess.ProcessId,
+                "the EventPipe session must target the chosen Pod's CoreClrSample, not the diagnostics container");
+            collected.Data.Counters.Counters.Should().Contain(
+                counter => counter.Provider == "System.Runtime" && counter.Name == "cpu-usage",
+                "a six-second window at a one-second interval must observe the System.Runtime CPU counter");
+
+            var queryResult = await podClient.CallToolAsync(
+                "query_snapshot",
+                new Dictionary<string, object?>
+                {
+                    ["handle"] = collected.Handle!,
+                    ["view"] = "byProvider",
+                },
+                cancellationToken: ct).ConfigureAwait(false);
+
+            await RecordToolResponseAsync("query_snapshot(view=byProvider)", queryResult, ct).ConfigureAwait(false);
+            queryResult.IsError.Should().NotBe(true,
+                "the counter handle must remain queryable through the orchestrator proxy");
+            var queried = DeserializeStructured<CollectionQueryResult>(queryResult);
+            queried.Should().NotBeNull();
+            queried!.Kind.Should().Be(CollectionHandleKinds.Counters);
+            queried.View.Should().Be("byProvider");
+            queried.ProcessId.Should().Be(targetProcess.ProcessId);
+            ((JsonElement)queried.Payload).GetProperty("providers").EnumerateArray()
+                .Should().Contain(provider =>
+                    provider.GetProperty("provider").GetString() == "System.Runtime"
+                    && provider.GetProperty("counters").EnumerateArray().Any(counter =>
+                        counter.GetProperty("name").GetString() == "cpu-usage"));
+
+            // ------------------------------------------------------------
+            // Step 6: detach_from_pod and confirm the handle is no longer
+            // present in the caller's active-investigation view.
             // ------------------------------------------------------------
             var detachResult = await orchClient.CallToolAsync(
                 "detach_from_pod",
@@ -249,6 +309,24 @@ public sealed class KindIntegrationTests
             detached!.Found.Should().BeTrue();
             detached.NewState.Should().Be(InvestigationState.Closed,
                 "detach_from_pod must transition Active -> Closed");
+
+            var activeResult = await orchClient.CallToolAsync(
+                "list_orchestrator",
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "investigations",
+                    ["includeTerminal"] = false,
+                },
+                cancellationToken: ct).ConfigureAwait(false);
+
+            activeResult.IsError.Should().NotBe(true,
+                "list_orchestrator(kind=investigations) must succeed after detach");
+            var active = DeserializeStructured<ListOrchestratorResult>(activeResult);
+            active.Should().NotBeNull();
+            active!.Investigations.Should().NotBeNull();
+            active.Investigations!.Items.Should().NotContain(
+                investigation => investigation.HandleId == attachEnvelope.HandleId,
+                "a detached investigation must no longer appear as active");
         }
         catch
         {
@@ -341,37 +419,64 @@ public sealed class KindIntegrationTests
 
     private static T? DeserializeStructured<T>(ModelContextProtocol.Protocol.CallToolResult result)
     {
-        string json;
-        if (result.StructuredContent is { } structured)
-        {
-            json = structured.GetRawText();
-        }
-        else
-        {
-            var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault();
-            text.Should().NotBeNull("tool must return either structured content or a text block");
-            json = text!.Text;
-        }
-        var envelope = JsonSerializer.Deserialize<DiagnosticResult<T>>(json, DeserializeOptions);
-        envelope.Should().NotBeNull();
-        envelope!.Error.Should().BeNull("structured response surfaced an error envelope: " + envelope.Summary);
+        var envelope = DeserializeResult<T>(result);
+        envelope.Error.Should().BeNull("structured response surfaced an error envelope: " + envelope.Summary);
         return envelope.Data;
     }
 
     private static DiagnosticResult<JsonElement>? DeserializeEnvelope(ModelContextProtocol.Protocol.CallToolResult result)
+        => DeserializeResult<JsonElement>(result);
+
+    private static DiagnosticResult<T> DeserializeResult<T>(ModelContextProtocol.Protocol.CallToolResult result)
     {
-        string json;
+        var envelope = JsonSerializer.Deserialize<DiagnosticResult<T>>(GetResponseJson(result), DeserializeOptions);
+        envelope.Should().NotBeNull();
+        return envelope!;
+    }
+
+    private async Task RecordToolResponseAsync(
+        string operation,
+        ModelContextProtocol.Protocol.CallToolResult result,
+        CancellationToken cancellationToken)
+    {
+        var json = GetResponseJson(result);
+        _output.WriteLine($"{operation} MCP response envelope:{Environment.NewLine}{json}");
+
+        var artifactPath = Environment.GetEnvironmentVariable(ResponseArtifactEnvVar);
+        if (string.IsNullOrWhiteSpace(artifactPath))
+        {
+            return;
+        }
+
+        var directory = Path.GetDirectoryName(artifactPath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        using var document = JsonDocument.Parse(json);
+        var artifact = JsonSerializer.Serialize(new
+        {
+            operation,
+            capturedAt = DateTimeOffset.UtcNow,
+            response = document.RootElement.Clone(),
+        });
+        await File.AppendAllTextAsync(
+            artifactPath,
+            artifact + Environment.NewLine,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string GetResponseJson(ModelContextProtocol.Protocol.CallToolResult result)
+    {
         if (result.StructuredContent is { } structured)
         {
-            json = structured.GetRawText();
+            return structured.GetRawText();
         }
-        else
-        {
-            var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault();
-            text.Should().NotBeNull();
-            json = text!.Text;
-        }
-        return JsonSerializer.Deserialize<DiagnosticResult<JsonElement>>(json, DeserializeOptions);
+
+        var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault();
+        text.Should().NotBeNull("tool must return either structured content or a text block");
+        return text!.Text;
     }
 
     private sealed record Activation(
