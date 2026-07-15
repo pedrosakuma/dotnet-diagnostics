@@ -167,25 +167,34 @@ public sealed partial class QuerySnapshotTool
             return InvalidArgument(nameof(handle), "is required");
         }
 
+        var principal = principalAccessor.Current;
         var lookupResult = handles.LookupWithKind(handle);
         var lookup = lookupResult.Lookup;
         if (lookup is null)
         {
+            lookupResult = AuthorizeUnavailableLookup(principal, lookupResult, view, out var authorizationFailure);
+            if (authorizationFailure is not null)
+            {
+                return authorizationFailure;
+            }
             return HandleUnavailableError(IsDiffView(view) ? "Current" : null, handle, lookupResult);
         }
 
         var kind = lookup.Value.Kind;
-        var principal = principalAccessor.Current;
+        if (!KindHandlers.TryGetValue(kind, out var handler))
+        {
+            return UnsupportedHandleKind(handle, kind);
+        }
+        if (!AuthorizeKind(principal, kind, view, out var activeAuthorizationFailure))
+        {
+            return activeAuthorizationFailure!;
+        }
+
         var isDiffView = IsDiffView(view);
         var journeyMode = JourneyMode.Trend;
         if (isDiffView && !JourneyModeParser.TryParse(mode, out journeyMode))
         {
             return InvalidArgument(nameof(mode), "must be either 'trend' or 'dispersion' when view='diff'");
-        }
-
-        if (!KindHandlers.TryGetValue(kind, out var handler))
-        {
-            return UnsupportedHandleKind(handle, kind);
         }
 
         var context = new QuerySnapshotDispatchContext
@@ -243,7 +252,8 @@ public sealed partial class QuerySnapshotTool
         string? baselineHandle,
         string rankBy,
         double minDeltaPct,
-        int? topN)
+        int? topN,
+        BearerPrincipal? principal)
     {
         if (string.IsNullOrWhiteSpace(baselineHandle))
         {
@@ -275,7 +285,17 @@ public sealed partial class QuerySnapshotTool
         var baselineLookup = baselineResult.Lookup;
         if (baselineLookup is null)
         {
-            return HandleUnavailableError("Baseline", baselineHandle!, baselineResult);
+            var authorizedResult = AuthorizeUnavailableLookup(
+                principal,
+                baselineResult,
+                GrowthView,
+                out var authorizationFailure);
+            return authorizationFailure
+                ?? HandleUnavailableError("Baseline", baselineHandle!, authorizedResult);
+        }
+        if (!AuthorizeKind(principal, baselineLookup.Value.Kind, GrowthView, out var baselineAuthorizationFailure))
+        {
+            return baselineAuthorizationFailure!;
         }
 
         if (!string.Equals(currentLookup.Kind, baselineLookup.Value.Kind, StringComparison.Ordinal))
@@ -339,18 +359,12 @@ public sealed partial class QuerySnapshotTool
                 .Distinct(StringComparer.Ordinal));
 
     private static async Task<DiagnosticResult<object>> ResolveThreadAddressesAsync(
-        IDiagnosticHandleStore handles,
+        ThreadSnapshotArtifact snapshot,
         INativeAddressResolver addressResolver,
         string handle,
         string? address,
         CancellationToken cancellationToken)
     {
-        var snapshot = handles.TryGet<ThreadSnapshotArtifact>(handle);
-        if (snapshot is null)
-        {
-            return HandleExpiredError(null, handle);
-        }
-
         if (string.IsNullOrWhiteSpace(address))
         {
             return InvalidArgument(nameof(address), "is required for view='resolve-address' (decimal or 0x-prefixed hex; comma-separated for several)");
@@ -419,7 +433,7 @@ public sealed partial class QuerySnapshotTool
     }
 
     private static async Task<DiagnosticResult<object>> ResolveFrameVariablesAsync(
-        IDiagnosticHandleStore handles,
+        ThreadSnapshotArtifact snapshot,
         IFrameVariableResolver resolver,
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
@@ -428,12 +442,6 @@ public sealed partial class QuerySnapshotTool
         bool includeSensitiveValues,
         CancellationToken cancellationToken)
     {
-        var snapshot = handles.TryGet<ThreadSnapshotArtifact>(handle);
-        if (snapshot is null)
-        {
-            return HandleExpiredError(null, handle);
-        }
-
         if (threadId is null)
         {
             return InvalidArgument(nameof(threadId), "is required for view='frame-vars' (ManagedThreadId from view='threads-summary')");
@@ -488,7 +496,8 @@ public sealed partial class QuerySnapshotTool
         double minDeltaPct,
         int? topN,
         string depth,
-        JourneyMode mode)
+        JourneyMode mode,
+        BearerPrincipal? principal)
     {
         var hasBaseline = !string.IsNullOrWhiteSpace(baselineHandle);
         var hasComparisonHandles = comparisonHandles is { Length: > 0 };
@@ -525,14 +534,33 @@ public sealed partial class QuerySnapshotTool
 
         if (hasComparisonHandles)
         {
-            return TryBuildComparableJourneyDiff(handles, handle, currentLookup, comparisonHandles!, minDeltaPct, effectiveTopN, journeyDepth, mode);
+            return TryBuildComparableJourneyDiff(
+                handles,
+                handle,
+                currentLookup,
+                comparisonHandles!,
+                minDeltaPct,
+                effectiveTopN,
+                journeyDepth,
+                mode,
+                principal);
         }
 
         var baselineResult = handles.LookupWithKind(baselineHandle!);
         var baselineLookup = baselineResult.Lookup;
         if (baselineLookup is null)
         {
-            return HandleUnavailableError("Baseline", baselineHandle!, baselineResult);
+            var authorizedResult = AuthorizeUnavailableLookup(
+                principal,
+                baselineResult,
+                DiffView,
+                out var authorizationFailure);
+            return authorizationFailure
+                ?? HandleUnavailableError("Baseline", baselineHandle!, authorizedResult);
+        }
+        if (!AuthorizeKind(principal, baselineLookup.Value.Kind, DiffView, out var baselineAuthorizationFailure))
+        {
+            return baselineAuthorizationFailure!;
         }
 
         if (!string.Equals(currentLookup.Kind, baselineLookup.Value.Kind, StringComparison.Ordinal))
@@ -559,7 +587,16 @@ public sealed partial class QuerySnapshotTool
             "allocation-sample" when currentLookup.Artifact is AllocationSampleArtifact current && baselineLookup.Value.Artifact is AllocationSampleArtifact baseline
                 => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline.Summary, baselineHandle!, current.Summary, handle, minDeltaPct, effectiveTopN)),
 
-            _ => TryBuildComparableJourneyDiff(handles, handle, currentLookup, new[] { baselineHandle! }, minDeltaPct, effectiveTopN, journeyDepth, mode)
+            _ => TryBuildComparableJourneyDiff(
+                handles,
+                handle,
+                currentLookup,
+                new[] { baselineHandle! },
+                minDeltaPct,
+                effectiveTopN,
+                journeyDepth,
+                mode,
+                principal)
         };
     }
 
@@ -571,7 +608,8 @@ public sealed partial class QuerySnapshotTool
         double minDeltaPct,
         int topN,
         JourneyDiffDepth depth,
-        JourneyMode mode)
+        JourneyMode mode,
+        BearerPrincipal? principal)
     {
         var projector = ComparableProjectors.FirstOrDefault(p => string.Equals(p.Kind, currentLookup.Kind, StringComparison.Ordinal));
         if (projector is null || !projector.CanProject(currentLookup.Artifact))
@@ -597,7 +635,17 @@ public sealed partial class QuerySnapshotTool
             var lookup = lookupResult.Lookup;
             if (lookup is null)
             {
-                return HandleUnavailableError($"Comparison[{i}]", comparisonHandle, lookupResult);
+                var authorizedResult = AuthorizeUnavailableLookup(
+                    principal,
+                    lookupResult,
+                    DiffView,
+                    out var authorizationFailure);
+                return authorizationFailure
+                    ?? HandleUnavailableError($"Comparison[{i}]", comparisonHandle, authorizedResult);
+            }
+            if (!AuthorizeKind(principal, lookup.Value.Kind, DiffView, out var comparisonAuthorizationFailure))
+            {
+                return comparisonAuthorizationFailure!;
             }
             if (!string.Equals(currentLookup.Kind, lookup.Value.Kind, StringComparison.Ordinal))
             {
@@ -643,6 +691,85 @@ public sealed partial class QuerySnapshotTool
             side,
             handle,
             new DiagnosticHandleLookupResult(DiagnosticHandleLookupStatus.Expired, null, null));
+
+    private static DiagnosticHandleLookupResult AuthorizeUnavailableLookup(
+        BearerPrincipal? principal,
+        DiagnosticHandleLookupResult lookupResult,
+        string? view,
+        out DiagnosticResult<object>? failure)
+    {
+        failure = null;
+        var kind = lookupResult.Tombstone?.Kind;
+        if (kind is null || !KindHandlers.ContainsKey(kind))
+        {
+            return DiagnosticHandleLookupResult.Unknown;
+        }
+
+        if (!AuthorizeKind(principal, kind, view, out failure))
+        {
+            return DiagnosticHandleLookupResult.Unknown;
+        }
+
+        return lookupResult;
+    }
+
+    private static bool AuthorizeKind(
+        BearerPrincipal? principal,
+        string kind,
+        string? view,
+        out DiagnosticResult<object>? failure)
+    {
+        if (kind == DiagnosticTools.HeapSnapshotKind)
+        {
+            return RequireScope(principal, ScopeHeapRead, out failure);
+        }
+
+        if (kind == DiagnosticTools.ThreadSnapshotKind)
+        {
+            if (!RequireScope(principal, ScopePtrace, out failure))
+            {
+                return false;
+            }
+
+            if (string.Equals(view?.Trim(), FrameVarsView, StringComparison.OrdinalIgnoreCase))
+            {
+                return RequireScope(principal, ScopeHeapRead, out failure);
+            }
+
+            return true;
+        }
+
+        if (kind == DiagnosticTools.OffCpuHandleKind)
+        {
+            return RequireScope(principal, ScopeEventPipe, out failure);
+        }
+
+        if (kind is "cpu-sample" or "allocation-sample" or DiagnosticTools.NativeAllocHandleKind)
+        {
+            return RequireScope(principal, ScopeInvestigationExport, out failure);
+        }
+
+        if (kind == CollectionHandleKinds.Counters)
+        {
+            return RequireAnyOfScope(principal, ScopeReadCounters, ScopeEventPipe, out failure);
+        }
+
+        if (!RequireScope(principal, ScopeEventPipe, out failure))
+        {
+            return false;
+        }
+
+        if (kind == MethodParameterCaptureUseCases.HandleKind
+            && string.Equals(
+                string.IsNullOrWhiteSpace(view) ? MethodParameterCaptureQueryDispatcher.SummaryView : view.Trim(),
+                MethodParameterCaptureQueryDispatcher.EventsView,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return RequireExplicitScope(principal, ScopeSensitiveParameterRead, out failure);
+        }
+
+        return true;
+    }
 
     private static DiagnosticResult<object> HandleUnavailableError(
         string? side,
