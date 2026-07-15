@@ -42,23 +42,44 @@ Most of this README is about the **MCP server**. If you want to run diagnostics 
 inspect_process(view="triage")
 ```
 
-**Response:**
+**Response excerpt (rationales shortened):**
 ```json
 {
-  "verdict": "threadpool-starvation",
+  "modelVersion": 2,
+  "assessment": "critical",
   "severity": "Critical",
-  "topIndicators": [
-    {"name": "threadpool-queue-length", "value": 1191, "score": 100, "level": "critical"},
-    {"name": "cpu-usage", "value": 0.13, "score": 0, "level": "normal"},
-    {"name": "time-in-gc", "value": 0, "score": 0, "level": "normal"}
+  "observedSignals": [
+    {
+      "name": "threadpool.queue",
+      "level": "critical",
+      "summary": "The ThreadPool queue contained 1191 work items.",
+      "evidence": [
+        {"name": "threadpool-queue-length", "value": 1191, "comparison": ">=", "threshold": 200, "unit": "items", "rationale": "Queue crossed the critical threshold."}
+      ]
+    }
   ],
-  "hints": [{"nextTool": "collect_events", "suggestedArguments": {"kind": "threadpool"}}]
+  "hypotheses": [
+    {
+      "name": "threadpool.backlog",
+      "confidence": "moderate",
+      "summary": "Work was queued faster than the ThreadPool completed it; counters do not prove starvation.",
+      "supportingEvidence": [{"name": "threadpool-queue-length", "value": 1191, "comparison": ">=", "threshold": 50, "rationale": "Large queue supports a backlog hypothesis."}],
+      "contradictingEvidence": [],
+      "nextStep": "Collect ThreadPool events and blocking stacks to distinguish sustained starvation, blocking, and transient demand."
+    }
+  ],
+  "topIndicators": [
+    {"name": "threadpool-queue-length", "value": 1191, "score": 100, "level": "critical"}
+  ],
+  "verdict": "threadpool-starvation",
+  "secondaryVerdicts": null
 }
 ```
 
-**Verdicts:** `cpu-bound`, `gc-pressure`, `memory-pressure`, `threadpool-starvation`, `lock-contention`, `io-bound`, `healthy`
-
-**TopIndicators** are always returned (even when healthy) — enabling **proactive optimization**, not just reactive firefighting. The LLM simply follows the first hint.
+`observedSignals` report threshold crossings; `hypotheses` explain bounded interpretations and
+the evidence needed to confirm them. A low-CPU snapshot with a small queue is `inconclusive`, not
+categorically `io-bound`. `verdict` / `secondaryVerdicts` remain for compatibility and are
+deprecated for removal in v1.0. **TopIndicators** remain available on every result.
 
 ---
 
@@ -153,11 +174,11 @@ as `dotnet-diagnostics-cli-<version>-<rid>`. **Full reference:** [`docs/cli-refe
 
 | Tool | Purpose |
 |---|---|
-| `inspect_process(view="triage")` | **IoT-style diagnosis** — 1 call returns verdict + severity + ranked TopIndicators + hints |
+| `inspect_process(view="triage")` | **Fast evidence triage** — observed signals + bounded hypotheses + ranked TopIndicators + hints |
 | `inspect_process(view="list")` / `inspect_process(view="info")` | Discover .NET processes via diagnostic IPC |
 | `inspect_process(view="capabilities")` | Detect CoreCLR vs NativeAOT and what's usable |
 | `inspect_process(view="container")` | Linux cgroup v2: CPU throttling, memory pressure, OOM kills, PSI |
-| `collect_events(kind="counters")` | EventCounters with **auto-hints** (CPU, GC, starvation, contention, allocation, I/O) |
+| `collect_events(kind="counters")` | EventCounters with neutral **auto-hints** (CPU, GC, queueing, contention, allocation, waiting) |
 | `collect_sample(kind="cpu")` / `query_snapshot(view="call-tree")` | Top-N CPU hotspots (inclusive/exclusive) + on-demand caller→callee tree |
 | `collect_sample(kind="off_cpu")` / `query_snapshot` | Where threads block (futex / IO / sleep) — Linux `perf` backend |
 | `collect_sample(kind="native-alloc")` / `query_snapshot(view="call-tree")` | Native/unmanaged allocation hotspots (off-GC-heap `malloc`) attributed to call sites — Linux `perf` uprobe backend |

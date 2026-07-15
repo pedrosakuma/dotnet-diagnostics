@@ -1,15 +1,14 @@
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.Triage;
 using FluentAssertions;
+using System.Text.Json;
 using Xunit;
 
 namespace DotnetDiagnostics.Core.Tests;
 
 /// <summary>
-/// Unit coverage for <see cref="TriageClassifier"/>. Guards that the triage verdict surface is
-/// comprehensive across the dimensions humans reach for triage about — CPU, memory, GC, contention,
-/// thread-pool starvation and I/O — so a "my app is slow" prompt is never silently mis-classified
-/// as healthy (#280 discoverability follow-up).
+/// Unit coverage for <see cref="TriageClassifier"/>. Guards the separation between direct
+/// observations, bounded hypotheses, and the deprecated verdict compatibility projection.
 /// </summary>
 public sealed class TriageClassifierTests
 {
@@ -33,7 +32,14 @@ public sealed class TriageClassifierTests
         var result = TriageClassifier.Classify(SnapshotOf(("cpu-usage", 95)));
 
         result.Verdict.Should().Be(TriageClassifier.CpuBound);
+        result.Assessment.Should().Be(TriageClassifier.CriticalAssessment);
         result.Severity.Should().Be(TriageSeverity.Critical);
+        result.ObservedSignals.Should().ContainSingle(s => s.Name == "cpu.utilization");
+        var hypothesis = result.Hypotheses.Should().ContainSingle().Subject;
+        hypothesis.Name.Should().Be(TriageClassifier.CpuComputeDemandHypothesis);
+        hypothesis.Confidence.Should().Be("high");
+        hypothesis.SupportingEvidence.Should().ContainSingle(e =>
+            e.Name == "cpu-usage" && e.Comparison == ">=" && e.Threshold == 70);
     }
 
     [Fact]
@@ -42,15 +48,20 @@ public sealed class TriageClassifierTests
         var result = TriageClassifier.Classify(SnapshotOf(("time-in-gc", 20)));
 
         result.Verdict.Should().Be(TriageClassifier.GcPressure);
+        result.Hypotheses.Should().ContainSingle(h => h.Name == TriageClassifier.GcOverheadHypothesis);
     }
 
     [Fact]
     public void Classify_HighContention_ReturnsLockContention()
     {
-        var result = TriageClassifier.Classify(SnapshotOf(("monitor-lock-contention-count", 25)));
+        var result = TriageClassifier.Classify(
+            SnapshotOf(("monitor-lock-contention-count", 25)),
+            requestDurationP95: 0.05);
 
         result.Verdict.Should().Be(TriageClassifier.LockContention);
         result.Severity.Should().Be(TriageSeverity.Degraded);
+        result.Hypotheses.Should().ContainSingle()
+            .Which.ContradictingEvidence.Should().ContainSingle(e => e.Name == "request-duration-p95");
     }
 
     [Fact]
@@ -65,6 +76,7 @@ public sealed class TriageClassifierTests
 
         result.Verdict.Should().Be(TriageClassifier.MemoryPressure);
         result.Severity.Should().Be(TriageSeverity.Degraded);
+        result.Hypotheses.Should().ContainSingle(h => h.Name == TriageClassifier.ManagedMemoryActivityHypothesis);
     }
 
     [Fact]
@@ -74,6 +86,8 @@ public sealed class TriageClassifierTests
 
         result.Verdict.Should().Be(TriageClassifier.MemoryPressure);
         result.Severity.Should().Be(TriageSeverity.Critical);
+        result.Hypotheses.Should().ContainSingle()
+            .Which.Confidence.Should().Be("high");
     }
 
     [Fact]
@@ -82,6 +96,8 @@ public sealed class TriageClassifierTests
         var result = TriageClassifier.Classify(SnapshotOf(("gen-2-gc-count", 5)));
 
         result.Verdict.Should().Be(TriageClassifier.MemoryPressure);
+        result.Hypotheses.Should().ContainSingle()
+            .Which.SupportingEvidence.Should().ContainSingle(e => e.Name == "gen-2-gc-count");
     }
 
     [Fact]
@@ -94,6 +110,8 @@ public sealed class TriageClassifierTests
         result.Verdict.Should().Be(TriageClassifier.GcPressure);
         result.SecondaryVerdicts.Should().Contain(TriageClassifier.MemoryPressure);
         result.Severity.Should().Be(TriageSeverity.Critical);
+        result.Hypotheses.Should().Contain(h => h.Name == TriageClassifier.GcOverheadHypothesis);
+        result.Hypotheses.Should().Contain(h => h.Name == TriageClassifier.ManagedMemoryActivityHypothesis);
     }
 
     [Fact]
@@ -108,6 +126,8 @@ public sealed class TriageClassifierTests
 
         result.Verdict.Should().Be(TriageClassifier.ThreadPoolStarvation);
         result.SecondaryVerdicts.Should().Contain(TriageClassifier.MemoryPressure);
+        result.Hypotheses.Should().Contain(h => h.Name == TriageClassifier.ThreadPoolBacklogHypothesis);
+        result.Hypotheses.Should().Contain(h => h.Name == TriageClassifier.ManagedMemoryActivityHypothesis);
     }
 
     [Fact]
@@ -119,16 +139,74 @@ public sealed class TriageClassifierTests
 
         result.Verdict.Should().Be(TriageClassifier.CpuBound);
         result.SecondaryVerdicts.Should().Contain(TriageClassifier.ThreadPoolStarvation);
+        result.Hypotheses.Should().Contain(h => h.Name == TriageClassifier.CpuComputeDemandHypothesis);
+        result.Hypotheses.Should().Contain(h => h.Name == TriageClassifier.ThreadPoolBacklogHypothesis);
     }
 
     [Fact]
-    public void Classify_LowCpuWithQueueBuildup_ReturnsIoBound()
+    public void Classify_LowCpuWithSmallQueue_IsInconclusive_NotIoBound()
     {
         var result = TriageClassifier.Classify(SnapshotOf(
             ("cpu-usage", 10),
             ("threadpool-queue-length", 15)));
 
-        result.Verdict.Should().Be(TriageClassifier.IoBound);
+        result.Verdict.Should().Be(TriageClassifier.Inconclusive);
+        result.Verdict.Should().NotBe(TriageClassifier.IoBound);
+        result.Assessment.Should().Be(TriageClassifier.InconclusiveAssessment);
+        result.Severity.Should().Be(TriageSeverity.Healthy);
+        result.ObservedSignals.Should().ContainSingle(s => s.Name == "threadpool.queue" && s.Level == "elevated");
+        result.Hypotheses.Should().BeEmpty(
+            "a low-CPU snapshot with a small transient queue does not identify I/O or another cause");
+    }
+
+    [Fact]
+    public void Classify_LowCpuQueueAndLatency_EmitsWaitingHypothesis_NotIoBound()
+    {
+        var result = TriageClassifier.Classify(
+            SnapshotOf(
+                ("cpu-usage", 10),
+                ("threadpool-queue-length", 15)),
+            requestDurationP95: 0.8);
+
+        result.Verdict.Should().Be(TriageClassifier.Inconclusive);
+        result.Verdict.Should().NotBe(TriageClassifier.IoBound);
+        result.Assessment.Should().Be(TriageClassifier.DegradedAssessment);
+        var hypothesis = result.Hypotheses.Should().ContainSingle().Subject;
+        hypothesis.Name.Should().Be(TriageClassifier.WaitingOrBackpressureHypothesis);
+        hypothesis.Confidence.Should().Be("moderate");
+        hypothesis.SupportingEvidence.Should().HaveCount(3);
+        hypothesis.Summary.Should().Contain("does not identify I/O");
+    }
+
+    [Fact]
+    public void Classify_CriticalQueueWithLatency_EmitsStrongBacklogAndWaitingHypotheses()
+    {
+        var result = TriageClassifier.Classify(
+            SnapshotOf(
+                ("cpu-usage", 10),
+                ("threadpool-queue-length", 250)),
+            requestDurationP95: 2.5);
+
+        result.Verdict.Should().Be(TriageClassifier.ThreadPoolStarvation,
+            "the field remains as a deprecated compatibility projection");
+        result.Assessment.Should().Be(TriageClassifier.CriticalAssessment);
+        result.Severity.Should().Be(TriageSeverity.Critical);
+        result.Hypotheses.Should().Contain(h =>
+            h.Name == TriageClassifier.ThreadPoolBacklogHypothesis && h.Confidence == "high");
+        result.Hypotheses.Should().Contain(h =>
+            h.Name == TriageClassifier.WaitingOrBackpressureHypothesis && h.Confidence == "high");
+    }
+
+    [Fact]
+    public void Classify_ExceptionStorm_IsObservedButCauseIsInconclusive()
+    {
+        var result = TriageClassifier.Classify(SnapshotOf(("exception-count", 75)));
+
+        result.Verdict.Should().Be(TriageClassifier.Inconclusive);
+        result.Assessment.Should().Be(TriageClassifier.InconclusiveAssessment);
+        result.Severity.Should().Be(TriageSeverity.Critical);
+        result.ObservedSignals.Should().ContainSingle(s => s.Name == "exceptions.rate");
+        result.Hypotheses.Should().BeEmpty();
     }
 
     [Fact]
@@ -143,6 +221,95 @@ public sealed class TriageClassifierTests
             ("gen-2-gc-count", 0)));
 
         result.Verdict.Should().Be(TriageClassifier.Healthy);
+        result.Assessment.Should().Be(TriageClassifier.HealthyAssessment);
         result.Severity.Should().Be(TriageSeverity.Healthy);
+        result.ObservedSignals.Should().BeEmpty();
+        result.Hypotheses.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Classify_MixedSignals_OrdersHypothesesAndBacksEachWithExplicitEvidence()
+    {
+        var result = TriageClassifier.Classify(
+            SnapshotOf(
+                ("cpu-usage", 95),
+                ("time-in-gc", 35),
+                ("threadpool-queue-length", 120),
+                ("monitor-lock-contention-count", 25),
+                ("alloc-rate", 80_000_000),
+                ("gen-2-gc-count", 5)),
+            requestDurationP95: 0.9);
+
+        result.Assessment.Should().Be(TriageClassifier.CriticalAssessment);
+        result.Hypotheses.Should().HaveCount(5);
+        result.Hypotheses!.Select(h => h.Name).Should().Equal(
+            TriageClassifier.CpuComputeDemandHypothesis,
+            TriageClassifier.GcOverheadHypothesis,
+            TriageClassifier.ThreadPoolBacklogHypothesis,
+            TriageClassifier.SynchronizationContentionHypothesis,
+            TriageClassifier.ManagedMemoryActivityHypothesis);
+        result.Hypotheses.Should().OnlyContain(h =>
+            h.SupportingEvidence.Count > 0
+            && h.SupportingEvidence.All(e => !string.IsNullOrWhiteSpace(e.Rationale))
+            && !string.IsNullOrWhiteSpace(h.NextStep));
+    }
+
+    [Fact]
+    public void Classify_SerializedContract_PreservesLegacyFieldsAndAddsV2Fields()
+    {
+        var result = TriageClassifier.Classify(SnapshotOf(("cpu-usage", 95)));
+
+        var json = JsonSerializer.SerializeToNode(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        json!["verdict"]!.GetValue<string>().Should().Be(TriageClassifier.CpuBound);
+        json["severity"].Should().NotBeNull();
+        json["evidence"].Should().NotBeNull();
+        json["topIndicators"].Should().NotBeNull();
+        json["modelVersion"]!.GetValue<int>().Should().Be(2);
+        json["assessment"]!.GetValue<string>().Should().Be(TriageClassifier.CriticalAssessment);
+        json["observedSignals"]!.AsArray().Should().NotBeEmpty();
+        json["hypotheses"]!.AsArray().Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public void TriageResult_DeserializesLegacyPayloadAsModelVersionOne()
+    {
+        const string legacyJson =
+            """
+            {
+              "verdict": "healthy",
+              "severity": 0,
+              "evidence": {
+                "cpuUsage": 5,
+                "timeInGc": 0,
+                "threadPoolQueueLength": 0,
+                "monitorLockContentionCount": 0,
+                "allocRate": 1000,
+                "gen2GcCount": 0,
+                "gcHeapSize": 1000000,
+                "exceptionCount": 0,
+                "requestDurationP95": null
+              },
+              "secondaryVerdicts": null,
+              "topIndicators": []
+            }
+            """;
+
+        var result = JsonSerializer.Deserialize<TriageResult>(
+            legacyJson,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        result.Should().NotBeNull();
+        result!.ModelVersion.Should().Be(1);
+        result.Verdict.Should().Be(TriageClassifier.Healthy);
+        result.ObservedSignals.Should().BeNull();
+        result.Hypotheses.Should().BeNull();
+
+        var (verdict, severity, evidence, secondaryVerdicts, topIndicators) = result;
+        verdict.Should().Be(TriageClassifier.Healthy);
+        severity.Should().Be(TriageSeverity.Healthy);
+        evidence.CpuUsage.Should().Be(5);
+        secondaryVerdicts.Should().BeNull();
+        topIndicators.Should().BeEmpty();
     }
 }

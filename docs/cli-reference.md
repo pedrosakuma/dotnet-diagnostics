@@ -141,7 +141,7 @@ One-call process inspector exposing three views (`--view` required):
 
 | View | What it does |
 |---|---|
-| `triage` | Collects counters for `--duration` seconds (default 5), classifies the workload, and returns a verdict with severity and ranked indicators. Verdicts: `cpu-bound`, `gc-pressure`, `memory-pressure`, `threadpool-starvation`, `lock-contention`, `io-bound`, `healthy`. |
+| `triage` | Collects counters for `--duration` seconds (default 5), reports threshold-backed observed signals separately from evidence-backed hypotheses, and returns neutral drill-down hints. |
 | `runtime-config` | Reads the process's effective runtime configuration: GC mode and heap count, ThreadPool worker/IOCP bounds, tiered-compilation flags, filtered runtime env vars, and AppContext switches. |
 | `container` | Reads cgroup/container CPU quota + throttling, memory limits / OOM counters, PSI, pid limits and `oom_score` for the target process. Linux/cgroup-v2-first; returns partial signals plus notes when the host lacks a container envelope or PSI. |
 
@@ -152,6 +152,15 @@ dotnet-diagnostics-cli inspect --view runtime-config --pid 1234
 dotnet-diagnostics-cli inspect --view container --pid 1234
 dotnet-diagnostics-cli inspect --view triage --json
 ```
+
+Human-readable output leads with `Assessment`, then prints `Observed signals`, `Hypotheses`
+(confidence, supporting/contradicting evidence, and next step), and ranked indicators. JSON uses
+the same `modelVersion=2` contract as MCP. A low-CPU snapshot with a small transient queue is
+`inconclusive`; it is not labeled `io-bound`.
+
+For compatibility, JSON continues to serialize `verdict`, `secondaryVerdicts`, `severity`,
+`evidence`, and `topIndicators`. `verdict` and `secondaryVerdicts` are deprecated for removal in
+v1.0; migrate automation to `assessment`, `observedSignals`, and `hypotheses`.
 
 ### `collect`
 

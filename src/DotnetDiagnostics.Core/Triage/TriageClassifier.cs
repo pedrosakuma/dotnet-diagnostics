@@ -3,34 +3,68 @@ using DotnetDiagnostics.Core.Counters;
 namespace DotnetDiagnostics.Core.Triage;
 
 /// <summary>
-/// Phase 12 triage classifier — extracts the auto-hint logic into a reusable classification engine.
-/// Produces a <see cref="TriageResult"/> with verdict, severity, and evidence from counter snapshots.
+/// Deterministic triage projection that separates observed threshold crossings from bounded
+/// hypotheses. Rules are intentionally transparent and diagnosis-agnostic.
 /// </summary>
 public static class TriageClassifier
 {
-    /// <summary>Well-known verdict for CPU-bound workloads (cpu-usage &gt; 70%).</summary>
+    /// <summary>Deprecated compatibility verdict for CPU-heavy windows.</summary>
     public const string CpuBound = "cpu-bound";
 
-    /// <summary>Well-known verdict for GC pressure (time-in-gc &gt; 15%).</summary>
+    /// <summary>Deprecated compatibility verdict for high GC-time windows.</summary>
     public const string GcPressure = "gc-pressure";
 
-    /// <summary>Well-known verdict for memory / allocation pressure (high alloc-rate or frequent gen-2 GCs)
-    /// even when GC CPU time is still moderate — catches leaks / churn before they show up as gc-pressure.</summary>
+    /// <summary>Deprecated compatibility verdict for high allocation or gen-2 activity.</summary>
     public const string MemoryPressure = "memory-pressure";
 
-    /// <summary>Well-known verdict for ThreadPool starvation (queue-length &gt; 50).</summary>
+    /// <summary>Deprecated compatibility verdict for a large ThreadPool backlog.</summary>
     public const string ThreadPoolStarvation = "threadpool-starvation";
 
-    /// <summary>Well-known verdict for lock contention (contention-count &gt; 10).</summary>
+    /// <summary>Deprecated compatibility verdict for high monitor-contention activity.</summary>
     public const string LockContention = "lock-contention";
 
-    /// <summary>Well-known verdict for I/O-bound workloads (low CPU + queue buildup).</summary>
+    /// <summary>
+    /// Deprecated compatibility value. Counter-only triage no longer emits <c>io-bound</c>
+    /// because low CPU plus a queue does not identify where work is waiting.
+    /// </summary>
     public const string IoBound = "io-bound";
 
-    /// <summary>Well-known verdict for healthy systems (no triggers fired).</summary>
+    /// <summary>Compatibility verdict for windows with no salient observations.</summary>
     public const string Healthy = "healthy";
 
-    // Thresholds (same as auto-hints in DiagnosticTools.SnapshotCounters).
+    /// <summary>Compatibility verdict for salient observations that do not support a legacy category.</summary>
+    public const string Inconclusive = "inconclusive";
+
+    /// <summary>Neutral assessment with no salient observed signals.</summary>
+    public const string HealthyAssessment = "healthy";
+
+    /// <summary>Neutral assessment with observations but insufficient evidence for a hypothesis.</summary>
+    public const string InconclusiveAssessment = "inconclusive";
+
+    /// <summary>Neutral assessment with one or more bounded hypotheses.</summary>
+    public const string DegradedAssessment = "degraded";
+
+    /// <summary>Neutral assessment containing a critical observed signal.</summary>
+    public const string CriticalAssessment = "critical";
+
+    /// <summary>High CPU compute-demand hypothesis.</summary>
+    public const string CpuComputeDemandHypothesis = "cpu.compute-demand";
+
+    /// <summary>GC overhead hypothesis.</summary>
+    public const string GcOverheadHypothesis = "gc.overhead";
+
+    /// <summary>ThreadPool backlog hypothesis.</summary>
+    public const string ThreadPoolBacklogHypothesis = "threadpool.backlog";
+
+    /// <summary>Synchronization contention hypothesis.</summary>
+    public const string SynchronizationContentionHypothesis = "synchronization.contention";
+
+    /// <summary>Managed-memory activity hypothesis.</summary>
+    public const string ManagedMemoryActivityHypothesis = "managed-memory.activity";
+
+    /// <summary>Waiting or backpressure hypothesis; deliberately does not assert I/O.</summary>
+    public const string WaitingOrBackpressureHypothesis = "work.waiting-or-backpressure";
+
     private const double CpuCriticalThreshold = 90;
     private const double CpuDegradedThreshold = 70;
     private const double TimeInGcCriticalThreshold = 30;
@@ -42,21 +76,26 @@ public static class TriageClassifier
     private const double AllocRateCriticalThreshold = 100_000_000; // 100 MB/s
     private const double Gen2GcDegradedThreshold = 3; // gen-2 collections per interval
     private const double Gen2GcCriticalThreshold = 10;
-    private const double IoBoundCpuThreshold = 30;
-    private const double IoBoundQueueThreshold = 10;
+    private const double LowCpuThreshold = 30;
+    private const double QueueLengthElevatedThreshold = 10;
+    private const double ContentionCriticalThreshold = 50;
+    private const double ExceptionHighThreshold = 10;
+    private const double ExceptionCriticalThreshold = 50;
+    private const double RequestDurationHighThresholdMilliseconds = 500;
+    private const double RequestDurationCriticalThresholdMilliseconds = 2_000;
+    private const double RequestDurationNormalThresholdMilliseconds = 100;
 
     /// <summary>Maximum number of top indicators to return.</summary>
     private const int MaxTopIndicators = 5;
 
     /// <summary>
-    /// Classifies a counter snapshot into a triage result with verdict, severity, and evidence.
+    /// Projects a counter snapshot into observed signals, hypotheses, and legacy compatibility fields.
     /// </summary>
     /// <param name="snapshot">The counter snapshot to classify.</param>
     /// <param name="requestDurationP95">Optional HTTP request duration p95 from Meters.</param>
-    /// <returns>A <see cref="TriageResult"/> with the primary verdict and any secondary findings.</returns>
+    /// <returns>A transparent <see cref="TriageResult"/>.</returns>
     public static TriageResult Classify(CounterSnapshot snapshot, double? requestDurationP95 = null)
     {
-        // Extract key counters.
         var cpu = GetCounter(snapshot, "cpu-usage");
         var timeInGc = GetCounter(snapshot, "time-in-gc");
         var queueLength = GetCounter(snapshot, "threadpool-queue-length");
@@ -66,7 +105,6 @@ public static class TriageClassifier
         var heapSize = GetCounter(snapshot, "gc-heap-size");
         var exceptionCount = GetCounter(snapshot, "exception-count");
 
-        // Build evidence.
         var evidence = new TriageEvidence(
             CpuUsage: cpu,
             TimeInGc: timeInGc,
@@ -78,72 +116,398 @@ public static class TriageClassifier
             ExceptionCount: exceptionCount,
             RequestDurationP95: requestDurationP95);
 
-        // Classify by priority order (same as auto-hints).
-        var verdicts = new List<string>();
-        var severity = TriageSeverity.Healthy;
+        var topIndicators = BuildTopIndicators(evidence);
+        var observedSignals = BuildObservedSignals(evidence);
+        var hypotheses = BuildHypotheses(evidence);
+        var severity = CalculateSeverity(observedSignals);
+        var assessment = observedSignals.Count == 0
+            ? HealthyAssessment
+            : hypotheses.Count == 0
+                ? InconclusiveAssessment
+                : severity == TriageSeverity.Critical
+                    ? CriticalAssessment
+                    : DegradedAssessment;
 
-        // CPU-bound check.
+        var verdicts = new List<string>();
         if (cpu >= CpuDegradedThreshold)
         {
             verdicts.Add(CpuBound);
-            severity = cpu >= CpuCriticalThreshold ? TriageSeverity.Critical : TriageSeverity.Degraded;
         }
 
-        // GC pressure check.
         if (timeInGc >= TimeInGcDegradedThreshold)
         {
             verdicts.Add(GcPressure);
-            var gcSeverity = timeInGc >= TimeInGcCriticalThreshold ? TriageSeverity.Critical : TriageSeverity.Degraded;
-            severity = (TriageSeverity)Math.Max((int)severity, (int)gcSeverity);
         }
 
-        // ThreadPool starvation check.
         if (queueLength >= QueueLengthDegradedThreshold)
         {
             verdicts.Add(ThreadPoolStarvation);
-            var tpSeverity = queueLength >= QueueLengthCriticalThreshold ? TriageSeverity.Critical : TriageSeverity.Degraded;
-            severity = (TriageSeverity)Math.Max((int)severity, (int)tpSeverity);
         }
 
-        // Lock contention check.
         if (contention >= ContentionDegradedThreshold)
         {
             verdicts.Add(LockContention);
-            severity = (TriageSeverity)Math.Max((int)severity, (int)TriageSeverity.Degraded);
         }
 
-        // I/O-bound check (low CPU + queue buildup).
-        if (cpu < IoBoundCpuThreshold && queueLength >= IoBoundQueueThreshold)
-        {
-            verdicts.Add(IoBound);
-            severity = (TriageSeverity)Math.Max((int)severity, (int)TriageSeverity.Degraded);
-        }
-
-        // Memory / allocation pressure check — intentionally LOWEST priority so it only becomes the
-        // primary verdict when no established verdict fired. Fires on sustained high allocation rate
-        // or frequent gen-2 collections even when time-in-gc is still moderate, catching leaks /
-        // allocation churn that would otherwise be mis-classified as "healthy" until GC CPU cost
-        // catches up. When another verdict already fired, this surfaces as a secondary verdict.
         if (allocRate >= AllocRateDegradedThreshold || gen2Count >= Gen2GcDegradedThreshold)
         {
             verdicts.Add(MemoryPressure);
-            var memSeverity = (allocRate >= AllocRateCriticalThreshold || gen2Count >= Gen2GcCriticalThreshold)
-                ? TriageSeverity.Critical
-                : TriageSeverity.Degraded;
-            severity = (TriageSeverity)Math.Max((int)severity, (int)memSeverity);
         }
 
-        // Determine primary verdict and secondaries.
-        if (verdicts.Count == 0)
-        {
-            return new TriageResult(Healthy, TriageSeverity.Healthy, evidence, null, BuildTopIndicators(evidence));
-        }
-
-        var primary = verdicts[0];
+        var primary = verdicts.Count > 0
+            ? verdicts[0]
+            : observedSignals.Count > 0
+                ? Inconclusive
+                : Healthy;
         var secondary = verdicts.Count > 1 ? verdicts.Skip(1).ToList() : null;
 
-        return new TriageResult(primary, severity, evidence, secondary, BuildTopIndicators(evidence));
+        return new TriageResult(
+            primary,
+            severity,
+            evidence,
+            secondary,
+            topIndicators)
+        {
+            ModelVersion = 2,
+            Assessment = assessment,
+            ObservedSignals = observedSignals,
+            Hypotheses = hypotheses,
+        };
     }
+
+    private static List<TriageObservedSignal> BuildObservedSignals(TriageEvidence evidence)
+    {
+        var signals = new List<TriageObservedSignal>();
+
+        if (evidence.CpuUsage is { } cpu && cpu >= CpuDegradedThreshold)
+        {
+            var critical = cpu >= CpuCriticalThreshold;
+            AddSignal(
+                signals,
+                "cpu.utilization",
+                critical ? "critical" : "high",
+                $"CPU utilization was {cpu:F1}%.",
+                BuildThresholdEvidence(
+                    "cpu-usage", cpu, "%", ">=",
+                    critical ? CpuCriticalThreshold : CpuDegradedThreshold,
+                    "The process crossed the configured CPU-utilization threshold."));
+        }
+
+        if (evidence.TimeInGc is { } timeInGc && timeInGc >= TimeInGcDegradedThreshold)
+        {
+            var critical = timeInGc >= TimeInGcCriticalThreshold;
+            AddSignal(
+                signals,
+                "gc.time",
+                critical ? "critical" : "high",
+                $"Time in GC was {timeInGc:F1}%.",
+                BuildThresholdEvidence(
+                    "time-in-gc", timeInGc, "%", ">=",
+                    critical ? TimeInGcCriticalThreshold : TimeInGcDegradedThreshold,
+                    "The captured window crossed the configured GC-time threshold."));
+        }
+
+        if (evidence.ThreadPoolQueueLength is { } queue && queue >= QueueLengthElevatedThreshold)
+        {
+            var (level, threshold) = queue switch
+            {
+                >= QueueLengthCriticalThreshold => ("critical", QueueLengthCriticalThreshold),
+                >= QueueLengthDegradedThreshold => ("high", QueueLengthDegradedThreshold),
+                _ => ("elevated", QueueLengthElevatedThreshold),
+            };
+            AddSignal(
+                signals,
+                "threadpool.queue",
+                level,
+                $"The ThreadPool queue contained {queue:F0} work items.",
+                BuildThresholdEvidence(
+                    "threadpool-queue-length", queue, "items", ">=", threshold,
+                    "The queue crossed the configured observation threshold; one window cannot establish whether it is transient."));
+        }
+
+        if (evidence.MonitorLockContentionCount is { } contention && contention >= ContentionDegradedThreshold)
+        {
+            var critical = contention >= ContentionCriticalThreshold;
+            AddSignal(
+                signals,
+                "synchronization.monitor-contentions",
+                critical ? "critical" : "high",
+                $"The runtime reported {contention:F0} monitor contentions in the interval.",
+                BuildThresholdEvidence(
+                    "monitor-lock-contention-count", contention, "contentions", ">=",
+                    critical ? ContentionCriticalThreshold : ContentionDegradedThreshold,
+                    "The contention count crossed the configured observation threshold."));
+        }
+
+        if (evidence.AllocRate is { } allocRate && allocRate >= AllocRateDegradedThreshold)
+        {
+            var critical = allocRate >= AllocRateCriticalThreshold;
+            AddSignal(
+                signals,
+                "memory.allocation-rate",
+                critical ? "critical" : "high",
+                $"The managed allocation rate was {allocRate / 1_000_000:F1} MB/s.",
+                BuildThresholdEvidence(
+                    "alloc-rate", allocRate / 1_000_000, "MB/s", ">=",
+                    (critical ? AllocRateCriticalThreshold : AllocRateDegradedThreshold) / 1_000_000,
+                    "The allocation rate crossed the configured observation threshold."));
+        }
+
+        if (evidence.Gen2GcCount is { } gen2Count && gen2Count >= Gen2GcDegradedThreshold)
+        {
+            var critical = gen2Count >= Gen2GcCriticalThreshold;
+            AddSignal(
+                signals,
+                "memory.gen2-collections",
+                critical ? "critical" : "high",
+                $"The runtime reported {gen2Count:F0} gen-2 collections in the interval.",
+                BuildThresholdEvidence(
+                    "gen-2-gc-count", gen2Count, "collections", ">=",
+                    critical ? Gen2GcCriticalThreshold : Gen2GcDegradedThreshold,
+                    "The gen-2 collection count crossed the configured observation threshold."));
+        }
+
+        if (evidence.ExceptionCount is { } exceptions && exceptions >= ExceptionHighThreshold)
+        {
+            var critical = exceptions >= ExceptionCriticalThreshold;
+            AddSignal(
+                signals,
+                "exceptions.rate",
+                critical ? "critical" : "high",
+                $"The runtime reported {exceptions:F0} exceptions in the interval.",
+                BuildThresholdEvidence(
+                    "exception-count", exceptions, "exceptions", ">=",
+                    critical ? ExceptionCriticalThreshold : ExceptionHighThreshold,
+                    "The exception count crossed the configured observation threshold."));
+        }
+
+        var requestDurationMilliseconds = ToMilliseconds(evidence.RequestDurationP95);
+        if (requestDurationMilliseconds is { } p95 && p95 >= RequestDurationHighThresholdMilliseconds)
+        {
+            var critical = p95 >= RequestDurationCriticalThresholdMilliseconds;
+            AddSignal(
+                signals,
+                "http.request-duration-p95",
+                critical ? "critical" : "high",
+                $"HTTP request duration p95 was {p95:F0} ms.",
+                BuildThresholdEvidence(
+                    "request-duration-p95", p95, "ms", ">=",
+                    critical ? RequestDurationCriticalThresholdMilliseconds : RequestDurationHighThresholdMilliseconds,
+                    "The observed latency crossed the configured request-duration threshold."));
+        }
+
+        return signals;
+    }
+
+    private static List<TriageHypothesis> BuildHypotheses(TriageEvidence evidence)
+    {
+        var hypotheses = new List<TriageHypothesis>();
+        var requestDurationMilliseconds = ToMilliseconds(evidence.RequestDurationP95);
+
+        if (evidence.CpuUsage is { } cpu && cpu >= CpuDegradedThreshold)
+        {
+            hypotheses.Add(new TriageHypothesis(
+                CpuComputeDemandHypothesis,
+                cpu >= CpuCriticalThreshold ? "high" : "moderate",
+                "The process spent a large share of the window doing compute work; the hot code path and resource limit are not identified by counters.",
+                [BuildThresholdEvidence("cpu-usage", cpu, "%", ">=", CpuDegradedThreshold,
+                    "High process CPU supports elevated compute demand during this window.")],
+                [],
+                "Capture on-CPU samples and inspect exclusive hot frames before assigning a cause."));
+        }
+
+        if (evidence.TimeInGc is { } timeInGc && timeInGc >= TimeInGcDegradedThreshold)
+        {
+            var supporting = new List<TriageEvidenceItem>
+            {
+                BuildThresholdEvidence("time-in-gc", timeInGc, "%", ">=", TimeInGcDegradedThreshold,
+                    "High GC time supports runtime overhead from garbage collection."),
+            };
+            if (evidence.AllocRate is { } gcAllocRate && gcAllocRate >= AllocRateDegradedThreshold)
+            {
+                supporting.Add(BuildThresholdEvidence(
+                    "alloc-rate", gcAllocRate / 1_000_000, "MB/s", ">=",
+                    AllocRateDegradedThreshold / 1_000_000,
+                    "High allocation activity corroborates the GC-time signal."));
+            }
+
+            hypotheses.Add(new TriageHypothesis(
+                GcOverheadHypothesis,
+                timeInGc >= TimeInGcCriticalThreshold ? "high" : "moderate",
+                "Garbage collection consumed a material share of the captured window; counters do not distinguish allocation churn, heap shape, or induced collections.",
+                supporting,
+                [],
+                "Collect GC events and allocation evidence to distinguish pause behavior from allocation activity."));
+        }
+
+        if (evidence.ThreadPoolQueueLength is { } queue && queue >= QueueLengthDegradedThreshold)
+        {
+            var supporting = new List<TriageEvidenceItem>
+            {
+                BuildThresholdEvidence("threadpool-queue-length", queue, "items", ">=", QueueLengthDegradedThreshold,
+                    "A large queue supports a sustained ThreadPool backlog hypothesis."),
+            };
+            if (requestDurationMilliseconds is { } highP95 && highP95 >= RequestDurationHighThresholdMilliseconds)
+            {
+                supporting.Add(BuildThresholdEvidence(
+                    "request-duration-p95", highP95, "ms", ">=", RequestDurationHighThresholdMilliseconds,
+                    "Elevated request latency corroborates that the backlog may be user-visible."));
+            }
+
+            var contradicting = BuildNormalLatencyContradiction(requestDurationMilliseconds);
+            hypotheses.Add(new TriageHypothesis(
+                ThreadPoolBacklogHypothesis,
+                queue >= QueueLengthCriticalThreshold
+                    && requestDurationMilliseconds >= RequestDurationHighThresholdMilliseconds
+                        ? "high"
+                        : "moderate",
+                "Work was queued faster than the ThreadPool completed it during the window; the counters alone do not prove starvation or identify blocking.",
+                supporting,
+                contradicting,
+                "Collect ThreadPool events and blocking stacks to distinguish sustained starvation, blocking, and transient demand."));
+        }
+
+        if (evidence.MonitorLockContentionCount is { } contention && contention >= ContentionDegradedThreshold)
+        {
+            var supporting = new List<TriageEvidenceItem>
+            {
+                BuildThresholdEvidence(
+                    "monitor-lock-contention-count", contention, "contentions", ">=",
+                    ContentionDegradedThreshold,
+                    "Repeated monitor contention supports synchronization delay during the window."),
+            };
+            if (requestDurationMilliseconds is { } highP95 && highP95 >= RequestDurationHighThresholdMilliseconds)
+            {
+                supporting.Add(BuildThresholdEvidence(
+                    "request-duration-p95", highP95, "ms", ">=", RequestDurationHighThresholdMilliseconds,
+                    "Elevated request latency corroborates possible user-visible impact."));
+            }
+
+            hypotheses.Add(new TriageHypothesis(
+                SynchronizationContentionHypothesis,
+                contention >= ContentionCriticalThreshold
+                    && requestDurationMilliseconds >= RequestDurationHighThresholdMilliseconds
+                        ? "high"
+                        : "moderate",
+                "Monitor contention was elevated; the counter does not identify the contended lock, owner, or wait duration.",
+                supporting,
+                BuildNormalLatencyContradiction(requestDurationMilliseconds),
+                "Collect contention events and inspect call-site and owner-thread groupings."));
+        }
+
+        if (evidence.CpuUsage is { } lowCpu
+            && lowCpu < LowCpuThreshold
+            && evidence.ThreadPoolQueueLength is { } waitingQueue
+            && waitingQueue >= QueueLengthElevatedThreshold
+            && requestDurationMilliseconds is { } waitingP95
+            && waitingP95 >= RequestDurationHighThresholdMilliseconds)
+        {
+            hypotheses.Add(new TriageHypothesis(
+                WaitingOrBackpressureHypothesis,
+                waitingQueue >= QueueLengthDegradedThreshold
+                    && waitingP95 >= RequestDurationCriticalThresholdMilliseconds
+                        ? "high"
+                        : "moderate",
+                "Low CPU, queued work, and elevated request latency co-occurred. This supports waiting or backpressure, but does not identify I/O, a downstream dependency, or transient demand.",
+                [
+                    BuildThresholdEvidence("cpu-usage", lowCpu, "%", "<", LowCpuThreshold,
+                        "Low CPU makes on-CPU saturation less likely during this window."),
+                    BuildThresholdEvidence("threadpool-queue-length", waitingQueue, "items", ">=",
+                        QueueLengthElevatedThreshold,
+                        "Queued work shows that some work was waiting to run or complete."),
+                    BuildThresholdEvidence("request-duration-p95", waitingP95, "ms", ">=",
+                        RequestDurationHighThresholdMilliseconds,
+                        "Elevated request latency shows concurrent user-visible delay."),
+                ],
+                [],
+                "Capture activities, networking events, and thread stacks to determine where work is waiting; do not infer I/O from counters alone."));
+        }
+
+        if (evidence.AllocRate >= AllocRateDegradedThreshold || evidence.Gen2GcCount >= Gen2GcDegradedThreshold)
+        {
+            var supporting = new List<TriageEvidenceItem>();
+            if (evidence.AllocRate is { } allocRate && allocRate >= AllocRateDegradedThreshold)
+            {
+                supporting.Add(BuildThresholdEvidence(
+                    "alloc-rate", allocRate / 1_000_000, "MB/s", ">=",
+                    AllocRateDegradedThreshold / 1_000_000,
+                    "High allocation activity supports managed-memory pressure."));
+            }
+            if (evidence.Gen2GcCount is { } gen2Count && gen2Count >= Gen2GcDegradedThreshold)
+            {
+                supporting.Add(BuildThresholdEvidence(
+                    "gen-2-gc-count", gen2Count, "collections", ">=",
+                    Gen2GcDegradedThreshold,
+                    "Frequent gen-2 collections corroborate managed-memory pressure."));
+            }
+
+            var contradicting = new List<TriageEvidenceItem>();
+            if (evidence.TimeInGc is { } lowGcTime && lowGcTime < 5)
+            {
+                contradicting.Add(BuildThresholdEvidence(
+                    "time-in-gc", lowGcTime, "%", "<", 5,
+                    "Low GC CPU cost limits what can be concluded about current runtime impact."));
+            }
+
+            hypotheses.Add(new TriageHypothesis(
+                ManagedMemoryActivityHypothesis,
+                evidence.AllocRate >= AllocRateCriticalThreshold || evidence.Gen2GcCount >= Gen2GcCriticalThreshold
+                    ? "high"
+                    : "moderate",
+                "Managed allocation or full-collection activity was elevated; counters do not distinguish short-lived churn from retained growth.",
+                supporting,
+                contradicting,
+                "Collect allocation samples, GC events, and a memory trend before distinguishing churn from retention."));
+        }
+
+        return hypotheses;
+    }
+
+    private static TriageSeverity CalculateSeverity(IReadOnlyList<TriageObservedSignal> signals)
+    {
+        if (signals.Any(static signal => signal.Level == "critical"))
+        {
+            return TriageSeverity.Critical;
+        }
+
+        return signals.Any(static signal => signal.Level == "high")
+            ? TriageSeverity.Degraded
+            : TriageSeverity.Healthy;
+    }
+
+    private static List<TriageEvidenceItem> BuildNormalLatencyContradiction(double? requestDurationMilliseconds)
+    {
+        if (requestDurationMilliseconds is not { } p95 || p95 >= RequestDurationNormalThresholdMilliseconds)
+        {
+            return [];
+        }
+
+        return
+        [
+            BuildThresholdEvidence(
+                "request-duration-p95", p95, "ms", "<", RequestDurationNormalThresholdMilliseconds,
+                "Normal request latency weakens the case that the observed signal affected requests in this window."),
+        ];
+    }
+
+    private static void AddSignal(
+        List<TriageObservedSignal> signals,
+        string name,
+        string level,
+        string summary,
+        TriageEvidenceItem evidence)
+        => signals.Add(new TriageObservedSignal(name, level, summary, [evidence]));
+
+    private static TriageEvidenceItem BuildThresholdEvidence(
+        string name,
+        double value,
+        string? unit,
+        string comparison,
+        double threshold,
+        string rationale)
+        => new(name, Math.Round(value, 2), unit, comparison, threshold, rationale);
+
+    private static double? ToMilliseconds(double? seconds) => seconds * 1_000;
 
     /// <summary>
     /// Builds a ranked list of the most notable indicators, always populated regardless of verdict.
@@ -189,7 +553,7 @@ public static class TriageClassifier
             {
                 >= QueueLengthCriticalThreshold => ((int)Math.Min(100, 80 + (queue - 200) / 300 * 20), "critical"),
                 >= QueueLengthDegradedThreshold => ((int)(50 + (queue - 50) / 150 * 30), "high"),
-                >= IoBoundQueueThreshold => ((int)(20 + (queue - 10) / 40 * 30), "elevated"),
+                >= QueueLengthElevatedThreshold => ((int)(20 + (queue - 10) / 40 * 30), "elevated"),
                 _ => ((int)(queue / 10 * 20), "normal")
             };
             indicators.Add(("threadpool-queue-length", queue, "items", score, level));

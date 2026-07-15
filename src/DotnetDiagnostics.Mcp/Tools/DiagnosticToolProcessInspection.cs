@@ -187,15 +187,16 @@ internal static class DiagnosticToolProcessInspection
         var triage = TriageClassifier.Classify(snapshot, requestDurationP95);
         var hints = BuildTriageHints(triage, pid);
 
-        var secondaryText = triage.SecondaryVerdicts?.Count > 0
-            ? $" (also: {string.Join(", ", triage.SecondaryVerdicts)})"
-            : string.Empty;
-
         var indicatorsText = triage.TopIndicators?.Count > 0
             ? $" | top: {string.Join(", ", triage.TopIndicators.Take(3).Select(i => $"{i.Name}={i.Value}{i.Unit ?? ""}({i.Level})"))}"
             : string.Empty;
 
-        var summary = $"Triage: {triage.Verdict} ({triage.Severity}){secondaryText}{indicatorsText}";
+        var hypothesisText = triage.Hypotheses?.Count > 0
+            ? $"hypotheses: {string.Join(", ", triage.Hypotheses.Select(static h => $"{h.Name} ({h.Confidence})"))}"
+            : triage.ObservedSignals?.Count > 0
+                ? "observations require more evidence before assigning a cause"
+                : "no salient observed signals";
+        var summary = $"Triage: {triage.Assessment} ({triage.Severity}); {hypothesisText}{indicatorsText}";
 
         var ok = DiagnosticResult.Ok(triage, summary, [.. hints]);
         return WithContext(ok, resolved.Context);
@@ -389,78 +390,72 @@ internal static class DiagnosticToolProcessInspection
     {
         var hints = new List<NextActionHint>();
 
-        switch (triage.Verdict)
+        foreach (var hypothesis in triage.Hypotheses ?? [])
         {
-            case TriageClassifier.CpuBound:
-                hints.Add(new NextActionHint("collect_sample", $"cpu-usage={triage.Evidence.CpuUsage:F1}% — investigate the hot path.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10, ["topN"] = 25 }));
-                break;
+            switch (hypothesis.Name)
+            {
+                case TriageClassifier.CpuComputeDemandHypothesis:
+                    hints.Add(new NextActionHint("collect_sample", hypothesis.NextStep,
+                        new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "cpu", ["durationSeconds"] = 10, ["topN"] = 25 }));
+                    break;
 
-            case TriageClassifier.GcPressure:
-                hints.Add(new NextActionHint("collect_events", $"time-in-gc={triage.Evidence.TimeInGc:F1}% — GC pressure detected.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "gc", ["durationSeconds"] = 10 }));
-                hints.Add(new NextActionHint("inspect_heap", "GC pressure — inspect heap for allocation patterns.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["source"] = "live" }));
-                break;
+                case TriageClassifier.GcOverheadHypothesis:
+                    hints.Add(new NextActionHint("collect_events", hypothesis.NextStep,
+                        new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "gc", ["durationSeconds"] = 10 }));
+                    break;
 
-            case TriageClassifier.MemoryPressure:
-                if ((triage.Evidence.AllocRate ?? 0) >= 50_000_000)
-                {
-                    hints.Add(new NextActionHint("collect_sample", $"alloc-rate={triage.Evidence.AllocRate / 1_000_000:F0} MB/s — profile the allocation hotspot.",
+                case TriageClassifier.ManagedMemoryActivityHypothesis:
+                    hints.Add(new NextActionHint("collect_sample", hypothesis.NextStep,
                         new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "allocation", ["durationSeconds"] = 10 }));
-                }
+                    hints.Add(new NextActionHint("inspect_process", "Measure working-set direction before distinguishing allocation churn from retained growth.",
+                        new Dictionary<string, object?> { ["processId"] = pid, ["view"] = "memory_trend" }));
+                    break;
 
-                hints.Add(new NextActionHint("inspect_heap", $"Memory pressure (gen-2 GC={triage.Evidence.Gen2GcCount:F0}) — inspect the live heap for the dominant types and their retention paths.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["source"] = "live" }));
-                hints.Add(new NextActionHint("inspect_process", "Confirm whether the working set is trending up over time.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["view"] = "memory_trend" }));
-                break;
+                case TriageClassifier.ThreadPoolBacklogHypothesis:
+                    hints.Add(new NextActionHint("collect_events", hypothesis.NextStep,
+                        new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "threadpool", ["durationSeconds"] = 10 }));
+                    break;
 
-            case TriageClassifier.ThreadPoolStarvation:
-                hints.Add(new NextActionHint("collect_events", $"threadpool-queue-length={triage.Evidence.ThreadPoolQueueLength:F0} — possible ThreadPool starvation.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "threadpool", ["durationSeconds"] = 10 }));
-                break;
+                case TriageClassifier.SynchronizationContentionHypothesis:
+                    hints.Add(new NextActionHint("collect_events", hypothesis.NextStep,
+                        new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "contention", ["durationSeconds"] = 10 }));
+                    break;
 
-            case TriageClassifier.LockContention:
-                hints.Add(new NextActionHint("collect_events", $"monitor-lock-contention-count={triage.Evidence.MonitorLockContentionCount:F0} — lock contention detected.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "contention", ["durationSeconds"] = 10 }));
-                break;
-
-            case TriageClassifier.IoBound:
-                hints.Add(new NextActionHint("collect_thread_snapshot", $"cpu-usage={triage.Evidence.CpuUsage:F1}% but queue={triage.Evidence.ThreadPoolQueueLength:F0} — I/O bound likely, inspect blocking stacks.",
-                    new Dictionary<string, object?> { ["processId"] = pid }));
-                hints.Add(new NextActionHint("collect_events", "Low CPU + queue buildup — trace activities to see what's waiting.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "activities", ["durationSeconds"] = 10 }));
-                break;
-
-            default:
-                hints.Add(new NextActionHint("collect_events", "System looks healthy — confirm with GC events if response times are high.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "gc", ["durationSeconds"] = 10 }));
-                break;
+                case TriageClassifier.WaitingOrBackpressureHypothesis:
+                    hints.Add(new NextActionHint("collect_events", hypothesis.NextStep,
+                        new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "activities", ["durationSeconds"] = 10 }));
+                    hints.Add(new NextActionHint("collect_thread_snapshot", "Inspect current thread states without assuming the wait is I/O.",
+                        new Dictionary<string, object?> { ["processId"] = pid }));
+                    break;
+            }
         }
 
-        if (triage.SecondaryVerdicts is not null)
+        if (hints.Count == 0 && triage.ObservedSignals?.Count > 0)
         {
-            foreach (var secondary in triage.SecondaryVerdicts)
+            var firstSignal = triage.ObservedSignals[0];
+            var kind = firstSignal.Name switch
             {
-                hints.Add(new NextActionHint("collect_events", $"Also detected: {secondary} — follow up after primary issue.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = GetKindForVerdict(secondary), ["durationSeconds"] = 10 }));
-            }
+                "threadpool.queue" => "threadpool",
+                "exceptions.rate" => "exceptions",
+                "http.request-duration-p95" => "activities",
+                _ => "counters",
+            };
+            hints.Add(new NextActionHint(
+                "collect_events",
+                $"Observed {firstSignal.Name}, but the current window is inconclusive. Extend the relevant capture before assigning a cause.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = kind, ["durationSeconds"] = 10 }));
+        }
+
+        if (hints.Count == 0)
+        {
+            hints.Add(new NextActionHint(
+                "collect_events",
+                "No salient signal crossed a triage threshold. If the symptom persists, extend the counter window or choose a symptom-specific collector.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "counters", ["durationSeconds"] = 10 }));
         }
 
         return hints;
     }
-
-    private static string GetKindForVerdict(string verdict) => verdict switch
-    {
-        TriageClassifier.CpuBound => "counters",
-        TriageClassifier.GcPressure => "gc",
-        TriageClassifier.MemoryPressure => "gc",
-        TriageClassifier.ThreadPoolStarvation => "threadpool",
-        TriageClassifier.LockContention => "contention",
-        TriageClassifier.IoBound => "activities",
-        _ => "counters"
-    };
 
     private static string SummariseProcessResources(ProcessResources resources, int durationSeconds)
     {

@@ -60,7 +60,7 @@ done
 ## 1. Step 0 — one triage call refutes the CPU theory
 
 Always start with `inspect --view triage` (MCP: `inspect_process(view="triage")`).
-It collects counters for a few seconds and classifies the workload.
+It collects counters for a few seconds and separates observations from hypotheses.
 
 **Baseline, idle:**
 
@@ -68,15 +68,23 @@ It collects counters for a few seconds and classifies the workload.
 dotnet-diagnostics-cli inspect --view triage --pid <pid> --duration 6
 ```
 ```
-Triage: healthy (Healthy) | top: cpu-usage=0.21%(normal), time-in-gc=0%(normal), threadpool-queue-length=0items(normal)
+Triage: healthy (Healthy); no salient observed signals | top: cpu-usage=0.21%(normal), time-in-gc=0%(normal), threadpool-queue-length=0items(normal)
 ```
 
 **The same call, during the load:**
 
 ```
-Triage: threadpool-starvation (Critical) (also: io-bound)
-  Verdict   : threadpool-starvation
+Triage: critical (Critical); hypotheses: threadpool.backlog (moderate)
+  Assessment: critical
   Severity  : Critical
+  Legacy    : threadpool-starvation (deprecated; migrate before v1.0)
+  Observed signals:
+    threadpool.queue [critical] — The ThreadPool queue contained 538 work items.
+      threadpool-queue-length=538.00items >= 200.00items
+  Hypotheses:
+    threadpool.backlog [moderate] — Work was queued faster than the ThreadPool completed it during the window; the counters alone do not prove starvation or identify blocking.
+      supports: threadpool-queue-length=538.00items >= 50.00items
+      next: Collect ThreadPool events and blocking stacks to distinguish sustained starvation, blocking, and transient demand.
   Indicators:
     threadpool-queue-length                  538.00 items        [critical]
     cpu-usage                                  0.11 %            [normal]     ← the tell
@@ -95,10 +103,10 @@ Triage: threadpool-starvation (Critical) (also: io-bound)
   CPU-bound. **Hypothesis "we're underpowered" is dead.**
 - `threadpool-queue-length = 538` and climbing, flagged **critical**. Work is
   queued but not running.
-- The classifier already names it: `threadpool-starvation`, and the `next` hint
-  hands you the exact drill-down command.
+- Triage emits the bounded `threadpool.backlog` hypothesis, explicitly noting that counters do
+  not yet prove starvation. The `next` hint hands you the exact confirmation command.
 
-We went from "buy bigger boxes" to "the ThreadPool is starved" in one call.
+We went from "buy bigger boxes" to "confirm why the ThreadPool backlog is growing" in one call.
 
 ## 2. Step 1 — counters confirm the shape
 
@@ -109,8 +117,8 @@ dotnet-diagnostics-cli collect --kind counters --pid <pid> --duration 8 --json
 {
   "summary": "Captured 41 counter(s) and 0 meter series over 8s — cpu-usage=0.1%, gc-heap-size=13.8.",
   "hints": [
-    { "reason": "threadpool-queue-length=594 — possible ThreadPool starvation." },
-    { "reason": "Low CPU + queue buildup — trace activities to see what's waiting." }
+    { "reason": "threadpool-queue-length=594 — ThreadPool backlog observed; collect events to distinguish sustained starvation, blocking, and transient demand." },
+    { "reason": "Low CPU and queue=594 were observed, but one window is inconclusive. Extend ThreadPool collection before assigning a cause." }
   ]
   // data.counters (trimmed to the ones that matter):
   //   cpu-usage                 = 0.07 %
@@ -283,9 +291,10 @@ done
 Real capture, fixed endpoint, **identical load** that produced `queue=538` above:
 
 ```
-Triage: healthy (Healthy) | top: cpu-usage=0.13%(normal), time-in-gc=0%(normal), threadpool-queue-length=0items(normal)
-  Verdict   : healthy
+Triage: healthy (Healthy); no salient observed signals | top: cpu-usage=0.13%(normal), time-in-gc=0%(normal), threadpool-queue-length=0items(normal)
+  Assessment: healthy
   Severity  : Healthy
+  Legacy    : healthy (deprecated; migrate before v1.0)
   Indicators:
     cpu-usage                                  0.13 %            [normal]
     threadpool-queue-length                    0.00 items        [normal]
@@ -296,14 +305,14 @@ Side by side, same process, same load:
 
 | Signal | Broken (`/sync-over-async`) | Fixed (`/sync-over-async-fixed`) |
 |---|---|---|
-| `inspect --view triage` verdict | `threadpool-starvation` **(Critical)** | `healthy` |
+| `inspect --view triage` assessment | `threadpool.backlog` hypothesis; **Critical** observed queue | `healthy`; no hypothesis |
 | `threadpool-queue-length` | 538, climbing | **0** |
 | `threadpool-thread-count` | 636 (ballooning) | flat, ~#cores |
 | `cpu-usage` | 0.11 % (idle while failing) | 0.13 % (tracks real work) |
 | `collect --kind threadpool` | `starvation reasons=36`, hill-climbing thrash | no starvation events |
 
-If triage comes back `healthy` under the load that used to break it, the fix is
-proven — with evidence, not vibes.
+If triage comes back `healthy` with no observed signals under the load that used to break it,
+the fix is proven — with evidence, not vibes.
 
 > **Gotcha when measuring both live.** Let the broken load fully drain before you
 > capture the fixed run. Blocked worker threads from the broken endpoint take a

@@ -62,21 +62,43 @@ Tool results arrive in `result.content[].text` as JSON envelopes.
 
 ---
 
-## 1. Step 0 — triage says cpu-bound (and hands me the next tool)
+## 1. Step 0 — triage observes CPU saturation (and hands me the next tool)
 
 `inspect_process(view="triage")` collects counters for a few seconds and
-classifies the workload. This is where a blind agent starts.
+separates observed signals from bounded hypotheses. This is where a blind agent starts.
 
 ```jsonc
 // inspect_process(view="triage", processId=<pid>)
 {
-  "summary": "Triage: cpu-bound (Critical) (also: threadpool-starvation) | top: cpu-usage=95.36%(critical), threadpool-queue-length=296items(critical), time-in-gc=0%(normal)",
+  "summary": "Triage: critical (Critical); hypotheses: cpu.compute-demand (high), threadpool.backlog (moderate) | top: cpu-usage=95.36%(critical), threadpool-queue-length=296items(critical), time-in-gc=0%(normal)",
   "hints": [
     { "nextTool": "collect_sample",
-      "reason": "cpu-usage=95.4% — investigate the hot path.",
-      "suggestedArguments": { "processId": <pid>, "durationSeconds": 10, "topN": 25 } }
+      "reason": "Capture on-CPU samples and inspect exclusive hot frames before assigning a cause.",
+      "suggestedArguments": { "kind": "cpu", "processId": <pid>, "durationSeconds": 10, "topN": 25 } }
   ],
   "data": { "triage": {
+    "modelVersion": 2,
+    "assessment": "critical",
+    "observedSignals": [
+      { "name": "cpu.utilization", "level": "critical",
+        "summary": "CPU utilization was 95.4%.",
+        "evidence": [{ "name": "cpu-usage", "value": 95.36, "comparison": ">=", "threshold": 90, "unit": "%", "rationale": "CPU crossed the critical threshold." }] },
+      { "name": "threadpool.queue", "level": "critical",
+        "summary": "The ThreadPool queue contained 296 work items.",
+        "evidence": [{ "name": "threadpool-queue-length", "value": 296, "comparison": ">=", "threshold": 200, "unit": "items", "rationale": "Queue crossed the critical threshold." }] }
+    ],
+    "hypotheses": [
+      { "name": "cpu.compute-demand", "confidence": "high",
+        "summary": "The process spent a large share of the window doing compute work.",
+        "supportingEvidence": [{ "name": "cpu-usage", "value": 95.36, "comparison": ">=", "threshold": 70, "rationale": "High CPU supports elevated compute demand." }],
+        "contradictingEvidence": [],
+        "nextStep": "Capture on-CPU samples and inspect exclusive hot frames before assigning a cause." },
+      { "name": "threadpool.backlog", "confidence": "moderate",
+        "summary": "Work was queued faster than the ThreadPool completed it; counters do not prove starvation.",
+        "supportingEvidence": [{ "name": "threadpool-queue-length", "value": 296, "comparison": ">=", "threshold": 50, "rationale": "Large queue supports a backlog hypothesis." }],
+        "contradictingEvidence": [],
+        "nextStep": "Collect ThreadPool events and blocking stacks to distinguish sustained starvation, blocking, and transient demand." }
+    ],
     "verdict": "cpu-bound", "severity": "Critical",
     "evidence": { "cpuUsage": 95.36, "timeInGc": 0, "allocRate": 56504,
                   "threadPoolQueueLength": 296, "gen2GcCount": 0 }
@@ -86,12 +108,12 @@ classifies the workload. This is where a blind agent starts.
 
 **What a blind agent reads here:**
 
-- `cpuUsage = 95.36%`, `severity = Critical`. Genuinely CPU-bound.
+- `cpuUsage = 95.36%`, `severity = Critical`, with explicit `cpu.compute-demand` evidence.
 - `timeInGc = 0`, `allocRate ≈ 0.06 MB/s`, `gen2GcCount = 0` → **not** a GC / allocation
   problem. So it's not "LINQ is boxing" or "we're churning garbage".
-- The verdict confirms the ticket's premise ("it's CPU"). The **naive next move**
-  is exactly the ticket's ask: *it's CPU-bound, so scale cores.* Hold that thought —
-  triage tells you **that** it's burning CPU, never **where**. The `hints` block
+- The hypothesis supports the ticket's premise ("it's spending the window on CPU") without
+  claiming why. The **naive next move** is exactly the ticket's ask: *scale cores.* Hold that
+  thought — triage tells you **that** it's burning CPU, never **where**. The `hints` block
   already points at the tool that answers *where*: `collect_sample`.
 
 ## 2. Step 1 — the CPU sample, and the trap it sets
@@ -355,7 +377,7 @@ Read the fixed column carefully — it's the proof:
 
 | Signal | Broken (`/culture-lookup`) | Fixed (`/culture-lookup-fixed`) |
 |---|---|---|
-| `inspect_process(view="triage")` | cpu-bound **(Critical)**, cpu ≈ 95% | not cpu-bound; threads idle |
+| `inspect_process(view="triage")` | `cpu.compute-demand` **(high)**, cpu ≈ 95% | no CPU hypothesis; threads idle |
 | Hot exclusive leaf | `CompareInfo.IcuGetHashCodeOfString` ≈ **89%** | **no ICU frame**; top is an idle semaphore wait |
 | Endpoint lambda exclusive | ~0.5% (all cost was below it, in ICU) | ~15% (the lookup itself) |
 | Single-request wall time (`iterations=2M`) | ≈ 1.24 s | ≈ 0.10 s (**~12×**) |

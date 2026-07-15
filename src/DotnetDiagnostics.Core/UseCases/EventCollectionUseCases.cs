@@ -94,6 +94,7 @@ public static class EventCollectionUseCases
         var allocRate = snapshot.Counters.FirstOrDefault(c => c.Provider == "System.Runtime" && c.Name == "alloc-rate");
         var gen2Count = snapshot.Counters.FirstOrDefault(c => c.Provider == "System.Runtime" && c.Name == "gen-2-gc-count");
         var contention = snapshot.Counters.FirstOrDefault(c => c.Provider == "System.Runtime" && c.Name == "monitor-lock-contention-count");
+        var requestDurationP95 = HeadlineCounters.FindRequestDuration(snapshot.Meters)?.Histogram?.P95;
 
         // Build hints based on counter thresholds (highest priority first).
         var hints = new List<NextActionHint>();
@@ -102,22 +103,22 @@ public static class EventCollectionUseCases
         if ((cpu?.Value ?? 0) >= 70)
         {
             hints.Add(new NextActionHint("collect_sample", $"cpu-usage={cpu!.Value:F1}% — investigate the hot path.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10, ["topN"] = 25 }));
+                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "cpu", ["durationSeconds"] = 10, ["topN"] = 25 }));
         }
 
-        // ThreadPool queue > 50 → potential starvation (Phase 12 Wave 1.1).
+        // ThreadPool queue > 50 → sustained backlog worth drilling into.
         if ((queueLength?.Value ?? 0) > 50)
         {
-            hints.Add(new NextActionHint("collect_events", $"threadpool-queue-length={queueLength!.Value:F0} — possible ThreadPool starvation.",
+            hints.Add(new NextActionHint("collect_events", $"threadpool-queue-length={queueLength!.Value:F0} — ThreadPool backlog observed; collect events to distinguish sustained starvation, blocking, and transient demand.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "threadpool", ["durationSeconds"] = 10 }));
         }
 
-        // GC time > 15% → GC pressure (Phase 12 Wave 1.2).
+        // GC time > 15% → material GC overhead in this window.
         if ((timeInGc?.Value ?? 0) > 15)
         {
-            hints.Add(new NextActionHint("collect_events", $"time-in-gc={timeInGc!.Value:F1}% — GC pressure detected.",
+            hints.Add(new NextActionHint("collect_events", $"time-in-gc={timeInGc!.Value:F1}% — GC time was elevated; collect events before assigning a cause.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "gc", ["durationSeconds"] = 10 }));
-            hints.Add(new NextActionHint("inspect_heap", "GC pressure — inspect heap for allocation patterns.",
+            hints.Add(new NextActionHint("inspect_heap", "Inspect heap shape only after correlating the elevated GC-time signal with allocation and collection events.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["source"] = "live" }));
         }
 
@@ -127,26 +128,33 @@ public static class EventCollectionUseCases
         // alloc-rate (> 50 MB/s) signals an allocation hotspot worth investigating.
         if ((allocRate?.Value ?? 0) > 50_000_000 && (gen2Count?.Value ?? 0) > 0)
         {
-            hints.Add(new NextActionHint("collect_sample", $"alloc-rate={allocRate!.Value / 1_000_000:F1} MB/s + gen-2 GCs active — allocation hotspot likely.",
+            hints.Add(new NextActionHint("collect_sample", $"alloc-rate={allocRate!.Value / 1_000_000:F1} MB/s + gen-2 GCs active — managed-memory activity is elevated; sample allocations before distinguishing churn from retention.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "allocation", ["durationSeconds"] = 10 }));
         }
 
-        // High lock contention → investigate contention sources (Phase 12 Wave 1.4).
-        // monitor-lock-contention-count > 10/interval suggests lock storms worth investigating.
+        // High lock contention count → investigate contention sources.
         if ((contention?.Value ?? 0) > 10)
         {
-            hints.Add(new NextActionHint("collect_events", $"monitor-lock-contention-count={contention!.Value:F0} — lock contention detected.",
+            hints.Add(new NextActionHint("collect_events", $"monitor-lock-contention-count={contention!.Value:F0} — contention activity was elevated; collect call-site and owner evidence.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "contention", ["durationSeconds"] = 10 }));
         }
 
-        // I/O bounded pattern: low CPU (< 30%) but queue building up → likely waiting on external I/O.
-        // Suggest thread snapshot to see blocking stacks + activities to see what's in-flight.
+        // Low CPU plus a queue is ambiguous. Elevated request latency supplies stronger evidence for
+        // waiting/backpressure, but still does not identify I/O or another cause.
         if ((cpu?.Value ?? 0) < 30 && (queueLength?.Value ?? 0) > 10)
         {
-            hints.Add(new NextActionHint("collect_thread_snapshot", $"cpu-usage={cpu?.Value:F1}% but threadpool-queue-length={queueLength?.Value:F0} — I/O bound likely, inspect blocking stacks.",
-                new Dictionary<string, object?> { ["processId"] = pid }));
-            hints.Add(new NextActionHint("collect_events", "Low CPU + queue buildup — trace activities to see what's waiting.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "activities", ["durationSeconds"] = 10 }));
+            if (requestDurationP95 is { } p95 && p95 >= 0.5)
+            {
+                hints.Add(new NextActionHint("collect_events", $"Low CPU, queue={queueLength?.Value:F0}, and request p95={p95 * 1_000:F0} ms co-occurred — investigate waiting/backpressure without assuming I/O.",
+                    new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "activities", ["durationSeconds"] = 10 }));
+                hints.Add(new NextActionHint("collect_thread_snapshot", "Inspect current thread states to locate waiting work.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
+            }
+            else
+            {
+                hints.Add(new NextActionHint("collect_events", $"Low CPU and queue={queueLength?.Value:F0} were observed, but one window is inconclusive. Extend ThreadPool collection before assigning a cause.",
+                    new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "threadpool", ["durationSeconds"] = 10 }));
+            }
         }
 
         // Fallback: counters look quiet, suggest GC events to confirm.

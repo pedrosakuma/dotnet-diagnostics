@@ -1,20 +1,77 @@
 namespace DotnetDiagnostics.Core.Triage;
 
 /// <summary>
-/// Phase 12 triage result — IoT-style diagnostic classification that does the heavy lifting
-/// server-side and returns actionable leads. The LLM just follows the first hint.
+/// Compact triage result that separates directly observed counter signals from inferred,
+/// evidence-backed hypotheses.
 /// </summary>
-/// <param name="Verdict">Primary classification: cpu-bound, gc-pressure, memory-pressure, threadpool-starvation, lock-contention, io-bound, healthy.</param>
-/// <param name="Severity">Overall severity: critical, degraded, or healthy.</param>
-/// <param name="Evidence">Key counter values that drove the classification.</param>
-/// <param name="SecondaryVerdicts">Additional classifications if multiple issues detected (e.g., gc-pressure + allocation-heavy).</param>
+/// <param name="Verdict">Deprecated compatibility projection for pre-v2 consumers. Migrate to <see cref="Assessment"/> and <see cref="Hypotheses"/> before v1.0.</param>
+/// <param name="Severity">Observed impact level: critical, degraded, or healthy. It does not name a cause.</param>
+/// <param name="Evidence">Raw key counter values retained for compatibility and independent interpretation.</param>
+/// <param name="SecondaryVerdicts">Deprecated compatibility projection for additional pre-v2 classifications.</param>
 /// <param name="TopIndicators">Ranked list of most notable indicators (always populated, even when healthy). Enables proactive optimization.</param>
 public sealed record TriageResult(
     string Verdict,
     TriageSeverity Severity,
     TriageEvidence Evidence,
     IReadOnlyList<string>? SecondaryVerdicts = null,
-    IReadOnlyList<TriageIndicator>? TopIndicators = null);
+    IReadOnlyList<TriageIndicator>? TopIndicators = null)
+{
+    /// <summary>
+    /// Triage contract version. Defaults to 1 for legacy construction/deserialization;
+    /// current classifier output is version 2.
+    /// </summary>
+    public int ModelVersion { get; init; } = 1;
+
+    /// <summary>Neutral overall assessment: healthy, inconclusive, degraded, critical, or unknown.</summary>
+    public string Assessment { get; init; } = "unknown";
+
+    /// <summary>Direct threshold crossings from the captured window. These are observations, not diagnoses.</summary>
+    public IReadOnlyList<TriageObservedSignal>? ObservedSignals { get; init; }
+
+    /// <summary>Ordered, evidence-backed interpretations that require drill-down before assigning a cause.</summary>
+    public IReadOnlyList<TriageHypothesis>? Hypotheses { get; init; }
+}
+
+/// <summary>A directly observed signal whose threshold was crossed during the capture window.</summary>
+/// <param name="Name">Stable diagnosis-agnostic signal name, such as <c>cpu.utilization</c>.</param>
+/// <param name="Level">Observed level: elevated, high, or critical.</param>
+/// <param name="Summary">Plain-language description of what was observed.</param>
+/// <param name="Evidence">Explicit values, comparisons, and thresholds supporting the observation.</param>
+public sealed record TriageObservedSignal(
+    string Name,
+    string Level,
+    string Summary,
+    IReadOnlyList<TriageEvidenceItem> Evidence);
+
+/// <summary>An inferred interpretation of one or more observed signals.</summary>
+/// <param name="Name">Stable, diagnosis-agnostic hypothesis name.</param>
+/// <param name="Confidence">Evidence strength: moderate or high.</param>
+/// <param name="Summary">Bounded interpretation that does not claim a root cause.</param>
+/// <param name="SupportingEvidence">Indicators that caused the hypothesis to be emitted.</param>
+/// <param name="ContradictingEvidence">Available indicators that weaken or bound the interpretation.</param>
+/// <param name="NextStep">Neutral drill-down needed to confirm or reject the hypothesis.</param>
+public sealed record TriageHypothesis(
+    string Name,
+    string Confidence,
+    string Summary,
+    IReadOnlyList<TriageEvidenceItem> SupportingEvidence,
+    IReadOnlyList<TriageEvidenceItem> ContradictingEvidence,
+    string NextStep);
+
+/// <summary>Transparent threshold evidence used by an observed signal or hypothesis.</summary>
+/// <param name="Name">Metric name.</param>
+/// <param name="Value">Observed value.</param>
+/// <param name="Unit">Metric unit.</param>
+/// <param name="Comparison">Comparison applied to the threshold, such as <c>&gt;=</c> or <c>&lt;</c>.</param>
+/// <param name="Threshold">Threshold used by the deterministic rule.</param>
+/// <param name="Rationale">Why this comparison supports or contradicts the interpretation.</param>
+public sealed record TriageEvidenceItem(
+    string Name,
+    double Value,
+    string? Unit,
+    string Comparison,
+    double Threshold,
+    string Rationale);
 
 /// <summary>
 /// A ranked indicator showing how notable a metric is relative to healthy baselines.
@@ -47,7 +104,7 @@ public enum TriageSeverity
 
 /// <summary>
 /// Key counter evidence that drove the triage classification. Provides just enough context
-/// for the LLM to understand why a verdict was reached without full counter dumps.
+/// for a consumer to interpret the observed window without a full counter dump.
 /// </summary>
 /// <param name="CpuUsage">CPU usage percentage (0-100).</param>
 /// <param name="TimeInGc">Percentage of time spent in GC.</param>

@@ -233,15 +233,15 @@ collect options:
             ]),
         new(
             "inspect",
-            "One-shot process inspector: workload triage or runtime configuration (--view required).",
+            "One-shot process inspector: evidence-backed workload triage or runtime configuration (--view required).",
 """
 inspect options:
       --view <view>             Required. One of: triage, runtime-config, container.
   -d, --duration <int>          triage: counter collection window in seconds (default 5).
 inspect views:
-  triage          Collect counters for <duration>s, classify the workload (verdict, severity,
-                  top indicators) and return actionable next steps. Verdicts: cpu-bound, gc-pressure,
-                  memory-pressure, threadpool-starvation, lock-contention, io-bound, healthy.
+  triage          Collect counters for <duration>s, separate observed signals from evidence-backed
+                  hypotheses, and return neutral next steps. Each hypothesis includes confidence and
+                  supporting/contradicting evidence. Legacy verdict fields are deprecated until v1.0.
   runtime-config  Read the process's effective runtime configuration: GC mode, ThreadPool bounds,
                   tiered-compilation flags, runtime env vars and AppContext switches.
   container       Read cgroup/container CPU, memory, PSI, pid-limit and OOM signals for the target.

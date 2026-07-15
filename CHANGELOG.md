@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+- **Evidence-backed triage (#622)** — `inspect_process(view="triage")`, CLI `inspect --view
+  triage`, and sweep triage now separate threshold-backed `observedSignals` from bounded
+  `hypotheses` with confidence, supporting/contradicting evidence, and neutral next steps.
+  `verdict` / `secondaryVerdicts` remain serialized as deprecated compatibility fields until
+  v1.0. Counter-only triage no longer emits `io-bound`; low CPU plus a small queue is
+  `inconclusive` unless additional latency evidence supports a waiting/backpressure hypothesis.
+
 ## [0.17.0] — 2026-07-07
 
 Highlights: **Two major additive waves.** (1) A new **findings / signal-grouping diagnostic

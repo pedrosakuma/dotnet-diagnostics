@@ -15,7 +15,7 @@ namespace DotnetDiagnostics.Core.Triage;
 /// calls (~25–40s) to one window.
 /// </summary>
 /// <param name="DurationSeconds">The collection window each collector observed.</param>
-/// <param name="Triage">Server-side classification (verdict, severity, evidence) derived from the counter snapshot.</param>
+/// <param name="Triage">Observed signals, evidence-backed hypotheses, and compatibility fields derived from the counter snapshot.</param>
 /// <param name="Counters">EventCounter snapshot (CPU, GC, threadpool, allocation rate), or null when collection failed.</param>
 /// <param name="Gc">GC start/stop summary, or null when collection failed.</param>
 /// <param name="Exceptions">Managed exception stream summary, or null when collection failed.</param>

@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Nodes;
 using DotnetDiagnostics.Cli;
 using FluentAssertions;
 
@@ -144,6 +145,43 @@ public sealed class CliInspectValidationTests
         exit.Should().Be(0);
         stderr.Should().BeEmpty();
         stdout.Should().Contain("Scope");
+    }
+
+    [Fact]
+    public async Task RunAsync_InspectTriageJson_ProjectsV2AndLegacyFields()
+    {
+        var (exit, stdout, stderr) = await RunAsync(
+            "inspect",
+            "--view",
+            "triage",
+            "--pid",
+            Environment.ProcessId.ToString(),
+            "--duration",
+            "3",
+            "--json");
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        var data = JsonNode.Parse(stdout)!["data"]!;
+        data["modelVersion"]!.GetValue<int>().Should().Be(2);
+        data["assessment"]!.GetValue<string>().Should().NotBeNullOrWhiteSpace();
+        data["observedSignals"].Should().NotBeNull();
+        data["hypotheses"].Should().NotBeNull();
+        data["verdict"].Should().NotBeNull(
+            "the deprecated field remains serialized during the migration window");
+    }
+
+    [Fact]
+    public async Task RunAsync_InspectHelp_ExplainsEvidenceBackedTriage()
+    {
+        var (exit, stdout, stderr) = await RunAsync("inspect", "--help");
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("observed signals");
+        stdout.Should().Contain("evidence-backed");
+        stdout.Should().Contain("supporting/contradicting evidence");
+        stdout.Should().Contain("deprecated until v1.0");
     }
 
     [Fact]
