@@ -160,11 +160,11 @@ internal static partial class CliCommands
         }
 
         var store = services.GetRequiredService<IDiagnosticHandleStore>();
-        var lookup = store.TryGetWithKind(options.Handle);
+        var lookupResult = store.LookupWithKind(options.Handle);
+        var lookup = lookupResult.Lookup;
         if (lookup is null)
         {
-            return Fail($"query: handle '{options.Handle}' is unknown or expired.", "NotFound",
-                "Handles are evicted when they expire or when the target process exits. Re-run the originating collect command to get a fresh handle.");
+            return HandleUnavailable(options.Handle, lookupResult);
         }
 
         var kind = lookup.Value.Kind;
@@ -710,6 +710,38 @@ internal static partial class CliCommands
         var result = DiagnosticResult.Fail<object>(
             summary,
             new DiagnosticError(errorKind, summary, detail));
+        return BuildResult<object>(result, static (_, _) => { });
+    }
+
+    private static CliCommandResult HandleUnavailable(
+        string handle,
+        DiagnosticHandleLookupResult lookupResult)
+    {
+        DiagnosticResult<object> result = lookupResult.Status switch
+        {
+            DiagnosticHandleLookupStatus.CapacityEvicted => DiagnosticResult.Fail<object>(
+                $"query: handle '{handle}' was evicted because the in-memory handle store reached capacity. " +
+                $"Re-run the originating command; operators can raise Diagnostics__HandleStore__MaxEntries up to {DiagnosticHandleStoreOptions.MaxAllowedEntries}.",
+                new DiagnosticError(
+                    "HandleCapacityEvicted",
+                    $"Re-run the originating command. Increase Diagnostics__HandleStore__MaxEntries only when the workload needs more concurrent artifacts (maximum {DiagnosticHandleStoreOptions.MaxAllowedEntries}).",
+                    handle),
+                new NextActionHint("collect", "Re-run the originating collect/inspect command to issue a fresh handle.")),
+            DiagnosticHandleLookupStatus.Expired => DiagnosticResult.Fail<object>(
+                $"query: handle '{handle}' expired after its TTL elapsed.",
+                new DiagnosticError(
+                    "HandleExpired",
+                    "Re-run the originating command and query the fresh handle before its printed expiry.",
+                    handle),
+                new NextActionHint("collect", "Re-run the originating collect/inspect command to issue a fresh handle.")),
+            _ => DiagnosticResult.Fail<object>(
+                $"query: handle '{handle}' is not known to this session.",
+                new DiagnosticError(
+                    "HandleNotFound",
+                    "Handles are process-local. Use a handle printed by a command in this same live session.",
+                    handle),
+                new NextActionHint("collect", "Re-run the originating command in this session to issue a fresh handle.")),
+        };
         return BuildResult<object>(result, static (_, _) => { });
     }
 

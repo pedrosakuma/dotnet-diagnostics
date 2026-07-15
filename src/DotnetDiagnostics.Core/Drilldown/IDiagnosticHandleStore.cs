@@ -31,19 +31,31 @@ public interface IDiagnosticHandleStore
 
     /// <summary>
     /// Retrieves the artifact previously stored under <paramref name="handle"/>, casting it
-    /// to <typeparamref name="T"/>. Returns <c>null</c> if the handle is unknown, expired, or
-    /// holds an artifact of an incompatible type.
+    /// to <typeparamref name="T"/>. Returns <c>null</c> if the handle is unknown, expired,
+    /// capacity-evicted, or holds an artifact of an incompatible type.
     /// </summary>
     T? TryGet<T>(string handle) where T : class;
 
     /// <summary>
     /// Retrieves the artifact previously stored under <paramref name="handle"/> together with the
     /// <c>kind</c> it was registered with — without forcing a generic type assertion. Returns
-    /// <c>null</c> when the handle is unknown or expired. Used by the polymorphic
+    /// <c>null</c> when the handle is unknown, expired, or capacity-evicted. Used by the polymorphic
     /// <c>query_collection</c> dispatcher, which selects the artifact's concrete type based on
     /// <see cref="DiagnosticHandle.Kind"/>.
     /// </summary>
     HandleLookup? TryGetWithKind(string handle);
+
+    /// <summary>
+    /// Retrieves the artifact and preserves a bounded reason when it is unavailable. Implementations
+    /// without tombstone support fall back to <see cref="DiagnosticHandleLookupStatus.Unknown"/>.
+    /// </summary>
+    DiagnosticHandleLookupResult LookupWithKind(string handle)
+    {
+        var lookup = TryGetWithKind(handle);
+        return lookup is { } found
+            ? DiagnosticHandleLookupResult.Found(found)
+            : DiagnosticHandleLookupResult.Unknown;
+    }
 
     /// <summary>
     /// Removes the artifact stored under <paramref name="handle"/> immediately. Safe to call
@@ -95,4 +107,40 @@ public readonly record struct HandleLookup(DiagnosticHandle Handle, object Artif
 {
     /// <summary>Convenience accessor for <see cref="DiagnosticHandle.Kind"/>.</summary>
     public string Kind => Handle.Kind;
+}
+
+/// <summary>Observable outcome of a handle lookup without retaining an evicted artifact.</summary>
+public enum DiagnosticHandleLookupStatus
+{
+    /// <summary>The handle currently resolves to a live artifact.</summary>
+    Found,
+    /// <summary>The artifact's configured TTL elapsed.</summary>
+    Expired,
+    /// <summary>The artifact was removed early to enforce the configured capacity.</summary>
+    CapacityEvicted,
+    /// <summary>The handle was never observed by this store, or its bounded tombstone aged out.</summary>
+    Unknown,
+}
+
+/// <summary>Small bounded metadata retained after TTL or capacity removal.</summary>
+public sealed record DiagnosticHandleTombstone(
+    string Id,
+    DiagnosticHandleLookupStatus Status,
+    DateTimeOffset RemovedAt,
+    int ProcessId,
+    string Kind);
+
+/// <summary>Detailed handle lookup result used by recovery-oriented query surfaces.</summary>
+public readonly record struct DiagnosticHandleLookupResult(
+    DiagnosticHandleLookupStatus Status,
+    HandleLookup? Lookup,
+    DiagnosticHandleTombstone? Tombstone)
+{
+    /// <summary>Canonical unknown result for stores without matching metadata.</summary>
+    public static DiagnosticHandleLookupResult Unknown { get; } =
+        new(DiagnosticHandleLookupStatus.Unknown, null, null);
+
+    /// <summary>Creates a successful lookup result.</summary>
+    public static DiagnosticHandleLookupResult Found(HandleLookup lookup) =>
+        new(DiagnosticHandleLookupStatus.Found, lookup, null);
 }

@@ -20,6 +20,7 @@ using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.Symbols;
 using DotnetDiagnostics.Core.ThreadPool;
+using DotnetDiagnostics.Core.Drilldown;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace DotnetDiagnostics.Core.Hosting;
@@ -44,13 +45,17 @@ public static class DiagnosticCoreServiceRegistration
     /// Core stays free of any <c>Microsoft.Extensions.Configuration</c> dependency.
     /// </param>
     /// <param name="configuredSymbolPath">Optional symbol search path forwarded to <see cref="SymbolPathBuilder"/>.</param>
+    /// <param name="handleStoreOptions">Validated bounded handle-store settings supplied by the host.</param>
     public static IServiceCollection AddDiagnosticCoreServices(
         this IServiceCollection services,
         SecurityOptions securityOptions,
-        string? configuredSymbolPath = null)
+        string? configuredSymbolPath = null,
+        DiagnosticHandleStoreOptions? handleStoreOptions = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(securityOptions);
+        handleStoreOptions ??= new DiagnosticHandleStoreOptions();
+        handleStoreOptions.Validate();
 
         // B4 security gates (issue #165). The caller binds SecurityOptions from the
         // `Diagnostics` configuration section; B5 (issue #166) will retrofit these into the
@@ -130,8 +135,11 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<DotnetDiagnostics.Core.ProcessDiscovery.IRuntimeConfigInspector, DotnetDiagnostics.Core.ProcessDiscovery.RuntimeConfigInspector>();
         services.AddSingleton<DotnetDiagnostics.Core.ProcessDiscovery.IProcessResourcesCollector, DotnetDiagnostics.Core.ProcessDiscovery.ProcessResourcesCollector>();
         services.AddSingleton<DotnetDiagnostics.Core.ProcessDiscovery.IRequestsNowCollector, DotnetDiagnostics.Core.ProcessDiscovery.RequestsNowCollector>();
-        services.AddSingleton<DotnetDiagnostics.Core.Drilldown.IDiagnosticHandleStore>(_ =>
-            new DotnetDiagnostics.Core.Drilldown.MemoryDiagnosticHandleStore(maxEntries: 32));
+        services.AddSingleton(handleStoreOptions);
+        services.AddSingleton<IDiagnosticHandleStore>(serviceProvider =>
+            new MemoryDiagnosticHandleStore(
+                handleStoreOptions.MaxEntries,
+                logger: serviceProvider.GetService<Microsoft.Extensions.Logging.ILogger<MemoryDiagnosticHandleStore>>()));
 
         return services;
     }

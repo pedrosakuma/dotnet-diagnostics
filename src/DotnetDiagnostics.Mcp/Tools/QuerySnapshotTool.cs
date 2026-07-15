@@ -167,10 +167,11 @@ public sealed partial class QuerySnapshotTool
             return InvalidArgument(nameof(handle), "is required");
         }
 
-        var lookup = handles.TryGetWithKind(handle);
+        var lookupResult = handles.LookupWithKind(handle);
+        var lookup = lookupResult.Lookup;
         if (lookup is null)
         {
-            return HandleExpiredError(IsDiffView(view) ? "Current" : null, handle);
+            return HandleUnavailableError(IsDiffView(view) ? "Current" : null, handle, lookupResult);
         }
 
         var kind = lookup.Value.Kind;
@@ -270,10 +271,11 @@ public sealed partial class QuerySnapshotTool
             return InvalidArgument(nameof(topN), "must be >= 1 when view='growth'");
         }
 
-        var baselineLookup = handles.TryGetWithKind(baselineHandle!);
+        var baselineResult = handles.LookupWithKind(baselineHandle!);
+        var baselineLookup = baselineResult.Lookup;
         if (baselineLookup is null)
         {
-            return HandleExpiredError("Baseline", baselineHandle!);
+            return HandleUnavailableError("Baseline", baselineHandle!, baselineResult);
         }
 
         if (!string.Equals(currentLookup.Kind, baselineLookup.Value.Kind, StringComparison.Ordinal))
@@ -526,10 +528,11 @@ public sealed partial class QuerySnapshotTool
             return TryBuildComparableJourneyDiff(handles, handle, currentLookup, comparisonHandles!, minDeltaPct, effectiveTopN, journeyDepth, mode);
         }
 
-        var baselineLookup = handles.TryGetWithKind(baselineHandle!);
+        var baselineResult = handles.LookupWithKind(baselineHandle!);
+        var baselineLookup = baselineResult.Lookup;
         if (baselineLookup is null)
         {
-            return HandleExpiredError("Baseline", baselineHandle!);
+            return HandleUnavailableError("Baseline", baselineHandle!, baselineResult);
         }
 
         if (!string.Equals(currentLookup.Kind, baselineLookup.Value.Kind, StringComparison.Ordinal))
@@ -590,10 +593,11 @@ public sealed partial class QuerySnapshotTool
                 return InvalidArgument(nameof(comparisonHandles), $"entry {i} duplicates another comparison handle or the current handle");
             }
 
-            var lookup = handles.TryGetWithKind(comparisonHandle);
+            var lookupResult = handles.LookupWithKind(comparisonHandle);
+            var lookup = lookupResult.Lookup;
             if (lookup is null)
             {
-                return HandleExpiredError($"Comparison[{i}]", comparisonHandle);
+                return HandleUnavailableError($"Comparison[{i}]", comparisonHandle, lookupResult);
             }
             if (!string.Equals(currentLookup.Kind, lookup.Value.Kind, StringComparison.Ordinal))
             {
@@ -635,17 +639,74 @@ public sealed partial class QuerySnapshotTool
         => $"Compared {diff.Kind} handle '{currentHandle}' across {comparisonHandles.Length + 1} captures: {diff.MetricSeries.Count} metric series, {diff.KeyMatrix.Count} key rows — verdict {diff.Verdict}.";
 
     private static DiagnosticResult<object> HandleExpiredError(string? side, string handle)
+        => HandleUnavailableError(
+            side,
+            handle,
+            new DiagnosticHandleLookupResult(DiagnosticHandleLookupStatus.Expired, null, null));
+
+    private static DiagnosticResult<object> HandleUnavailableError(
+        string? side,
+        string handle,
+        DiagnosticHandleLookupResult lookupResult)
     {
         var prefix = string.IsNullOrWhiteSpace(side) ? "Handle" : $"{side} handle";
-        return DiagnosticResult.Fail<object>(
-            $"{prefix} '{handle}' is unknown or expired.",
-            new DiagnosticError(
-                "HandleExpired",
-                "Drill-down handles live ~10min and are invalidated when the target process exits.",
-                handle),
-            new NextActionHint(ToolName,
-                "Re-run the original collector on the same pid to issue a fresh handle.",
-                null));
+        var recovery = RecoveryHint(lookupResult.Tombstone);
+        return lookupResult.Status switch
+        {
+            DiagnosticHandleLookupStatus.CapacityEvicted => DiagnosticResult.Fail<object>(
+                $"{prefix} '{handle}' was evicted because the in-memory handle store reached capacity.",
+                new DiagnosticError(
+                    "HandleCapacityEvicted",
+                    $"The artifact was removed before its TTL to enforce the bounded handle store. Re-run the original collector; operators can raise Diagnostics:HandleStore:MaxEntries (environment Diagnostics__HandleStore__MaxEntries) up to {DiagnosticHandleStoreOptions.MaxAllowedEntries}.",
+                    handle),
+                recovery),
+            DiagnosticHandleLookupStatus.Expired => DiagnosticResult.Fail<object>(
+                $"{prefix} '{handle}' expired after its TTL elapsed.",
+                new DiagnosticError(
+                    "HandleExpired",
+                    "Re-run the original collector to issue a fresh handle and query it before handleExpiresAt.",
+                    handle),
+                recovery),
+            _ => DiagnosticResult.Fail<object>(
+                $"{prefix} '{handle}' is not known to this server/session.",
+                new DiagnosticError(
+                    "HandleNotFound",
+                    "The handle may be invalid, belong to another server instance/session, or have lost its bounded tombstone after a restart or sustained churn.",
+                    handle),
+                new NextActionHint(
+                    "inspect_process",
+                    "Verify that you are connected to the same running server/session; otherwise re-run the original collector to issue a fresh handle.",
+                    null)),
+        };
+    }
+
+    private static NextActionHint RecoveryHint(DiagnosticHandleTombstone? tombstone)
+    {
+        if (tombstone is null)
+        {
+            return new NextActionHint(
+                "inspect_process",
+                "Verify that the target and server/session are still available, then re-run the original collector.",
+                null);
+        }
+
+        var kind = tombstone?.Kind;
+        var processId = tombstone?.ProcessId;
+        var tool = kind switch
+        {
+            DiagnosticTools.HeapSnapshotKind => "inspect_heap",
+            DiagnosticTools.ThreadSnapshotKind => "collect_thread_snapshot",
+            "cpu-sample" or "allocation-sample" or DiagnosticTools.NativeAllocHandleKind or DiagnosticTools.OffCpuHandleKind or MethodParameterCaptureUseCases.HandleKind
+                => "collect_sample",
+            _ => "collect_events",
+        };
+        var arguments = processId is { } pid
+            ? new Dictionary<string, object?> { ["processId"] = pid }
+            : null;
+        return new NextActionHint(
+            tool,
+            "Re-run the original collector with the same parameters to issue a fresh handle.",
+            arguments);
     }
 
     private static DiagnosticResult<object> InvalidKindPair(string currentKind, string baselineKind)

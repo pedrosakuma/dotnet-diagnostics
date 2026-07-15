@@ -128,13 +128,33 @@ public sealed class SessionReplTests
     }
 
     [Fact]
-    public async Task Query_UnknownHandle_ReturnsNotFound()
+    public async Task Query_UnknownHandle_ReturnsHandleNotFound()
     {
         var (exit, stdout, _) = await RunReplAsync("query --handle does-not-exist\nexit\n");
 
         exit.Should().Be(0);
-        stdout.Should().Contain("unknown or expired");
-        stdout.Should().Contain("NotFound");
+        stdout.Should().Contain("not known to this session");
+        stdout.Should().Contain("HandleNotFound");
+    }
+
+    [Fact]
+    public async Task Query_CapacityEvictedHandle_ExplainsRecovery()
+    {
+        var store = new MemoryDiagnosticHandleStore(maxEntries: 1);
+        var evicted = SeedCountersHandle(store);
+        store.Register(42, CollectionHandleKinds.Counters, new object(), TimeSpan.FromMinutes(5));
+        using var services = new ServiceCollection()
+            .AddSingleton<IDiagnosticHandleStore>(store)
+            .BuildServiceProvider();
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {evicted.Id}\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("HandleCapacityEvicted");
+        stdout.Should().Contain("Diagnostics__HandleStore__MaxEntries");
+        stdout.Should().Contain("Re-run the originating");
     }
 
     [Fact]
