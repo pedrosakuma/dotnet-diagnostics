@@ -4,17 +4,17 @@ These manifests are loaded by `.github/workflows/kind-integration.yml` and back
 the final acceptance bullet of issue #20:
 
 > Integration test that spins up two replicas of the sample target, attaches to
-> a specific one by label, runs `list_dotnet_processes` through the orchestrator,
-> and confirms it sees only the chosen Pod's PID.
+> a specific one by label, runs diagnostics through the orchestrator, and
+> confirms the target carries the chosen replica's command-line discriminator.
 
 Each Deployment runs **one** CoreClrSample Pod tagged with a discriminating
 `p6-target={a,b}` label so the test can:
 
 1. Call `list_pods` with `labelSelector=app=p6-sample,p6-target=a`.
 2. Call `attach_to_pod` against the single matching Pod.
-3. Proxy `list_dotnet_processes` through the returned handle and confirm the
-   surfaced PID's command-line is the one with `P6_TARGET_LABEL=a` (replica
-   `b` must not appear).
+3. Proxy `inspect_process(view="list")` through the returned handle and confirm
+   the surfaced PID's command line contains `--p6-target=a` (replica `b` carries
+   `--p6-target=b`).
 
 Both Pods carry the `diagnostics.dotnet.io/prepared=true` label, mount a shared
 `/tmp` emptyDir, and run as UID/GID 10001 — matching `central-target.yaml`'s

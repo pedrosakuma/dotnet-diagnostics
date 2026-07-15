@@ -2,7 +2,8 @@
 # (issue #20, P6 acceptance). The replica is its own Deployment instead of a
 # multi-replica one so the test can pick a specific Pod via the discriminating
 # label `p6-target=a` and assert later that the orchestrator forwarded
-# `list_dotnet_processes` to it (and not its sibling `p6-target=b`).
+# diagnostics to its replica-specific command line (and not its sibling
+# `p6-target=b`).
 #
 # Mirrors deploy/k8s/central-target.yaml (no sidecar, prepared label, shared
 # /tmp emptyDir, pinned UID/GID) so the orchestrator's ephemeral-container
@@ -32,6 +33,7 @@ spec:
         - name: app
           image: coreclr-sample:p6
           imagePullPolicy: IfNotPresent
+          args: ["--p6-target=a"]
           ports:
             - containerPort: 8080
               name: http
@@ -40,10 +42,6 @@ spec:
               value: http://0.0.0.0:8080
             - name: DOTNET_EnableDiagnostics
               value: "1"
-            # Surfaced through list_dotnet_processes so the kind test can assert
-            # the proxied call landed on replica `a` and not `b`.
-            - name: P6_TARGET_LABEL
-              value: a
           securityContext:
             runAsUser: 10001
             runAsGroup: 10001

@@ -242,6 +242,10 @@ public sealed class KindIntegrationTests
             // identified target PID, then drill into its retained handle.
             // ------------------------------------------------------------
             var targetProcess = procs.Single(p => p.ManagedEntrypointAssemblyName == "CoreClrSample");
+            targetProcess.CommandLine.Should().Contain(
+                $"--{activation.TargetLabel}",
+                "the proxied diagnostics path must land on the replica selected by list_orchestrator, not its identical sibling");
+
             var collectResult = await podClient.CallToolAsync(
                 "collect_events",
                 new Dictionary<string, object?>
