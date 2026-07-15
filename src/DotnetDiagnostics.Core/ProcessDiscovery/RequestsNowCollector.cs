@@ -78,12 +78,7 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
 
         var requests = new ConcurrentDictionary<string, PendingRequest>(StringComparer.Ordinal);
         using var snapshotCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var snapshotRequests = Channel.CreateBounded<SnapshotCaptureRequest>(new BoundedChannelOptions(SnapshotQueueCapacity)
-        {
-            SingleReader = true,
-            SingleWriter = false,
-            FullMode = BoundedChannelFullMode.Wait,
-        });
+        var snapshotRequests = new SnapshotCaptureQueue(SnapshotQueueCapacity);
         var snapshotOptions = new ThreadSnapshotOptions(MaxFramesPerThread: Math.Max(16, topFrames));
 
         var snapshotTask = Task.Run(async () =>
@@ -138,7 +133,7 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
                     if (requestEvent.IsStart)
                     {
                         requests[requestEvent.Key] = requestEvent.PendingRequest!;
-                        if (!snapshotRequests.Writer.TryWrite(new SnapshotCaptureRequest(requestEvent.Key, requestEvent.PendingRequest!.ThreadId)))
+                        if (!snapshotRequests.TryWrite(new SnapshotCaptureRequest(requestEvent.Key, requestEvent.PendingRequest!.ThreadId)))
                         {
                             requests.TryRemove(requestEvent.Key, out _);
                             _logger.LogDebug(
@@ -169,7 +164,7 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
         {
             try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
             try { await processingTask.WaitAsync(WorkerDrainBudget, CancellationToken.None).ConfigureAwait(false); } catch (TimeoutException) { _logger.LogDebug("Requests-now processing task did not drain within {DrainBudget} for pid {Pid}.", WorkerDrainBudget, processId); } catch (Exception) { }
-            snapshotRequests.Writer.TryComplete();
+            snapshotRequests.TryComplete();
             if (cancellationToken.IsCancellationRequested)
             {
                 snapshotCancellation.Cancel();
@@ -205,7 +200,10 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
                 TopFrames: request.TopFrames))
             .ToArray();
 
-        return new RequestsNowSnapshot(processId, capturedAt, window, inFlight);
+        return new RequestsNowSnapshot(processId, capturedAt, window, inFlight)
+        {
+            Notes = snapshotRequests.BuildNotes(),
+        };
     }
 
     private static string BuildFilterSpec() =>
@@ -366,9 +364,54 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
         int ThreadId,
         string[] TopFrames);
 
-    private readonly record struct SnapshotCaptureRequest(
+    internal readonly record struct SnapshotCaptureRequest(
         string Key,
         int ThreadId);
+
+    internal sealed class SnapshotCaptureQueue
+    {
+        private readonly Channel<SnapshotCaptureRequest> _channel;
+        private long _droppedCount;
+
+        internal SnapshotCaptureQueue(int capacity)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(capacity, 1);
+            Capacity = capacity;
+            _channel = Channel.CreateBounded<SnapshotCaptureRequest>(new BoundedChannelOptions(capacity)
+            {
+                SingleReader = true,
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.Wait,
+            });
+        }
+
+        internal int Capacity { get; }
+
+        internal long DroppedCount => Interlocked.Read(ref _droppedCount);
+
+        internal ChannelReader<SnapshotCaptureRequest> Reader => _channel.Reader;
+
+        internal bool TryWrite(SnapshotCaptureRequest request)
+        {
+            if (_channel.Writer.TryWrite(request))
+            {
+                return true;
+            }
+
+            Interlocked.Increment(ref _droppedCount);
+            return false;
+        }
+
+        internal bool TryComplete() => _channel.Writer.TryComplete();
+
+        internal IReadOnlyList<string> BuildNotes()
+        {
+            var droppedCount = DroppedCount;
+            return droppedCount == 0
+                ? []
+                : [$"Dropped {droppedCount} request thread snapshot capture(s) after reaching SnapshotQueueCapacity={Capacity}; request rows and counts are incomplete lower bounds once the cap is hit because omitted requests are removed from the result."];
+        }
+    }
 
     private readonly record struct RequestEvent(
         string Key,

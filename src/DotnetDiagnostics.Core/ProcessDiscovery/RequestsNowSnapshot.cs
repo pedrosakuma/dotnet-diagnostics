@@ -14,4 +14,8 @@ public sealed record RequestsNowSnapshot(
     int ProcessId,
     DateTimeOffset CapturedAt,
     TimeSpan Window,
-    IReadOnlyList<InFlightHttpRequest> Requests);
+    IReadOnlyList<InFlightHttpRequest> Requests)
+{
+    /// <summary>Collection caveats, including any insertion-time queue truncation.</summary>
+    public IReadOnlyList<string> Notes { get; init; } = [];
+}
