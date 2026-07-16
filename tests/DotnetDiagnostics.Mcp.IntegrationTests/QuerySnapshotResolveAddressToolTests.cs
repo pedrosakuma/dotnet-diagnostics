@@ -76,8 +76,51 @@ public sealed class QuerySnapshotResolveAddressToolTests
         result.Error!.Kind.Should().Be("InvalidArgument");
     }
 
+    [Fact]
+    public async Task ResolveAddress_LiveOriginConcurrentCall_ReturnsSchemaValidBusyHint()
+    {
+        const int processId = 627275;
+        var store = new MemoryDiagnosticHandleStore();
+        var handle = store.Register(
+            processId,
+            DiagnosticTools.ThreadSnapshotKind,
+            ThreadArtifact(ThreadSnapshotOrigin.Live, processId),
+            TimeSpan.FromMinutes(10));
+        var resolver = new BlockingResolver();
+        var first = Invoke(store, resolver, handle.Id, "0x1234");
+
+        await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        DotnetDiagnostics.Core.DiagnosticResult<object> busy;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            busy = await Invoke(store, resolver, handle.Id, "0x1234", timeout.Token);
+        }
+        finally
+        {
+            resolver.Release();
+        }
+        await first;
+
+        busy.Error!.Kind.Should().Be("Busy");
+        resolver.CallCount.Should().Be(1);
+        var hint = busy.Hints.Should().ContainSingle().Which;
+        hint.SuggestedArguments.Should().BeEquivalentTo(new Dictionary<string, object?>
+        {
+            ["handle"] = handle.Id,
+            ["view"] = "resolve-address",
+            ["address"] = "0x1234",
+        });
+        hint.SuggestedArguments.Should().NotContainKey("processId");
+        hint.ShouldMatchCanonicalSchema();
+    }
+
     private static Task<DotnetDiagnostics.Core.DiagnosticResult<object>> Invoke(
-        MemoryDiagnosticHandleStore store, INativeAddressResolver resolver, string handle, string? address)
+        MemoryDiagnosticHandleStore store,
+        INativeAddressResolver resolver,
+        string handle,
+        string? address,
+        CancellationToken cancellationToken = default)
         => QuerySnapshotTool.QuerySnapshot(
             store,
             new StubDumpInspector(),
@@ -89,20 +132,25 @@ public sealed class QuerySnapshotResolveAddressToolTests
             handle: handle,
             view: "resolve-address",
             address: address,
-            cancellationToken: CancellationToken.None);
+            cancellationToken: cancellationToken);
 
-    private static ThreadSnapshotArtifact ThreadArtifact() => new(
-        ThreadSnapshotOrigin.Dump,
-        2718,
-        DateTimeOffset.UtcNow,
-        TimeSpan.FromMilliseconds(50),
-        "Core",
-        "10.0.0",
-        Array.Empty<ManagedThread>(),
-        Array.Empty<MonitorLockState>())
+    private static ThreadSnapshotArtifact ThreadArtifact(
+        ThreadSnapshotOrigin origin = ThreadSnapshotOrigin.Dump,
+        int processId = 2718)
     {
-        DumpFilePath = "/tmp/crash.dmp",
-    };
+        var artifact = new ThreadSnapshotArtifact(
+            origin,
+            processId,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMilliseconds(50),
+            "Core",
+            "10.0.0",
+            Array.Empty<ManagedThread>(),
+            Array.Empty<MonitorLockState>());
+        return origin == ThreadSnapshotOrigin.Dump
+            ? artifact with { DumpFilePath = "/tmp/crash.dmp" }
+            : artifact;
+    }
 
     private sealed class StubResolver : INativeAddressResolver
     {
@@ -112,6 +160,32 @@ public sealed class QuerySnapshotResolveAddressToolTests
         public Task<IReadOnlyList<NativeAddressLocation>> ResolveAsync(
             ThreadSnapshotArtifact artifact, IReadOnlyList<ulong> addresses, CancellationToken cancellationToken = default)
             => Task.FromResult(_locations);
+    }
+
+    private sealed class BlockingResolver : INativeAddressResolver
+    {
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _callCount;
+
+        public TaskCompletionSource Entered => _entered;
+
+        public int CallCount => Volatile.Read(ref _callCount);
+
+        public void Release() => _release.TrySetResult();
+
+        public async Task<IReadOnlyList<NativeAddressLocation>> ResolveAsync(
+            ThreadSnapshotArtifact artifact,
+            IReadOnlyList<ulong> addresses,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _callCount);
+            _entered.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+            return Array.Empty<NativeAddressLocation>();
+        }
     }
 
     private sealed class StubDumpInspector : IDumpInspector

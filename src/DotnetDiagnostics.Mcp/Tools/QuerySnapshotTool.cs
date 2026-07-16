@@ -382,18 +382,36 @@ public sealed partial class QuerySnapshotTool
             return InvalidArgument(nameof(address), "contained no parseable addresses");
         }
 
-        IReadOnlyList<NativeAddressLocation> locations;
-        try
+        async Task<DiagnosticResult<IReadOnlyList<NativeAddressLocation>>> ResolveAsync()
         {
-            locations = await addressResolver.ResolveAsync(snapshot, parsed, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var resolved = await addressResolver.ResolveAsync(snapshot, parsed, cancellationToken).ConfigureAwait(false);
+                return DiagnosticResult.Ok(resolved, $"Resolved addresses against snapshot '{handle}'.");
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException)
+            {
+                return DiagnosticResult.Fail<IReadOnlyList<NativeAddressLocation>>(
+                    $"Could not resolve addresses against snapshot '{handle}': {ex.Message}",
+                    new DiagnosticError("AddressResolutionUnavailable", ex.Message, handle),
+                    new NextActionHint("collect_thread_snapshot", "Re-capture the snapshot if the origin process or dump is no longer reachable.", null));
+            }
         }
-        catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException)
+
+        var resolution = snapshot.Origin == ThreadSnapshotOrigin.Live
+            ? await AttachGuard.GuardAttachAsync(
+                "query_snapshot",
+                snapshot.ProcessId,
+                ResolveAsync,
+                cancellationToken,
+                retryArguments: BuildResolveAddressRetryArguments(handle, address))
+                .ConfigureAwait(false)
+            : await ResolveAsync().ConfigureAwait(false);
+        if (resolution.Error is not null)
         {
-            return AsObjectEnvelope(DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
-                $"Could not resolve addresses against snapshot '{handle}': {ex.Message}",
-                new DiagnosticError("AddressResolutionUnavailable", ex.Message, handle),
-                new NextActionHint("collect_thread_snapshot", "Re-capture the snapshot if the origin process or dump is no longer reachable.", null)));
+            return AsObjectEnvelope(resolution);
         }
+        var locations = resolution.Data!;
 
         var entries = locations.Select(static l => new ResolvedAddressEntry(
             Address: $"0x{l.Address:x}",
@@ -456,18 +474,43 @@ public sealed partial class QuerySnapshotTool
         var principalUnlocksSensitive = principalAccessor.Current?.HasExplicitScope("sensitive-heap-read") == true;
         var emitSensitive = sensitiveGate.ShouldEmit(includeSensitiveValues, principalUnlocksSensitive);
 
-        FrameVariablesResult frameVars;
-        try
+        async Task<DiagnosticResult<FrameVariablesResult>> ResolveAsync()
         {
-            frameVars = await resolver.ResolveAsync(snapshot, threadId.Value, emitSensitive, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var resolved = await resolver.ResolveAsync(
+                    snapshot,
+                    threadId.Value,
+                    emitSensitive,
+                    cancellationToken).ConfigureAwait(false);
+                return DiagnosticResult.Ok(resolved, $"Resolved frame variables against snapshot '{handle}'.");
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException)
+            {
+                return DiagnosticResult.Fail<FrameVariablesResult>(
+                    $"Could not inspect frame locals against snapshot '{handle}': {ex.Message}",
+                    new DiagnosticError("FrameVariablesUnavailable", ex.Message, handle),
+                    new NextActionHint("collect_thread_snapshot", "Re-capture the snapshot if the origin process or dump is no longer reachable.", null));
+            }
         }
-        catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException)
+
+        var resolution = snapshot.Origin == ThreadSnapshotOrigin.Live
+            ? await AttachGuard.GuardAttachAsync(
+                "query_snapshot",
+                snapshot.ProcessId,
+                ResolveAsync,
+                cancellationToken,
+                retryArguments: BuildFrameVariablesRetryArguments(
+                    handle,
+                    threadId.Value,
+                    includeSensitiveValues))
+                .ConfigureAwait(false)
+            : await ResolveAsync().ConfigureAwait(false);
+        if (resolution.Error is not null)
         {
-            return AsObjectEnvelope(DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
-                $"Could not inspect frame locals against snapshot '{handle}': {ex.Message}",
-                new DiagnosticError("FrameVariablesUnavailable", ex.Message, handle),
-                new NextActionHint("collect_thread_snapshot", "Re-capture the snapshot if the origin process or dump is no longer reachable.", null)));
+            return AsObjectEnvelope(resolution);
         }
+        var frameVars = resolution.Data!;
 
         var origin = snapshot.Origin.ToString().ToLowerInvariant();
         var result = new ThreadSnapshotQueryResult(
@@ -482,6 +525,28 @@ public sealed partial class QuerySnapshotTool
             (frameVars.CurrentExceptionType is { } exType ? $"; current exception {exType}." : ".");
         return AsObjectEnvelope(DiagnosticResult.Ok(result, summary));
     }
+
+    private static Dictionary<string, object?> BuildResolveAddressRetryArguments(
+        string handle,
+        string address)
+        => new Dictionary<string, object?>
+        {
+            ["handle"] = handle,
+            ["view"] = ResolveAddressView,
+            ["address"] = address,
+        };
+
+    private static Dictionary<string, object?> BuildFrameVariablesRetryArguments(
+        string handle,
+        int threadId,
+        bool includeSensitiveValues)
+        => new Dictionary<string, object?>
+        {
+            ["handle"] = handle,
+            ["view"] = FrameVarsView,
+            ["threadId"] = threadId,
+            ["includeSensitiveValues"] = includeSensitiveValues,
+        };
 
     private static DiagnosticResult<object> TryBuildDiff(
         IDiagnosticHandleStore handles,

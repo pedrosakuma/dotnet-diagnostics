@@ -73,8 +73,13 @@ public sealed class QuerySnapshotFrameVarsToolTests
     [Fact]
     public async Task FrameVars_WithoutServerGateOrScope_SuppressesSensitiveValues()
     {
+        const int processId = 627450;
         var store = new MemoryDiagnosticHandleStore();
-        var handle = store.Register(2718, DiagnosticTools.ThreadSnapshotKind, ThreadArtifact(), TimeSpan.FromMinutes(10));
+        var handle = store.Register(
+            processId,
+            DiagnosticTools.ThreadSnapshotKind,
+            ThreadArtifact(ThreadSnapshotOrigin.Live, processId),
+            TimeSpan.FromMinutes(10));
 
         var stub = new StubFrameResolver(Empty());
         var result = await Invoke(store, stub, handle.Id, threadId: 12, includeSensitiveValues: true);
@@ -89,8 +94,13 @@ public sealed class QuerySnapshotFrameVarsToolTests
     [Fact]
     public async Task FrameVars_ServerGateEnabled_EmitsSensitiveValues()
     {
+        const int processId = 627451;
         var store = new MemoryDiagnosticHandleStore();
-        var handle = store.Register(2718, DiagnosticTools.ThreadSnapshotKind, ThreadArtifact(), TimeSpan.FromMinutes(10));
+        var handle = store.Register(
+            processId,
+            DiagnosticTools.ThreadSnapshotKind,
+            ThreadArtifact(ThreadSnapshotOrigin.Live, processId),
+            TimeSpan.FromMinutes(10));
 
         var stub = new StubFrameResolver(Empty());
         var gate = new SensitiveValueGate(new SecurityOptions { AllowSensitiveHeapValues = true });
@@ -103,14 +113,76 @@ public sealed class QuerySnapshotFrameVarsToolTests
         stub.LastSensitive.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task FrameVars_LiveOriginConcurrentCall_ReturnsSchemaValidBusyHint()
+    {
+        const int processId = 627449;
+        var store = new MemoryDiagnosticHandleStore();
+        var handle = store.Register(
+            processId,
+            DiagnosticTools.ThreadSnapshotKind,
+            ThreadArtifact(ThreadSnapshotOrigin.Live, processId),
+            TimeSpan.FromMinutes(10));
+        var resolver = new BlockingFrameResolver(Empty());
+        var gate = new SensitiveValueGate(new SecurityOptions { AllowSensitiveHeapValues = true });
+        var first = Invoke(
+            store,
+            resolver,
+            handle.Id,
+            threadId: 12,
+            includeSensitiveValues: true,
+            sensitiveGate: gate);
+
+        await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        DotnetDiagnostics.Core.DiagnosticResult<object> busy;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            busy = await Invoke(
+                store,
+                resolver,
+                handle.Id,
+                threadId: 12,
+                includeSensitiveValues: true,
+                sensitiveGate: gate,
+                cancellationToken: timeout.Token);
+        }
+        finally
+        {
+            resolver.Release();
+        }
+        await first;
+
+        resolver.CallCount.Should().Be(1);
+        resolver.LastSensitive.Should().BeTrue(
+            "the live attach guard must not bypass the existing sensitive-value policy");
+        busy.Error!.Kind.Should().Be("Busy");
+        var hint = busy.Hints.Should().ContainSingle().Which;
+        hint.SuggestedArguments.Should().BeEquivalentTo(new Dictionary<string, object?>
+        {
+            ["handle"] = handle.Id,
+            ["view"] = "frame-vars",
+            ["threadId"] = 12,
+            ["includeSensitiveValues"] = true,
+        });
+        hint.SuggestedArguments.Should().NotContainKey("processId");
+        hint.ShouldMatchCanonicalSchema();
+    }
+
 
     private static Task<DotnetDiagnostics.Core.DiagnosticResult<object>> Invoke(
-        MemoryDiagnosticHandleStore store, IFrameVariableResolver resolver, string handle, int? threadId, bool includeSensitiveValues = false)
+        MemoryDiagnosticHandleStore store,
+        IFrameVariableResolver resolver,
+        string handle,
+        int? threadId,
+        bool includeSensitiveValues = false,
+        SensitiveValueGate? sensitiveGate = null,
+        CancellationToken cancellationToken = default)
         => QuerySnapshotTool.QuerySnapshot(
             store,
             new StubDumpInspector(),
             new SensitiveDataRedactor(null),
-            new SensitiveValueGate(null),
+            sensitiveGate ?? new SensitiveValueGate(null),
             TestPrincipalAccessors.Root,
             new ClrMdNativeAddressResolver(),
             resolver,
@@ -118,23 +190,58 @@ public sealed class QuerySnapshotFrameVarsToolTests
             view: "frame-vars",
             threadId: threadId,
             includeSensitiveValues: includeSensitiveValues,
-            cancellationToken: CancellationToken.None);
+            cancellationToken: cancellationToken);
 
-    private static ThreadSnapshotArtifact ThreadArtifact() => new(
-        ThreadSnapshotOrigin.Dump,
-        2718,
-        DateTimeOffset.UtcNow,
-        TimeSpan.FromMilliseconds(50),
-        "Core",
-        "10.0.0",
-        new[]
-        {
-            new ManagedThread(12, 10012u, 12u, "Running", true, false, false, false, false, 0u, null, null, Array.Empty<ManagedStackFrame>()),
-        },
-        Array.Empty<MonitorLockState>())
+    private static ThreadSnapshotArtifact ThreadArtifact(
+        ThreadSnapshotOrigin origin = ThreadSnapshotOrigin.Dump,
+        int processId = 2718)
     {
-        DumpFilePath = "/var/crash.dmp",
-    };
+        var artifact = new ThreadSnapshotArtifact(
+            origin,
+            processId,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMilliseconds(50),
+            "Core",
+            "10.0.0",
+            new[]
+            {
+                new ManagedThread(12, 10012u, 12u, "Running", true, false, false, false, false, 0u, null, null, Array.Empty<ManagedStackFrame>()),
+            },
+            Array.Empty<MonitorLockState>());
+        return origin == ThreadSnapshotOrigin.Dump
+            ? artifact with { DumpFilePath = "/var/crash.dmp" }
+            : artifact;
+    }
+
+    private sealed class BlockingFrameResolver(FrameVariablesResult result) : IFrameVariableResolver
+    {
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _callCount;
+
+        public TaskCompletionSource Entered => _entered;
+
+        public int CallCount => Volatile.Read(ref _callCount);
+
+        public bool LastSensitive { get; private set; }
+
+        public void Release() => _release.TrySetResult();
+
+        public async Task<FrameVariablesResult> ResolveAsync(
+            ThreadSnapshotArtifact artifact,
+            int managedThreadId,
+            bool includeSensitiveValues,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _callCount);
+            LastSensitive = includeSensitiveValues;
+            _entered.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+            return result;
+        }
+    }
 
     private sealed class StubFrameResolver : IFrameVariableResolver
     {
