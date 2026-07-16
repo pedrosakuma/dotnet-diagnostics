@@ -91,11 +91,15 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
             exportRelative = Path.GetRelativePath(_artifactRoot.Root, exportFullPath).Replace(Path.DirectorySeparatorChar, '/');
         }
 
-        var aggregator = await CollectGraphAsync(processId, timeout, exportFullPath, cancellationToken).ConfigureAwait(false);
+        var collection = await CollectGraphAsync(processId, timeout, exportFullPath, cancellationToken).ConfigureAwait(false);
+        var aggregator = collection.Aggregator;
         sw.Stop();
-        if (exportFullPath is not null)
+        var traceAvailable = exportFullPath is not null
+            && collection.TraceCompleted
+            && File.Exists(exportFullPath);
+        if (traceAvailable)
         {
-            SafeArtifactPath.SetRestrictiveFilePermissions(exportFullPath);
+            SafeArtifactPath.SetRestrictiveFilePermissions(exportFullPath!);
         }
 
         var warnings = new List<string>
@@ -105,6 +109,14 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
         if (aggregator.NodeCount == 0)
         {
             warnings.Add("No managed objects were reported. The GC heap dump may have timed out before the runtime started streaming the object graph.");
+        }
+        if (collection.TimedOut)
+        {
+            warnings.Add($"GC heap collection reached its {timeout.TotalSeconds:0.#}s timeout; the snapshot may be incomplete.");
+        }
+        if (opts.ExportTrace && !traceAvailable)
+        {
+            warnings.Add("GC trace export was not completed before collection ended; no trace artifact was published.");
         }
 
         var (byBytes, byInstances) = aggregator.Project(snapshotTopN);
@@ -125,180 +137,237 @@ public sealed class GcDumpHeapSnapshotCollector : IGcDumpHeapSnapshotCollector
             TopTypesByInstances: byInstances)
         {
             Warnings = warnings,
-            TracePath = exportRelative,
+            TracePath = traceAvailable ? exportRelative : null,
         };
     }
 
-    private async Task<GcDumpTypeAggregator> CollectGraphAsync(int processId, TimeSpan timeout, string? exportFullPath, CancellationToken ct)
+    private async Task<GcDumpCollection> CollectGraphAsync(int processId, TimeSpan timeout, string? exportFullPath, CancellationToken ct)
     {
+        var collectionTimer = Stopwatch.StartNew();
         var client = new DiagnosticsClient(processId);
 
         // Flush the type table so the GCBulkType name stream is fully populated before the dump.
-        await FlushTypeTableAsync(client, ct).ConfigureAwait(false);
+        var flushBudget = Min(Remaining(collectionTimer, timeout), TimeSpan.FromSeconds(5));
+        if (flushBudget <= TimeSpan.Zero)
+        {
+            return new GcDumpCollection(new GcDumpTypeAggregator(), TimedOut: true);
+        }
+        try
+        {
+            if (await FlushTypeTableAsync(client, flushBudget, ct).ConfigureAwait(false))
+            {
+                return new GcDumpCollection(new GcDumpTypeAggregator(), TimedOut: true);
+            }
+        }
+        catch (TimeoutException)
+        {
+            return new GcDumpCollection(new GcDumpTypeAggregator(), TimedOut: true);
+        }
 
         var providers = new[]
         {
             new EventPipeProvider(RuntimeProvider, EventLevel.Verbose, GcHeapSnapshotKeyword),
         };
-        var session = await client
-            .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: false, circularBufferMB: 256, ct)
-            .ConfigureAwait(false);
+        var startBudget = Remaining(collectionTimer, timeout);
+        if (startBudget <= TimeSpan.Zero)
+        {
+            return new GcDumpCollection(new GcDumpTypeAggregator(), TimedOut: true);
+        }
+        EventPipeSession session;
+        try
+        {
+            session = await client
+                .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: false, circularBufferMB: 256, startBudget, ct)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            return new GcDumpCollection(new GcDumpTypeAggregator(), TimedOut: true);
+        }
+
+        var aggregator = new GcDumpTypeAggregator();
+        var gcNum = -1;
+        var dataSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var dumpComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var processing = Task.Run(() =>
+        {
+            Stream eventStream = session.EventStream;
+            FileStream? exportFile = null;
+            try
+            {
+                if (exportFullPath is not null)
+                {
+                    // Tee the raw EventPipe byte stream to disk while the aggregator consumes it, so the
+                    // persisted .nettrace is byte-identical to what dotnet-gcdump would write.
+                    exportFile = SafeArtifactPath.CreateRestrictedFile(exportFullPath);
+                    eventStream = new TeeReadStream(eventStream, exportFile);
+                }
+
+                using var source = new EventPipeEventSource(eventStream);
+
+                source.Clr.GCStart += data =>
+                {
+                    dataSeen.TrySetResult();
+                    if (gcNum < 0 && data.Depth == 2 && data.Type != GCType.BackgroundGC)
+                    {
+                        gcNum = data.Count;
+                    }
+                };
+                source.Clr.GCStop += data =>
+                {
+                    if (data.Count == gcNum)
+                    {
+                        // Mark completion only — do NOT StopProcessing here. GCStop proves the induced
+                        // GC finished, but tail GCBulkNode/TypeBulkType events may still be buffered.
+                        // The control path stops the session, letting Process() drain to EOF naturally.
+                        dumpComplete.TrySetResult();
+                    }
+                };
+                source.Clr.TypeBulkType += data =>
+                {
+                    for (var i = 0; i < data.Count; i++)
+                    {
+                        var v = data.Values(i);
+                        aggregator.RegisterType(v.TypeID, v.TypeName);
+                    }
+                };
+                source.Clr.GCBulkNode += data =>
+                {
+                    dataSeen.TrySetResult();
+                    for (var i = 0; i < data.Count; i++)
+                    {
+                        var v = data.Values(i);
+                        aggregator.AddNode(v.TypeID, v.Size);
+                    }
+                };
+
+                source.Process();
+            }
+            finally
+            {
+                // Always release the export handle, even when the parser throws, so a failed/cancelled
+                // export does not leak the fd or leave the restricted file locked.
+                exportFile?.Dispose();
+            }
+        }, CancellationToken.None);
+
+        var cancelled = false;
+        var timedOut = false;
+        var cancellationTask = Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        var remaining = Remaining(collectionTimer, timeout);
+        var noDataTask = remaining > TimeSpan.FromSeconds(5)
+            ? Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None)
+            : Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
+        var timeoutTask = Task.Delay(remaining, CancellationToken.None);
+
+        var initialCompletion = await Task.WhenAny(
+            processing,
+            dataSeen.Task,
+            dumpComplete.Task,
+            noDataTask,
+            timeoutTask,
+            cancellationTask).ConfigureAwait(false);
+
+        if (initialCompletion == cancellationTask)
+        {
+            cancelled = true;
+        }
+        else if (initialCompletion == timeoutTask)
+        {
+            timedOut = true;
+        }
+        else if (initialCompletion == noDataTask && !dataSeen.Task.IsCompleted)
+        {
+            _logger.LogWarning("No EventPipe heap data within 5s for PID {Pid}; assuming no managed heap.", processId);
+        }
+        else if (initialCompletion == dataSeen.Task || (initialCompletion == noDataTask && dataSeen.Task.IsCompleted))
+        {
+            var terminalCompletion = await Task.WhenAny(
+                processing,
+                dumpComplete.Task,
+                timeoutTask,
+                cancellationTask).ConfigureAwait(false);
+            cancelled = terminalCompletion == cancellationTask;
+            timedOut = terminalCompletion == timeoutTask;
+        }
 
         try
         {
-            var aggregator = new GcDumpTypeAggregator();
-            var gcNum = -1;
-            var dataSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var dumpComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            var processing = Task.Run(() =>
-            {
-                Stream eventStream = session.EventStream;
-                FileStream? exportFile = null;
-                try
-                {
-                    if (exportFullPath is not null)
-                    {
-                        // Tee the raw EventPipe byte stream to disk while the aggregator consumes it, so the
-                        // persisted .nettrace is byte-identical to what dotnet-gcdump would write.
-                        exportFile = SafeArtifactPath.CreateRestrictedFile(exportFullPath);
-                        eventStream = new TeeReadStream(eventStream, exportFile);
-                    }
-
-                    using var source = new EventPipeEventSource(eventStream);
-
-                    source.Clr.GCStart += data =>
-                    {
-                        dataSeen.TrySetResult();
-                        if (gcNum < 0 && data.Depth == 2 && data.Type != GCType.BackgroundGC)
-                        {
-                            gcNum = data.Count;
-                        }
-                    };
-                    source.Clr.GCStop += data =>
-                    {
-                        if (data.Count == gcNum)
-                        {
-                            // Mark completion only — do NOT StopProcessing here. GCStop proves the induced
-                            // GC finished, but tail GCBulkNode/TypeBulkType events may still be buffered.
-                            // The control path stops the session, letting Process() drain to EOF naturally.
-                            dumpComplete.TrySetResult();
-                        }
-                    };
-                    source.Clr.TypeBulkType += data =>
-                    {
-                        for (var i = 0; i < data.Count; i++)
-                        {
-                            var v = data.Values(i);
-                            aggregator.RegisterType(v.TypeID, v.TypeName);
-                        }
-                    };
-                    source.Clr.GCBulkNode += data =>
-                    {
-                        dataSeen.TrySetResult();
-                        for (var i = 0; i < data.Count; i++)
-                        {
-                            var v = data.Values(i);
-                            aggregator.AddNode(v.TypeID, v.Size);
-                        }
-                    };
-
-                    source.Process();
-                }
-                finally
-                {
-                    // Always release the export handle, even when the parser throws, so a failed/cancelled
-                    // export does not leak the fd or leave the restricted file locked.
-                    exportFile?.Dispose();
-                }
-            }, CancellationToken.None);
-
-            var cancelled = false;
-            var cancellationTask = Task.Delay(Timeout.InfiniteTimeSpan, ct);
-            var noDataTask = Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None);
-            var timeoutTask = Task.Delay(timeout, CancellationToken.None);
-
-            var initialCompletion = await Task.WhenAny(
+            await EventPipeSessionShutdown.StopAndDrainAsync(
+                session,
                 processing,
-                dataSeen.Task,
-                dumpComplete.Task,
-                noDataTask,
-                timeoutTask,
-                cancellationTask).ConfigureAwait(false);
-
-            if (initialCompletion == cancellationTask)
-            {
-                cancelled = true;
-            }
-            else if (initialCompletion == noDataTask && !dataSeen.Task.IsCompleted)
-            {
-                _logger.LogWarning("No EventPipe heap data within 5s for PID {Pid}; assuming no managed heap.", processId);
-            }
-            else if (initialCompletion == dataSeen.Task || (initialCompletion == noDataTask && dataSeen.Task.IsCompleted))
-            {
-                var terminalCompletion = await Task.WhenAny(
-                    processing,
-                    dumpComplete.Task,
-                    timeoutTask,
-                    cancellationTask).ConfigureAwait(false);
-                cancelled = terminalCompletion == cancellationTask;
-            }
-
-            try
-            {
-                await session.StopAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogDebug(ex, "Stopping gcdump EventPipe session for PID {Pid} threw.", processId);
-            }
-
-            // After StopAsync the stream closes; bound the drain wait so a cancelled caller is not held
-            // for the full dump timeout. The reader observes EOF and returns shortly.
-            var drainBudget = cancelled ? TimeSpan.FromSeconds(2) : timeout;
-            try
-            {
-                await processing.WaitAsync(drainBudget, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (TimeoutException)
-            {
-                // Processing did not drain in time; return whatever was aggregated so far. The
-                // aggregator is lock-guarded so a late reader cannot corrupt the projection; observe
-                // the orphaned task so its faults don't surface as unobserved exceptions.
-                _ = processing.ContinueWith(
-                    static t => _ = t.Exception,
-                    CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
-            }
-
-            ct.ThrowIfCancellationRequested();
-            return aggregator;
+                ex => _logger.LogDebug(ex, "Stopping gcdump EventPipe session for PID {Pid} threw.", processId),
+                Remaining(collectionTimer, timeout),
+                propagateProcessingErrors: true).ConfigureAwait(false);
         }
-        finally
+        catch (TimeoutException)
         {
-            session.Dispose();
+            timedOut = true;
         }
+
+        ct.ThrowIfCancellationRequested();
+        return new GcDumpCollection(
+            aggregator,
+            timedOut || collectionTimer.Elapsed >= timeout,
+            TraceCompleted: processing.IsCompletedSuccessfully);
     }
 
-    private static async Task FlushTypeTableAsync(DiagnosticsClient client, CancellationToken ct)
+    private async Task<bool> FlushTypeTableAsync(DiagnosticsClient client, TimeSpan timeout, CancellationToken ct)
     {
+        var flushTimer = Stopwatch.StartNew();
         var providers = new[]
         {
             new EventPipeProvider(SampleProfilerProvider, EventLevel.Informational),
         };
         var session = await client
-            .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: false, circularBufferMB: 1, ct)
+            .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: false, circularBufferMB: 1, timeout, ct)
             .ConfigureAwait(false);
+        var firstEvent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var processing = Task.Run(() =>
+        {
+            using var source = new EventPipeEventSource(session.EventStream);
+            source.Dynamic.All += _ => firstEvent.TrySetResult();
+            source.Process();
+        }, CancellationToken.None);
+
+        var remaining = Remaining(flushTimer, timeout);
+        var timedOut = false;
+        if (remaining > TimeSpan.Zero)
+        {
+            var timeoutTask = Task.Delay(remaining, CancellationToken.None);
+            var cancellationTask = Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            var completion = await Task.WhenAny(firstEvent.Task, processing, timeoutTask, cancellationTask).ConfigureAwait(false);
+            timedOut = completion == timeoutTask;
+        }
+
         try
         {
-            await session.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            await EventPipeSessionShutdown.StopAndDrainAsync(
+                session,
+                processing,
+                ex => _logger.LogDebug(ex, "Stopping gcdump type-table flush session threw."),
+                Remaining(flushTimer, timeout),
+                propagateProcessingErrors: true).ConfigureAwait(false);
         }
-        finally
+        catch (TimeoutException)
         {
-            session.Dispose();
+            timedOut = true;
         }
+        ct.ThrowIfCancellationRequested();
+        return timedOut;
     }
+
+    private static TimeSpan Remaining(Stopwatch timer, TimeSpan timeout)
+        => timeout > timer.Elapsed ? timeout - timer.Elapsed : TimeSpan.Zero;
+
+    private static TimeSpan Min(TimeSpan left, TimeSpan right)
+        => left <= right ? left : right;
+
+    private sealed record GcDumpCollection(
+        GcDumpTypeAggregator Aggregator,
+        bool TimedOut,
+        bool TraceCompleted = false);
 }
 
 /// <summary>

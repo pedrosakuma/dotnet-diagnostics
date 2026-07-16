@@ -209,26 +209,16 @@ public sealed class CapabilityDetector : ICapabilityDetector
             return new ProbeResult(SessionStarted: false, SampleEventsReceived: 0, FailureReason: ex.GetType().Name);
         }
 
-        try
-        {
-            return await DrainProbeAsync(session, ct).ConfigureAwait(false);
-        }
-        finally
-        {
-            try
-            {
-                await session.StopAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // best-effort stop
-            }
-
-            session.Dispose();
-        }
+        var (result, processingTask) = await DrainProbeAsync(session, ct).ConfigureAwait(false);
+        await EventPipeSessionShutdown.StopAndDrainAsync(
+            session,
+            processingTask,
+            ex => _logger.LogDebug(ex, "Stopping EventPipe capability probe failed."))
+            .ConfigureAwait(false);
+        return result;
     }
 
-    private static async Task<ProbeResult> DrainProbeAsync(EventPipeSession session, CancellationToken ct)
+    private static async Task<(ProbeResult Result, Task ProcessingTask)> DrainProbeAsync(EventPipeSession session, CancellationToken ct)
     {
         long anyEvents = 0;
         long sampleEvents = 0;
@@ -282,8 +272,9 @@ public sealed class CapabilityDetector : ICapabilityDetector
         // give a touch of time for sample events to accumulate before stopping
         await Task.Delay(TimeSpan.FromMilliseconds(250), ct).ConfigureAwait(false);
 
-        _ = sourceTask;
-        return new ProbeResult(SessionStarted: true, SampleEventsReceived: sampleEvents, FailureReason: null);
+        return (
+            new ProbeResult(SessionStarted: true, SampleEventsReceived: sampleEvents, FailureReason: null),
+            sourceTask);
     }
 
     private static RuntimeFlavor ClassifyRuntime(ProcessInfoSnapshot? snapshot, ProbeResult probe, LoadedModuleSignature? modules)

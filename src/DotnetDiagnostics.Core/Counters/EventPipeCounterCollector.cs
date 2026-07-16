@@ -167,25 +167,11 @@ public sealed class EventPipeCounterCollector : ICounterCollector
         }
         finally
         {
-            try
-            {
-                await session.StopAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // best-effort stop
-            }
-
-            try
-            {
-                await processingTask.ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // already logged
-            }
-
-            session.Dispose();
+            await EventPipeSessionShutdown.StopAndDrainAsync(
+                session,
+                processingTask,
+                ex => _logger.LogDebug(ex, "Stopping EventPipe counter session for pid {Pid} failed.", processId))
+                .ConfigureAwait(false);
         }
 
         var counters = latestCounters.Values

@@ -154,37 +154,23 @@ public sealed class JitMapEmitter
         try
         {
             // Rundown is synchronous on StopAsync — events drain into the pump above.
-            using var stopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            stopCts.CancelAfter(timeout);
             try
             {
-                await session.StopAsync(stopCts.Token).ConfigureAwait(false);
+                await EventPipeSessionShutdown.StopAndDrainAsync(
+                    session,
+                    processingTask,
+                    ex => _logger.LogDebug(ex, "JitMapEmitter: EventPipe shutdown failed for pid {Pid}.", processId),
+                    timeout).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (TimeoutException)
             {
-                // Internal guard timeout fired — pump still has whatever rundown drained so far;
+                // Internal guard timeout fired — the pump still has whatever rundown drained so far;
                 // emit a partial map rather than failing the whole off-CPU window.
                 _logger.LogDebug(
-                    "JitMapEmitter: rundown StopAsync exceeded {TimeoutMs}ms for pid {Pid}; emitting partial map.",
+                    "JitMapEmitter: rundown shutdown exceeded {TimeoutMs}ms for pid {Pid}; emitting partial map.",
                     timeout.TotalMilliseconds, processId);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // Caller-triggered OperationCanceledException is intentionally excluded so it
-                // propagates up to the off-CPU sampler / MCP tool. Any other failure (broken
-                // pipe, session disposed mid-flight, …) is best-effort: log and continue.
-                _logger.LogDebug(ex, "JitMapEmitter: StopAsync failed for pid {Pid}.", processId);
-            }
-
-            try
-            {
-                // Wait briefly for the pump to drain the post-stop event tail.
-                await processingTask.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // Pump may have already exited or timed out; the bag already has what it has.
-            }
+            cancellationToken.ThrowIfCancellationRequested();
         }
         finally
         {

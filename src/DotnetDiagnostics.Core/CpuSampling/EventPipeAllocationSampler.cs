@@ -90,7 +90,7 @@ public sealed class EventPipeAllocationSampler
         }
     }
 
-    private static async Task CollectTraceAsync(int pid, string outputPath, TimeSpan duration, CancellationToken ct)
+    private async Task CollectTraceAsync(int pid, string outputPath, TimeSpan duration, CancellationToken ct)
     {
         var providers = new[]
         {
@@ -118,9 +118,11 @@ public sealed class EventPipeAllocationSampler
         }
         finally
         {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await copyTask.ConfigureAwait(false); } catch (Exception) { }
-            session.Dispose();
+            await EventPipeSessionShutdown.StopAndDrainAsync(
+                session,
+                copyTask,
+                ex => _logger.LogDebug(ex, "Stopping allocation-sampling EventPipe session for pid {Pid} failed.", pid))
+                .ConfigureAwait(false);
         }
     }
 

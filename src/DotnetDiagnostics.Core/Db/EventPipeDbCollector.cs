@@ -63,9 +63,11 @@ public sealed class EventPipeDbCollector : IDbCollector
         }
         finally
         {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
-            session.Dispose();
+            await EventPipeSessionShutdown.StopAndDrainAsync(
+                session,
+                processingTask,
+                ex => _logger.LogDebug(ex, "Stopping database EventPipe session for pid {Pid} failed.", processId))
+                .ConfigureAwait(false);
         }
 
         return state.BuildSnapshot(processId, startedAt, duration);

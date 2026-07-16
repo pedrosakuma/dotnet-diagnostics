@@ -153,7 +153,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         return rel.Replace(Path.DirectorySeparatorChar, '/');
     }
 
-    private static async Task CollectTraceAsync(DiagnosticsClient? providedClient, Func<ValueTask>? resumeAsync, int pid, string outputPath, TimeSpan duration, bool restricted, CancellationToken ct)
+    private async Task CollectTraceAsync(DiagnosticsClient? providedClient, Func<ValueTask>? resumeAsync, int pid, string outputPath, TimeSpan duration, bool restricted, CancellationToken ct)
     {
         var providers = new[]
         {
@@ -192,25 +192,11 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         }
         finally
         {
-            try
-            {
-                await session.StopAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // best-effort stop
-            }
-
-            try
-            {
-                await copyTask.ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // best-effort
-            }
-
-            session.Dispose();
+            await EventPipeSessionShutdown.StopAndDrainAsync(
+                session,
+                copyTask,
+                ex => _logger.LogDebug(ex, "Stopping CPU-sampling EventPipe session for pid {Pid} failed.", pid))
+                .ConfigureAwait(false);
         }
     }
 

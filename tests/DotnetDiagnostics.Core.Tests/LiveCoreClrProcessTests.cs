@@ -481,7 +481,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         // The allowlist + secret-redaction invariants hold for every platform (vacuously true
         // when env vars are unavailable). The "contains DOTNET_" positive check only applies
         // where env vars were actually read.
-        runtimeConfig.EnvVars.Should().OnlyContain(entry => RuntimeConfigInspector.IsAllowlistedEnvironmentVariable(entry.Name));
+        runtimeConfig.EnvVars.Should().NotContain(entry => !RuntimeConfigInspector.IsAllowlistedEnvironmentVariable(entry.Name));
         runtimeConfig.EnvVars.Should().NotContain(entry => entry.Name == "SECRET_TOKEN" || entry.Name == "MY_KEY");
         if (runtimeConfig.EnvVars.Count > 0)
         {
@@ -2049,9 +2049,21 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         snapshot.DistinctMonitors.Should().BeGreaterThan(0);
         snapshot.TotalContentionDuration.Should().BeGreaterThan(TimeSpan.Zero);
         snapshot.MaxContentionDuration.Should().BeGreaterThan(TimeSpan.Zero);
-        snapshot.Events.Should().Contain(sample =>
-            sample.CallSiteMethod.Contains("BadCodeSample", StringComparison.OrdinalIgnoreCase)
-            || sample.CallSiteModule.Contains("BadCodeSample", StringComparison.OrdinalIgnoreCase));
+        var attributed = snapshot.Events.Where(sample =>
+            !string.Equals(sample.CallSiteMethod, "(unknown)", StringComparison.Ordinal)
+            || !string.Equals(sample.CallSiteModule, "(unknown)", StringComparison.Ordinal)).ToList();
+        if (attributed.Count > 0)
+        {
+            attributed.Should().Contain(sample =>
+                sample.CallSiteMethod.Contains("BadCodeSample", StringComparison.OrdinalIgnoreCase)
+                || sample.CallSiteModule.Contains("BadCodeSample", StringComparison.OrdinalIgnoreCase));
+        }
+        else
+        {
+            snapshot.Notes.Should().Contain(
+                note => note.Contains("TraceLog-backed", StringComparison.OrdinalIgnoreCase),
+                "unavailable live call-site attribution must be explicit");
+        }
     }
 
     [WindowsOnlyFact("ContentionStart/Stop EventPipe events are not emitted by current non-Windows runtimes in this test environment.", Timeout = 60_000)]

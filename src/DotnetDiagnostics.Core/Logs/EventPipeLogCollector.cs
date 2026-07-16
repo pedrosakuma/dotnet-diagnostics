@@ -163,9 +163,11 @@ public sealed partial class EventPipeLogCollector : ILogCollector
         }
         finally
         {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
-            session.Dispose();
+            await EventPipeSessionShutdown.StopAndDrainAsync(
+                session,
+                processingTask,
+                ex => _logger.LogDebug(ex, "Stopping ILogger EventPipe session for pid {Pid} failed.", processId))
+                .ConfigureAwait(false);
         }
 
         var byCategory = categoryCounts.Values
