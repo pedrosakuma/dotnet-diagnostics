@@ -124,7 +124,17 @@ public static class GatedCaptureUseCases
                 new DiagnosticError("ConfirmationRequired", message, nameof(confirmDump)),
                 new NextActionHint("collect_events",
                     "Re-issue with confirmDump=true to arm the dump-on-threshold watch. Required scopes: dump-write + ptrace.",
-                    new Dictionary<string, object?> { ["confirmDump"] = true }) { Priority = NextActionHintPriority.High });
+                    new Dictionary<string, object?>
+                    {
+                        ["kind"] = "counters",
+                        ["processId"] = processId,
+                        ["triggerWhen"] = triggerWhen,
+                        ["captureKind"] = captureKind,
+                        ["windowSeconds"] = windowSeconds,
+                        ["maxCaptures"] = maxCaptures,
+                        ["sampleIntervalSeconds"] = sampleIntervalSeconds,
+                        ["confirmDump"] = true,
+                    }) { Priority = NextActionHintPriority.High });
         }
 
         var resolved = await ResolveContextAsync<GatedCaptureResult>(resolver, processId, cancellationToken).ConfigureAwait(false);
@@ -223,7 +233,7 @@ public static class GatedCaptureUseCases
         {
             hints.Add(new NextActionHint("collect_events",
                 "Predicate never tripped within the window. Re-arm with a longer window, a lower threshold, or while the workload runs.",
-                new Dictionary<string, object?> { ["processId"] = watch.ProcessId }));
+                null));
         }
 
         return DiagnosticResult.Ok(watch, summary, hints.ToArray());

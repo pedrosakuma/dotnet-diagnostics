@@ -1,5 +1,6 @@
 using System.Reflection;
 using DotnetDiagnostics.Mcp.Hosting;
+using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
 using ModelContextProtocol.Server;
 
@@ -210,6 +211,49 @@ public sealed class ToolReferenceDocParityTests
             "suggested arguments are replayed as typed tool inputs and must contain concrete schema-valid values");
     }
 
+    [Fact]
+    public void ReplayableCollectorHints_DeclareExplicitKind()
+    {
+        var root = FindRepoRoot();
+        var violations = new List<string>();
+        foreach (var path in Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+                     .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                                    && !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)))
+        {
+            var source = File.ReadAllText(path);
+            foreach (var (offset, call) in EnumerateCollectorHintConstructions(source))
+            {
+                var arguments = SplitTopLevelArguments(call);
+                if (arguments.Count < 3 || string.Equals(arguments[2].Trim(), "null", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var kindMatch = System.Text.RegularExpressions.Regex.Match(
+                    arguments[2],
+                    @"\[""kind""\]\s*=\s*""([^""]+)""",
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+                var hasKind = System.Text.RegularExpressions.Regex.IsMatch(
+                    arguments[2],
+                    @"\[""kind""\]\s*=",
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+                var allowedKinds = call.Contains("\"collect_events\"", StringComparison.Ordinal)
+                    ? CollectEventsTool.AllowedKinds
+                    : CollectSampleTool.AllowedKinds;
+                if (!hasKind
+                    || (kindMatch.Success
+                        && !allowedKinds.Contains(kindMatch.Groups[1].Value, StringComparer.Ordinal)))
+                {
+                    var line = source.AsSpan(0, offset).Count('\n') + 1;
+                    violations.Add($"{Path.GetRelativePath(root, path).Replace('\\', '/')}:{line}");
+                }
+            }
+        }
+
+        violations.Should().BeEmpty(
+            "every replayable collect_events/collect_sample hint must preserve its canonical kind instead of invoking the tool default");
+    }
+
     private static IReadOnlyList<string> EnumerateToolNames()
     {
         var names = new SortedSet<string>(StringComparer.Ordinal);
@@ -268,5 +312,137 @@ public sealed class ToolReferenceDocParityTests
         }
 
         return count;
+    }
+
+    private static IEnumerable<(int Offset, string Call)> EnumerateCollectorHintConstructions(string source)
+    {
+        var pattern = new System.Text.RegularExpressions.Regex(
+            @"(?:new\s+NextActionHint|new)\s*\(\s*""collect_(?:events|sample)""",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        foreach (System.Text.RegularExpressions.Match match in pattern.Matches(source))
+        {
+            var open = source.IndexOf('(', match.Index);
+            var end = FindMatchingParenthesis(source, open);
+            if (end > open)
+            {
+                yield return (match.Index, source[match.Index..(end + 1)]);
+            }
+        }
+    }
+
+    private static IReadOnlyList<string> SplitTopLevelArguments(string call)
+    {
+        var open = call.IndexOf('(');
+        var close = FindMatchingParenthesis(call, open);
+        var arguments = new List<string>();
+        var start = open + 1;
+        var depth = 0;
+        var state = LexicalState.Code;
+        for (var index = start; index < close; index++)
+        {
+            AdvanceLexicalState(call, ref index, ref state, out var character);
+            if (state != LexicalState.Code)
+            {
+                continue;
+            }
+
+            if (character is '(' or '[' or '{')
+            {
+                depth++;
+            }
+            else if (character is ')' or ']' or '}')
+            {
+                depth--;
+            }
+            else if (character == ',' && depth == 0)
+            {
+                arguments.Add(call[start..index]);
+                start = index + 1;
+                if (arguments.Count == 2)
+                {
+                    arguments.Add(call[start..close]);
+                    return arguments;
+                }
+            }
+        }
+
+        arguments.Add(call[start..close]);
+        return arguments;
+    }
+
+    private static int FindMatchingParenthesis(string source, int open)
+    {
+        var depth = 0;
+        var state = LexicalState.Code;
+        for (var index = open; index < source.Length; index++)
+        {
+            AdvanceLexicalState(source, ref index, ref state, out var character);
+            if (state != LexicalState.Code)
+            {
+                continue;
+            }
+
+            if (character == '(')
+            {
+                depth++;
+            }
+            else if (character == ')' && --depth == 0)
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static void AdvanceLexicalState(
+        string source,
+        ref int index,
+        ref LexicalState state,
+        out char character)
+    {
+        character = source[index];
+        var next = index + 1 < source.Length ? source[index + 1] : '\0';
+        switch (state)
+        {
+            case LexicalState.Code when character == '"':
+                state = LexicalState.String;
+                break;
+            case LexicalState.Code when character == '\'':
+                state = LexicalState.Character;
+                break;
+            case LexicalState.Code when character == '/' && next == '/':
+                state = LexicalState.LineComment;
+                index++;
+                break;
+            case LexicalState.Code when character == '/' && next == '*':
+                state = LexicalState.BlockComment;
+                index++;
+                break;
+            case LexicalState.String when character == '\\':
+            case LexicalState.Character when character == '\\':
+                index++;
+                break;
+            case LexicalState.String when character == '"':
+            case LexicalState.Character when character == '\'':
+                state = LexicalState.Code;
+                break;
+            case LexicalState.LineComment when character == '\n':
+                state = LexicalState.Code;
+                break;
+            case LexicalState.BlockComment when character == '*' && next == '/':
+                state = LexicalState.Code;
+                index++;
+                break;
+        }
+    }
+
+    private enum LexicalState
+    {
+        Code,
+        String,
+        Character,
+        LineComment,
+        BlockComment,
     }
 }

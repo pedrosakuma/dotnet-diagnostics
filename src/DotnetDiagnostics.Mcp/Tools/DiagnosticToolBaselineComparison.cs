@@ -163,7 +163,11 @@ internal static class DiagnosticToolBaselineComparison
                 diff.Verdict.StartsWith("regression", StringComparison.Ordinal)
                     ? "Re-sample the regressing process and drill into the new top frame."
                     : "Optional: capture a fresh sample to confirm the improvement is stable.",
-                new Dictionary<string, object?> { ["durationSeconds"] = 20 }));
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "cpu",
+                    ["durationSeconds"] = 20,
+                }));
     }
 
     private static DiagnosticResult<object> CompareComparableSnapshots(IDiagnosticHandleStore handles, string[] snapshotsJson, int topN, JourneyDiffDepth depth, JourneyMode mode)

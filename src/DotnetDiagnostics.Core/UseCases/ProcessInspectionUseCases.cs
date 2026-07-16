@@ -70,7 +70,12 @@ public static class ProcessInspectionUseCases
             process,
             $"Process {process.ProcessId} — {process.ManagedEntrypointAssemblyName ?? "<unknown>"} on .NET {process.RuntimeVersion} ({process.OperatingSystem}/{process.ProcessArchitecture}).",
             new NextActionHint("collect_events", "Cheap first signal: CPU/memory/GC/thread-pool sweep before any sampling.",
-                new Dictionary<string, object?> { ["processId"] = process.ProcessId, ["durationSeconds"] = 5 }));
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "counters",
+                    ["processId"] = process.ProcessId,
+                    ["durationSeconds"] = 5,
+                }));
         return WithContext(result, resolved.Context);
     }
 
@@ -95,9 +100,19 @@ public static class ProcessInspectionUseCases
             var caps = await detector.DetectAsync(resolved.ProcessId, cancellationToken).ConfigureAwait(false);
             var hint = caps.CanSampleCpu
                 ? new NextActionHint("collect_events", "Cheap first signal: CPU/memory/GC/thread-pool. Run before reaching for sampling.",
-                    new Dictionary<string, object?> { ["processId"] = resolved.ProcessId, ["durationSeconds"] = 5 })
+                    new Dictionary<string, object?>
+                    {
+                        ["kind"] = "counters",
+                        ["processId"] = resolved.ProcessId,
+                        ["durationSeconds"] = 5,
+                    })
                 : new NextActionHint("collect_events", "NativeAOT: CPU sampling unavailable. Counters + EventSource + dumps still work.",
-                    new Dictionary<string, object?> { ["processId"] = resolved.ProcessId, ["durationSeconds"] = 5 });
+                    new Dictionary<string, object?>
+                    {
+                        ["kind"] = "counters",
+                        ["processId"] = resolved.ProcessId,
+                        ["durationSeconds"] = 5,
+                    });
 
             var ok = DiagnosticResult.Ok(
                 caps,

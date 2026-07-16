@@ -110,7 +110,12 @@ public static class SamplerUseCases
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
             { Priority = NextActionHintPriority.High },
             new("collect_events", "Confirm hot path isn't driven by exception-heavy control flow.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 }),
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "exceptions",
+                    ["processId"] = pid,
+                    ["durationSeconds"] = 10,
+                }),
         };
 
         if (!string.IsNullOrEmpty(result.Artifact.TracePath))

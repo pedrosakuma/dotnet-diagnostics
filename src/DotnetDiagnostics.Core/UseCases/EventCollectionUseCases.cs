@@ -260,9 +260,9 @@ public static class EventCollectionUseCases
 
                     var primaryHint = snap.TotalExceptions > 0
                         ? new NextActionHint("collect_events", "Subscribe to a domain-specific EventSource to correlate with the exception spikes.",
-                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["providerName"] = "System.Net.Http", ["durationSeconds"] = 10 })
+                            new Dictionary<string, object?> { ["kind"] = "event_source", ["processId"] = context.ProcessId, ["providerName"] = "System.Net.Http", ["durationSeconds"] = 10 })
                         : new NextActionHint("collect_events", "No exception pressure — sweep GC events next.",
-                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["durationSeconds"] = 10 });
+                            new Dictionary<string, object?> { ["kind"] = "gc", ["processId"] = context.ProcessId, ["durationSeconds"] = 10 });
 
                     var signals = ExceptionSignals.Detect(snap, handle.Id);
                     var result = DiagnosticResult.OkWithHandle(
@@ -376,7 +376,7 @@ public static class EventCollectionUseCases
                             $"Max GC pause {gc.MaxPauseTime.TotalMilliseconds:F0}ms is high — capture a WithHeap dump for offline heap analysis.",
                             new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["dumpType"] = "WithHeap" })
                         : new NextActionHint("collect_events", "GC looks healthy — pivot to a domain EventSource (e.g. System.Net.Http) for application-level signal.",
-                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["providerName"] = "System.Net.Http", ["durationSeconds"] = 10 });
+                            new Dictionary<string, object?> { ["kind"] = "event_source", ["processId"] = context.ProcessId, ["providerName"] = "System.Net.Http", ["durationSeconds"] = 10 });
 
                     var signals = GcSignals.Detect(gc, handle.Id);
                     var result = DiagnosticResult.OkWithHandle(
@@ -597,7 +597,7 @@ public static class EventCollectionUseCases
                             warningPlus > 0
                                 ? "Correlate warning/error spikes with CPU hotspots from the same window."
                                 : "If the app was slow without warning/error logs, pivot to CPU sampling for the same process.",
-                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["durationSeconds"] = 10 }));
+                            new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = context.ProcessId, ["durationSeconds"] = 10 }));
                 }),
             [
                 new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
@@ -833,7 +833,7 @@ public static class EventCollectionUseCases
                             snapshot.NPlusOne.Count > 0 || snapshot.ByCommand.Any(static command => command.P95Ms > 50)
                                 ? "Correlate slow-query hotspots with CPU stacks from the same process."
                                 : "If DB latency looks healthy, pivot to CPU sampling or logs for the same process.",
-                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["durationSeconds"] = 10 }));
+                            new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = context.ProcessId, ["durationSeconds"] = 10 }));
                 }),
             [
                 new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),
@@ -1184,10 +1184,10 @@ public static class EventCollectionUseCases
         var primaryHint = topOperation is { MaxDurationMs: > 250 }
             ? new NextActionHint("collect_sample",
                 $"Correlate the slowest captured operation ({topOperation.SourceName}/{topOperation.OperationName}, max {topOperation.MaxDurationMs:F1} ms) with CPU hotspots in the same process.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 })
+                new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = 10 })
             : new NextActionHint("collect_events",
                 "Cross-check ActivitySource timing with runtime counters for the same process.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds });
+                new Dictionary<string, object?> { ["kind"] = "counters", ["processId"] = pid, ["durationSeconds"] = durationSeconds });
 
         var handle = handles.Register(pid, CollectionHandleKinds.Activities, capture, CollectionHandleTtl);
         return WithContext(DiagnosticResult.OkWithHandle(
@@ -1309,7 +1309,7 @@ public static class EventCollectionUseCases
             handle.Id,
             handle.ExpiresAt,
             new NextActionHint("collect_events", "Cross-check captured events against runtime counters for the same window.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
+                new Dictionary<string, object?> { ["kind"] = "counters", ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
             new NextActionHint("query_snapshot",
                 "Drill into this capture without re-collecting (views: summary, byEventName, events).",
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byEventName" })),
