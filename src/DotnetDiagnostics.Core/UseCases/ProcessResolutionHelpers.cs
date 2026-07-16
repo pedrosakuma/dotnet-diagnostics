@@ -74,13 +74,7 @@ public static class ProcessResolutionHelpers
                 new NextActionHint(
                     "inspect_process",
                     "Inspect the candidate list inline below and re-issue the call with the chosen processId.",
-                    new Dictionary<string, object?>
-                    {
-                        ["view"] = "list",
-                        ["candidates"] = resolution.Candidates is { Count: > 0 }
-                            ? resolution.Candidates.Take(5).Select(c => new { c.ProcessId, c.ManagedEntrypointAssemblyName }).ToArray()
-                            : null,
-                    })),
+                    new Dictionary<string, object?> { ["view"] = "list" })),
 
             "EndpointUnavailable" => DiagnosticResult.Fail<T>(
                 error.Message,
