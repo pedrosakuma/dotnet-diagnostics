@@ -1,8 +1,8 @@
 using System.Runtime.InteropServices;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.NativeAlloc;
+using DotnetDiagnostics.Core.OffCpu;
 using FluentAssertions;
-using Microsoft.Diagnostics.Tracing.Session;
 
 namespace DotnetDiagnostics.Core.Tests;
 
@@ -157,15 +157,17 @@ public sealed class EtwNativeAllocSamplerUnitTests
     }
 
     [Fact]
-    public void IsAvailable_WhenElevated_ReturnsTrue_OnWindows()
+    public void IsAvailable_MatchesKernelLoggerTokenAccess_OnWindows()
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
 
-        // Availability is admin OR SeSystemProfilePrivilege; elevation is a sufficient condition.
-        if (TraceEventSession.IsElevated() == true)
-        {
-            new EtwNativeAllocSampler().IsAvailable().Should().BeTrue();
-        }
+        var access = EtwOffCpuSampler.GetKernelLoggerAccess();
+
+        new EtwNativeAllocSampler().IsAvailable().Should().Be(
+            access.IsAllowed,
+            $"the token reported administrator={access.IsAdministrator}, " +
+            $"SeSystemProfilePrivilege present={access.HasSystemProfilePrivilege}, " +
+            $"enabled={access.IsSystemProfilePrivilegeEnabled}");
     }
 
     [Fact]
@@ -197,10 +199,9 @@ public sealed class EtwNativeAllocSamplerUnitTests
     [Fact]
     public async Task SampleAsync_WhenNotAvailable_ThrowsUnauthorized_OnWindows()
     {
-        // Only meaningful on a non-elevated Windows host.
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows) || TraceEventSession.IsElevated() == true) return;
-
         var sampler = new EtwNativeAllocSampler();
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows) || sampler.IsAvailable()) return;
+
         var act = async () => await sampler.SampleAsync(1, TimeSpan.FromSeconds(1));
         var ex = await act.Should().ThrowAsync<UnauthorizedAccessException>();
         ex.Which.Message.Should().ContainAny("Administrators", "SeSystemProfilePrivilege");

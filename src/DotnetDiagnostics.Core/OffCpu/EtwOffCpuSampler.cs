@@ -435,7 +435,10 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     internal static EtwKernelLoggerAccess GetKernelLoggerAccess()
     {
-        using var identity = WindowsIdentity.GetCurrent(TokenAccessLevels.Query);
+        // WindowsPrincipal.IsInRole may duplicate the token internally. A query-only handle causes
+        // SecurityException on Windows hosts (including GitHub runners), which made callers report
+        // ETW as unavailable even for an administrator token.
+        using var identity = WindowsIdentity.GetCurrent(TokenAccessLevels.Query | TokenAccessLevels.Duplicate);
         var principal = new WindowsPrincipal(identity);
         var privilege = GetTokenPrivilegeState(identity.AccessToken, SystemProfilePrivilegeName);
         return new EtwKernelLoggerAccess(
