@@ -614,9 +614,9 @@ be present in the captured snapshot.
 - **At an idle prompt:** Ctrl-C leaves the session (exit code 130). `exit` / `quit` / EOF leave cleanly
   (exit code 0).
 
-## Linux ptrace note
+## Linux live-heap ptrace note
 
-`inspect-heap --source live` and `dump` attach via `ptrace(2)`. On
+`inspect-heap --source live` attaches via `ptrace(2)`. On
 Debian/Ubuntu/WSL the default `kernel.yama.ptrace_scope=1` blocks same-UID peer attach, surfacing as a
 `PermissionDenied` envelope. Fixes:
 
@@ -636,6 +636,9 @@ Debian/Ubuntu/WSL the default `kernel.yama.ptrace_scope=1` blocks same-UID peer 
   session exits. This only helps under `ptrace_scope=1`; `scope=2` still needs `CAP_SYS_PTRACE` and
   `scope=3` forbids attach entirely — use the dump-based workflow there. When `capabilities` detects
   this exact environment it advertises the `--launch` tip.
+
+The `dump` command writes through diagnostic IPC and does not require Linux
+`CAP_SYS_PTRACE`.
 
 The MCP sidecar must also run as the **same UID** as the target so it can open
 `/tmp/dotnet-diagnostic-<pid>`. EventPipe-based commands (`collect`, counters, GC, exceptions) need neither

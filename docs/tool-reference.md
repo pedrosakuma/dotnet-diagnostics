@@ -726,8 +726,6 @@ NextActionHints: throttle > 5% suggests `collect_sample(kind="cpu")` directly; m
 
 ### Off-CPU sampling (`collect_sample(kind="off_cpu")` + `query_snapshot`)
 
-> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="off_cpu", …)`](#collect_sample) instead; the legacy `collect_sample(kind="off_cpu")` remains registered behind a deprecation banner during the window (issue #210).
-
 Complements `collect_sample(kind="cpu")` (which shows **on-CPU** — where the app
 spends time executing) with **off-CPU** — where threads were **blocked**
 (I/O, locks, condvars, monitor wait). It resolves the classic blind-spot "low CPU
@@ -772,50 +770,50 @@ unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
 
 | Tool | Cost | Requires CoreCLR? | NativeAOT? | Side effects |
 |---|---|---|---|---|
-| [`inspect_process`](#inspect_process) | depends on `view` | no | ✅ | union of the five legacy bootstrap tools below |
-| [`inspect_process(view="list")`](#inspect_process(view="list")) *(deprecated — use `inspect_process(view="list")`)* | cheap | no | ✅ | none |
-| [`inspect_process(view="info")`](#inspect_process(view="info")) *(deprecated — use `inspect_process(view="info")`)* | cheap | no | ✅ | none |
-| [`inspect_process(view="capabilities")`](#inspect_process(view="capabilities")) *(deprecated — use `inspect_process(view="capabilities")`)* | ~2 s | no | ✅ | opens a short EventPipe probe |
-| [`inspect_process(view="container")`](#inspect_process(view="container")) *(deprecated — use `inspect_process(view="container")`)* | cheap | no | ✅ (Linux) | reads `/sys/fs/cgroup` + `/proc` files |
-| [`inspect_process(view="memory_trend")`](#inspect_process(view="memory_trend")) *(deprecated — use `inspect_process(view="memory_trend")`)* | window-bound | no | ✅ | reads `/proc/<pid>/smaps_rollup` + `/proc/<pid>/stat` (Linux) or `GetProcessMemoryInfo` (Windows) |
+| [`inspect_process`](#inspect_process) | depends on `view` | no | ✅ | discriminator-based process inspection |
+| [`inspect_process(view="list")`](#inspect_process(view="list")) | cheap | no | ✅ | none |
+| [`inspect_process(view="info")`](#inspect_process(view="info")) | cheap | no | ✅ | none |
+| [`inspect_process(view="capabilities")`](#inspect_process(view="capabilities")) | ~2 s | no | ✅ | opens a short EventPipe probe |
+| [`inspect_process(view="container")`](#inspect_process(view="container")) | cheap | no | ✅ (Linux) | reads `/sys/fs/cgroup` + `/proc` files |
+| [`inspect_process(view="memory_trend")`](#inspect_process(view="memory_trend")) | window-bound | no | ✅ | reads `/proc/<pid>/smaps_rollup` + `/proc/<pid>/stat` (Linux) or `GetProcessMemoryInfo` (Windows) |
 | [`inspect_process(view="runtime-config")`](#inspect_process(view="runtime-config")) | cheap | no | ✅ (Windows env partial) | ClrMD GC / ThreadPool probe + filtered `/proc/<pid>/environ` (Linux) |
 | [`inspect_process(view="resources")`](#inspect_process(view="resources")) | cheap / window-bound | no | ✅ (Linux/Windows partial) | reads `/proc/<pid>/fd`, `/proc/<pid>/net/tcp{,6}`, `/proc/<pid>/limits`, `VmRSS` + a short `gc-heap-size` counter probe (Linux) or `GetProcessHandleCount` / `WorkingSet64` (Windows) |
 | [`inspect_process(view="requests-now")`](#inspect_process(view="requests-now")) | ~2 s | no | ✅ (ptrace required) | short EventPipe request window + live thread snapshot |
 | [`inspect_process(view="triage")`](#inspect_process) | ~5 s | no | ✅ | **Fast evidence triage.** Collects counters, separates observed signals from bounded hypotheses, and returns neutral drill-down hints. |
 | [`inspect_process(view="preflight")`](#inspect_process(view="preflight")) | cheap | no | ✅ | **Phase 13 environment self-diagnosis.** Target-optional, remediation-first readiness checks (diagnostic-socket UID, ClrMD attach/ptrace, perf off-CPU, native-alloc). Answers *"why can't I attach to this PID and how do I fix it?"* before paying for a failed collect. |
-| `collect_sample(kind="off_cpu")` (Linux/Windows) | window-bound | no | ✅ (Linux) | **Deprecated — use `collect_sample(kind="off_cpu")`.** system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
+| `collect_sample(kind="off_cpu")` (Linux/Windows) | window-bound | no | ✅ (Linux) | system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
 | `query_snapshot` | cheap | no | ✅ | drilldown on handle from `collect_sample(kind="off_cpu")` |
-| [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | **Canonical EventPipe collector.** Dispatches by `kind` to counters/exceptions/crash-guard/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/kestrel/networking/requests/startup. |
-| [`collect_sample`](#collect_sample) | window-bound | depends on kind | ✅ (mostly — see kind) | **Canonical bounded-time sampler.** Dispatches by `kind` to cpu/off_cpu/allocation/native-alloc. |
-| [`collect_events(kind="counters")`](#collect_events(kind="counters")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="counters")`.** opens an EventPipe session |
-| [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")) | window-bound | no | ✅ (perf/ETW, native frames) | **Deprecated — use `collect_sample(kind="cpu")`.** EventPipe + temp `.nettrace` on disk |
-| [`collect_sample(kind="allocation")`](#collect_sample(kind="allocation")) | window-bound | no | ⚠️ TypeName empty | **Deprecated — use `collect_sample(kind="allocation")`.** EventPipe session |
-| [`collect_events(kind="exceptions")`](#collect_events(kind="exceptions")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="exceptions")`.** EventPipe session |
+| [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | Dispatches by `kind` to counters/exceptions/crash-guard/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/kestrel/networking/requests/startup. |
+| [`collect_sample`](#collect_sample) | window-bound | depends on kind | ✅ (mostly — see kind) | Dispatches by `kind` to cpu/off_cpu/allocation/native-alloc/method-params. |
+| [`collect_events(kind="counters")`](#collect_events(kind="counters")) | window-bound | no | ✅ | opens an EventPipe session |
+| [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")) | window-bound | no | ✅ (perf/ETW, native frames) | EventPipe + temp `.nettrace` on disk |
+| [`collect_sample(kind="allocation")`](#collect_sample(kind="allocation")) | window-bound | no | ⚠️ TypeName empty | EventPipe session |
+| [`collect_events(kind="exceptions")`](#collect_events(kind="exceptions")) | window-bound | no | ✅ | EventPipe session |
 | [`collect_events(kind="crash-guard")`](#collect_events(kind="crash-guard")) | window-bound (returns on exit) | no | ✅ | Runtime exception/crash guard; emits dump hint on unhandled exception |
-| [`collect_events(kind="gc")`](#collect_events(kind="gc")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="gc")`.** EventPipe session |
-| [`collect_events(kind="activities")`](#collect_events(kind="activities")) | window-bound | no | ✅ | **Deprecated — use `collect_events(kind="activities")`.** EventPipe session |
-| [`collect_events(kind="event_source")`](#collect_events(kind="event_source")) | window-bound | no | ⚠️ provider must be embedded at publish | **Deprecated — use `collect_events(kind="event_source")`.** EventPipe session |
+| [`collect_events(kind="gc")`](#collect_events(kind="gc")) | window-bound | no | ✅ | EventPipe session |
+| [`collect_events(kind="activities")`](#collect_events(kind="activities")) | window-bound | no | ✅ | EventPipe session |
+| [`collect_events(kind="event_source")`](#collect_events(kind="event_source")) | window-bound | no | ⚠️ provider must be embedded at publish | EventPipe session |
 | `collect_thread_snapshot` / `query_snapshot` | seconds | no | ✅ via `linux-native-stack` / `etw-native-stack` | ptrace attach (Linux) / kernel logger (Windows) |
-| `inspect_heap` (canonical) / `inspect_heap(source="live")` / `inspect_heap(source="dump")` (deprecated aliases, 0.7.0) / `query_snapshot` | seconds | **yes** | ❌ | ClrMD walks managed heap (heap drilldown values metadata-only by default — see [Security gates](#security-gates-b4)) |
+| `inspect_heap(source="live"|"dump")` / `query_snapshot` | seconds | **yes** | ❌ | ClrMD walks managed heap (heap drilldown values metadata-only by default — see [Security gates](#security-gates-b4)) |
 | `inspect_heap(source="gcdump")` | seconds | no (EventPipe, no ptrace) | ❌ | Induced GC heap snapshot over EventPipe — **production-safe**, no dump file; per-type byte/instance totals only (ClrMD-only views empty) |
 | [`collect_process_dump`](#collect_process_dump) | seconds–minutes | no | ✅ (native dump) | **writes a dump file to disk** |
 | [`capture_method_bytes`](#capture_method_bytes) | cheap | **yes** | ❌ (use `dotnet-native-mcp.disassemble`) | reads JIT code-heap |
 | `get_bytes(kind="module")` | cheap | **yes** (live module attach) | ❌ (materialize locally, then hand off) | streams PE / PDB bytes over MCP chunks |
 | `get_bytes(kind="dump")` | cheap | no | ❌ (materialize locally, then hand off) | streams dump bytes from `MCP_ARTIFACT_ROOT` |
-| `list_orchestrator(kind=pods\|investigations)` (orchestrator) | cheap | n/a | n/a | Successor to `list_orchestrator(kind="pods")` + `list_orchestrator(kind="investigations")`. `kind=pods` → Kubernetes `pods.list` (scope `orchestrator-list`); `kind=investigations` → in-memory handle snapshot (scope `orchestrator-attach`). **Opt-in**, registered only when `Orchestrator:Enabled=true`. Legacy tool names remain accepted for one deprecation window (removed in 0.7.0). |
+| `list_orchestrator(kind=pods\|investigations)` (orchestrator) | cheap | n/a | n/a | `kind=pods` → Kubernetes `pods.list` (scope `orchestrator-list`); `kind=investigations` → in-memory handle snapshot (scope `orchestrator-attach`). **Opt-in**, registered only when `Orchestrator:Enabled=true`. |
 
 "Window-bound" means the duration is the dominant cost; the tool will block for
 ~`durationSeconds`.
 
 ### Linux runtime requirements
 
-EventPipe-based tools (including `collect_events(kind="activities")`, alongside the ones listed in the index above) only need the
+EventPipe-based tools (including `collect_events(kind="activities")`) only need the
 diagnostic IPC socket, which works as long as the MCP server runs as the
-**same UID** as the target process. ClrMD-backed tools added since the MVP —
-`collect_thread_snapshot`, `inspect_heap(source="live")`, `inspect_heap(source="dump")` against a live
-PID, `collect_process_dump`, and `get_bytes(kind="module")` — additionally call
-`ptrace(PTRACE_ATTACH, …)` under the hood. On Linux, matching UIDs is **not**
-sufficient when the host's
+**same UID** as the target process. Live memory readers — `collect_thread_snapshot`,
+`inspect_heap(source="live")`, `capture_method_bytes`, and `get_bytes(kind="module")` —
+additionally call `ptrace(PTRACE_ATTACH, …)` under the hood. The optional
+`collect_sample(kind="cpu", resolveMethodInstantiations=true)` enrichment takes the same
+ClrMD path after sampling. On Linux, matching UIDs is **not** sufficient when the host's
 `kernel.yama.ptrace_scope` is `1` (the Debian/Ubuntu/WSL default): the kernel
 blocks same-UID peer attach.
 
@@ -835,10 +833,10 @@ Mitigations:
 - **Bare host / local dev:** `sudo sysctl -w kernel.yama.ptrace_scope=0`, or
   run the MCP server as root.
 
-When ptrace cannot be granted, fall back to `collect_process_dump` +
-`inspect_heap(source="dump")` (the dump capture runs in the target's own process, so it does
-not require ptrace from the sidecar — but writing the dump file is still
-gated on the diagnostic socket UID).
+When kernel ptrace permission cannot be granted, fall back to `collect_process_dump` +
+`inspect_heap(source="dump")`. Dump capture runs in the target runtime through diagnostic
+IPC, so it does not require `CAP_SYS_PTRACE`; MCP authorization separately requires the
+`dump-write` + `ptrace` bearer scopes and human approval.
 
 For **NativeAOT on Linux**, `collect_thread_snapshot` now routes to
 `eu-stack -p <pid>` (elfutils) instead of ClrMD. The snapshot payload carries
@@ -852,15 +850,9 @@ hint to the perf-replay fallback tracked in issue #92.
 
 ## `inspect_process`
 
-**Canonical bootstrap tool.**
-Consolidates the five legacy metadata tools — `inspect_process(view="list")`,
-`inspect_process(view="info")`, `inspect_process(view="capabilities")`, `inspect_process(view="container")`,
-`inspect_process(view="memory_trend")` — behind one `view` discriminator, and adds the
-Phase 11 `inspect_process(view="runtime-config")` projection for GC / ThreadPool / tiered-comp startup settings,
-plus the Phase 10.3 `inspect_process(view="resources")` FD / handle / socket inspector and
-Phase 10.4 `inspect_process(view="requests-now")` for an in-flight ASP.NET Core request snapshot.
-Each legacy view delegates to the same implementation as the removed tool of the same name, so
-the payload under `data` is byte-identical to the legacy envelope's `data`.
+The process bootstrap and inspection tool. Its `view` discriminator selects process
+discovery, metadata, capability, container, memory-trend, runtime-config, resource,
+in-flight-request, triage, or preflight projections under one stable envelope.
 
 **Parameters:**
 
@@ -954,10 +946,6 @@ Unknown view values surface as the standard discriminator-dispatch error
 
 ## `inspect_process(view="list")`
 
-> **Deprecated** — use [`inspect_process(view="list")`](#inspect_process). The
-> payload is unchanged; the legacy tool remains registered and emits a
-> `Deprecated` flag on `tools/list`.
-
 Lists every .NET process on the local machine that exposes a Diagnostic IPC
 endpoint (Unix socket on Linux, named pipe on Windows).
 
@@ -985,8 +973,6 @@ unreachable are silently omitted.
 
 ## `inspect_process(view="info")`
 
-> **Deprecated** — use [`inspect_process(view="info")`](#inspect_process).
-
 Returns metadata for a single PID.
 
 **Parameters:**
@@ -1001,8 +987,6 @@ process is gone / unreachable.
 ---
 
 ## `inspect_process(view="capabilities")`
-
-> **Deprecated** — use [`inspect_process(view="capabilities")`](#inspect_process).
 
 Probes the target by opening a short EventPipe session against the
 `Microsoft-DotNETCore-SampleProfiler` provider. The presence/absence of sample
@@ -1067,7 +1051,7 @@ and a `/proc/*/status` UID read, opens no EventPipe session, and never fails.
       "status": "Blocked",
       "reason": "Linux: kernel.yama.ptrace_scope=1 … and sidecar lacks CAP_SYS_PTRACE — same-UID peer attach is blocked.",
       "remediation": "Grant the capability (container: --cap-add SYS_PTRACE / capabilities.add: ['SYS_PTRACE']) or relax the host (sudo sysctl -w kernel.yama.ptrace_scope=0).",
-      "affectedTools": ["collect_thread_snapshot", "inspect_heap(source=\"live\")", "inspect_heap(source=\"dump\")", "collect_process_dump"]
+      "affectedTools": ["collect_thread_snapshot", "inspect_heap(source=\"live\")", "capture_method_bytes", "get_bytes(kind=\"module\")"]
     }
   ]
 }
@@ -1078,7 +1062,7 @@ and a `/proc/*/status` UID read, opens no EventPipe session, and never fails.
 | `id` | Severity when failing | Affects |
 |---|---|---|
 | `socket-uid` | **Blocked** (UID mismatch) / Degraded (unreadable) | **all tools** — the diagnostic IPC socket is owned by the target UID |
-| `clrmd-attach` | **Blocked** | `collect_thread_snapshot`, `inspect_heap`, `collect_process_dump` |
+| `clrmd-attach` | **Blocked** | `collect_thread_snapshot`, `inspect_heap(source="live")`, `capture_method_bytes`, `get_bytes(kind="module")` |
 | `offcpu-perf` | Degraded | `collect_sample(kind="off_cpu")` |
 | `native-alloc` | Degraded | `collect_sample(kind="native-alloc")` |
 
@@ -1094,8 +1078,6 @@ on a hard blocker for CI gating.
 ---
 
 ## `inspect_process(view="memory_trend")`
-
-> **Deprecated** — use [`inspect_process(view="memory_trend")`](#inspect_process).
 
 Samples OS-level memory metrics at regular intervals over a configurable window
 and computes per-second deltas and a growth verdict. Works on **any** runtime
@@ -1317,13 +1299,10 @@ Short ASP.NET Core request snapshot for the "which requests are hanging right no
 
 ## `collect_events`
 
-**Canonical EventPipe collector.** A single tool that dispatches by `kind` to
+The EventPipe collector dispatches by `kind` to
 the underlying counters / exceptions / crash-guard / gc / datas / catalog /
 event_source / activities / logs / jit / threadpool / contention / db /
-kestrel / networking / startup collectors. New clients should call
-`collect_events` instead of the legacy entrypoints; the legacy tools remain
-registered and behaviorally identical, but each carries a `DEPRECATED` notice
-and will be removed in `0.7.0`.
+kestrel / networking / startup collectors.
 
 **Parameters:**
 
@@ -1360,11 +1339,8 @@ every other kind requires `eventpipe` (`event_source` additionally honors the ex
 
 ## `collect_sample`
 
-**Canonical bounded-time sampler.** A single tool that
+The bounded-time sampler
 dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc / method-params sampler.
-New clients should call `collect_sample` instead of the three legacy entry
-points; the legacy tools remain registered and behaviorally identical, but
-each carries a `DEPRECATED` notice and will be removed in `0.9.0`.
 
 **Parameters:**
 
@@ -1397,7 +1373,7 @@ the underlying sampler verbatim, so `query_snapshot(view="call-tree")` and
 **Platform notes.** `kind="off_cpu"` requires Linux (`perf record -e sched_switch`)
 or Windows admin (NT Kernel Logger ContextSwitch); on unsupported hosts the
 unified tool returns the same `NotSupported` / `PermissionDenied` envelope the
-legacy `collect_sample(kind="off_cpu")` returns. `kind="allocation"` works on CoreCLR
+backend returns. `kind="allocation"` works on CoreCLR
 and NativeAOT, but on NativeAOT GCAllocationTick events carry an empty
 TypeName — surfaced via the envelope summary so the LLM knows to fall back
 to `kind="cpu"` for per-site attribution.
@@ -1451,10 +1427,6 @@ modifier scope `sensitive-parameter-read` (root / `*` tokens do **not** auto-gra
 ---
 
 ## `collect_events(kind="counters")`
-
-> **Deprecated — call [`collect_events`](#collect_events) with `kind="counters"`.**
-> Behaviorally identical; will be removed in `0.7.0`.
-
 
 Subscribes to one or more legacy EventCounter providers and, optionally, one or
 more Meter names through `System.Diagnostics.Metrics`. Returns the latest
@@ -1524,8 +1496,6 @@ and also includes `http.server.request.duration` p95 when available.
 ---
 
 ## `collect_sample(kind="cpu")`
-
-> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="cpu", …)`](#collect_sample) instead. The legacy tool remains registered and behaviorally identical during the deprecation window (issue #210).
 
 Captures a CPU sample via the `Microsoft-DotNETCore-SampleProfiler` provider,
 writes a temporary `.nettrace`, parses it with `TraceLog` and aggregates the
@@ -1655,8 +1625,6 @@ closed form.
 
 ## `collect_sample(kind="allocation")`
 
-> **DEPRECATED (0.9.0).** Call [`collect_sample(kind="allocation", …)`](#collect_sample) instead. The legacy tool remains registered and behaviorally identical during the deprecation window (issue #210).
-
 Captures allocation samples from the target process via `GCAllocationTick`
 events from `Microsoft-Windows-DotNETRuntime` (keyword `GCKeyword=0x1`, level
 Verbose). The GC fires this event roughly every **100 KB of total managed
@@ -1718,9 +1686,6 @@ returned handle to find which allocation sites are responsible.
 ---
 
 ## `collect_events(kind="exceptions")`
-
-> **Deprecated — call [`collect_events`](#collect_events) with `kind="exceptions"`.**
-> Behaviorally identical; will be removed in `0.7.0`.
 
 Collects every exception thrown by the process during the window.
 
@@ -1817,10 +1782,6 @@ process is still alive long enough for an explicit dump.
 
 ## `collect_events(kind="gc")`
 
-> **Deprecated — call [`collect_events`](#collect_events) with `kind="gc"`.**
-> Behaviorally identical; will be removed in `0.7.0`.
-
-
 Subscribes to the runtime `GC` keyword, pairs `GCStart`/`GCStop` events and
 returns aggregate + per-collection details.
 
@@ -1870,10 +1831,6 @@ with `dumpType = "WithHeap"` and analyze offline with `dotnet-dump`.
 ---
 
 ## `collect_events(kind="activities")`
-
-> **Deprecated — call [`collect_events`](#collect_events) with `kind="activities"`.**
-> Behaviorally identical; will be removed in `0.7.0`.
-
 
 Captures `ActivitySource` spans through the `Microsoft-Diagnostics-DiagnosticSource`
 EventPipe bridge, keeping completed span records inline and grouped rollups behind
@@ -2283,10 +2240,6 @@ to run against a hung production process.
 
 ## `collect_events(kind="event_source")`
 
-> **Deprecated — call [`collect_events`](#collect_events) with `kind="event_source"`.**
-> Behaviorally identical; will be removed in `0.7.0`.
-
-
 Generic passthrough that opens an EventPipe session for any EventSource by
 name and captures the events it emits in the window. Use for HTTP activity
 (`System.Net.Http`), Kestrel/Hosting/Logging events, or app-defined sources.
@@ -2414,12 +2367,10 @@ The single **drilldown surface**. Every collector that captures a reusable
 artifact (heap, thread, off-CPU, event collection, CPU/allocation/native-alloc
 sample) registers a handle in the shared handle store; `query_snapshot` answers
 parameterized follow-up questions against that handle without re-paying the
-collection cost. It replaces the five legacy per-family query tools
-(`query_heap_snapshot`, `query_thread_snapshot`, `query_off_cpu_snapshot`,
-`query_collection`, `get_call_tree`) behind one `(handle, view)` contract; the
-dispatcher reads the artifact kind and forwards to the matching implementation so
-response envelopes stay byte-identical (asserted by
-`QuerySnapshotCompatibilityTests`).
+collection cost. It is the only registered drilldown tool; the former per-family
+query aliases were removed after consolidation. The dispatcher reads the artifact
+kind and forwards to the matching implementation behind one `(handle, view)`
+contract.
 
 **Core parameters:**
 
@@ -2457,7 +2408,7 @@ response envelopes stay byte-identical (asserted by
 view→parameter mapping.
 
 **Authorization.** The static gate accepts any drilldown-capable bearer; after
-resolving the handle kind the tool re-applies the exact legacy scope at runtime
+resolving the handle kind the tool applies the handle-specific scope at runtime
 (heap → `heap-read`, thread → `ptrace`, off-CPU → `eventpipe`, call-tree →
 `investigation-export`, counters → `read-counters`, other EventPipe collections
 → `eventpipe`, method-parameter handles → `eventpipe` plus the explicit
@@ -2618,12 +2569,11 @@ JIT split the method). Suspend window on live attach is typically < 100 ms.
 
 ## `get_bytes`
 
-**Successor to `get_bytes(kind="module")` + `get_bytes(kind="dump")`.** Single
-byte-fetch entrypoint that dispatches on a `kind` discriminator:
+The single byte-fetch entrypoint dispatches on a `kind` discriminator:
 
-- `kind: "module"` — same shape as the legacy `get_bytes(kind="module")`. Required
+- `kind: "module"` — streams a loaded module. Required
   `moduleVersionId`; optional `asset` (`"pe"`/`"pdb"`), `processId`.
-- `kind: "dump"` — same shape as the legacy `get_bytes(kind="dump")`. Required
+- `kind: "dump"` — streams a dump artifact. Required
   `dumpFilePath` (under `MCP_ARTIFACT_ROOT`).
 - `kind: "trace"` — streams a raw `.nettrace` exported by `collect_sample(kind="cpu", exportTrace=true)`
   or `inspect_heap(source="gcdump", exportTrace=true)`. Required `traceFilePath`
@@ -2641,17 +2591,13 @@ Both branches share `offset` / `maxBytes` and return the same
 `ByteFetchEnvelope` documented below. Unknown `kind` returns a structured
 `InvalidArgument` error envelope listing the allowed values — never throws.
 
-> **Scope:** `module-bytes-read` (literal modifier — same enforcement as the
-> legacy tools). `kind="delete"` additionally requires the literal `delete-artifact`
+> **Scope:** `module-bytes-read` (literal modifier). `kind="delete"` additionally
+> requires the literal `delete-artifact`
 > scope; root/`*` does not auto-grant it.
 >
 > **Artifact TTL reaper.** A background reaper prunes artifacts older than
 > `MCP_ARTIFACT_TTL_HOURS` (default 24h; `0`/negative disables it) so a sidecar doing
 > repeated WithHeap dumps does not fill `/tmp`. `kind="delete"` is the manual override.
-
-The legacy `get_bytes(kind="module")` and `get_bytes(kind="dump")` entrypoints remain available
-during the deprecation window and emit byte-for-byte identical envelopes — see
-`GetBytesCompatibilityTests` for the asserted contract.
 
 ## `get_bytes(kind="module")`
 
@@ -2814,10 +2760,6 @@ discriminator.
 **Why `attach_to_pod` / `detach_from_pod` are NOT folded in.** Those
 verbs have side-effect boundaries (ephemeral-container injection, handle close,
 session unbind) that are distinct from read-only listing. They remain explicit.
-
-**Deprecation.** `list_orchestrator(kind="pods")` and `list_orchestrator(kind="investigations")` are still
-registered and behave unchanged, but each carries `[DeprecatedTool]` metadata
-pointing at `list_orchestrator` and will be removed in **0.7.0**.
 
 **Examples**
 
@@ -3122,7 +3064,7 @@ deprecation warning. Tools covered:
 - `collect_sample(kind="cpu")`
 - `collect_sample(kind="off_cpu")`
 - `collect_thread_snapshot`
-- `inspect_heap` (and its deprecated aliases `inspect_heap(source="dump")` / `inspect_heap(source="live")`)
+- `inspect_heap(source="dump"|"live")`
 
 `MCP_SYMBOL_PATH` and `_NT_SYMBOL_PATH` from the **operator-set environment** are *not*
 validated — they are treated as trusted by the deployment.

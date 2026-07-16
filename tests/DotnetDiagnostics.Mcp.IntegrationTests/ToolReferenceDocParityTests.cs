@@ -1,5 +1,5 @@
 using System.Reflection;
-using DotnetDiagnostics.Mcp.Tools;
+using DotnetDiagnostics.Mcp.Hosting;
 using FluentAssertions;
 using ModelContextProtocol.Server;
 
@@ -16,24 +16,6 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 /// </summary>
 public sealed class ToolReferenceDocParityTests
 {
-    // The shipping tool surface, mirrored from ToolScopeAttributesTests
-    // (ToolScopeRegistry_Production_Surface_Has_Full_Coverage). Keep in sync: any type
-    // that carries [McpServerTool] methods and is registered in DiagnosticServiceRegistration
-    // belongs here.
-    private static readonly Type[] ToolSurfaceTypes =
-    {
-        typeof(DiagnosticTools),
-        typeof(OrchestratorTools),
-        typeof(ListOrchestratorTool),
-        typeof(InspectProcessTool),
-        typeof(CollectEventsTool),
-        typeof(CollectSampleTool),
-        typeof(QuerySnapshotTool),
-        typeof(InspectHeapTool),
-        typeof(GetBytesTool),
-        typeof(DiscoverAzureTool),
-    };
-
     public static TheoryData<string> ToolNames()
     {
         var data = new TheoryData<string>();
@@ -148,7 +130,9 @@ public sealed class ToolReferenceDocParityTests
     private static IReadOnlyList<string> EnumerateToolNames()
     {
         var names = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var type in ToolSurfaceTypes)
+        foreach (var type in PodLocalToolSurfaces.GetSurfaceTypes(
+                     enableOrchestratorTools: true,
+                     enableAzureDiscoveryTools: true))
         {
             foreach (var method in type.GetMethods(
                 BindingFlags.Public | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))

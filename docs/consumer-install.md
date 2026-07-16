@@ -25,7 +25,16 @@ All three publish the same MCP surface (Streamable HTTP, bearer-token authentica
 > `sensitive-parameter-read` scope, and `includeSensitiveValues=true`. The standalone CLI and
 > BenchmarkDotNet diagnoser do not expose this capability.
 
-> 🐧 **Linux heads-up — ClrMD-backed tools need ptrace.** Whichever distribution you pick, `collect_thread_snapshot`, `inspect_heap(source="live")`, `inspect_heap(source="dump")` (against a live PID) and `collect_process_dump` will fail on Linux with `PermissionDenied` / `Could not PTRACE_ATTACH to any thread of the process N.` unless you grant the server permission to attach. Matching the target's UID is **not** enough on Debian/Ubuntu/WSL (default `kernel.yama.ptrace_scope=1`). See [§ 1.5 Linux: enabling ClrMD-backed tools](#15-linux-enabling-clrmd-backed-tools-ptrace) before you wire the server into your client. EventPipe-only tools (`collect_events(kind="counters")`, `collect_sample(kind="cpu")`, `collect_events(kind="exceptions")`, `collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`) work out of the box **unless** you opt into `collect_sample(kind="cpu")(resolveMethodInstantiations=true)`, which intentionally takes the ClrMD path to recover closed generic method signatures.
+> 🐧 **Linux heads-up — live memory readers need kernel ptrace permission.**
+> `collect_thread_snapshot`, `capture_method_bytes`, `inspect_heap(source="live")`, and
+> `get_bytes(kind="module")` against a live PID will fail with `PermissionDenied` /
+> `Could not PTRACE_ATTACH to any thread of the process N.` unless the diagnostics host may
+> attach. Matching the target's UID is **not** enough on Debian/Ubuntu/WSL (default
+> `kernel.yama.ptrace_scope=1`). See
+> [§ 1.5 Linux: enabling live memory readers](#15-linux-enabling-live-memory-readers-kernel-ptrace)
+> before wiring the server into a client. EventPipe-only tools work out of the box unless
+> `collect_sample(kind="cpu", resolveMethodInstantiations=true)` explicitly enables its
+> post-sample ClrMD enrichment.
 
 ### 1a. .NET global tool
 
@@ -60,14 +69,14 @@ tar -xzf dotnet-diagnostics-mcp-*-linux-x64.tar.gz -C ~/.local/bin
 ~/.local/bin/dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 ```
 
-### 1.5. Linux: enabling ClrMD-backed tools (ptrace)
+### 1.5. Linux: enabling live memory readers (kernel ptrace)
 
-Four tools attach to the target via `ptrace(PTRACE_ATTACH, …)`:
+Four live-memory operations attach to the target via `ptrace(PTRACE_ATTACH, …)`:
 
 - `collect_thread_snapshot`
+- `capture_method_bytes` against a live PID
 - `inspect_heap(source="live")`
-- `inspect_heap(source="dump")` against a **live** PID (offline dump analysis is unaffected)
-- `collect_process_dump`
+- `get_bytes(kind="module")` against a live PID
 
 Linux's [Yama LSM](https://www.kernel.org/doc/Documentation/admin-guide/LSM/Yama.rst) defaults `kernel.yama.ptrace_scope=1` on Debian, Ubuntu, WSL, GitHub Codespaces, and most desktop distros — meaning **same-UID peer attach is blocked**. The MCP server reports this as a structured `DiagnosticError`:
 
@@ -78,7 +87,7 @@ Linux's [Yama LSM](https://www.kernel.org/doc/Documentation/admin-guide/LSM/Yama
 
 Pick the recipe that matches your distribution:
 
-| Distribution        | Recipe                                                                                       | Scope                  |
+| Distribution        | Recipe                                                                                       | Permission reach       |
 |---------------------|----------------------------------------------------------------------------------------------|------------------------|
 | **Global tool / single-file binary** (running on the host) | `sudo sysctl -w kernel.yama.ptrace_scope=0`<br/>Persist with `echo 'kernel.yama.ptrace_scope = 0' \| sudo tee /etc/sysctl.d/10-ptrace.conf`. | Host-wide (relaxes a security default — see note below). |
 | **Container (Docker / Podman)** | Add `--cap-add SYS_PTRACE` to the `docker run` command. | Sidecar container only. |
@@ -87,7 +96,10 @@ Pick the recipe that matches your distribution:
 
 > **Security note on `ptrace_scope=0`.** This is the historical Linux default and is appropriate for personal dev workstations / Codespaces. It lets any process owned by your UID attach to any other process owned by your UID — which is precisely what the diagnostics server needs. On a shared host or anything close to production, prefer the container/K8s recipes (capability scoped to the sidecar) over relaxing the host setting.
 
-You can verify the current Yama policy with `cat /proc/sys/kernel/yama/ptrace_scope` — `0` allows the attach, `1` is "scope to children", `2` is "admin-only", `3` is "no attach". Anything > 0 will break the four tools above.
+You can verify the current Yama policy with `cat /proc/sys/kernel/yama/ptrace_scope` — `0`
+allows the attach, `1` is "scope to children", `2` is "admin-only", and `3` is "no
+attach". Anything above `0` blocks these same-UID peer attaches unless the process has the
+required kernel capability.
 
 To dodge the requirement entirely, use the dump-based workflow:
 
@@ -97,7 +109,10 @@ collect_process_dump  (runs inside the target process — no ptrace needed)
 inspect_heap(source="dump")          (offline analysis — no live attach)
 ```
 
-`collect_process_dump` writes the dump via the diagnostic IPC socket, which only needs UID parity. The capture happens inside the target itself, so ptrace permission never enters the picture.
+`collect_process_dump` writes through the diagnostic IPC socket. It needs UID/socket access,
+not Linux `CAP_SYS_PTRACE`; the capture happens inside the target runtime. MCP authorization is
+a separate boundary: the server still requires the bearer scopes `dump-write` + `ptrace` and
+human approval (`confirm=true` or MCP elicitation) before writing a dump.
 
 ---
 

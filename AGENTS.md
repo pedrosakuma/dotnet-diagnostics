@@ -121,9 +121,9 @@ The .NET diagnostic IPC socket at `/tmp/dotnet-diagnostic-<pid>` inherits the **
 - **Local dev**: `docker run --user 0 …` on the sidecar (target runs as root).
 - **K8s**: pod-level `securityContext` with matching `runAsUser` + `runAsGroup` + `fsGroup`. See [`deploy/k8s/sample-sidecar.yaml`](./deploy/k8s/sample-sidecar.yaml).
 
-### 🪪 `CAP_SYS_PTRACE` for ClrMD-backed tools — UID alone is not enough on Linux
+### 🪪 `CAP_SYS_PTRACE` for live memory readers — UID alone is not enough on Linux
 
-`collect_thread_snapshot`, `inspect_heap(source="live")`, `inspect_heap(source="dump")` (against a live PID) and `collect_process_dump` attach via `ptrace(2)`. On Linux with `kernel.yama.ptrace_scope=1` (Debian/Ubuntu/WSL default) same-UID peer attach is blocked.
+`collect_thread_snapshot`, `inspect_heap(source="live")`, live `capture_method_bytes`, and `get_bytes(kind="module")` attach via `ptrace(2)`. On Linux with `kernel.yama.ptrace_scope=1` (Debian/Ubuntu/WSL default) same-UID peer attach is blocked. `collect_process_dump` instead writes through diagnostic IPC and does not require Linux `CAP_SYS_PTRACE`, although MCP authorization still requires its separate `dump-write` + `ptrace` bearer scopes and human approval.
 
 - **Docker (local)**: `--cap-add SYS_PTRACE` on the **sidecar** container.
 - **K8s**: `capabilities.add: ["SYS_PTRACE"]` on the sidecar container's `securityContext`. See [`deploy/k8s/sample-sidecar.yaml`](./deploy/k8s/sample-sidecar.yaml).

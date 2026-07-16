@@ -88,12 +88,13 @@ diag(pid 1234)> exit
 - **Full CLI reference:** [`docs/cli-reference.md`](https://github.com/pedrosakuma/dotnet-diagnostics/blob/main/docs/cli-reference.md)
 - **Project README & MCP server:** [github.com/pedrosakuma/dotnet-diagnostics](https://github.com/pedrosakuma/dotnet-diagnostics)
 
-## Linux note (ClrMD-backed tools)
+## Linux note (live heap inspection)
 
-`inspect-heap --source live` and `dump` attach via `ptrace(2)`. On
+`inspect-heap --source live` attaches via `ptrace(2)`. On
 Debian/Ubuntu/WSL the default `kernel.yama.ptrace_scope=1` blocks same-UID peer attach — run
 `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope` (or grant `CAP_SYS_PTRACE` in a container).
-EventPipe-based tools (`collect`, counters, GC, exceptions) are unaffected.
+The `dump` command writes through diagnostic IPC and does not need that kernel capability.
+EventPipe-based tools (`collect`, counters, GC, exceptions) are also unaffected.
 
 ## License
 

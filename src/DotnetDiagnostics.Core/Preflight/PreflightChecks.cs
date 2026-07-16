@@ -14,8 +14,8 @@ public static class PreflightChecks
     {
         "collect_thread_snapshot",
         "inspect_heap(source=\"live\")",
-        "inspect_heap(source=\"dump\")",
-        "collect_process_dump",
+        "capture_method_bytes",
+        "get_bytes(kind=\"module\")",
     };
 
     private static readonly string[] AllTools = { "all tools" };

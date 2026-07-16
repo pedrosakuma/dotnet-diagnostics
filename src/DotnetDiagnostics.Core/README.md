@@ -18,8 +18,9 @@ dotnet add package dotnet-diagnostics-core
 ```
 
 > **Target framework:** `net10.0`. **Platform:** the engine attaches over the diagnostic IPC socket;
-> ClrMD-backed operations (heap/thread snapshots, dumps) additionally need `CAP_SYS_PTRACE` on Linux
-> and the same UID as the target. See the repo docs for the deployment matrix.
+> live ClrMD memory readers (heap/thread snapshots, method bytes, module bytes) additionally need
+> `CAP_SYS_PTRACE` on Linux and the same UID as the target. Process dumps write through diagnostic
+> IPC and do not require that kernel capability. See the repo docs for the deployment matrix.
 
 ## Supported public surface (Pattern B — curated facade)
 

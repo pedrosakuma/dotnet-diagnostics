@@ -266,4 +266,4 @@ Remove-Item -Recurse -Force "$env:ProgramData\dotnet-diagnostics-mcp" -ErrorActi
 | `Authorization` header rejected with 401                                                          | The MCP client is reading a stale `MCP_BEARER_TOKEN` from User scope instead of the service account / token file. Refresh the client. |
 | `whoami /priv` does **not** list `SeSystemProfilePrivilege` for the service process               | The privilege is on the **account**, but the service was started with a **filtered token** (rare; legacy 32-bit hosts). Verify the service is 64-bit; restart the host once. |
 
-For Linux / containers, see [`consumer-install.md § 1.5`](./consumer-install.md#15-linux-enabling-clrmd-backed-tools-ptrace).
+For Linux / containers, see [`consumer-install.md § 1.5`](./consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).

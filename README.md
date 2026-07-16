@@ -117,7 +117,7 @@ docker run -d -p 127.0.0.1:8787:8080 \
 <details>
 <summary><strong>Linux ptrace note</strong></summary>
 
-On Debian/Ubuntu/WSL, `kernel.yama.ptrace_scope=1` blocks ClrMD tools. Fix: `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope`. See [`docs/consumer-install.md`](./docs/consumer-install.md#15-linux-enabling-clrmd-backed-tools-ptrace).
+On Debian/Ubuntu/WSL, `kernel.yama.ptrace_scope=1` blocks ClrMD live-memory readers. Fix: `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope`. See [`docs/consumer-install.md`](./docs/consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
 
 </details>
 
