@@ -12,6 +12,91 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
 public sealed class QuerySnapshotHandleSecurityTests
 {
+    public static TheoryData<string, string, string?> ReplayableRecoveryHints()
+        => new()
+        {
+            { DiagnosticTools.ThreadSnapshotKind, "collect_thread_snapshot", null },
+            { "cpu-sample", "collect_sample", "cpu" },
+            { "allocation-sample", "collect_sample", "allocation" },
+            { DiagnosticTools.NativeAllocHandleKind, "collect_sample", "native-alloc" },
+            { DiagnosticTools.OffCpuHandleKind, "collect_sample", "off_cpu" },
+            { CollectionHandleKinds.Counters, "collect_events", "counters" },
+            { CollectionHandleKinds.ExceptionSnapshot, "collect_events", "exceptions" },
+            { CollectionHandleKinds.CrashGuardSnapshot, "collect_events", "crash-guard" },
+            { CollectionHandleKinds.GcEvents, "collect_events", "gc" },
+            { CollectionHandleKinds.GcDatas, "collect_events", "datas" },
+            { CollectionHandleKinds.EventCatalog, "collect_events", "catalog" },
+            { CollectionHandleKinds.Activities, "collect_events", "activities" },
+            { CollectionHandleKinds.LogSnapshot, "collect_events", "logs" },
+            { CollectionHandleKinds.JitSnapshot, "collect_events", "jit" },
+            { CollectionHandleKinds.ThreadPoolSnapshot, "collect_events", "threadpool" },
+            { CollectionHandleKinds.ContentionSnapshot, "collect_events", "contention" },
+            { CollectionHandleKinds.DbSnapshot, "collect_events", "db" },
+            { CollectionHandleKinds.KestrelSnapshot, "collect_events", "kestrel" },
+            { CollectionHandleKinds.NetworkingSnapshot, "collect_events", "networking" },
+            { CollectionHandleKinds.StartupSnapshot, "collect_events", "startup" },
+            { CollectionHandleKinds.InFlightRequests, "collect_events", "requests" },
+        };
+
+    public static TheoryData<string, string, string?> NonReplayableRecoveryHints()
+        => new()
+        {
+            { DiagnosticTools.HeapSnapshotKind, "inspect_heap", null },
+            { CollectionHandleKinds.EventSource, "collect_events", "event_source" },
+            { MethodParameterCaptureUseCases.HandleKind, "collect_sample", "method-params" },
+        };
+
+    [Theory]
+    [MemberData(nameof(ReplayableRecoveryHints))]
+    public async Task CapacityTombstone_ReconstructsCanonicalCollectorArguments(
+        string handleKind,
+        string expectedTool,
+        string? expectedCollectorKind)
+    {
+        var hint = await CapacityRecoveryHint(handleKind);
+
+        hint.NextTool.Should().Be(expectedTool);
+        hint.SuggestedArguments.Should().NotBeNull();
+        hint.SuggestedArguments!["processId"].Should().Be(424242);
+        if (expectedCollectorKind is null)
+        {
+            hint.SuggestedArguments.Should().NotContainKey("kind");
+        }
+        else
+        {
+            hint.SuggestedArguments!["kind"].Should().Be(expectedCollectorKind);
+        }
+        hint.ShouldMatchCanonicalSchema();
+    }
+
+    [Theory]
+    [MemberData(nameof(NonReplayableRecoveryHints))]
+    public async Task CapacityTombstone_OmitsArgumentsWhenOriginalInputsCannotBeReconstructed(
+        string handleKind,
+        string expectedTool,
+        string? expectedCollectorKind)
+    {
+        var hint = await CapacityRecoveryHint(handleKind);
+
+        hint.NextTool.Should().Be(expectedTool);
+        hint.SuggestedArguments.Should().BeNull();
+        if (expectedCollectorKind is not null)
+        {
+            hint.Reason.Should().Contain($"kind=\"{expectedCollectorKind}\"");
+        }
+        hint.ShouldMatchCanonicalSchema();
+    }
+
+    [Fact]
+    public void RecoveryMapping_CoversEveryQueryableHandleKind()
+    {
+        var expected = ReplayableRecoveryHints()
+            .Select(row => (string)row[0])
+            .Concat(NonReplayableRecoveryHints().Select(row => (string)row[0]));
+
+        expected.Should().BeEquivalentTo(QuerySnapshotTool.RegisteredKinds);
+    }
+
     [Fact]
     public async Task CountersDiff_RequiresReadCountersInsteadOfEventPipe()
     {
@@ -170,6 +255,26 @@ public sealed class QuerySnapshotHandleSecurityTests
             view: view,
             baselineHandle: baselineHandle,
             cancellationToken: CancellationToken.None);
+
+    private static async Task<NextActionHint> CapacityRecoveryHint(string handleKind)
+    {
+        var store = new MemoryDiagnosticHandleStore(maxEntries: 1);
+        var evicted = store.Register(424242, handleKind, new object(), TimeSpan.FromMinutes(10));
+        store.Register(1, CollectionHandleKinds.Counters, new object(), TimeSpan.FromMinutes(10));
+
+        var principal = handleKind == MethodParameterCaptureUseCases.HandleKind
+            ? TestPrincipalAccessors.WithScopes("eventpipe", "sensitive-parameter-read")
+            : TestPrincipalAccessors.Root;
+        var result = await Query(
+            store,
+            principal,
+            evicted.Id,
+            view: "summary");
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("HandleCapacityEvicted");
+        return result.Hints.Should().ContainSingle().Subject;
+    }
 
     private static CpuSampleTraceArtifact CpuArtifact()
     {

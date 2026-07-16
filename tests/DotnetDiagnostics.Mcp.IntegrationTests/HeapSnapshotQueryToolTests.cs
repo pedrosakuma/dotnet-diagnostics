@@ -25,6 +25,7 @@ public sealed class HeapSnapshotQueryToolTests
         hint.NextTool.Should().Be("inspect_heap");
         hint.SuggestedArguments.Should().BeEquivalentTo(
             new Dictionary<string, object?> { ["source"] = "live" });
+        hint.ShouldMatchCanonicalSchema();
     }
 
     [Fact]

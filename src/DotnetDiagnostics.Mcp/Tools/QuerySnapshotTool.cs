@@ -809,24 +809,65 @@ public sealed partial class QuerySnapshotTool
                 null);
         }
 
-        var kind = tombstone?.Kind;
-        var processId = tombstone?.ProcessId;
-        var tool = kind switch
+        var recovery = tombstone.Kind switch
         {
-            DiagnosticTools.HeapSnapshotKind => "inspect_heap",
-            DiagnosticTools.ThreadSnapshotKind => "collect_thread_snapshot",
-            "cpu-sample" or "allocation-sample" or DiagnosticTools.NativeAllocHandleKind or DiagnosticTools.OffCpuHandleKind or MethodParameterCaptureUseCases.HandleKind
-                => "collect_sample",
-            _ => "collect_events",
+            DiagnosticTools.HeapSnapshotKind => new RecoveryTarget("inspect_heap"),
+            DiagnosticTools.ThreadSnapshotKind => new RecoveryTarget("collect_thread_snapshot", Replayable: true),
+            "cpu-sample" => new RecoveryTarget("collect_sample", "cpu", Replayable: true),
+            "allocation-sample" => new RecoveryTarget("collect_sample", "allocation", Replayable: true),
+            DiagnosticTools.NativeAllocHandleKind => new RecoveryTarget("collect_sample", "native-alloc", Replayable: true),
+            DiagnosticTools.OffCpuHandleKind => new RecoveryTarget("collect_sample", "off_cpu", Replayable: true),
+            MethodParameterCaptureUseCases.HandleKind => new RecoveryTarget("collect_sample", "method-params"),
+            CollectionHandleKinds.Counters => new RecoveryTarget("collect_events", "counters", Replayable: true),
+            CollectionHandleKinds.ExceptionSnapshot => new RecoveryTarget("collect_events", "exceptions", Replayable: true),
+            CollectionHandleKinds.CrashGuardSnapshot => new RecoveryTarget("collect_events", "crash-guard", Replayable: true),
+            CollectionHandleKinds.GcEvents => new RecoveryTarget("collect_events", "gc", Replayable: true),
+            CollectionHandleKinds.GcDatas => new RecoveryTarget("collect_events", "datas", Replayable: true),
+            CollectionHandleKinds.EventCatalog => new RecoveryTarget("collect_events", "catalog", Replayable: true),
+            CollectionHandleKinds.EventSource => new RecoveryTarget("collect_events", "event_source"),
+            CollectionHandleKinds.Activities => new RecoveryTarget("collect_events", "activities", Replayable: true),
+            CollectionHandleKinds.LogSnapshot => new RecoveryTarget("collect_events", "logs", Replayable: true),
+            CollectionHandleKinds.JitSnapshot => new RecoveryTarget("collect_events", "jit", Replayable: true),
+            CollectionHandleKinds.ThreadPoolSnapshot => new RecoveryTarget("collect_events", "threadpool", Replayable: true),
+            CollectionHandleKinds.ContentionSnapshot => new RecoveryTarget("collect_events", "contention", Replayable: true),
+            CollectionHandleKinds.DbSnapshot => new RecoveryTarget("collect_events", "db", Replayable: true),
+            CollectionHandleKinds.KestrelSnapshot => new RecoveryTarget("collect_events", "kestrel", Replayable: true),
+            CollectionHandleKinds.NetworkingSnapshot => new RecoveryTarget("collect_events", "networking", Replayable: true),
+            CollectionHandleKinds.StartupSnapshot => new RecoveryTarget("collect_events", "startup", Replayable: true),
+            CollectionHandleKinds.InFlightRequests => new RecoveryTarget("collect_events", "requests", Replayable: true),
+            _ => new RecoveryTarget("inspect_process"),
         };
-        var arguments = processId is { } pid
-            ? new Dictionary<string, object?> { ["processId"] = pid }
-            : null;
-        return new NextActionHint(
-            tool,
-            "Re-run the original collector with the same parameters to issue a fresh handle.",
-            arguments);
+
+        Dictionary<string, object?>? arguments = null;
+        if (recovery.Replayable)
+        {
+            arguments = new Dictionary<string, object?>();
+            if (recovery.Kind is not null)
+            {
+                arguments["kind"] = recovery.Kind;
+            }
+            if (tombstone.ProcessId is var processId and > 0)
+            {
+                arguments["processId"] = processId;
+            }
+        }
+
+        var reason = recovery switch
+        {
+            { Replayable: true, Kind: not null } =>
+                $"Re-run {recovery.Tool}(kind=\"{recovery.Kind}\") to issue a fresh handle; reapply any optional filters or duration from the original capture.",
+            { Replayable: true } =>
+                $"Re-run {recovery.Tool} to issue a fresh handle; reapply any optional settings from the original capture.",
+            { Kind: not null } =>
+                $"Re-run {recovery.Tool}(kind=\"{recovery.Kind}\") with the original required filters to issue a fresh handle; the tombstone does not retain those inputs.",
+            _ =>
+                $"Re-run {recovery.Tool} with the original source and required inputs to issue a fresh handle; the tombstone does not retain them.",
+        };
+
+        return new NextActionHint(recovery.Tool, reason, arguments);
     }
+
+    private sealed record RecoveryTarget(string Tool, string? Kind = null, bool Replayable = false);
 
     private static DiagnosticResult<object> InvalidKindPair(string currentKind, string baselineKind)
     {

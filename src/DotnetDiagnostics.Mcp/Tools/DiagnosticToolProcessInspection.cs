@@ -114,16 +114,26 @@ internal static class DiagnosticToolProcessInspection
             {
                 new NextActionHint("inspect_heap",
                     $"RSS growing at {rssMiB:F2} MiB/s — inspect the live heap to identify dominant retainers.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["topTypes"] = 25 }),
+                    new Dictionary<string, object?>
+                    {
+                        ["source"] = "live",
+                        ["processId"] = pid,
+                        ["topTypes"] = 25,
+                    }),
                 new NextActionHint("inspect_process",
                     "Cross-check memory against cgroup limits before concluding it is a leak.",
-                    new Dictionary<string, object?> { ["processId"] = pid }),
+                    new Dictionary<string, object?> { ["view"] = "resources", ["processId"] = pid }),
             }
             : new[]
             {
                 new NextActionHint("collect_events",
                     "Memory looks stable — check runtime counters for CPU/GC pressure.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 5 }),
+                    new Dictionary<string, object?>
+                    {
+                        ["kind"] = "counters",
+                        ["processId"] = pid,
+                        ["durationSeconds"] = 5,
+                    }),
             };
 
         var ok = DiagnosticResult.Ok(trend, summary, hints);
@@ -309,7 +319,12 @@ internal static class DiagnosticToolProcessInspection
             [
                 new NextActionHint("collect_sample",
                     $"CPU throttling > 5% ({cpu.ThrottlePercent:F1}% of periods). Sample on-CPU stacks to see which code is hitting the quota.",
-                    new Dictionary<string, object?> { ["processId"] = s.ProcessId, ["durationSeconds"] = 10 }),
+                    new Dictionary<string, object?>
+                    {
+                        ["kind"] = "cpu",
+                        ["processId"] = s.ProcessId,
+                        ["durationSeconds"] = 10,
+                    }),
             ];
         }
         if (s.Memory is { UsageFraction: > 0.85 } mem)
@@ -318,7 +333,12 @@ internal static class DiagnosticToolProcessInspection
             [
                 new NextActionHint("inspect_heap",
                     $"Memory at {(mem.UsageFraction ?? 0) * 100:F0}% of limit. Inspect the live heap to identify the dominant retainers before the cgroup OOM-kills.",
-                    new Dictionary<string, object?> { ["processId"] = s.ProcessId, ["topTypes"] = 25 }),
+                    new Dictionary<string, object?>
+                    {
+                        ["source"] = "live",
+                        ["processId"] = s.ProcessId,
+                        ["topTypes"] = 25,
+                    }),
             ];
         }
         if (!s.InContainer)
@@ -327,7 +347,12 @@ internal static class DiagnosticToolProcessInspection
             [
                 new NextActionHint("collect_events",
                     "Not in a container envelope — runtime EventCounters remain the cheapest first signal.",
-                    new Dictionary<string, object?> { ["processId"] = s.ProcessId, ["durationSeconds"] = 5 }),
+                    new Dictionary<string, object?>
+                    {
+                        ["kind"] = "counters",
+                        ["processId"] = s.ProcessId,
+                        ["durationSeconds"] = 5,
+                    }),
             ];
         }
         return
