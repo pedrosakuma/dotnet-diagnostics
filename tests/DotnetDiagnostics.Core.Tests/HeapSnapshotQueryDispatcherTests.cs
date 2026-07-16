@@ -125,6 +125,28 @@ public class HeapSnapshotQueryDispatcherTests
         HeapSnapshotQueryDispatcher.ProjectionViews.Should().NotContain("duplicate-strings");
     }
 
+    [Fact]
+    public void GcDumpClrMdOnlyRecapture_OmitsReplayArguments()
+    {
+        var snapshot = Snapshot() with
+        {
+            Origin = HeapSnapshotOrigin.GcDump,
+            RetentionPaths = null,
+        };
+
+        var outcome = HeapSnapshotQueryDispatcher.Dispatch(
+            snapshot,
+            Handle,
+            "retention-paths",
+            topN: 10,
+            rankBy: null,
+            typeFullName: null);
+
+        var hint = outcome.Result!.Hints.Should().ContainSingle().Which;
+        hint.NextTool.Should().Be("inspect_heap");
+        hint.SuggestedArguments.Should().BeNull();
+    }
+
     private static HeapSnapshotArtifact Snapshot() => new(
         Origin: HeapSnapshotOrigin.Live,
         ProcessId: 123,

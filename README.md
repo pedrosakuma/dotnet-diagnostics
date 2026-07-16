@@ -2,9 +2,13 @@
 
 [![CI](https://github.com/pedrosakuma/dotnet-diagnostics/actions/workflows/ci.yml/badge.svg)](https://github.com/pedrosakuma/dotnet-diagnostics/actions/workflows/ci.yml)
 
-An **MCP server** for LLM-driven performance diagnostics on **.NET 10** applications — zero instrumentation required.
+An **MCP server** for LLM-driven performance diagnostics on **.NET 10** applications.
+Normal EventPipe and ClrMD diagnostics require no target code changes or prior instrumentation.
+The explicit exception is `collect_sample(kind="method-params")`, an opt-in, privileged,
+security-gated dynamic profiler attach that temporarily instruments an allowlist of methods.
 
-> **Status:** 15 unified tools, HTTP + stdio transports, IoT-style triage (6+ steps → 2 steps).
+> **Status:** 16 unified tools in the full surface (12 default plus 4 configuration-gated),
+> HTTP + stdio transports, IoT-style triage (6+ steps → 2 steps).
 > See [`docs/`](./docs) for full reference.
 
 ### Two ways to use it
@@ -113,7 +117,7 @@ docker run -d -p 127.0.0.1:8787:8080 \
 <details>
 <summary><strong>Linux ptrace note</strong></summary>
 
-On Debian/Ubuntu/WSL, `kernel.yama.ptrace_scope=1` blocks ClrMD tools. Fix: `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope`. See [`docs/consumer-install.md`](./docs/consumer-install.md#15-linux-enabling-clrmd-backed-tools-ptrace).
+On Debian/Ubuntu/WSL, `kernel.yama.ptrace_scope=1` blocks ClrMD live-memory readers. Fix: `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope`. See [`docs/consumer-install.md`](./docs/consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
 
 </details>
 
@@ -174,23 +178,22 @@ as `dotnet-diagnostics-cli-<version>-<rid>`. **Full reference:** [`docs/cli-refe
 
 | Tool | Purpose |
 |---|---|
-| `inspect_process(view="triage")` | **Fast evidence triage** — observed signals + bounded hypotheses + ranked TopIndicators + hints |
-| `inspect_process(view="list")` / `inspect_process(view="info")` | Discover .NET processes via diagnostic IPC |
-| `inspect_process(view="capabilities")` | Detect CoreCLR vs NativeAOT and what's usable |
-| `inspect_process(view="container")` | Linux cgroup v2: CPU throttling, memory pressure, OOM kills, PSI |
-| `collect_events(kind="counters")` | EventCounters with neutral **auto-hints** (CPU, GC, queueing, contention, allocation, waiting) |
-| `collect_sample(kind="cpu")` / `query_snapshot(view="call-tree")` | Top-N CPU hotspots (inclusive/exclusive) + on-demand caller→callee tree |
-| `collect_sample(kind="off_cpu")` / `query_snapshot` | Where threads block (futex / IO / sleep) — Linux `perf` backend |
-| `collect_sample(kind="native-alloc")` / `query_snapshot(view="call-tree")` | Native/unmanaged allocation hotspots (off-GC-heap `malloc`) attributed to call sites — Linux `perf` uprobe backend |
-| `collect_events(kind="exceptions")` | Managed exceptions thrown in a window, aggregated by type |
-| `collect_events(kind="gc")` | GC pauses + per-generation counts |
-| `collect_events(kind="activities")` / `query_snapshot` | ActivitySource span capture (trace/span ids, parent linkage, tags, duration) + **GC overlay** correlation |
-| `collect_events(kind="event_source")` / `query_snapshot` | Generic EventSource passthrough (HTTP, Kestrel, custom) + re-project artifacts |
-| `collect_thread_snapshot` / `query_snapshot` | Managed thread states + SyncBlock lock graph + deadlock / unique-stack drilldown |
-| `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `query_snapshot` | Top retained types + retention paths + roots + async state machines, live or from a dump |
+| `inspect_process` | Process discovery, capabilities, environment/resources, memory trends, preflight, and evidence-backed triage |
+| `collect_events` | EventCounters/Meters and bounded EventPipe event families (GC, exceptions, activities, logs, JIT, networking, and more) |
+| `collect_sample` | CPU, off-CPU, managed/native allocation, and explicitly gated method-parameter capture |
+| `query_snapshot` | Re-project retained handles into call trees, diffs, histograms, events, roots, and other focused views |
+| `inspect_heap` | Live or dump heap walk with retained-type, root, retention-path, and async-state-machine drilldowns |
+| `get_bytes` | Materialize authorized module, PDB, dump, or trace bytes from a server-side artifact |
+| `discover_azure` | Configuration-gated App Service, Container Apps, and AKS discovery |
 | `collect_process_dump` | Write a Mini / Triage / WithHeap / Full dump to disk |
-| `start_investigation` | Structured plan (cold / warm / hypothesis) before any collector runs |
-| `export_investigation_summary` / `compare_to_baseline` | Portable JSON memory; LLM persists, diffs across deploys |
+| `collect_thread_snapshot` | Managed thread states, stacks, SyncBlock lock graph, and deadlock evidence |
+| `capture_method_bytes` | Read JIT-emitted native bytes for a managed method from a live process or dump |
+| `start_investigation` | Build a bounded cold, warm, or hypothesis-driven investigation plan |
+| `export_investigation_summary` | Export portable investigation memory as JSON |
+| `compare_to_baseline` | Compare a current investigation summary with a saved baseline |
+| `list_orchestrator` | Configuration-gated Kubernetes namespace, workload, pod, and investigation inventory |
+| `attach_to_pod` | Configuration-gated sidecar/ephemeral-container attach and investigation-handle creation |
+| `detach_from_pod` | Close an orchestrated investigation and release its transport resources |
 
 </details>
 
@@ -206,7 +209,8 @@ all deployment guides (Kubernetes, Helm, Azure, AWS, GCP).
 
 ## Goals
 
-- **Zero changes to target app** — works via diagnostic IPC
+- **No prior instrumentation for standard diagnostics** — EventPipe and ClrMD work through diagnostic IPC without target code changes
+- **Explicit sensitive attach boundary** — method-parameter capture is opt-in dynamic profiler instrumentation, not a passive collector
 - **Cross-platform** — Linux + Windows, containers first-class
 - **Graceful NativeAOT** — unsupported tools return `not_supported`, not crashes
 - **LLM-friendly** — summarized JSON, not raw `.nettrace`
@@ -261,10 +265,9 @@ Add to `~/.copilot/mcp-config.json`:
 | 5 | ✅ | Kubernetes sidecar ([`deploy/k8s/`](./deploy/k8s)) |
 | 6 | ✅ | Documentation polish |
 | 7 | ✅ | Cloud integrations (Azure, AWS, GCP) |
-| 8 | ✅ | Tool consolidation (24 → 15 tools) |
-| **12** | ✅ | **Diagnostic Journey UX** — auto-hints + IoT triage |
-| **13** | ✅ | **GC overlay** — correlate GC pauses with activity spans |
-| Next | ⏳ | Flame graph export, NativeAOT publish |
+| 8 | ✅ | Tool consolidation into unified discriminator tools |
+| 9–15 | ✅ | Diagnostic UX, package surfaces, platform parity, and signal grouping (see [`CHANGELOG.md`](./CHANGELOG.md)) |
+| **16** | 🚧 | **MCP protocol evolution + external capability gaps** — active roadmap [#551](https://github.com/pedrosakuma/dotnet-diagnostics/issues/551) |
 
 </details>
 
@@ -272,4 +275,4 @@ Add to `~/.copilot/mcp-config.json`:
 
 ## License
 
-TBD.
+MIT — see [`LICENSE`](./LICENSE).

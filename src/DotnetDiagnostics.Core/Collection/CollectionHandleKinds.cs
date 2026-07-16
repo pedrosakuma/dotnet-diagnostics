@@ -2,33 +2,33 @@ namespace DotnetDiagnostics.Core.Collection;
 
 /// <summary>
 /// Canonical <c>kind</c> string each collector registers with <see cref="Drilldown.IDiagnosticHandleStore"/>.
-/// The unified <c>query_collection</c> tool dispatches on these values to pick the right view shape.
+/// The unified <c>query_snapshot</c> tool dispatches on these values to pick the right view shape.
 /// Keep these stable — they are observable on every handle returned to MCP clients.
 /// </summary>
 public static class CollectionHandleKinds
 {
-    /// <summary>Handle backing a <see cref="Counters.CounterSnapshot"/> emitted by <c>snapshot_counters</c>.</summary>
+    /// <summary>Handle backing a <see cref="Counters.CounterSnapshot"/> emitted by <c>collect_events(kind="counters")</c>.</summary>
     public const string Counters = "counters";
 
-    /// <summary>Handle backing a <see cref="Exceptions.ExceptionSnapshot"/> emitted by <c>collect_exceptions</c>.</summary>
+    /// <summary>Handle backing a <see cref="Exceptions.ExceptionSnapshot"/> emitted by <c>collect_events(kind="exceptions")</c>.</summary>
     public const string ExceptionSnapshot = "exception-snapshot";
 
     /// <summary>Handle backing a <see cref="Exceptions.CrashGuardSnapshot"/> emitted by <c>collect_events(kind="crash-guard")</c>.</summary>
     public const string CrashGuardSnapshot = "crash-guard-snapshot";
 
-    /// <summary>Handle backing a <see cref="Gc.GcSummary"/> emitted by <c>collect_gc_events</c>.</summary>
+    /// <summary>Handle backing a <see cref="Gc.GcSummary"/> emitted by <c>collect_events(kind="gc")</c>.</summary>
     public const string GcEvents = "gc-events";
 
     /// <summary>Handle backing a <see cref="Gc.GcDatasSnapshot"/> emitted by <c>collect_events(kind="datas")</c>.</summary>
     public const string GcDatas = "gc-datas";
 
-    /// <summary>Handle backing an <see cref="EventSources.EventSourceCapture"/> emitted by <c>collect_event_source</c>.</summary>
+    /// <summary>Handle backing an <see cref="EventSources.EventSourceCapture"/> emitted by <c>collect_events(kind="event_source")</c>.</summary>
     public const string EventSource = "event-source";
 
     /// <summary>Handle backing an <see cref="EventSources.EventCatalogSnapshot"/> emitted by <c>collect_events(kind="catalog")</c>.</summary>
     public const string EventCatalog = "event-catalog";
 
-    /// <summary>Handle backing an <see cref="Activities.ActivityCapture"/> emitted by <c>collect_activities</c>.</summary>
+    /// <summary>Handle backing an <see cref="Activities.ActivityCapture"/> emitted by <c>collect_events(kind="activities")</c>.</summary>
     public const string Activities = "activities";
 
     /// <summary>Handle backing a <see cref="Logs.LogSnapshot"/> emitted by <c>collect_events(kind="logs")</c>.</summary>

@@ -19,11 +19,9 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// (<c>containerapps</c>), and AKS (<c>aksclusters</c>).
 /// </summary>
 /// <remarks>
-/// <para>This PR (#232) ships only the contract: the tool, the three backend
-/// interfaces and the response envelope. The real backends arrive in #233
-/// (App Service + Container Apps) and #234 (AKS). Default backend implementations
-/// throw <see cref="NotImplementedException"/> on every call so any wiring
-/// regression surfaces immediately.</para>
+/// <para>The contract shipped in #232. Production backends are registered by
+/// <c>AddAzureDiscoveryServices</c>: #233 added App Service and Container Apps,
+/// and #234 added AKS plus the kubeconfig-handle store.</para>
 /// <para>Mirrors the style of <see cref="ListOrchestratorTool"/>: discriminator
 /// validation via <see cref="DiscriminatorDispatch"/>, structured envelope with
 /// <c>data.kind</c> echo and exactly one populated payload, scope enforcement via
@@ -61,8 +59,8 @@ public sealed class DiscoverAzureTool
         "Discover .NET workloads in an Azure subscription. Pass kind='webapps' to enumerate " +
         "App Service sites; kind='containerapps' for Azure Container Apps; kind='aksclusters' " +
         "for AKS managed clusters. Read-only ARM listing — never returns raw kubeconfig (AKS " +
-        "responses carry an opaque handle when includeKubeconfig=true). Backends for webapps/" +
-        "containerapps land in #233; AKS in #234.")]
+        "responses carry an opaque handle when includeKubeconfig=true). All three production " +
+        "backends are available when AzureDiscovery:Enabled=true.")]
     public async Task<DiagnosticResult<DiscoverAzureResult>> DiscoverAzureAsync(
         IAzureWebAppsDiscovery webApps,
         IAzureContainerAppsDiscovery containerApps,

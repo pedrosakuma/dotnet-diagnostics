@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.UseCases;
 using FluentAssertions;
@@ -32,7 +33,9 @@ public sealed class AttachConcurrencyLimiterTests
 
         second.IsError.Should().BeTrue();
         second.Error!.Kind.Should().Be("Busy");
-        second.Hints.Should().ContainSingle(h => h.NextTool == "collect_thread_snapshot");
+        var hint = second.Hints.Should().ContainSingle(h => h.NextTool == "collect_thread_snapshot").Which;
+        hint.SuggestedArguments.Should().BeNull(
+            "AttachGuard cannot assume that a tool accepts processId when the caller did not supply retry arguments");
 
         release.SetResult();
         (await first).IsError.Should().BeFalse();
@@ -84,5 +87,24 @@ public sealed class AttachConcurrencyLimiterTests
         second.IsError.Should().BeFalse();
         release.SetResult();
         (await first).IsError.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ClassifyAttachFailure_UsesCanonicalDumpAndOffCpuHints()
+    {
+        var result = AttachGuard.ClassifyAttachFailure<string>(
+            "collect_thread_snapshot",
+            4242,
+            new Win32Exception(1));
+
+        result.Error!.Kind.Should().Be("PermissionDenied");
+
+        var dump = result.Hints.Should().ContainSingle(h => h.NextTool == "collect_process_dump").Which;
+        dump.Reason.Should().Contain("inspect_heap(source=\"dump\")");
+        dump.Reason.Should().NotContain("inspect_dump");
+
+        var offCpu = result.Hints.Should().ContainSingle(h => h.NextTool == "collect_sample").Which;
+        offCpu.SuggestedArguments!["kind"].Should().Be("off_cpu");
+        offCpu.SuggestedArguments["processId"].Should().Be(4242);
     }
 }

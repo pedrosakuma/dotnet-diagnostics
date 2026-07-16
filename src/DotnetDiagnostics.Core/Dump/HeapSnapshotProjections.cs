@@ -3,13 +3,13 @@ namespace DotnetDiagnostics.Core.Dump;
 /// <summary>
 /// Projections from the canonical <see cref="HeapSnapshotArtifact"/> aggregate into the
 /// bounded shapes the MCP tools return inline. The snapshot itself stays in the handle
-/// store for drilldown queries (<c>query_heap_snapshot</c> + <c>heap://snapshot/{handle}</c>).
+/// store for drilldown queries (<c>query_snapshot</c> + <c>heap://snapshot/{handle}</c>).
 /// </summary>
 public static class HeapSnapshotProjections
 {
     /// <summary>
     /// Projects the artifact into the dump-style summary (<see cref="DumpInspection"/>) returned
-    /// by <c>inspect_dump</c>. Caps the top-N lists at <paramref name="inlineTopTypes"/> so the
+    /// by <c>inspect_heap(source="dump")</c>. Caps the top-N lists at <paramref name="inlineTopTypes"/> so the
     /// inline response stays bounded regardless of the richer snapshot caps.
     /// </summary>
     public static DumpInspection ToDumpInspection(this HeapSnapshotArtifact snapshot, int inlineTopTypes, string? handle = null)
@@ -33,7 +33,7 @@ public static class HeapSnapshotProjections
 
     /// <summary>
     /// Projects the artifact into the live-style summary (<see cref="LiveHeapInspection"/>)
-    /// returned by <c>inspect_live_heap</c>.
+    /// returned by <c>inspect_heap(source="live")</c>.
     /// </summary>
     public static LiveHeapInspection ToLiveHeapInspection(this HeapSnapshotArtifact snapshot, int inlineTopTypes, string? handle = null)
     {

@@ -13,10 +13,8 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// Consolidation (issue #212): merges the two orchestrator listing
-/// endpoints — <c>list_pods</c> and <c>list_active_investigations</c> — into a single
-/// <c>list_orchestrator(kind=...)</c> tool. #213 — the legacy tools
-/// have been deleted in the alias removal wave; this is now the sole listing entry-point.
+/// Canonical orchestrator listing surface. The <c>kind</c> discriminator selects Pod
+/// discovery or active-investigation inventory.
 /// </summary>
 /// <remarks>
 /// <para><c>attach_to_pod</c> / <c>detach_from_pod</c> are deliberately NOT merged —
@@ -46,11 +44,11 @@ public sealed class ListOrchestratorTool
         Idempotent = true,
         UseStructuredContent = true)]
     [Description(
-        "Consolidation of the orchestrator listing surface. Pass kind='pods' to enumerate " +
-        "candidate Pods in allowed namespaces (replaces list_pods — preserves namespace/labelSelector/" +
+        "Pass kind='pods' to enumerate " +
+        "candidate Pods in allowed namespaces (supports namespace/labelSelector/" +
         "fieldSelector/containerName/preparedOnly/includeNotReady/limit/cursor); pass kind='investigations' " +
-        "to enumerate investigation handles minted on behalf of this MCP session (replaces " +
-        "list_active_investigations — preserves includeTerminal/includeAllSessions). Read-only; never injects " +
+        "to enumerate investigation handles minted on behalf of this MCP session (supports " +
+        "includeTerminal/includeAllSessions). Read-only; never injects " +
         "an ephemeral container and never returns bearer tokens. attach_to_pod / detach_from_pod are " +
         "intentionally NOT folded in — they remain explicit per the orchestrator design.")]
     public static async Task<DiagnosticResult<ListOrchestratorResult>> ListOrchestrator(

@@ -226,7 +226,7 @@ public sealed class DiagnosticTools
         "On CoreCLR uses EventPipe SampleProfiler (managed frames with mvid+token handoff). " +
         "Optionally, resolveMethodInstantiations=true performs a second ClrMD attach after sampling to recover closed generic method signatures for the hottest managed frames; on Linux that requires CAP_SYS_PTRACE (or ptrace_scope=0) and briefly suspends the target while the attach runs. " +
         "On NativeAOT (Linux) falls back to 'perf record' when available — frames are native symbols only, MethodIdentity is null. " +
-        "Each hotspot reports both inclusive and exclusive sample counts. Run after snapshot_counters shows elevated cpu-usage. " +
+        "Each hotspot reports both inclusive and exclusive sample counts. Run after collect_events(kind='counters') shows elevated cpu-usage. " +
         "Spec-compliant clients can call this tool as an MCP Task (tools/call with params.task) and poll via tasks/get + tasks/result, " +
         "or rely on MCP-native notifications/progress + notifications/cancelled on the same tools/call request.")]
     public static async Task<DiagnosticResult<CpuSample>> CollectCpuSample(
@@ -244,7 +244,7 @@ public sealed class DiagnosticTools
         [Description("If true, performs an opt-in ClrMD attach after sampling to recover closed generic instantiations for the hottest managed frames (displayed on MethodIdentity as ClosedSignature + GenericTypeArguments.Method). CoreCLR only. On Linux this requires CAP_SYS_PTRACE (or ptrace_scope=0) and briefly suspends the target during the attach. Defaults to false to keep the EventPipe-only path lightweight.")] bool resolveMethodInstantiations = false,
         [Description("Cap on how many top hotspots get ClrMD generic-instantiation enrichment. Must be >= 1. Defaults to the requested topN so the enrichment work stays bounded to the hottest frames.")] int? maxResolvedMethodInstantiations = null,
         [Description("NativeAOT only. Filesystem path to the ILC '*.map.xml' map file produced by publishing with <IlcGenerateMapFile>true</IlcGenerateMapFile> (ilc --map). When supplied, the perf-based AOT sampler emits a name-based MethodIdentity (TypeFullName + MethodName; MVID/metadata token stay null) for hot managed methods so the dotnet-native-mcp 'disassemble this hot AOT function' handoff works. Ignored on CoreCLR. The path is a hint only — the consumer must verify the artifact before loading it.")] string? nativeAotMapFile = null,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 hotspots inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full sample is always retained behind the issued handle — drill in with get_call_tree.")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 hotspots inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full sample is always retained behind the issued handle — drill in with query_snapshot(view='call-tree').")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("If true, persists the raw .nettrace under the artifact root and returns its relative path so it can be fetched with get_bytes(kind='trace') for offline PerfView/Speedscope/Perfetto analysis. Defaults to false (the trace is parsed then deleted).")] bool exportTrace = false,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
@@ -278,10 +278,10 @@ public sealed class DiagnosticTools
         "which fire roughly every 100 KB of total managed allocations. " +
         "On CoreCLR, TypeName is fully populated with managed type names. " +
         "On NativeAOT, GCAllocationTick events fire but TypeName is empty — all events roll up under '<unknown>' " +
-        "and only the total event count and bytes are meaningful; use collect_cpu_sample for per-site attribution on AOT. " +
-        "Returns two ranked lists (TopByBytes, TopByCount) and a handle for call-site drill-down via get_call_tree. " +
-        "When managed symbols are available, get_call_tree projects MethodIdentity (MVID + token) onto the returned frames for dotnet-assembly-mcp handoff. " +
-        "Run after snapshot_counters shows elevated GC pressure or growing gen0/gen1 heap sizes.")]
+        "and only the total event count and bytes are meaningful; use collect_sample(kind='cpu') for per-site attribution on AOT. " +
+        "Returns two ranked lists (TopByBytes, TopByCount) and a handle for call-site drill-down via query_snapshot(view='call-tree'). " +
+        "When managed symbols are available, query_snapshot projects MethodIdentity (MVID + token) onto the returned frames for dotnet-assembly-mcp handoff. " +
+        "Run after collect_events(kind='counters') shows elevated GC pressure or growing gen0/gen1 heap sizes.")]
     public static async Task<DiagnosticResult<AllocationSample>> CollectAllocationSample(
         EventPipeAllocationSampler sampler,
         IDiagnosticHandleStore handles,
@@ -301,14 +301,14 @@ public sealed class DiagnosticTools
 
     [RequireScope("investigation-export")]
     [Description(
-        "Returns a pruned caller→callee tree from a prior collect_cpu_sample or collect_allocation_sample run, " +
+        "Returns a pruned caller→callee tree from a prior collect_sample(kind='cpu'|'allocation') run, " +
         "addressed by its handle. Frames are enriched with MethodIdentity (MVID + metadata token) when the producer captured one. " +
         "Use `rootMethodFilter` to anchor the walk at a method substring (case-insensitive). " +
         "`maxDepth` and `maxNodes` bound the response size so the LLM stays under its token budget. " +
         "Handles expire ~10 minutes after collection.")]
     public static DiagnosticResult<CallTreeView> GetCallTree(
         IDiagnosticHandleStore handles,
-        [Description("Handle returned by a prior collect_cpu_sample call.")] string handle,
+        [Description("Handle returned by a prior collect_sample(kind='cpu') call.")] string handle,
         [Description("Optional case-insensitive substring; the tree is re-rooted at the highest-ranked frame whose method name contains this text.")] string? rootMethodFilter = null,
         [Description("Maximum tree depth from the root. Must be >= 1. Defaults to 8.")] int maxDepth = 8,
         [Description("Approximate cap on the number of nodes returned (top children at each level). Must be >= 1. Defaults to 200.")] int maxNodes = 200)
@@ -317,13 +317,13 @@ public sealed class DiagnosticTools
     [RequireScope("eventpipe")]
     [Description(
         "Captures off-CPU stacks for the target process — where threads are blocked, for how long, and on which " +
-        "kernel/user frame. Companion to collect_cpu_sample: on-CPU sampling shows hot code, off-CPU shows time " +
+        "kernel/user frame. Companion to collect_sample(kind='cpu'): on-CPU sampling shows hot code, off-CPU shows time " +
         "spent waiting (futex, IO, sleep, lock). Closes the 'latency high, CPU low' diagnostic gap that on-CPU " +
         "samples can't see by definition. " +
         "Backend: Linux only in this release — runs 'perf record -a -e sched:sched_switch --call-graph dwarf' " +
         "for durationSeconds. Requires the perf binary in PATH and CAP_PERFMON (or perf_event_paranoid <= -1). " +
         "Windows ETW kernel CSwitch support tracked in issue #41 sub-slice 2b. " +
-        "Returns the top-N blocking stacks inline and a handle for query_off_cpu_snapshot drilldown.")]
+        "Returns the top-N blocking stacks inline and a handle for query_snapshot drilldown.")]
     public static async Task<DiagnosticResult<OffCpuSnapshot>> CollectOffCpuSample(
         IOffCpuSampler sampler,
         IDiagnosticHandleStore handles,
@@ -334,7 +334,7 @@ public sealed class DiagnosticTools
         [Description("Sampling window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of blocking stacks returned inline (the full set lives behind the handle). Defaults to 25.")] int topN = 25,
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 blocking stacks inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full artifact is always retained behind the issued handle — drill in with query_off_cpu_snapshot.")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 blocking stacks inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full artifact is always retained behind the issued handle — drill in with query_snapshot.")]
         SamplingDepth depth = SamplingDepth.Summary,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         CancellationToken cancellationToken = default)
@@ -396,13 +396,13 @@ public sealed class DiagnosticTools
 
     [RequireScope("eventpipe")]
     [Description(
-        "Re-projects a prior collect_off_cpu_sample artifact under a named view, without re-running perf. " +
+        "Re-projects a prior collect_sample(kind='off_cpu') artifact under a named view, without re-running perf. " +
         "Views: 'topStacks' (default — blocking stacks ranked by off-CPU micros), 'byThread' (per-TID rollup), " +
-        "'stack' (full root→leaf frames of a specific stack rank). Use the handle returned by collect_off_cpu_sample. " +
+        "'stack' (full root→leaf frames of a specific stack rank). Use the handle returned by collect_sample(kind='off_cpu'). " +
         "Handles expire ~10 minutes after collection.")]
     public static DiagnosticResult<OffCpuQueryView> QueryOffCpuSnapshot(
         IDiagnosticHandleStore handles,
-        [Description("Handle returned by a prior collect_off_cpu_sample call.")] string handle,
+        [Description("Handle returned by a prior collect_sample(kind='off_cpu') call.")] string handle,
         [Description("View name: topStacks (default), byThread, stack.")] string view = "topStacks",
         [Description("Maximum items returned for topStacks/byThread. Defaults to 25.")] int topN = 25,
         [Description("Required when view='stack' — 1-based rank of the stack in the top-stacks list.")] int? stackRank = null)
@@ -485,7 +485,7 @@ public sealed class DiagnosticTools
             var requiredScope = entry.Kind == CollectionHandleKinds.Counters ? "read-counters" : "eventpipe";
             if (!principal.HasScope(requiredScope))
             {
-                var message = $"forbidden: tool 'query_collection' requires scope '{requiredScope}' for kind '{entry.Kind}'.";
+                var message = $"forbidden: tool 'query_snapshot' requires scope '{requiredScope}' for kind '{entry.Kind}'.";
                 return DiagnosticResult.Fail<CollectionQueryResult>(
                     message,
                     new DiagnosticError("Forbidden", message, requiredScope));
@@ -521,10 +521,10 @@ public sealed class DiagnosticTools
         if (outcome.UnknownKind is not null)
         {
             return DiagnosticResult.Fail<CollectionQueryResult>(
-                $"Handle '{handle}' is of kind '{outcome.UnknownKind}' which query_collection does not support.",
+                $"Handle '{handle}' is of kind '{outcome.UnknownKind}' which query_snapshot does not support.",
                 new DiagnosticError(
                     "UnsupportedHandleKind",
-                    $"query_collection dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.CrashGuardSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventCatalog, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot, CollectionHandleKinds.ContentionSnapshot, CollectionHandleKinds.DbSnapshot, CollectionHandleKinds.KestrelSnapshot, CollectionHandleKinds.NetworkingSnapshot, CollectionHandleKinds.StartupSnapshot })}.",
+                    $"query_snapshot dispatches over kinds: {string.Join(", ", new[] { CollectionHandleKinds.Counters, CollectionHandleKinds.ExceptionSnapshot, CollectionHandleKinds.CrashGuardSnapshot, CollectionHandleKinds.GcEvents, CollectionHandleKinds.EventCatalog, CollectionHandleKinds.EventSource, CollectionHandleKinds.Activities, CollectionHandleKinds.LogSnapshot, CollectionHandleKinds.JitSnapshot, CollectionHandleKinds.ThreadPoolSnapshot, CollectionHandleKinds.ContentionSnapshot, CollectionHandleKinds.DbSnapshot, CollectionHandleKinds.KestrelSnapshot, CollectionHandleKinds.NetworkingSnapshot, CollectionHandleKinds.StartupSnapshot })}.",
                     outcome.UnknownKind),
                 new NextActionHint("query_snapshot", "Use the kind-specific drill-down tool for heap/thread/cpu handles.", null));
         }
@@ -573,7 +573,7 @@ public sealed class DiagnosticTools
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of individual exception details to return. Must be >= 1. Defaults to 100.")] int maxRecent = 100,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' drops the Recent[] list inline (keeps Total + ByType, which is what most diagnoses need). 'detail' includes Recent up to maxRecent. 'raw' is equivalent to detail. The full snapshot is always retained behind the issued handle — drill in with query_collection(handle, view=recent).")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' drops the Recent[] list inline (keeps Total + ByType, which is what most diagnoses need). 'detail' includes Recent up to maxRecent. 'raw' is equivalent to detail. The full snapshot is always retained behind the issued handle — drill in with query_snapshot(handle, view='recent').")]
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
     {
@@ -617,7 +617,7 @@ public sealed class DiagnosticTools
         [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
         [Description("Duration of the collection window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of GC events to return. Must be >= 1. Defaults to 200.")] int maxEvents = 200,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' drops the Events[] list inline (keeps totals, max pause, per-gen counts). 'detail' includes Events up to maxEvents. 'raw' is equivalent to detail. The full GC summary is always retained behind the issued handle — drill in with query_collection(handle, view=events|pauseHistogram).")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' drops the Events[] list inline (keeps totals, max pause, per-gen counts). 'detail' includes Events up to maxEvents. 'raw' is equivalent to detail. The full GC summary is always retained behind the issued handle — drill in with query_snapshot(handle, view='events'|'pauseHistogram').")]
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
     {
@@ -873,7 +873,7 @@ public sealed class DiagnosticTools
     [Description(
         "Captures completed ActivitySource spans via the Microsoft-Diagnostics-DiagnosticSource EventPipe bridge. " +
         "Enables the runtime provider with FilterAndPayloadSpecs, extracts operation/trace/span ids, parent linkage, tags, and duration from Activity stop events, aggregates them by source and operation, " +
-        "and returns a handle for query_collection drilldown.")]
+        "and returns a handle for query_snapshot drilldown.")]
     public static async Task<DiagnosticResult<ActivityCapture>> CollectActivities(
         IActivityCollector collector,
         IProcessContextResolver resolver,
@@ -910,7 +910,7 @@ public sealed class DiagnosticTools
         [Description("EventSource keyword mask. -1 (default) means all keywords. For non-allowlisted providers (when opted in via unsafeProvider=true) this is clamped to a safer default when left at -1; pass an explicit positive mask to override.")] long keywords = -1,
         [Description("Event verbosity level (0=LogAlways, 1=Critical, 2=Error, 3=Warning, 4=Informational, 5=Verbose). Defaults to 5. For non-allowlisted providers (when opted in via unsafeProvider=true) this is clamped to Informational unless explicitly set lower.")] int eventLevel = 5,
         [Description("Maximum number of captured events to return. Must be >= 1. Defaults to 200.")] int maxEvents = 200,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' drops the Events[] list inline (keeps the Total count and metadata). 'detail' includes Events up to maxEvents. 'raw' is equivalent to detail. The full capture is always retained behind the issued handle — drill in with query_collection(handle, view=byEventName|events).")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' drops the Events[] list inline (keeps the Total count and metadata). 'detail' includes Events up to maxEvents. 'raw' is equivalent to detail. The full capture is always retained behind the issued handle — drill in with query_snapshot(handle, view='byEventName'|'events').")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("Opt-in switch for non-allowlisted EventSource providers (issue #165 / M2). Only honoured when the server has `Diagnostics:AllowSensitiveHeapValues=true`. Defaults to false; deny path returns an `EventSourceProviderNotAllowed` envelope.")] bool unsafeProvider = false,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
@@ -1017,12 +1017,12 @@ public sealed class DiagnosticTools
     [RequireScope("heap-read", "ptrace")]
     [Description(
         "Attaches to a live .NET process via ClrMD and walks its managed heap WITHOUT writing a dump file. " +
-        "Returns the same top-N type / retention information as inspect_dump but skips the disk I/O of " +
+        "Returns the same top-N type / retention information as inspect_heap(source='dump') but skips the disk I/O of " +
         "collect_process_dump. The target is suspended for the duration of the walk (typically sub-second " +
         "for small heaps, can reach a few seconds for multi-GB heaps); plan accordingly for latency-sensitive " +
         "workloads. Same UID constraint as the diagnostic socket applies — sidecar must run as the target's UID. " +
         "Each TypeStat carries a TypeIdentity (ModuleVersionId + MetadataToken) ready to hand off verbatim to " +
-        "dotnet-assembly-mcp's get_type. Use inspect_dump when you need an artifact to keep, share or re-inspect.")]
+        "dotnet-assembly-mcp's get_type. Use inspect_heap(source='dump') when you need an artifact to keep, share or re-inspect.")]
     public static Task<DiagnosticResult<LiveHeapInspection>> InspectLiveHeap(
         IDumpInspector inspector,
         IDiagnosticHandleStore handles,
@@ -1077,7 +1077,7 @@ public sealed class DiagnosticTools
 
     [RequireScope("heap-read")]
     [Description(
-        "Returns a slice of a heap snapshot previously captured by inspect_dump or inspect_live_heap, addressed by its handle. " +
+        "Returns a slice of a heap snapshot previously captured by inspect_heap, addressed by its handle. " +
         "Lets the LLM ask for a richer top-N (snapshot retains ~200 types), retention paths filtered by type substring, " +
         "GC roots grouped by kind, the finalizer queue, or per-segment heap layout — without paying the walk cost a second time. Views: " +
         "`top-types` (expand the inline top-N to up to snapshot capacity), " +
@@ -1103,7 +1103,7 @@ public sealed class DiagnosticTools
         SensitiveDataRedactor redactor,
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
-        [Description("Snapshot handle returned by inspect_dump or inspect_live_heap.")] string handle,
+        [Description("Snapshot handle returned by inspect_heap.")] string handle,
         [Description("Which slice of the snapshot to return: 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'timers', 'alc', 'object', 'gcroot', 'objsize' or 'async'.")] string view = "top-types",
         [Description("Maximum entries to return for any ranked view ('top-types', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'async', 'timers', 'alc'). Ignored by 'roots-by-kind', 'gchandles', 'retention-paths', 'object', 'gcroot' and 'objsize'.")] int topN = 50,
         [Description("For view='top-types': ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
@@ -1146,7 +1146,7 @@ public sealed class DiagnosticTools
         "dumpFilePath analyses an already-captured WithHeap/Full dump offline. When both are omitted " +
         "the server auto-selects a live .NET process (live mode). Returns inline threads-summary + " +
         "lock-graph headlines plus a handle (~10min TTL) the LLM can drill into via " +
-        "query_thread_snapshot. Dump-origin handles are NOT evicted when the producer PID exits.")]
+        "query_snapshot. Dump-origin handles are NOT evicted when the producer PID exits.")]
     public static Task<DiagnosticResult<ThreadSnapshotQueryResult>> CollectThreadSnapshot(
         IThreadSnapshotInspector inspector,
         IDiagnosticHandleStore handles,
@@ -1159,7 +1159,7 @@ public sealed class DiagnosticTools
         [Description("Include runtime frames (PInvoke trampolines, etc.) without an associated managed method. Off by default.")] bool includeRuntimeFrames = false,
         [Description("Include pure native frames where ClrMD cannot resolve a method. Off by default.")] bool includeNativeFrames = false,
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' returns only the top-3 blocked threads inline and drops the SyncBlock lock-graph (use query_thread_snapshot(view=lock-graph) for the full graph). 'detail' returns the historical top-25 threads + top-25 locks. 'raw' is equivalent to detail. The full snapshot is always retained behind the issued handle.")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' returns only the top-3 blocked threads inline and drops the SyncBlock lock-graph (use query_snapshot(handle, view=\"lock-graph\") for the full graph). 'detail' returns the historical top-25 threads + top-25 locks. 'raw' is equivalent to detail. The full snapshot is always retained behind the issued handle.")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
@@ -1197,7 +1197,7 @@ public sealed class DiagnosticTools
         "disasm coverage (NativeAOT and R2R are already covered on-disk by dotnet-native-mcp; " +
         "JIT-emitted code only lives in the live process / dump). Useful for diffing tier " +
         "promotion (Tier0 → Tier1+PGO) of a hot method observed via " +
-        "collect_event_source(\"Microsoft-Windows-DotNETRuntime\", keywords=Jit|JitTracing). " +
+        "collect_events(kind=\"event_source\", providerName=\"Microsoft-Windows-DotNETRuntime\", keywords=Jit|JitTracing). " +
         "Supply at most ONE of processId or dumpFilePath: processId attaches via ClrMD with " +
         "suspend (sub-second for a single method); dumpFilePath analyses a WithHeap/Full dump " +
         "offline. When both are omitted the server auto-selects a live .NET process. The " +
@@ -1341,7 +1341,7 @@ public sealed class DiagnosticTools
         "Modes are resolved from the arguments: hypothesis present → " +
         "'hypothesis' (routes directly to the relevant evidence collector); baseline present → " +
         "'warm' (skips covered steps, emits MetricComparisons against baseline); otherwise 'cold' " +
-        "(USE-style: snapshot_counters first, branch on evidence). Call this BEFORE any other " +
+        "(USE-style: collect_events(kind=\"counters\") first, branch on evidence). Call this BEFORE any other " +
         "collector when the symptom is non-trivial — it pays for itself by preventing loops.")]
     public static Task<DiagnosticResult<InvestigationPlan>> StartInvestigation(
         IInvestigationPlanner planner,
@@ -1376,7 +1376,7 @@ public sealed class DiagnosticTools
         Idempotent = true,
         UseStructuredContent = true)]
     [Description(
-        "Reads a prior collect_cpu_sample drill-down handle and produces a portable, versioned " +
+        "Reads a prior collect_sample(kind=\"cpu\") drill-down handle and produces a portable, versioned " +
         "InvestigationSummary (~5-20 KB JSON) ready to paste into a PR, ADR, or ticket. " +
         "Includes build + container provenance harvested from the sidecar environment, stable " +
         "module+methodFullName symbol refs (survive rebuilds where line numbers shift), and " +
@@ -1389,10 +1389,10 @@ public sealed class DiagnosticTools
         IInvestigationSummaryExporter exporter,
         IDiagnosticHandleStore handles,
         DotnetDiagnostics.Mcp.Observability.IInvestigationTelemetryEmitter telemetry,
-        [Description("Handle returned by a prior collect_cpu_sample call.")] string handle,
+        [Description("Handle returned by a prior collect_sample(kind=\"cpu\") call.")] string handle,
         [Description("Output format: 'json' (default — portable, machine-readable) or 'markdown' (human-readable for PRs).")] SummaryFormat format = SummaryFormat.Json,
         [Description("Max hotspots to include in the summary. Defaults to 10.")] int topHotspots = 10,
-        [Description("Optional managed assembly name for the target (from list_dotnet_processes).")] string? buildAssemblyName = null,
+        [Description("Optional managed assembly name for the target (from inspect_process(view='list')).")] string? buildAssemblyName = null,
         [Description("Optional investigation id from the previous summary, to link lineage.")] string? previousInvestigationId = null,
         [Description("Optional commit SHA being proposed as the fix.")] string? fixCommitSha = null,
         [Description("Optional PR URL being proposed as the fix.")] string? fixPullRequestUrl = null,

@@ -140,8 +140,8 @@ socket UID".
 
 | MCP tool family | Works on ECS / EC2? | Notes |
 |---|---|---|
-| EventPipe (`inspect_process`, `collect_sample(kind="cpu")`, `collect_events`, …) | ✅ Yes | Only needs socket access + UID match. |
-| ClrMD / `ptrace` (`collect_thread_snapshot`, `inspect_heap(source="live")`, `collect_process_dump`) | ✅ Yes | `LinuxParameters.Capabilities.Add: [SYS_PTRACE]` (template adds it). |
+| Diagnostic IPC / EventPipe (`inspect_process`, `collect_process_dump`, `collect_sample(kind="cpu")`, `collect_events`, …) | ✅ Yes | Needs socket access + UID match; dump capture does not require kernel ptrace. |
+| ClrMD / `ptrace` (live `collect_thread_snapshot`, `inspect_heap(source="live")`, live `capture_method_bytes`, `get_bytes(kind="module")`, `collect_sample(kind="cpu", resolveMethodInstantiations=true)`) | ✅ Yes | `LinuxParameters.Capabilities.Add: [SYS_PTRACE]` (template adds it). |
 | `perf`-based off-CPU sampling (`collect_sample(kind="off_cpu")`) | ✅ Yes | No container capability (ECS rejects `CAP_PERFMON`); requires host `kernel.perf_event_paranoid = -1`. |
 
 ## Deploy

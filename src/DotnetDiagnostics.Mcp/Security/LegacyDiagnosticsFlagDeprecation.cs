@@ -55,7 +55,7 @@ public sealed class LegacyDiagnosticsFlagDeprecation : IEventSourceDeprecationSi
     /// <summary>
     /// Records that the <c>Diagnostics:AllowSensitiveHeapValues</c> flag was the path
     /// that unlocked a sensitive emission (heap drilldown value preview or
-    /// <c>collect_event_source unsafeProvider</c>) for a principal that did NOT hold
+    /// <c>collect_events(kind="event_source", unsafeProvider=true)</c>) for a principal that did NOT hold
     /// the <c>sensitive-heap-read</c> scope. Emits the deprecation warning exactly
     /// once per process.
     /// </summary>
@@ -68,7 +68,7 @@ public sealed class LegacyDiagnosticsFlagDeprecation : IEventSourceDeprecationSi
     }
 
     /// <summary>
-    /// Records that <c>collect_event_source</c> accepted a provider name via the
+    /// Records that <c>collect_events(kind="event_source")</c> accepted a provider name via the
     /// curated allowlist (default or configured) for a principal that did NOT hold
     /// the <c>eventsource-any</c> scope. Emits the deprecation warning exactly once
     /// per process. The allowlist policy itself is retained.

@@ -48,8 +48,8 @@ public sealed record CallTreeView(
 
 /// <summary>
 /// In-memory artifact registered under a handle when the CPU sampler completes. The summary
-/// (returned to the LLM by <c>collect_cpu_sample</c>) is intentionally compact; the full tree
-/// here is what <c>get_call_tree</c> walks on follow-up calls. <see cref="ResolvedSources"/>
+/// (returned to the LLM by <c>collect_sample(kind="cpu")</c>) is intentionally compact; the full tree
+/// here is what <c>query_snapshot(view="call-tree")</c> walks on follow-up calls. <see cref="ResolvedSources"/>
 /// holds optional source-level resolution (file:line, SourceLink) for top-N hotspots — keyed
 /// by <c>(module, methodFullName)</c> so the exporter can attach the location without walking
 /// the whole tree. <see cref="TracePath"/>, when set, is the path of the persisted raw

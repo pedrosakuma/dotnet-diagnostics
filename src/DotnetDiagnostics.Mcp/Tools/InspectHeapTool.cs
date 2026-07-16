@@ -13,11 +13,9 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// #206 — unified <c>inspect_heap</c> tool that merges the legacy
-/// <c>inspect_dump</c> + <c>inspect_live_heap</c> pair behind a single
-/// <c>source=live|dump</c> discriminator. Both backends already produce the same
-/// <see cref="HeapSnapshotArtifact"/> consumed by <c>query_heap_snapshot</c> — this tool
-/// is the public consolidation of that "split collector, unified drilldown" pattern.
+/// Canonical <c>inspect_heap</c> tool. A <c>source=live|dump|gcdump</c>
+/// discriminator selects the collector, and every backend produces a
+/// <see cref="HeapSnapshotArtifact"/> consumed by <c>query_snapshot</c>.
 /// </summary>
 /// <remarks>
 /// <para>The implementation is a thin dispatcher: after validating the discriminator and the
@@ -42,9 +40,9 @@ public sealed class InspectHeapTool
     // Static gate is `heap-read` only — the minimum scope shared by both backends.
     // `source="live"` additionally requires `ptrace` at runtime (see below) so that
     // least-privilege tokens scoped to dump inspection alone are not denied by the
-    // shared canonical entry point. `inspect_live_heap` still carries the static
+    // shared canonical entry point. The underlying live collector carries the static
     // `[RequireScope("heap-read", "ptrace")]` gate; the runtime check here mirrors
-    // that semantic for the live branch of `inspect_heap`.
+    // that semantic for the live branch.
     [RequireScope("heap-read")]
     [McpServerTool(
         Name = ToolName,
@@ -72,10 +70,10 @@ public sealed class InspectHeapTool
         "`processId` (auto-resolved); it returns per-type byte/instance totals but ClrMD-only views " +
         "(GC handles, static fields, delegate targets, segment layout) stay empty. " +
         "Live and dump invocations both produce the same `HeapSnapshotArtifact`, addressable via " +
-        "`query_heap_snapshot(handle, view, …)` for retention paths, static-field roots, task/timer leak candidates, AssemblyLoadContext leak candidates, GCHandle table aggregation, finalizer " +
+        "`query_snapshot(handle, view, …)` for retention paths, static-field roots, task/timer leak candidates, AssemblyLoadContext leak candidates, GCHandle table aggregation, finalizer " +
         "queue and other drilldown views without re-walking. Live-origin handles are evicted when " +
-        "the target PID exits; dump-origin handles are retained until their TTL elapses. Supersedes " +
-        "the deprecated `inspect_dump` and `inspect_live_heap` tools (#206).")]
+        "the target PID exits; dump-origin handles are retained until their TTL elapses. " +
+        "`inspect_heap` is the only registered public heap-inspection tool.")]
     public static async Task<DiagnosticResult<object>> InspectHeap(
         IDumpInspector inspector,
         IDiagnosticHandleStore handles,

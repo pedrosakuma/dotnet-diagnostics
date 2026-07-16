@@ -67,7 +67,7 @@ public sealed class InvestigationPlanner : IInvestigationPlanner
         };
 
     // ContentionKeyword on Microsoft-Windows-DotNETRuntime. Numeric so the JSON schema for
-    // collect_event_source (long keywords) accepts the value verbatim from the plan.
+    // collect_events(kind="event_source") accepts the long keyword value verbatim from the plan.
     private const long ContentionKeyword = 0x4000L;
 
     // ───────────────────────────── COLD ─────────────────────────────

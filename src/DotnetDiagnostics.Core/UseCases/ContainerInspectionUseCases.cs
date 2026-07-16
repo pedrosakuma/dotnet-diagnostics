@@ -73,7 +73,12 @@ public static class ContainerInspectionUseCases
             [
                 new NextActionHint("collect_sample",
                     $"CPU throttling > 5% ({cpu.ThrottlePercent:F1}% of periods). Sample on-CPU stacks to see which code is hitting the quota.",
-                    new Dictionary<string, object?> { ["processId"] = s.ProcessId, ["durationSeconds"] = 10 }),
+                    new Dictionary<string, object?>
+                    {
+                        ["kind"] = "cpu",
+                        ["processId"] = s.ProcessId,
+                        ["durationSeconds"] = 10,
+                    }),
             ];
         }
         if (s.Memory is { UsageFraction: > 0.85 } mem)
@@ -82,7 +87,12 @@ public static class ContainerInspectionUseCases
             [
                 new NextActionHint("inspect_heap",
                     $"Memory at {(mem.UsageFraction ?? 0) * 100:F0}% of limit. Inspect the live heap to identify the dominant retainers before the cgroup OOM-kills.",
-                    new Dictionary<string, object?> { ["processId"] = s.ProcessId, ["topTypes"] = 25 }),
+                    new Dictionary<string, object?>
+                    {
+                        ["source"] = "live",
+                        ["processId"] = s.ProcessId,
+                        ["topTypes"] = 25,
+                    }),
             ];
         }
         if (!s.InContainer)
@@ -91,7 +101,12 @@ public static class ContainerInspectionUseCases
             [
                 new NextActionHint("collect_events",
                     "Not in a container envelope — runtime EventCounters remain the cheapest first signal.",
-                    new Dictionary<string, object?> { ["processId"] = s.ProcessId, ["durationSeconds"] = 5 }),
+                    new Dictionary<string, object?>
+                    {
+                        ["kind"] = "counters",
+                        ["processId"] = s.ProcessId,
+                        ["durationSeconds"] = 5,
+                    }),
             ];
         }
 
@@ -99,7 +114,12 @@ public static class ContainerInspectionUseCases
         [
             new NextActionHint("collect_events",
                 "No kernel-level pressure detected. Move up the stack to runtime counters.",
-                new Dictionary<string, object?> { ["processId"] = s.ProcessId, ["durationSeconds"] = 5 }),
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "counters",
+                    ["processId"] = s.ProcessId,
+                    ["durationSeconds"] = 5,
+                }),
         ];
     }
 }

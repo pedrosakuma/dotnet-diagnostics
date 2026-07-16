@@ -8,7 +8,7 @@ namespace DotnetDiagnostics.Core.OffCpu;
 /// <see cref="DotnetDiagnostics.Core.CpuSampling.CpuSampleQueryDispatcher"/>. Every off-CPU view
 /// (<c>topStacks</c>, <c>byThread</c>, <c>stack</c>) renders purely from the already-captured
 /// artifact — no live perf re-run, no authorization — so both the MCP server's
-/// <c>query_off_cpu_snapshot</c> tool and the standalone CLI <c>session</c> REPL (issue #300) share
+/// <c>query_snapshot</c> tool and the standalone CLI <c>session</c> REPL (issue #300) share
 /// one implementation.
 /// </summary>
 public static class OffCpuQueryDispatcher

@@ -101,6 +101,8 @@ public sealed class PtraceProbeTests
         Assert.Equal(3, result.PtraceScope);
         Assert.Contains("ptrace_scope=3", result.Reason);
         Assert.Contains("cannot override", result.Reason);
+        Assert.Contains("inspect_heap(source=\"dump\")", result.Reason);
+        Assert.DoesNotContain("inspect_dump", result.Reason);
     }
 
     [Fact]
@@ -118,6 +120,8 @@ public sealed class PtraceProbeTests
         Assert.True(result.HasCapSysPtrace);
         Assert.Equal(3, result.PtraceScope);
         Assert.Contains("cannot override", result.Reason);
+        Assert.Contains("inspect_heap(source=\"dump\")", result.Reason);
+        Assert.DoesNotContain("inspect_dump", result.Reason);
     }
 
     [Fact]

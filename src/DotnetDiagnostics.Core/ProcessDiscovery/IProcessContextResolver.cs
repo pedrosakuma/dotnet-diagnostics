@@ -6,7 +6,7 @@ using DotnetDiagnostics.Core;
 /// Resolves the target <c>processId</c> for every diagnostic tool that operates against a
 /// live .NET process. When the caller omits the id and exactly one .NET process is reachable,
 /// the resolver auto-selects it transparently — saving the LLM the obligatory
-/// <c>list_dotnet_processes</c> + <c>get_diagnostic_capabilities</c> opening round-trips.
+/// <c>inspect_process(view="list")</c> + <c>inspect_process(view="capabilities")</c> opening round-trips.
 /// </summary>
 /// <remarks>
 /// Resolution outcomes are non-throwing: the tool is expected to translate

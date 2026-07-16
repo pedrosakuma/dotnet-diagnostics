@@ -4,7 +4,7 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 
 /// <summary>
 /// Client-safe projection of <see cref="IInvestigationStore.Snapshot"/>, returned by the
-/// <c>list_active_investigations</c> MCP tool. Each entry is the same shape <c>attach_to_pod</c>
+/// <c>list_orchestrator(kind="investigations")</c> MCP path. Each entry is the same shape <c>attach_to_pod</c>
 /// returns so the LLM has one investigation envelope to reason about across both tools.
 /// </summary>
 /// <remarks>

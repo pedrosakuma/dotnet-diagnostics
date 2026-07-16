@@ -3,7 +3,7 @@
 `samples/BadCodeSample/` is a minimal API where every endpoint triggers a
 different, well-known .NET anti-pattern. Use it to validate that the MCP
 server (and an LLM driving it) can pinpoint each problem using nothing but the
-9 tools.
+current unified tool surface.
 
 ## Topology used for these scenarios
 
@@ -29,9 +29,10 @@ docker run -d --name badcode-mcp --network diagmcp-net \
   dotnet-diagnostics-mcp:dev
 ```
 
-> `--cap-add SYS_PTRACE` is required for the ClrMD-backed tools
-> (`collect_thread_snapshot`, `inspect_heap(source="live")`,
-> `inspect_heap(source="dump")` against a live PID and `collect_process_dump`). Without it,
+> `--cap-add SYS_PTRACE` is required for live memory readers
+> (`collect_thread_snapshot`, `inspect_heap(source="live")`, `capture_method_bytes`,
+> `get_bytes(kind="module")`, and
+> `collect_sample(kind="cpu", resolveMethodInstantiations=true)`). Without it,
 > these tools return a structured `PermissionDenied` error on hosts where
 > `kernel.yama.ptrace_scope=1` (Debian/Ubuntu/WSL default). EventPipe-only
 > tools work without it. See [`docs/local-docker-sidecar.md`](./local-docker-sidecar.md)

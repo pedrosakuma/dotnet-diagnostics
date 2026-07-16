@@ -39,7 +39,7 @@ internal static class DiagnosticToolSampling
         [Description("If true, performs an opt-in ClrMD attach after sampling to recover closed generic instantiations for the hottest managed frames (displayed on MethodIdentity as ClosedSignature + GenericTypeArguments.Method). CoreCLR only. On Linux this requires CAP_SYS_PTRACE (or ptrace_scope=0) and briefly suspends the target during the attach. Defaults to false to keep the EventPipe-only path lightweight.")] bool resolveMethodInstantiations = false,
         [Description("Cap on how many top hotspots get ClrMD generic-instantiation enrichment. Must be >= 1. Defaults to the requested topN so the enrichment work stays bounded to the hottest frames.")] int? maxResolvedMethodInstantiations = null,
         [Description("NativeAOT only. Filesystem path to the ILC '*.map.xml' map file produced by publishing with <IlcGenerateMapFile>true</IlcGenerateMapFile> (ilc --map). When supplied, the perf-based AOT sampler emits a name-based MethodIdentity (TypeFullName + MethodName; MVID/metadata token stay null) for hot managed methods so the dotnet-native-mcp 'disassemble this hot AOT function' handoff works. Ignored on CoreCLR. The path is a hint only — the consumer must verify the artifact before loading it.")] string? nativeAotMapFile = null,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 hotspots inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full sample is always retained behind the issued handle — drill in with get_call_tree.")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 hotspots inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full sample is always retained behind the issued handle — drill in with query_snapshot(view='call-tree').")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("If true, persists the raw .nettrace under the artifact root and returns its relative path so it can be fetched with get_bytes(kind='trace') for offline PerfView/Speedscope/Perfetto analysis. Defaults to false (the trace is parsed then deleted).")] bool exportTrace = false,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
@@ -79,7 +79,7 @@ internal static class DiagnosticToolSampling
         {
             result = await CollectionProgressTicker.RunAsync(
                 requestContext,
-                "collect_cpu_sample",
+                "collect_sample(kind=\"cpu\")",
                 TimeSpan.FromSeconds(durationSeconds),
                 TimeSpan.FromSeconds(1),
                 ct => sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, srcOpts, instantiationOpts, nativeAotOpts, exportTrace, ct),
@@ -110,7 +110,7 @@ internal static class DiagnosticToolSampling
         }
         catch (Exception ex) when (resolveMethodInstantiations && ex is not OperationCanceledException)
         {
-            return WithContext(ClassifyAttachFailure<CpuSample>("collect_cpu_sample", pid, ex), ctx);
+            return WithContext(ClassifyAttachFailure<CpuSample>("collect_sample", pid, ex), ctx);
         }
 
         var handle = handles.Register(pid, "cpu-sample", result.Artifact, CpuSampleHandleTtl);
@@ -121,10 +121,10 @@ internal static class DiagnosticToolSampling
             new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "top-methods", ["rankBy"] = "exclusive" })
         { Priority = NextActionHintPriority.High });
         hints.Add(new NextActionHint("query_snapshot", "Walk the merged caller→callee tree built from the same samples.",
-            new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
+            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = 8, ["maxNodes"] = 200 })
         { Priority = NextActionHintPriority.High });
         hints.Add(new NextActionHint("collect_events", "Confirm hot path isn't driven by exception-heavy control flow.",
-            new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 }));
+            new Dictionary<string, object?> { ["kind"] = "exceptions", ["processId"] = pid, ["durationSeconds"] = 10 }));
 
         if (!string.IsNullOrEmpty(result.Artifact.TracePath))
         {
@@ -201,9 +201,9 @@ internal static class DiagnosticToolSampling
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
             { Priority = NextActionHintPriority.High },
             new NextActionHint("collect_sample", "Cross-reference: identify hot CPU paths that correlate with the top allocating types.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
+                new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
             new NextActionHint("collect_events", "Observe GC pause frequency and generation distribution caused by this allocation load.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds }))
+                new Dictionary<string, object?> { ["kind"] = "gc", ["processId"] = pid, ["durationSeconds"] = durationSeconds }))
             with
         { Signals = signals.Count > 0 ? signals : null };
         return WithContext(ok, ctx);
@@ -211,7 +211,7 @@ internal static class DiagnosticToolSampling
 
     public static DiagnosticResult<CallTreeView> GetCallTree(
         IDiagnosticHandleStore handles,
-        [Description("Handle returned by a prior collect_cpu_sample call.")] string handle,
+        [Description("Handle returned by a prior collect_sample(kind='cpu') call.")] string handle,
         [Description("Optional case-insensitive substring; the tree is re-rooted at the highest-ranked frame whose method name contains this text.")] string? rootMethodFilter = null,
         [Description("Maximum tree depth from the root. Must be >= 1. Defaults to 8.")] int maxDepth = 8,
         [Description("Approximate cap on the number of nodes returned (top children at each level). Must be >= 1. Defaults to 200.")] int maxNodes = 200)
@@ -227,7 +227,7 @@ internal static class DiagnosticToolSampling
                 $"Handle '{handle}' is unknown or expired.",
                 new DiagnosticError("HandleExpired", "Drill-down handles live ~10min and are invalidated when the target process exits.", handle),
                 new NextActionHint("collect_sample", "Re-run the sampler on the same pid to issue a fresh handle.",
-                    new Dictionary<string, object?> { ["durationSeconds"] = 10 }));
+                    new Dictionary<string, object?> { ["kind"] = "cpu", ["durationSeconds"] = 10 }));
         }
 
         return CpuSampleQueryDispatcher.RenderCallTree(artifact, handle, rootMethodFilter, maxDepth, maxNodes);
@@ -243,7 +243,7 @@ internal static class DiagnosticToolSampling
         [Description("Sampling window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of blocking stacks returned inline (the full set lives behind the handle). Defaults to 25.")] int topN = 25,
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 blocking stacks inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full artifact is always retained behind the issued handle — drill in with query_off_cpu_snapshot.")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' returns the top-3 blocking stacks inline. 'detail' returns the requested topN (default 25). 'raw' is equivalent to detail. The full artifact is always retained behind the issued handle — drill in with query_snapshot.")]
         SamplingDepth depth = SamplingDepth.Summary,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         CancellationToken cancellationToken = default)
@@ -276,14 +276,14 @@ internal static class DiagnosticToolSampling
         catch (UnauthorizedAccessException ex)
         {
             return DiagnosticResult.Fail<OffCpuSnapshot>(
-                $"collect_off_cpu_sample could not start NT Kernel Logger capture for pid {pid}: Windows denied access to the ContextSwitch provider.",
+                $"collect_sample(kind=\"off_cpu\") could not start NT Kernel Logger capture for pid {pid}: Windows denied access to the ContextSwitch provider.",
                 new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
                 new NextActionHint("inspect_process",
                     "After granting either BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance') to the sidecar account and restarting the Windows service, re-check capabilities before retrying.",
                     new Dictionary<string, object?> { ["processId"] = pid }),
                 new NextActionHint("collect_sample",
                     "Retry after the sidecar account has one of the two supported Windows paths: BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance').",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds, ["topN"] = topN }));
+                    new Dictionary<string, object?> { ["kind"] = "off_cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds, ["topN"] = topN }));
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("perf", StringComparison.OrdinalIgnoreCase)
                                                    || ex.Message.Contains("CAP_", StringComparison.OrdinalIgnoreCase)
@@ -330,7 +330,7 @@ internal static class DiagnosticToolSampling
             new NextActionHint("query_snapshot", "Drill into per-thread off-CPU view or a specific stack.",
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byThread" }),
             new NextActionHint("collect_sample", "Cross-reference with on-CPU hotspots to separate compute from wait.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 }));
+                new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = 10 }));
         return WithContext(ok, resolved.Context);
     }
 
@@ -418,7 +418,7 @@ internal static class DiagnosticToolSampling
 
     public static DiagnosticResult<OffCpuQueryView> QueryOffCpuSnapshot(
         IDiagnosticHandleStore handles,
-        [Description("Handle returned by a prior collect_off_cpu_sample call.")] string handle,
+        [Description("Handle returned by a prior collect_sample(kind='off_cpu') call.")] string handle,
         [Description("View name: topStacks (default), byThread, stack.")] string view = "topStacks",
         [Description("Maximum items returned for topStacks/byThread. Defaults to 25.")] int topN = 25,
         [Description("Required when view='stack' — 1-based rank of the stack in the top-stacks list.")] int? stackRank = null)
@@ -433,7 +433,7 @@ internal static class DiagnosticToolSampling
                 $"Handle '{handle}' is unknown or expired.",
                 new DiagnosticError("HandleExpired", "Off-CPU handles live ~10min and are invalidated when the target process exits.", handle),
                 new NextActionHint("collect_sample", "Re-run the off-CPU sampler to issue a fresh handle.",
-                    new Dictionary<string, object?> { ["durationSeconds"] = 10 }));
+                    new Dictionary<string, object?> { ["kind"] = "off_cpu", ["durationSeconds"] = 10 }));
         }
 
         return OffCpuQueryDispatcher.Dispatch(artifact, view, topN, stackRank);

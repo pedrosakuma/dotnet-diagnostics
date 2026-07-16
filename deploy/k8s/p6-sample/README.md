@@ -10,7 +10,7 @@ the final acceptance bullet of issue #20:
 Each Deployment runs **one** CoreClrSample Pod tagged with a discriminating
 `p6-target={a,b}` label so the test can:
 
-1. Call `list_pods` with `labelSelector=app=p6-sample,p6-target=a`.
+1. Call `list_orchestrator(kind="pods")` with `labelSelector=app=p6-sample,p6-target=a`.
 2. Call `attach_to_pod` against the single matching Pod.
 3. Proxy `inspect_process(view="list")` through the returned handle and confirm
    the surfaced PID's command line contains `--p6-target=a` (replica `b` carries

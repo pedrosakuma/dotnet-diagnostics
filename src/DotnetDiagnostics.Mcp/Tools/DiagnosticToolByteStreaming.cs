@@ -32,10 +32,19 @@ internal static class DiagnosticToolByteStreaming
         var explicitScopeFailure = RequireLiteralScope<ByteFetchEnvelope>(
             principalAccessor,
             logger,
-            "get_module_bytes",
+            "get_bytes",
             identifierName: "mvid",
             identifierValue: mvid.ToString("D"),
-            offset);
+            offset,
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "module",
+                ["moduleVersionId"] = moduleVersionId,
+                ["asset"] = asset,
+                ["offset"] = offset,
+                ["maxBytes"] = maxBytes,
+                ["processId"] = processId,
+            });
         if (explicitScopeFailure is not null)
         {
             return explicitScopeFailure;
@@ -44,12 +53,12 @@ internal static class DiagnosticToolByteStreaming
         var resolved = await ResolveContextAsync<ByteFetchEnvelope>(resolver, processId, cancellationToken).ConfigureAwait(false);
         if (resolved.Failure is not null) return resolved.Failure;
 
-        return await GuardAttachAsync("get_module_bytes", resolved.ProcessId, async () =>
+        return await GuardAttachAsync("get_bytes", resolved.ProcessId, async () =>
         {
             try
             {
                 var envelope = await moduleByteSource.FetchAsync(resolved.ProcessId, mvid, asset, offset, maxBytes, cancellationToken).ConfigureAwait(false);
-                AuditByteFetch(logger, principalAccessor.Current, "get_module_bytes", envelope.Identifier, null, envelope.Offset, envelope.ChunkSize, envelope.TotalSize);
+                AuditByteFetch(logger, principalAccessor.Current, "get_bytes", envelope.Identifier, null, envelope.Offset, envelope.ChunkSize, envelope.TotalSize);
                 var result = BuildByteFetchResult(
                     envelope,
                     BuildByteFetchSummary(envelope),
@@ -58,9 +67,17 @@ internal static class DiagnosticToolByteStreaming
             }
             catch (FileNotFoundException ex)
             {
-                return ArtifactNotFound<ByteFetchEnvelope>("get_module_bytes", ex.Message, ex.FileName ?? mvid.ToString("D"));
+                return ArtifactNotFound<ByteFetchEnvelope>("get_bytes(kind=\"module\")", ex.Message, ex.FileName ?? mvid.ToString("D"));
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, new Dictionary<string, object?>
+        {
+            ["kind"] = "module",
+            ["moduleVersionId"] = moduleVersionId,
+            ["asset"] = asset,
+            ["offset"] = offset,
+            ["maxBytes"] = maxBytes,
+            ["processId"] = resolved.ProcessId,
+        }).ConfigureAwait(false);
     }
 
     [Description(
@@ -83,10 +100,17 @@ internal static class DiagnosticToolByteStreaming
         var explicitScopeFailure = RequireLiteralScope<ByteFetchEnvelope>(
             principalAccessor,
             logger,
-            "get_dump_bytes",
+            "get_bytes",
             identifierName: "dumpPath",
             identifierValue: dumpFilePath,
-            offset);
+            offset,
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "dump",
+                ["dumpFilePath"] = dumpFilePath,
+                ["offset"] = offset,
+                ["maxBytes"] = maxBytes,
+            });
         if (explicitScopeFailure is not null)
         {
             return explicitScopeFailure;
@@ -95,25 +119,26 @@ internal static class DiagnosticToolByteStreaming
         try
         {
             var envelope = await dumpByteSource.FetchAsync(dumpFilePath, offset, maxBytes, cancellationToken).ConfigureAwait(false);
-            AuditByteFetch(logger, principalAccessor.Current, "get_dump_bytes", null, envelope.Identifier, envelope.Offset, envelope.ChunkSize, envelope.TotalSize);
+            AuditByteFetch(logger, principalAccessor.Current, "get_bytes", null, envelope.Identifier, envelope.Offset, envelope.ChunkSize, envelope.TotalSize);
             return BuildByteFetchResult(envelope, BuildByteFetchSummary(envelope), BuildDumpByteFetchHint(envelope, maxBytes));
         }
         catch (DotnetDiagnostics.Core.Artifacts.ArtifactPathException artifactEx)
         {
             return DiagnosticResult.Fail<ByteFetchEnvelope>(
-                $"get_dump_bytes rejected the request: {artifactEx.Message}",
+                $"get_bytes(kind=\"dump\") rejected the request: {artifactEx.Message}",
                 new DiagnosticError("InvalidArtifactPath", artifactEx.Message, artifactEx.ParameterName),
                 new NextActionHint("get_bytes",
-                    "Re-issue with a path under the artifact root; absolute paths must still resolve under that root after symlink resolution."));
+                    "Re-issue with a path under the artifact root; absolute paths must still resolve under that root after symlink resolution.",
+                    new Dictionary<string, object?> { ["kind"] = "dump", ["dumpFilePath"] = dumpFilePath }));
         }
         catch (FileNotFoundException ex)
         {
-            return ArtifactNotFound<ByteFetchEnvelope>("get_dump_bytes", ex.Message, ex.FileName ?? dumpFilePath);
+            return ArtifactNotFound<ByteFetchEnvelope>("get_bytes(kind=\"dump\")", ex.Message, ex.FileName ?? dumpFilePath);
         }
         catch (InvalidOperationException ex)
         {
             return DiagnosticResult.Fail<ByteFetchEnvelope>(
-                $"get_dump_bytes rejected the request: {ex.Message}",
+                $"get_bytes(kind=\"dump\") rejected the request: {ex.Message}",
                 new DiagnosticError("InvalidArgument", ex.Message, ex.GetType().FullName));
         }
     }
@@ -138,10 +163,17 @@ internal static class DiagnosticToolByteStreaming
         var explicitScopeFailure = RequireLiteralScope<ByteFetchEnvelope>(
             principalAccessor,
             logger,
-            "get_trace_bytes",
+            "get_bytes",
             identifierName: "tracePath",
             identifierValue: traceFilePath,
-            offset);
+            offset,
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "trace",
+                ["traceFilePath"] = traceFilePath,
+                ["offset"] = offset,
+                ["maxBytes"] = maxBytes,
+            });
         if (explicitScopeFailure is not null)
         {
             return explicitScopeFailure;
@@ -151,25 +183,26 @@ internal static class DiagnosticToolByteStreaming
         {
             var fetched = await traceByteSource.FetchAsync(traceFilePath, offset, maxBytes, cancellationToken).ConfigureAwait(false);
             var envelope = fetched with { Kind = "trace", Asset = "trace" };
-            AuditByteFetch(logger, principalAccessor.Current, "get_trace_bytes", null, envelope.Identifier, envelope.Offset, envelope.ChunkSize, envelope.TotalSize);
+            AuditByteFetch(logger, principalAccessor.Current, "get_bytes", null, envelope.Identifier, envelope.Offset, envelope.ChunkSize, envelope.TotalSize);
             return BuildByteFetchResult(envelope, BuildByteFetchSummary(envelope), BuildTraceByteFetchHint(envelope, maxBytes));
         }
         catch (DotnetDiagnostics.Core.Artifacts.ArtifactPathException artifactEx)
         {
             return DiagnosticResult.Fail<ByteFetchEnvelope>(
-                $"get_trace_bytes rejected the request: {artifactEx.Message}",
+                $"get_bytes(kind=\"trace\") rejected the request: {artifactEx.Message}",
                 new DiagnosticError("InvalidArtifactPath", artifactEx.Message, artifactEx.ParameterName),
                 new NextActionHint("get_bytes",
-                    "Re-issue with a path under the artifact root; absolute paths must still resolve under that root after symlink resolution."));
+                    "Re-issue with a path under the artifact root; absolute paths must still resolve under that root after symlink resolution.",
+                    new Dictionary<string, object?> { ["kind"] = "trace", ["traceFilePath"] = traceFilePath }));
         }
         catch (FileNotFoundException ex)
         {
-            return ArtifactNotFound<ByteFetchEnvelope>("get_trace_bytes", ex.Message, ex.FileName ?? traceFilePath);
+            return ArtifactNotFound<ByteFetchEnvelope>("get_bytes(kind=\"trace\")", ex.Message, ex.FileName ?? traceFilePath);
         }
         catch (InvalidOperationException ex)
         {
             return DiagnosticResult.Fail<ByteFetchEnvelope>(
-                $"get_trace_bytes rejected the request: {ex.Message}",
+                $"get_bytes(kind=\"trace\") rejected the request: {ex.Message}",
                 new DiagnosticError("InvalidArgument", ex.Message, ex.GetType().FullName));
         }
     }
@@ -186,7 +219,8 @@ internal static class DiagnosticToolByteStreaming
         string tool,
         string identifierName,
         string identifierValue,
-        long offset)
+        long offset,
+        IReadOnlyDictionary<string, object?> suggestedArguments)
     {
         var principal = principalAccessor.Current;
         if (principal?.HasExplicitScope("module-bytes-read") == true)
@@ -211,8 +245,9 @@ internal static class DiagnosticToolByteStreaming
                 "Grant the bearer principal the literal scope 'module-bytes-read'. Root ('*') is intentionally insufficient for this modifier scope.",
                 principal?.Name),
             new NextActionHint(
-                tool,
-                "Retry with a bearer token that explicitly includes 'module-bytes-read'."));
+                "get_bytes",
+                "Retry with a bearer token that explicitly includes 'module-bytes-read'.",
+                suggestedArguments));
     }
 
     private static void AuditByteFetch(
@@ -324,8 +359,9 @@ internal static class DiagnosticToolByteStreaming
         string tool,
         int? processId,
         Func<Task<DiagnosticResult<T>>> body,
-        CancellationToken cancellationToken)
-        => AttachGuard.GuardAttachAsync(tool, processId, body, cancellationToken);
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, object?>? retryArguments = null)
+        => AttachGuard.GuardAttachAsync(tool, processId, body, cancellationToken, retryArguments: retryArguments);
 
     private static DiagnosticResult<T> ClassifyAttachFailure<T>(string tool, int? processId, Exception ex)
         => AttachGuard.ClassifyAttachFailure<T>(tool, processId, ex);

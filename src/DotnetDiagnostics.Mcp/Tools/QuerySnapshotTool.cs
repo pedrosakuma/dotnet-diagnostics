@@ -19,14 +19,10 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// #207 — single drilldown surface that subsumes the five
-/// handle-based query tools (<c>query_heap_snapshot</c>, <c>query_thread_snapshot</c>,
-/// <c>query_off_cpu_snapshot</c>, <c>query_collection</c>, <c>get_call_tree</c>) behind
-/// one <c>(handle, view)</c> contract. The dispatcher reads the artifact kind recorded
-/// against the supplied handle in <see cref="IDiagnosticHandleStore"/> and forwards
-/// to the matching legacy implementation so the response envelopes stay byte-identical
-/// (asserted by <c>QuerySnapshotCompatibilityTests</c>). The legacy tools remain
-/// registered through the deprecation window.
+/// Canonical drilldown surface for every handle-backed artifact. The dispatcher reads
+/// the artifact kind recorded against the supplied handle in
+/// <see cref="IDiagnosticHandleStore"/> and forwards to the matching kind-specific
+/// implementation while preserving the established response envelopes.
 /// </summary>
 /// <remarks>
 /// <para><b>Authorization.</b> The static gate accepts any drilldown-capable
@@ -51,9 +47,8 @@ public sealed partial class QuerySnapshotTool
     internal const string ToolName = "query_snapshot";
 
     // View constants accepted for the cpu-sample / allocation-sample handle kinds.
-    // The legacy `get_call_tree` tool exposed no view discriminator (it had exactly one
-    // projection); the unified tool exposes that projection as the canonical
-    // `call-tree` view so the (handle, view) contract is uniform across kinds.
+    // CPU/allocation handles historically exposed one call-tree projection. The canonical
+    // tool names it explicitly so the (handle, view) contract is uniform across kinds.
     internal const string CallTreeView = "call-tree";
     internal const string DiffView = "diff";
 
@@ -136,7 +131,7 @@ public sealed partial class QuerySnapshotTool
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
         IFrameVariableResolver frameVariableResolver,
-        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, collect_sample(kind=\"native-alloc\"), collect_sample(kind=\"method-params\"), collect_events(kind=\"counters\"), collect_events(kind=\"exceptions\"), collect_events(kind=\"crash-guard\"), collect_events(kind=\"gc\"), collect_events(kind=\"datas\"), collect_events(kind=\"catalog\"), collect_events(kind=\"event_source\"), collect_events(kind=\"activities\"), collect_events(kind=\"logs\"), collect_events(kind=\"jit\"), collect_events(kind=\"threadpool\"), collect_events(kind=\"contention\"), collect_events(kind=\"db\"), collect_events(kind=\"kestrel\"), collect_events(kind=\"networking\"), collect_events(kind=\"requests\") (in-flight requests), collect_events(kind=\"startup\")).")] string handle,
+        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_sample(kind=\"cpu\"|\"off_cpu\"|\"allocation\"|\"native-alloc\"|\"method-params\"), or collect_events(kind=\"counters\"|\"exceptions\"|\"crash-guard\"|\"gc\"|\"datas\"|\"catalog\"|\"event_source\"|\"activities\"|\"logs\"|\"jit\"|\"threadpool\"|\"contention\"|\"db\"|\"kestrel\"|\"networking\"|\"requests\"|\"startup\")).")] string handle,
         [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff|growth. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|wait-chains|threadpool|resolve-address|frame-vars. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|exceptions|stack|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns|requests|longRunning. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
         [Description("Maximum entries returned by any ranked-list view. Omit to use the per-kind legacy default: 50 for heap / thread / collection, 25 for off-CPU. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
         [Description("Ranking for ranked views. Heap view='top-types'/'growth': 'bytes' (default) or 'instances'. CPU-sample view='top-methods': 'exclusive' (self-time, default) or 'inclusive'.")] string rankBy = "bytes",
@@ -387,18 +382,36 @@ public sealed partial class QuerySnapshotTool
             return InvalidArgument(nameof(address), "contained no parseable addresses");
         }
 
-        IReadOnlyList<NativeAddressLocation> locations;
-        try
+        async Task<DiagnosticResult<IReadOnlyList<NativeAddressLocation>>> ResolveAsync()
         {
-            locations = await addressResolver.ResolveAsync(snapshot, parsed, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var resolved = await addressResolver.ResolveAsync(snapshot, parsed, cancellationToken).ConfigureAwait(false);
+                return DiagnosticResult.Ok(resolved, $"Resolved addresses against snapshot '{handle}'.");
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException)
+            {
+                return DiagnosticResult.Fail<IReadOnlyList<NativeAddressLocation>>(
+                    $"Could not resolve addresses against snapshot '{handle}': {ex.Message}",
+                    new DiagnosticError("AddressResolutionUnavailable", ex.Message, handle),
+                    new NextActionHint("collect_thread_snapshot", "Re-capture the snapshot if the origin process or dump is no longer reachable.", null));
+            }
         }
-        catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException)
+
+        var resolution = snapshot.Origin == ThreadSnapshotOrigin.Live
+            ? await AttachGuard.GuardAttachAsync(
+                "query_snapshot",
+                snapshot.ProcessId,
+                ResolveAsync,
+                cancellationToken,
+                retryArguments: BuildResolveAddressRetryArguments(handle, address))
+                .ConfigureAwait(false)
+            : await ResolveAsync().ConfigureAwait(false);
+        if (resolution.Error is not null)
         {
-            return AsObjectEnvelope(DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
-                $"Could not resolve addresses against snapshot '{handle}': {ex.Message}",
-                new DiagnosticError("AddressResolutionUnavailable", ex.Message, handle),
-                new NextActionHint("collect_thread_snapshot", "Re-capture the snapshot if the origin process or dump is no longer reachable.", null)));
+            return AsObjectEnvelope(resolution);
         }
+        var locations = resolution.Data!;
 
         var entries = locations.Select(static l => new ResolvedAddressEntry(
             Address: $"0x{l.Address:x}",
@@ -461,18 +474,43 @@ public sealed partial class QuerySnapshotTool
         var principalUnlocksSensitive = principalAccessor.Current?.HasExplicitScope("sensitive-heap-read") == true;
         var emitSensitive = sensitiveGate.ShouldEmit(includeSensitiveValues, principalUnlocksSensitive);
 
-        FrameVariablesResult frameVars;
-        try
+        async Task<DiagnosticResult<FrameVariablesResult>> ResolveAsync()
         {
-            frameVars = await resolver.ResolveAsync(snapshot, threadId.Value, emitSensitive, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var resolved = await resolver.ResolveAsync(
+                    snapshot,
+                    threadId.Value,
+                    emitSensitive,
+                    cancellationToken).ConfigureAwait(false);
+                return DiagnosticResult.Ok(resolved, $"Resolved frame variables against snapshot '{handle}'.");
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException)
+            {
+                return DiagnosticResult.Fail<FrameVariablesResult>(
+                    $"Could not inspect frame locals against snapshot '{handle}': {ex.Message}",
+                    new DiagnosticError("FrameVariablesUnavailable", ex.Message, handle),
+                    new NextActionHint("collect_thread_snapshot", "Re-capture the snapshot if the origin process or dump is no longer reachable.", null));
+            }
         }
-        catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException)
+
+        var resolution = snapshot.Origin == ThreadSnapshotOrigin.Live
+            ? await AttachGuard.GuardAttachAsync(
+                "query_snapshot",
+                snapshot.ProcessId,
+                ResolveAsync,
+                cancellationToken,
+                retryArguments: BuildFrameVariablesRetryArguments(
+                    handle,
+                    threadId.Value,
+                    includeSensitiveValues))
+                .ConfigureAwait(false)
+            : await ResolveAsync().ConfigureAwait(false);
+        if (resolution.Error is not null)
         {
-            return AsObjectEnvelope(DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
-                $"Could not inspect frame locals against snapshot '{handle}': {ex.Message}",
-                new DiagnosticError("FrameVariablesUnavailable", ex.Message, handle),
-                new NextActionHint("collect_thread_snapshot", "Re-capture the snapshot if the origin process or dump is no longer reachable.", null)));
+            return AsObjectEnvelope(resolution);
         }
+        var frameVars = resolution.Data!;
 
         var origin = snapshot.Origin.ToString().ToLowerInvariant();
         var result = new ThreadSnapshotQueryResult(
@@ -487,6 +525,28 @@ public sealed partial class QuerySnapshotTool
             (frameVars.CurrentExceptionType is { } exType ? $"; current exception {exType}." : ".");
         return AsObjectEnvelope(DiagnosticResult.Ok(result, summary));
     }
+
+    private static Dictionary<string, object?> BuildResolveAddressRetryArguments(
+        string handle,
+        string address)
+        => new Dictionary<string, object?>
+        {
+            ["handle"] = handle,
+            ["view"] = ResolveAddressView,
+            ["address"] = address,
+        };
+
+    private static Dictionary<string, object?> BuildFrameVariablesRetryArguments(
+        string handle,
+        int threadId,
+        bool includeSensitiveValues)
+        => new Dictionary<string, object?>
+        {
+            ["handle"] = handle,
+            ["view"] = FrameVarsView,
+            ["threadId"] = threadId,
+            ["includeSensitiveValues"] = includeSensitiveValues,
+        };
 
     private static DiagnosticResult<object> TryBuildDiff(
         IDiagnosticHandleStore handles,
@@ -814,24 +874,65 @@ public sealed partial class QuerySnapshotTool
                 null);
         }
 
-        var kind = tombstone?.Kind;
-        var processId = tombstone?.ProcessId;
-        var tool = kind switch
+        var recovery = tombstone.Kind switch
         {
-            DiagnosticTools.HeapSnapshotKind => "inspect_heap",
-            DiagnosticTools.ThreadSnapshotKind => "collect_thread_snapshot",
-            "cpu-sample" or "allocation-sample" or DiagnosticTools.NativeAllocHandleKind or DiagnosticTools.OffCpuHandleKind or MethodParameterCaptureUseCases.HandleKind
-                => "collect_sample",
-            _ => "collect_events",
+            DiagnosticTools.HeapSnapshotKind => new RecoveryTarget("inspect_heap"),
+            DiagnosticTools.ThreadSnapshotKind => new RecoveryTarget("collect_thread_snapshot"),
+            "cpu-sample" => new RecoveryTarget("collect_sample", "cpu", Replayable: true),
+            "allocation-sample" => new RecoveryTarget("collect_sample", "allocation", Replayable: true),
+            DiagnosticTools.NativeAllocHandleKind => new RecoveryTarget("collect_sample", "native-alloc", Replayable: true),
+            DiagnosticTools.OffCpuHandleKind => new RecoveryTarget("collect_sample", "off_cpu", Replayable: true),
+            MethodParameterCaptureUseCases.HandleKind => new RecoveryTarget("collect_sample", "method-params"),
+            CollectionHandleKinds.Counters => new RecoveryTarget("collect_events", "counters", Replayable: true),
+            CollectionHandleKinds.ExceptionSnapshot => new RecoveryTarget("collect_events", "exceptions", Replayable: true),
+            CollectionHandleKinds.CrashGuardSnapshot => new RecoveryTarget("collect_events", "crash-guard", Replayable: true),
+            CollectionHandleKinds.GcEvents => new RecoveryTarget("collect_events", "gc", Replayable: true),
+            CollectionHandleKinds.GcDatas => new RecoveryTarget("collect_events", "datas", Replayable: true),
+            CollectionHandleKinds.EventCatalog => new RecoveryTarget("collect_events", "catalog", Replayable: true),
+            CollectionHandleKinds.EventSource => new RecoveryTarget("collect_events", "event_source"),
+            CollectionHandleKinds.Activities => new RecoveryTarget("collect_events", "activities", Replayable: true),
+            CollectionHandleKinds.LogSnapshot => new RecoveryTarget("collect_events", "logs", Replayable: true),
+            CollectionHandleKinds.JitSnapshot => new RecoveryTarget("collect_events", "jit", Replayable: true),
+            CollectionHandleKinds.ThreadPoolSnapshot => new RecoveryTarget("collect_events", "threadpool", Replayable: true),
+            CollectionHandleKinds.ContentionSnapshot => new RecoveryTarget("collect_events", "contention", Replayable: true),
+            CollectionHandleKinds.DbSnapshot => new RecoveryTarget("collect_events", "db", Replayable: true),
+            CollectionHandleKinds.KestrelSnapshot => new RecoveryTarget("collect_events", "kestrel", Replayable: true),
+            CollectionHandleKinds.NetworkingSnapshot => new RecoveryTarget("collect_events", "networking", Replayable: true),
+            CollectionHandleKinds.StartupSnapshot => new RecoveryTarget("collect_events", "startup", Replayable: true),
+            CollectionHandleKinds.InFlightRequests => new RecoveryTarget("collect_events", "requests", Replayable: true),
+            _ => new RecoveryTarget("inspect_process"),
         };
-        var arguments = processId is { } pid
-            ? new Dictionary<string, object?> { ["processId"] = pid }
-            : null;
-        return new NextActionHint(
-            tool,
-            "Re-run the original collector with the same parameters to issue a fresh handle.",
-            arguments);
+
+        Dictionary<string, object?>? arguments = null;
+        if (recovery.Replayable)
+        {
+            arguments = new Dictionary<string, object?>();
+            if (recovery.Kind is not null)
+            {
+                arguments["kind"] = recovery.Kind;
+            }
+            if (tombstone.ProcessId is var processId and > 0)
+            {
+                arguments["processId"] = processId;
+            }
+        }
+
+        var reason = recovery switch
+        {
+            { Replayable: true, Kind: not null } =>
+                $"Re-run {recovery.Tool}(kind=\"{recovery.Kind}\") to issue a fresh handle; reapply any optional filters or duration from the original capture.",
+            { Replayable: true } =>
+                $"Re-run {recovery.Tool} to issue a fresh handle; reapply any optional settings from the original capture.",
+            { Kind: not null } =>
+                $"Re-run {recovery.Tool}(kind=\"{recovery.Kind}\") with the original required filters to issue a fresh handle; the tombstone does not retain those inputs.",
+            _ =>
+                $"Re-run {recovery.Tool} with the original source and required inputs to issue a fresh handle; the tombstone does not retain them.",
+        };
+
+        return new NextActionHint(recovery.Tool, reason, arguments);
     }
+
+    private sealed record RecoveryTarget(string Tool, string? Kind = null, bool Replayable = false);
 
     private static DiagnosticResult<object> InvalidKindPair(string currentKind, string baselineKind)
     {

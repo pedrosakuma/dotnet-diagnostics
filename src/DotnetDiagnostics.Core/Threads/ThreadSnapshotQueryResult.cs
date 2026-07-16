@@ -1,7 +1,7 @@
 namespace DotnetDiagnostics.Core.Threads;
 
 /// <summary>
-/// Typed payload returned by <c>query_thread_snapshot</c>. Carries the slice requested by the LLM
+/// Typed payload returned by the thread views of <c>query_snapshot</c>. Carries the slice requested by the LLM
 /// (threads list, one thread's stack, lock graph, deadlock analysis, top-blocked ranking,
 /// unique stack groups, or async-stall classification) plus provenance fields (origin, pid,
 /// captured-at, suspend duration) so the model can reason about freshness without a second
@@ -90,7 +90,7 @@ public sealed record ThreadDeadlockCommand(string Command, string Purpose);
 public sealed record ThreadSampleId(int ManagedThreadId, uint OSThreadId);
 
 /// <summary>
-/// Aggregate returned by <c>query_thread_snapshot(view="unique-stacks")</c>. The canonical stack
+/// Aggregate returned by <c>query_snapshot(view="unique-stacks")</c>. The canonical stack
 /// is returned root → leaf for readability, while the signature hash is computed from the top
 /// frames selected by the caller.
 /// </summary>
@@ -105,7 +105,7 @@ public sealed record UniqueThreadStackGroup(
     public string? InferredWaitReason { get; init; }
 }
 
-/// <summary>Aggregate returned by <c>query_thread_snapshot(view="async-stalls")</c>.</summary>
+/// <summary>Aggregate returned by <c>query_snapshot(view="async-stalls")</c>.</summary>
 public sealed record AsyncStallsView(
     string View,
     int ClassifiedThreads,
@@ -118,7 +118,7 @@ public sealed record AsyncStallBucketSummary(
     int Count,
     IReadOnlyList<int> SampleThreadIds);
 
-/// <summary>Representative classified thread surfaced by <c>query_thread_snapshot(view="async-stalls")</c>.</summary>
+/// <summary>Representative classified thread surfaced by <c>query_snapshot(view="async-stalls")</c>.</summary>
 public sealed record AsyncStalledThread(
     int ThreadId,
     string Bucket,

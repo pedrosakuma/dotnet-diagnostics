@@ -31,7 +31,7 @@ public sealed record DiagnosticCapabilities(
     /// to compile.</summary>
     public bool InContainer { get; init; }
 
-    /// <summary>True when the host exposes cgroup v2 (and therefore <c>get_container_signals</c>
+    /// <summary>True when the host exposes cgroup v2 (and therefore <c>inspect_process(view="container")</c>
     /// can be called against this process). False on cgroup v1 hosts and Windows.</summary>
     public bool CgroupV2 { get; init; }
 
@@ -61,7 +61,7 @@ public sealed record DiagnosticCapabilities(
     public bool PsiAvailable { get; init; }
 
     /// <summary>
-    /// True when <c>collect_off_cpu_sample</c> is expected to succeed against this sidecar
+    /// True when <c>collect_sample(kind="off_cpu")</c> is expected to succeed against this sidecar
     /// before the LLM commits to the (system-wide, privileged) capture. On Linux it requires
     /// <c>perf</c> in <c>PATH</c> plus <c>CAP_PERFMON</c> / <c>CAP_SYS_ADMIN</c> /
     /// <c>perf_event_paranoid &lt;= -1</c>;
@@ -94,14 +94,17 @@ public sealed record DiagnosticCapabilities(
     public int? PtraceScope { get; init; }
 
     /// <summary>
-    /// True when the four ClrMD-backed live-attach tools (<c>collect_thread_snapshot</c>,
-    /// <c>inspect_live_heap</c>, <c>inspect_dump</c> against a live PID,
-    /// <c>collect_process_dump</c>) — plus <c>collect_cpu_sample(resolveMethodInstantiations=true)</c>
-    /// when the opt-in closed-generic enrichment is requested — are expected to succeed on this sidecar host
+    /// True when the ClrMD-backed live-attach paths (<c>collect_thread_snapshot</c> against
+    /// a live PID, <c>inspect_heap(source="live")</c>, live <c>capture_method_bytes</c>,
+    /// <c>get_bytes(kind="module")</c>, and
+    /// <c>collect_sample(kind="cpu", resolveMethodInstantiations=true)</c>) are expected to
+    /// succeed on this sidecar host
     /// without surfacing a <c>PermissionDenied</c> error. On Linux this requires
     /// either <c>CAP_SYS_PTRACE</c> on the sidecar or <c>kernel.yama.ptrace_scope=0</c>
     /// on the host; on Windows ClrMD attaches via <c>DebugActiveProcess</c> and is
-    /// generally allowed; on macOS live attach is not supported.
+    /// generally allowed; on macOS live attach is not supported. Dump capture through
+    /// <c>collect_process_dump</c> uses diagnostic IPC rather than kernel ptrace and remains
+    /// available when its socket, authorization, and approval requirements are met.
     /// Like <see cref="CanSampleOffCpu"/> this is a property of the sidecar host,
     /// not of the target runtime.
     /// </summary>

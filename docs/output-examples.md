@@ -291,20 +291,22 @@ shapes live in the tool reference:
 | `db` (EF Core / SqlClient)                    | [`collect_events(kind="db")`](./tool-reference.md#collect_eventskinddb) |
 | `datas` (DATAS GC tuning, Server GC)          | [`collect_events`](./tool-reference.md#collect_events) |
 | `off_cpu` (where threads block)               | [`collect_sample(kind="off_cpu")`](./tool-reference.md#off-cpu-sampling-collect_samplekindoff_cpu--query_snapshot) |
-| Heap walk (`inspect_heap`)                    | [`tool-reference.md`](./tool-reference.md) — live-attach gated for `source="live"` ([ptrace note](#live-attach-ptrace-snapshots--same-gate-every-surface)) |
-| Thread snapshot (`collect_thread_snapshot`)   | [`tool-reference.md`](./tool-reference.md) — live-attach gated ([ptrace note](#live-attach-ptrace-snapshots--same-gate-every-surface)) |
+| Heap walk (`inspect_heap`)                    | [`tool-reference.md`](./tool-reference.md) — live-attach gated for `source="live"` ([ptrace note](#live-memory-readers--same-kernel-ptrace-boundary-on-every-surface)) |
+| Thread snapshot (`collect_thread_snapshot`)   | [`tool-reference.md`](./tool-reference.md) — live-attach gated ([ptrace note](#live-memory-readers--same-kernel-ptrace-boundary-on-every-surface)) |
 | Process dump (`collect_process_dump`)         | [`tool-reference.md` → `collect_process_dump`](./tool-reference.md#collect_process_dump) — requires `confirm=true` |
 
 ---
 
-## Live-attach (ptrace) snapshots — same gate, every surface
+## Live memory readers — same kernel ptrace boundary on every surface
 
-Only the **snapshot minority** of capabilities attach to the runtime via `ptrace(2)`:
-`inspect_heap(source="live")`, `collect_thread_snapshot`, `collect_process_dump`, and
-`capture_method_bytes`. **Every EventPipe collector above** (counters, gc, exceptions,
-threadpool, contention, cpu, allocation, …) needs **no ptrace at all** — so the entire
-CLI `collect` surface and the **whole BenchmarkDotNet diagnoser** are unaffected (the
-in-process diagnoser is EventPipe-only — observe-only, no ptrace, no code injection).
+Only the **live-memory-reader minority** uses kernel `ptrace(2)`:
+`inspect_heap(source="live")`, `collect_thread_snapshot`, live `capture_method_bytes`,
+`get_bytes(kind="module")`, and the optional
+`collect_sample(kind="cpu", resolveMethodInstantiations=true)` enrichment. Normal
+EventPipe collection (counters, gc, exceptions, threadpool, contention, cpu, allocation,
+…) needs **no ptrace at all**. `collect_process_dump` also avoids kernel ptrace: it asks the
+target runtime to write the dump through diagnostic IPC, while retaining separate
+`dump-write` + `ptrace` bearer scopes as an authorization boundary.
 
 The gate is handled identically across **MCP server and CLI** because the logic lives in
 one place — `DotnetDiagnostics.Core` (`AttachGuard` + `PtraceProbe`):

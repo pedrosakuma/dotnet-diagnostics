@@ -465,6 +465,6 @@ public sealed partial class QuerySnapshotTool
                 $"query_snapshot dispatches over kinds: {string.Join(", ", SupportedKinds)}.",
                 kind),
             new NextActionHint(ToolName,
-                "Use a handle issued by inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, or any of the EventPipe collectors.",
+                "Use a handle issued by inspect_heap, collect_thread_snapshot, collect_sample, or collect_events.",
                 null));
 }

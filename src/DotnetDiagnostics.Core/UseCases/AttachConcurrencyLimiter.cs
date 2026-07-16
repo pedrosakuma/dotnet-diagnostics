@@ -3,8 +3,8 @@
 namespace DotnetDiagnostics.Core.UseCases;
 
 /// <summary>
-/// Per-pid concurrency gate for ptrace/ClrMD-attach tools (#452, D2). The .NET diagnostic
-/// pipeline can suspend a given target process from only one attacher at a time, so two
+/// Per-pid concurrency gate for live diagnostic attaches (#452, D2). Diagnostic IPC and
+/// ptrace-based operations can suspend a given target process from only one attacher at a time, so two
 /// simultaneous live attaches (collect_thread_snapshot, inspect_heap source=live,
 /// collect_process_dump, capture_method_bytes) against the same pid collide and one fails
 /// hard. This limiter serializes attaches keyed per pid (default 1 in flight per pid); when a

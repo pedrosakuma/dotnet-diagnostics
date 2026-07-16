@@ -4,7 +4,7 @@ using System.Collections.Generic;
 namespace DotnetDiagnostics.Mcp.Orchestrator;
 
 /// <summary>
-/// A single Pod surfaced by <c>list_pods</c> as a candidate for diagnostic attach.
+/// A single Pod surfaced by <c>list_orchestrator(kind="pods")</c> as a candidate for diagnostic attach.
 /// Mirrors the <c>PodCandidate</c> shape from docs/central-orchestrator-design.md §3.3.
 /// </summary>
 /// <param name="Namespace">Kubernetes namespace of the Pod.</param>

@@ -32,7 +32,7 @@ below.
    `/tmp` so the diagnostic IPC socket is visible.
 3. `kubectl port-forward` exposes the MCP endpoint to the investigator's
    workstation. The model walks the standard diagnostic flow
-   (`list_dotnet_processes` → `get_diagnostic_capabilities` → collectors).
+   (`inspect_process(view="list")` → `inspect_process(view="capabilities")` → collectors).
 4. When the investigation is over the operator deletes / restarts the Pod.
    Ephemeral containers are scoped to the Pod's lifetime — there is no way
    to remove them without recreating the Pod, which is intentional: it
@@ -121,7 +121,7 @@ curl -sN -X POST http://localhost:8787/mcp \
     -H "Mcp-Session-Id: $SID" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
-    -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_dotnet_processes","arguments":{}}}'
+    -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"inspect_process","arguments":{"view":"list"}}}'
 ```
 
 The response should include the target's PID with its
@@ -171,14 +171,14 @@ PID namespace.
 
 ## NativeAOT CPU sampling (perf bundled by default)
 
-`collect_cpu_sample` against a NativeAOT target falls back to Linux `perf`
+`collect_sample(kind="cpu")` against a NativeAOT target falls back to Linux `perf`
 since SampleProfiler is absent. The default sidecar image now ships `perf`,
 so the only runtime change required is to grant the right capabilities:
 
 1. **Use the default image** — `dotnet-diagnostics-mcp:dev` (or the published
    GHCR tag without a suffix). Pass `--build-arg INSTALL_PERF=false` and use
    the `-lean` GHCR tag only when you explicitly want to skip the ~80 MB perf
-   payload — this disables `collect_off_cpu_sample` and the perf-replay
+   payload — this disables `collect_sample(kind="off_cpu")` and the perf-replay
    thread-snapshot fallback.
 2. **Patch `ephemeral-attach.patch.json`** to grant the relevant
    capabilities on the ephemeral container's `securityContext`:

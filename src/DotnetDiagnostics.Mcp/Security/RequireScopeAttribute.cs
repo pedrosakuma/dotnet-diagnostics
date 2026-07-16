@@ -12,9 +12,9 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// principal must hold <i>every</i> listed scope (any wildcard / root scope satisfies
 /// every entry — see <see cref="BearerPrincipal.HasScope"/>).</para>
 /// <para>Stacking example: <c>collect_process_dump</c> stacks <c>ptrace</c> and
-/// <c>dump-write</c>; <c>inspect_live_heap</c> stacks <c>heap-read</c> and <c>ptrace</c>.</para>
+/// <c>dump-write</c>; <c>inspect_heap(source="live")</c> stacks <c>heap-read</c> and <c>ptrace</c>.</para>
 /// <para>For tools whose handle can be minted under multiple originating scopes (e.g.
-/// <c>query_collection</c> reads handles from both <c>read-counters</c> and
+/// <c>query_snapshot</c> reads handles from both <c>read-counters</c> and
 /// <c>eventpipe</c> collectors per docs/authorization.md#drilldown-over-handles), use <see cref="RequireAnyScopeAttribute"/>
 /// instead.</para>
 /// </remarks>
@@ -51,9 +51,9 @@ public sealed class RequireScopeAttribute : Attribute
 /// does not yet record per-handle <c>RequiredScopes</c>).
 /// </summary>
 /// <remarks>
-/// Example: <c>query_collection</c> drills into a handle minted by either
-/// <c>snapshot_counters</c> (<c>read-counters</c>) or any of the <c>collect_*</c>
-/// EventPipe tools (<c>eventpipe</c>). The attribute lists both scopes; the call is
+/// Example: <c>query_snapshot</c> drills into a handle minted by either
+/// <c>collect_events(kind="counters")</c> (<c>read-counters</c>) or another
+/// <c>collect_events</c> path (<c>eventpipe</c>). The attribute lists both scopes; the call is
 /// authorized when the principal holds either. A future PR will tighten this to an
 /// exact per-handle <c>RequiredScopes</c> check.
 /// </remarks>

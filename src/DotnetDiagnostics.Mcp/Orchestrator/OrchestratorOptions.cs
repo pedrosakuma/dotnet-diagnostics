@@ -15,7 +15,7 @@ namespace DotnetDiagnostics.Mcp.Orchestrator;
 /// <para>
 /// <see cref="NamespaceAllowlist"/> is enforced as a deny-by-omission policy: only
 /// namespaces explicitly listed (or matched by a single <c>"*"</c> entry) are reachable
-/// from <c>list_pods</c> / <c>attach_to_pod</c>. The wildcard exists only for
+/// from <c>list_orchestrator(kind="pods")</c> / <c>attach_to_pod</c>. The wildcard exists only for
 /// cluster-wide deployments and must be opted into deliberately — see
 /// docs/central-orchestrator-design.md §2.3 and §6.
 /// </para>
@@ -35,7 +35,7 @@ public sealed class OrchestratorOptions
     public const string DefaultPreparedLabelKey = "diagnostics.dotnet.io/prepared";
 
     /// <summary>
-    /// Master switch. When false (default) the orchestrator tools (<c>list_pods</c>,
+    /// Master switch. When false (default) the orchestrator tools (<c>list_orchestrator</c>,
     /// <c>attach_to_pod</c>, …) are NOT registered with the MCP server.
     /// </summary>
     public bool Enabled { get; set; }
@@ -76,7 +76,8 @@ public sealed class OrchestratorOptions
     public bool RequirePreparedLabel { get; set; } = true;
 
     /// <summary>
-    /// Hard cap on the <c>limit</c> parameter callers may request from <c>list_pods</c>.
+    /// Hard cap on the <c>limit</c> parameter callers may request from
+    /// <c>list_orchestrator(kind="pods")</c>.
     /// Default 500.
     /// </summary>
     public int MaxListLimit { get; set; } = 500;
@@ -130,7 +131,7 @@ public sealed class OrchestratorOptions
     public string ProxyBasePath { get; set; } = "/proxy";
 
     /// <summary>
-    /// H6 (issue #164) — when true, <c>list_active_investigations</c> accepts an
+    /// H6 (issue #164) — when true, <c>list_orchestrator(kind="investigations")</c> accepts an
     /// opt-in <c>includeAllSessions=true</c> argument and returns handles minted by
     /// other MCP sessions (the legacy behavior). Default false: every session sees
     /// only its own handles, which is the secure-by-default posture. Set true only

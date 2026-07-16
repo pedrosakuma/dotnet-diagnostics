@@ -1,6 +1,6 @@
 # GitHub Copilot instructions
 
-The canonical agent guide for this repository is **[`AGENTS.md`](../AGENTS.md)** at the repo root. Read it before making changes — it covers conventions (diagnostic socket UID, `.dockerignore` re-includes, EventPipe timing, ≤10 MCP tools), the Phase 7 roadmap, and the full build/test surface.
+The canonical agent guide for this repository is **[`AGENTS.md`](../AGENTS.md)** at the repo root. Read it before making changes — it covers conventions (diagnostic socket UID, `.dockerignore` re-includes, EventPipe timing, MCP tool-surface budgeting), the active Phase 16 roadmap, and the full build/test surface.
 
 ## Critical facts (do not re-derive these)
 
@@ -11,10 +11,10 @@ The canonical agent guide for this repository is **[`AGENTS.md`](../AGENTS.md)**
 - **Central package management**: package versions live in `Directory.Packages.props`; project files reference packages without a `Version` attribute.
 - **Bearer token**: server reads `MCP_BEARER_TOKEN`; if unset, generates and logs an ephemeral token. No hard-coded default.
 - **Diagnostic socket UID**: MCP sidecar must run as the same UID as the target app (locally `--user 0`). Otherwise `ServerNotAvailableException: Permission denied`.
-- **Two deliverables**: the **MCP server** (`DotnetDiagnostics.Mcp`) and the standalone **`dotnet-diagnostics-cli`** (`DotnetDiagnostics.Cli`, assembly `dotnet-diagnostics`) — a Core-only CLI (one-shot + `session` REPL, no HTTP/bearer/daemon). Both publish to NuGet from one release tag. CLI docs live in [`docs/cli-reference.md`](../docs/cli-reference.md); keep it Core-only (asserted by `NoServerReferenceTests`).
+- **Three deliverables**: the **MCP server** (`DotnetDiagnostics.Mcp`), the standalone **`dotnet-diagnostics-cli`** (`DotnetDiagnostics.Cli`, assembly `dotnet-diagnostics`) — a Core-only CLI (one-shot + `session` REPL, no HTTP/bearer/daemon) — and the **BenchmarkDotNet diagnoser** (`DotnetDiagnostics.BenchmarkDotNet`). CLI docs live in [`docs/cli-reference.md`](../docs/cli-reference.md); keep it Core-only (asserted by `NoServerReferenceTests`).
 - **Shell escapes for `gh` / `git`**: `!` in `gh ... --title "..."` silently fails (bash history expansion); use single quotes. Non-trivial bodies and commit messages go via `--body-file` / `-F file` — inline strings with backticks/`$`/`!` hang. Don't pipe output of `gh ... create` (`| tail`, `2>&1 | …`) — failures become invisible. See AGENTS.md → "Shell escapes when driving `gh` / `git`".
 
 ## Where to work
 
-- [Phase 7 tracking issue #17](https://github.com/pedrosakuma/dotnet-diagnostics/issues/17) — dependency graph + execution order
+- [Phase 16 tracking issue #551](https://github.com/pedrosakuma/dotnet-diagnostics/issues/551) — current priorities + external capability gaps
 - [`docs/`](../docs) — tool reference, **CLI reference**, investigation playbooks, sidecar walkthroughs

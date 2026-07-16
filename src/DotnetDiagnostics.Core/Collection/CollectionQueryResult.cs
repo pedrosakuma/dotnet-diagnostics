@@ -7,7 +7,7 @@ using DotnetDiagnostics.Core.ThreadPool;
 namespace DotnetDiagnostics.Core.Collection;
 
 /// <summary>
-/// Envelope returned by <c>query_collection</c>. Carries the artifact kind, the selected view,
+/// Envelope returned by <c>query_snapshot</c>. Carries the artifact kind, the selected view,
 /// the original collection metadata (processId, started-at, duration) and the typed
 /// <see cref="Payload"/> produced by the view dispatcher.
 /// </summary>
@@ -202,7 +202,7 @@ public sealed record GcHeapStatsTrend(
 /// <param name="CapturedCount">Events that were actually stored and thus grouped here.</param>
 /// <param name="Truncated">True when the collector dropped tail events (<c>TotalEvents &gt; CapturedCount</c>).
 /// When true, <paramref name="ByEventName"/> reflects only the captured prefix — re-run
-/// <c>collect_event_source</c> with a larger <c>maxEvents</c> to get exact totals.</param>
+/// <c>collect_events(kind="event_source")</c> with a larger <c>maxEvents</c> to get exact totals.</param>
 /// <param name="ByEventName">Per-event-name aggregates over the captured subset only.</param>
 public sealed record EventSourceByEventNameView(
     string Provider,

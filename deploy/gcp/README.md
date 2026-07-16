@@ -16,10 +16,13 @@ For Kubernetes on GKE (or any other cluster), use the generic recipes under
 [`../aws/`](../aws/).
 
 > **Cloud Run is a reduced-capability host.** gVisor blocks `ptrace`, so
-> `collect_thread_snapshot`, `inspect_live_heap`, live-PID `inspect_dump`,
-> `collect_process_dump`, and `collect_off_cpu_sample` all return
-> `PermissionDenied`. EventPipe-based tools (counters, cpu_sample,
-> exceptions, gc, event_source, activities, allocation_sample) work fine.
+> live `collect_thread_snapshot`, `inspect_heap(source="live")`, live
+> `capture_method_bytes`, `get_bytes(kind="module")`, and
+> `collect_sample(kind="cpu", resolveMethodInstantiations=true)` return
+> `PermissionDenied`. Diagnostic-IPC and EventPipe paths — including
+> `collect_process_dump` and normal `collect_sample(kind="cpu")` — work without
+> kernel ptrace. `collect_sample(kind="off_cpu")` remains unavailable because
+> Cloud Run exposes neither host perf access nor `CAP_PERFMON`.
 > See [`cloud-run/README.md`](cloud-run/README.md) for the full capability
 > matrix and pick AWS ECS / Fargate or Kubernetes if you need the blocked
 > tools.

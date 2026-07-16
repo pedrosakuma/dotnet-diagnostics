@@ -17,7 +17,7 @@ namespace DotnetDiagnostics.Core.Collection;
 
 /// <summary>
 /// Renders a previously-collected artifact under a named view. Pure (no I/O, no DI) so the
-/// <c>query_collection</c> tool can stay a thin reflection-over-the-store wrapper.
+/// <c>query_snapshot</c> tool can stay a thin reflection-over-the-store wrapper.
 /// </summary>
 /// <remarks>
 /// Adding a new view = adding one branch to the per-kind switch. Adding a new collector kind =

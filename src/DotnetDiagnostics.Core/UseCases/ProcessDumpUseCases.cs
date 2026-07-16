@@ -98,10 +98,15 @@ public static class ProcessDumpUseCases
             var hint = dumpType == ProcessDumpType.Mini
                 ? new NextActionHint("inspect_heap",
                     "Mini dump captured — heap walk unavailable. Re-capture with dumpType='WithHeap' for full inspection.",
-                    new Dictionary<string, object?> { ["dumpFilePath"] = dump.FilePath })
+                    new Dictionary<string, object?> { ["source"] = "dump", ["dumpFilePath"] = dump.FilePath })
                 : new NextActionHint("inspect_heap",
                     "Inspect the dump's managed heap for top-retained types + handoff payload to dotnet-assembly-mcp.",
-                    new Dictionary<string, object?> { ["dumpFilePath"] = dump.FilePath, ["topTypes"] = 20 });
+                    new Dictionary<string, object?>
+                    {
+                        ["source"] = "dump",
+                        ["dumpFilePath"] = dump.FilePath,
+                        ["topTypes"] = 20,
+                    });
             var payload = new DumpToolResult
             {
                 Kind = DumpToolResultKinds.DumpWritten,
@@ -114,6 +119,12 @@ public static class ProcessDumpUseCases
                 payload,
                 $"Wrote {dumpType} dump for pid {dump.ProcessId} to {dump.FilePath} ({dump.FileSizeBytes:N0} bytes).",
                 hint), ctx);
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, retryArguments: new Dictionary<string, object?>
+        {
+            ["processId"] = pid,
+            ["dumpType"] = dumpType.ToString(),
+            ["outputDirectory"] = outputDirectory,
+            ["confirm"] = true,
+        }).ConfigureAwait(false);
     }
 }

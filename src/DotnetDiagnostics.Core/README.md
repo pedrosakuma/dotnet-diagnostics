@@ -3,8 +3,11 @@
 The transport-agnostic **.NET diagnostics engine** behind the
 [`dotnet-diagnostics-mcp`](https://github.com/pedrosakuma/dotnet-diagnostics) MCP server and
 the `dotnet-diagnostics-cli`. It attaches to a live .NET process over the runtime diagnostic IPC
-socket — **no modification to the target app** — and turns the raw EventPipe / ClrMD / TraceEvent
-streams into structured results.
+socket and turns raw EventPipe / ClrMD / TraceEvent streams into structured results. Those normal
+paths require no target code changes or prior instrumentation. The explicit exception is
+`MethodParameterCaptureUseCases`: it performs a privileged dynamic attach of vendored
+dotnet-monitor profilers plus a startup hook and temporarily ReJIT-instruments an allowlist of
+methods; hosts must expose that sensitive capability only behind an explicit authorization policy.
 
 This package exists so other hosts can call the same engine **in-process**, without shelling out to
 a tool. The first such consumer is the BenchmarkDotNet diagnoser
@@ -15,8 +18,9 @@ dotnet add package dotnet-diagnostics-core
 ```
 
 > **Target framework:** `net10.0`. **Platform:** the engine attaches over the diagnostic IPC socket;
-> ClrMD-backed operations (heap/thread snapshots, dumps) additionally need `CAP_SYS_PTRACE` on Linux
-> and the same UID as the target. See the repo docs for the deployment matrix.
+> live ClrMD memory readers (heap/thread snapshots, method bytes, module bytes) additionally need
+> `CAP_SYS_PTRACE` on Linux and the same UID as the target. Process dumps write through diagnostic
+> IPC and do not require that kernel capability. See the repo docs for the deployment matrix.
 
 ## Supported public surface (Pattern B — curated facade)
 
@@ -35,6 +39,7 @@ The supported entry points are the static **use-case** classes; each method retu
 | `HeapInspectionUseCases` | Live or dump heap walk + drilldown handles. |
 | `ProcessDumpUseCases` | Write a process dump (Mini / Triage / WithHeap / Full). |
 | `ByteMaterializationUseCases` | Stream module (PE/PDB) or dump bytes. |
+| `MethodParameterCaptureUseCases` | Explicit dynamic-profiler capture of allowlisted method parameters on supported CoreCLR targets. |
 
 Supporting types that are part of the facade because the use-cases return or accept them:
 

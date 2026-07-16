@@ -4,8 +4,8 @@ using DotnetDiagnostics.Core.Capabilities;
 
 /// <summary>
 /// Compact per-process digest attached to every successful diagnostic response so the LLM
-/// can chain follow-up calls without re-running <c>list_dotnet_processes</c> or
-/// <c>get_diagnostic_capabilities</c>. Cached for a short TTL — see
+/// can chain follow-up calls without re-running <c>inspect_process(view="list")</c> or
+/// <c>inspect_process(view="capabilities")</c>. Cached for a short TTL — see
 /// <see cref="IProcessContextResolver"/>.
 /// </summary>
 /// <param name="ProcessId">Resolved process id (after auto-resolve when the caller omitted it).</param>

@@ -57,7 +57,7 @@ public sealed class EventPipeAllocationSampler
     /// <summary>
     /// Samples allocations in the target process for <paramref name="duration"/> and
     /// aggregates the captured <c>GCAllocationTick</c> events into a top-N type summary plus
-    /// a merged call-tree artifact suitable for follow-up drill-down via <c>get_call_tree</c>.
+    /// a merged call-tree artifact suitable for follow-up drill-down via <c>query_snapshot(view="call-tree")</c>.
     /// </summary>
     public async Task<AllocationSampleResult> SampleAsync(
         int processId,

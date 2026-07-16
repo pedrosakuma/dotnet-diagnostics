@@ -1,5 +1,6 @@
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.UseCases;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.Core.Tests;
@@ -86,6 +87,25 @@ public sealed class ProcessContextResolverTests
         result.Error!.Kind.Should().Be("AmbiguousDotnetProcess");
         result.Candidates.Should().HaveCount(2);
         detector.CallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ResolveContextAsync_MultipleProcesses_UsesReplayableInspectProcessArguments()
+    {
+        var discovery = new StubDiscovery(
+            new DotnetProcess(1, "/a", "linux", "x64", "10.0.0", "a"),
+            new DotnetProcess(2, "/b", "linux", "x64", "10.0.0", "b"));
+        var detector = new StubDetector(_ => DefaultCaps);
+        var resolver = new ProcessContextResolver(discovery, detector, new FakeTimeProvider(), TimeSpan.FromSeconds(60));
+
+        var result = await ProcessResolutionHelpers.ResolveContextAsync<object>(resolver, processId: null, default);
+
+        result.Failure.Should().NotBeNull();
+        result.Failure!.Error!.Message.Should().Contain("1=a").And.Contain("2=b");
+        var hint = result.Failure.Hints.Should().ContainSingle().Which;
+        hint.NextTool.Should().Be("inspect_process");
+        hint.SuggestedArguments.Should().BeEquivalentTo(
+            new Dictionary<string, object?> { ["view"] = "list" });
     }
 
     [Fact]

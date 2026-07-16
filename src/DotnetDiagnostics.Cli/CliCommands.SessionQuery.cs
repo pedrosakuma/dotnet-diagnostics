@@ -65,7 +65,7 @@ internal static partial class CliCommands
     /// <summary>
     /// Handle kind backing an <see cref="OffCpuSnapshotArtifact"/> whose session drill-down is served by
     /// the host-neutral <see cref="OffCpuQueryDispatcher"/>. Keep in sync with the server's
-    /// <c>collect_off_cpu_sample</c> handle registration (<c>off-cpu-snapshot</c>).
+    /// <c>collect_sample(kind="off_cpu")</c> handle registration (<c>off-cpu-snapshot</c>).
     /// </summary>
     private const string OffCpuSessionKind = "off-cpu-snapshot";
 
@@ -311,7 +311,7 @@ internal static partial class CliCommands
 
             var detail = normalized == "duplicate-strings"
                 ? "The 'duplicate-strings' view exposes raw string previews behind the server's sensitive-value policy, which the standalone CLI cannot enforce; run the MCP server if you need it."
-                : "The 'object', 'gcroot' and 'objsize' views need a ClrMD runtime: 'gcroot'/'object' are served in-session for dump-origin handles, but a live attach (and 'objsize') require the MCP server's query_heap_snapshot tool.";
+                : "The 'object', 'gcroot' and 'objsize' views need a ClrMD runtime: 'gcroot'/'object' are served in-session for dump-origin handles, but a live attach (and 'objsize') require the MCP server's query_snapshot tool.";
             return Fail($"query: view '{view}' for a heap snapshot is not available in the session yet.", "NotSupportedInSession", detail);
         }
 

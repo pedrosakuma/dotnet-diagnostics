@@ -55,7 +55,11 @@ public sealed class PreflightChecksTests
         var attach = Find(report, "clrmd-attach");
         Assert.Equal(PreflightStatus.Blocked, attach.Status);
         Assert.False(string.IsNullOrWhiteSpace(attach.Remediation));
-        Assert.Contains("collect_process_dump", attach.AffectedTools!);
+        Assert.Contains("capture_method_bytes", attach.AffectedTools!);
+        Assert.Contains("get_bytes(kind=\"module\")", attach.AffectedTools!);
+        Assert.Contains("collect_sample(kind=\"cpu\", resolveMethodInstantiations=true)", attach.AffectedTools!);
+        Assert.DoesNotContain("collect_process_dump", attach.AffectedTools!);
+        Assert.DoesNotContain("inspect_heap(source=\"dump\")", attach.AffectedTools!);
         // Most-severe check is surfaced first.
         Assert.Equal("clrmd-attach", report.Checks[0].Id);
     }

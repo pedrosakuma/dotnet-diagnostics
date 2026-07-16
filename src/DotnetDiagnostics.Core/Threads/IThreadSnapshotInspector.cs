@@ -10,7 +10,7 @@ namespace DotnetDiagnostics.Core.Threads;
 ///   <item><see cref="InspectDumpAsync"/> — read a previously-captured .dmp file (no impact on the target).</item>
 /// </list>
 /// Both paths produce the same <see cref="ThreadSnapshotArtifact"/>; downstream drilldown queries
-/// (<c>query_thread_snapshot</c>, the <c>thread://snapshot/{handle}</c> Resource) don't need to
+/// (<c>query_snapshot</c>, the <c>thread://snapshot/{handle}</c> Resource) don't need to
 /// know how the snapshot was collected — same "split collector, unified drilldown" pattern as the
 /// heap snapshot work.
 /// </summary>

@@ -1,12 +1,14 @@
 # dotnet-diagnostics-cli
 
 A **standalone command-line tool** for on-demand performance diagnostics on running **.NET 10**
-applications — no instrumentation, no MCP client, no HTTP server, no bearer token, no daemon.
+applications — no target code changes or prior instrumentation, no MCP client, no HTTP server,
+no bearer token, no daemon.
 
 It runs the same Core diagnostics engine as the [`dotnet-diagnostics-mcp`](https://www.nuget.org/packages/dotnet-diagnostics-mcp)
 MCP server, but as a tool a human (or a script / CI job) drives directly. Attach to a live process,
 collect a window of events, walk the heap, or write a dump — then exit. A stateful `session` REPL keeps
 collected artifacts queryable across commands so you can drill in without re-collecting.
+The CLI does not expose the MCP server's privileged dynamic-profiler method-parameter capture.
 
 > **Two packages, one engine.** Install **this** package (`dotnet-diagnostics-cli`) for interactive /
 > scripted human use. Install [`dotnet-diagnostics-mcp`](https://www.nuget.org/packages/dotnet-diagnostics-mcp)
@@ -86,12 +88,13 @@ diag(pid 1234)> exit
 - **Full CLI reference:** [`docs/cli-reference.md`](https://github.com/pedrosakuma/dotnet-diagnostics/blob/main/docs/cli-reference.md)
 - **Project README & MCP server:** [github.com/pedrosakuma/dotnet-diagnostics](https://github.com/pedrosakuma/dotnet-diagnostics)
 
-## Linux note (ClrMD-backed tools)
+## Linux note (live heap inspection)
 
-`inspect-heap --source live` and `dump` attach via `ptrace(2)`. On
+`inspect-heap --source live` attaches via `ptrace(2)`. On
 Debian/Ubuntu/WSL the default `kernel.yama.ptrace_scope=1` blocks same-UID peer attach — run
 `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope` (or grant `CAP_SYS_PTRACE` in a container).
-EventPipe-based tools (`collect`, counters, GC, exceptions) are unaffected.
+The `dump` command writes through diagnostic IPC and does not need that kernel capability.
+EventPipe-based tools (`collect`, counters, GC, exceptions) are also unaffected.
 
 ## License
 

@@ -30,7 +30,7 @@ internal static class DiagnosticToolThreadingAndJit
         [Description("Include runtime frames (PInvoke trampolines, etc.) without an associated managed method. Off by default.")] bool includeRuntimeFrames = false,
         [Description("Include pure native frames where ClrMD cannot resolve a method. Off by default.")] bool includeNativeFrames = false,
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' returns only the top-3 blocked threads inline and drops the SyncBlock lock-graph (use query_thread_snapshot(view=lock-graph) for the full graph). 'detail' returns the historical top-25 threads + top-25 locks. 'raw' is equivalent to detail. The full snapshot is always retained behind the issued handle.")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' returns only the top-3 blocked threads inline and drops the SyncBlock lock-graph (use query_snapshot(view='lock-graph') for the full graph). 'detail' returns the historical top-25 threads + top-25 locks. 'raw' is equivalent to detail. The full snapshot is always retained behind the issued handle.")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
@@ -96,7 +96,7 @@ internal static class DiagnosticToolThreadingAndJit
                     Locks = Array.Empty<MonitorLockState>(),
                 };
                 var droppedThreads = snapshot.Threads.Count - topBlocked.Length;
-                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Showing top {topBlocked.Length} blocked inline (dropped {droppedThreads} thread(s) and {snapshot.Locks.Count} lock(s); handle has all). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Use query_thread_snapshot(view=top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool).";
+                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Showing top {topBlocked.Length} blocked inline (dropped {droppedThreads} thread(s) and {snapshot.Locks.Count} lock(s); handle has all). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Use query_snapshot(handle=\"{handle.Id}\", view=top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool).";
             }
             else
             {
@@ -105,7 +105,7 @@ internal static class DiagnosticToolThreadingAndJit
                     Threads = snapshot.Threads.Take(25).ToArray(),
                     Locks = snapshot.Locks.Take(25).ToArray(),
                 };
-                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Use query_thread_snapshot(view=top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool).";
+                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Use query_snapshot(handle=\"{handle.Id}\", view=top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool).";
             }
 
             if (snapshot.SnapshotKind is not "exact")
@@ -136,7 +136,18 @@ internal static class DiagnosticToolThreadingAndJit
                 ? DiagnosticResult.Ok(summaryView, summary)
                 : DiagnosticResult.Ok(summaryView, summary, hint);
             return WithContext(result with { Signals = signals.Count > 0 ? signals : null }, liveCtx);
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, hasDump
+            ? null
+            : new Dictionary<string, object?>
+            {
+                ["processId"] = livePid,
+                ["maxFramesPerThread"] = maxFramesPerThread,
+                ["includeRuntimeFrames"] = includeRuntimeFrames,
+                ["includeNativeFrames"] = includeNativeFrames,
+                ["symbolPath"] = symbolPath,
+                ["depth"] = depth,
+                ["investigationHandleId"] = investigationHandleId,
+            }).ConfigureAwait(false);
     }
 
     public static async Task<DiagnosticResult<CapturedMethodBytes>> CaptureMethodBytes(
@@ -207,7 +218,16 @@ internal static class DiagnosticToolThreadingAndJit
                 ? DiagnosticResult.Ok(captured, summary)
                 : DiagnosticResult.Ok(captured, summary, hint);
             return WithContext(result, liveCtx);
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, hasDump
+            ? null
+            : BuildCaptureMethodBytesRetryArguments(
+                moduleVersionId,
+                metadataToken,
+                livePid,
+                codeAddress,
+                tier,
+                outputDirectory,
+                investigationHandleId)).ConfigureAwait(false);
     }
 
     public static DiagnosticResult<ThreadSnapshotQueryResult> QueryThreadSnapshot(
@@ -228,8 +248,7 @@ internal static class DiagnosticToolThreadingAndJit
             return DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
                 $"Handle '{handle}' is unknown or expired.",
                 new DiagnosticError("HandleExpired", "Thread snapshot handles live ~10min; live-origin handles are also invalidated when the target PID exits.", handle),
-                new NextActionHint("collect_thread_snapshot", "Re-capture to issue a fresh handle.",
-                    new Dictionary<string, object?> { ["processId"] = "<pid>" }));
+                new NextActionHint("collect_thread_snapshot", "Re-capture to issue a fresh handle."));
         }
 
         return ThreadSnapshotQueryDispatcher.Dispatch(snapshot, handle, view, threadId, topN, framesToHash, minCount);
@@ -306,10 +325,35 @@ internal static class DiagnosticToolThreadingAndJit
             principalAccessor?.Current?.HasExplicitScope("symbols-remote") == true,
             deprecation);
 
+    internal static IReadOnlyDictionary<string, object?> BuildCaptureMethodBytesRetryArguments(
+        string moduleVersionId,
+        string metadataToken,
+        int processId,
+        string? codeAddress,
+        string? tier,
+        string? outputDirectory,
+        string? investigationHandleId)
+        => new Dictionary<string, object?>
+        {
+            ["moduleVersionId"] = moduleVersionId,
+            ["metadataToken"] = metadataToken,
+            ["processId"] = processId,
+            ["codeAddress"] = codeAddress,
+            ["tier"] = tier,
+            ["outputDirectory"] = outputDirectory,
+            ["investigationHandleId"] = investigationHandleId,
+        };
+
     private static Task<DiagnosticResult<T>> GuardAttachAsync<T>(
         string tool,
         int? processId,
         Func<Task<DiagnosticResult<T>>> body,
-        CancellationToken cancellationToken)
-        => AttachGuard.GuardAttachAsync(tool, processId, body, cancellationToken);
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, object?>? retryArguments = null)
+        => AttachGuard.GuardAttachAsync(
+            tool,
+            processId,
+            body,
+            cancellationToken,
+            retryArguments: retryArguments);
 }

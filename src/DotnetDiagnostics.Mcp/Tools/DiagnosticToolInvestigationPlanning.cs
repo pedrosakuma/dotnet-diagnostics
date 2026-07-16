@@ -56,10 +56,10 @@ internal static class DiagnosticToolInvestigationPlanning
         IInvestigationSummaryExporter exporter,
         IDiagnosticHandleStore handles,
         DotnetDiagnostics.Mcp.Observability.IInvestigationTelemetryEmitter telemetry,
-        [Description("Handle returned by a prior collect_cpu_sample call.")] string handle,
+        [Description("Handle returned by a prior collect_sample(kind='cpu') call.")] string handle,
         [Description("Output format: 'json' (default — portable, machine-readable) or 'markdown' (human-readable for PRs).") ] SummaryFormat format = SummaryFormat.Json,
         [Description("Max hotspots to include in the summary. Defaults to 10.")] int topHotspots = 10,
-        [Description("Optional managed assembly name for the target (from list_dotnet_processes).") ] string? buildAssemblyName = null,
+        [Description("Optional managed assembly name for the target (from inspect_process(view='list')).") ] string? buildAssemblyName = null,
         [Description("Optional investigation id from the previous summary, to link lineage.")] string? previousInvestigationId = null,
         [Description("Optional commit SHA being proposed as the fix.")] string? fixCommitSha = null,
         [Description("Optional PR URL being proposed as the fix.")] string? fixPullRequestUrl = null,
@@ -78,7 +78,7 @@ internal static class DiagnosticToolInvestigationPlanning
                 $"Handle '{handle}' is unknown or expired.",
                 new DiagnosticError("HandleExpired", "Drill-down handles live ~10min and are invalidated when the target process exits.", handle),
                 new NextActionHint("collect_sample", "Re-run the sampler on the same pid to issue a fresh handle.",
-                    new Dictionary<string, object?> { ["durationSeconds"] = 10 }));
+                    new Dictionary<string, object?> { ["kind"] = "cpu", ["durationSeconds"] = 10 }));
         }
 
         var fix = (fixCommitSha is null && fixPullRequestUrl is null && fixDescription is null)
@@ -100,9 +100,7 @@ internal static class DiagnosticToolInvestigationPlanning
         var bytes = exported.Rendered.Length;
         return DiagnosticResult.Ok(
             exported,
-            $"Exported investigation {exported.Summary.InvestigationId} ({exported.Summary.Findings.TopHotspots.Count} hotspots, {bytes} chars {format}). Paste `rendered` into your PR/ADR; re-supply this JSON via compare_to_baseline on the next investigation.",
-            new NextActionHint("compare_to_baseline", "When you investigate the next deploy, pass this summary as the baseline.",
-                new Dictionary<string, object?> { ["baselineSummaryJson"] = "<paste rendered JSON here>" }));
+            $"Exported investigation {exported.Summary.InvestigationId} ({exported.Summary.Findings.TopHotspots.Count} hotspots, {bytes} chars {format}). Paste `rendered` into your PR/ADR; re-supply this JSON via compare_to_baseline on the next investigation.");
     }
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)

@@ -110,6 +110,8 @@ each for a concrete reason — they are not gaps:
 - `crash-guard` — a crash/first-chance guard for a failing process, not a benchmark perf view.
 - `sweep` — a combined multi-kind sweep; redundant here since a method can already list multiple
   kinds on its `[DiagnosticKind]`.
+- `method-params` — captures sensitive values through an explicit dynamic profiler attach and
+  ReJIT instrumentation; it remains MCP-server-only and is never enabled by the diagnoser.
 - **off-CPU** sampling (`off_cpu`) — attributes *blocked/wait* time, but needs host `perf` + kernel
   tracepoints + elevated privilege, so it is not portable in-process for a benchmark. Feasibility via
   the child-launch/container angle is tracked separately (issue #501).
@@ -119,3 +121,7 @@ each for a concrete reason — they are not gaps:
 ## Stability
 
 While this package is `0.x` its public API carries no SemVer stability guarantee.
+
+## License
+
+MIT — see the repository.

@@ -12,18 +12,16 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// Successor for <c>get_module_bytes</c> and <c>get_dump_bytes</c>: a single
-/// byte-fetch surface that dispatches on a <c>kind</c> discriminator. Both legacy tools
-/// share the same <see cref="ByteFetchEnvelope"/>, chunking contract, and downstream
-/// consumers (dotnet-assembly-mcp, dotnet-native-mcp, orchestrator proxy), so merging them
-/// reduces the visible MCP surface without changing the wire shape.
+/// Canonical byte-fetch surface. It dispatches module, dump, trace, inventory, and
+/// deletion operations on a <c>kind</c> discriminator while preserving the shared
+/// <see cref="ByteFetchEnvelope"/> and chunking contract used by downstream consumers.
 /// </summary>
 /// <remarks>
-/// <para>Implementation delegates to the existing <see cref="DiagnosticTools.GetModuleBytes"/>
-/// and <see cref="DiagnosticTools.GetDumpBytes"/> entrypoints so the legacy tools and
-/// this successor stay byte-for-byte compatible (asserted by
-/// <c>GetBytesCompatibilityTests</c>). When the legacy tools are eventually removed, the
-/// implementations will move here and the call direction will flip.</para>
+/// <para>Implementation delegates to the existing internal
+/// <see cref="DiagnosticTools.GetModuleBytes"/> and
+/// <see cref="DiagnosticTools.GetDumpBytes"/> entrypoints. Those methods are implementation
+/// details rather than registered MCP tools; compatibility is asserted by
+/// <c>GetBytesCompatibilityTests</c>.</para>
 /// </remarks>
 [McpServerToolType]
 public sealed class GetBytesTool
@@ -50,7 +48,7 @@ public sealed class GetBytesTool
         "Streams a managed module artifact (PE or PDB), a dump file, or a raw trace (.nettrace) as repeated CallTool chunks so sibling MCPs can materialise pod-local binaries through the orchestrator proxy; also lists and deletes artifacts under MCP_ARTIFACT_ROOT for lifecycle hygiene. " +
         "Dispatches on 'kind': 'module' (resolve by ModuleVersionId in a live process; asset defaults to 'pe'; optional processId — server auto-selects when omitted), 'dump' (path under MCP_ARTIFACT_ROOT, re-validated every call), 'trace' (a .nettrace exported by collect_sample(kind='cpu', exportTrace=true) or inspect_heap(source='gcdump', exportTrace=true), path under MCP_ARTIFACT_ROOT), 'list' (read-only inventory of all artifacts under the root, newest first), or 'delete' (remove one artifact — requires the literal 'delete-artifact' scope). " +
         "maxBytes defaults to 4 MiB and is capped at 16 MiB per response; total artifact size is capped at 256 MiB. A TTL reaper (MCP_ARTIFACT_TTL_HOURS, default 24h, 0=disabled) prunes aged artifacts automatically. " +
-        "Successor to 'get_module_bytes' and 'get_dump_bytes'; both legacy tools remain available during the deprecation window and emit identical envelopes.")]
+        "`get_bytes` is the only registered public byte-fetch tool. Clients migrating from the removed `get_module_bytes` and `get_dump_bytes` names should use `kind=\"module\"` and `kind=\"dump\"`, respectively; the removed names are migration history and are not registered.")]
     public static async Task<DiagnosticResult<object>> GetBytes(
         IModuleByteSource moduleByteSource,
         IDumpByteSource dumpByteSource,

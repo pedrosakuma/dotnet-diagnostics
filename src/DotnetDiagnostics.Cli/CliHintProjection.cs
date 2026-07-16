@@ -33,13 +33,15 @@ internal static class CliHintProjection
     /// <summary>
     /// MCP tool name → CLI command. A hint whose <see cref="NextActionHint.NextTool"/> is absent from
     /// this map has no CLI equivalent (e.g. <c>collect_sample</c>, <c>collect_thread_snapshot</c>,
-    /// <c>query_snapshot</c>, <c>query_heap_snapshot</c>, <c>dotnet-assembly-mcp.get_method</c>) and is
+    /// <c>query_snapshot</c>, <c>dotnet-assembly-mcp.get_method</c>) and is
     /// dropped.
     /// </summary>
     private static readonly Dictionary<string, string> ToolToCommand = new(StringComparer.Ordinal)
     {
         ["collect_events"] = "collect",
         ["inspect_process"] = "processes",
+        // Historical aliases are accepted only to sanitize persisted pre-consolidation
+        // envelopes. Current runtime hints must emit canonical tool names.
         ["list_dotnet_processes"] = "processes",
         ["collect_sample"] = "collect",
         ["collect_thread_snapshot"] = "collect",
@@ -83,6 +85,7 @@ internal static class CliHintProjection
     private static readonly (string From, string To)[] ReasonRewrites =
     {
         ("inspect_heap(source=\"dump\")", "inspect-heap --source dump"),
+        // Historical prose rewrites support persisted pre-consolidation envelopes only.
         ("inspect_heap/inspect_dump", "inspect-heap"),
         ("collect_process_dump", "dump"),
         ("inspect_live_heap", "inspect-heap"),
@@ -264,7 +267,7 @@ internal static class CliHintProjection
 
     /// <summary>
     /// Replaces the MCP-audience capability narrative (Core's <see cref="DiagnosticCapabilities.Notes"/>,
-    /// which names MCP-only tools such as <c>collect_off_cpu_sample</c>, <c>collect_thread_snapshot</c>,
+    /// which names MCP-only tools such as <c>collect_sample</c>, <c>collect_thread_snapshot</c>,
     /// <c>inspect_process(view=resources)</c>) with a concise CLI-authored note built from the typed
     /// capability fields (#302). The note covers only what the one-shot CLI actually exposes — the
     /// live-attach host gate that decides whether <c>inspect-heap --source live</c> and <c>dump</c>
@@ -324,7 +327,7 @@ internal static class CliHintProjection
         else
         {
             // AttachClrMdReason is Core prose that may name MCP tools (e.g. "use the dump-based
-            // workflow (collect_process_dump + inspect_dump)"); sanitize it and fail closed to a
+            // historical dump-workflow wording); sanitize it and fail closed to a
             // generic message if anything still leaks.
             var reason = SanitizeReason(caps.AttachClrMdReason ?? string.Empty);
             parts.Add(!string.IsNullOrWhiteSpace(reason) && !ContainsLeak(reason)

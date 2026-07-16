@@ -112,8 +112,8 @@ public enum HeapSnapshotOrigin
 
 /// <summary>
 /// Canonical heap snapshot produced once per walk and registered in the drilldown handle store.
-/// Both <c>inspect_dump</c> and <c>inspect_live_heap</c> emit the same shape, so downstream
-/// drilldown queries (<c>query_heap_snapshot</c>, <c>heap://snapshot/{handle}</c> Resource) do not
+/// Every <c>inspect_heap</c> source emits the same shape, so downstream
+/// drilldown queries (<c>query_snapshot</c>, <c>heap://snapshot/{handle}</c> Resource) do not
 /// need to know how it was collected — that's the "split collector, unified drilldown" pattern.
 /// </summary>
 public sealed record HeapSnapshotArtifact(
@@ -249,7 +249,7 @@ public sealed record DuplicateStringStat(
     long TotalBytes,
     bool PreviewTruncated);
 
-/// <summary>One pending async state machine surfaced by <c>query_heap_snapshot(view="async")</c>.</summary>
+/// <summary>One pending async state machine surfaced by <c>query_snapshot(view="async")</c>.</summary>
 public sealed record AsyncOperationStat(
     string StateMachineTypeFullName,
     int State,

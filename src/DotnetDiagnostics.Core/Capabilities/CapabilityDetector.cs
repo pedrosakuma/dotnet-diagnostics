@@ -366,15 +366,15 @@ public sealed class CapabilityDetector : ICapabilityDetector
 
         // Off-CPU availability is a property of the sidecar host (perf + CAP_PERFMON on Linux,
         // admin elevation on Windows), not of the target runtime — so we surface it as a
-        // separate hint so the LLM can decide whether to call collect_off_cpu_sample before
+        // separate hint so the LLM can decide whether to call collect_sample(kind="off_cpu") before
         // committing to the (system-wide, privileged) capture.
         if (canSampleOffCpu)
         {
-            primary += " collect_off_cpu_sample is available.";
+            primary += " collect_sample(kind=\"off_cpu\") is available.";
         }
         else if (OperatingSystem.IsWindows())
         {
-            primary += " collect_off_cpu_sample is NOT available: the sidecar lacks administrative " +
+            primary += " collect_sample(kind=\"off_cpu\") is NOT available: the sidecar lacks administrative " +
                        "elevation required for the NT Kernel Logger ContextSwitch provider. Run the " +
                        "diagnostics process as Administrator (or grant SeSystemProfilePrivilege).";
         }
@@ -382,23 +382,23 @@ public sealed class CapabilityDetector : ICapabilityDetector
         {
             if (!perfHost.PerfInstalled)
             {
-                primary += " collect_off_cpu_sample is NOT available: 'perf' is missing from PATH / linux-tools candidates. Install linux-perf (or linux-tools-$(uname -r) on Debian/Ubuntu).";
+                primary += " collect_sample(kind=\"off_cpu\") is NOT available: 'perf' is missing from PATH / linux-tools candidates. Install linux-perf (or linux-tools-$(uname -r) on Debian/Ubuntu).";
             }
             else if (perfHost.HasCapPerfmon || perfHost.HasCapSysAdmin)
             {
-                primary += " collect_off_cpu_sample is NOT available despite perf being installed and the sidecar holding a profiling capability; inspect the runtime error for the remaining host restriction.";
+                primary += " collect_sample(kind=\"off_cpu\") is NOT available despite perf being installed and the sidecar holding a profiling capability; inspect the runtime error for the remaining host restriction.";
             }
             else
             {
                 var paranoid = perfHost.PerfEventParanoid is { } value
                     ? value.ToString(System.Globalization.CultureInfo.InvariantCulture)
                     : "<unknown>";
-                primary += $" collect_off_cpu_sample is NOT available: perf is installed but the sidecar lacks CAP_PERFMON and kernel.perf_event_paranoid={paranoid}. Grant CAP_PERFMON (or CAP_SYS_ADMIN) or lower the sysctl to -1 for sched_switch tracing.";
+                primary += $" collect_sample(kind=\"off_cpu\") is NOT available: perf is installed but the sidecar lacks CAP_PERFMON and kernel.perf_event_paranoid={paranoid}. Grant CAP_PERFMON (or CAP_SYS_ADMIN) or lower the sysctl to -1 for sched_switch tracing.";
             }
         }
         else
         {
-            primary += " collect_off_cpu_sample is not supported on this OS in this release.";
+            primary += " collect_sample(kind=\"off_cpu\") is not supported on this OS in this release.";
         }
 
         if (OperatingSystem.IsLinux())
@@ -410,14 +410,17 @@ public sealed class CapabilityDetector : ICapabilityDetector
             primary += " Windows handle count inspection is available via inspect_process(view=resources); per-handle and per-socket breakdown remains unsupported in this release.";
         }
 
-        // ClrMD live attach (collect_thread_snapshot, inspect_live_heap, inspect_dump on live
-        // PID, collect_process_dump, plus collect_cpu_sample(resolveMethodInstantiations=true))
-        // is also a host-side capability. Tell the LLM up front when the live-attach path
-        // will hard-fail with PermissionDenied so it can either route
-        // around them (dump-based workflow) or relay a concrete mitigation to the user.
+        // ClrMD live attach is also a host-side capability. Tell the LLM up front when
+        // canonical live-memory paths will hard-fail with PermissionDenied so it can route
+        // around them via diagnostic-IPC dump capture plus offline inspection.
         if (!ptrace.CanAttach)
         {
-            primary += $" ClrMD live attach tools (collect_thread_snapshot, inspect_live_heap, inspect_dump on live PID, collect_process_dump, collect_cpu_sample(resolveMethodInstantiations=true)) are NOT available: {ptrace.Reason}";
+            primary += " ClrMD live-attach paths (collect_thread_snapshot against a live PID, " +
+                       "inspect_heap(source=\"live\"), live capture_method_bytes, get_bytes(kind=\"module\"), " +
+                       "collect_sample(kind=\"cpu\", resolveMethodInstantiations=true)) are NOT available: " +
+                       $"{ptrace.Reason} collect_process_dump remains available through diagnostic IPC and " +
+                       "does not require kernel ptrace, although its separate bearer scopes and human approval " +
+                       "still apply; inspect the resulting dump with inspect_heap(source=\"dump\").";
         }
 
         if (canCollectThreadSnapshot && !string.IsNullOrWhiteSpace(threadSnapshotSource))

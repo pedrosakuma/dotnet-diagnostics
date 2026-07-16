@@ -11,13 +11,13 @@ namespace DotnetDiagnostics.Core.Security;
 /// <remarks>
 /// Implementations must be idempotent per process (emit each warning at most once) and must never
 /// log or echo bearer values. The two notification points mirror the legacy gates that the
-/// <c>collect_event_source</c> path can still fall back to: the <c>EventSourceAllowlist</c> policy
+/// <c>collect_events(kind="event_source")</c> path can still fall back to: the <c>EventSourceAllowlist</c> policy
 /// and the <c>Diagnostics:AllowSensitiveHeapValues</c> flag.
 /// </remarks>
 public interface IEventSourceDeprecationSink
 {
     /// <summary>
-    /// Records that <c>collect_event_source</c> accepted a provider name via the curated allowlist
+    /// Records that <c>collect_events(kind="event_source")</c> accepted a provider name via the curated allowlist
     /// (default or configured) for a caller that did NOT hold the <c>eventsource-any</c> scope.
     /// </summary>
     void NotifyEventSourceAllowlistBypass();

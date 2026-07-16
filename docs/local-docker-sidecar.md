@@ -69,10 +69,12 @@ on-disk MVID once a minute and, on drift, asks the host to stop gracefully so
 the supervisor (`--restart=always`, systemd, K8s) brings up the fresh build.
 Without the env var the watcher only logs a warning. See issue #75.
 
-### Heads up: ClrMD tools need `CAP_SYS_PTRACE` on Linux
+### Heads up: live memory readers need `CAP_SYS_PTRACE` on Linux
 
-`collect_thread_snapshot`, `inspect_heap(source="live")`, `inspect_heap(source="dump")` (for live PIDs)
-and `collect_process_dump` all attach via ClrMD, which under the hood issues
+`collect_thread_snapshot`, `inspect_heap(source="live")`, live `capture_method_bytes`,
+`get_bytes(kind="module")`, and the opt-in
+`collect_sample(kind="cpu", resolveMethodInstantiations=true)` enrichment attach via ClrMD,
+which under the hood issues
 `ptrace(PTRACE_ATTACH, …)`. Matching UIDs alone is **not** enough on Linux:
 the kernel's [Yama LSM](https://www.kernel.org/doc/Documentation/admin-guide/LSM/Yama.rst)
 defaults `kernel.yama.ptrace_scope=1` on Debian/Ubuntu/WSL, which blocks
