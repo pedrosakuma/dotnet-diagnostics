@@ -162,26 +162,35 @@ public sealed class RequestsNowCollector : IRequestsNowCollector
         }
         finally
         {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.WaitAsync(WorkerDrainBudget, CancellationToken.None).ConfigureAwait(false); } catch (TimeoutException) { _logger.LogDebug("Requests-now processing task did not drain within {DrainBudget} for pid {Pid}.", WorkerDrainBudget, processId); } catch (Exception) { }
-            snapshotRequests.TryComplete();
-            if (cancellationToken.IsCancellationRequested)
-            {
-                snapshotCancellation.Cancel();
-            }
-
             try
             {
-                await snapshotTask.WaitAsync(WorkerDrainBudget, CancellationToken.None).ConfigureAwait(false);
+                await EventPipeSessionShutdown.StopAndDrainAsync(
+                    session,
+                    processingTask,
+                    ex => _logger.LogDebug(ex, "Stopping requests-now EventPipe session for pid {Pid} failed.", processId))
+                    .ConfigureAwait(false);
             }
-            catch (TimeoutException)
+            finally
             {
-                _logger.LogDebug("Requests-now snapshot task did not drain within {DrainBudget} for pid {Pid}.", WorkerDrainBudget, processId);
-                snapshotCancellation.Cancel();
-                try { await snapshotTask.WaitAsync(WorkerDrainBudget, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            }
-            catch (Exception)
-            {
+                snapshotRequests.TryComplete();
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    snapshotCancellation.Cancel();
+                }
+
+                try
+                {
+                    await snapshotTask.WaitAsync(WorkerDrainBudget, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    _logger.LogDebug("Requests-now snapshot task did not drain within {DrainBudget} for pid {Pid}.", WorkerDrainBudget, processId);
+                    snapshotCancellation.Cancel();
+                    try { await snapshotTask.WaitAsync(WorkerDrainBudget, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
+                }
+                catch (Exception)
+                {
+                }
             }
             session.Dispose();
         }

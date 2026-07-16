@@ -280,21 +280,11 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                     }
                 }
 
-                try
-                {
-                    await session.StopAsync(CancellationToken.None).ConfigureAwait(false);
-                }
-                catch
-                {
-                }
-
-                try
-                {
-                    await processingTask.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false);
-                }
-                catch
-                {
-                }
+                await EventPipeSessionShutdown.StopAndDrainAsync(
+                    session,
+                    processingTask,
+                    ex => _logger.LogDebug(ex, "Stopping method-parameter EventPipe session for pid {Pid} failed.", processId))
+                    .ConfigureAwait(false);
             }
 
             if (observer.TryGetFailure(requestId, out var failureReason))

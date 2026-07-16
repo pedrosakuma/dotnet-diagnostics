@@ -39,6 +39,8 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         [55] = "ThreadPoolWorkerThreadAdjustmentAdjustment",
         [56] = "ThreadPoolWorkerThreadAdjustmentStats",
         [57] = "ThreadPoolWorkerThreadWait",
+        [59] = "ThreadPoolMinMaxThreadsChanged",
+        [60] = "ThreadPoolWorkingThreadCount",
         [61] = "ThreadPoolEnqueue",
         [62] = "ThreadPoolDequeue",
         [85] = "ThreadPoolMinMaxThreadsChanged",
@@ -159,6 +161,17 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
 
                             break;
                         }
+                        case "ThreadPoolWorkingThreadCount":
+                        {
+                            if (TryReadInt(traceEvent, out var workingCount, "Count")
+                                || TryReadIntByIndex(traceEvent, 0, out workingCount))
+                            {
+                                lastWorkerCount = workingCount;
+                                workerSamples.Enqueue(new CountSample(timestamp, workingCount));
+                            }
+
+                            break;
+                        }
                         case "ThreadPoolWorkerThreadAdjustmentAdjustment":
                         {
                             var reason = ResolveAdjustmentReason(traceEvent);
@@ -246,9 +259,11 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         }
         finally
         {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
-            session.Dispose();
+            await EventPipeSessionShutdown.StopAndDrainAsync(
+                session,
+                processingTask,
+                ex => _logger.LogDebug(ex, "Stopping EventPipe threadpool session for pid {Pid} failed.", processId))
+                .ConfigureAwait(false);
         }
 
         if (workerSamples.DroppedCount > 0)
@@ -324,8 +339,15 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
     }
 
     private static string GetCanonicalEventName(TraceEvent traceEvent)
+        => GetCanonicalEventName((int)traceEvent.ID, traceEvent.EventName);
+
+    internal static string GetCanonicalEventName(int eventId, string? eventName)
     {
-        var eventName = traceEvent.EventName;
+        if (RuntimeEventIds.TryGetValue(eventId, out var mapped))
+        {
+            return mapped;
+        }
+
         if (!string.IsNullOrWhiteSpace(eventName)
             && !eventName.StartsWith("EventID(", StringComparison.Ordinal)
             && !string.Equals(eventName, "Unknown", StringComparison.OrdinalIgnoreCase))
@@ -333,9 +355,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
             return NormalizeEventName(eventName);
         }
 
-        return RuntimeEventIds.TryGetValue((int)traceEvent.ID, out var mapped)
-            ? mapped
-            : NormalizeEventName(eventName);
+        return NormalizeEventName(eventName);
     }
 
     private static string NormalizeEventName(string? eventName)
@@ -521,7 +541,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
     {
         if (TryReadString(traceEvent, out var reasonText, "Reason") && !string.IsNullOrWhiteSpace(reasonText))
         {
-            return reasonText;
+            return NormalizeAdjustmentReason(reasonText);
         }
 
         if ((TryReadInt(traceEvent, out var reason, "AdjustmentReason", "Reason")
@@ -533,6 +553,12 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
 
         return "Unknown";
     }
+
+    internal static string NormalizeAdjustmentReason(string reason)
+        => int.TryParse(reason, out var numericReason)
+            && AdjustmentReasons.TryGetValue(numericReason, out var mapped)
+                ? mapped
+                : reason;
 
     private static string? ExtractWorkItemOrigin(TraceEvent traceEvent, ConcurrentDictionary<string, byte> notes)
     {

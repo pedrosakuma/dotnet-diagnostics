@@ -36,9 +36,9 @@ internal static class EventPipeCollectionRunner
         }
         finally
         {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
-            session.Dispose();
+            await EventPipeSessionShutdown
+                .StopAndDrainAsync(session, processingTask, onProcessingError)
+                .ConfigureAwait(false);
         }
     }
 }

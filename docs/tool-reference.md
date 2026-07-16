@@ -1985,7 +1985,7 @@ and groups the captured waits by contended call site and owner thread.
 
 **Notes:**
 
-- `byCallSite` is best-effort and depends on EventPipe call stacks being available in the session.
+- Direct live EventPipe streams are not TraceLog-backed, so managed call-site attribution is unavailable and `byCallSite` groups those waits under `(unknown)`. A future trace-file-backed path may provide attribution without changing the handle shape.
 - On current Linux runtimes, `ContentionStart` / `ContentionStop` may not be emitted over EventPipe even when `monitor-lock-contention-count` rises; the collector surfaces that caveat in `notes` when the window is empty.
 
 

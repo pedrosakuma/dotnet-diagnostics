@@ -136,9 +136,11 @@ public sealed class EventPipeContentionCollector : IContentionCollector
         }
         finally
         {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
-            session.Dispose();
+            await EventPipeSessionShutdown.StopAndDrainAsync(
+                session,
+                processingTask,
+                ex => _logger.LogDebug(ex, "Stopping contention EventPipe session for pid {Pid} failed.", processId))
+                .ConfigureAwait(false);
         }
 
         var unfinishedStarts = pendingByThread.Sum(static entry => entry.Value.Count);

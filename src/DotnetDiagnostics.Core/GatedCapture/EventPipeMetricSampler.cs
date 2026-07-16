@@ -101,7 +101,10 @@ internal sealed class EventPipeMetricSampler : IGatedMetricSampler
         }
         finally
         {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
+            await EventPipeSessionShutdown.StopSessionAsync(
+                session,
+                ex => _logger.LogDebug(ex, "Stopping gated-capture EventPipe session for pid {Pid} failed.", processId))
+                .ConfigureAwait(false);
             try
             {
                 var drain = Task.Delay(TimeSpan.FromSeconds(2), CancellationToken.None);
