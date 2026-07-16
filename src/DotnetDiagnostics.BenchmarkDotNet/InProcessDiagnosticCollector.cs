@@ -212,6 +212,9 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
     /// self-cost (exclusive samples) and its share of the window.
     /// </summary>
     /// <remarks>
+    /// Diagnostic summaries are an invariant English contract so benchmark artifacts and reports
+    /// remain stable across host locales.
+    ///
     /// The hottest self-cost frame is selected from the full caller→callee tree
     /// (<paramref name="root"/>), not from <see cref="CpuSample.TopHotspots"/>: that list is
     /// ranked by <em>inclusive</em> samples and truncated to the top-N, so a hot leaf can be
@@ -231,8 +234,8 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
 
         if (sample.TotalSamples <= 0 || hottest is null || hottest.Value.Exclusive <= 0)
         {
-            return $"Captured {sample.TotalSamples} sample(s) over {durationSeconds}s but no method aggregation surfaced " +
-                "\u2014 increase durationSeconds or verify the benchmark is CPU-bound during the window.";
+            return FormattableString.Invariant(
+                $"Captured {sample.TotalSamples} sample(s) over {durationSeconds}s but no method aggregation surfaced \u2014 increase durationSeconds or verify the benchmark is CPU-bound during the window.");
         }
 
         var (method, exclusive, treeInclusive) = hottest.Value;
@@ -240,8 +243,8 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
             .FirstOrDefault(h => string.Equals(h.Frame.Method, method, StringComparison.Ordinal))?.InclusiveSamples
             ?? treeInclusive;
         var exclusivePercent = 100.0 * exclusive / sample.TotalSamples;
-        return $"Captured {sample.TotalSamples} sample(s) over {durationSeconds}s across {sample.TopHotspots.Count} hotspot(s). " +
-            $"Hottest self-cost: {method} ({exclusivePercent:F1}% exclusive \u2014 {exclusive} self / {inclusive} inclusive sample(s)).";
+        return FormattableString.Invariant(
+            $"Captured {sample.TotalSamples} sample(s) over {durationSeconds}s across {sample.TopHotspots.Count} hotspot(s). Hottest self-cost: {method} ({exclusivePercent:F1}% exclusive \u2014 {exclusive} self / {inclusive} inclusive sample(s)).");
     }
 
     /// <summary>
@@ -330,24 +333,26 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
     /// top allocating type by bytes, with the NativeAOT (<c>&lt;unknown&gt;</c> TypeName) caveat. When
     /// <paramref name="coLocated"/> is true the benchmark shared this process (in-process toolchain),
     /// so the numbers are not isolated from <c>MemoryDiagnoser</c> — that is flagged explicitly.
+    /// Diagnostic summaries are an invariant English contract so benchmark artifacts and reports
+    /// remain stable across host locales.
     /// </summary>
     internal static string BuildAllocationSummary(AllocationSample sample, int durationSeconds, bool coLocated)
     {
         string headline;
         if (sample.TotalEvents <= 0 || sample.TopByBytes.Count == 0)
         {
-            headline = $"Captured {sample.TotalEvents} allocation event(s) over {durationSeconds}s but no type aggregation surfaced " +
-                "\u2014 increase durationSeconds or drive a workload that allocates during the window.";
+            headline = FormattableString.Invariant(
+                $"Captured {sample.TotalEvents} allocation event(s) over {durationSeconds}s but no type aggregation surfaced \u2014 increase durationSeconds or drive a workload that allocates during the window.");
         }
         else
         {
             var top = sample.TopByBytes[0];
             var unknownOnly = string.Equals(top.TypeName, "<unknown>", StringComparison.Ordinal) && sample.TopByBytes.Count == 1;
             headline = unknownOnly
-                ? $"Captured {sample.TotalEvents} allocation event(s) ({sample.TotalBytes:N0} bytes) over {durationSeconds}s, " +
-                    "but TypeName was empty for all events (expected on NativeAOT). Drill into call sites via the call-tree handle."
-                : $"Captured {sample.TotalEvents} allocation event(s) ({sample.TotalBytes:N0} bytes) over {durationSeconds}s across {sample.TopByBytes.Count} type(s). " +
-                    $"Top by bytes: {top.TypeName} ({top.TotalBytes:N0} bytes, {top.EventCount} event(s), {top.DominantKind} heap).";
+                ? FormattableString.Invariant(
+                    $"Captured {sample.TotalEvents} allocation event(s) ({sample.TotalBytes:N0} bytes) over {durationSeconds}s, but TypeName was empty for all events (expected on NativeAOT). Drill into call sites via the call-tree handle.")
+                : FormattableString.Invariant(
+                    $"Captured {sample.TotalEvents} allocation event(s) ({sample.TotalBytes:N0} bytes) over {durationSeconds}s across {sample.TopByBytes.Count} type(s). Top by bytes: {top.TypeName} ({top.TotalBytes:N0} bytes, {top.EventCount} event(s), {top.DominantKind} heap).");
 
             if (sample.TopBySite.Count > 0)
             {
@@ -355,7 +360,8 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
                 var where = string.IsNullOrEmpty(site.Frame.Module)
                     ? site.Frame.Method
                     : $"{site.Frame.Module}!{site.Frame.Method}";
-                headline += $" Top site: {where} ({site.TotalBytes:N0} bytes, {site.EventCount} event(s)).";
+                headline += FormattableString.Invariant(
+                    $" Top site: {where} ({site.TotalBytes:N0} bytes, {site.EventCount} event(s)).");
             }
         }
 

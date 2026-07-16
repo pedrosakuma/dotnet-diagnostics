@@ -1,3 +1,4 @@
+using System.Globalization;
 using DotnetDiagnostics.BenchmarkDotNet;
 using DotnetDiagnostics.Core.CpuSampling;
 using FluentAssertions;
@@ -245,5 +246,51 @@ public class InProcessDiagnosticCollectorTests
         var summary = InProcessDiagnosticCollector.BuildAllocationSummary(sample, durationSeconds: 5, coLocated: false);
 
         summary.Should().Contain("no type aggregation");
+    }
+
+    [Theory]
+    [InlineData("en-US")]
+    [InlineData("pt-BR")]
+    public void DiagnosticSummaries_UseInvariantEnglishFormatting(string cultureName)
+    {
+        var originalCulture = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(cultureName);
+
+            var cpuSample = new CpuSample(
+                ProcessId: 1234,
+                StartedAt: DateTimeOffset.UtcNow,
+                Duration: TimeSpan.FromSeconds(5),
+                TotalSamples: 400,
+                TopHotspots: new[]
+                {
+                    new Hotspot(new SampledFrame("MyApp.dll", "Crunch"), InclusiveSamples: 360, ExclusiveSamples: 300),
+                });
+            var allocationSample = new AllocationSample(
+                ProcessId: 1234,
+                StartedAt: DateTimeOffset.UtcNow,
+                Duration: TimeSpan.FromSeconds(5),
+                TotalEvents: 120,
+                TotalBytes: 4_200_000,
+                TopByBytes: new[]
+                {
+                    new AllocatedType("System.String", TotalBytes: 1_800_000, EventCount: 64, DominantKind: HeapKind.Small),
+                },
+                TopByCount: Array.Empty<AllocatedType>());
+
+            var cpuSummary = InProcessDiagnosticCollector.BuildCpuSummary(cpuSample, root: null, durationSeconds: 5);
+            var allocationSummary = InProcessDiagnosticCollector.BuildAllocationSummary(
+                allocationSample, durationSeconds: 5, coLocated: false);
+
+            cpuSummary.Should().Be(
+                "Captured 400 sample(s) over 5s across 1 hotspot(s). Hottest self-cost: Crunch (75.0% exclusive \u2014 300 self / 360 inclusive sample(s)).");
+            allocationSummary.Should().Be(
+                "Captured 120 allocation event(s) (4,200,000 bytes) over 5s across 1 type(s). Top by bytes: System.String (1,800,000 bytes, 64 event(s), Small heap).");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+        }
     }
 }

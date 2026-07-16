@@ -37,7 +37,7 @@ public sealed class ClrMdModuleByteSourceTests : IAsyncLifetime
         mvid.Should().NotBeNull();
 
         var first = await source.FetchAsync(ProcessId, mvid!.Value, asset: "pe", offset: 0, maxBytes: 4096);
-        first.SourcePath.Should().Be(Path.GetFullPath(SampleDll));
+        first.SourcePath.ShouldMatchFileSystemPath(Path.GetFullPath(SampleDll));
         Convert.FromBase64String(first.Base64Chunk).Take(2).Should().Equal((byte)'M', (byte)'Z');
 
         var assembled = new List<byte>();
@@ -73,12 +73,12 @@ public sealed class ClrMdModuleByteSourceTests : IAsyncLifetime
         pdbEnvelope.ChunkSize.Should().BeGreaterThan(0);
         if (peEnvelope.CompanionPdbPath is not null)
         {
-            pdbEnvelope.SourcePath.Should().Be(peEnvelope.CompanionPdbPath);
+            pdbEnvelope.SourcePath.ShouldMatchFileSystemPath(peEnvelope.CompanionPdbPath);
             pdbEnvelope.PdbIsEmbedded.Should().BeFalse();
         }
         else
         {
-            pdbEnvelope.SourcePath.Should().Be(Path.GetFullPath(SampleDll));
+            pdbEnvelope.SourcePath.ShouldMatchFileSystemPath(Path.GetFullPath(SampleDll));
             pdbEnvelope.PdbIsEmbedded.Should().BeTrue();
         }
     }
