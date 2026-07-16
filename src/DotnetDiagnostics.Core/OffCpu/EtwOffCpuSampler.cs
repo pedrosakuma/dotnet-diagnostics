@@ -435,7 +435,7 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     internal static EtwKernelLoggerAccess GetKernelLoggerAccess()
     {
-        using var identity = WindowsIdentity.GetCurrent(TokenAccessLevels.Query);
+        using var identity = WindowsIdentity.GetCurrent(TokenAccessLevels.Query | TokenAccessLevels.Duplicate);
         var principal = new WindowsPrincipal(identity);
         var privilege = GetTokenPrivilegeState(identity.AccessToken, SystemProfilePrivilegeName);
         return new EtwKernelLoggerAccess(

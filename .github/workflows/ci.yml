@@ -117,6 +117,7 @@ jobs:
       # crash dump survives upload.
       - name: Test (Core)
         if: needs.changes.outputs.code == 'true'
+        shell: bash
         run: scripts/ci-test-with-retry.sh core-test-results.trx -- dotnet test tests/DotnetDiagnostics.Core.Tests/DotnetDiagnostics.Core.Tests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --logger "trx;LogFileName=core-test-results.trx" --results-directory TestResults
 
       # CLI tests are lightweight (parser/exit-code units + a `processes --json` smoke and the
@@ -124,8 +125,16 @@ jobs:
       # plain step. Kept separate from the live-process suites to preserve the no-cross-assembly-
       # parallelism invariant documented above.
       - name: Test (CLI)
-        if: needs.changes.outputs.code == 'true'
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
         run: dotnet test tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj --no-build --configuration Release --logger "trx;LogFileName=cli-test-results.trx" --results-directory TestResults
+
+      # BenchmarkDotNet tests cover the in-process diagnoser and report formatting.
+      # Continue here so all suites emit TRX; the final gate re-fails this outcome.
+      - name: Test (BenchmarkDotNet)
+        id: benchmark_tests
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        continue-on-error: true
+        run: dotnet test tests/DotnetDiagnostics.BenchmarkDotNet.Tests/DotnetDiagnostics.BenchmarkDotNet.Tests.csproj --no-build --configuration Release --logger "trx;LogFileName=benchmark-test-results.trx" --results-directory TestResults
 
       # Pack smoke (issue #288): `dotnet build` + the CLI unit tests do NOT exercise the
       # PackAsTool metadata, README packing, or tool-manifest layout — those only fail at
@@ -135,8 +144,34 @@ jobs:
         run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --configuration Release -o artifacts/nupkg-smoke
 
       - name: Test (Server integration)
-        if: needs.changes.outputs.code == 'true'
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: bash
         run: scripts/ci-test-with-retry.sh server-test-results.trx -- dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --filter "Category!=KindIntegration" --logger "trx;LogFileName=server-test-results.trx" --results-directory TestResults
+
+      - name: Verify expected test results
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
+        shell: bash
+        env:
+          BENCHMARK_TEST_OUTCOME: ${{ steps.benchmark_tests.outcome }}
+        run: |
+          shopt -s globstar nullglob
+          for trx in core-test-results.trx cli-test-results.trx benchmark-test-results.trx server-test-results.trx; do
+            found=false
+            for trx_path in TestResults{,.attempt1}/"$trx" TestResults{,.attempt1}/**/"$trx"; do
+              if [[ -s "$trx_path" ]]; then
+                found=true
+                break
+              fi
+            done
+            if [[ "$found" == false ]]; then
+              echo "::error::Expected nonempty test result '$trx' was not produced."
+              exit 1
+            fi
+          done
+          if [[ "$BENCHMARK_TEST_OUTCOME" != "success" ]]; then
+            echo "::error::BenchmarkDotNet tests completed with outcome '$BENCHMARK_TEST_OUTCOME'."
+            exit 1
+          fi
 
       # TRX result files are tiny — always keep them when tests ran. Crash dumps
       # (full process dumps from `--blame-crash`, hundreds of MB) are uploaded
