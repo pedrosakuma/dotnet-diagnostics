@@ -212,8 +212,10 @@ public sealed class ToolReferenceDocParityTests
     }
 
     [Fact]
-    public void ReplayableCollectorHints_DeclareExplicitKind()
+    public void LiteralCollectorHintConstructions_DeclareExplicitKind()
     {
+        // Supplemental lexical guard only; dynamic planner/recovery factories are exercised
+        // behaviorally in NextActionHintReplayabilityTests and QuerySnapshotHandleSecurityTests.
         var root = FindRepoRoot();
         var violations = new List<string>();
         foreach (var path in Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)

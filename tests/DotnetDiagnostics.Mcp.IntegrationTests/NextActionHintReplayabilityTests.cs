@@ -1,8 +1,10 @@
 using DotnetDiagnostics.Core;
+using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Container;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Investigation;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
@@ -27,6 +29,78 @@ public sealed class NextActionHintReplayabilityTests
         Action validate = hint.ShouldMatchCanonicalSchema;
 
         validate.Should().Throw<Xunit.Sdk.XunitException>();
+    }
+
+    [Fact]
+    public async Task InvestigationPlannerStepsAndEmittedHints_MatchCanonicalSchema()
+    {
+        const int processId = 424242;
+        var baseline = new BaselineHandle(
+            "inv-baseline",
+            DateTimeOffset.UtcNow,
+            new Dictionary<string, double> { ["cpu_pct"] = 10 });
+        var requests = new[]
+        {
+            new InvestigationRequest(processId, Symptom: "high latency"),
+            new InvestigationRequest(processId, Baseline: baseline),
+            new InvestigationRequest(processId, Hypothesis: "lock contention"),
+            new InvestigationRequest(processId, Hypothesis: "hot CPU"),
+            new InvestigationRequest(processId, Hypothesis: "memory leak"),
+            new InvestigationRequest(processId, Hypothesis: "threadpool starvation"),
+            new InvestigationRequest(processId, Hypothesis: "exception storm"),
+            new InvestigationRequest(processId, Hypothesis: "cold startup"),
+            new InvestigationRequest(processId, Hypothesis: "unknown failure mode"),
+        };
+        var planner = new InvestigationPlanner();
+        var resolver = new FixedProcessContextResolver(processId);
+
+        foreach (var request in requests)
+        {
+            var plan = planner.Plan(request);
+            var plannedHints = plan.AllSteps
+                .Select(step => new NextActionHint(step.ToolName, step.Rationale, step.ToolParams))
+                .Concat(plan.Terminals
+                    .Where(terminal => terminal.ToolName is not null)
+                    .Select(terminal => new NextActionHint(
+                        terminal.ToolName!,
+                        terminal.Description,
+                        terminal.ToolParams)))
+                .Concat(plan.Playbook ?? [])
+                .Append(plan.NextAction!);
+
+            foreach (var hint in plannedHints)
+            {
+                hint.ShouldMatchCanonicalSchema();
+            }
+
+            var result = await DiagnosticToolInvestigationPlanning.StartInvestigation(
+                planner,
+                resolver,
+                processId,
+                request.Symptom,
+                request.Hypothesis,
+                request.Baseline);
+
+            result.Error.Should().BeNull();
+            foreach (var hint in result.Hints)
+            {
+                hint.ShouldMatchCanonicalSchema();
+            }
+        }
+    }
+
+    [Fact]
+    public void AttachFailureDynamicCollectorHint_OmitsUnreconstructableArguments()
+    {
+        var result = AttachGuard.ClassifyAttachFailure<object>(
+            "collect_sample",
+            424242,
+            new ArtifactPathException("nativeAotMapFile", "test rejection"));
+
+        var hint = result.Hints.Should().ContainSingle().Which;
+        hint.NextTool.Should().Be("collect_sample");
+        hint.SuggestedArguments.Should().BeNull();
+        hint.ShouldMatchCanonicalSchema();
     }
 
     [Theory]
