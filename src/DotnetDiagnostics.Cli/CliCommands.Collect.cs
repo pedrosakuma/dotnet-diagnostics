@@ -123,7 +123,7 @@ internal static partial class CliCommands
                 services.GetRequiredService<IStartupCollector>(), resolver, handles,
                 pid, duration, depth, cancellationToken).ConfigureAwait(false)),
 
-            "sweep" => Wrap(options, await SweepUseCase.RunSweep(
+            "sweep" => Wrap(options, CliHintProjection.ProjectSweepSummary(await SweepUseCase.RunSweep(
                 services.GetRequiredService<ICounterCollector>(),
                 services.GetRequiredService<IGcCollector>(),
                 services.GetRequiredService<IExceptionCollector>(),
@@ -131,7 +131,7 @@ internal static partial class CliCommands
                 services.GetRequiredService<IProcessResourcesCollector>(),
                 resolver, handles,
                 pid, duration, options.MaxEvents ?? 100, options.MaxEvents ?? 200, depth,
-                cancellationToken).ConfigureAwait(false)),
+                cancellationToken).ConfigureAwait(false))),
 
             "networking" => Wrap(options, await EventCollectionUseCases.CollectNetworking(
                 services.GetRequiredService<INetworkingCollector>(), resolver, handles,

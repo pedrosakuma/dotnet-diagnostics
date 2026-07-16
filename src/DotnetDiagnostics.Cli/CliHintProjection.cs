@@ -2,6 +2,7 @@ using System.Globalization;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.ThreadPool;
+using DotnetDiagnostics.Core.Triage;
 
 namespace DotnetDiagnostics.Cli;
 
@@ -157,6 +158,11 @@ internal static class CliHintProjection
 
         return result with { Hints = projected, Summary = summary };
     }
+
+    internal static DiagnosticResult<SweepResult> ProjectSweepSummary(DiagnosticResult<SweepResult> result)
+        => result.Data is { Failures.Count: > 0 }
+            ? result with { Summary = $"{result.Summary} See data.failures for details." }
+            : result;
 
     /// <summary>
     /// Projects a single hint. Returns <see langword="false"/> when the hint has no CLI equivalent or

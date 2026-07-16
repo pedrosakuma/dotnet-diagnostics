@@ -321,7 +321,7 @@ public sealed partial class CollectEventsTool
     /// HandleExpiresAt, ResolvedProcess and Error so callers see the exact same envelope they
     /// got from the legacy tool — only the typed payload moves into the polymorphic shape.
     /// </summary>
-    private static DiagnosticResult<CollectEventsEnvelope> Project<TInner>(
+    internal static DiagnosticResult<CollectEventsEnvelope> Project<TInner>(
         DiagnosticResult<TInner> inner,
         string kind,
         Func<CollectEventsEnvelope, TInner, CollectEventsEnvelope> populate)
@@ -332,7 +332,11 @@ public sealed partial class CollectEventsTool
             envelope = populate(envelope, inner.Data);
         }
 
-        return new DiagnosticResult<CollectEventsEnvelope>(inner.Summary, inner.Hints, inner.Error)
+        var summary = kind == "sweep" && inner.Data is SweepResult { Failures.Count: > 0 }
+            ? $"{inner.Summary} See data.sweep.failures for details."
+            : inner.Summary;
+
+        return new DiagnosticResult<CollectEventsEnvelope>(summary, inner.Hints, inner.Error)
         {
             Data = inner.IsError ? null : envelope,
             Signals = inner.Signals,

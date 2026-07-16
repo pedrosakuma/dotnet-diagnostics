@@ -139,7 +139,7 @@ public static class SweepUseCase
 
     internal static string FormatFailureText(int failureCount)
         => failureCount > 0
-            ? $" {failureCount} collector(s) failed (see data.sweep.failures)."
+            ? $" {failureCount} collector(s) failed."
             : string.Empty;
 
     private static void Note<T>(List<string> failures, string kind, DiagnosticResult<T> r)
