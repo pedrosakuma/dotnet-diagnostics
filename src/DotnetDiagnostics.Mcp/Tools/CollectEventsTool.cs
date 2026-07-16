@@ -144,7 +144,7 @@ public sealed partial class CollectEventsTool
             "'requests' (in-flight ASP.NET Core requests — which requests started but have not stopped, with path/verb/elapsed/trace-id, oldest-first, long-runners flagged; pure EventPipe / no ptrace — the first move for 'the app is hung, what's it doing?'). " +
             "'startup' (loader + DependencyInjection events emitted during the window; pre-attach cold-start events are missed). " +
             "'replica_counters' (orchestrator fan-out: simultaneous live counter capture across ALL attached Pods to find the replica skew outlier on cpu/gc-heap-size/threadpool-queue — requires attach_to_pod first). " +
-            "'sweep' (parallel initial triage — fans out counters+gc+exceptions+threadpool+resource concurrently in ONE round-trip, returns a consolidated triage verdict + per-collector drill-down handles; cuts cold-start from 5–7 calls to 1–2). " +
+            "'sweep' (parallel initial triage — fans out counters+gc+exceptions+threadpool+resource concurrently in ONE round-trip, returns observed signals + evidence-backed hypotheses + per-collector drill-down handles; cuts cold-start from 5–7 calls to 1–2). " +
             "All kinds except 'counters' and 'replica_counters' use the 'eventpipe' scope; those two use 'read-counters'. " +
             "IMPORTANT: for 'exceptions', 'crash-guard', and 'gc', start collection BEFORE the workload — EventPipe sessions " +
             "take ~500 ms–1 s to fully start and earlier events are missed. For 'startup', attaching to an already-running process misses the initial cold-start; true cold-start capture requires enabling EventPipe before/at process launch (reverse-connect or CLI --launch/DOTNET_ startup session).")]
@@ -321,7 +321,7 @@ public sealed partial class CollectEventsTool
     /// HandleExpiresAt, ResolvedProcess and Error so callers see the exact same envelope they
     /// got from the legacy tool — only the typed payload moves into the polymorphic shape.
     /// </summary>
-    private static DiagnosticResult<CollectEventsEnvelope> Project<TInner>(
+    internal static DiagnosticResult<CollectEventsEnvelope> Project<TInner>(
         DiagnosticResult<TInner> inner,
         string kind,
         Func<CollectEventsEnvelope, TInner, CollectEventsEnvelope> populate)
@@ -332,7 +332,11 @@ public sealed partial class CollectEventsTool
             envelope = populate(envelope, inner.Data);
         }
 
-        return new DiagnosticResult<CollectEventsEnvelope>(inner.Summary, inner.Hints, inner.Error)
+        var summary = kind == "sweep" && inner.Data is SweepResult { Failures.Count: > 0 }
+            ? $"{inner.Summary} See data.sweep.failures for details."
+            : inner.Summary;
+
+        return new DiagnosticResult<CollectEventsEnvelope>(summary, inner.Hints, inner.Error)
         {
             Data = inner.IsError ? null : envelope,
             Signals = inner.Signals,

@@ -127,24 +127,56 @@ internal static partial class CliCommands
 
         var triage = TriageClassifier.Classify(snapshot, requestDurationP95);
 
-        var secondaryText = triage.SecondaryVerdicts?.Count > 0
-            ? $" (also: {string.Join(", ", triage.SecondaryVerdicts)})"
-            : string.Empty;
         var indicatorsText = triage.TopIndicators?.Count > 0
             ? $" | top: {string.Join(", ", triage.TopIndicators.Take(3).Select(i => $"{i.Name}={i.Value}{i.Unit ?? string.Empty}({i.Level})"))}"
             : string.Empty;
-        var summary = $"Triage: {triage.Verdict} ({triage.Severity}){secondaryText}{indicatorsText}";
+        var hypothesisText = triage.Hypotheses?.Count > 0
+            ? $"hypotheses: {string.Join(", ", triage.Hypotheses.Select(static h => $"{h.Name} ({h.Confidence})"))}"
+            : triage.ObservedSignals?.Count > 0
+                ? "observations require more evidence before assigning a cause"
+                : "no salient observed signals";
+        var summary = $"Triage: {triage.Assessment} ({triage.Severity}); {hypothesisText}{indicatorsText}";
 
         var hints = BuildCliTriageHints(triage, pid);
         var ok = ProcessResolutionHelpers.WithContext(DiagnosticResult.Ok(triage, summary, [.. hints]), resolved.Context);
         return BuildResult(ok, static (sb, t) =>
         {
             sb.AppendLine();
-            sb.AppendLine(CultureInfo.InvariantCulture, $"  Verdict   : {t.Verdict}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  Assessment: {t.Assessment}");
             sb.AppendLine(CultureInfo.InvariantCulture, $"  Severity  : {t.Severity}");
-            if (t.SecondaryVerdicts?.Count > 0)
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  Legacy    : {t.Verdict} (deprecated; migrate before v1.0)");
+            if (t.ObservedSignals?.Count > 0)
             {
-                sb.AppendLine(CultureInfo.InvariantCulture, $"  Also      : {string.Join(", ", t.SecondaryVerdicts)}");
+                sb.AppendLine("  Observed signals:");
+                foreach (var signal in t.ObservedSignals)
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"    {signal.Name} [{signal.Level}] — {signal.Summary}");
+                    foreach (var evidence in signal.Evidence)
+                    {
+                        sb.AppendLine(CultureInfo.InvariantCulture,
+                            $"      {evidence.Name}={evidence.Value:F2}{evidence.Unit ?? string.Empty} {evidence.Comparison} {evidence.Threshold:F2}{evidence.Unit ?? string.Empty}");
+                    }
+                }
+            }
+
+            if (t.Hypotheses?.Count > 0)
+            {
+                sb.AppendLine("  Hypotheses:");
+                foreach (var hypothesis in t.Hypotheses)
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"    {hypothesis.Name} [{hypothesis.Confidence}] — {hypothesis.Summary}");
+                    foreach (var evidence in hypothesis.SupportingEvidence)
+                    {
+                        sb.AppendLine(CultureInfo.InvariantCulture,
+                            $"      supports: {evidence.Name}={evidence.Value:F2}{evidence.Unit ?? string.Empty} {evidence.Comparison} {evidence.Threshold:F2}{evidence.Unit ?? string.Empty}");
+                    }
+                    foreach (var evidence in hypothesis.ContradictingEvidence)
+                    {
+                        sb.AppendLine(CultureInfo.InvariantCulture,
+                            $"      contradicts: {evidence.Name}={evidence.Value:F2}{evidence.Unit ?? string.Empty} {evidence.Comparison} {evidence.Threshold:F2}{evidence.Unit ?? string.Empty}");
+                    }
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"      next: {hypothesis.NextStep}");
+                }
             }
 
             if (t.TopIndicators?.Count > 0)
@@ -339,37 +371,54 @@ internal static partial class CliCommands
     private static string FormatMiB(long? bytes)
         => bytes is null ? "unlimited" : FormatMiB(bytes.Value);
 
-    private static List<NextActionHint> BuildCliTriageHints(TriageResult triage, int pid)    {
+    private static List<NextActionHint> BuildCliTriageHints(TriageResult triage, int pid)
+    {
         var hints = new List<NextActionHint>();
-        switch (triage.Verdict)
+        foreach (var hypothesis in triage.Hypotheses ?? [])
         {
-            case TriageClassifier.CpuBound:
-                hints.Add(new NextActionHint("collect", $"cpu-usage={triage.Evidence.CpuUsage:F1}% — capture a CPU sample to find the hot path: collect --kind counters --pid {pid} --duration 10"));
-                break;
-            case TriageClassifier.GcPressure:
-                hints.Add(new NextActionHint("collect", $"time-in-gc={triage.Evidence.TimeInGc:F1}% — collect GC events: collect --kind gc --pid {pid} --duration 10"));
-                hints.Add(new NextActionHint("inspect-heap", $"GC pressure — inspect the heap for allocation patterns: inspect-heap --pid {pid}"));
-                break;
-            case TriageClassifier.MemoryPressure:
-                if ((triage.Evidence.AllocRate ?? 0) >= 50_000_000)
-                {
-                    hints.Add(new NextActionHint("collect", $"alloc-rate={triage.Evidence.AllocRate / 1_000_000:F0} MB/s — collect counters to track allocation: collect --kind counters --pid {pid} --duration 10"));
-                }
+            switch (hypothesis.Name)
+            {
+                case TriageClassifier.CpuComputeDemandHypothesis:
+                    hints.Add(new NextActionHint("collect", $"{hypothesis.NextStep} Run: collect --kind cpu --pid {pid} --duration 10"));
+                    break;
+                case TriageClassifier.GcOverheadHypothesis:
+                    hints.Add(new NextActionHint("collect", $"{hypothesis.NextStep} Run: collect --kind gc --pid {pid} --duration 10"));
+                    break;
+                case TriageClassifier.ManagedMemoryActivityHypothesis:
+                    hints.Add(new NextActionHint("collect", $"{hypothesis.NextStep} Run: collect --kind allocation --pid {pid} --duration 10"));
+                    break;
+                case TriageClassifier.ThreadPoolBacklogHypothesis:
+                    hints.Add(new NextActionHint("collect", $"{hypothesis.NextStep} Run: collect --kind threadpool --pid {pid} --duration 10"));
+                    break;
+                case TriageClassifier.SynchronizationContentionHypothesis:
+                    hints.Add(new NextActionHint("collect", $"{hypothesis.NextStep} Run: collect --kind contention --pid {pid} --duration 10"));
+                    break;
+                case TriageClassifier.WaitingOrBackpressureHypothesis:
+                    hints.Add(new NextActionHint("collect", $"{hypothesis.NextStep} Run: collect --kind activities --pid {pid} --duration 10"));
+                    hints.Add(new NextActionHint("collect", $"Inspect thread states without assuming the wait is I/O: collect --kind thread-snapshot --pid {pid}"));
+                    break;
+            }
+        }
 
-                hints.Add(new NextActionHint("inspect-heap", $"Memory pressure (gen-2={triage.Evidence.Gen2GcCount:F0}) — inspect the live heap: inspect-heap --pid {pid}"));
-                break;
-            case TriageClassifier.ThreadPoolStarvation:
-                hints.Add(new NextActionHint("collect", $"threadpool-queue-length={triage.Evidence.ThreadPoolQueueLength:F0} — collect ThreadPool events: collect --kind threadpool --pid {pid} --duration 10"));
-                break;
-            case TriageClassifier.LockContention:
-                hints.Add(new NextActionHint("collect", $"monitor-lock-contention={triage.Evidence.MonitorLockContentionCount:F0} — collect contention events: collect --kind contention --pid {pid} --duration 10"));
-                break;
-            case TriageClassifier.IoBound:
-                hints.Add(new NextActionHint("collect", $"cpu={triage.Evidence.CpuUsage:F1}% but queue={triage.Evidence.ThreadPoolQueueLength:F0} — trace activities to see what is waiting: collect --kind activities --pid {pid} --duration 10"));
-                break;
-            default:
-                hints.Add(new NextActionHint("collect", $"System looks healthy — confirm with GC events if response times are high: collect --kind gc --pid {pid} --duration 10"));
-                break;
+        if (hints.Count == 0 && triage.GetHighestPriorityObservedSignal() is { } prioritySignal)
+        {
+            var kind = prioritySignal.Name switch
+            {
+                "threadpool.queue" => "threadpool",
+                "exceptions.rate" => "exceptions",
+                "http.request-duration-p95" => "activities",
+                _ => "counters",
+            };
+            hints.Add(new NextActionHint(
+                "collect",
+                $"Observed {prioritySignal.Name}, but the current window is inconclusive. Extend the capture: collect --kind {kind} --pid {pid} --duration 10"));
+        }
+
+        if (hints.Count == 0)
+        {
+            hints.Add(new NextActionHint(
+                "collect",
+                $"No salient signal crossed a triage threshold. If the symptom persists, extend counters: collect --kind counters --pid {pid} --duration 10"));
         }
 
         return hints;

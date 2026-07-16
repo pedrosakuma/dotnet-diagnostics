@@ -14,7 +14,7 @@ namespace DotnetDiagnostics.Core.UseCases;
 /// <summary>
 /// Parallel initial-triage use case (issue #447 / Wave B1). Fans out the five EventPipe-safe
 /// collectors — counters, gc, exceptions, threadpool and resource — concurrently, each over its
-/// own session, classifies the counters into a triage verdict and returns one consolidated
+/// own session, projects the counters into observed signals and hypotheses, and returns one consolidated
 /// <see cref="SweepResult"/> envelope plus next-action hints. Cold triage drops from five
 /// sequential calls (~25–40s) to a single window. Shared by the MCP <c>collect_events(kind=sweep)</c>
 /// path and the standalone CLI (<c>collect --kind sweep</c>); depends on Core only.
@@ -81,7 +81,16 @@ public static class SweepUseCase
             : null;
         var triage = counters.Data is not null
             ? TriageClassifier.Classify(counters.Data, requestDurationP95)
-            : new TriageResult("unknown", TriageSeverity.Healthy, new TriageEvidence(null, null, null, null, null, null, null, null, null));
+            : new TriageResult(
+                "unknown",
+                TriageSeverity.Healthy,
+                new TriageEvidence(null, null, null, null, null, null, null, null, null))
+            {
+                ModelVersion = 2,
+                Assessment = "unknown",
+                ObservedSignals = [],
+                Hypotheses = [],
+            };
 
         var handleMap = new Dictionary<string, string?>
         {
@@ -96,15 +105,18 @@ public static class SweepUseCase
             counters.Data, gc.Data, exceptions.Data, threadPool.Data, resource,
             handleMap, failures);
 
-        var failureText = failures.Count > 0 ? $" {failures.Count} collector(s) failed (see data.failures)." : string.Empty;
+        var failureText = FormatFailureText(failures.Count);
         var starvation = threadPool.Data?.HillClimbing.Count(static s => string.Equals(s.Reason, "Starvation", StringComparison.OrdinalIgnoreCase)) ?? 0;
         var fdText = resource?.FdCount?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a";
+        var hypothesisText = triage.Hypotheses?.Count > 0
+            ? string.Join(", ", triage.Hypotheses.Select(static h => $"{h.Name} ({h.Confidence})"))
+            : "none";
         var summary =
-            $"Sweep over {window}s: {triage.Verdict} ({triage.Severity}). " +
+            $"Sweep over {window}s: assessment={triage.Assessment} ({triage.Severity}), hypotheses={hypothesisText}. " +
             $"GC collections={gc.Data?.TotalCollections ?? 0}, exceptions={exceptions.Data?.TotalExceptions ?? 0}, " +
             $"threadpool starvation={starvation}, fd={fdText}.{failureText}";
 
-        var hints = BuildSweepHints(triage, pid);
+        var hints = BuildSweepHints(triage, pid, handleMap);
 
         // Cross-signal correlation (#528): each collector already computed its own diagnosis-agnostic
         // signal groupings independently; surface it when ≥2 of them stood out in this SAME window
@@ -124,6 +136,11 @@ public static class SweepUseCase
 
         return WithContext(result, resolved.Context);
     }
+
+    internal static string FormatFailureText(int failureCount)
+        => failureCount > 0
+            ? $" {failureCount} collector(s) failed."
+            : string.Empty;
 
     private static void Note<T>(List<string> failures, string kind, DiagnosticResult<T> r)
     {
@@ -147,37 +164,92 @@ public static class SweepUseCase
         catch (Exception) { return null; }
     }
 
-    /// <summary>Maps the triage verdict to drill-down hints, mirroring PerformTriage's mapping but pointing back at the sweep handles.</summary>
-    private static List<NextActionHint> BuildSweepHints(TriageResult triage, int pid)
+    /// <summary>Maps evidence-backed hypotheses to neutral drill-down hints that reuse sweep handles where possible.</summary>
+    private static List<NextActionHint> BuildSweepHints(
+        TriageResult triage,
+        int pid,
+        IReadOnlyDictionary<string, string?> handles)
     {
         var hints = new List<NextActionHint>();
-        switch (triage.Verdict)
+        foreach (var hypothesis in triage.Hypotheses ?? [])
         {
-            case TriageClassifier.CpuBound:
-                hints.Add(new NextActionHint("collect_sample", $"cpu-usage={triage.Evidence.CpuUsage:F1}% — investigate the hot path.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10, ["topN"] = 25 }));
-                break;
-            case TriageClassifier.GcPressure:
-            case TriageClassifier.MemoryPressure:
-                hints.Add(new NextActionHint("inspect_heap", "GC / memory pressure — inspect the live heap for the dominant types.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["source"] = "live" }));
-                break;
-            case TriageClassifier.ThreadPoolStarvation:
-                hints.Add(new NextActionHint("collect_thread_snapshot", $"threadpool-queue-length={triage.Evidence.ThreadPoolQueueLength:F0} — inspect blocking stacks.",
-                    new Dictionary<string, object?> { ["processId"] = pid }));
-                break;
-            case TriageClassifier.LockContention:
-                hints.Add(new NextActionHint("collect_events", $"monitor-lock-contention-count={triage.Evidence.MonitorLockContentionCount:F0} — drill into contention.",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "contention", ["durationSeconds"] = 10 }));
-                break;
-            case TriageClassifier.IoBound:
-                hints.Add(new NextActionHint("collect_thread_snapshot", "Low CPU + queue buildup — I/O bound likely, inspect blocking stacks.",
-                    new Dictionary<string, object?> { ["processId"] = pid }));
-                break;
-            default:
-                hints.Add(new NextActionHint("query_snapshot", "System looks healthy — drill into any of the sweep handles to confirm.", null));
-                break;
+            switch (hypothesis.Name)
+            {
+                case TriageClassifier.CpuComputeDemandHypothesis:
+                    hints.Add(new NextActionHint("collect_sample", hypothesis.NextStep,
+                        new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "cpu", ["durationSeconds"] = 10, ["topN"] = 25 }));
+                    break;
+                case TriageClassifier.GcOverheadHypothesis:
+                    AddHandleHint(hints, handles, "gc", "events", hypothesis.NextStep);
+                    break;
+                case TriageClassifier.ManagedMemoryActivityHypothesis:
+                    hints.Add(new NextActionHint("collect_sample", hypothesis.NextStep,
+                        new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "allocation", ["durationSeconds"] = 10 }));
+                    break;
+                case TriageClassifier.ThreadPoolBacklogHypothesis:
+                    AddHandleHint(hints, handles, "threadpool", "timeline", hypothesis.NextStep);
+                    break;
+                case TriageClassifier.SynchronizationContentionHypothesis:
+                    hints.Add(new NextActionHint("collect_events", hypothesis.NextStep,
+                        new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "contention", ["durationSeconds"] = 10 }));
+                    break;
+                case TriageClassifier.WaitingOrBackpressureHypothesis:
+                    hints.Add(new NextActionHint("collect_thread_snapshot", hypothesis.NextStep,
+                        new Dictionary<string, object?> { ["processId"] = pid }));
+                    break;
+            }
         }
+
+        if (hints.Count == 0 && triage.GetHighestPriorityObservedSignal() is { } prioritySignal)
+        {
+            var (kind, view) = prioritySignal.Name switch
+            {
+                "threadpool.queue" => ("threadpool", "timeline"),
+                "exceptions.rate" => ("exceptions", "byType"),
+                _ => ("counters", "summary"),
+            };
+            AddHandleHint(
+                hints,
+                handles,
+                kind,
+                view,
+                $"Observed {prioritySignal.Name}, but the current window is inconclusive. Drill into the matching sweep handle before assigning a cause.");
+        }
+
+        if (hints.Count == 0)
+        {
+            AddHandleHint(
+                hints,
+                handles,
+                "counters",
+                "summary",
+                "No salient triage signal crossed a threshold; drill into the counter handle if the symptom persists.");
+        }
+
+        if (hints.Count == 0)
+        {
+            hints.Add(new NextActionHint(
+                "collect_events",
+                "No matching sweep handle is available. Re-collect the relevant signal before assigning a cause.",
+                new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "counters", ["durationSeconds"] = 10 }));
+        }
+
         return hints;
+    }
+
+    private static void AddHandleHint(
+        List<NextActionHint> hints,
+        IReadOnlyDictionary<string, string?> handles,
+        string kind,
+        string view,
+        string reason)
+    {
+        if (handles.TryGetValue(kind, out var handle) && handle is not null)
+        {
+            hints.Add(new NextActionHint(
+                "query_snapshot",
+                reason,
+                new Dictionary<string, object?> { ["handle"] = handle, ["view"] = view }));
+        }
     }
 }

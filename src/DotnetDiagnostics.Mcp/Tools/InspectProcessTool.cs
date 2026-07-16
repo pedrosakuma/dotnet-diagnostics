@@ -76,7 +76,7 @@ public sealed class InspectProcessTool
     /// <summary>Capture in-flight ASP.NET Core requests and enrich them with the current thread stack.</summary>
     public const string RequestsNowView = "requests-now";
 
-    /// <summary>Phase 12 IoT-style triage: collect counters, classify, return verdict + hints.</summary>
+    /// <summary>Fast triage: collect counters, separate observed signals from hypotheses, and return drill-down hints.</summary>
     public const string TriageView = "triage";
 
     /// <summary>Phase 13 environment self-diagnosis: target-optional, remediation-first readiness checks (UID, ptrace, perf).</summary>
@@ -106,7 +106,8 @@ public sealed class InspectProcessTool
         UseStructuredContent = true)]
     [Description(
         "START HERE for a slow/struggling .NET app or 'where do I start?' — triages and inspects a " +
-        "process. Choose the projection via the 'view' parameter.")]
+        "process. The triage view separates observed signals from evidence-backed hypotheses and " +
+        "does not infer I/O from low CPU plus queueing alone. Choose the projection via the 'view' parameter.")]
     public static async Task<DiagnosticResult<InspectProcessReport>> InspectProcess(
         IProcessDiscovery discovery,
         IProcessContextResolver resolver,
@@ -120,7 +121,7 @@ public sealed class InspectProcessTool
         IPrincipalAccessor principalAccessor,
         IPreflightInspector preflightInspector,
         [Description("Projection to compute. Defaults to 'list'. Values: " +
-            "'triage' (collect counters ~5s, classify workload cpu-bound/gc-pressure/memory-pressure/threadpool-starvation/lock-contention/io-bound/healthy, return a verdict + actionable hints); " +
+            "'triage' (collect counters ~5s, return threshold-backed observedSignals, bounded hypotheses with confidence/supporting/contradicting evidence, ranked topIndicators, and neutral drill-down hints; verdict/secondaryVerdicts remain deprecated compatibility fields until v1.0); " +
             "'list' (every .NET process visible to the diagnostic IPC; ignores processId); " +
             "'info' (process metadata); 'capabilities' (CoreCLR vs NativeAOT, supported collectors); " +
             "'container' (cgroup limits + signals); 'memory_trend' (working-set trend over durationSeconds/sampleEverySeconds); " +
@@ -273,7 +274,7 @@ public sealed class InspectProcessTool
 /// <param name="RuntimeConfig">Populated when <c>view=runtime-config</c> — GC / ThreadPool / tiered-comp settings plus filtered env vars.</param>
 /// <param name="Resources">Populated when <c>view=resources</c> — FD / handle / socket state.</param>
 /// <param name="RequestsNow">Populated when <c>view=requests-now</c> — in-flight ASP.NET Core requests with thread stacks.</param>
-/// <param name="Triage">Populated when <c>view=triage</c> — Phase 12 IoT-style classification with verdict, severity, evidence, and actionable hints.</param>
+/// <param name="Triage">Populated when <c>view=triage</c> — observed signals, evidence-backed hypotheses, severity, top indicators, and deprecated compatibility verdict fields.</param>
 /// <param name="Preflight">Populated when <c>view=preflight</c> — Phase 13 environment self-diagnosis: target-optional, remediation-first readiness checks.</param>
 public sealed record InspectProcessReport(
     string View,

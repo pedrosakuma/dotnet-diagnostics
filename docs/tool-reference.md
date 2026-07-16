@@ -178,7 +178,7 @@ Per-tool `Summary` semantics:
 
 | Tool | What `Summary` drops inline |
 | --- | --- |
-| `collect_events(kind="counters")` | All non-headline counters (keeps ~14: cpu-usage, working-set, gc-heap-size, gen-2-gc-count, time-in-gc, alloc-rate, threadpool-thread-count, threadpool-queue-length, exception-count, monitor-lock-contention-count + ASP.NET Core requests/failed/current + Kestrel connections-per-sec). **Auto-hints** trigger on: `cpu > 70%` (CPU hotspot), `threadpool-queue-length > 50` (starvation), `time-in-gc > 15%` (GC pressure), `alloc-rate > 50 MB/s` + Gen2 (allocation), `contention > 10` (lock storms), low CPU + queue buildup (I/O bound). |
+| `collect_events(kind="counters")` | All non-headline counters (keeps ~14: cpu-usage, working-set, gc-heap-size, gen-2-gc-count, time-in-gc, alloc-rate, threadpool-thread-count, threadpool-queue-length, exception-count, monitor-lock-contention-count + ASP.NET Core requests/failed/current + Kestrel connections-per-sec). **Auto-hints** trigger on elevated CPU, ThreadPool backlog, GC time, allocation + Gen2 activity, and contention. Low CPU + queueing is described as inconclusive unless elevated request latency corroborates waiting/backpressure; it never asserts I/O from counters alone. |
 | `inspect_process(view="container")` | The `Notes[]` (caveats about cgroup v1 / missing PSI). Cgroup values themselves remain. |
 | `collect_sample(kind="cpu")` | `TopHotspots` truncated to the top 3 (handle keeps `topN`, default 25). |
 | `collect_sample(kind="off_cpu")` | `TopBlockingStacks` truncated to the top 3 (handle keeps `topN`). |
@@ -197,7 +197,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="networking")` | The full `ByOperation[]` list. Summary keeps headline HTTP/DNS/TLS/socket counts + latency tails; drill in with `query_snapshot(handle, view=byOperation|queue|tls|dns)`. |
 | `collect_events(kind="requests")` | The full in-flight request list. Summary keeps the headline counts + the oldest requests inline; drill in with `query_snapshot(handle, view=requests|longRunning)`. |
 | `collect_events(kind="startup")` | The loader/DI event lists and full timeline. Summary keeps headline counts, top assembly/module aggregates, and notes. |
-| `collect_events(kind="sweep")` | The five sub-snapshots' bulky lists (counters, gc, exceptions, threadpool, resource). Summary keeps the triage verdict + per-collector handles. Each sub-collector's full payload stays behind its handle (`data.handles`). |
+| `collect_events(kind="sweep")` | The five sub-snapshots' bulky lists (counters, gc, exceptions, threadpool, resource). Summary keeps observed signals + hypotheses + per-collector handles. Each sub-collector's full payload stays behind its handle (`data.sweep.handles`). |
 | `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph\|deadlocks\|unique-stacks\|async-stalls\|wait-chains)`. |
 
 Explicit `topN` always wins over the depth default — if you pass
@@ -215,13 +215,14 @@ process. Instead of issuing five sequential collections (~25–40 s), it fans ou
 EventPipe-safe collectors — `counters`, `gc`, `exceptions`, `threadpool` and `resource` — **concurrently**
 in a single round-trip and returns one consolidated envelope:
 
-- `data.triage` — the classified verdict + severity + evidence (same shape as the legacy triage).
-- `data.counters` / `data.gc` / `data.exceptions` / `data.threadpool` / `data.resource` — each sub-snapshot's summary inline.
-- `data.handles` — per-collector drill-down handles (`counters`, `gc`, `exceptions`, `threadpool`); pass these to `query_snapshot` to follow up without re-collecting.
-- `data.failures` — per-collector failure notes; empty when every collector succeeded (one slow/failed collector never blocks the rest).
+- `data.sweep.triage` — `modelVersion=2`, neutral assessment/severity, observed signals, evidence-backed hypotheses, ranked indicators, and deprecated verdict compatibility fields.
+- `data.sweep.counters` / `data.sweep.gc` / `data.sweep.exceptions` / `data.sweep.threadpool` / `data.sweep.resource` — each sub-snapshot's summary inline.
+- `data.sweep.handles` — per-collector drill-down handles (`counters`, `gc`, `exceptions`, `threadpool`); pass these to `query_snapshot` to follow up without re-collecting.
+- `data.sweep.failures` — per-collector failure notes; empty when every collector succeeded (one slow/failed collector never blocks the rest).
 
 `durationSeconds` defaults to 6 and is floored at 6 s so each EventPipe session has time to start and
-emit at least one interval. The top-level `Hints[]` point at the next best drill-down for the verdict.
+emit at least one interval. The top-level `Hints[]` point at the next neutral drill-down for the
+highest-ranked hypothesis or inconclusive observation.
 
 ### Distributed trace correlation (`collect_events(kind="distributed_trace")`)
 
@@ -774,7 +775,7 @@ unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
 | [`inspect_process(view="runtime-config")`](#inspect_process(view="runtime-config")) | cheap | no | ✅ (Windows env partial) | ClrMD GC / ThreadPool probe + filtered `/proc/<pid>/environ` (Linux) |
 | [`inspect_process(view="resources")`](#inspect_process(view="resources")) | cheap / window-bound | no | ✅ (Linux/Windows partial) | reads `/proc/<pid>/fd`, `/proc/<pid>/net/tcp{,6}`, `/proc/<pid>/limits`, `VmRSS` + a short `gc-heap-size` counter probe (Linux) or `GetProcessHandleCount` / `WorkingSet64` (Windows) |
 | [`inspect_process(view="requests-now")`](#inspect_process(view="requests-now")) | ~2 s | no | ✅ (ptrace required) | short EventPipe request window + live thread snapshot |
-| [`inspect_process(view="triage")`](#inspect_process(view="triage")) | ~5 s | no | ✅ | **Phase 12 IoT-style triage.** Collects counters (5s), classifies workload (cpu-bound/gc-pressure/memory-pressure/threadpool-starvation/lock-contention/io-bound/healthy), returns actionable hints. The LLM just follows the first hint — no interpretation needed. |
+| [`inspect_process(view="triage")`](#inspect_process) | ~5 s | no | ✅ | **Fast evidence triage.** Collects counters, separates observed signals from bounded hypotheses, and returns neutral drill-down hints. |
 | [`inspect_process(view="preflight")`](#inspect_process(view="preflight")) | cheap | no | ✅ | **Phase 13 environment self-diagnosis.** Target-optional, remediation-first readiness checks (diagnostic-socket UID, ClrMD attach/ptrace, perf off-CPU, native-alloc). Answers *"why can't I attach to this PID and how do I fix it?"* before paying for a failed collect. |
 | `collect_sample(kind="off_cpu")` (Linux/Windows) | window-bound | no | ✅ (Linux) | **Deprecated — use `collect_sample(kind="off_cpu")`.** system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
 | `query_snapshot` | cheap | no | ✅ | drilldown on handle from `collect_sample(kind="off_cpu")` |
@@ -859,9 +860,9 @@ the payload under `data` is byte-identical to the legacy envelope's `data`.
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `view` | `"list" \| "info" \| "capabilities" \| "container" \| "memory_trend" \| "runtime-config" \| "resources" \| "requests-now"` | `"list"` | Which bootstrap projection to compute. |
+| `view` | `"list" \| "info" \| "capabilities" \| "container" \| "memory_trend" \| "runtime-config" \| "resources" \| "requests-now" \| "triage" \| "preflight"` | `"list"` | Which bootstrap projection to compute. |
 | `processId` | `int?` | auto | Target PID. **Ignored when `view="list"`** (the list view is process-agnostic). When omitted on `view="memory_trend"` or `view="resources"` the server auto-resolves the lone reachable .NET process; `view="runtime-config"` and `view="requests-now"` also auto-resolve but still require a real .NET process because they open a live diagnostics path. |
-| `durationSeconds` | `int` | `10` / `0` | Used by `view="memory_trend"` and `view="resources"`. Memory trend requires `>= 2`; resources uses `0` for a single snapshot (default) or `>= 2` for trend mode. |
+| `durationSeconds` | `int` | view-specific | Used by `view="memory_trend"`, `view="resources"`, and `view="triage"`. Triage defaults to 5 seconds and requires `>= 1`. |
 | `sampleEverySeconds` | `int` | `2` | Used only by `view="memory_trend"` / `view="resources"`. Must be ≥ 1. |
 | `depth` | `SamplingDepth?` | `Summary` | Used only by `view="container"`; forwarded to `inspect_process(view="container")`. |
 
@@ -879,6 +880,53 @@ populated field matching the requested view:
 | `runtime-config` | `RuntimeConfigView` (see [`inspect_process(view="runtime-config")`](#inspect_process(view="runtime-config"))) |
 | `resources` | `ProcessResources` (see [`inspect_process(view="resources")`](#inspect_process(view="resources"))) |
 | `requests-now` | `InFlightHttpRequest[]` (see [`inspect_process(view="requests-now")`](#inspect_process(view="requests-now"))) |
+| `triage` | `TriageResult` contract described below |
+| `preflight` | `PreflightReport` |
+
+### Triage contract v2
+
+`view="triage"` preserves the fast two-step workflow: one short counter capture, then one
+evidence-selected drill-down. The payload explicitly separates:
+
+- `observedSignals[]` — direct threshold crossings with value, comparison, threshold, unit, and rationale.
+- `hypotheses[]` — bounded interpretations with `confidence`, `supportingEvidence`,
+  `contradictingEvidence`, and a neutral `nextStep`, ordered by confidence and then the
+  strongest supporting observed-signal level.
+- `topIndicators[]` and raw `evidence` — retained for independent interpretation.
+- `assessment` — `healthy`, `inconclusive`, `degraded`, or `critical`.
+
+```json
+{
+  "modelVersion": 2,
+  "assessment": "inconclusive",
+  "severity": "Healthy",
+  "observedSignals": [{
+    "name": "threadpool.queue",
+    "level": "elevated",
+    "summary": "The ThreadPool queue contained 15 work items.",
+    "evidence": [{
+      "name": "threadpool-queue-length",
+      "value": 15,
+      "comparison": ">=",
+      "threshold": 10,
+      "unit": "items",
+      "rationale": "The queue crossed the observation threshold; one window may be transient."
+    }]
+  }],
+  "hypotheses": [],
+  "verdict": "inconclusive"
+}
+```
+
+Low CPU plus a small queue is deliberately inconclusive. A
+`work.waiting-or-backpressure` hypothesis requires low CPU, queueing, **and** elevated request
+p95 in the same window, and still does not claim I/O.
+
+**Compatibility/deprecation:** `verdict`, `secondaryVerdicts`, `severity`, `evidence`, and
+`topIndicators` remain serialized, so existing JSON consumers continue to receive their fields.
+`verdict` and `secondaryVerdicts` are deprecated compatibility projections; migrate to
+`assessment`, `observedSignals`, and `hypotheses` before v1.0. `io-bound` is retained as a
+constant for source compatibility but is no longer emitted by counter-only triage.
 
 **Recommended bootstrap sequence:**
 
@@ -890,6 +938,7 @@ inspect_process(view="memory_trend")    # lightweight leak signal — any OS pro
 inspect_process(view="runtime-config")  # GC / ThreadPool / tiered-comp startup settings + filtered env vars
 inspect_process(view="resources")       # unmanaged FD / socket / handle signal when heap is flat
 inspect_process(view="requests-now")    # in-flight ASP.NET Core requests + current thread stacks
+inspect_process(view="triage")          # observed signals + evidence-backed hypotheses + next drill-down
 ```
 
 Unknown view values surface as the standard discriminator-dispatch error

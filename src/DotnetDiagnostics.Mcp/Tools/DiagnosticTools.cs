@@ -156,10 +156,10 @@ public sealed class DiagnosticTools
 
     [RequireScope("read-counters")]
     [Description(
-        "Phase 12 IoT-style triage: collects counters (5s), runs server-side classification, and returns a verdict with actionable hints. " +
-        "The LLM just follows the first hint — no interpretation needed. " +
-        "Verdicts: cpu-bound, gc-pressure, memory-pressure, threadpool-starvation, lock-contention, io-bound, healthy. " +
-        "Severity: critical (immediate action), degraded (investigate), healthy (all clear).")]
+        "Fast triage: collects counters (5s), reports threshold-backed observed signals separately from evidence-backed hypotheses, " +
+        "and returns neutral drill-down hints. Every hypothesis includes confidence, supporting/contradicting evidence, and a next step. " +
+        "Low CPU plus a small ThreadPool queue is inconclusive, not proof of I/O. " +
+        "The legacy verdict and secondaryVerdicts fields remain serialized for compatibility and are deprecated for removal in v1.0.")]
     public static Task<DiagnosticResult<TriageResult>> PerformTriage(
         ICounterCollector collector,
         IProcessContextResolver resolver,

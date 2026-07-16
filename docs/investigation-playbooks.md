@@ -17,15 +17,15 @@ a symptom and walks through the tool calls in order.
 
 ## 1. "The app feels slow / high latency"
 
-**Hypothesis tree:** CPU bound → GC bound → I/O / downstream bound → contention.
+**Investigation branches:** CPU utilization → GC activity → waiting/backpressure → contention.
 
 ### Step 0 — Cold-start sweep (one call, parallel)
 Before stepping through vitals manually, run `collect_events(kind="sweep")`. It fans out the
 five EventPipe-safe collectors (counters + gc + exceptions + threadpool + resource) **concurrently**
-in ~6 s and returns a classified `triage` verdict, each sub-summary, and per-collector drill-down
-handles in `data.handles`. Follow the verdict's top hint (and `data.handles[...]` for `query_snapshot`)
-instead of re-collecting. Drop to the manual steps below only when the sweep verdict is ambiguous or
-you need a longer window for a specific signal.
+in ~6 s and returns observed signals, bounded hypotheses, each sub-summary, and per-collector
+drill-down handles in `data.sweep.handles`. Follow the highest-ranked hypothesis hint (and
+`data.sweep.handles[...]` for `query_snapshot`) instead of re-collecting. When assessment is
+`inconclusive`, extend the relevant capture rather than assigning a cause from one window.
 
 ### Step 1 — Quick vitals
 Call `collect_events(kind="counters")` with default providers for 5 s. If the target emits

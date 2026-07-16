@@ -427,8 +427,9 @@ internal static class DiagnosticServiceRegistration
         Recommended call order for a fresh investigation:
 
           0. For a vague "the app is slow / high CPU / memory growing / where do I start" symptom,
-             begin with `inspect_process(view="triage")` — it collects counters for ~5s, classifies
-             the workload, and hands back the next collector to run. For a non-trivial, multi-step
+             begin with `inspect_process(view="triage")` — it collects counters for ~5s, separates
+             observed signals from evidence-backed hypotheses, and hands back the next collector to
+             run. Treat low CPU plus a small queue as inconclusive, not proof of I/O. For a non-trivial, multi-step
              investigation where you want a decision tree up front, call `start_investigation` instead
              (then execute its first recommended step).
           1. `collect_events(kind="counters")` — cheap first signal: CPU, working set, GC pressure,

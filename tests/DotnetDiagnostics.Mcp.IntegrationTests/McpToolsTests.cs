@@ -177,6 +177,9 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             inspectText.Should().Contain(phrase,
                 $"inspect_process must advertise the intent phrase '{phrase}' so the LLM reaches for it on a slow-app prompt (#280)");
         }
+        inspectText.Should().Contain("observed signals");
+        inspectText.Should().Contain("hypotheses");
+        inspectText.Should().Contain("does not infer i/o");
 
         var start = tools.Single(t => t.Name == "start_investigation");
         var startText = (start.Description ?? string.Empty).ToLowerInvariant();
@@ -562,6 +565,33 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task InspectProcess_Triage_ReturnsObservedSignalsAndHypothesisContract()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "inspect_process",
+            new Dictionary<string, object?>
+            {
+                ["view"] = "triage",
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 3,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var envelope = DeserializeStructured<InspectProcessReport>(result);
+        envelope.Should().NotBeNull();
+        envelope!.Triage.Should().NotBeNull();
+        envelope.Triage!.ModelVersion.Should().Be(2);
+        envelope.Triage.Assessment.Should().NotBeNullOrWhiteSpace();
+        envelope.Triage.ObservedSignals.Should().NotBeNull();
+        envelope.Triage.Hypotheses.Should().NotBeNull();
+        envelope.Triage.Verdict.Should().NotBeNullOrWhiteSpace(
+            "the deprecated field remains serialized during the migration window");
+    }
+
+    [Fact]
     public async Task Sweep_FansOutAllCollectors_AndReturnsTriage()
     {
         await using var client = await ConnectAsync();
@@ -583,6 +613,9 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         envelope.Sweep.Should().NotBeNull();
         envelope.Sweep!.DurationSeconds.Should().Be(6);
         envelope.Sweep.Triage.Should().NotBeNull();
+        envelope.Sweep.Triage.ModelVersion.Should().Be(2);
+        envelope.Sweep.Triage.ObservedSignals.Should().NotBeNull();
+        envelope.Sweep.Triage.Hypotheses.Should().NotBeNull();
         envelope.Sweep.Counters.Should().NotBeNull();
         envelope.Sweep.Handles.Should().ContainKey("counters");
     }
