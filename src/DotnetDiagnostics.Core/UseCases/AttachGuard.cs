@@ -15,6 +15,8 @@ public static class AttachGuard
     /// Wraps a tool body that attaches to a live process and translates known failure shapes into a
     /// structured <see cref="DiagnosticResult{T}"/>. Cancellation requested via
     /// <paramref name="cancellationToken"/> propagates; every other exception is classified.
+    /// Callers that want a replayable busy hint must supply complete schema-valid
+    /// <paramref name="retryArguments"/>; Core never infers tool parameters.
     /// </summary>
     public static async Task<DiagnosticResult<T>> GuardAttachAsync<T>(
         string tool,
@@ -67,6 +69,8 @@ public static class AttachGuard
     /// <summary>
     /// Retriable "busy" envelope returned when another attach already holds the per-pid gate.
     /// The hint nudges the LLM to back off and retry the same tool rather than fail the run.
+    /// <paramref name="retryArguments"/> must be complete and schema-valid; pass
+    /// <see langword="null"/> for an informational, non-replayable hint.
     /// </summary>
     public static DiagnosticResult<T> BusyResult<T>(
         string tool,
@@ -77,27 +81,20 @@ public static class AttachGuard
             new DiagnosticError("Busy", "Only one process-attach can suspend a target at a time; this pid already has an attach in flight.", "AttachConcurrencyLimiter"),
             new NextActionHint(tool,
                 "Wait a moment and retry — the concurrent attach is expected to finish shortly.",
-                BuildRetryArguments(processId, retryArguments))
+                BuildRetryArguments(retryArguments))
             { Priority = NextActionHintPriority.High });
 
     private static Dictionary<string, object?>? BuildRetryArguments(
-        int processId,
         IReadOnlyDictionary<string, object?>? retryArguments)
     {
-        if (processId <= 0 && retryArguments is null)
+        if (retryArguments is null)
         {
             return null;
         }
 
-        var result = retryArguments is null
-            ? new Dictionary<string, object?>()
-            : new Dictionary<string, object?>(retryArguments);
-        if (processId > 0)
-        {
-            result.TryAdd("processId", processId);
-        }
-
-        return result;
+        // Tool schemas are intentionally unknown to Core. Callers must provide a complete,
+        // schema-valid replay bag; never infer that a live attach pid is accepted by the tool.
+        return new Dictionary<string, object?>(retryArguments);
     }
 
     /// <summary>

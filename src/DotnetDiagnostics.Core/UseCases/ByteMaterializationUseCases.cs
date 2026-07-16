@@ -93,7 +93,15 @@ public static class ByteMaterializationUseCases
             {
                 return IntegrityFailure(ex.Message);
             }
-        }, cancellationToken, retryArguments: new Dictionary<string, object?> { ["kind"] = "module" }).ConfigureAwait(false);
+        }, cancellationToken, retryArguments: new Dictionary<string, object?>
+        {
+            ["kind"] = "module",
+            ["moduleVersionId"] = moduleVersionId,
+            ["asset"] = normalizedAsset,
+            ["processId"] = resolved.ProcessId,
+            ["outputPath"] = outputPath,
+            ["maxBytes"] = maxBytes,
+        }).ConfigureAwait(false);
 
         return ProcessResolutionHelpers.WithContext(result, resolved.Context);
     }

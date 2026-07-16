@@ -103,6 +103,49 @@ public sealed class NextActionHintReplayabilityTests
         hint.ShouldMatchCanonicalSchema();
     }
 
+    [Fact]
+    public async Task QuerySnapshotBusyHint_PreservesSchemaArgumentsWithoutInjectingProcessId()
+    {
+        var arguments = DiagnosticToolHeapDump.BuildQuerySnapshotRetryArguments(
+            "HEAPHANDLE",
+            "object",
+            "0x1234");
+
+        var hint = await GetBusyHint("query_snapshot", arguments);
+
+        hint.SuggestedArguments.Should().BeEquivalentTo(arguments);
+        hint.SuggestedArguments.Should().NotContainKey("processId");
+        hint.ShouldMatchCanonicalSchema();
+    }
+
+    [Fact]
+    public async Task CaptureMethodBytesBusyHint_PreservesCompleteRequiredArguments()
+    {
+        var arguments = DiagnosticToolThreadingAndJit.BuildCaptureMethodBytesRetryArguments(
+            "3187855f-33c5-4a53-9d42-5ee9c14dbef7",
+            "0x06000001",
+            424242,
+            "0x1234",
+            "Tier1",
+            "method-bytes/424242",
+            investigationHandleId: null);
+
+        var hint = await GetBusyHint("capture_method_bytes", arguments);
+
+        hint.SuggestedArguments.Should().BeEquivalentTo(arguments);
+        hint.ShouldMatchCanonicalSchema();
+    }
+
+    [Fact]
+    public void BusyHintWithoutCallerArguments_IsNonReplayable()
+    {
+        var result = AttachGuard.BusyResult<object>("capture_method_bytes", 424242);
+
+        var hint = result.Hints.Should().ContainSingle().Which;
+        hint.SuggestedArguments.Should().BeNull();
+        hint.ShouldMatchCanonicalSchema();
+    }
+
     [Theory]
     [InlineData("growing", "inspect_heap", "source", "live")]
     [InlineData("stable", "collect_events", "kind", "counters")]
@@ -307,6 +350,41 @@ public sealed class NextActionHintReplayabilityTests
             hint.SuggestedArguments.Should().NotBeNull();
             hint.SuggestedArguments!["source"].Should().Be(expectedSource);
         }
+    }
+
+    private static async Task<NextActionHint> GetBusyHint(
+        string tool,
+        IReadOnlyDictionary<string, object?> retryArguments)
+    {
+        var limiter = new AttachConcurrencyLimiter(maxPerProcess: 1, acquireTimeout: TimeSpan.Zero);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = AttachGuard.GuardAttachAsync<object>(
+            tool,
+            424242,
+            async () =>
+            {
+                entered.SetResult();
+                await release.Task;
+                return DiagnosticResult.Ok(new object(), "completed");
+            },
+            CancellationToken.None,
+            limiter,
+            retryArguments);
+
+        await entered.Task;
+        var busy = await AttachGuard.GuardAttachAsync<object>(
+            tool,
+            424242,
+            () => Task.FromResult(DiagnosticResult.Ok(new object(), "unexpected")),
+            CancellationToken.None,
+            limiter,
+            retryArguments);
+        release.SetResult();
+        await first;
+
+        busy.Error!.Kind.Should().Be("Busy");
+        return busy.Hints.Should().ContainSingle().Which;
     }
 
     private sealed class StubMemoryTrendCollector(MemoryTrend result) : IMemoryTrendCollector

@@ -138,7 +138,18 @@ public static class HeapInspectionUseCases
                 ? DiagnosticResult.Ok(inspection, summary)
                 : DiagnosticResult.Ok(inspection, summary, hint);
             return WithContext(result, ctx);
-        }, cancellationToken, retryArguments: new Dictionary<string, object?> { ["source"] = "live" }).ConfigureAwait(false);
+        }, cancellationToken, retryArguments: new Dictionary<string, object?>
+        {
+            ["source"] = "live",
+            ["processId"] = pid,
+            ["topTypes"] = topTypes,
+            ["includeRetentionPaths"] = includeRetentionPaths,
+            ["retentionPathLimit"] = retentionPathLimit,
+            ["includeStaticFields"] = includeStaticFields,
+            ["includeDelegateTargets"] = includeDelegateTargets,
+            ["includeDuplicateStrings"] = includeDuplicateStrings,
+            ["symbolPath"] = symbolPath,
+        }).ConfigureAwait(false);
     }
 
     /// <summary>

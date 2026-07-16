@@ -119,6 +119,12 @@ public static class ProcessDumpUseCases
                 payload,
                 $"Wrote {dumpType} dump for pid {dump.ProcessId} to {dump.FilePath} ({dump.FileSizeBytes:N0} bytes).",
                 hint), ctx);
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, retryArguments: new Dictionary<string, object?>
+        {
+            ["processId"] = pid,
+            ["dumpType"] = dumpType.ToString(),
+            ["outputDirectory"] = outputDirectory,
+            ["confirm"] = true,
+        }).ConfigureAwait(false);
     }
 }

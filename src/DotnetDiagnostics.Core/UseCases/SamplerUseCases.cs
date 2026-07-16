@@ -504,7 +504,17 @@ public static class SamplerUseCases
                 ? DiagnosticResult.Ok(summaryView, summary)
                 : DiagnosticResult.Ok(summaryView, summary, hint);
             return WithContext(result with { Signals = signals.Count > 0 ? signals : null }, liveCtx);
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, retryArguments: hasDump
+            ? null
+            : new Dictionary<string, object?>
+            {
+                ["processId"] = livePid,
+                ["maxFramesPerThread"] = maxFramesPerThread,
+                ["includeRuntimeFrames"] = includeRuntimeFrames,
+                ["includeNativeFrames"] = includeNativeFrames,
+                ["symbolPath"] = symbolPath,
+                ["depth"] = depth,
+            }).ConfigureAwait(false);
     }
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)

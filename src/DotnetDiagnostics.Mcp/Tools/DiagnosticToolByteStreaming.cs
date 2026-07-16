@@ -76,6 +76,7 @@ internal static class DiagnosticToolByteStreaming
             ["asset"] = asset,
             ["offset"] = offset,
             ["maxBytes"] = maxBytes,
+            ["processId"] = resolved.ProcessId,
         }).ConfigureAwait(false);
     }
 

@@ -263,12 +263,7 @@ internal static class DiagnosticToolHeapDump
                         _ => QueryObjectSize(snapshot, handle, await inspector.InspectObjectSizeAsync(snapshot, parsedAddress, cancellationToken).ConfigureAwait(false)),
                     },
                     cancellationToken,
-                    new Dictionary<string, object?>
-                    {
-                        ["handle"] = handle,
-                        ["view"] = normalizedView,
-                        ["address"] = address,
-                    }).ConfigureAwait(false);
+                    BuildQuerySnapshotRetryArguments(handle, normalizedView, address)).ConfigureAwait(false);
             default:
                 return InvalidArg<HeapSnapshotQueryResult>(nameof(view), $"must be 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'timers', 'alc', 'object', 'gcroot', 'objsize' or 'async' (got '{view}')");
         }
@@ -475,6 +470,17 @@ internal static class DiagnosticToolHeapDump
         CancellationToken cancellationToken,
         IReadOnlyDictionary<string, object?>? retryArguments = null)
         => AttachGuard.GuardAttachAsync(tool, processId, body, cancellationToken, retryArguments: retryArguments);
+
+    internal static IReadOnlyDictionary<string, object?> BuildQuerySnapshotRetryArguments(
+        string handle,
+        string view,
+        string address)
+        => new Dictionary<string, object?>
+        {
+            ["handle"] = handle,
+            ["view"] = view,
+            ["address"] = address,
+        };
 
     private static Dictionary<string, object?>? BuildRecaptureArguments(
         HeapSnapshotArtifact snapshot,

@@ -136,7 +136,18 @@ internal static class DiagnosticToolThreadingAndJit
                 ? DiagnosticResult.Ok(summaryView, summary)
                 : DiagnosticResult.Ok(summaryView, summary, hint);
             return WithContext(result with { Signals = signals.Count > 0 ? signals : null }, liveCtx);
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, hasDump
+            ? null
+            : new Dictionary<string, object?>
+            {
+                ["processId"] = livePid,
+                ["maxFramesPerThread"] = maxFramesPerThread,
+                ["includeRuntimeFrames"] = includeRuntimeFrames,
+                ["includeNativeFrames"] = includeNativeFrames,
+                ["symbolPath"] = symbolPath,
+                ["depth"] = depth,
+                ["investigationHandleId"] = investigationHandleId,
+            }).ConfigureAwait(false);
     }
 
     public static async Task<DiagnosticResult<CapturedMethodBytes>> CaptureMethodBytes(
@@ -207,7 +218,16 @@ internal static class DiagnosticToolThreadingAndJit
                 ? DiagnosticResult.Ok(captured, summary)
                 : DiagnosticResult.Ok(captured, summary, hint);
             return WithContext(result, liveCtx);
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, hasDump
+            ? null
+            : BuildCaptureMethodBytesRetryArguments(
+                moduleVersionId,
+                metadataToken,
+                livePid,
+                codeAddress,
+                tier,
+                outputDirectory,
+                investigationHandleId)).ConfigureAwait(false);
     }
 
     public static DiagnosticResult<ThreadSnapshotQueryResult> QueryThreadSnapshot(
@@ -305,10 +325,35 @@ internal static class DiagnosticToolThreadingAndJit
             principalAccessor?.Current?.HasExplicitScope("symbols-remote") == true,
             deprecation);
 
+    internal static IReadOnlyDictionary<string, object?> BuildCaptureMethodBytesRetryArguments(
+        string moduleVersionId,
+        string metadataToken,
+        int processId,
+        string? codeAddress,
+        string? tier,
+        string? outputDirectory,
+        string? investigationHandleId)
+        => new Dictionary<string, object?>
+        {
+            ["moduleVersionId"] = moduleVersionId,
+            ["metadataToken"] = metadataToken,
+            ["processId"] = processId,
+            ["codeAddress"] = codeAddress,
+            ["tier"] = tier,
+            ["outputDirectory"] = outputDirectory,
+            ["investigationHandleId"] = investigationHandleId,
+        };
+
     private static Task<DiagnosticResult<T>> GuardAttachAsync<T>(
         string tool,
         int? processId,
         Func<Task<DiagnosticResult<T>>> body,
-        CancellationToken cancellationToken)
-        => AttachGuard.GuardAttachAsync(tool, processId, body, cancellationToken);
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, object?>? retryArguments = null)
+        => AttachGuard.GuardAttachAsync(
+            tool,
+            processId,
+            body,
+            cancellationToken,
+            retryArguments: retryArguments);
 }

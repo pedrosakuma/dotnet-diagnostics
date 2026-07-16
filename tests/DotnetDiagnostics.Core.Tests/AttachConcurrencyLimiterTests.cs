@@ -33,7 +33,9 @@ public sealed class AttachConcurrencyLimiterTests
 
         second.IsError.Should().BeTrue();
         second.Error!.Kind.Should().Be("Busy");
-        second.Hints.Should().ContainSingle(h => h.NextTool == "collect_thread_snapshot");
+        var hint = second.Hints.Should().ContainSingle(h => h.NextTool == "collect_thread_snapshot").Which;
+        hint.SuggestedArguments.Should().BeNull(
+            "AttachGuard cannot assume that a tool accepts processId when the caller did not supply retry arguments");
 
         release.SetResult();
         (await first).IsError.Should().BeFalse();
