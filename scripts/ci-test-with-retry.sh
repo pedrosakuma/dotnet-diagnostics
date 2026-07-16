@@ -29,10 +29,17 @@ trx_name="$1"
 shift 2
 trx_path="TestResults/${trx_name}"
 
+require_trx() {
+  if [[ ! -s "$trx_path" ]]; then
+    echo "::error::dotnet test exited successfully but did not produce nonempty TRX '$trx_path'." >&2
+    return 1
+  fi
+}
+
 # Returns 0 if the TRX from the last run looks like the documented phantom
 # crash (every executed test passed but the host died), 1 otherwise.
 is_phantom_crash() {
-  [[ -f "$trx_path" ]] || return 1
+  [[ -s "$trx_path" ]] || return 1
 
   local outcome failed error aborted timeout total executed passed
   outcome=$(grep -oE '<ResultSummary[^>]*outcome="[^"]*"' "$trx_path" \
@@ -82,7 +89,8 @@ run_attempt() {
 run_attempt "attempt 1" "$@"
 rc=$?
 if [[ $rc -eq 0 ]]; then
-  exit 0
+  require_trx
+  exit $?
 fi
 
 if ! is_phantom_crash; then
@@ -102,7 +110,8 @@ fi
 run_attempt "attempt 2 (retry after phantom crash)" "$@"
 rc=$?
 if [[ $rc -eq 0 ]]; then
-  exit 0
+  require_trx
+  exit $?
 fi
 
 if is_phantom_crash; then
