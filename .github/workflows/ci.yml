@@ -125,7 +125,7 @@ jobs:
       # plain step. Kept separate from the live-process suites to preserve the no-cross-assembly-
       # parallelism invariant documented above.
       - name: Test (CLI)
-        if: needs.changes.outputs.code == 'true'
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
         run: dotnet test tests/DotnetDiagnostics.Cli.Tests/DotnetDiagnostics.Cli.Tests.csproj --no-build --configuration Release --logger "trx;LogFileName=cli-test-results.trx" --results-directory TestResults
 
       # Pack smoke (issue #288): `dotnet build` + the CLI unit tests do NOT exercise the
@@ -136,12 +136,12 @@ jobs:
         run: dotnet pack src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj --no-build --configuration Release -o artifacts/nupkg-smoke
 
       - name: Test (Server integration)
-        if: needs.changes.outputs.code == 'true'
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
         run: scripts/ci-test-with-retry.sh server-test-results.trx -- dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --filter "Category!=KindIntegration" --logger "trx;LogFileName=server-test-results.trx" --results-directory TestResults
 
       - name: Verify expected test results
-        if: needs.changes.outputs.code == 'true'
+        if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
         run: |
           shopt -s globstar nullglob
