@@ -2,6 +2,7 @@ using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Globalization;
 using DotnetDiagnostics.Core.Artifacts;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Hosting;
 using DotnetDiagnostics.Core.Launch;
 using DotnetDiagnostics.Core.ProcessDiscovery;
@@ -619,9 +620,11 @@ internal static class CliHost
         // gates. Host.CreateApplicationBuilder already layers appsettings.json + environment variables.
         var securityOptions = new SecurityOptions();
         builder.Configuration.GetSection(SecurityOptions.SectionName).Bind(securityOptions);
+        var handleStoreOptions = new DiagnosticHandleStoreOptions();
+        builder.Configuration.GetSection(DiagnosticHandleStoreOptions.SectionName).Bind(handleStoreOptions);
 
         var configuredSymbolPath = Environment.GetEnvironmentVariable(SymbolPathBuilder.McpSymbolPathEnvironmentVariable);
-        builder.Services.AddDiagnosticCoreServices(securityOptions, configuredSymbolPath);
+        builder.Services.AddDiagnosticCoreServices(securityOptions, configuredSymbolPath, handleStoreOptions);
 
         // Point the artifact sandbox at a command-specific directory by overriding the default
         // EnvironmentArtifactRootProvider with an explicit one (the LAST IArtifactRootProvider

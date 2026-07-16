@@ -468,20 +468,31 @@ public sealed class DiagnosticTools
             correlateArtifact = gcEntry.Value.Artifact;
         }
 
+        return QueryCollection(entry.Value, principalAccessor, handle, view, topN, correlateArtifact);
+    }
+
+    internal static DiagnosticResult<CollectionQueryResult> QueryCollection(
+        HandleLookup entry,
+        IPrincipalAccessor principalAccessor,
+        string handle,
+        string? view,
+        int topN,
+        object? correlateArtifact = null)
+    {
         var principal = principalAccessor.Current;
         if (principal is not null)
         {
-            var requiredScope = entry.Value.Kind == CollectionHandleKinds.Counters ? "read-counters" : "eventpipe";
+            var requiredScope = entry.Kind == CollectionHandleKinds.Counters ? "read-counters" : "eventpipe";
             if (!principal.HasScope(requiredScope))
             {
-                var message = $"forbidden: tool 'query_collection' requires scope '{requiredScope}' for kind '{entry.Value.Kind}'.";
+                var message = $"forbidden: tool 'query_collection' requires scope '{requiredScope}' for kind '{entry.Kind}'.";
                 return DiagnosticResult.Fail<CollectionQueryResult>(
                     message,
                     new DiagnosticError("Forbidden", message, requiredScope));
             }
         }
 
-        if (entry.Value.Kind == CollectionHandleKinds.EventCatalog && entry.Value.Artifact is EventCatalogSnapshot catalogSnapshot)
+        if (entry.Kind == CollectionHandleKinds.EventCatalog && entry.Artifact is EventCatalogSnapshot catalogSnapshot)
         {
             var effectiveView = string.IsNullOrWhiteSpace(view) ? EventCatalogQueryDispatcher.CatalogView : view.Trim();
             var catalogResult = EventCatalogQueryDispatcher.Render(catalogSnapshot, handle, effectiveView, topN);
@@ -505,7 +516,7 @@ public sealed class DiagnosticTools
                     new Dictionary<string, object?> { ["handle"] = handle }));
         }
 
-        var outcome = CollectionQueryDispatcher.Dispatch(entry.Value.Kind, view, entry.Value.Artifact, topN, correlateArtifact);
+        var outcome = CollectionQueryDispatcher.Dispatch(entry.Kind, view, entry.Artifact, topN, correlateArtifact);
 
         if (outcome.UnknownKind is not null)
         {
@@ -521,7 +532,7 @@ public sealed class DiagnosticTools
         {
             var allowed = outcome.AllowedViews ?? Array.Empty<string>();
             return DiagnosticResult.Fail<CollectionQueryResult>(
-                $"View '{outcome.UnknownView}' is not defined for kind '{entry.Value.Kind}'.",
+                $"View '{outcome.UnknownView}' is not defined for kind '{entry.Kind}'.",
                 new DiagnosticError(
                     "UnknownView",
                     $"Allowed views: {string.Join(", ", allowed)}.",

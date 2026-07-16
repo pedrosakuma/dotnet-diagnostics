@@ -60,7 +60,7 @@ public sealed class QuerySnapshotGrowthToolTests
     }
 
     [Fact]
-    public async Task Growth_ExpiredBaselineHandle_ReturnsHandleExpired()
+    public async Task Growth_UnknownBaselineHandle_ReturnsHandleNotFound()
     {
         var store = new MemoryDiagnosticHandleStore();
         var current = store.Register(123, "heap-snapshot", HeapSnapshot(("X", 100, 1)), TimeSpan.FromMinutes(10));
@@ -68,7 +68,22 @@ public sealed class QuerySnapshotGrowthToolTests
         var result = await Growth(store, current.Id, baselineHandle: "does-not-exist");
 
         result.Error.Should().NotBeNull();
-        result.Error!.Kind.Should().Be("HandleExpired");
+        result.Error!.Kind.Should().Be("HandleNotFound");
+    }
+
+    [Fact]
+    public async Task QuerySnapshot_CapacityEvictedHandle_ReturnsRecoveryOrientedError()
+    {
+        var store = new MemoryDiagnosticHandleStore(maxEntries: 1);
+        var evicted = store.Register(123, "heap-snapshot", HeapSnapshot(("Old", 100, 1)), TimeSpan.FromMinutes(10));
+        store.Register(123, "heap-snapshot", HeapSnapshot(("New", 200, 2)), TimeSpan.FromMinutes(10));
+
+        var result = await Growth(store, evicted.Id, baselineHandle: null);
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("HandleCapacityEvicted");
+        result.Error.Message.Should().Contain("Diagnostics:HandleStore:MaxEntries");
+        result.Hints.Should().ContainSingle().Which.NextTool.Should().Be("inspect_heap");
     }
 
     [Fact]

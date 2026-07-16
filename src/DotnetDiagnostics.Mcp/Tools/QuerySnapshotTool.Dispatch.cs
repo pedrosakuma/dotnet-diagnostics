@@ -113,7 +113,8 @@ public sealed partial class QuerySnapshotTool
                 context.MinDeltaPct,
                 context.TopN,
                 context.Depth,
-                context.JourneyMode);
+                context.JourneyMode,
+                context.Principal);
         }
 
         if (IsGrowthView(context.View))
@@ -125,11 +126,17 @@ public sealed partial class QuerySnapshotTool
                 context.BaselineHandle,
                 context.RankBy,
                 context.MinDeltaPct,
-                context.TopN);
+                context.TopN,
+                context.Principal);
         }
 
-        var heap = await DiagnosticTools.QueryHeapSnapshot(
-            context.Handles,
+        if (context.Lookup.Artifact is not HeapSnapshotArtifact snapshot)
+        {
+            return HandleExpiredError(null, context.Handle);
+        }
+
+        var heap = await DiagnosticToolHeapDump.QueryHeapSnapshot(
+            snapshot,
             context.Inspector,
             context.Redactor,
             context.SensitiveGate,
@@ -153,10 +160,15 @@ public sealed partial class QuerySnapshotTool
             return Task.FromResult(forbidden!);
         }
 
+        if (context.Lookup.Artifact is not ThreadSnapshotArtifact snapshot)
+        {
+            return Task.FromResult(HandleExpiredError(null, context.Handle));
+        }
+
         if (context.MatchesView(ResolveAddressView))
         {
             return ResolveThreadAddressesAsync(
-                context.Handles,
+                snapshot,
                 context.AddressResolver,
                 context.Handle,
                 context.Address,
@@ -171,7 +183,7 @@ public sealed partial class QuerySnapshotTool
             }
 
             return ResolveFrameVariablesAsync(
-                context.Handles,
+                snapshot,
                 context.FrameVariableResolver,
                 context.SensitiveGate,
                 context.PrincipalAccessor,
@@ -181,8 +193,8 @@ public sealed partial class QuerySnapshotTool
                 context.CancellationToken);
         }
 
-        var thread = DiagnosticTools.QueryThreadSnapshot(
-            context.Handles,
+        var thread = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot,
             context.Handle,
             context.ResolveView(DefaultThreadView),
             context.ThreadId,
@@ -199,9 +211,13 @@ public sealed partial class QuerySnapshotTool
             return Task.FromResult(forbidden!);
         }
 
-        var offCpu = DiagnosticTools.QueryOffCpuSnapshot(
-            context.Handles,
-            context.Handle,
+        if (context.Lookup.Artifact is not DotnetDiagnostics.Core.OffCpu.OffCpuSnapshotArtifact artifact)
+        {
+            return Task.FromResult(HandleExpiredError(null, context.Handle));
+        }
+
+        var offCpu = DotnetDiagnostics.Core.OffCpu.OffCpuQueryDispatcher.Dispatch(
+            artifact,
             context.ResolveView(DefaultOffCpuView),
             context.TopN ?? 25,
             context.StackRank);
@@ -226,19 +242,20 @@ public sealed partial class QuerySnapshotTool
                 context.MinDeltaPct,
                 context.TopN,
                 context.Depth,
-                context.JourneyMode));
+                context.JourneyMode,
+                context.Principal));
+        }
+
+        var trace = CpuSampleQueryDispatcher.ResolveTrace(context.Lookup.Artifact);
+        if (trace is null)
+        {
+            return Task.FromResult(HandleExpiredError(null, context.Handle));
         }
 
         var cpuView = string.IsNullOrWhiteSpace(context.View) ? CpuSampleQueryDispatcher.CallTreeView : context.View!;
         if (!string.Equals(cpuView, CpuSampleQueryDispatcher.CallTreeView, StringComparison.Ordinal)
             && CpuSampleQueryDispatcher.IsKnownView(cpuView))
         {
-            var trace = CpuSampleQueryDispatcher.ResolveTrace(context.Lookup.Artifact);
-            if (trace is null)
-            {
-                return Task.FromResult(HandleExpiredError(null, context.Handle));
-            }
-
             var cpuTopN = context.TopN ?? CpuSampleQueryDispatcher.DefaultTopN;
             DiagnosticResult<object> result = cpuView switch
             {
@@ -267,8 +284,8 @@ public sealed partial class QuerySnapshotTool
             return Task.FromResult(UnknownView(context.View!, context.Kind, CpuViewNames));
         }
 
-        var callTree = DiagnosticTools.GetCallTree(
-            context.Handles,
+        var callTree = CpuSampleQueryDispatcher.RenderCallTree(
+            trace,
             context.Handle,
             context.RootMethodFilter,
             context.MaxDepth,
@@ -278,7 +295,7 @@ public sealed partial class QuerySnapshotTool
 
     private static Task<DiagnosticResult<object>> HandleCountersCollectionAsync(QuerySnapshotDispatchContext context)
     {
-        if (!RequireAnyOfScope(context.Principal, ScopeReadCounters, ScopeEventPipe, out var forbidden))
+        if (!RequireScope(context.Principal, ScopeReadCounters, out var forbidden))
         {
             return Task.FromResult(forbidden!);
         }
@@ -294,11 +311,12 @@ public sealed partial class QuerySnapshotTool
                 context.MinDeltaPct,
                 context.TopN,
                 context.Depth,
-                context.JourneyMode));
+                context.JourneyMode,
+                context.Principal));
         }
 
         var collection = DiagnosticTools.QueryCollection(
-            context.Handles,
+            context.Lookup,
             context.PrincipalAccessor,
             context.Handle,
             string.IsNullOrWhiteSpace(context.View) ? null : context.View,
@@ -313,8 +331,7 @@ public sealed partial class QuerySnapshotTool
             return Task.FromResult(forbidden!);
         }
 
-        var snapshot = context.Handles.TryGet<EventCatalogSnapshot>(context.Handle);
-        if (snapshot is null)
+        if (context.Lookup.Artifact is not EventCatalogSnapshot snapshot)
         {
             return Task.FromResult(HandleExpiredError(null, context.Handle));
         }
@@ -347,11 +364,11 @@ public sealed partial class QuerySnapshotTool
                 context.MinDeltaPct,
                 context.TopN,
                 context.Depth,
-                context.JourneyMode));
+                context.JourneyMode,
+                context.Principal));
         }
 
-        var snapshot = context.Handles.TryGet<GcDatasSnapshot>(context.Handle);
-        if (snapshot is null)
+        if (context.Lookup.Artifact is not GcDatasSnapshot snapshot)
         {
             return Task.FromResult(HandleExpiredError(null, context.Handle));
         }
@@ -383,11 +400,12 @@ public sealed partial class QuerySnapshotTool
                 context.MinDeltaPct,
                 context.TopN,
                 context.Depth,
-                context.JourneyMode));
+                context.JourneyMode,
+                context.Principal));
         }
 
         var collection = DiagnosticTools.QueryCollection(
-            context.Handles,
+            context.Lookup,
             context.PrincipalAccessor,
             context.Handle,
             string.IsNullOrWhiteSpace(context.View) ? null : context.View,
@@ -401,9 +419,12 @@ public sealed partial class QuerySnapshotTool
         {
             return Task.FromResult(eventPipeForbidden!);
         }
+        if (!RequireExplicitScope(context.Principal, ScopeSensitiveParameterRead, out var modifierForbidden))
+        {
+            return Task.FromResult(modifierForbidden!);
+        }
 
-        var artifact = context.Handles.TryGet<MethodParameterCaptureArtifact>(context.Handle);
-        if (artifact is null)
+        if (context.Lookup.Artifact is not MethodParameterCaptureArtifact artifact)
         {
             return Task.FromResult(HandleExpiredError(null, context.Handle));
         }
@@ -413,11 +434,6 @@ public sealed partial class QuerySnapshotTool
             : context.View!;
         if (string.Equals(resolvedView, MethodParameterCaptureQueryDispatcher.EventsView, StringComparison.OrdinalIgnoreCase))
         {
-            if (!RequireExplicitScope(context.Principal, ScopeSensitiveParameterRead, out var modifierForbidden))
-            {
-                return Task.FromResult(modifierForbidden!);
-            }
-
             if (!context.SecurityOptions.AllowMethodParameterCapture)
             {
                 return Task.FromResult(DiagnosticResult.Fail<object>(

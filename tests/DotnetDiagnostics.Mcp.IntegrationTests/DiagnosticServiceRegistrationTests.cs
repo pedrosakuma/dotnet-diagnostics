@@ -19,11 +19,11 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 /// </summary>
 public class DiagnosticServiceRegistrationTests
 {
-    private static IServiceCollection BuildServices()
+    private static IServiceCollection BuildServices(IConfiguration? configuration = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        var configuration = new ConfigurationBuilder().Build();
+        configuration ??= new ConfigurationBuilder().Build();
         services.AddDiagnosticCoreServices(configuredSymbolPath: null, configuration: configuration);
         return services;
     }
@@ -69,5 +69,42 @@ public class DiagnosticServiceRegistrationTests
         services.Should().ContainSingle(d => d.ServiceType == typeof(LegacyDiagnosticsFlagDeprecation));
         services.Should().ContainSingle(d => d.ServiceType == typeof(ModelContextProtocol.IMcpTaskStore));
         services.Should().Contain(d => d.ServiceType == typeof(IHostedService));
+    }
+
+    [Fact]
+    public void BindsConfiguredHandleStoreCapacity()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [$"{DiagnosticHandleStoreOptions.SectionName}:MaxEntries"] = "2",
+            })
+            .Build();
+        using var provider = BuildServices(configuration).BuildServiceProvider();
+        var store = provider.GetRequiredService<IDiagnosticHandleStore>();
+
+        var first = store.Register(1, "test", new object(), TimeSpan.FromMinutes(5));
+        store.Register(2, "test", new object(), TimeSpan.FromMinutes(5));
+        store.Register(3, "test", new object(), TimeSpan.FromMinutes(5));
+
+        store.LookupWithKind(first.Id).Status.Should().Be(DiagnosticHandleLookupStatus.CapacityEvicted);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(DiagnosticHandleStoreOptions.MaxAllowedEntries + 1)]
+    public void RejectsUnsafeConfiguredHandleStoreCapacity(int maxEntries)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [$"{DiagnosticHandleStoreOptions.SectionName}:MaxEntries"] = maxEntries.ToString(),
+            })
+            .Build();
+
+        var action = () => BuildServices(configuration);
+
+        action.Should().Throw<ArgumentOutOfRangeException>()
+            .WithMessage("*Diagnostics:HandleStore:MaxEntries*");
     }
 }

@@ -6,6 +6,7 @@ using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Dump;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Logs;
@@ -54,11 +55,13 @@ internal static class DiagnosticServiceRegistration
         // the bound options are handed to the Core registration below.
         var securityOptions = new SecurityOptions();
         configuration?.GetSection(SecurityOptions.SectionName).Bind(securityOptions);
+        var handleStoreOptions = new DiagnosticHandleStoreOptions();
+        configuration?.GetSection(DiagnosticHandleStoreOptions.SectionName).Bind(handleStoreOptions);
 
         // The entire Core diagnostic engine (samplers, collectors, security gates, stores)
         // is registered by the host-neutral Core entry point (#284). Everything below is the
         // small set of registrations that intentionally stay host-specific.
-        services.AddDiagnosticCoreServices(securityOptions, configuredSymbolPath);
+        services.AddDiagnosticCoreServices(securityOptions, configuredSymbolPath, handleStoreOptions);
 
         // B5.4 / docs/authorization.md#backward-compatibility — once-per-process deprecation warnings when a legacy
         // Diagnostics:Allow* flag is the path that unlocks a sensitive operation for a

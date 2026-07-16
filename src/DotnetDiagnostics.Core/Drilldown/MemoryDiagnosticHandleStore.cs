@@ -1,31 +1,72 @@
-using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using System.Security.Cryptography;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DotnetDiagnostics.Core.Drilldown;
 
 /// <summary>
-/// Simple in-memory <see cref="IDiagnosticHandleStore"/>. Uses a concurrent dictionary plus a
-/// LRU-ish eviction pass at registration time. Suitable for a single sidecar; not designed for
-/// horizontal scale (handles are scoped to one process).
+/// Bounded in-memory <see cref="IDiagnosticHandleStore"/> for a single process. Capacity eviction
+/// removes the artifact whose TTL deadline is earliest (then the oldest registration on ties).
+/// A small FIFO tombstone set preserves TTL-versus-capacity loss reasons without retaining artifacts.
 /// </summary>
 public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
 {
-    private readonly ConcurrentDictionary<string, Entry> _entries = new(StringComparer.Ordinal);
-    private readonly int _maxEntries;
-    private readonly TimeProvider _clock;
+    /// <summary>Meter emitted by the handle store; tags never include handle ids or artifacts.</summary>
+    public const string MeterName = "DotnetDiagnostics.Core.DiagnosticHandles";
 
-    public MemoryDiagnosticHandleStore(int maxEntries = 64, TimeProvider? clock = null)
+    private const int TombstonesPerEntry = 4;
+    private static readonly Meter Meter = new(MeterName);
+    private static readonly Counter<long> Registrations = Meter.CreateCounter<long>(
+        "dotnet_diagnostics_handle_registrations_total",
+        description: "Total diagnostic artifact handle registrations by kind.");
+    private static readonly Counter<long> Evictions = Meter.CreateCounter<long>(
+        "dotnet_diagnostics_handle_evictions_total",
+        description: "Total diagnostic artifact removals by reason and kind.");
+    private static readonly Counter<long> Lookups = Meter.CreateCounter<long>(
+        "dotnet_diagnostics_handle_lookups_total",
+        description: "Total diagnostic handle lookups by outcome.");
+    private static readonly Counter<long> DisposalFailures = Meter.CreateCounter<long>(
+        "dotnet_diagnostics_handle_disposal_failures_total",
+        description: "Total failures disposing removed diagnostic artifacts.");
+
+    private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DiagnosticHandleTombstone> _tombstones = new(StringComparer.Ordinal);
+    private readonly Queue<string> _tombstoneOrder = new();
+    private readonly object _gate = new();
+    private readonly int _maxEntries;
+    private readonly int _maxTombstones;
+    private readonly TimeProvider _clock;
+    private readonly ILogger<MemoryDiagnosticHandleStore> _logger;
+    private long _registrationSequence;
+
+    /// <summary>Creates a strictly bounded store.</summary>
+    public MemoryDiagnosticHandleStore(
+        int maxEntries = DiagnosticHandleStoreOptions.DefaultMaxEntries,
+        TimeProvider? clock = null,
+        ILogger<MemoryDiagnosticHandleStore>? logger = null)
     {
-        if (maxEntries < 1)
+        if (maxEntries is < 1 or > DiagnosticHandleStoreOptions.MaxAllowedEntries)
         {
-            throw new ArgumentOutOfRangeException(nameof(maxEntries), "Must be >= 1.");
+            throw new ArgumentOutOfRangeException(
+                nameof(maxEntries),
+                maxEntries,
+                $"Must be between 1 and {DiagnosticHandleStoreOptions.MaxAllowedEntries}.");
         }
 
         _maxEntries = maxEntries;
+        _maxTombstones = checked(maxEntries * TombstonesPerEntry);
         _clock = clock ?? TimeProvider.System;
+        _logger = logger ?? NullLogger<MemoryDiagnosticHandleStore>.Instance;
     }
 
-    public DiagnosticHandle Register(int processId, string kind, object artifact, TimeSpan ttl, bool evictWhenProcessExits = true, HandleOrigin? origin = null)
+    public DiagnosticHandle Register(
+        int processId,
+        string kind,
+        object artifact,
+        TimeSpan ttl,
+        bool evictWhenProcessExits = true,
+        HandleOrigin? origin = null)
     {
         ArgumentNullException.ThrowIfNull(artifact);
         ArgumentException.ThrowIfNullOrWhiteSpace(kind);
@@ -34,153 +75,313 @@ public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
             throw new ArgumentOutOfRangeException(nameof(ttl), "TTL must be positive.");
         }
 
-        EvictExpired();
-        EnforceCapacity();
+        List<Removal> removals;
+        DiagnosticHandle handle;
+        int entryCount;
+        lock (_gate)
+        {
+            var now = _clock.GetUtcNow();
+            removals = EvictExpiredLocked(now);
+            while (_entries.Count >= _maxEntries)
+            {
+                var victim = _entries.Values
+                    .OrderBy(static entry => entry.Handle.ExpiresAt)
+                    .ThenBy(static entry => entry.Sequence)
+                    .First();
+                removals.Add(RemoveLocked(victim.Handle.Id, RemovalReason.Capacity, now, retainTombstone: true));
+            }
 
-        var id = NewHandleId();
-        var expiresAt = _clock.GetUtcNow().Add(ttl);
-        // Infer origin from evictWhenProcessExits when the caller did not specify one,
-        // so the legacy boolean parameter keeps controlling both eviction semantics and
-        // the audit-friendly origin label.
-        var effectiveOrigin = origin ?? (evictWhenProcessExits ? HandleOrigin.Live : HandleOrigin.Dump);
-        var handle = new DiagnosticHandle(id, expiresAt, processId, kind) { Origin = effectiveOrigin };
-        _entries[id] = new Entry(handle, artifact, evictWhenProcessExits);
+            var id = NewUniqueHandleIdLocked();
+            var effectiveOrigin = origin ?? (evictWhenProcessExits ? HandleOrigin.Live : HandleOrigin.Dump);
+            handle = new DiagnosticHandle(id, now.Add(ttl), processId, kind) { Origin = effectiveOrigin };
+            _entries.Add(id, new Entry(handle, artifact, evictWhenProcessExits, _registrationSequence++));
+            entryCount = _entries.Count;
+        }
+
+        ObserveRemovals(removals);
+        Registrations.Add(1, new KeyValuePair<string, object?>("kind", kind));
+        _logger.LogInformation(
+            "Registered diagnostic handle {HandleId} kind {Kind} for process {ProcessId}; store usage is {EntryCount}/{Capacity}, expires at {ExpiresAt}.",
+            handle.Id,
+            handle.Kind,
+            handle.ProcessId,
+            entryCount,
+            _maxEntries,
+            handle.ExpiresAt);
         return handle;
     }
 
     public T? TryGet<T>(string handle) where T : class
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(handle);
-        if (!_entries.TryGetValue(handle, out var entry))
-        {
-            return null;
-        }
-
-        if (entry.Handle.ExpiresAt <= _clock.GetUtcNow())
-        {
-            _entries.TryRemove(handle, out _);
-            DisposeIfNeeded(entry.Artifact);
-            return null;
-        }
-
-        return entry.Artifact as T;
-    }
+        => LookupWithKind(handle).Lookup?.Artifact as T;
 
     public HandleLookup? TryGetWithKind(string handle)
+        => LookupWithKind(handle).Lookup;
+
+    public DiagnosticHandleLookupResult LookupWithKind(string handle)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(handle);
-        if (!_entries.TryGetValue(handle, out var entry))
+
+        Removal? expired = null;
+        DiagnosticHandleLookupResult result;
+        lock (_gate)
         {
-            return null;
+            if (_entries.TryGetValue(handle, out var entry))
+            {
+                var now = _clock.GetUtcNow();
+                if (entry.Handle.ExpiresAt <= now)
+                {
+                    expired = RemoveLocked(handle, RemovalReason.Expired, now, retainTombstone: true);
+                    result = FromTombstone(_tombstones[handle]);
+                }
+                else
+                {
+                    result = DiagnosticHandleLookupResult.Found(new HandleLookup(entry.Handle, entry.Artifact));
+                }
+            }
+            else if (_tombstones.TryGetValue(handle, out var tombstone))
+            {
+                result = FromTombstone(tombstone);
+            }
+            else
+            {
+                result = DiagnosticHandleLookupResult.Unknown;
+            }
         }
 
-        if (entry.Handle.ExpiresAt <= _clock.GetUtcNow())
+        if (expired is { } removal)
         {
-            _entries.TryRemove(handle, out _);
-            DisposeIfNeeded(entry.Artifact);
-            return null;
+            ObserveRemoval(removal);
         }
 
-        return new HandleLookup(entry.Handle, entry.Artifact);
+        Lookups.Add(
+            1,
+            new KeyValuePair<string, object?>("outcome", LookupOutcome(result.Status)));
+        return result;
     }
 
     public bool Invalidate(string handle)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(handle);
-        if (_entries.TryRemove(handle, out var entry))
+        Removal? removal = null;
+        lock (_gate)
         {
-            DisposeIfNeeded(entry.Artifact);
-            return true;
+            if (_entries.ContainsKey(handle))
+            {
+                removal = RemoveLocked(handle, RemovalReason.Invalidated, _clock.GetUtcNow(), retainTombstone: false);
+            }
         }
 
-        return false;
+        if (removal is not { } removed)
+        {
+            return false;
+        }
+
+        ObserveRemoval(removed);
+        return true;
     }
 
     public int InvalidateForProcess(int processId)
     {
-        // Only handles that opted in to PID-exit eviction (the default for live-origin
-        // artifacts) are removed by this sweep. Dump-origin handles register with
-        // `evictWhenProcessExits: false` so they survive the originating PID's exit —
-        // the dump file lives on disk independently of the process that captured it.
-        // Without this filter, a single live-origin handle sharing a PID with a
-        // dump-origin one would cause the dump handle to be evicted before TTL.
-        var victims = _entries
-            .Where(kv => kv.Value.EvictWhenProcessExits && kv.Value.Handle.ProcessId == processId)
-            .Select(kv => kv.Key)
-            .ToArray();
-
-        var removed = 0;
-        foreach (var key in victims)
+        List<Removal> removals;
+        lock (_gate)
         {
-            if (_entries.TryRemove(key, out var entry))
+            var now = _clock.GetUtcNow();
+            var victims = _entries.Values
+                .Where(entry => entry.EvictWhenProcessExits && entry.Handle.ProcessId == processId)
+                .Select(static entry => entry.Handle.Id)
+                .ToArray();
+            removals = new List<Removal>(victims.Length);
+            foreach (var key in victims)
             {
-                DisposeIfNeeded(entry.Artifact);
-                removed++;
+                removals.Add(RemoveLocked(key, RemovalReason.ProcessExited, now, retainTombstone: false));
             }
         }
 
-        return removed;
+        ObserveRemovals(removals);
+        return removals.Count;
     }
 
-    /// <summary>Distinct PIDs currently referenced by live (non-expired) handles that opted into
-    /// process-exit eviction. Offline-origin handles (e.g. dump files registered with
-    /// <c>evictWhenProcessExits: false</c>) are intentionally excluded so they survive PID reuse
-    /// on another host.</summary>
+    /// <summary>Distinct PIDs referenced by live handles that opt in to process-exit eviction.</summary>
     public IReadOnlyCollection<int> RegisteredProcessIds()
     {
-        var now = _clock.GetUtcNow();
-        var set = new HashSet<int>();
-        foreach (var kv in _entries)
+        List<Removal> expired;
+        int[] processIds;
+        lock (_gate)
         {
-            if (!kv.Value.EvictWhenProcessExits) continue;
-            if (kv.Value.Handle.ExpiresAt > now)
+            expired = EvictExpiredLocked(_clock.GetUtcNow());
+            processIds = _entries.Values
+                .Where(static entry => entry.EvictWhenProcessExits)
+                .Select(static entry => entry.Handle.ProcessId)
+                .Distinct()
+                .ToArray();
+        }
+
+        ObserveRemovals(expired);
+        return processIds;
+    }
+
+    internal int EntryCount
+    {
+        get
+        {
+            lock (_gate)
             {
-                set.Add(kv.Value.Handle.ProcessId);
+                return _entries.Count;
             }
         }
-        return set;
     }
 
-    private void EvictExpired()
+    internal int TombstoneCount
     {
-        var now = _clock.GetUtcNow();
-        foreach (var kv in _entries)
+        get
         {
-            if (kv.Value.Handle.ExpiresAt <= now && _entries.TryRemove(kv.Key, out var removed))
+            lock (_gate)
             {
-                DisposeIfNeeded(removed.Artifact);
+                return _tombstones.Count;
             }
         }
     }
 
-    private void EnforceCapacity()
-    {
-        while (_entries.Count >= _maxEntries)
-        {
-            var oldest = _entries
-                .OrderBy(kv => kv.Value.Handle.ExpiresAt)
-                .Select(kv => kv.Key)
-                .FirstOrDefault();
-            if (oldest is null || !_entries.TryRemove(oldest, out var removed))
-            {
-                return;
-            }
+    internal int TombstoneCapacity => _maxTombstones;
 
-            DisposeIfNeeded(removed.Artifact);
+    private List<Removal> EvictExpiredLocked(DateTimeOffset now)
+    {
+        var victims = _entries.Values
+            .Where(entry => entry.Handle.ExpiresAt <= now)
+            .Select(static entry => entry.Handle.Id)
+            .ToArray();
+        var removals = new List<Removal>(victims.Length);
+        foreach (var key in victims)
+        {
+            removals.Add(RemoveLocked(key, RemovalReason.Expired, now, retainTombstone: true));
+        }
+
+        return removals;
+    }
+
+    private Removal RemoveLocked(
+        string handleId,
+        RemovalReason reason,
+        DateTimeOffset removedAt,
+        bool retainTombstone)
+    {
+        var entry = _entries[handleId];
+        _entries.Remove(handleId);
+        if (retainTombstone)
+        {
+            AddTombstoneLocked(entry.Handle, reason, removedAt);
+        }
+
+        return new Removal(entry, reason);
+    }
+
+    private void AddTombstoneLocked(DiagnosticHandle handle, RemovalReason reason, DateTimeOffset removedAt)
+    {
+        var status = reason == RemovalReason.Capacity
+            ? DiagnosticHandleLookupStatus.CapacityEvicted
+            : DiagnosticHandleLookupStatus.Expired;
+        _tombstones.Add(
+            handle.Id,
+            new DiagnosticHandleTombstone(handle.Id, status, removedAt, handle.ProcessId, handle.Kind));
+        _tombstoneOrder.Enqueue(handle.Id);
+
+        while (_tombstones.Count > _maxTombstones)
+        {
+            _tombstones.Remove(_tombstoneOrder.Dequeue());
         }
     }
 
-    private static void DisposeIfNeeded(object artifact)
+    private string NewUniqueHandleIdLocked()
     {
-        if (artifact is IDisposable disposable)
+        string id;
+        do
         {
-            try { disposable.Dispose(); } catch { /* best-effort */ }
+            id = NewHandleId();
+        }
+        while (_entries.ContainsKey(id) || _tombstones.ContainsKey(id));
+
+        return id;
+    }
+
+    private void ObserveRemovals(IEnumerable<Removal> removals)
+    {
+        foreach (var removal in removals)
+        {
+            ObserveRemoval(removal);
         }
     }
+
+    private void ObserveRemoval(Removal removal)
+    {
+        var reason = RemovalReasonName(removal.Reason);
+        Evictions.Add(
+            1,
+            new KeyValuePair<string, object?>("reason", reason),
+            new KeyValuePair<string, object?>("kind", removal.Entry.Handle.Kind));
+
+        if (removal.Reason == RemovalReason.Capacity)
+        {
+            _logger.LogWarning(
+                "Capacity-evicted diagnostic handle {HandleId} kind {Kind} for process {ProcessId}; configured capacity is {Capacity}.",
+                removal.Entry.Handle.Id,
+                removal.Entry.Handle.Kind,
+                removal.Entry.Handle.ProcessId,
+                _maxEntries);
+        }
+        else if (removal.Reason == RemovalReason.Expired)
+        {
+            _logger.LogInformation(
+                "TTL-expired diagnostic handle {HandleId} kind {Kind} for process {ProcessId}.",
+                removal.Entry.Handle.Id,
+                removal.Entry.Handle.Kind,
+                removal.Entry.Handle.ProcessId);
+        }
+
+        if (removal.Entry.Artifact is not IDisposable disposable)
+        {
+            return;
+        }
+
+        try
+        {
+            disposable.Dispose();
+        }
+        catch (Exception ex)
+        {
+            DisposalFailures.Add(
+                1,
+                new KeyValuePair<string, object?>("reason", reason),
+                new KeyValuePair<string, object?>("kind", removal.Entry.Handle.Kind));
+            _logger.LogWarning(
+                ex,
+                "Failed to dispose diagnostic artifact for handle {HandleId} kind {Kind} after {Reason} removal.",
+                removal.Entry.Handle.Id,
+                removal.Entry.Handle.Kind,
+                reason);
+        }
+    }
+
+    private static DiagnosticHandleLookupResult FromTombstone(DiagnosticHandleTombstone tombstone) =>
+        new(tombstone.Status, null, tombstone);
+
+    private static string LookupOutcome(DiagnosticHandleLookupStatus status) => status switch
+    {
+        DiagnosticHandleLookupStatus.Found => "found",
+        DiagnosticHandleLookupStatus.Expired => "expired",
+        DiagnosticHandleLookupStatus.CapacityEvicted => "capacity_evicted",
+        _ => "unknown",
+    };
+
+    private static string RemovalReasonName(RemovalReason reason) => reason switch
+    {
+        RemovalReason.Expired => "ttl",
+        RemovalReason.Capacity => "capacity",
+        RemovalReason.ProcessExited => "process_exit",
+        _ => "invalidate",
+    };
 
     private static string NewHandleId()
     {
-        // 96-bit random, base32-encoded (no padding) — short, URL-safe, ambiguity-free.
         Span<byte> bytes = stackalloc byte[12];
         RandomNumberGenerator.Fill(bytes);
         return ToCrockford(bytes);
@@ -194,7 +395,6 @@ public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
 
     private static string ToCrockford(ReadOnlySpan<byte> bytes)
     {
-        // 12 bytes = 96 bits = 20 base32 chars (rounded up; we encode 96/5 = 19.2 -> 20 chars, pad-free).
         var chars = new char[20];
         int bitBuffer = 0;
         int bitCount = 0;
@@ -209,12 +409,28 @@ public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
                 chars[outIndex++] = Crockford[(bitBuffer >> bitCount) & 0x1F];
             }
         }
+
         if (bitCount > 0)
         {
             chars[outIndex++] = Crockford[(bitBuffer << (5 - bitCount)) & 0x1F];
         }
+
         return new string(chars, 0, outIndex);
     }
 
-    private sealed record Entry(DiagnosticHandle Handle, object Artifact, bool EvictWhenProcessExits = true);
+    private sealed record Entry(
+        DiagnosticHandle Handle,
+        object Artifact,
+        bool EvictWhenProcessExits,
+        long Sequence);
+
+    private readonly record struct Removal(Entry Entry, RemovalReason Reason);
+
+    private enum RemovalReason
+    {
+        Expired,
+        Capacity,
+        ProcessExited,
+        Invalidated,
+    }
 }

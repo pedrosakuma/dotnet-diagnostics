@@ -648,12 +648,36 @@ scope.
 > `truncated=true` the groups reflect only the captured prefix — re-run
 > `collect_events(kind="event_source")` with a larger `maxEvents` for exact aggregates.
 
-Handles are invalidated when: the TTL expires, the target process dies
-(automatic eviction), or a server restart clears the store. Accessing an
-unknown handle returns `DiagnosticError { Kind: "HandleExpired" }` with a
-`NextActionHint` pointing at the original collector. Responses with handles
-include both absolute `handleExpiresAt` and relative `handleExpiresInSeconds`
-so clients can refresh without parsing timestamps.
+The in-memory store retains at most `Diagnostics:HandleStore:MaxEntries`
+artifacts (default `32`, valid range `1..1024`; environment override
+`Diagnostics__HandleStore__MaxEntries`). Registration is serialized so the
+bound is strict even under concurrent collectors. After removing TTL-expired
+entries, capacity pressure evicts the artifact with the earliest expiry
+deadline (oldest registration breaks ties). This favors handles with more
+remaining lifetime, but a busy multi-step investigation can still lose an
+artifact before its TTL.
+
+The store retains only lightweight FIFO tombstones — four per configured live
+entry — never the evicted artifact. `query_snapshot` therefore reports:
+
+- `HandleExpired` when a retained tombstone proves the TTL elapsed;
+- `HandleCapacityEvicted` when capacity removed the artifact early, with a
+  recovery hint to re-run the original collector and an operator configuration
+  hint;
+- `HandleNotFound` for a random handle, another server/session, a restart,
+  process-exit invalidation, or a tombstone that aged out.
+
+Structured logs cover registrations, TTL expiry, capacity eviction (warning,
+so it is visible without debug logging), and disposal failures. Meter
+`DotnetDiagnostics.Core.DiagnosticHandles` emits
+`dotnet_diagnostics_handle_registrations_total`,
+`dotnet_diagnostics_handle_evictions_total` (`reason=ttl|capacity|process_exit|invalidate`),
+`dotnet_diagnostics_handle_lookups_total`, and
+`dotnet_diagnostics_handle_disposal_failures_total`; metric tags contain only
+bounded reason/kind values, never handle ids or artifacts.
+
+Responses with handles include both absolute `handleExpiresAt` and relative
+`handleExpiresInSeconds` so clients can refresh without parsing timestamps.
 
 This contract is the "split collector, unified drilldown" pattern
 (documented in [`AGENTS.md`](../AGENTS.md)) applied to *all* collectors
@@ -2380,10 +2404,12 @@ view→parameter mapping.
 **Authorization.** The static gate accepts any drilldown-capable bearer; after
 resolving the handle kind the tool re-applies the exact legacy scope at runtime
 (heap → `heap-read`, thread → `ptrace`, off-CPU → `eventpipe`, call-tree →
-`investigation-export`, collections → `read-counters`/`eventpipe`). Unknown
-handle kinds, unknown views, and parameter-shape violations return structured
-`InvalidArgument` / `UnsupportedHandleKind` / `HandleExpired` envelopes — never a
-500.
+`investigation-export`, counters → `read-counters`, other EventPipe collections
+→ `eventpipe`, method-parameter handles → `eventpipe` plus the explicit
+`sensitive-parameter-read` modifier scope for every view). Unknown handle kinds, unknown views, and parameter-shape violations return
+structured `InvalidArgument` / `UnsupportedHandleKind` envelopes. Missing
+handles return `HandleExpired`, `HandleCapacityEvicted`, or `HandleNotFound`
+according to the bounded metadata described above — never a 500.
 
 ---
 

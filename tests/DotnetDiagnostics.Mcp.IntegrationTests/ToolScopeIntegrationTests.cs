@@ -199,7 +199,7 @@ public sealed class ToolScopeIntegrationTests
             await using var client = await ConnectWithTokenAsync(factory, token);
 
             // query_snapshot uses RequireAnyScope("read-counters", "eventpipe", "heap-read").
-            // We supply a bogus handle so the tool body returns a HandleExpired error,
+            // We supply a bogus handle so the tool body returns a HandleNotFound error,
             // but the scope filter must let the call through either way.
             var result = await client.CallToolAsync(
                 "query_snapshot",
