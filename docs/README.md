@@ -13,6 +13,12 @@
 The repo ships **three deliverables** on one shared Core capture engine. Start with the track
 you're using, then reach for the cross-cutting references.
 
+> **Instrumentation boundary.** Standard EventPipe and ClrMD diagnostics require no target
+> code changes or prior instrumentation. MCP-only
+> `collect_sample(kind="method-params")` is deliberately different: it is an explicit,
+> privileged, security-gated dynamic attach of vendored dotnet-monitor profilers plus a startup hook,
+> temporarily instrumenting only the caller's allowlisted methods.
+
 ### Cross-cutting
 
 | File | What it covers |

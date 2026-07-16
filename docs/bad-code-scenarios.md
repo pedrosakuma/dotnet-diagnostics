@@ -3,7 +3,7 @@
 `samples/BadCodeSample/` is a minimal API where every endpoint triggers a
 different, well-known .NET anti-pattern. Use it to validate that the MCP
 server (and an LLM driving it) can pinpoint each problem using nothing but the
-9 tools.
+current unified tool surface.
 
 ## Topology used for these scenarios
 

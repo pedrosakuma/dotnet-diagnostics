@@ -72,6 +72,67 @@ public sealed class ToolReferenceDocParityTests
     }
 
     [Fact]
+    public void RootReadme_ToolOverviewListsEveryReflectedTool()
+    {
+        var readme = ReadRepoFile("README.md");
+        var start = readme.IndexOf("## Tools Overview", StringComparison.Ordinal);
+        start.Should().BeGreaterThanOrEqualTo(0);
+        var end = readme.IndexOf("## Documentation", start, StringComparison.Ordinal);
+        end.Should().BeGreaterThan(start);
+        var overview = readme[start..end];
+
+        foreach (var toolName in EnumerateToolNames())
+        {
+            overview.Should().Contain(
+                $"`{toolName}`",
+                $"the root README tool overview must list the reflected '{toolName}' MCP tool");
+        }
+    }
+
+    [Fact]
+    public void PublicSummaries_ReportTheReflectedFullToolCount()
+    {
+        var count = EnumerateToolNames().Count;
+
+        ReadRepoFile("README.md").Should().Contain($"**Status:** {count} unified tools");
+        ReadRepoFile("AGENTS.md").Should().Contain($"full **{count}-tool** MCP surface");
+    }
+
+    [Fact]
+    public void PackageReadmesAndMetadata_StateTheRepositoryMitLicense()
+    {
+        ReadRepoFile("LICENSE").Should().StartWith("MIT License");
+
+        var packageReadmes = new[]
+        {
+            "README.md",
+            Path.Combine("src", "DotnetDiagnostics.Core", "README.md"),
+            Path.Combine("src", "DotnetDiagnostics.Cli", "README.md"),
+            Path.Combine("src", "DotnetDiagnostics.BenchmarkDotNet", "README.md"),
+        };
+
+        foreach (var path in packageReadmes)
+        {
+            var readme = ReadRepoFile(path);
+            readme.Should().Contain("## License");
+            readme.Should().Contain("MIT");
+        }
+
+        var packageProjects = new[]
+        {
+            Path.Combine("src", "DotnetDiagnostics.Mcp", "DotnetDiagnostics.Mcp.csproj"),
+            Path.Combine("src", "DotnetDiagnostics.Core", "DotnetDiagnostics.Core.csproj"),
+            Path.Combine("src", "DotnetDiagnostics.Cli", "DotnetDiagnostics.Cli.csproj"),
+            Path.Combine("src", "DotnetDiagnostics.BenchmarkDotNet", "DotnetDiagnostics.BenchmarkDotNet.csproj"),
+        };
+
+        foreach (var path in packageProjects)
+        {
+            ReadRepoFile(path).Should().Contain("<PackageLicenseExpression>MIT</PackageLicenseExpression>");
+        }
+    }
+
+    [Fact]
     public void ToolReference_DocumentsSweepFieldsUnderTheSweepProjection()
     {
         var doc = ReadToolReference();
@@ -104,9 +165,12 @@ public sealed class ToolReferenceDocParityTests
     }
 
     private static string ReadToolReference()
+        => ReadRepoFile(Path.Combine("docs", "tool-reference.md"));
+
+    private static string ReadRepoFile(string relativePath)
     {
         // [CallerFilePath] collapses to "/_/…" in deterministic CI builds, so walk up from the test
-        // assembly to the repo root (marked by DotnetDiagnostics.slnx) and read docs/tool-reference.md.
+        // assembly to the repo root (marked by DotnetDiagnostics.slnx).
         var dir = Path.GetDirectoryName(typeof(ToolReferenceDocParityTests).Assembly.Location);
         while (dir is not null && !File.Exists(Path.Combine(dir, "DotnetDiagnostics.slnx")))
         {
@@ -120,6 +184,6 @@ public sealed class ToolReferenceDocParityTests
                 typeof(ToolReferenceDocParityTests).Assembly.Location);
         }
 
-        return File.ReadAllText(Path.Combine(dir, "docs", "tool-reference.md"));
+        return File.ReadAllText(Path.Combine(dir, relativePath));
     }
 }

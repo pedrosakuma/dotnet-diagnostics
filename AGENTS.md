@@ -4,13 +4,13 @@
 
 ## What this project is
 
-`dotnet-diagnostics-mcp` is an **MCP server** that lets an LLM perform on-demand performance diagnostics on running **.NET 10** applications — locally or in a Kubernetes sidecar — **without any modification to the target app**.
+`dotnet-diagnostics-mcp` is an **MCP server** that lets an LLM perform on-demand performance diagnostics on running **.NET 10** applications — locally or in a Kubernetes sidecar. Normal EventPipe and ClrMD diagnostics require no target code changes or prior instrumentation. The explicit exception is `collect_sample(kind="method-params")`: an opt-in, privileged, security-gated dynamic profiler attach that temporarily instruments an allowlist of methods.
 
-The server attaches to the .NET runtime diagnostic IPC socket and exposes 9 tools (process discovery, capability detection, EventCounters snapshot, CPU sampling, exception collection, GC events, EventSource passthrough, process dump) over either **Streamable HTTP** (default, with bearer-token auth — designed for sidecar / shared-deploy) or **stdio** (`--stdio`, recommended for local dev — the MCP client owns the process lifecycle, no daemon or bearer token; see issue #74).
+The server attaches to the .NET runtime diagnostic IPC socket and exposes a full **16-tool** MCP surface: 12 tools by default plus 3 Kubernetes-orchestrator tools and `discover_azure` when their configuration gates are enabled. It supports either **Streamable HTTP** (default, with bearer-token auth — designed for sidecar / shared-deploy) or **stdio** (`--stdio`, recommended for local dev — the MCP client owns the process lifecycle, no daemon or bearer token; see issue #74).
 
-The repo also ships a **second deliverable** built on the same Core engine: **`dotnet-diagnostics-cli`** (`src/DotnetDiagnostics.Cli`, assembly name `dotnet-diagnostics`), a Core-only standalone CLI for humans / scripts / CI — one-shot sub-commands plus a stateful `session` REPL, **no HTTP, no bearer, no daemon**. Both tools publish to NuGet from the same release tag (`dotnet-diagnostics-mcp` and `dotnet-diagnostics-cli`). The CLI references **Core only** (asserted by `NoServerReferenceTests`); document it in [`docs/cli-reference.md`](./docs/cli-reference.md), not the MCP tool reference.
+The repo also ships **`dotnet-diagnostics-cli`** (`src/DotnetDiagnostics.Cli`, assembly name `dotnet-diagnostics`), a Core-only standalone CLI for humans / scripts / CI — one-shot sub-commands plus a stateful `session` REPL, **no HTTP, no bearer, no daemon** — and **`dotnet-diagnostics-benchmarkdotnet`**, an in-process BenchmarkDotNet diagnoser. All three packages publish from the same release tag. The CLI references **Core only** (asserted by `NoServerReferenceTests`); document it in [`docs/cli-reference.md`](./docs/cli-reference.md), not the MCP tool reference.
 
-**Status:** MVP complete (Phases 1–6). Active work on Phase 7 is tracked in [issue #17](https://github.com/pedrosakuma/dotnet-diagnostics/issues/17) and the milestone [`Phase 7 — Roadmap`](https://github.com/pedrosakuma/dotnet-diagnostics/milestone/1).
+**Status:** Phases 1–15 are complete. Active work is tracked in [issue #551, Phase 16 — Roadmap](https://github.com/pedrosakuma/dotnet-diagnostics/issues/551).
 
 ## Repository layout
 
@@ -19,10 +19,12 @@ src/
   DotnetDiagnostics.Core/      — IPC + EventPipe primitives, no MCP knowledge
   DotnetDiagnostics.Mcp/    — MCP tools, HTTP transport, bearer auth
   DotnetDiagnostics.Cli/       — standalone CLI (dotnet-diagnostics-cli), Core only, one-shot + session REPL
+  DotnetDiagnostics.BenchmarkDotNet/ — in-process BenchmarkDotNet diagnoser built on Core
 tests/
   DotnetDiagnostics.Core.Tests/              — live process tests (spawn sample, attach, assert)
   DotnetDiagnostics.Mcp.IntegrationTests/ — HTTP + MCP protocol tests
   DotnetDiagnostics.Cli.Tests/               — CLI parsing, command, and session-REPL tests
+  DotnetDiagnostics.BenchmarkDotNet.Tests/   — diagnoser validation + documentation parity
 samples/
   CoreClrSample/      — minimal ASP.NET API used by Core tests
   NativeAotSample/    — used to validate capability detection
@@ -223,18 +225,18 @@ alongside the cloud-integrations work (#16), plus 8 non-aliased tools
    answers parameterized follow-up questions. This keeps the tool surface flat while letting the
    LLM ask narrowly-scoped questions without re-paying the collection cost.
 
-See Phase 7 issues [#8 `mcp-drilldown`](https://github.com/pedrosakuma/dotnet-diagnostics/issues/8)
+The unified drilldown architecture originated in Phase 7 issues [#8 `mcp-drilldown`](https://github.com/pedrosakuma/dotnet-diagnostics/issues/8)
 and [#24 wave 1 heap drilldown](https://github.com/pedrosakuma/dotnet-diagnostics/issues/24).
 
-## Phase 7 — what is being designed and why
+## Phase 16 — active roadmap
 
-All open work has a GitHub issue. **Read the meta tracking issue first**: [#17 Phase 7 — Post-MVP Roadmap](https://github.com/pedrosakuma/dotnet-diagnostics/issues/17). It carries the current dependency graph, execution order, label taxonomy, and links to the two deep-research artifacts that back the design. Don't inline that taxonomy here — it drifts.
+All open work has a GitHub issue. **Read the active tracking issue first**: [#551 Phase 16 — Roadmap](https://github.com/pedrosakuma/dotnet-diagnostics/issues/551). It carries the current priority order and links to the research behind each gap. Don't inline that list here — it drifts.
 
 ## How to contribute as an agent
 
 When picking up an issue:
 
-1. **Read the meta tracking issue** ([#17](https://github.com/pedrosakuma/dotnet-diagnostics/issues/17)) for the dependency graph. Don't start blocked work.
+1. **Read the active tracking issue** ([#551](https://github.com/pedrosakuma/dotnet-diagnostics/issues/551)) for current priorities and dependencies. Don't start blocked work.
 2. **Read the linked research findings** in the issue body before designing.
 3. **Build + run tests** before and after — `dotnet build` and `dotnet test` from the repo root.
 4. **Don't add tools without an issue** — discuss first in the relevant `drilldown` or `discoverability` issue.
@@ -279,7 +281,7 @@ to every contributor and every agent on this repo.
 
 ## Things deliberately not in scope
 
-- **Modifying the target application** — non-goal. Everything must work over the diagnostic socket.
+- **Modifying target source or deployment** — non-goal. Standard diagnostics work over the diagnostic socket; the explicitly requested method-parameter path may temporarily attach a profiler and ReJIT only its allowlisted methods.
 - **Persistent server-side state** — server stays stateless; investigation memory is portable JSON the agent persists externally (see issue [#10](https://github.com/pedrosakuma/dotnet-diagnostics/issues/10)).
 - **A web UI** — this is an MCP server; the UI is whatever MCP client the human uses.
 - **Replacing dotnet-monitor** — different goals. `dotnet-monitor` is rule-based collection for ops; we are interactive diagnosis for an LLM. They complement each other.

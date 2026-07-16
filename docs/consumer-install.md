@@ -16,6 +16,15 @@ This page covers installing **dotnet-diagnostics-mcp** as an end user — no sou
 
 All three publish the same MCP surface (Streamable HTTP, bearer-token authenticated, `/health` allow-listed).
 
+> **Instrumentation boundary.** Standard EventPipe and ClrMD diagnostics need no target code
+> changes or prior instrumentation. `collect_sample(kind="method-params")` is the explicit
+> exception: it performs a privileged dynamic attach of vendored dotnet-monitor profilers and
+> a startup hook to the running process, then ReJIT-instruments only the requested method
+> allowlist. It is disabled
+> by default and requires `Diagnostics:AllowMethodParameterCapture=true`, the literal
+> `sensitive-parameter-read` scope, and `includeSensitiveValues=true`. The standalone CLI and
+> BenchmarkDotNet diagnoser do not expose this capability.
+
 > 🐧 **Linux heads-up — ClrMD-backed tools need ptrace.** Whichever distribution you pick, `collect_thread_snapshot`, `inspect_heap(source="live")`, `inspect_heap(source="dump")` (against a live PID) and `collect_process_dump` will fail on Linux with `PermissionDenied` / `Could not PTRACE_ATTACH to any thread of the process N.` unless you grant the server permission to attach. Matching the target's UID is **not** enough on Debian/Ubuntu/WSL (default `kernel.yama.ptrace_scope=1`). See [§ 1.5 Linux: enabling ClrMD-backed tools](#15-linux-enabling-clrmd-backed-tools-ptrace) before you wire the server into your client. EventPipe-only tools (`collect_events(kind="counters")`, `collect_sample(kind="cpu")`, `collect_events(kind="exceptions")`, `collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`) work out of the box **unless** you opt into `collect_sample(kind="cpu")(resolveMethodInstantiations=true)`, which intentionally takes the ClrMD path to recover closed generic method signatures.
 
 ### 1a. .NET global tool

@@ -30,7 +30,7 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>mcp;diagnostics;dotnet;performance;profiling;cpu;gc;eventpipe</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <Description>MCP server that attaches to running .NET processes (CoreCLR or NativeAOT) over the diagnostic IPC socket and exposes on-demand performance diagnostics (CPU sampling, EventCounters, GC events, exceptions, dumps, heap drilldown). No target-side instrumentation required.</Description>
+    <Description>MCP server that attaches to running .NET processes (CoreCLR or NativeAOT) over the diagnostic IPC socket and exposes on-demand performance diagnostics. Standard EventPipe and ClrMD paths need no prior target instrumentation; method-parameter capture is an explicit, privileged, gated dynamic profiler attach.</Description>
   </PropertyGroup>
 
   <ItemGroup>

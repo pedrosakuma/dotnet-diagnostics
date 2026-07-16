@@ -9,6 +9,12 @@ delivered over Streamable HTTP at `POST /mcp` and require an
 > [`src/DotnetDiagnostics.Core`](../src/DotnetDiagnostics.Core), which are the source of
 > truth for field names and types.
 
+> **Instrumentation boundary.** Standard EventPipe and ClrMD tools require no target code
+> changes or prior instrumentation. `collect_sample(kind="method-params")` is an explicit,
+> privileged, security-gated dynamic profiler attach: it loads vendored dotnet-monitor
+> profiler/startup-hook payloads and temporarily ReJIT-instruments only the requested method
+> allowlist.
+
 ### Common response envelope
 
 Every structured tool response is a `DiagnosticResult<T>` envelope with:
@@ -2935,12 +2941,13 @@ Cluster User Role** per cluster; missing it leaves `handoff` null on that row wi
 with the master switch off looks identical to a pre-#232 build (the tool is not
 registered and the Azure SDK is never reached).
 
-**Backends.** The contract is shipped in #232; the real backends arrive in:
-- **#233** — App Service (`webapps`) + Container Apps (`containerapps`).
-- **#234** — AKS (`aksclusters`), including the kubeconfig-handle store.
+**Backends.** All three production backends are shipped and registered by
+`AddAzureDiscoveryServices` when `AzureDiscovery:Enabled=true`:
+- App Service (`webapps`) uses `DefaultAzureWebAppsDiscovery`.
+- Container Apps (`containerapps`) uses `DefaultAzureContainerAppsDiscovery`.
+- AKS (`aksclusters`) uses `AzureAksDiscovery`, including the opaque kubeconfig-handle store.
 
-Until those PRs merge, calling the tool with `AzureDiscovery:Enabled=true` throws
-`NotImplementedException` through the backend stubs.
+The historical throwing fallback types are not part of the production registration.
 
 ---
 
