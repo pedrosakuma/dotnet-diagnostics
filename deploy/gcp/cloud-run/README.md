@@ -29,19 +29,15 @@ therefore fail with `PermissionDenied` on this platform.
 
 | MCP tool | Cloud Run | Reason |
 |---|---|---|
-| `snapshot_counters` | ✅ Works | EventPipe over the diag socket. |
-| `collect_cpu_sample` | ✅ Works | EventPipe (SampleProfiler). |
-| `collect_gc_events` | ✅ Works | EventPipe (GC keyword). |
-| `collect_exceptions` | ✅ Works | EventPipe (Exception keyword). |
-| `collect_event_source` | ✅ Works | EventPipe (arbitrary provider). |
-| `collect_activities` | ✅ Works | EventPipe (ActivitySource). |
-| `collect_allocation_sample` | ✅ Works | EventPipe (GCAllocationTick). |
-| `list_dotnet_processes` / `get_process_info` / `get_diagnostic_capabilities` | ✅ Works | Diagnostic socket only. |
-| `collect_thread_snapshot` | ❌ Blocked | Needs `ptrace`. |
-| `inspect_live_heap` | ❌ Blocked | Needs `ptrace`. |
-| `inspect_dump` (live PID) | ❌ Blocked | Needs `ptrace`. |
-| `collect_process_dump` | ❌ Blocked | Needs `ptrace`. |
-| `collect_off_cpu_sample` | ❌ Blocked | Needs `perf` + `CAP_PERFMON`. |
+| `collect_events(kind="counters"|"gc"|"exceptions"|"event_source"|"activities")` | ✅ Works | EventPipe over the diagnostic socket. |
+| `collect_sample(kind="cpu"|"allocation")` | ✅ Works | EventPipe (SampleProfiler / GCAllocationTick). |
+| `inspect_process` | ✅ Works | Diagnostic socket and host metadata only. |
+| `collect_process_dump` | ✅ Works | Diagnostic IPC, not kernel ptrace; keep the artifact root on the shared `/tmp` volume. |
+| Live `collect_thread_snapshot` | ❌ Blocked | Needs `ptrace`. |
+| `inspect_heap(source="live")` | ❌ Blocked | Needs `ptrace`. |
+| Live `capture_method_bytes` / `get_bytes(kind="module")` | ❌ Blocked | Needs `ptrace`. |
+| `collect_sample(kind="cpu", resolveMethodInstantiations=true)` | ❌ Blocked | The optional post-sample ClrMD enrichment needs `ptrace`; normal CPU sampling works. |
+| `collect_sample(kind="off_cpu")` | ❌ Blocked | Needs `perf` + `CAP_PERFMON`. |
 
 If you need the blocked tools, deploy on **AWS ECS / Fargate**
 ([`../../aws/ecs-fargate/`](../../aws/ecs-fargate/)) or **Kubernetes**
@@ -174,7 +170,7 @@ curl -fsS -H "Authorization: Bearer $TOKEN" "$URL/health"
 
 A passing health check proves the diag listener is up. It does **not**
 imply that ptrace-backed tools work — they do not, see the capability
-matrix above. The minimum supported smoke is calling `snapshot_counters`
+matrix above. The minimum supported smoke is calling `collect_events(kind="counters")`
 over the MCP HTTP transport and seeing `System.Runtime` counters come back.
 
 ## MCP client snippet
@@ -207,9 +203,11 @@ through Identity-Aware Proxy, or an SSH tunnel.
 - **GCP discovery tools.** A future `list_cloud_run_services` style tool
   that hits the Cloud Run API to enumerate candidate workloads lives in a
   separate issue and is intentionally not part of this recipe.
-- **`collect_thread_snapshot` / `inspect_live_heap` / `inspect_dump` /
-  `collect_process_dump` / `collect_off_cpu_sample`.** Blocked on gVisor;
-  see the capability matrix above.
+- **Live `collect_thread_snapshot`, `inspect_heap(source="live")`,
+  `capture_method_bytes`, `get_bytes(kind="module")`, CPU method-instantiation
+  enrichment, and `collect_sample(kind="off_cpu")`.** Blocked on gVisor; see
+  the capability matrix above. `collect_process_dump` remains available through
+  diagnostic IPC.
 - **Cloud Functions / App Engine.** Both have execution models
   (request-scoped freeze, no shared `/tmp`) that break the sidecar pattern.
 

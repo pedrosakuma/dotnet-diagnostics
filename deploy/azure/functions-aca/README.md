@@ -56,8 +56,8 @@ grants no `CAP_SYS_PTRACE`:
 
 | MCP tool family | Works on Functions-on-ACA? | Notes |
 |---|---|---|
-| EventPipe — `inspect_process`, `collect_sample(kind="cpu")`, `collect_events`, `collect_sample(kind="allocation")` | ✅ Yes | Needs shared `/tmp` + UID match. Target the worker PID. |
-| ClrMD / `ptrace` — `collect_thread_snapshot`, `inspect_heap(source="live")`, `collect_process_dump` | ❌ No | Container Apps grants no `CAP_SYS_PTRACE`. Use AKS for these. |
+| Diagnostic IPC / EventPipe — `inspect_process`, `collect_process_dump`, `collect_sample(kind="cpu")`, `collect_events`, `collect_sample(kind="allocation")` | ✅ Yes | Needs shared `/tmp` + UID match. Target the worker PID; keep dump artifacts on the shared volume. |
+| ClrMD / `ptrace` — live `collect_thread_snapshot`, `inspect_heap(source="live")`, live `capture_method_bytes`, `get_bytes(kind="module")`, `collect_sample(kind="cpu", resolveMethodInstantiations=true)` | ❌ No | Container Apps grants no `CAP_SYS_PTRACE`. Use AKS for these. |
 | `perf` off-CPU — `collect_sample(kind="off_cpu")` | ❌ No | No `CAP_PERFMON` / host access. |
 
 ## Prerequisites

@@ -19,14 +19,10 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// #207 — single drilldown surface that subsumes the five
-/// handle-based query tools (<c>query_heap_snapshot</c>, <c>query_thread_snapshot</c>,
-/// <c>query_off_cpu_snapshot</c>, <c>query_collection</c>, <c>get_call_tree</c>) behind
-/// one <c>(handle, view)</c> contract. The dispatcher reads the artifact kind recorded
-/// against the supplied handle in <see cref="IDiagnosticHandleStore"/> and forwards
-/// to the matching legacy implementation so the response envelopes stay byte-identical
-/// (asserted by <c>QuerySnapshotCompatibilityTests</c>). The legacy tools remain
-/// registered through the deprecation window.
+/// Canonical drilldown surface for every handle-backed artifact. The dispatcher reads
+/// the artifact kind recorded against the supplied handle in
+/// <see cref="IDiagnosticHandleStore"/> and forwards to the matching kind-specific
+/// implementation while preserving the established response envelopes.
 /// </summary>
 /// <remarks>
 /// <para><b>Authorization.</b> The static gate accepts any drilldown-capable
@@ -136,7 +132,7 @@ public sealed partial class QuerySnapshotTool
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
         IFrameVariableResolver frameVariableResolver,
-        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_off_cpu_sample, collect_cpu_sample, collect_allocation_sample, collect_sample(kind=\"native-alloc\"), collect_sample(kind=\"method-params\"), collect_events(kind=\"counters\"), collect_events(kind=\"exceptions\"), collect_events(kind=\"crash-guard\"), collect_events(kind=\"gc\"), collect_events(kind=\"datas\"), collect_events(kind=\"catalog\"), collect_events(kind=\"event_source\"), collect_events(kind=\"activities\"), collect_events(kind=\"logs\"), collect_events(kind=\"jit\"), collect_events(kind=\"threadpool\"), collect_events(kind=\"contention\"), collect_events(kind=\"db\"), collect_events(kind=\"kestrel\"), collect_events(kind=\"networking\"), collect_events(kind=\"requests\") (in-flight requests), collect_events(kind=\"startup\")).")] string handle,
+        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_sample(kind=\"cpu\"|\"off_cpu\"|\"allocation\"|\"native-alloc\"|\"method-params\"), or collect_events(kind=\"counters\"|\"exceptions\"|\"crash-guard\"|\"gc\"|\"datas\"|\"catalog\"|\"event_source\"|\"activities\"|\"logs\"|\"jit\"|\"threadpool\"|\"contention\"|\"db\"|\"kestrel\"|\"networking\"|\"requests\"|\"startup\")).")] string handle,
         [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff|growth. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|wait-chains|threadpool|resolve-address|frame-vars. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|exceptions|stack|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns|requests|longRunning. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
         [Description("Maximum entries returned by any ranked-list view. Omit to use the per-kind legacy default: 50 for heap / thread / collection, 25 for off-CPU. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
         [Description("Ranking for ranked views. Heap view='top-types'/'growth': 'bytes' (default) or 'instances'. CPU-sample view='top-methods': 'exclusive' (self-time, default) or 'inclusive'.")] string rankBy = "bytes",

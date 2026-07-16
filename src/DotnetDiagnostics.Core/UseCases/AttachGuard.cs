@@ -126,7 +126,7 @@ public static class AttachGuard
                         : new Dictionary<string, object?> { ["view"] = "capabilities" })
                 { Priority = NextActionHintPriority.High },
                 new("collect_process_dump",
-                    "Fall back to dump-based workflow (collect_process_dump then inspect_heap/inspect_dump). " +
+                    "Fall back to dump-based workflow (collect_process_dump, then inspect_heap(source=\"dump\")). " +
                     "Dumps use the diagnostic IPC socket (no ptrace) and work across PID namespaces.",
                     processId is int pp && pp > 0 ? new Dictionary<string, object?> { ["processId"] = pp } : null)
                 { Priority = NextActionHintPriority.Low },
@@ -135,9 +135,11 @@ public static class AttachGuard
             if (string.Equals(tool, "collect_thread_snapshot", StringComparison.Ordinal))
             {
                 hints.Add(new NextActionHint(
-                    "collect_off_cpu_sample",
+                    "collect_sample",
                     "If ptrace cannot be granted, use the perf-replay fallback path tracked in issue #92 (short capture + thread-state inference).",
-                    processId is int pidForReplay && pidForReplay > 0 ? new Dictionary<string, object?> { ["processId"] = pidForReplay, ["durationSeconds"] = 5 } : null));
+                    processId is int pidForReplay && pidForReplay > 0
+                        ? new Dictionary<string, object?> { ["kind"] = "off_cpu", ["processId"] = pidForReplay, ["durationSeconds"] = 5 }
+                        : new Dictionary<string, object?> { ["kind"] = "off_cpu", ["durationSeconds"] = 5 }));
             }
 
             return DiagnosticResult.Fail<T>(

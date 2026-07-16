@@ -1146,7 +1146,7 @@ public sealed class DiagnosticTools
         "dumpFilePath analyses an already-captured WithHeap/Full dump offline. When both are omitted " +
         "the server auto-selects a live .NET process (live mode). Returns inline threads-summary + " +
         "lock-graph headlines plus a handle (~10min TTL) the LLM can drill into via " +
-        "query_thread_snapshot. Dump-origin handles are NOT evicted when the producer PID exits.")]
+        "query_snapshot. Dump-origin handles are NOT evicted when the producer PID exits.")]
     public static Task<DiagnosticResult<ThreadSnapshotQueryResult>> CollectThreadSnapshot(
         IThreadSnapshotInspector inspector,
         IDiagnosticHandleStore handles,
@@ -1159,7 +1159,7 @@ public sealed class DiagnosticTools
         [Description("Include runtime frames (PInvoke trampolines, etc.) without an associated managed method. Off by default.")] bool includeRuntimeFrames = false,
         [Description("Include pure native frames where ClrMD cannot resolve a method. Off by default.")] bool includeNativeFrames = false,
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' returns only the top-3 blocked threads inline and drops the SyncBlock lock-graph (use query_thread_snapshot(view=lock-graph) for the full graph). 'detail' returns the historical top-25 threads + top-25 locks. 'raw' is equivalent to detail. The full snapshot is always retained behind the issued handle.")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' returns only the top-3 blocked threads inline and drops the SyncBlock lock-graph (use query_snapshot(handle, view=\"lock-graph\") for the full graph). 'detail' returns the historical top-25 threads + top-25 locks. 'raw' is equivalent to detail. The full snapshot is always retained behind the issued handle.")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
@@ -1197,7 +1197,7 @@ public sealed class DiagnosticTools
         "disasm coverage (NativeAOT and R2R are already covered on-disk by dotnet-native-mcp; " +
         "JIT-emitted code only lives in the live process / dump). Useful for diffing tier " +
         "promotion (Tier0 → Tier1+PGO) of a hot method observed via " +
-        "collect_event_source(\"Microsoft-Windows-DotNETRuntime\", keywords=Jit|JitTracing). " +
+        "collect_events(kind=\"event_source\", providerName=\"Microsoft-Windows-DotNETRuntime\", keywords=Jit|JitTracing). " +
         "Supply at most ONE of processId or dumpFilePath: processId attaches via ClrMD with " +
         "suspend (sub-second for a single method); dumpFilePath analyses a WithHeap/Full dump " +
         "offline. When both are omitted the server auto-selects a live .NET process. The " +
@@ -1341,7 +1341,7 @@ public sealed class DiagnosticTools
         "Modes are resolved from the arguments: hypothesis present → " +
         "'hypothesis' (routes directly to the relevant evidence collector); baseline present → " +
         "'warm' (skips covered steps, emits MetricComparisons against baseline); otherwise 'cold' " +
-        "(USE-style: snapshot_counters first, branch on evidence). Call this BEFORE any other " +
+        "(USE-style: collect_events(kind=\"counters\") first, branch on evidence). Call this BEFORE any other " +
         "collector when the symptom is non-trivial — it pays for itself by preventing loops.")]
     public static Task<DiagnosticResult<InvestigationPlan>> StartInvestigation(
         IInvestigationPlanner planner,
@@ -1376,7 +1376,7 @@ public sealed class DiagnosticTools
         Idempotent = true,
         UseStructuredContent = true)]
     [Description(
-        "Reads a prior collect_cpu_sample drill-down handle and produces a portable, versioned " +
+        "Reads a prior collect_sample(kind=\"cpu\") drill-down handle and produces a portable, versioned " +
         "InvestigationSummary (~5-20 KB JSON) ready to paste into a PR, ADR, or ticket. " +
         "Includes build + container provenance harvested from the sidecar environment, stable " +
         "module+methodFullName symbol refs (survive rebuilds where line numbers shift), and " +
@@ -1389,7 +1389,7 @@ public sealed class DiagnosticTools
         IInvestigationSummaryExporter exporter,
         IDiagnosticHandleStore handles,
         DotnetDiagnostics.Mcp.Observability.IInvestigationTelemetryEmitter telemetry,
-        [Description("Handle returned by a prior collect_cpu_sample call.")] string handle,
+        [Description("Handle returned by a prior collect_sample(kind=\"cpu\") call.")] string handle,
         [Description("Output format: 'json' (default — portable, machine-readable) or 'markdown' (human-readable for PRs).")] SummaryFormat format = SummaryFormat.Json,
         [Description("Max hotspots to include in the summary. Defaults to 10.")] int topHotspots = 10,
         [Description("Optional managed assembly name for the target (from list_dotnet_processes).")] string? buildAssemblyName = null,

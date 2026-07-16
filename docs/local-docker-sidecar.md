@@ -71,8 +71,10 @@ Without the env var the watcher only logs a warning. See issue #75.
 
 ### Heads up: live memory readers need `CAP_SYS_PTRACE` on Linux
 
-`collect_thread_snapshot`, `inspect_heap(source="live")`, live `capture_method_bytes`, and
-`get_bytes(kind="module")` attach via ClrMD, which under the hood issues
+`collect_thread_snapshot`, `inspect_heap(source="live")`, live `capture_method_bytes`,
+`get_bytes(kind="module")`, and the opt-in
+`collect_sample(kind="cpu", resolveMethodInstantiations=true)` enrichment attach via ClrMD,
+which under the hood issues
 `ptrace(PTRACE_ATTACH, …)`. Matching UIDs alone is **not** enough on Linux:
 the kernel's [Yama LSM](https://www.kernel.org/doc/Documentation/admin-guide/LSM/Yama.rst)
 defaults `kernel.yama.ptrace_scope=1` on Debian/Ubuntu/WSL, which blocks

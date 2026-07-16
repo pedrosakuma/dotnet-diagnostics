@@ -23,11 +23,11 @@ Kubernetes cluster, use [`../../k8s/`](../../k8s/).
 >
 > | MCP tool family | Works on ACI? | Notes |
 > |---|---|---|
-> | EventPipe — `inspect_process`, `collect_sample(kind="cpu")`, `collect_events` (counters / GC / exceptions / startup / kestrel / networking), `collect_sample(kind="allocation")` | ✅ Yes | Needs only shared `/tmp` + UID match. |
-> | ClrMD / `ptrace` — `collect_thread_snapshot`, `inspect_heap(source="live")`, `collect_process_dump` | ❌ No | ACI grants no `CAP_SYS_PTRACE` and no shared PID namespace. |
+> | Diagnostic IPC / EventPipe — `inspect_process`, `collect_process_dump`, `collect_sample(kind="cpu")`, `collect_events` (counters / GC / exceptions / startup / kestrel / networking), `collect_sample(kind="allocation")` | ✅ Yes | Needs shared `/tmp` + UID match. Dump capture writes through diagnostic IPC; keep the artifact root on the shared volume. |
+> | ClrMD / `ptrace` — live `collect_thread_snapshot`, `inspect_heap(source="live")`, live `capture_method_bytes`, `get_bytes(kind="module")`, `collect_sample(kind="cpu", resolveMethodInstantiations=true)` | ❌ No | ACI grants no `CAP_SYS_PTRACE` and no shared PID namespace. |
 > | `perf` off-CPU — `collect_sample(kind="off_cpu")` | ❌ No | No `CAP_PERFMON` / host kernel access. |
 >
-> If you need a full heap walk, thread snapshot, or process dump, use the
+> If you need a live full heap walk or thread snapshot, use the
 > [AKS recipe](../../k8s/) (`securityContext.capabilities.add: [SYS_PTRACE]`)
 > or the [ECS/EC2 recipe](../../aws/ecs-ec2/) instead.
 

@@ -20,8 +20,9 @@ For Kubernetes on EKS (or any other cluster), use the generic recipes under
 > **Fargate platform version 1.4.0 is required.** The template pins it
 > explicitly. Earlier platform versions silently drop `LinuxParameters` and
 > the diag container cannot use `SYS_PTRACE`-backed tools
-> (`collect_thread_snapshot`, `inspect_live_heap`, `inspect_dump`,
-> `collect_process_dump`).
+> (live `collect_thread_snapshot`, `inspect_heap(source="live")`, live
+> `capture_method_bytes`, `get_bytes(kind="module")`, and
+> `collect_sample(kind="cpu", resolveMethodInstantiations=true)`).
 >
 > **AWS Lambda is out of scope** for this recipe — Lambda's freeze-between-
 > invocations model breaks long-running diagnostic sessions.
@@ -91,9 +92,9 @@ underlying invariant.
 
 | MCP tool family | Works on Fargate 1.4.0+? | Notes |
 |---|---|---|
-| EventPipe (`snapshot_counters`, `collect_cpu_sample`, `collect_gc_events`, …) | ✅ Yes | Only needs socket access + UID match. |
-| ClrMD / `ptrace` (`collect_thread_snapshot`, `inspect_live_heap`, `inspect_dump`, `collect_process_dump`) | ✅ Yes | Requires `LinuxParameters.Capabilities.Add: [SYS_PTRACE]` (template adds it). |
-| `perf`-based off-CPU sampling (`collect_off_cpu_sample`) | ❌ Not validated | Fargate does not expose `CAP_PERFMON` or paranoia tuning. |
+| Diagnostic IPC / EventPipe (`inspect_process`, `collect_process_dump`, `collect_sample(kind="cpu")`, `collect_events`, …) | ✅ Yes | Needs socket access + UID match; dump capture does not require kernel ptrace. |
+| ClrMD / `ptrace` (live `collect_thread_snapshot`, `inspect_heap(source="live")`, live `capture_method_bytes`, `get_bytes(kind="module")`, `collect_sample(kind="cpu", resolveMethodInstantiations=true)`) | ✅ Yes | Requires `LinuxParameters.Capabilities.Add: [SYS_PTRACE]` (template adds it). |
+| `perf`-based off-CPU sampling (`collect_sample(kind="off_cpu")`) | ❌ Not validated | Fargate does not expose `CAP_PERFMON` or paranoia tuning. |
 
 ## Deploy
 
@@ -192,7 +193,7 @@ or a `localhost` port set up via `aws ssm start-session` port forwarding).
   issue and is intentionally not part of this recipe.
 - **CDK / Terraform variants.** Native CloudFormation is the first
   reference. Alternate IaC dialects are deferred.
-- **`collect_off_cpu_sample`.** Fargate does not currently advertise
+- **`collect_sample(kind="off_cpu")`.** Fargate does not currently advertise
   `CAP_PERFMON`. The recipe leaves this tool documented as not-validated.
 
 ## Reference

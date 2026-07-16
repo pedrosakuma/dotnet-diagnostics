@@ -30,8 +30,9 @@ docker run -d --name badcode-mcp --network diagmcp-net \
 ```
 
 > `--cap-add SYS_PTRACE` is required for live memory readers
-> (`collect_thread_snapshot`, `inspect_heap(source="live")`, `capture_method_bytes`, and
-> `get_bytes(kind="module")`). Without it,
+> (`collect_thread_snapshot`, `inspect_heap(source="live")`, `capture_method_bytes`,
+> `get_bytes(kind="module")`, and
+> `collect_sample(kind="cpu", resolveMethodInstantiations=true)`). Without it,
 > these tools return a structured `PermissionDenied` error on hosts where
 > `kernel.yama.ptrace_scope=1` (Debian/Ubuntu/WSL default). EventPipe-only
 > tools work without it. See [`docs/local-docker-sidecar.md`](./local-docker-sidecar.md)

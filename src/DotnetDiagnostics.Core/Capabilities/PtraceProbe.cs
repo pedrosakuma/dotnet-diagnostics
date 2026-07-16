@@ -3,11 +3,14 @@ using System.Globalization;
 namespace DotnetDiagnostics.Core.Capabilities;
 
 /// <summary>
-/// Static probe that decides whether the four ClrMD-backed live-attach tools
-/// (<c>collect_thread_snapshot</c>, <c>inspect_live_heap</c>, <c>inspect_dump</c>
-/// against a live PID, <c>collect_process_dump</c>) — plus the opt-in
-/// <c>collect_cpu_sample(resolveMethodInstantiations=true)</c> enrichment path — can attach to a peer process
-/// on the host the diagnostics MCP server is running on. The check is a property
+/// Static probe that decides whether the ClrMD-backed live-attach paths
+/// (<c>collect_thread_snapshot</c> against a live PID,
+/// <c>inspect_heap(source="live")</c>, live <c>capture_method_bytes</c>,
+/// <c>get_bytes(kind="module")</c>, and the opt-in
+/// <c>collect_sample(kind="cpu", resolveMethodInstantiations=true)</c> enrichment)
+/// can attach to a peer process on the host the diagnostics MCP server is running on.
+/// <c>collect_process_dump</c> instead uses diagnostic IPC and does not depend on this probe.
+/// The check is a property
 /// of the sidecar / host, not of the target runtime — same shape as
 /// <c>CanSampleOffCpu</c>.
 /// </summary>
@@ -69,7 +72,7 @@ public static class PtraceProbe
         if (OperatingSystem.IsMacOS())
         {
             return new PtraceProbeResult(CanAttach: false,
-                Reason: "macOS: ClrMD does not support live attach. Use the dump-based workflow (collect_process_dump + inspect_dump).");
+                Reason: "macOS: ClrMD does not support live attach. Use the dump-based workflow (collect_process_dump, then inspect_heap(source=\"dump\")).");
         }
 
         if (!OperatingSystem.IsLinux())
@@ -94,7 +97,7 @@ public static class PtraceProbe
         if (scopeResult is { HasValue: true, Value: 3 })
         {
             return new PtraceProbeResult(CanAttach: false,
-                Reason: "Linux: kernel.yama.ptrace_scope=3 (no attach permitted). CAP_SYS_PTRACE cannot override this — relax the host sysctl or use the dump-based workflow (collect_process_dump + inspect_dump).")
+                Reason: "Linux: kernel.yama.ptrace_scope=3 (no attach permitted). CAP_SYS_PTRACE cannot override this — relax the host sysctl or use the dump-based workflow (collect_process_dump, then inspect_heap(source=\"dump\")).")
             {
                 HasCapSysPtrace = hasCapSysPtrace,
                 PtraceScope = 3,
@@ -135,7 +138,7 @@ public static class PtraceProbe
             },
 
             { HasValue: true, Value: 3 } => new PtraceProbeResult(CanAttach: false,
-                Reason: "Linux: kernel.yama.ptrace_scope=3 (no attach permitted). CAP_SYS_PTRACE cannot override this — relax the host sysctl or use the dump-based workflow (collect_process_dump + inspect_dump).")
+                Reason: "Linux: kernel.yama.ptrace_scope=3 (no attach permitted). CAP_SYS_PTRACE cannot override this — relax the host sysctl or use the dump-based workflow (collect_process_dump, then inspect_heap(source=\"dump\")).")
             {
                 HasCapSysPtrace = false,
                 PtraceScope = 3,

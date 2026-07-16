@@ -123,13 +123,13 @@ The .NET diagnostic IPC socket at `/tmp/dotnet-diagnostic-<pid>` inherits the **
 
 ### 🪪 `CAP_SYS_PTRACE` for live memory readers — UID alone is not enough on Linux
 
-`collect_thread_snapshot`, `inspect_heap(source="live")`, live `capture_method_bytes`, and `get_bytes(kind="module")` attach via `ptrace(2)`. On Linux with `kernel.yama.ptrace_scope=1` (Debian/Ubuntu/WSL default) same-UID peer attach is blocked. `collect_process_dump` instead writes through diagnostic IPC and does not require Linux `CAP_SYS_PTRACE`, although MCP authorization still requires its separate `dump-write` + `ptrace` bearer scopes and human approval.
+`collect_thread_snapshot`, `inspect_heap(source="live")`, live `capture_method_bytes`, `get_bytes(kind="module")`, and the opt-in enrichment in `collect_sample(kind="cpu", resolveMethodInstantiations=true)` attach via `ptrace(2)`. On Linux with `kernel.yama.ptrace_scope=1` (Debian/Ubuntu/WSL default) same-UID peer attach is blocked. `collect_process_dump` instead writes through diagnostic IPC and does not require Linux `CAP_SYS_PTRACE`, although MCP authorization still requires its separate `dump-write` + `ptrace` bearer scopes and human approval.
 
 - **Docker (local)**: `--cap-add SYS_PTRACE` on the **sidecar** container.
 - **K8s**: `capabilities.add: ["SYS_PTRACE"]` on the sidecar container's `securityContext`. See [`deploy/k8s/sample-sidecar.yaml`](./deploy/k8s/sample-sidecar.yaml).
 - **Bare host**: `sudo sysctl -w kernel.yama.ptrace_scope=0`.
 
-Failure surfaces as a structured `PermissionDenied` envelope (see #32). EventPipe-based tools (counters, cpu_sample, exceptions, gc, event_source) do **not** need `CAP_SYS_PTRACE`.
+Failure surfaces as a structured `PermissionDenied` envelope (see #32). EventPipe-based tools do **not** need `CAP_SYS_PTRACE` unless a caller explicitly enables a ClrMD enrichment such as `resolveMethodInstantiations=true`.
 
 ### 🐧 WSL2 perf quirks (host-side off-CPU sampling)
 

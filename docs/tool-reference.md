@@ -1051,7 +1051,7 @@ and a `/proc/*/status` UID read, opens no EventPipe session, and never fails.
       "status": "Blocked",
       "reason": "Linux: kernel.yama.ptrace_scope=1 … and sidecar lacks CAP_SYS_PTRACE — same-UID peer attach is blocked.",
       "remediation": "Grant the capability (container: --cap-add SYS_PTRACE / capabilities.add: ['SYS_PTRACE']) or relax the host (sudo sysctl -w kernel.yama.ptrace_scope=0).",
-      "affectedTools": ["collect_thread_snapshot", "inspect_heap(source=\"live\")", "capture_method_bytes", "get_bytes(kind=\"module\")"]
+      "affectedTools": ["collect_thread_snapshot", "inspect_heap(source=\"live\")", "capture_method_bytes", "get_bytes(kind=\"module\")", "collect_sample(kind=\"cpu\", resolveMethodInstantiations=true)"]
     }
   ]
 }
@@ -1062,7 +1062,7 @@ and a `/proc/*/status` UID read, opens no EventPipe session, and never fails.
 | `id` | Severity when failing | Affects |
 |---|---|---|
 | `socket-uid` | **Blocked** (UID mismatch) / Degraded (unreadable) | **all tools** — the diagnostic IPC socket is owned by the target UID |
-| `clrmd-attach` | **Blocked** | `collect_thread_snapshot`, `inspect_heap(source="live")`, `capture_method_bytes`, `get_bytes(kind="module")` |
+| `clrmd-attach` | **Blocked** | `collect_thread_snapshot`, `inspect_heap(source="live")`, `capture_method_bytes`, `get_bytes(kind="module")`, `collect_sample(kind="cpu", resolveMethodInstantiations=true)` |
 | `offcpu-perf` | Degraded | `collect_sample(kind="off_cpu")` |
 | `native-alloc` | Degraded | `collect_sample(kind="native-alloc")` |
 
@@ -2084,7 +2084,7 @@ per-tier counts, `reJitCount`, `osrCount`, and `hasIlMap`.
 
 - The runtime does not always publish named ThreadPool adjustment payloads on every platform; when that happens the collector annotates `notes` and infers the transition reason from the timing / direction of worker growth.
 - Work-item origins require EventPipe call stacks on `ThreadPoolEnqueueWork`; when stacks are unavailable the collector returns a note and leaves `workItemOrigins` empty.
-- Effective min/max counts are best-effort: the collector stays EventPipe-only and fills `effectiveSettings` only when the runtime emits `ThreadPoolMinMaxThreadsChanged`; otherwise it falls back to a note and points callers at `collect_thread_snapshot(view="threadpool")` for a ptrace-backed snapshot.
+- Effective min/max counts are best-effort: the collector stays EventPipe-only and fills `effectiveSettings` only when the runtime emits `ThreadPoolMinMaxThreadsChanged`; otherwise it falls back to a note and points callers at `collect_thread_snapshot`, followed by `query_snapshot(view="threadpool")`, for a ptrace-backed snapshot.
 | `intervalSeconds` | `int` | `1` | Refresh interval requested from SqlClient EventCounters |
 | `depth` | `SamplingDepth` | `Summary` | `Summary` keeps only the top command/N+1 slices inline; `Detail` / `Raw` keep the full capture |
 
