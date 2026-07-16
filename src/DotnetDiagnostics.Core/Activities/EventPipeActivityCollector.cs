@@ -104,9 +104,11 @@ public sealed partial class EventPipeActivityCollector : IActivityCollector
         }
         finally
         {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try { await processingTask.ConfigureAwait(false); } catch (Exception) { }
-            session.Dispose();
+            await EventPipeSessionShutdown.StopAndDrainAsync(
+                session,
+                processingTask,
+                ex => _logger.LogDebug(ex, "Stopping Activity EventPipe session for pid {Pid} failed.", processId))
+                .ConfigureAwait(false);
         }
 
         capturedActivities = capturedActivities

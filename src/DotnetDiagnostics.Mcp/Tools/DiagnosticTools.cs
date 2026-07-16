@@ -758,7 +758,8 @@ public sealed class DiagnosticTools
     [RequireScope("eventpipe")]
     [Description(
         "Collects a curated CLR lock-contention view from the runtime Contention keyword. " +
-        "Aggregates monitor waits by call site and owner thread, computes total/p50/p95/max wait duration, and retains the full event slice behind the issued handle for query_snapshot(handle, view=summary|byCallSite|byOwner).")]
+        "Aggregates monitor wait duration and owner thread, computes total/p50/p95/max wait duration, and retains the full event slice behind the issued handle for query_snapshot(handle, view=summary|byCallSite|byOwner). " +
+        "Direct live EventPipe streams do not expose TraceLog-backed managed call sites, so byCallSite groups unavailable attribution under '(unknown)'.")]
     public static async Task<DiagnosticResult<ContentionSnapshot>> CollectContention(
         IContentionCollector collector,
         IProcessContextResolver resolver,

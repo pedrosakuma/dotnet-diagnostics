@@ -115,7 +115,10 @@ public sealed class EventPipeStartupCollector : IStartupCollector
             }
             catch
             {
-                try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
+                await EventPipeSessionShutdown.StopSessionAsync(
+                    session,
+                    ex => _logger.LogDebug(ex, "Stopping startup EventPipe session after resume failure for pid {Pid} failed.", processId))
+                    .ConfigureAwait(false);
                 session.Dispose();
                 throw;
             }
@@ -180,27 +183,11 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         }
         finally
         {
-            try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
-            try
-            {
-                await processingTask.WaitAsync(ProcessingDrainBudget, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (TimeoutException)
-            {
-                _logger.LogDebug(
-                    "Startup EventPipe processing did not drain within {DrainBudget} for pid {Pid}; returning captured data so far.",
-                    ProcessingDrainBudget,
-                    processId);
-                _ = processingTask.ContinueWith(
-                    static task => _ = task.Exception,
-                    CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
-            }
-            catch (Exception)
-            {
-            }
-            session.Dispose();
+            await EventPipeSessionShutdown.StopAndDrainAsync(
+                session,
+                processingTask,
+                ex => _logger.LogDebug(ex, "Stopping startup EventPipe session for pid {Pid} failed.", processId),
+                ProcessingDrainBudget).ConfigureAwait(false);
         }
 
         List<StartupAssemblyLoad> orderedAssemblies;

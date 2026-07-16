@@ -38,8 +38,8 @@ public sealed class ClrMdModuleByteSourceCacheTests
 
         resolverCalls.Should().Be(1);
         source.ModuleResolutionCacheCount.Should().Be(1);
-        first.SourcePath.Should().Be(Path.GetFullPath(assemblyPath));
-        second.SourcePath.Should().Be(Path.GetFullPath(assemblyPath));
+        first.SourcePath.ShouldMatchFileSystemPath(Path.GetFullPath(assemblyPath));
+        second.SourcePath.ShouldMatchFileSystemPath(Path.GetFullPath(assemblyPath));
     }
 
 
@@ -80,7 +80,7 @@ public sealed class ClrMdModuleByteSourceCacheTests
             var pdb = await source.FetchAsync(1234, moduleVersionId, asset: "pdb", offset: 0, maxBytes: 4);
 
             resolverCalls.Should().Be(2);
-            pdb.SourcePath.Should().Be(Path.GetFullPath(siblingPdbPath));
+            pdb.SourcePath.ShouldMatchFileSystemPath(Path.GetFullPath(siblingPdbPath));
             pdb.PdbIsEmbedded.Should().BeFalse();
         }
         finally

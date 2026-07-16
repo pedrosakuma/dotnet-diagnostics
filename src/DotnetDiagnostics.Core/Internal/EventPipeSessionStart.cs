@@ -40,9 +40,17 @@ internal static class EventPipeSessionStart
 
         try
         {
-            return await client
-                .StartEventPipeSessionAsync(providers, requestRundown, circularBufferMB, linkedCts.Token)
-                .ConfigureAwait(false);
+            await EventPipeSessionControl.Gate.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+            try
+            {
+                return await client
+                    .StartEventPipeSessionAsync(providers, requestRundown, circularBufferMB, linkedCts.Token)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                EventPipeSessionControl.Gate.Release();
+            }
         }
         catch (OperationCanceledException ex) when (linkedCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {

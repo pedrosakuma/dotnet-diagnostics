@@ -136,7 +136,10 @@ public sealed class EventPipeCrashGuardCollector : ICrashGuardCollector
                 {
                     try { await exitTask.ConfigureAwait(false); } catch (Exception) { }
                 }
-                try { await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
+                await EventPipeSessionShutdown.StopSessionAsync(
+                    session,
+                    ex => _logger.LogDebug(ex, "Stopping crash-guard EventPipe session for pid {Pid} failed.", processId))
+                    .ConfigureAwait(false);
             }
             try
             {
