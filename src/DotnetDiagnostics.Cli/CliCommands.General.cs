@@ -400,10 +400,9 @@ internal static partial class CliCommands
             }
         }
 
-        if (hints.Count == 0 && triage.ObservedSignals?.Count > 0)
+        if (hints.Count == 0 && triage.GetHighestPriorityObservedSignal() is { } prioritySignal)
         {
-            var firstSignal = triage.ObservedSignals[0];
-            var kind = firstSignal.Name switch
+            var kind = prioritySignal.Name switch
             {
                 "threadpool.queue" => "threadpool",
                 "exceptions.rate" => "exceptions",
@@ -412,7 +411,7 @@ internal static partial class CliCommands
             };
             hints.Add(new NextActionHint(
                 "collect",
-                $"Observed {firstSignal.Name}, but the current window is inconclusive. Extend the capture: collect --kind {kind} --pid {pid} --duration 10"));
+                $"Observed {prioritySignal.Name}, but the current window is inconclusive. Extend the capture: collect --kind {kind} --pid {pid} --duration 10"));
         }
 
         if (hints.Count == 0)

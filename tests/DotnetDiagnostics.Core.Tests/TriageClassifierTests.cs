@@ -223,6 +223,55 @@ public sealed class TriageClassifierTests
     }
 
     [Fact]
+    public void Classify_InconclusiveMixedSignals_PrioritizesCriticalExceptionFallback()
+    {
+        var result = TriageClassifier.Classify(SnapshotOf(
+            ("cpu-usage", 10),
+            ("threadpool-queue-length", 15),
+            ("exception-count", 75)));
+
+        result.Assessment.Should().Be(TriageClassifier.InconclusiveAssessment);
+        result.Hypotheses.Should().BeEmpty();
+        result.ObservedSignals!.Select(signal => signal.Name).Should().Equal(
+            "threadpool.queue",
+            "exceptions.rate");
+        result.GetHighestPriorityObservedSignal().Should().NotBeNull()
+            .And.Match<TriageObservedSignal>(signal =>
+                signal.Name == "exceptions.rate" && signal.Level == "critical");
+    }
+
+    [Fact]
+    public void GetHighestPriorityObservedSignal_UsesTopIndicatorScoreWithinTheSameLevel()
+    {
+        var result = new TriageResult(
+            TriageClassifier.Inconclusive,
+            TriageSeverity.Degraded,
+            new TriageEvidence(null, null, null, null, null, null, null, null, null),
+            TopIndicators:
+            [
+                new TriageIndicator("weak-metric", 1, null, 51, "high"),
+                new TriageIndicator("strong-metric", 2, null, 79, "high"),
+            ])
+        {
+            ObservedSignals =
+            [
+                new TriageObservedSignal(
+                    "weak.signal",
+                    "high",
+                    "Weak signal.",
+                    [new TriageEvidenceItem("weak-metric", 1, null, ">=", 1, "Threshold crossed.")]),
+                new TriageObservedSignal(
+                    "strong.signal",
+                    "high",
+                    "Strong signal.",
+                    [new TriageEvidenceItem("strong-metric", 2, null, ">=", 1, "Threshold crossed.")]),
+            ],
+        };
+
+        result.GetHighestPriorityObservedSignal()!.Name.Should().Be("strong.signal");
+    }
+
+    [Fact]
     public void Classify_AllQuiet_ReturnsHealthy()
     {
         var result = TriageClassifier.Classify(SnapshotOf(

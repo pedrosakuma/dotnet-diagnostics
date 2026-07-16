@@ -33,6 +33,46 @@ public sealed record TriageResult(
     /// observed-signal level. Each requires drill-down before assigning a cause.
     /// </summary>
     public IReadOnlyList<TriageHypothesis>? Hypotheses { get; init; }
+
+    /// <summary>
+    /// Selects the most important observed signal for an inconclusive fallback hint. Signals are
+    /// ranked by observed level, then by the matching top-indicator score; source order breaks ties.
+    /// </summary>
+    public TriageObservedSignal? GetHighestPriorityObservedSignal()
+    {
+        if (ObservedSignals is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        return ObservedSignals
+            .OrderByDescending(static signal => SignalLevelRank(signal.Level))
+            .ThenByDescending(GetTopIndicatorScore)
+            .First();
+    }
+
+    private int GetTopIndicatorScore(TriageObservedSignal signal)
+    {
+        var score = 0;
+        foreach (var indicator in TopIndicators ?? [])
+        {
+            if (signal.Evidence.Any(evidence =>
+                    string.Equals(evidence.Name, indicator.Name, StringComparison.Ordinal)))
+            {
+                score = Math.Max(score, indicator.Score);
+            }
+        }
+
+        return score;
+    }
+
+    private static int SignalLevelRank(string level) => level switch
+    {
+        "critical" => 3,
+        "high" => 2,
+        "elevated" => 1,
+        _ => 0,
+    };
 }
 
 /// <summary>A directly observed signal whose threshold was crossed during the capture window.</summary>

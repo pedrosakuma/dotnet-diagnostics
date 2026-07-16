@@ -105,7 +105,7 @@ public static class SweepUseCase
             counters.Data, gc.Data, exceptions.Data, threadPool.Data, resource,
             handleMap, failures);
 
-        var failureText = failures.Count > 0 ? $" {failures.Count} collector(s) failed (see data.failures)." : string.Empty;
+        var failureText = FormatFailureText(failures.Count);
         var starvation = threadPool.Data?.HillClimbing.Count(static s => string.Equals(s.Reason, "Starvation", StringComparison.OrdinalIgnoreCase)) ?? 0;
         var fdText = resource?.FdCount?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a";
         var hypothesisText = triage.Hypotheses?.Count > 0
@@ -136,6 +136,11 @@ public static class SweepUseCase
 
         return WithContext(result, resolved.Context);
     }
+
+    internal static string FormatFailureText(int failureCount)
+        => failureCount > 0
+            ? $" {failureCount} collector(s) failed (see data.sweep.failures)."
+            : string.Empty;
 
     private static void Note<T>(List<string> failures, string kind, DiagnosticResult<T> r)
     {
@@ -195,10 +200,9 @@ public static class SweepUseCase
             }
         }
 
-        if (hints.Count == 0 && triage.ObservedSignals?.Count > 0)
+        if (hints.Count == 0 && triage.GetHighestPriorityObservedSignal() is { } prioritySignal)
         {
-            var firstSignal = triage.ObservedSignals[0];
-            var (kind, view) = firstSignal.Name switch
+            var (kind, view) = prioritySignal.Name switch
             {
                 "threadpool.queue" => ("threadpool", "timeline"),
                 "exceptions.rate" => ("exceptions", "byType"),
@@ -209,7 +213,7 @@ public static class SweepUseCase
                 handles,
                 kind,
                 view,
-                $"Observed {firstSignal.Name}, but the current window is inconclusive. Drill into the matching sweep handle before assigning a cause.");
+                $"Observed {prioritySignal.Name}, but the current window is inconclusive. Drill into the matching sweep handle before assigning a cause.");
         }
 
         if (hints.Count == 0)

@@ -430,10 +430,9 @@ internal static class DiagnosticToolProcessInspection
             }
         }
 
-        if (hints.Count == 0 && triage.ObservedSignals?.Count > 0)
+        if (hints.Count == 0 && triage.GetHighestPriorityObservedSignal() is { } prioritySignal)
         {
-            var firstSignal = triage.ObservedSignals[0];
-            var kind = firstSignal.Name switch
+            var kind = prioritySignal.Name switch
             {
                 "threadpool.queue" => "threadpool",
                 "exceptions.rate" => "exceptions",
@@ -442,7 +441,7 @@ internal static class DiagnosticToolProcessInspection
             };
             hints.Add(new NextActionHint(
                 "collect_events",
-                $"Observed {firstSignal.Name}, but the current window is inconclusive. Extend the relevant capture before assigning a cause.",
+                $"Observed {prioritySignal.Name}, but the current window is inconclusive. Extend the relevant capture before assigning a cause.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = kind, ["durationSeconds"] = 10 }));
         }
 
