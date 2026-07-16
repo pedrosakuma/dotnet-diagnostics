@@ -85,9 +85,16 @@ public static class EventCatalogQueryDispatcher
             ? "No providers matched the supplied filters."
             : $"Showing {groups.Count} provider(s) from the catalog. Busiest: {groups[0].Provider} ({groups[0].TotalCount}).";
 
+        var hintArguments = new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CatalogView };
+        if (groups.Count > 0)
+        {
+            hintArguments["providerFilter"] = groups[0].Provider;
+        }
+
         return DiagnosticResult.Ok(view, summary,
-            new NextActionHint("query_snapshot", "Inspect event names for a provider.",
-                new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CatalogView, ["providerFilter"] = groups.Count == 0 ? "<provider>" : groups[0].Provider }));
+            new NextActionHint("query_snapshot",
+                groups.Count == 0 ? "Return to the unfiltered event catalog." : "Inspect event names for the busiest provider.",
+                hintArguments));
     }
 
     public static DiagnosticResult<EventCatalogEventsView> RenderEvents(

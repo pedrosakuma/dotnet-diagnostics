@@ -189,7 +189,7 @@ internal static class DiagnosticToolHeapDump
                 $"Handle '{handle}' is unknown or expired.",
                 new DiagnosticError("HandleExpired", "Heap snapshot handles live ~10min and are invalidated when the target process exits.", handle),
                 new NextActionHint("inspect_heap", "Re-attach and re-walk to issue a fresh handle.",
-                    new Dictionary<string, object?> { ["source"] = "live", ["processId"] = "<pid>" }));
+                    new Dictionary<string, object?> { ["source"] = "live" }));
         }
 
         return await QueryHeapSnapshot(

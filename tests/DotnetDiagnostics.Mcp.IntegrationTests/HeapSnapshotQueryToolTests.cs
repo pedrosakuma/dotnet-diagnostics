@@ -9,6 +9,25 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 public sealed class HeapSnapshotQueryToolTests
 {
     [Fact]
+    public async Task QueryHeapSnapshot_UnknownHandle_UsesAutoResolvableInspectHeapHint()
+    {
+        var result = await DiagnosticTools.QueryHeapSnapshot(
+            new MemoryDiagnosticHandleStore(),
+            new StubDumpInspector(),
+            new SensitiveDataRedactor(null),
+            new SensitiveValueGate(null),
+            TestPrincipalAccessors.Root,
+            "missing",
+            view: "top-types");
+
+        result.Error!.Kind.Should().Be("HandleExpired");
+        var hint = result.Hints.Should().ContainSingle().Which;
+        hint.NextTool.Should().Be("inspect_heap");
+        hint.SuggestedArguments.Should().BeEquivalentTo(
+            new Dictionary<string, object?> { ["source"] = "live" });
+    }
+
+    [Fact]
     public async Task QueryHeapSnapshot_ObjectView_ParsesHexAddress_AndReturnsObjectPayload()
     {
         var store = new MemoryDiagnosticHandleStore();

@@ -192,6 +192,24 @@ public sealed class ToolReferenceDocParityTests
             "removed names may survive only in the enumerated migration-history or backward-compatibility locations");
     }
 
+    [Fact]
+    public void SuggestedArgumentBags_DoNotContainAngleBracketPlaceholders()
+    {
+        var root = FindRepoRoot();
+        var placeholderAssignments = Directory
+            .EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                           && !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .SelectMany(path => System.Text.RegularExpressions.Regex.Matches(
+                    File.ReadAllText(path),
+                    "new Dictionary<string, object\\?>\\s*\\{[^}]*\"<[^\"\\r\\n]+>\"")
+                .Select(match => $"{Path.GetRelativePath(root, path).Replace('\\', '/')}:{match.Value}"))
+            .ToArray();
+
+        placeholderAssignments.Should().BeEmpty(
+            "suggested arguments are replayed as typed tool inputs and must contain concrete schema-valid values");
+    }
+
     private static IReadOnlyList<string> EnumerateToolNames()
     {
         var names = new SortedSet<string>(StringComparer.Ordinal);

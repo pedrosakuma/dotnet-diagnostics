@@ -435,17 +435,26 @@ public static class EventCollectionUseCases
                             ? $"Cataloged {snapshot.TotalEvents} metadata-only event(s) across {snapshot.DistinctEventTypes} event type(s) over {context.DurationSeconds}s. Dropped {droppedSample} sampled occurrence(s) from inline (handle has all)."
                             : $"Cataloged {snapshot.TotalEvents} metadata-only event(s) across {snapshot.DistinctEventTypes} event type(s) over {context.DurationSeconds}s.");
 
+                    var hints = new List<NextActionHint>
+                    {
+                        new("query_snapshot",
+                            "Drill into this metadata-only event catalog (views: catalog, byProvider, events).",
+                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = EventCatalogQueryDispatcher.CatalogView }),
+                    };
+                    var providerName = snapshot.Catalog.Count > 0 ? snapshot.Catalog[0].Provider : null;
+                    if (!string.IsNullOrWhiteSpace(providerName))
+                    {
+                        hints.Add(new NextActionHint("collect_events",
+                            "Use kind=event_source for targeted payload capture when you know the provider and have the required allowlist/scope.",
+                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["kind"] = "event_source", ["providerName"] = providerName }));
+                    }
+
                     return DiagnosticResult.OkWithHandle(
                         inlineSnapshot,
                         summary,
                         handle.Id,
                         handle.ExpiresAt,
-                        new NextActionHint("query_snapshot",
-                            "Drill into this metadata-only event catalog (views: catalog, byProvider, events).",
-                            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = EventCatalogQueryDispatcher.CatalogView }),
-                        new NextActionHint("collect_events",
-                            "Use kind=event_source for targeted payload capture when you know the provider and have the required allowlist/scope.",
-                            new Dictionary<string, object?> { ["processId"] = context.ProcessId, ["kind"] = "event_source", ["providerName"] = "<provider>" }));
+                        hints.ToArray());
                 }),
             [
                 new ValidationRule(nameof(durationSeconds), durationSeconds >= 1, "must be >= 1"),

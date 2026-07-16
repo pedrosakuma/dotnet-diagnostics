@@ -101,11 +101,14 @@ public static class CpuSampleQueryDispatcher
             ? $"Showing {nodeCount} nodes (truncated; raise maxNodes or maxDepth, or narrow with rootMethodFilter). Root: {root.Frame.Method} — {root.InclusiveSamples} inclusive samples."
             : $"Showing the full sub-tree rooted at {root.Frame.Method} ({nodeCount} nodes, {root.InclusiveSamples} inclusive samples).";
 
-        return DiagnosticResult.Ok(
-            view,
-            summary,
-            new NextActionHint("query_snapshot", "Drill deeper by anchoring at a specific method.",
-                new Dictionary<string, object?> { ["handle"] = handle, ["rootMethodFilter"] = "<method substring>", ["maxDepth"] = 6 }));
+        var drilldownMethod = pruned.Children.Count > 0 ? pruned.Children[0].Frame.Method : null;
+        return drilldownMethod is null
+            ? DiagnosticResult.Ok(view, summary)
+            : DiagnosticResult.Ok(
+                view,
+                summary,
+                new NextActionHint("query_snapshot", "Drill deeper by anchoring at the hottest child method.",
+                    new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallTreeView, ["rootMethodFilter"] = drilldownMethod, ["maxDepth"] = 6 }));
     }
 
     /// <summary>Renders the <c>top-methods</c> view: per-method exclusive/inclusive aggregation, ranked and capped.</summary>
@@ -130,9 +133,11 @@ public static class CpuSampleQueryDispatcher
             ? "No methods aggregated — the trace captured no attributable frames."
             : $"Top {top.Count} method(s) by {normalizedSort} samples (of {ranked.Count} total). Hottest: {top[0].Method} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive).";
 
-        return DiagnosticResult.Ok(view, summary,
-            new NextActionHint("query_snapshot", "Drill into a hot method's callers/callees.",
-                new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallerCalleeView, ["rootMethodFilter"] = "<method substring>" }));
+        return top.Count == 0
+            ? DiagnosticResult.Ok(view, summary)
+            : DiagnosticResult.Ok(view, summary,
+                new NextActionHint("query_snapshot", "Drill into the hottest method's callers/callees.",
+                    new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallerCalleeView, ["rootMethodFilter"] = top[0].Method }));
     }
 
     /// <summary>Renders the <c>by-module</c> view: samples aggregated per assembly.</summary>
@@ -180,9 +185,18 @@ public static class CpuSampleQueryDispatcher
             ? "No dominant call chain — the root has no children."
             : $"Hot path is {depth} frame(s) deep at a {thresholdPercent:0.#}% threshold. Leaf: {frames[^1].Method} ({frames[^1].InclusivePercent:0.#}% inclusive).";
 
+        var hintArguments = new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallTreeView };
+        if (frames.Count > 0)
+        {
+            hintArguments["rootMethodFilter"] = frames[^1].Method;
+        }
+
         return DiagnosticResult.Ok(view, summary,
-            new NextActionHint("query_snapshot", "Lower the threshold to extend the chain, or anchor the full tree at the leaf.",
-                new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallTreeView, ["rootMethodFilter"] = frames.Count == 0 ? "<method>" : frames[^1].Method }));
+            new NextActionHint("query_snapshot",
+                frames.Count == 0
+                    ? "Inspect the full call tree to choose a concrete method."
+                    : "Lower the threshold to extend the chain, or anchor the full tree at the leaf.",
+                hintArguments));
     }
 
     /// <summary>Renders the <c>caller-callee</c> view for the single method matched by <paramref name="methodFilter"/>.</summary>
@@ -214,8 +228,8 @@ public static class CpuSampleQueryDispatcher
             return DiagnosticResult.Fail<CallerCalleeView>(
                 $"'{methodFilter}' matched {matches.Count} distinct methods; narrow it to one.",
                 new DiagnosticError("InvalidArgument", "The caller-callee view resolves a single focus method. Pass a more specific substring.", string.Join("; ", candidates)),
-                new NextActionHint("query_snapshot", "Re-issue with a substring that uniquely identifies one method.",
-                    new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallerCalleeView, ["rootMethodFilter"] = "<more specific substring>" }));
+                new NextActionHint("query_snapshot", "Rank methods first to choose a concrete method name.",
+                    new Dictionary<string, object?> { ["handle"] = handle, ["view"] = TopMethodsView }));
         }
 
         var focus = matches[0];
@@ -225,9 +239,16 @@ public static class CpuSampleQueryDispatcher
         var summary =
             $"{view.Method}: {view.InclusiveSamples} inclusive ({view.InclusivePercent:0.#}%) / {view.ExclusiveSamples} exclusive samples — {view.Callers.Count} caller(s), {view.Callees.Count} callee(s).";
 
-        return DiagnosticResult.Ok(view, summary,
-            new NextActionHint("query_snapshot", "Follow a caller or callee by name.",
-                new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallerCalleeView, ["rootMethodFilter"] = "<caller or callee name>" }));
+        var nextMethod = view.Callers.Count > 0
+            ? view.Callers[0].Method
+            : view.Callees.Count > 0
+                ? view.Callees[0].Method
+                : null;
+        return nextMethod is null
+            ? DiagnosticResult.Ok(view, summary)
+            : DiagnosticResult.Ok(view, summary,
+                new NextActionHint("query_snapshot", "Follow the top caller or callee by name.",
+                    new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallerCalleeView, ["rootMethodFilter"] = nextMethod }));
     }
 
     private static CallTreeNode? FindHighestRankedDescendant(CallTreeNode node, string substring)

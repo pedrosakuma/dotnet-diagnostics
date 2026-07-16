@@ -228,8 +228,7 @@ internal static class DiagnosticToolThreadingAndJit
             return DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
                 $"Handle '{handle}' is unknown or expired.",
                 new DiagnosticError("HandleExpired", "Thread snapshot handles live ~10min; live-origin handles are also invalidated when the target PID exits.", handle),
-                new NextActionHint("collect_thread_snapshot", "Re-capture to issue a fresh handle.",
-                    new Dictionary<string, object?> { ["processId"] = "<pid>" }));
+                new NextActionHint("collect_thread_snapshot", "Re-capture to issue a fresh handle."));
         }
 
         return ThreadSnapshotQueryDispatcher.Dispatch(snapshot, handle, view, threadId, topN, framesToHash, minCount);

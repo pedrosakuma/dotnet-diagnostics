@@ -78,7 +78,7 @@ internal static class DiagnosticToolInvestigationPlanning
                 $"Handle '{handle}' is unknown or expired.",
                 new DiagnosticError("HandleExpired", "Drill-down handles live ~10min and are invalidated when the target process exits.", handle),
                 new NextActionHint("collect_sample", "Re-run the sampler on the same pid to issue a fresh handle.",
-                    new Dictionary<string, object?> { ["durationSeconds"] = 10 }));
+                    new Dictionary<string, object?> { ["kind"] = "cpu", ["durationSeconds"] = 10 }));
         }
 
         var fix = (fixCommitSha is null && fixPullRequestUrl is null && fixDescription is null)
@@ -100,9 +100,7 @@ internal static class DiagnosticToolInvestigationPlanning
         var bytes = exported.Rendered.Length;
         return DiagnosticResult.Ok(
             exported,
-            $"Exported investigation {exported.Summary.InvestigationId} ({exported.Summary.Findings.TopHotspots.Count} hotspots, {bytes} chars {format}). Paste `rendered` into your PR/ADR; re-supply this JSON via compare_to_baseline on the next investigation.",
-            new NextActionHint("compare_to_baseline", "When you investigate the next deploy, pass this summary as the baseline.",
-                new Dictionary<string, object?> { ["baselineSummaryJson"] = "<paste rendered JSON here>" }));
+            $"Exported investigation {exported.Summary.InvestigationId} ({exported.Summary.Findings.TopHotspots.Count} hotspots, {bytes} chars {format}). Paste `rendered` into your PR/ADR; re-supply this JSON via compare_to_baseline on the next investigation.");
     }
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)
