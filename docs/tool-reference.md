@@ -2512,11 +2512,11 @@ to capture more than transient dumps.
 
 ## `capture_method_bytes`
 
-Reads the JIT-emitted (or ReadyToRun-baked) native machine code for a single
-managed method out of a live .NET process (or `WithHeap`/`Full` dump) and
-writes the raw bytes to a file on disk. Closes the only disasm coverage gap:
-NativeAOT and R2R binaries live on disk and are already covered by
-`dotnet-native-mcp`; JIT-emitted code lives only in the target process memory.
+Reads JIT-emitted native machine code for a single managed method from the
+runtime code heap of a live .NET process (or `WithHeap`/`Full` dump) and writes
+the raw bytes to a file on disk. NativeAOT and ReadyToRun code lives in the
+published binary and should be inspected on disk with `dotnet-native-mcp`;
+JIT-emitted code exists only in process or dump memory.
 
 The bytes are emitted via a **file side-channel** (mirroring `collect_process_dump`)
 so binary payloads never enter the LLM context. Each captured region returns a
@@ -2524,10 +2524,11 @@ so binary payloads never enter the LLM context. Each captured region returns a
 file path, size, architecture and load-base — feed that hint verbatim to
 disassemble.
 
-**Backend:** ClrMD `HotColdInfo`. **Requires:** CoreCLR target (NativeAOT
-returns an error envelope — use `dotnet-native-mcp.load_native_binary` against
-the binary on disk instead). On Linux also requires `CAP_SYS_PTRACE` for live
-attach.
+**Backend:** ClrMD `HotColdInfo`. **Requires:** a CoreCLR method with a
+JIT-emitted body in the runtime code heap. NativeAOT and ReadyToRun-only methods
+return an error envelope — use `dotnet-native-mcp.load_native_binary` against
+the binary on disk instead. On Linux, live attach also requires
+`CAP_SYS_PTRACE`.
 
 **Parameters:**
 
@@ -2565,7 +2566,8 @@ attach.
 
 **Side effects:** writes one `.bin` file per region (Hot, plus Cold when the
 JIT split the method). Suspend window on live attach is typically < 100 ms.
-**NativeAOT/R2R targets are rejected** with an explanatory error envelope.
+**NativeAOT and ReadyToRun-only methods are rejected** with an explanatory
+error envelope and an on-disk `dotnet-native-mcp` handoff.
 
 ## `get_bytes`
 
@@ -3071,12 +3073,13 @@ validated — they are treated as trusted by the deployment.
 
 ### D2 — per-pid attach concurrency gate
 
-Live-attach tools suspend their target through the .NET diagnostic pipeline / ptrace, and a
-given process can be suspended by only one attacher at a time. Two simultaneous attaches
+Live-attach tools suspend their target through diagnostic IPC and/or ptrace, and a given
+process can be suspended by only one attacher at a time. Two simultaneous attaches
 against the same pid (`collect_thread_snapshot`, `inspect_heap(source="live")`,
 `collect_process_dump`, `capture_method_bytes`) therefore collide. A per-pid concurrency gate
 serializes them: while one attach holds the pid, a second attach against that same pid returns
 a retriable `Busy` envelope (`NextActionHint` to retry the same tool) instead of failing hard.
+`collect_process_dump` specifically uses diagnostic IPC, not kernel ptrace.
 Attaches against *different* pids and dump-based work (no live pid) are never gated.
 
 - `MCP_ATTACH_MAX_PER_PID` — permits in flight per pid (default `1`).

@@ -164,7 +164,7 @@ public static class EventCollectionUseCases
                 new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "gc", ["durationSeconds"] = 10 }));
         }
 
-        // The handle always carries the FULL snapshot (query_collection drilldown stays cheap),
+        // The handle always carries the FULL snapshot (query_snapshot drilldown stays cheap),
         // but the inline payload is depth-gated to keep first-look responses small.
         var handle = handles.Register(pid, CollectionHandleKinds.Counters, snapshot, CollectionHandleTtl);
 

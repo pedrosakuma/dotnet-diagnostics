@@ -47,14 +47,14 @@ public static class ByteMaterializationUseCases
         var normalizedAsset = NormalizeAsset(asset);
         if (normalizedAsset is null) return InvalidArg(nameof(asset), "must be 'pe' or 'pdb'");
 
-        if (!principalAllowsLiteralScope) return LiteralScopeForbidden("get_module_bytes", principalName);
+        if (!principalAllowsLiteralScope) return LiteralScopeForbidden("get-bytes", principalName);
 
         var resolved = await ProcessResolutionHelpers.ResolveContextAsync<ByteMaterialization>(resolver, processId, cancellationToken).ConfigureAwait(false);
         if (resolved.Failure is not null) return resolved.Failure;
 
         var fullOutputPath = Path.GetFullPath(outputPath);
 
-        var result = await AttachGuard.GuardAttachAsync<ByteMaterialization>("get_module_bytes", resolved.ProcessId, async () =>
+        var result = await AttachGuard.GuardAttachAsync<ByteMaterialization>("get-bytes", resolved.ProcessId, async () =>
         {
             try
             {
@@ -64,7 +64,7 @@ public static class ByteMaterializationUseCases
                     cancellationToken).ConfigureAwait(false);
 
                 logger?.LogInformation(
-                    "get_module_bytes materialised bytes. tokenName={TokenName} mvid={Mvid} totalSize={TotalSize} output={Output}",
+                    "get-bytes materialised module bytes. tokenName={TokenName} mvid={Mvid} totalSize={TotalSize} output={Output}",
                     principalName ?? "(none)",
                     mvid.ToString("D"),
                     last.TotalSize,
@@ -93,7 +93,7 @@ public static class ByteMaterializationUseCases
             {
                 return IntegrityFailure(ex.Message);
             }
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, retryArguments: new Dictionary<string, object?> { ["kind"] = "module" }).ConfigureAwait(false);
 
         return ProcessResolutionHelpers.WithContext(result, resolved.Context);
     }
@@ -118,7 +118,7 @@ public static class ByteMaterializationUseCases
         if (string.IsNullOrWhiteSpace(outputPath)) return InvalidArg(nameof(outputPath), "is required");
         if (maxBytes <= 0) return InvalidArg(nameof(maxBytes), "must be > 0");
 
-        if (!principalAllowsLiteralScope) return LiteralScopeForbidden("get_dump_bytes", principalName);
+        if (!principalAllowsLiteralScope) return LiteralScopeForbidden("get-bytes", principalName);
 
         var fullOutputPath = Path.GetFullPath(outputPath);
 
@@ -130,7 +130,7 @@ public static class ByteMaterializationUseCases
                 cancellationToken).ConfigureAwait(false);
 
             logger?.LogInformation(
-                "get_dump_bytes materialised bytes. tokenName={TokenName} dumpPath={DumpPath} totalSize={TotalSize} output={Output}",
+                "get-bytes materialised dump bytes. tokenName={TokenName} dumpPath={DumpPath} totalSize={TotalSize} output={Output}",
                 principalName ?? "(none)",
                 last.Identifier,
                 last.TotalSize,
@@ -151,7 +151,7 @@ public static class ByteMaterializationUseCases
         catch (ArtifactPathException ex)
         {
             return DiagnosticResult.Fail<ByteMaterialization>(
-                $"get_dump_bytes rejected the request: {ex.Message}",
+                $"get-bytes rejected the dump request: {ex.Message}",
                 new DiagnosticError("InvalidArtifactPath", ex.Message, ex.ParameterName),
                 new NextActionHint("get-bytes", "Re-issue with a dump path that resolves under the artifact root."));
         }
@@ -162,7 +162,7 @@ public static class ByteMaterializationUseCases
         catch (InvalidOperationException ex)
         {
             return DiagnosticResult.Fail<ByteMaterialization>(
-                $"get_dump_bytes rejected the request: {ex.Message}",
+                $"get-bytes rejected the dump request: {ex.Message}",
                 new DiagnosticError("InvalidArgument", ex.Message, ex.GetType().FullName));
         }
         catch (ByteIntegrityException ex)
@@ -199,7 +199,7 @@ public static class ByteMaterializationUseCases
         if (string.IsNullOrWhiteSpace(outputPath)) return InvalidArg(nameof(outputPath), "is required");
         if (maxBytes <= 0) return InvalidArg(nameof(maxBytes), "must be > 0");
 
-        if (!principalAllowsLiteralScope) return LiteralScopeForbidden("get_trace_bytes", principalName);
+        if (!principalAllowsLiteralScope) return LiteralScopeForbidden("get-bytes", principalName);
 
         var fullOutputPath = Path.GetFullPath(outputPath);
 
@@ -211,7 +211,7 @@ public static class ByteMaterializationUseCases
                 cancellationToken).ConfigureAwait(false);
 
             logger?.LogInformation(
-                "get_trace_bytes materialised bytes. tokenName={TokenName} tracePath={TracePath} totalSize={TotalSize} output={Output}",
+                "get-bytes materialised trace bytes. tokenName={TokenName} tracePath={TracePath} totalSize={TotalSize} output={Output}",
                 principalName ?? "(none)",
                 last.Identifier,
                 last.TotalSize,
@@ -232,7 +232,7 @@ public static class ByteMaterializationUseCases
         catch (ArtifactPathException ex)
         {
             return DiagnosticResult.Fail<ByteMaterialization>(
-                $"get_trace_bytes rejected the request: {ex.Message}",
+                $"get-bytes rejected the trace request: {ex.Message}",
                 new DiagnosticError("InvalidArtifactPath", ex.Message, ex.ParameterName),
                 new NextActionHint("get-bytes", "Re-issue with a trace path that resolves under the artifact root."));
         }
@@ -243,7 +243,7 @@ public static class ByteMaterializationUseCases
         catch (InvalidOperationException ex)
         {
             return DiagnosticResult.Fail<ByteMaterialization>(
-                $"get_trace_bytes rejected the request: {ex.Message}",
+                $"get-bytes rejected the trace request: {ex.Message}",
                 new DiagnosticError("InvalidArgument", ex.Message, ex.GetType().FullName));
         }
         catch (ByteIntegrityException ex)
@@ -429,7 +429,7 @@ public static class ByteMaterializationUseCases
         => DiagnosticResult.Fail<ByteMaterialization>(
             $"The requested artifact could not be located: {message}",
             new DiagnosticError("ArtifactNotFound", message, detail),
-            new NextActionHint("list_dotnet_processes", "Confirm the module/dump exists and the target is still alive."));
+            new NextActionHint("processes", "Confirm the module/dump exists and the target is still alive."));
 
     private static DiagnosticResult<ByteMaterialization> IntegrityFailure(string message)
         => DiagnosticResult.Fail<ByteMaterialization>(

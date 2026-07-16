@@ -16,10 +16,8 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// Single bootstrap entrypoint that subsumes the five read-only
-/// process inspection tools (<c>list_dotnet_processes</c>, <c>get_process_info</c>,
-/// <c>get_diagnostic_capabilities</c>, <c>get_container_signals</c>, <c>get_memory_trend</c>)
-/// behind one <c>view=</c> discriminator, plus the Phase 10.3 <c>view=resources</c>
+/// Single bootstrap entrypoint for read-only process inspection behind one
+/// <c>view=</c> discriminator, including the Phase 10.3 <c>view=resources</c>
 /// and Phase 10.4 <c>view=requests-now</c> extensions for FD / handle / socket inspection and
 /// in-flight ASP.NET Core request snapshots. #213 — the five
 /// legacy tools have been deleted in the alias removal wave; this is now the sole
@@ -136,7 +134,7 @@ public sealed class InspectProcessTool
         int? durationSeconds = null,
         [Description("view=memory_trend or view=resources only — interval between consecutive samples in seconds. Must be >= 1. Defaults to 2.")]
         int sampleEverySeconds = 2,
-        [Description("view=container only — depth knob forwarded to get_container_signals. Summary (default) drops the Notes[] caveats; Detail / Raw keep them.")]
+        [Description("view=container only — controls the container-signals projection. Summary (default) drops the Notes[] caveats; Detail / Raw keep them.")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,

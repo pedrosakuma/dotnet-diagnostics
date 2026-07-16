@@ -9,7 +9,7 @@ namespace DotnetDiagnostics.Core.Threads;
 /// (<c>threads-summary</c>, <c>stack</c>, <c>lock-graph</c>, <c>deadlocks</c>, <c>top-blocked</c>,
 /// <c>unique-stacks</c>, <c>async-stalls</c>, <c>wait-chains</c>, <c>threadpool</c>) renders purely from the already
 /// captured artifact — no live ClrMD attach, no authorization — so both the MCP server's
-/// <c>query_thread_snapshot</c> tool and the standalone CLI <c>session</c> REPL (issue #300) share
+/// <c>query_snapshot</c> tool and the standalone CLI <c>session</c> REPL (issue #300) share
 /// one implementation.
 /// </summary>
 public static class ThreadSnapshotQueryDispatcher

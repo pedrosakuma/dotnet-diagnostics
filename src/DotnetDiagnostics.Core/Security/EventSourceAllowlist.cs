@@ -1,7 +1,7 @@
 namespace DotnetDiagnostics.Core.Security;
 
 /// <summary>
-/// Provider-name allowlist used by <c>collect_event_source</c> (issue #165 / M2).
+/// Provider-name allowlist used by <c>collect_events(kind="event_source")</c> (issue #165 / M2).
 /// Custom EventSources can emit user ids, request payloads, and auth-failure detail —
 /// the LLM ingests every captured event. The allowlist defaults to a curated set of
 /// runtime / ASP.NET Core / HttpClient providers; anything else is rejected unless

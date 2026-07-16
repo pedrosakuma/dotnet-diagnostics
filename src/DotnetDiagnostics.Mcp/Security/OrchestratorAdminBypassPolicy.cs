@@ -14,7 +14,7 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// </summary>
 /// <remarks>
 /// Centralising the policy keeps the bypass semantics identical across
-/// <c>list_active_investigations</c>, <c>detach_from_pod</c> and the H6 proxy
+/// <c>list_orchestrator(kind="investigations")</c>, <c>detach_from_pod</c> and the H6 proxy
 /// owner check — drift between the three call sites would re-introduce the
 /// cross-session privilege bug B3 closed.
 /// </remarks>

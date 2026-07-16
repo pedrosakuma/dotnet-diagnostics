@@ -58,7 +58,7 @@ internal sealed class KubernetesPodInventory : IPodInventory
         {
             throw new OrchestratorException(
                 OrchestratorErrorKinds.PermissionDenied,
-                $"Kubernetes API rejected the list_pods call with {(int?)ex.Response?.StatusCode}. " +
+                $"Kubernetes API rejected the list_orchestrator(kind=\"pods\") call with {(int?)ex.Response?.StatusCode}. " +
                 "Check the orchestrator ServiceAccount has 'pods' get/list/watch in the requested namespace.",
                 ex);
         }
@@ -238,7 +238,7 @@ internal sealed class KubernetesPodInventory : IPodInventory
         }
         if (requested > _options.MaxListLimit)
         {
-            _logger.LogDebug("Clamping list_pods limit {Requested} to MaxListLimit {Max}.", requested, _options.MaxListLimit);
+            _logger.LogDebug("Clamping list_orchestrator(kind=pods) limit {Requested} to MaxListLimit {Max}.", requested, _options.MaxListLimit);
             return _options.MaxListLimit;
         }
         return requested;

@@ -47,9 +47,8 @@ public sealed partial class QuerySnapshotTool
     internal const string ToolName = "query_snapshot";
 
     // View constants accepted for the cpu-sample / allocation-sample handle kinds.
-    // The legacy `get_call_tree` tool exposed no view discriminator (it had exactly one
-    // projection); the unified tool exposes that projection as the canonical
-    // `call-tree` view so the (handle, view) contract is uniform across kinds.
+    // CPU/allocation handles historically exposed one call-tree projection. The canonical
+    // tool names it explicitly so the (handle, view) contract is uniform across kinds.
     internal const string CallTreeView = "call-tree";
     internal const string DiffView = "diff";
 

@@ -95,7 +95,7 @@ public static class SamplerUseCases
         }
         catch (Exception ex) when (resolveMethodInstantiations && ex is not OperationCanceledException)
         {
-            return WithContext(AttachGuard.ClassifyAttachFailure<CpuSample>("collect_cpu_sample", pid, ex), ctx);
+            return WithContext(AttachGuard.ClassifyAttachFailure<CpuSample>("collect_sample", pid, ex), ctx);
         }
 
         var handle = handles.Register(pid, "cpu-sample", result.Artifact, SampleHandleTtl);
@@ -188,9 +188,9 @@ public static class SamplerUseCases
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
             { Priority = NextActionHintPriority.High },
             new NextActionHint("collect_sample", "Cross-reference: identify hot CPU paths that correlate with the top allocating types.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
+                new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
             new NextActionHint("collect_events", "Observe GC pause frequency and generation distribution caused by this allocation load.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds }))
+                new Dictionary<string, object?> { ["kind"] = "gc", ["processId"] = pid, ["durationSeconds"] = durationSeconds }))
             with
         { Signals = signals.Count > 0 ? signals : null };
         return WithContext(ok, ctx);
@@ -238,14 +238,14 @@ public static class SamplerUseCases
         catch (UnauthorizedAccessException ex)
         {
             return DiagnosticResult.Fail<OffCpuSnapshot>(
-                $"collect_off_cpu_sample could not start NT Kernel Logger capture for pid {pid}: Windows denied access to the ContextSwitch provider.",
+                $"collect_sample(kind=\"off_cpu\") could not start NT Kernel Logger capture for pid {pid}: Windows denied access to the ContextSwitch provider.",
                 new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
                 new NextActionHint("inspect_process",
                     "After granting either BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance') to the sidecar account and restarting the Windows service, re-check capabilities before retrying.",
                     new Dictionary<string, object?> { ["processId"] = pid }),
                 new NextActionHint("collect_sample",
                     "Retry after the sidecar account has one of the two supported Windows paths: BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance').",
-                    new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = durationSeconds, ["topN"] = topN }));
+                    new Dictionary<string, object?> { ["kind"] = "off_cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds, ["topN"] = topN }));
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("perf", StringComparison.OrdinalIgnoreCase)
                                                    || ex.Message.Contains("CAP_", StringComparison.OrdinalIgnoreCase)
@@ -292,7 +292,7 @@ public static class SamplerUseCases
             new NextActionHint("query_snapshot", "Drill into per-thread off-CPU view or a specific stack.",
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byThread" }),
             new NextActionHint("collect_sample", "Cross-reference with on-CPU hotspots to separate compute from wait.",
-                new Dictionary<string, object?> { ["processId"] = pid, ["durationSeconds"] = 10 }));
+                new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = 10 }));
         return WithContext(ok, resolved.Context);
     }
 

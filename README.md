@@ -187,7 +187,7 @@ as `dotnet-diagnostics-cli-<version>-<rid>`. **Full reference:** [`docs/cli-refe
 | `discover_azure` | Configuration-gated App Service, Container Apps, and AKS discovery |
 | `collect_process_dump` | Write a Mini / Triage / WithHeap / Full dump to disk |
 | `collect_thread_snapshot` | Managed thread states, stacks, SyncBlock lock graph, and deadlock evidence |
-| `capture_method_bytes` | Read JIT/ReadyToRun native bytes for a managed method |
+| `capture_method_bytes` | Read JIT-emitted native bytes for a managed method from a live process or dump |
 | `start_investigation` | Build a bounded cold, warm, or hypothesis-driven investigation plan |
 | `export_investigation_summary` | Export portable investigation memory as JSON |
 | `compare_to_baseline` | Compare a current investigation summary with a saved baseline |

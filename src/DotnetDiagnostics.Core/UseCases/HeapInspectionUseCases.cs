@@ -11,7 +11,7 @@ namespace DotnetDiagnostics.Core.UseCases;
 /// Host-neutral managed-heap inspection use cases (issue #288 PR3b). Owns the full
 /// <see cref="DiagnosticResult{T}"/> orchestration — symbol-path validation, attach guarding,
 /// ClrMD heap walk, snapshot-handle registration, summary text and the cross-MCP drilldown hint —
-/// for the offline <c>inspect_dump</c> and the live <c>inspect_live_heap</c> paths. Depends on Core
+/// for the offline and live <c>inspect_heap</c> paths. Depends on Core
 /// abstractions only and carries no MCP/transport knowledge, so both the MCP <c>inspect_heap</c>
 /// tool and the standalone <c>dotnet-diagnostics inspect-heap</c> CLI share one behavior.
 /// </summary>
@@ -49,11 +49,11 @@ public static class HeapInspectionUseCases
         ISymbolServerDeprecationSink? deprecation = null,
         CancellationToken cancellationToken = default)
     {
-        // B4 / issue #165 / M3: same SSRF guard as collect_cpu_sample.
+        // B4 / issue #165 / M3: same SSRF guard as CPU sampling.
         var symbolDenial = SymbolPathValidation.Validate<DumpInspection>(symbolServerAllowlist, symbolPath, principalAllowsSymbolsRemote, deprecation);
         if (symbolDenial is not null) return symbolDenial;
 
-        return await AttachGuard.GuardAttachAsync("inspect_dump", processId: null, async () =>
+        return await AttachGuard.GuardAttachAsync("inspect_heap", processId: null, async () =>
         {
             var snapshot = await inspector.InspectAsync(
                 dumpFilePath,
@@ -102,7 +102,7 @@ public static class HeapInspectionUseCases
         ISymbolServerDeprecationSink? deprecation = null,
         CancellationToken cancellationToken = default)
     {
-        // B4 / issue #165 / M3: same SSRF guard as collect_cpu_sample.
+        // B4 / issue #165 / M3: same SSRF guard as CPU sampling.
         var symbolDenial = SymbolPathValidation.Validate<LiveHeapInspection>(symbolServerAllowlist, symbolPath, principalAllowsSymbolsRemote, deprecation);
         if (symbolDenial is not null) return symbolDenial;
 
@@ -111,7 +111,7 @@ public static class HeapInspectionUseCases
         var pid = resolved.ProcessId;
         var ctx = resolved.Context;
 
-        return await AttachGuard.GuardAttachAsync("inspect_live_heap", pid, async () =>
+        return await AttachGuard.GuardAttachAsync("inspect_heap", pid, async () =>
         {
             var snapshot = await inspector.InspectLiveAsync(
                 pid,
@@ -138,7 +138,7 @@ public static class HeapInspectionUseCases
                 ? DiagnosticResult.Ok(inspection, summary)
                 : DiagnosticResult.Ok(inspection, summary, hint);
             return WithContext(result, ctx);
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, retryArguments: new Dictionary<string, object?> { ["source"] = "live" }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -216,7 +216,7 @@ public static class HeapInspectionUseCases
             return new NextActionHint(
                 "dotnet-assembly-mcp.get_method",
                 $"Pivot to assembly inspection for the top retained type `{id.TypeFullName}` via the (mvid, token) handoff. " +
-                $"Use query_heap_snapshot(handle=\"{handle}\", view=\"retention-paths\") to expand retention without re-walking.",
+                $"Use query_snapshot(handle=\"{handle}\", view=\"retention-paths\") to expand retention without re-walking.",
                 new Dictionary<string, object?>
                 {
                     ["moduleVersionId"] = id.ModuleVersionId,

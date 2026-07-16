@@ -68,7 +68,7 @@ public sealed class ProcessContextResolver : IProcessContextResolver
                     Error: new DiagnosticError(
                         "InvalidArgument",
                         $"processId must be a positive process id (or null/0 for auto-resolution). Got {requested}.",
-                        "Omit processId entirely (or pass 0) to auto-resolve when exactly one .NET process is reachable; otherwise pass the pid from list_dotnet_processes."));
+                        "Omit processId entirely (or pass 0) to auto-resolve when exactly one .NET process is reachable; otherwise pass a pid returned by inspect_process(view=\"list\")."));
             }
 
             if (requested > 0)
@@ -137,7 +137,7 @@ public sealed class ProcessContextResolver : IProcessContextResolver
                 Error: new DiagnosticError(
                     "ProcessNotFound",
                     $"No .NET process with pid {pid} is reachable on this host (either the pid is not running, it is not a .NET process, or the sidecar runs under a different UID than the target).",
-                    "Call list_dotnet_processes to discover currently-running .NET processes. In containers / Kubernetes, verify the sidecar shares the target's PID namespace and runs as the same UID."));
+                    "Call inspect_process(view=\"list\") to discover currently-running .NET processes. In containers / Kubernetes, verify the sidecar shares the target's PID namespace and runs as the same UID."));
         }
 
         DiagnosticCapabilities caps;

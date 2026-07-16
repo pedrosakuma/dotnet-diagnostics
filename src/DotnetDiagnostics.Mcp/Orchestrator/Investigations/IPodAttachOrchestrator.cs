@@ -22,7 +22,7 @@ public sealed record AttachRequest(
     bool RequirePreparedTarget = true,
     bool AllowReuseExistingSession = true,
     // Bearer identity of the caller. The orchestrator stamps it onto the minted
-    // handle so /proxy/{handleId}, fan-out helpers, and list_active_investigations
+    // handle so /proxy/{handleId}, fan-out helpers, and list_orchestrator(kind="investigations")
     // can enforce per-owner authorization without relying on protocol-session
     // headers. Null is accepted (stdio / framework without a projected bearer
     // identity) and produces an un-scoped handle reachable by any authenticated

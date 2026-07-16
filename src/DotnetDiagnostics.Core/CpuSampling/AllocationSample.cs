@@ -69,7 +69,7 @@ public sealed record AllocationSample(
 /// <summary>
 /// Combined result of an allocation sampling pass: the compact <see cref="AllocationSample"/>
 /// summary returned to the LLM, and a heavier <see cref="CpuSampleTraceArtifact"/> retained
-/// under a handle for drill-down queries via <c>get_call_tree</c>.
+/// under a handle for drill-down queries via <c>query_snapshot(view="call-tree")</c>.
 /// </summary>
 public sealed record AllocationSampleResult(AllocationSample Summary, CpuSampleTraceArtifact Artifact);
 

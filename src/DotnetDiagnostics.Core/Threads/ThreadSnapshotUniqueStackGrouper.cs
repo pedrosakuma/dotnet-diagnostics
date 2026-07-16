@@ -6,7 +6,7 @@ namespace DotnetDiagnostics.Core.Threads;
 
 /// <summary>
 /// Groups captured thread stacks by a stable signature derived from the top-N frames. Intended for
-/// <c>query_thread_snapshot(view="unique-stacks")</c> so the LLM can reason about K stack shapes
+/// <c>query_snapshot(view="unique-stacks")</c> so the LLM can reason about K stack shapes
 /// instead of O(N) individual threads.
 /// </summary>
 public static class ThreadSnapshotUniqueStackGrouper

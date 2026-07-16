@@ -31,7 +31,7 @@ public sealed record DiagnosticCapabilities(
     /// to compile.</summary>
     public bool InContainer { get; init; }
 
-    /// <summary>True when the host exposes cgroup v2 (and therefore <c>get_container_signals</c>
+    /// <summary>True when the host exposes cgroup v2 (and therefore <c>inspect_process(view="container")</c>
     /// can be called against this process). False on cgroup v1 hosts and Windows.</summary>
     public bool CgroupV2 { get; init; }
 

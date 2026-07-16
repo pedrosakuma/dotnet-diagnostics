@@ -127,6 +127,71 @@ public sealed class ToolReferenceDocParityTests
         doc.Should().NotContain("`data.failures`");
     }
 
+    [Fact]
+    public void RemovedToolAliases_AreConfinedToExplicitMigrationHistory()
+    {
+        var aliases = new[]
+        {
+            "get_module_bytes", "get_dump_bytes", "get_trace_bytes",
+            "inspect_dump", "inspect_live_heap",
+            "query_heap_snapshot", "query_thread_snapshot", "query_off_cpu_snapshot", "query_collection", "get_call_tree",
+            "snapshot_counters", "collect_exceptions", "collect_gc_events", "collect_event_source", "collect_activities",
+            "list_dotnet_processes", "get_process_info", "get_diagnostic_capabilities", "get_container_signals", "get_memory_trend",
+            "collect_cpu_sample", "collect_off_cpu_sample", "collect_allocation_sample",
+            "list_pods", "list_active_investigations",
+            "get_collection_status", "cancel_collection",
+        };
+        var expected = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            ["src/DotnetDiagnostics.Cli/CliHintProjection.cs|list_dotnet_processes"] = 2,
+            ["src/DotnetDiagnostics.Cli/CliHintProjection.cs|collect_off_cpu_sample"] = 2,
+            ["src/DotnetDiagnostics.Cli/CliHintProjection.cs|inspect_live_heap"] = 3,
+            ["src/DotnetDiagnostics.Cli/CliHintProjection.cs|inspect_dump"] = 4,
+            ["src/DotnetDiagnostics.Cli/CliHintProjection.cs|query_heap_snapshot"] = 2,
+            ["src/DotnetDiagnostics.Cli/CliHintProjection.cs|collect_cpu_sample"] = 1,
+            ["src/DotnetDiagnostics.Cli/CliHintProjection.cs|query_thread_snapshot"] = 1,
+            ["src/DotnetDiagnostics.Mcp/Tools/CollectSampleTool.cs|collect_cpu_sample"] = 1,
+            ["src/DotnetDiagnostics.Mcp/Tools/CollectSampleTool.cs|collect_off_cpu_sample"] = 1,
+            ["src/DotnetDiagnostics.Mcp/Tools/CollectSampleTool.cs|collect_allocation_sample"] = 1,
+            ["src/DotnetDiagnostics.Mcp/Tools/GetBytesTool.cs|get_module_bytes"] = 1,
+            ["src/DotnetDiagnostics.Mcp/Tools/GetBytesTool.cs|get_dump_bytes"] = 1,
+            ["docs/client-setup.md|get_collection_status"] = 1,
+            ["docs/client-setup.md|cancel_collection"] = 1,
+            ["docs/tool-reference.md|get_collection_status"] = 1,
+            ["docs/tool-reference.md|cancel_collection"] = 1,
+        };
+
+        var root = FindRepoRoot();
+        var files = Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                           && !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Concat(Directory.EnumerateFiles(Path.Combine(root, "docs"), "*.md", SearchOption.AllDirectories))
+            .Concat(Directory.EnumerateFiles(Path.Combine(root, "deploy"), "*.md", SearchOption.AllDirectories))
+            .Concat(Directory.EnumerateFiles(Path.Combine(root, "deploy"), "*.yml", SearchOption.AllDirectories))
+            .Concat(Directory.EnumerateFiles(Path.Combine(root, "deploy"), "*.yaml", SearchOption.AllDirectories))
+            .Append(Path.Combine(root, "README.md"))
+            .Append(Path.Combine(root, "AGENTS.md"));
+        var actual = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        foreach (var path in files)
+        {
+            var relativePath = Path.GetRelativePath(root, path).Replace('\\', '/');
+            var text = File.ReadAllText(path);
+            foreach (var alias in aliases)
+            {
+                var count = CountOccurrences(text, alias);
+                if (count > 0)
+                {
+                    actual[$"{relativePath}|{alias}"] = count;
+                }
+            }
+        }
+
+        actual.Should().BeEquivalentTo(
+            expected,
+            "removed names may survive only in the enumerated migration-history or backward-compatibility locations");
+    }
+
     private static IReadOnlyList<string> EnumerateToolNames()
     {
         var names = new SortedSet<string>(StringComparer.Ordinal);
@@ -152,6 +217,9 @@ public sealed class ToolReferenceDocParityTests
         => ReadRepoFile(Path.Combine("docs", "tool-reference.md"));
 
     private static string ReadRepoFile(string relativePath)
+        => File.ReadAllText(Path.Combine(FindRepoRoot(), relativePath));
+
+    private static string FindRepoRoot()
     {
         // [CallerFilePath] collapses to "/_/…" in deterministic CI builds, so walk up from the test
         // assembly to the repo root (marked by DotnetDiagnostics.slnx).
@@ -168,6 +236,19 @@ public sealed class ToolReferenceDocParityTests
                 typeof(ToolReferenceDocParityTests).Assembly.Location);
         }
 
-        return File.ReadAllText(Path.Combine(dir, relativePath));
+        return dir;
+    }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        var startIndex = 0;
+        while ((startIndex = text.IndexOf(value, startIndex, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            startIndex += value.Length;
+        }
+
+        return count;
     }
 }

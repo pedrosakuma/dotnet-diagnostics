@@ -5,7 +5,7 @@ namespace DotnetDiagnostics.Core.OffCpu;
 /// (<see cref="PerfSchedOffCpuSampler"/> on Linux, <see cref="EtwOffCpuSampler"/> on Windows).
 /// Keeping the per-stack / per-thread rollup, censored-span accounting and Notes wiring in one
 /// place ensures the <c>OffCpuSnapshotArtifact</c> shape returned to the LLM (and queried via
-/// <c>query_off_cpu_snapshot</c>) is platform-agnostic — only the raw spans and the
+/// <c>query_snapshot</c>) is platform-agnostic — only the raw spans and the
 /// <c>SymbolSource</c> tag change between backends.
 /// </summary>
 internal static class OffCpuAggregator

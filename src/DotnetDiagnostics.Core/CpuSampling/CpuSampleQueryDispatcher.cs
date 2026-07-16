@@ -7,7 +7,7 @@ namespace DotnetDiagnostics.Core.CpuSampling;
 /// analogue of <see cref="DotnetDiagnostics.Core.Dump.HeapSnapshotQueryDispatcher"/>. It renders the
 /// merged caller→callee <c>call-tree</c> view (pruned by <c>maxDepth</c>/<c>maxNodes</c>, optionally
 /// re-rooted at a method substring) directly from the already-collected trace, so both the MCP server's
-/// <c>get_call_tree</c> / <c>query_snapshot(view="call-tree")</c> path and the standalone CLI
+/// <c>query_snapshot(view="call-tree")</c> path and the standalone CLI
 /// <c>session</c> REPL (issue #300) share one implementation.
 /// </summary>
 /// <remarks>
@@ -69,7 +69,7 @@ public static class CpuSampleQueryDispatcher
 
     /// <summary>
     /// Renders the pruned call tree from <paramref name="artifact"/>. Mirrors the server's
-    /// <c>get_call_tree</c> body verbatim: stamps per-frame <c>MethodIdentity</c>, optionally
+    /// call-tree body verbatim: stamps per-frame <c>MethodIdentity</c>, optionally
     /// re-roots at the highest-ranked frame matching <paramref name="rootMethodFilter"/>, then prunes to
     /// <paramref name="maxDepth"/> / <paramref name="maxNodes"/>.
     /// </summary>

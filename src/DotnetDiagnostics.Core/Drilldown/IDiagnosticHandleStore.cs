@@ -40,7 +40,7 @@ public interface IDiagnosticHandleStore
     /// Retrieves the artifact previously stored under <paramref name="handle"/> together with the
     /// <c>kind</c> it was registered with — without forcing a generic type assertion. Returns
     /// <c>null</c> when the handle is unknown, expired, or capacity-evicted. Used by the polymorphic
-    /// <c>query_collection</c> dispatcher, which selects the artifact's concrete type based on
+    /// <c>query_snapshot</c> dispatcher, which selects the artifact's concrete type based on
     /// <see cref="DiagnosticHandle.Kind"/>.
     /// </summary>
     HandleLookup? TryGetWithKind(string handle);

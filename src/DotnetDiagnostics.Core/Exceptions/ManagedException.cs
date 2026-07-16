@@ -22,7 +22,7 @@ public sealed record ExceptionSnapshot(
 {
     /// <summary>
     /// Cap applied to <see cref="Recent"/> during collection (the <c>maxRecent</c> argument to
-    /// <c>collect_exceptions</c>; default <c>100</c>). When <see cref="TotalExceptions"/>
+    /// <c>collect_events(kind="exceptions")</c>; default <c>100</c>). When <see cref="TotalExceptions"/>
     /// exceeds this value, <see cref="Recent"/> is the truncated head of the stream (the first
     /// N observed during the window) and the tail is dropped — counts in <see cref="ByType"/>
     /// remain exact. Surfaced so the LLM can distinguish "fewer than the cap occurred" from

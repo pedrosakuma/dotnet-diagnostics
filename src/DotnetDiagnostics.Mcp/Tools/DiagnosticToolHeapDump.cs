@@ -169,7 +169,7 @@ internal static class DiagnosticToolHeapDump
         SensitiveDataRedactor redactor,
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
-        [Description("Snapshot handle returned by inspect_dump or inspect_live_heap.")] string handle,
+        [Description("Snapshot handle returned by inspect_heap.")] string handle,
         [Description("Which slice of the snapshot to return: 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'timers', 'alc', 'object', 'gcroot', 'objsize' or 'async'.")] string view = "top-types",
         [Description("Maximum entries to return for any ranked view ('top-types', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'async', 'timers', 'alc'). Ignored by 'roots-by-kind', 'gchandles', 'retention-paths', 'object', 'gcroot' and 'objsize'.")] int topN = 50,
         [Description("For view='top-types': ranking — 'bytes' (default) or 'instances'.")] string rankBy = "bytes",
@@ -189,7 +189,7 @@ internal static class DiagnosticToolHeapDump
                 $"Handle '{handle}' is unknown or expired.",
                 new DiagnosticError("HandleExpired", "Heap snapshot handles live ~10min and are invalidated when the target process exits.", handle),
                 new NextActionHint("inspect_heap", "Re-attach and re-walk to issue a fresh handle.",
-                    new Dictionary<string, object?> { ["processId"] = "<pid>" }));
+                    new Dictionary<string, object?> { ["source"] = "live", ["processId"] = "<pid>" }));
         }
 
         return await QueryHeapSnapshot(
@@ -254,7 +254,7 @@ internal static class DiagnosticToolHeapDump
                 }
 
                 return await GuardAttachAsync(
-                    "query_heap_snapshot",
+                    "query_snapshot",
                     snapshot.Origin == HeapSnapshotOrigin.Live ? snapshot.ProcessId : null,
                     async () => normalizedView switch
                     {
@@ -262,7 +262,13 @@ internal static class DiagnosticToolHeapDump
                         "gcroot" => QueryGcRoot(snapshot, handle, await inspector.InspectGcRootAsync(snapshot, parsedAddress, cancellationToken).ConfigureAwait(false)),
                         _ => QueryObjectSize(snapshot, handle, await inspector.InspectObjectSizeAsync(snapshot, parsedAddress, cancellationToken).ConfigureAwait(false)),
                     },
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    new Dictionary<string, object?>
+                    {
+                        ["handle"] = handle,
+                        ["view"] = normalizedView,
+                        ["address"] = address,
+                    }).ConfigureAwait(false);
             default:
                 return InvalidArg<HeapSnapshotQueryResult>(nameof(view), $"must be 'top-types', 'retention-paths', 'roots-by-kind', 'finalizer-queue', 'fragmentation', 'static-fields', 'delegate-targets', 'duplicate-strings', 'gchandles', 'timers', 'alc', 'object', 'gcroot', 'objsize' or 'async' (got '{view}')");
         }
@@ -308,7 +314,7 @@ internal static class DiagnosticToolHeapDump
         }
         if (snapshot.Origin == HeapSnapshotOrigin.Live)
         {
-            summary += " Live-object addresses can move after a GC; re-run inspect_live_heap if this address stops resolving.";
+            summary += " Live-object addresses can move after a GC; re-run inspect_heap(source=\"live\") if this address stops resolving.";
         }
 
         var result = new HeapSnapshotQueryResult(handle, "object", origin, snapshot.ProcessId, snapshot.CapturedAt)
@@ -424,7 +430,11 @@ internal static class DiagnosticToolHeapDump
         {
             return DiagnosticResult.Fail<HeapSnapshotQueryResult>(
                 $"Snapshot '{handle}' was captured without duplicate-string aggregation.",
-                new DiagnosticError("ViewNotCaptured", "Re-run inspect_dump / inspect_live_heap with includeDuplicateStrings=true.", handle));
+                new DiagnosticError("ViewNotCaptured", "Re-run inspect_heap with includeDuplicateStrings=true.", handle),
+                new NextActionHint(
+                    "inspect_heap",
+                    "Re-walk with includeDuplicateStrings=true to populate duplicate-string aggregation.",
+                    BuildRecaptureArguments(snapshot, "includeDuplicateStrings")));
         }
 
         var slice = snapshot.DuplicateStrings.Take(topN).Select(s =>
@@ -462,8 +472,30 @@ internal static class DiagnosticToolHeapDump
         string tool,
         int? processId,
         Func<Task<DiagnosticResult<T>>> body,
-        CancellationToken cancellationToken)
-        => AttachGuard.GuardAttachAsync(tool, processId, body, cancellationToken);
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, object?>? retryArguments = null)
+        => AttachGuard.GuardAttachAsync(tool, processId, body, cancellationToken, retryArguments: retryArguments);
+
+    private static Dictionary<string, object?> BuildRecaptureArguments(
+        HeapSnapshotArtifact snapshot,
+        string option)
+    {
+        var arguments = new Dictionary<string, object?>
+        {
+            ["source"] = snapshot.Origin == HeapSnapshotOrigin.Dump ? "dump" : "live",
+            [option] = true,
+        };
+        if (snapshot.Origin == HeapSnapshotOrigin.Dump && !string.IsNullOrWhiteSpace(snapshot.DumpFilePath))
+        {
+            arguments["dumpFilePath"] = snapshot.DumpFilePath;
+        }
+        else
+        {
+            arguments["processId"] = snapshot.ProcessId;
+        }
+
+        return arguments;
+    }
 
     private static bool TryParseUnsignedHexOrInt(string value, out ulong result)
     {

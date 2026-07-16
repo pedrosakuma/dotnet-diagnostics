@@ -64,7 +64,7 @@ public sealed record DiagnosticResult<T>(
     /// <summary>
     /// Per-process digest produced by <see cref="DotnetDiagnostics.Core.ProcessDiscovery.IProcessContextResolver"/>.
     /// Carried for free on every tool that targets a live process so the LLM never has to
-    /// re-run <c>list_dotnet_processes</c>/<c>get_diagnostic_capabilities</c> just to know
+    /// re-run <c>inspect_process(view="list")</c>/<c>inspect_process(view="capabilities")</c> just to know
     /// which runtime it is talking to. <see cref="DotnetDiagnostics.Core.ProcessDiscovery.ProcessContext.AutoResolved"/>
     /// signals whether the pid was supplied by the caller or chosen by the server.
     /// </summary>

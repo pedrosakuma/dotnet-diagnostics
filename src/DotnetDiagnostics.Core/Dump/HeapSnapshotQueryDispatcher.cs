@@ -6,7 +6,7 @@ namespace DotnetDiagnostics.Core.Dump;
 /// Host-neutral drill-down engine for <see cref="HeapSnapshotArtifact"/> handles — the heap analogue
 /// of <see cref="DotnetDiagnostics.Core.Collection.CollectionQueryDispatcher"/>. It renders the
 /// <b>projection</b> views that need nothing but the already-walked snapshot (no live ClrMD attach, no
-/// sensitive-value redactor, no authorization), so both the MCP server's <c>query_heap_snapshot</c>
+/// sensitive-value redactor, no authorization), so both the MCP server's <c>query_snapshot</c>
 /// tool and the standalone CLI <c>session</c> REPL (issue #300) share one implementation.
 /// </summary>
 /// <remarks>
@@ -129,11 +129,11 @@ public static class HeapSnapshotQueryDispatcher
             return DiagnosticResult.Fail<HeapSnapshotQueryResult>(
                 $"Snapshot '{handle}' was captured without retention paths.",
                 new DiagnosticError("RetentionPathsMissing",
-                    "Re-run inspect_dump or inspect_live_heap with includeRetentionPaths=true to populate the snapshot's retention data.",
+                    "Re-run inspect_heap with includeRetentionPaths=true to populate the snapshot's retention data.",
                     handle),
                 new NextActionHint("inspect_heap",
                     "Re-walk with includeRetentionPaths=true to populate retention chains for the top retained types.",
-                    new Dictionary<string, object?> { ["processId"] = snapshot.ProcessId, ["includeRetentionPaths"] = true }));
+                    BuildRecaptureArguments(snapshot, "includeRetentionPaths")));
         }
 
         IEnumerable<RetentionPath> filtered = snapshot.RetentionPaths;
@@ -216,7 +216,10 @@ public static class HeapSnapshotQueryDispatcher
         {
             return DiagnosticResult.Fail<HeapSnapshotQueryResult>(
                 $"Snapshot '{handle}' was captured without static-field walking.",
-                new DiagnosticError("ViewNotCaptured", "Re-run inspect_dump / inspect_live_heap with includeStaticFields=true.", handle));
+                new DiagnosticError("ViewNotCaptured", "Re-run inspect_heap with includeStaticFields=true.", handle),
+                new NextActionHint("inspect_heap",
+                    "Re-walk with includeStaticFields=true to populate static reference fields.",
+                    BuildRecaptureArguments(snapshot, "includeStaticFields")));
         }
         var slice = snapshot.StaticFields.Take(topN).ToArray();
         var summary = slice.Length == 0
@@ -237,7 +240,10 @@ public static class HeapSnapshotQueryDispatcher
         {
             return DiagnosticResult.Fail<HeapSnapshotQueryResult>(
                 $"Snapshot '{handle}' was captured without delegate-target aggregation.",
-                new DiagnosticError("ViewNotCaptured", "Re-run inspect_dump / inspect_live_heap with includeDelegateTargets=true.", handle));
+                new DiagnosticError("ViewNotCaptured", "Re-run inspect_heap with includeDelegateTargets=true.", handle),
+                new NextActionHint("inspect_heap",
+                    "Re-walk with includeDelegateTargets=true to populate delegate targets.",
+                    BuildRecaptureArguments(snapshot, "includeDelegateTargets")));
         }
         var slice = snapshot.DelegateTargets.Take(topN).ToArray();
         var summary = slice.Length == 0
@@ -388,4 +394,25 @@ public static class HeapSnapshotQueryDispatcher
             $"Argument '{parameterName}' {requirement}.",
             new DiagnosticError("InvalidArgument", $"Argument '{parameterName}' {requirement}.", parameterName),
             new NextActionHint("inspect_process", "Re-issue with valid arguments. See tool schema for ranges and defaults."));
+
+    private static Dictionary<string, object?> BuildRecaptureArguments(
+        HeapSnapshotArtifact snapshot,
+        string option)
+    {
+        var arguments = new Dictionary<string, object?>
+        {
+            ["source"] = snapshot.Origin == HeapSnapshotOrigin.Dump ? "dump" : "live",
+            [option] = true,
+        };
+        if (snapshot.Origin == HeapSnapshotOrigin.Dump && !string.IsNullOrWhiteSpace(snapshot.DumpFilePath))
+        {
+            arguments["dumpFilePath"] = snapshot.DumpFilePath;
+        }
+        else
+        {
+            arguments["processId"] = snapshot.ProcessId;
+        }
+
+        return arguments;
+    }
 }

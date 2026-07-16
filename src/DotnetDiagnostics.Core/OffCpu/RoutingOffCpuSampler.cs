@@ -9,7 +9,7 @@ namespace DotnetDiagnostics.Core.OffCpu;
 /// <see cref="PerfSchedOffCpuSampler"/> (perf sched_switch + DWARF unwind) and Windows to
 /// <see cref="EtwOffCpuSampler"/> (NT Kernel Logger ContextSwitch with stack walk). Both
 /// backends emit the same <see cref="OffCpuSnapshotArtifact"/> shape via the shared
-/// <see cref="OffCpuAggregator"/>, so downstream tools (<c>query_off_cpu_snapshot</c>) stay
+/// <see cref="OffCpuAggregator"/>, so downstream <c>query_snapshot</c> views stay
 /// platform-agnostic.
 /// </summary>
 public sealed class RoutingOffCpuSampler : IOffCpuSampler

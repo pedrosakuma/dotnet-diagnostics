@@ -122,7 +122,7 @@ public sealed class LinuxNativeThreadSnapshotInspector : IThreadSnapshotInspecto
     /// <summary>
     /// Builds the <see cref="ManagedThread"/> view for one parsed native thread. The Linux TID is
     /// used both as <see cref="ManagedThread.OSThreadId"/> and as <see cref="ManagedThread.ManagedThreadId"/>
-    /// so <c>query_thread_snapshot(view="stack")</c> can address each native thread by its TID — without
+    /// so <c>query_snapshot(view="stack")</c> can address each native thread by its TID — without
     /// it every native thread would collide on <c>ManagedThreadId = -1</c> and only the first would be
     /// reachable through the drilldown API.
     /// </summary>

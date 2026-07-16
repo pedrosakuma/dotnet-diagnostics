@@ -11,12 +11,12 @@ namespace DotnetDiagnostics.Core.Security;
 /// variables prefixed <c>Diagnostics__</c>):
 /// <list type="bullet">
 ///   <item><description><c>AllowSensitiveHeapValues</c> — bool. When false (default),
-///   string previews and field value previews returned by <c>query_heap_snapshot</c>
+///   string previews and field value previews returned by <c>query_snapshot</c>
 ///   are replaced with metadata-only placeholders. When true, callers may opt in per
 ///   call with <c>includeSensitiveValues=true</c>; values still pass through the
 ///   <see cref="SensitiveDataRedactor"/> pattern set.</description></item>
 ///   <item><description><c>EventSourceAllowlist</c> — string[]. Provider names that
-///   <c>collect_event_source</c> will subscribe to without an explicit opt-in.</description></item>
+///   <c>collect_events(kind="event_source")</c> will subscribe to without an explicit opt-in.</description></item>
 ///   <item><description><c>SymbolServerAllowlist</c> — string[]. Hosts that may appear
 ///   inside a <c>srv*https://…</c> segment of a caller-supplied <c>symbolPath</c>.</description></item>
 ///   <item><description><c>RedactionPatterns</c> — string[]. Additional regex patterns

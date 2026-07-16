@@ -23,7 +23,7 @@ namespace DotnetDiagnostics.Core.OffCpu;
 /// Per-thread pending-out tracking closes each off-CPU span exactly the way
 /// <see cref="PerfSchedOffCpuSampler"/> closes pairs on Linux, so the resulting
 /// <see cref="OffCpuSnapshotArtifact"/> is platform-agnostic and the
-/// <c>query_off_cpu_snapshot</c> drilldown does not need a Windows branch.
+/// the <c>query_snapshot</c> off-CPU drilldown does not need a Windows branch.
 /// </summary>
 /// <remarks>
 /// <para>

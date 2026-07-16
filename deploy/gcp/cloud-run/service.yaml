@@ -9,15 +9,16 @@
 # PermissionDenied on this platform:
 #
 #   - collect_thread_snapshot
-#   - inspect_live_heap
-#   - inspect_dump   (against a live PID)
-#   - collect_process_dump
-#   - collect_off_cpu_sample   (perf-based, also unavailable)
+#   - inspect_heap(source="live")
+#   - capture_method_bytes
+#   - get_bytes(kind="module")
+#   - collect_sample(kind="cpu", resolveMethodInstantiations=true)
+#   - collect_sample(kind="off_cpu")   (perf-based, also unavailable)
 #
-# EventPipe-based tools (snapshot_counters, collect_cpu_sample,
-# collect_exceptions, collect_gc_events, collect_event_source,
-# collect_activities, collect_allocation_sample) still work because they only
-# require socket access and a matching UID.
+# EventPipe-based paths (`collect_events` with counters/exceptions/gc/
+# event_source/activities and `collect_sample` with cpu/alloc) still work
+# because they only require socket access and a matching UID. The
+# `collect_process_dump` path also uses diagnostic IPC rather than ptrace.
 #
 # Validate without deploying:
 #   gcloud run services replace deploy/gcp/cloud-run/service.yaml \

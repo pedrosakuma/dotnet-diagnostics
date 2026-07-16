@@ -64,25 +64,31 @@ public static class ProcessResolutionHelpers
                 "No .NET process is visible to the diagnostic IPC on this host.",
                 error,
                 new NextActionHint(
-                    "list_dotnet_processes",
-                    "Confirm the target is running and shares your PID namespace + UID (containers/K8s).")),
+                    "inspect_process",
+                    "Confirm the target is running and shares your PID namespace + UID (containers/K8s).",
+                    new Dictionary<string, object?> { ["view"] = "list" })),
 
             "AmbiguousDotnetProcess" => DiagnosticResult.Fail<T>(
                 $"{resolution.Candidates?.Count ?? 0} .NET processes visible — pass processId explicitly.",
                 error,
                 new NextActionHint(
-                    "list_dotnet_processes",
+                    "inspect_process",
                     "Inspect the candidate list inline below and re-issue the call with the chosen processId.",
-                    resolution.Candidates is { Count: > 0 }
-                        ? new Dictionary<string, object?> { ["candidates"] = resolution.Candidates.Take(5).Select(c => new { c.ProcessId, c.ManagedEntrypointAssemblyName }).ToArray() }
-                        : null)),
+                    new Dictionary<string, object?>
+                    {
+                        ["view"] = "list",
+                        ["candidates"] = resolution.Candidates is { Count: > 0 }
+                            ? resolution.Candidates.Take(5).Select(c => new { c.ProcessId, c.ManagedEntrypointAssemblyName }).ToArray()
+                            : null,
+                    })),
 
             "EndpointUnavailable" => DiagnosticResult.Fail<T>(
                 error.Message,
                 error,
                 new NextActionHint(
-                    "list_dotnet_processes",
-                    "Re-list processes — the target may have exited or the sidecar UID may not match.")),
+                    "inspect_process",
+                    "Re-list processes — the target may have exited or the sidecar UID may not match.",
+                    new Dictionary<string, object?> { ["view"] = "list" })),
 
             _ => DiagnosticResult.Fail<T>(error.Message, error),
         };

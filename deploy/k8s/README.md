@@ -3,7 +3,7 @@
 This folder now contains both Kubernetes deployment models shipped by the repo:
 
 - the **always-on sidecar** for direct per-Pod investigations, and
-- the **central orchestrator** for Phase 7 fleet mode (`list_pods`, `attach_to_pod`, proxied diagnostics tools).
+- the **central orchestrator** for fleet mode (`list_orchestrator(kind="pods")`, `attach_to_pod`, proxied diagnostics tools).
 
 ## Files
 

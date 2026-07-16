@@ -6,7 +6,7 @@ namespace DotnetDiagnostics.Core.Capabilities;
 /// <summary>
 /// Cheap host-side probe for the Linux perf environment used by kernel-signal tooling.
 /// Separates "perf is installed" from "the sidecar can actually trace sched_switch" so
-/// <c>get_diagnostic_capabilities</c> can report both facts before the LLM spends a round-trip
+/// <c>inspect_process(view="capabilities")</c> can report both facts before the LLM spends a round-trip
 /// discovering them via failure.
 /// </summary>
 public static class PerfHostProbe

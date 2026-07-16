@@ -37,7 +37,7 @@ public sealed class EnvironmentProvenanceCollector : IProvenanceCollector
     {
         // We don't reach into the target process — that requires symbol resolution / module
         // enumeration we haven't built yet. The LLM passes the assembly name it learned from
-        // list_dotnet_processes / get_process_info; we surface that verbatim. Future work
+        // inspect_process list/info views; we surface that verbatim. Future work
         // (#11 source-resolution) will fill in InformationalVersion + GitSha by reading PE
         // headers / ResourceManager.
         if (string.IsNullOrWhiteSpace(assemblyName)) return null;

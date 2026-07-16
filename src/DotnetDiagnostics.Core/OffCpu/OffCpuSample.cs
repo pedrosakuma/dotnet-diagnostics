@@ -78,7 +78,7 @@ public sealed record OffCpuThreadView(
 public sealed record OffCpuSampleResult(OffCpuSnapshot Summary, OffCpuSnapshotArtifact Artifact);
 
 /// <summary>
-/// Discriminated view returned by <c>query_off_cpu_snapshot</c>. Exactly one of
+/// Discriminated off-CPU view returned by <c>query_snapshot</c>. Exactly one of
 /// <see cref="Stacks"/>, <see cref="Threads"/>, <see cref="Stack"/> is non-null depending on the
 /// requested <see cref="View"/> ("topStacks" | "byThread" | "stack").
 /// </summary>

@@ -23,8 +23,8 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// type is not added to the MCP tool surface so the LLM never sees the tools and the
 /// server keeps its sidecar-only behavior.
 ///
-/// Phase P3a ships only <c>list_pods</c>. Attach / detach / list_active_investigations
-/// land in P3b and P4 once the proxy plumbing is in place.
+/// Pod listing, attach/detach, and investigation inventory now ship through the canonical
+/// orchestrator surface.
 /// </remarks>
 [McpServerToolType]
 public sealed class OrchestratorTools
@@ -75,7 +75,7 @@ public sealed class OrchestratorTools
         catch (OrchestratorException ex)
         {
             return DiagnosticResult.Fail<PodCandidatePage>(
-                $"list_pods failed: {ex.Message}",
+                $"list_orchestrator(kind=\"pods\") failed: {ex.Message}",
                 new DiagnosticError(ex.ErrorKind, ex.Message),
                 BuildRecoveryHint(ex.ErrorKind));
         }
@@ -97,9 +97,6 @@ public sealed class OrchestratorTools
         var summary = $"Found {page.Items.Count} candidate Pod(s){(page.NextCursor is not null ? " (more available — use nextCursor)" : "")}. " +
                       $"First: {first.Namespace}/{first.Name} container={first.ContainerName} prepared={first.DiagnosticsPrepared} ({first.PreparationReason}).";
 
-        // Note: no NextActionHint pointing at attach_to_pod yet — that tool lands in P3b
-        // (issue #20). Until then, list_pods is read-only and the LLM should fall back to
-        // the sidecar transport for the actual diagnostic work.
         return DiagnosticResult.Ok(
             page,
             summary,
@@ -535,12 +532,12 @@ public sealed class OrchestratorTools
         if (items.Count == 0)
         {
             summary = includeTerminal
-                ? "list_active_investigations: no investigations owned by this bearer identity."
-                : "list_active_investigations: no Active/Attaching investigations owned by this bearer identity. Pass includeTerminal=true to inspect Closed/Expired/Failed history.";
+                ? "list_orchestrator(kind=\"investigations\"): no investigations owned by this bearer identity."
+                : "list_orchestrator(kind=\"investigations\"): no Active/Attaching investigations owned by this bearer identity. Pass includeTerminal=true to inspect Closed/Expired/Failed history.";
         }
         else
         {
-            summary = $"list_active_investigations: {items.Count} returned (active={active}, attaching={attaching}" +
+            summary = $"list_orchestrator(kind=\"investigations\"): {items.Count} returned (active={active}, attaching={attaching}" +
                       (includeTerminal ? $", closed={closed}, expired={expired}, failed={failed}" : "") +
                       $"; totalKnown={visibleTotal}" +
                       (adminListing ? "; admin listing (includeAllSessions=true)" : string.Empty) +

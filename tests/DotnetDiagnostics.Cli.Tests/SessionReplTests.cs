@@ -246,7 +246,7 @@ public sealed class SessionReplTests
         stdout.Should().Contain("not available in the session yet");
         stdout.Should().Contain("NotSupportedInSession");
         stdout.Should().Contain("ClrMD runtime");
-        stdout.Should().Contain("query_heap_snapshot");
+        stdout.Should().Contain("query_snapshot");
     }
 
     [Fact]

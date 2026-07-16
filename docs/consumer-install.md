@@ -77,6 +77,7 @@ Four live-memory operations attach to the target via `ptrace(PTRACE_ATTACH, …)
 - `capture_method_bytes` against a live PID
 - `inspect_heap(source="live")`
 - `get_bytes(kind="module")` against a live PID
+- `collect_sample(kind="cpu", resolveMethodInstantiations=true)` (the optional post-sample enrichment only)
 
 Linux's [Yama LSM](https://www.kernel.org/doc/Documentation/admin-guide/LSM/Yama.rst) defaults `kernel.yama.ptrace_scope=1` on Debian, Ubuntu, WSL, GitHub Codespaces, and most desktop distros — meaning **same-UID peer attach is blocked**. The MCP server reports this as a structured `DiagnosticError`:
 

@@ -142,7 +142,7 @@ orchestrator:
   enabled: true
   # Leave empty to default to the chart namespace.
   defaultNamespace: ""
-  # Leave empty to scope list_pods / attach_to_pod to the chart namespace.
+  # Leave empty to scope list_orchestrator(kind="pods") / attach_to_pod to the chart namespace.
   allowedNamespaces: []
   labelKeyAllowlist:
     - diagnostics.dotnet.io/prepared

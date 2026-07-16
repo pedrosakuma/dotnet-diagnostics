@@ -119,7 +119,7 @@ public static class ThreadDeadlockDetector
         {
             commands.Add(new ThreadDeadlockCommand(
                 $"~~[{member.OSThreadId.ToString("x", CultureInfo.InvariantCulture)}]s; !clrstack",
-                $"Inspect the blocked stack for managed thread {member.ThreadId} after mapping ids with !threads. MCP equivalent: query_thread_snapshot(handle=\"{handle}\", view=\"stack\", threadId={member.ThreadId})."));
+                $"Inspect the blocked stack for managed thread {member.ThreadId} after mapping ids with !threads. MCP equivalent: query_snapshot(handle=\"{handle}\", view=\"stack\", threadId={member.ThreadId})."));
         }
 
         return new ThreadDeadlockCycle(members, lockChain, commands);

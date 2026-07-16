@@ -4,7 +4,7 @@ namespace DotnetDiagnostics.Core.Security;
 
 /// <summary>
 /// Pattern-based redactor for string content that may be surfaced to an LLM through the
-/// heap drilldowns (<c>query_heap_snapshot</c> views <c>duplicate-strings</c> and
+/// heap drilldowns (<c>query_snapshot</c> views <c>duplicate-strings</c> and
 /// <c>object</c>). Even when the operator opts a deployment into
 /// <see cref="SecurityOptions.AllowSensitiveHeapValues"/>, every string returned still
 /// passes through this redactor so callers cannot accidentally exfiltrate well-known

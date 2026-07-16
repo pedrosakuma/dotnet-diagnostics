@@ -32,7 +32,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// <list type="number">
 ///   <item><description>The call carries an explicit <c>investigationHandleId</c> argument, or the MCP session has an <see cref="IInvestigationSessionBinder"/> binding.</description></item>
 ///   <item><description>The tool name is not in the orchestrator-management bypass list
-///     (<c>list_pods</c>, <c>attach_to_pod</c>, …). Forwarding these would loop the request
+///     (<c>list_orchestrator</c>, <c>attach_to_pod</c>, …). Forwarding these would loop the request
 ///     back into a child orchestrator surface that doesn't know about Kubernetes.</description></item>
 ///   <item><description>The call arguments do not contain a non-null <c>processId</c> property —
 ///     an explicit pid is the P2 escape hatch (explicit &gt; binding), matching the

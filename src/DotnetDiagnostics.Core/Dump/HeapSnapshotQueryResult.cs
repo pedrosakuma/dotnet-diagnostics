@@ -1,7 +1,7 @@
 namespace DotnetDiagnostics.Core.Dump;
 
 /// <summary>
-/// Typed payload returned by the <c>query_heap_snapshot</c> tool. Carries the slice requested
+/// Typed payload returned by the heap views of <c>query_snapshot</c>. Carries the slice requested
 /// by the LLM (top-N types OR retention paths matching a filter) along with provenance fields
 /// (origin, pid, captured-at) so the model can reason about freshness without a second roundtrip.
 /// </summary>

@@ -1,7 +1,7 @@
 # Helm deployment: dotnet-diagnostics-orchestrator
 
 The central orchestrator Helm chart lives at [`dotnet-diagnostics-orchestrator/`](./dotnet-diagnostics-orchestrator).
-It deploys the Phase 7 orchestrator surface (`list_pods`, `attach_to_pod`, routed diagnostics tools) behind the same HTTP auth surface as the existing sidecar: legacy/static bearer tokens, scoped opaque tokens, or OIDC/JWT validation.
+It deploys the orchestrator surface (`list_orchestrator(kind="pods")`, `attach_to_pod`, routed diagnostics tools) behind the same HTTP auth surface as the existing sidecar: legacy/static bearer tokens, scoped opaque tokens, or OIDC/JWT validation.
 
 ## Quick start: Helm
 

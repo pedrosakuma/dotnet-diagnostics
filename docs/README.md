@@ -5,7 +5,8 @@
 > `{ "kind": "confirmation_required", ... }` envelope describing the dump that would
 > have been written (`targetPid`, `dumpType`, `outputDirectory`) and **no file is
 > written to disk**. Pass `confirm=true` (in addition to holding the existing
-> `dump-write` + `ptrace` scopes) to perform the dump. The other ptrace-stack tools
+> `dump-write` + `ptrace` scopes) to perform the dump. The other tools protected by the
+> `ptrace` authorization scope
 > (`capture_method_bytes`, `inspect_heap(source="live")`, `collect_thread_snapshot`) are
 > deliberately unchanged. See [`authorization.md` → per-call confirmation](./authorization.md#per-call-confirmation)
 > and [`tool-reference.md` → `collect_process_dump`](./tool-reference.md#collect_process_dump).

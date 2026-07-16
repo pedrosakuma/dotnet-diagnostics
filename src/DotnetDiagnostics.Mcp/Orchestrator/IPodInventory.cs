@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 namespace DotnetDiagnostics.Mcp.Orchestrator;
 
 /// <summary>
-/// Inventory of attachable Pods. The MCP <c>list_pods</c> tool delegates to this service
+/// Inventory of attachable Pods. The MCP <c>list_orchestrator(kind="pods")</c> path delegates to this service
 /// instead of talking to the Kubernetes API directly so policy (namespace allowlist,
 /// selector validation, preparedness verdict) and transport are independently testable.
 /// </summary>
@@ -27,7 +27,7 @@ public interface IPodInventory
 
 /// <summary>
 /// Request shape for <see cref="IPodInventory.ListPodsAsync"/>. Mirrors the
-/// <c>list_pods</c> MCP tool signature but typed for easier unit testing.
+/// <c>list_orchestrator(kind="pods")</c> MCP arguments but typed for easier unit testing.
 /// </summary>
 /// <param name="Namespace">Namespace to scope the listing to. Null falls back to <c>OrchestratorOptions.DefaultNamespace</c>.</param>
 /// <param name="LabelSelector">Kubernetes label selector (e.g. <c>app=api,env=prod</c>). Keys are validated against the orchestrator's label allowlist when configured.</param>

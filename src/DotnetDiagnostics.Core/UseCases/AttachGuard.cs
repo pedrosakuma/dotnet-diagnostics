@@ -21,7 +21,8 @@ public static class AttachGuard
         int? processId,
         Func<Task<DiagnosticResult<T>>> body,
         CancellationToken cancellationToken,
-        AttachConcurrencyLimiter? limiter = null)
+        AttachConcurrencyLimiter? limiter = null,
+        IReadOnlyDictionary<string, object?>? retryArguments = null)
     {
         // Per-pid concurrency gate (#452, D2): two live attaches against the same target collide
         // because only one attacher can suspend it at a time. Serialize live attaches per pid;
@@ -41,7 +42,7 @@ public static class AttachGuard
 
             if (permit is null)
             {
-                return BusyResult<T>(tool, gatedPid);
+                return BusyResult<T>(tool, gatedPid, retryArguments);
             }
         }
 
@@ -67,14 +68,37 @@ public static class AttachGuard
     /// Retriable "busy" envelope returned when another attach already holds the per-pid gate.
     /// The hint nudges the LLM to back off and retry the same tool rather than fail the run.
     /// </summary>
-    public static DiagnosticResult<T> BusyResult<T>(string tool, int processId)
+    public static DiagnosticResult<T> BusyResult<T>(
+        string tool,
+        int processId,
+        IReadOnlyDictionary<string, object?>? retryArguments = null)
         => DiagnosticResult.Fail<T>(
             $"{tool} is busy: another attach against pid {processId} is in progress.",
             new DiagnosticError("Busy", "Only one process-attach can suspend a target at a time; this pid already has an attach in flight.", "AttachConcurrencyLimiter"),
             new NextActionHint(tool,
                 "Wait a moment and retry — the concurrent attach is expected to finish shortly.",
-                processId > 0 ? new Dictionary<string, object?> { ["processId"] = processId } : null)
+                BuildRetryArguments(processId, retryArguments))
             { Priority = NextActionHintPriority.High });
+
+    private static Dictionary<string, object?>? BuildRetryArguments(
+        int processId,
+        IReadOnlyDictionary<string, object?>? retryArguments)
+    {
+        if (processId <= 0 && retryArguments is null)
+        {
+            return null;
+        }
+
+        var result = retryArguments is null
+            ? new Dictionary<string, object?>()
+            : new Dictionary<string, object?>(retryArguments);
+        if (processId > 0)
+        {
+            result.TryAdd("processId", processId);
+        }
+
+        return result;
+    }
 
     /// <summary>
     /// Maps a known attach failure (<paramref name="ex"/>) for <paramref name="tool"/> into a
@@ -175,8 +199,8 @@ public static class AttachGuard
                     "collect_sample",
                     "When ptrace cannot be granted, use the perf-replay fallback tracked in issue #92.",
                     processId is int pidForReplay && pidForReplay > 0
-                        ? new Dictionary<string, object?> { ["processId"] = pidForReplay, ["durationSeconds"] = 5 }
-                        : null));
+                        ? new Dictionary<string, object?> { ["kind"] = "off_cpu", ["processId"] = pidForReplay, ["durationSeconds"] = 5 }
+                        : new Dictionary<string, object?> { ["kind"] = "off_cpu", ["durationSeconds"] = 5 }));
             }
 
             return DiagnosticResult.Fail<T>(
