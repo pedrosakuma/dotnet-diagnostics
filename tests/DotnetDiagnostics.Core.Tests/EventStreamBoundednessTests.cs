@@ -1,5 +1,6 @@
 using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Db;
+using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.ThreadPool;
 using FluentAssertions;
@@ -23,6 +24,35 @@ public sealed class EventStreamBoundednessTests
             .Select(static request => request.Path)
             .Should()
             .BeEquivalentTo(["/oldest", "/middle"]);
+    }
+
+    [Fact]
+    public void RequestsNowSnapshotQueue_ReportsOverflowAsIncompleteLowerBound()
+    {
+        var queue = new RequestsNowCollector.SnapshotCaptureQueue(capacity: 2);
+
+        queue.TryWrite(new RequestsNowCollector.SnapshotCaptureRequest("first", 1)).Should().BeTrue();
+        queue.TryWrite(new RequestsNowCollector.SnapshotCaptureRequest("second", 2)).Should().BeTrue();
+        queue.TryWrite(new RequestsNowCollector.SnapshotCaptureRequest("dropped", 3)).Should().BeFalse();
+
+        queue.DroppedCount.Should().Be(1);
+        queue.BuildNotes().Should().ContainSingle()
+            .Which.Should().ContainAll(
+                "Dropped 1",
+                "SnapshotQueueCapacity=2",
+                "incomplete lower bounds");
+    }
+
+    [Fact]
+    public void RequestsNowSnapshotQueue_DoesNotReportTruncationWithinCapacity()
+    {
+        var queue = new RequestsNowCollector.SnapshotCaptureQueue(capacity: 2);
+
+        queue.TryWrite(new RequestsNowCollector.SnapshotCaptureRequest("first", 1)).Should().BeTrue();
+        queue.TryWrite(new RequestsNowCollector.SnapshotCaptureRequest("second", 2)).Should().BeTrue();
+
+        queue.DroppedCount.Should().Be(0);
+        queue.BuildNotes().Should().BeEmpty();
     }
 
     [Fact]
