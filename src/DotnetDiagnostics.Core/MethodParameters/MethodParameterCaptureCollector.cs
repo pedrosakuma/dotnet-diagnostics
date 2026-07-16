@@ -38,12 +38,23 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
     private readonly ManagedMethodFilterResolver _resolver;
     private readonly SensitiveDataRedactor _redactor;
     private readonly ILogger<MethodParameterCaptureCollector> _logger;
+    private readonly MethodParameterCaptureLifecycleHooks? _lifecycleHooks;
 
     public MethodParameterCaptureCollector(MvidReader mvidReader, SensitiveDataRedactor redactor, ILogger<MethodParameterCaptureCollector>? logger = null)
+        : this(mvidReader, redactor, logger, lifecycleHooks: null)
+    {
+    }
+
+    internal MethodParameterCaptureCollector(
+        MvidReader mvidReader,
+        SensitiveDataRedactor redactor,
+        ILogger<MethodParameterCaptureCollector>? logger,
+        MethodParameterCaptureLifecycleHooks? lifecycleHooks)
     {
         _resolver = new ManagedMethodFilterResolver(mvidReader);
         _redactor = redactor;
         _logger = logger ?? NullLogger<MethodParameterCaptureCollector>.Instance;
+        _lifecycleHooks = lifecycleHooks;
     }
 
     public async Task<DiagnosticResult<MethodParameterCaptureArtifact>> CollectAsync(
@@ -147,6 +158,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
         var sharedPath = CreateSecureSharedDirectory();
         try
         {
+            _lifecycleHooks?.SharedPathCreated?.Invoke(sharedPath);
             var socketPath = Path.Combine(sharedPath, runtimeInstanceId.ToString("D") + ".sock");
 
             await DiagnosticsClientReflection.SetEnvironmentVariableAsync(client, SharedPathEnvVar, sharedPath, cancellationToken).ConfigureAwait(false);
@@ -187,7 +199,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                 requestRundown: false,
                 circularBufferMB: 256);
             using var source = new EventPipeEventSource(session.EventStream);
-            var observer = new ParameterCaptureObserver(_redactor, uniqueResolvedMethods, request.MaxEvents);
+            var observer = new ParameterCaptureObserver(_redactor, uniqueResolvedMethods, request.MaxEvents, _lifecycleHooks);
             var processingTask = Task.Run(() =>
             {
                 source.Dynamic.All += traceEvent =>
@@ -222,8 +234,8 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                 };
 
                 await SendProfilerMessageAsync(socketPath, commandSet: 2, command: 0, JsonSerializer.SerializeToUtf8Bytes(payload), cancellationToken).ConfigureAwait(false);
-                await observer.WaitForStartedAsync(requestId, TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
-                await observer.WaitForCompletionAsync(requestId, request.Duration + TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                await observer.WaitForStartedAsync(requestId, processId, TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+                await observer.WaitForCompletionAsync(requestId, processId, request.Duration + TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -236,15 +248,36 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                     new DiagnosticError("Internal", ex.Message, ex.GetType().FullName),
                     new NextActionHint("inspect_process", "Confirm the target remains healthy and reachable before retrying method-parameter capture.", new Dictionary<string, object?> { ["processId"] = processId }));
             }
+            catch (InvalidOperationException ex)
+            {
+                return DiagnosticResult.Fail<MethodParameterCaptureArtifact>(
+                    $"collect_sample(kind=\"method-params\") failed for pid {processId}: {ex.Message}",
+                    new DiagnosticError("Internal", ex.Message, ex.GetType().FullName),
+                    new NextActionHint("inspect_process", "Confirm the target remains healthy and reachable before retrying method-parameter capture.", new Dictionary<string, object?> { ["processId"] = processId }));
+            }
             finally
             {
+                var stopSent = false;
                 try
                 {
                     await SendProfilerMessageAsync(socketPath, commandSet: 2, command: 1, JsonSerializer.SerializeToUtf8Bytes(new StopCapturePayload { RequestId = requestId }), CancellationToken.None).ConfigureAwait(false);
+                    stopSent = true;
                 }
                 catch (Exception ex)
                 {
                     _logger.LogDebug(ex, "Best-effort stop for method-parameter capture failed for pid {Pid}.", processId);
+                }
+
+                if (stopSent && observer.HasStarted(requestId) && !HasProcessExited(processId))
+                {
+                    try
+                    {
+                        await observer.WaitForStoppedAsync(requestId, processId, TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Timed out confirming method-parameter capture stop for pid {Pid}.", processId);
+                    }
                 }
 
                 try
@@ -632,7 +665,24 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                || ex.Message.Contains("loaded", StringComparison.OrdinalIgnoreCase)
                || ex.Message.Contains("attached", StringComparison.OrdinalIgnoreCase));
 
-    private sealed class ParameterCaptureObserver(SensitiveDataRedactor redactor, IReadOnlyList<ResolvedMethodIdentity> resolvedMethods, int maxEvents)
+    private static bool HasProcessExited(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return true;
+        }
+    }
+
+    private sealed class ParameterCaptureObserver(
+        SensitiveDataRedactor redactor,
+        IReadOnlyList<ResolvedMethodIdentity> resolvedMethods,
+        int maxEvents,
+        MethodParameterCaptureLifecycleHooks? lifecycleHooks)
     {
         private readonly object _gate = new();
         private readonly Dictionary<Guid, string> _failureByRequestId = new();
@@ -661,6 +711,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                         if (TryGetGuid(traceEvent, "RequestId", 0, out var started))
                         {
                             _started.Add(started);
+                            lifecycleHooks?.CaptureStarted?.Invoke();
                         }
                         break;
                     case "Capturing/Stop":
@@ -668,6 +719,7 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                         if (TryGetGuid(traceEvent, "RequestId", 0, out var stopped))
                         {
                             _stopped.Add(stopped);
+                            lifecycleHooks?.CaptureStopped?.Invoke();
                         }
                         break;
                     case "FailedToCapture":
@@ -718,7 +770,15 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
             }
         }
 
-        public async Task WaitForStartedAsync(Guid requestId, TimeSpan timeout, CancellationToken cancellationToken)
+        public bool HasStarted(Guid requestId)
+        {
+            lock (_gate)
+            {
+                return _started.Contains(requestId);
+            }
+        }
+
+        public async Task WaitForStartedAsync(Guid requestId, int processId, TimeSpan timeout, CancellationToken cancellationToken)
         {
             await WaitUntilAsync(() =>
             {
@@ -726,10 +786,10 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                 {
                     return _started.Contains(requestId) || _failureByRequestId.ContainsKey(requestId);
                 }
-            }, timeout, "parameter capture start", cancellationToken).ConfigureAwait(false);
+            }, processId, timeout, "parameter capture start", cancellationToken).ConfigureAwait(false);
         }
 
-        public async Task WaitForCompletionAsync(Guid requestId, TimeSpan timeout, CancellationToken cancellationToken)
+        public async Task WaitForCompletionAsync(Guid requestId, int processId, TimeSpan timeout, CancellationToken cancellationToken)
         {
             await WaitUntilAsync(() =>
             {
@@ -737,7 +797,18 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                 {
                     return _stopped.Contains(requestId) || _failureByRequestId.ContainsKey(requestId) || Cancelled;
                 }
-            }, timeout, "parameter capture stop", cancellationToken).ConfigureAwait(false);
+            }, processId, timeout, "parameter capture stop", cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task WaitForStoppedAsync(Guid requestId, int processId, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            await WaitUntilAsync(() =>
+            {
+                lock (_gate)
+                {
+                    return _stopped.Contains(requestId) || _failureByRequestId.ContainsKey(requestId);
+                }
+            }, processId, timeout, "parameter capture stop confirmation", cancellationToken).ConfigureAwait(false);
         }
 
         public MethodParameterCaptureArtifact BuildArtifact(
@@ -830,7 +901,12 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
             return new CapturedParameterValue(name, typeName, redactedValue, redacted, truncated) { Notes = notes };
         }
 
-        private static async Task WaitUntilAsync(Func<bool> predicate, TimeSpan timeout, string description, CancellationToken cancellationToken)
+        private static async Task WaitUntilAsync(
+            Func<bool> predicate,
+            int processId,
+            TimeSpan timeout,
+            string description,
+            CancellationToken cancellationToken)
         {
             var deadline = DateTime.UtcNow + timeout;
             while (DateTime.UtcNow < deadline)
@@ -838,6 +914,11 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
                 if (predicate())
                 {
                     return;
+                }
+
+                if (HasProcessExited(processId))
+                {
+                    throw new InvalidOperationException($"Target process {processId} exited while waiting for {description}.");
                 }
 
                 await Task.Delay(250, cancellationToken).ConfigureAwait(false);
@@ -984,3 +1065,8 @@ public sealed class MethodParameterCaptureCollector : IMethodParameterCaptureCol
         }
     }
 }
+
+internal sealed record MethodParameterCaptureLifecycleHooks(
+    Action<string>? SharedPathCreated = null,
+    Action? CaptureStarted = null,
+    Action? CaptureStopped = null);

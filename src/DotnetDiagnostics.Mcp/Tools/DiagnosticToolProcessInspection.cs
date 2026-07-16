@@ -504,14 +504,20 @@ internal static class DiagnosticToolProcessInspection
 
     private static string SummariseRequestsNow(RequestsNowSnapshot snapshot, int windowSeconds)
     {
+        var completenessNote = snapshot.Notes.Count > 0
+            ? " " + string.Join(" ", snapshot.Notes)
+            : string.Empty;
+
         if (snapshot.Requests.Count == 0)
         {
-            return $"Process {snapshot.ProcessId}: no in-flight ASP.NET Core requests observed during the last {windowSeconds}s.";
+            return snapshot.Notes.Count == 0
+                ? $"Process {snapshot.ProcessId}: no in-flight ASP.NET Core requests observed during the last {windowSeconds}s."
+                : $"Process {snapshot.ProcessId}: no in-flight ASP.NET Core request rows were captured during the last {windowSeconds}s.{completenessNote}";
         }
 
         var preview = string.Join(", ", snapshot.Requests.Take(3).Select(request =>
             $"{request.Method} {request.Endpoint} ({request.StartedAtMs:F0} ms, tid {request.ThreadId})"));
-        return $"Process {snapshot.ProcessId}: {snapshot.Requests.Count} in-flight ASP.NET Core request(s) observed during the last {windowSeconds}s: {preview}{(snapshot.Requests.Count > 3 ? ", …" : string.Empty)}.";
+        return $"Process {snapshot.ProcessId}: {snapshot.Requests.Count} in-flight ASP.NET Core request(s) observed during the last {windowSeconds}s: {preview}{(snapshot.Requests.Count > 3 ? ", …" : string.Empty)}.{completenessNote}";
     }
 
     private static NextActionHint[] BuildRequestsNowHints(RequestsNowSnapshot snapshot)
@@ -522,7 +528,9 @@ internal static class DiagnosticToolProcessInspection
             [
                 new NextActionHint(
                     "collect_events",
-                    "No hanging requests were active in this 2s window — re-run during the incident or cross-check Hosting counters.",
+                    snapshot.Notes.Count == 0
+                        ? "No hanging requests were active in this 2s window — re-run during the incident or cross-check Hosting counters."
+                        : "The requests-now snapshot queue overflowed, so zero captured rows does not prove that no requests were active — re-run during the incident or cross-check Hosting counters.",
                     new Dictionary<string, object?>
                     {
                         ["kind"] = "counters",

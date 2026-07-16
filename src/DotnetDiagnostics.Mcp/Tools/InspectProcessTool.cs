@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.Collection;
@@ -206,7 +207,11 @@ public sealed class InspectProcessTool
                         requestsNowCollector, resolver, processId, cancellationToken)
                     .ConfigureAwait(false),
                 canonical,
-                (report, data) => report with { RequestsNow = data?.Requests }),
+                (report, data) => report with
+                {
+                    RequestsNow = data?.Requests,
+                    Notes = data is { Notes.Count: > 0 } ? data.Notes : null,
+                }),
             TriageView => Wrap(
                 await DiagnosticTools.PerformTriage(
                         counterCollector, resolver, processId, durationSeconds ?? 5, cancellationToken)
@@ -282,4 +287,9 @@ public sealed record InspectProcessReport(
     ProcessResources? Resources = null,
     IReadOnlyList<InFlightHttpRequest>? RequestsNow = null,
     TriageResult? Triage = null,
-    PreflightReport? Preflight = null);
+    PreflightReport? Preflight = null)
+{
+    /// <summary>View-level caveats that must remain visible after projection.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? Notes { get; init; }
+}

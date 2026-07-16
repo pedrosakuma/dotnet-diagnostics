@@ -1,4 +1,5 @@
 using System.IO;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Mcp.Observability;
 using DotnetDiagnostics.Mcp.Security;
 using Microsoft.AspNetCore.Builder;
@@ -61,7 +62,8 @@ internal static class OrchestratorObservabilityRegistration
             metrics
                 .AddMeter("Microsoft.AspNetCore.Hosting")
                 .AddMeter("Microsoft.AspNetCore.Server.Kestrel")
-                .AddMeter("System.Runtime");
+                .AddMeter("System.Runtime")
+                .AddMeter(MemoryDiagnosticHandleStore.MeterName);
 
             if (orchestratorEnabled)
             {

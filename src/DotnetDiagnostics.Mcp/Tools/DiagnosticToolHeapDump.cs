@@ -192,6 +192,39 @@ internal static class DiagnosticToolHeapDump
                     new Dictionary<string, object?> { ["processId"] = "<pid>" }));
         }
 
+        return await QueryHeapSnapshot(
+            snapshot,
+            inspector,
+            redactor,
+            sensitiveGate,
+            principalAccessor,
+            handle,
+            view,
+            topN,
+            rankBy,
+            typeFullName,
+            address,
+            includeSensitiveValues,
+            deprecation,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task<DiagnosticResult<HeapSnapshotQueryResult>> QueryHeapSnapshot(
+        HeapSnapshotArtifact snapshot,
+        IDumpInspector inspector,
+        SensitiveDataRedactor redactor,
+        SensitiveValueGate sensitiveGate,
+        IPrincipalAccessor principalAccessor,
+        string handle,
+        string view,
+        int topN,
+        string rankBy,
+        string? typeFullName,
+        string? address,
+        bool includeSensitiveValues,
+        LegacyDiagnosticsFlagDeprecation? deprecation,
+        CancellationToken cancellationToken)
+    {
         var principalUnlocksSensitive = principalAccessor.Current?.HasExplicitScope("sensitive-heap-read") == true;
         var emitSensitive = sensitiveGate.ShouldEmit(includeSensitiveValues, principalUnlocksSensitive);
 

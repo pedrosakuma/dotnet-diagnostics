@@ -1000,7 +1000,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
-    public async Task QueryCollection_ReturnsHandleExpiredErrorForUnknownHandle()
+    public async Task QueryCollection_ReturnsHandleNotFoundErrorForUnknownHandle()
     {
         await using var client = await ConnectAsync();
 
@@ -1016,7 +1016,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull("an unknown handle must surface a structured DiagnosticError");
-        envelope.Error!.Kind.Should().Be("HandleExpired");
+        envelope.Error!.Kind.Should().Be("HandleNotFound");
         envelope.Hints.Should().NotBeEmpty();
     }
 
@@ -1118,7 +1118,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
-    public async Task GetCallTree_ReturnsHandleExpiredErrorForUnknownHandle()
+    public async Task GetCallTree_ReturnsHandleNotFoundErrorForUnknownHandle()
     {
         await using var client = await ConnectAsync();
 
@@ -1136,9 +1136,9 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull("an unknown handle must surface a structured DiagnosticError");
-        envelope.Error!.Kind.Should().Be("HandleExpired");
+        envelope.Error!.Kind.Should().Be("HandleNotFound");
         envelope.Hints.Should().NotBeEmpty();
-        envelope.Hints[0].NextTool.Should().Be("query_snapshot");
+        envelope.Hints[0].NextTool.Should().Be("inspect_process");
     }
 
 

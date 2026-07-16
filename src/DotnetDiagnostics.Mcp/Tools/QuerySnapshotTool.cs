@@ -38,7 +38,8 @@ namespace DotnetDiagnostics.Mcp.Tools;
 ///   <item><description>thread-snapshot → <c>ptrace</c></description></item>
 ///   <item><description>off-cpu-snapshot → <c>eventpipe</c></description></item>
 ///   <item><description>cpu-sample / allocation-sample / native-alloc-sample (call-tree view) → <c>investigation-export</c></description></item>
-///   <item><description>counters / exception-snapshot / crash-guard-snapshot / gc-events / event-source / activities / log-snapshot / jit-snapshot / threadpool-snapshot / contention-snapshot / db-snapshot / kestrel-snapshot / networking-snapshot / in-flight-requests / startup-snapshot → any of <c>read-counters</c> or <c>eventpipe</c> (matches <c>query_collection</c>)</description></item>
+///   <item><description>counters → <c>read-counters</c>; exception-snapshot / crash-guard-snapshot / gc-events / event-source / activities / log-snapshot / jit-snapshot / threadpool-snapshot / contention-snapshot / db-snapshot / kestrel-snapshot / networking-snapshot / in-flight-requests / startup-snapshot → <c>eventpipe</c></description></item>
+///   <item><description>method-params-capture → <c>eventpipe</c> plus the explicit <c>sensitive-parameter-read</c> modifier scope for every view</description></item>
 /// </list>
 /// <para>Unknown handle kinds, unknown views and parameter shape violations all return
 /// the structured <c>InvalidArgument</c> / <c>UnsupportedHandleKind</c> envelopes the
@@ -167,24 +168,34 @@ public sealed partial class QuerySnapshotTool
             return InvalidArgument(nameof(handle), "is required");
         }
 
-        var lookup = handles.TryGetWithKind(handle);
+        var principal = principalAccessor.Current;
+        var lookupResult = handles.LookupWithKind(handle);
+        var lookup = lookupResult.Lookup;
         if (lookup is null)
         {
-            return HandleExpiredError(IsDiffView(view) ? "Current" : null, handle);
+            lookupResult = AuthorizeUnavailableLookup(principal, lookupResult, view, out var authorizationFailure);
+            if (authorizationFailure is not null)
+            {
+                return authorizationFailure;
+            }
+            return HandleUnavailableError(IsDiffView(view) ? "Current" : null, handle, lookupResult);
         }
 
         var kind = lookup.Value.Kind;
-        var principal = principalAccessor.Current;
+        if (!KindHandlers.TryGetValue(kind, out var handler))
+        {
+            return UnsupportedHandleKind(handle, kind);
+        }
+        if (!AuthorizeKind(principal, kind, view, out var activeAuthorizationFailure))
+        {
+            return activeAuthorizationFailure!;
+        }
+
         var isDiffView = IsDiffView(view);
         var journeyMode = JourneyMode.Trend;
         if (isDiffView && !JourneyModeParser.TryParse(mode, out journeyMode))
         {
             return InvalidArgument(nameof(mode), "must be either 'trend' or 'dispersion' when view='diff'");
-        }
-
-        if (!KindHandlers.TryGetValue(kind, out var handler))
-        {
-            return UnsupportedHandleKind(handle, kind);
         }
 
         var context = new QuerySnapshotDispatchContext
@@ -242,7 +253,8 @@ public sealed partial class QuerySnapshotTool
         string? baselineHandle,
         string rankBy,
         double minDeltaPct,
-        int? topN)
+        int? topN,
+        BearerPrincipal? principal)
     {
         if (string.IsNullOrWhiteSpace(baselineHandle))
         {
@@ -270,10 +282,21 @@ public sealed partial class QuerySnapshotTool
             return InvalidArgument(nameof(topN), "must be >= 1 when view='growth'");
         }
 
-        var baselineLookup = handles.TryGetWithKind(baselineHandle!);
+        var baselineResult = handles.LookupWithKind(baselineHandle!);
+        var baselineLookup = baselineResult.Lookup;
         if (baselineLookup is null)
         {
-            return HandleExpiredError("Baseline", baselineHandle!);
+            var authorizedResult = AuthorizeUnavailableLookup(
+                principal,
+                baselineResult,
+                GrowthView,
+                out var authorizationFailure);
+            return authorizationFailure
+                ?? HandleUnavailableError("Baseline", baselineHandle!, authorizedResult);
+        }
+        if (!AuthorizeKind(principal, baselineLookup.Value.Kind, GrowthView, out var baselineAuthorizationFailure))
+        {
+            return baselineAuthorizationFailure!;
         }
 
         if (!string.Equals(currentLookup.Kind, baselineLookup.Value.Kind, StringComparison.Ordinal))
@@ -337,18 +360,12 @@ public sealed partial class QuerySnapshotTool
                 .Distinct(StringComparer.Ordinal));
 
     private static async Task<DiagnosticResult<object>> ResolveThreadAddressesAsync(
-        IDiagnosticHandleStore handles,
+        ThreadSnapshotArtifact snapshot,
         INativeAddressResolver addressResolver,
         string handle,
         string? address,
         CancellationToken cancellationToken)
     {
-        var snapshot = handles.TryGet<ThreadSnapshotArtifact>(handle);
-        if (snapshot is null)
-        {
-            return HandleExpiredError(null, handle);
-        }
-
         if (string.IsNullOrWhiteSpace(address))
         {
             return InvalidArgument(nameof(address), "is required for view='resolve-address' (decimal or 0x-prefixed hex; comma-separated for several)");
@@ -417,7 +434,7 @@ public sealed partial class QuerySnapshotTool
     }
 
     private static async Task<DiagnosticResult<object>> ResolveFrameVariablesAsync(
-        IDiagnosticHandleStore handles,
+        ThreadSnapshotArtifact snapshot,
         IFrameVariableResolver resolver,
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
@@ -426,12 +443,6 @@ public sealed partial class QuerySnapshotTool
         bool includeSensitiveValues,
         CancellationToken cancellationToken)
     {
-        var snapshot = handles.TryGet<ThreadSnapshotArtifact>(handle);
-        if (snapshot is null)
-        {
-            return HandleExpiredError(null, handle);
-        }
-
         if (threadId is null)
         {
             return InvalidArgument(nameof(threadId), "is required for view='frame-vars' (ManagedThreadId from view='threads-summary')");
@@ -486,7 +497,8 @@ public sealed partial class QuerySnapshotTool
         double minDeltaPct,
         int? topN,
         string depth,
-        JourneyMode mode)
+        JourneyMode mode,
+        BearerPrincipal? principal)
     {
         var hasBaseline = !string.IsNullOrWhiteSpace(baselineHandle);
         var hasComparisonHandles = comparisonHandles is { Length: > 0 };
@@ -523,13 +535,33 @@ public sealed partial class QuerySnapshotTool
 
         if (hasComparisonHandles)
         {
-            return TryBuildComparableJourneyDiff(handles, handle, currentLookup, comparisonHandles!, minDeltaPct, effectiveTopN, journeyDepth, mode);
+            return TryBuildComparableJourneyDiff(
+                handles,
+                handle,
+                currentLookup,
+                comparisonHandles!,
+                minDeltaPct,
+                effectiveTopN,
+                journeyDepth,
+                mode,
+                principal);
         }
 
-        var baselineLookup = handles.TryGetWithKind(baselineHandle!);
+        var baselineResult = handles.LookupWithKind(baselineHandle!);
+        var baselineLookup = baselineResult.Lookup;
         if (baselineLookup is null)
         {
-            return HandleExpiredError("Baseline", baselineHandle!);
+            var authorizedResult = AuthorizeUnavailableLookup(
+                principal,
+                baselineResult,
+                DiffView,
+                out var authorizationFailure);
+            return authorizationFailure
+                ?? HandleUnavailableError("Baseline", baselineHandle!, authorizedResult);
+        }
+        if (!AuthorizeKind(principal, baselineLookup.Value.Kind, DiffView, out var baselineAuthorizationFailure))
+        {
+            return baselineAuthorizationFailure!;
         }
 
         if (!string.Equals(currentLookup.Kind, baselineLookup.Value.Kind, StringComparison.Ordinal))
@@ -556,7 +588,16 @@ public sealed partial class QuerySnapshotTool
             "allocation-sample" when currentLookup.Artifact is AllocationSampleArtifact current && baselineLookup.Value.Artifact is AllocationSampleArtifact baseline
                 => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline.Summary, baselineHandle!, current.Summary, handle, minDeltaPct, effectiveTopN)),
 
-            _ => TryBuildComparableJourneyDiff(handles, handle, currentLookup, new[] { baselineHandle! }, minDeltaPct, effectiveTopN, journeyDepth, mode)
+            _ => TryBuildComparableJourneyDiff(
+                handles,
+                handle,
+                currentLookup,
+                new[] { baselineHandle! },
+                minDeltaPct,
+                effectiveTopN,
+                journeyDepth,
+                mode,
+                principal)
         };
     }
 
@@ -568,7 +609,8 @@ public sealed partial class QuerySnapshotTool
         double minDeltaPct,
         int topN,
         JourneyDiffDepth depth,
-        JourneyMode mode)
+        JourneyMode mode,
+        BearerPrincipal? principal)
     {
         var projector = ComparableProjectors.FirstOrDefault(p => string.Equals(p.Kind, currentLookup.Kind, StringComparison.Ordinal));
         if (projector is null || !projector.CanProject(currentLookup.Artifact))
@@ -590,10 +632,21 @@ public sealed partial class QuerySnapshotTool
                 return InvalidArgument(nameof(comparisonHandles), $"entry {i} duplicates another comparison handle or the current handle");
             }
 
-            var lookup = handles.TryGetWithKind(comparisonHandle);
+            var lookupResult = handles.LookupWithKind(comparisonHandle);
+            var lookup = lookupResult.Lookup;
             if (lookup is null)
             {
-                return HandleExpiredError($"Comparison[{i}]", comparisonHandle);
+                var authorizedResult = AuthorizeUnavailableLookup(
+                    principal,
+                    lookupResult,
+                    DiffView,
+                    out var authorizationFailure);
+                return authorizationFailure
+                    ?? HandleUnavailableError($"Comparison[{i}]", comparisonHandle, authorizedResult);
+            }
+            if (!AuthorizeKind(principal, lookup.Value.Kind, DiffView, out var comparisonAuthorizationFailure))
+            {
+                return comparisonAuthorizationFailure!;
             }
             if (!string.Equals(currentLookup.Kind, lookup.Value.Kind, StringComparison.Ordinal))
             {
@@ -635,17 +688,149 @@ public sealed partial class QuerySnapshotTool
         => $"Compared {diff.Kind} handle '{currentHandle}' across {comparisonHandles.Length + 1} captures: {diff.MetricSeries.Count} metric series, {diff.KeyMatrix.Count} key rows — verdict {diff.Verdict}.";
 
     private static DiagnosticResult<object> HandleExpiredError(string? side, string handle)
+        => HandleUnavailableError(
+            side,
+            handle,
+            new DiagnosticHandleLookupResult(DiagnosticHandleLookupStatus.Expired, null, null));
+
+    private static DiagnosticHandleLookupResult AuthorizeUnavailableLookup(
+        BearerPrincipal? principal,
+        DiagnosticHandleLookupResult lookupResult,
+        string? view,
+        out DiagnosticResult<object>? failure)
+    {
+        failure = null;
+        var kind = lookupResult.Tombstone?.Kind;
+        if (kind is null || !KindHandlers.ContainsKey(kind))
+        {
+            return DiagnosticHandleLookupResult.Unknown;
+        }
+
+        if (!AuthorizeKind(principal, kind, view, out failure))
+        {
+            return DiagnosticHandleLookupResult.Unknown;
+        }
+
+        return lookupResult;
+    }
+
+    private static bool AuthorizeKind(
+        BearerPrincipal? principal,
+        string kind,
+        string? view,
+        out DiagnosticResult<object>? failure)
+    {
+        if (kind == DiagnosticTools.HeapSnapshotKind)
+        {
+            return RequireScope(principal, ScopeHeapRead, out failure);
+        }
+
+        if (kind == DiagnosticTools.ThreadSnapshotKind)
+        {
+            if (!RequireScope(principal, ScopePtrace, out failure))
+            {
+                return false;
+            }
+
+            if (string.Equals(view?.Trim(), FrameVarsView, StringComparison.OrdinalIgnoreCase))
+            {
+                return RequireScope(principal, ScopeHeapRead, out failure);
+            }
+
+            return true;
+        }
+
+        if (kind == DiagnosticTools.OffCpuHandleKind)
+        {
+            return RequireScope(principal, ScopeEventPipe, out failure);
+        }
+
+        if (kind is "cpu-sample" or "allocation-sample" or DiagnosticTools.NativeAllocHandleKind)
+        {
+            return RequireScope(principal, ScopeInvestigationExport, out failure);
+        }
+
+        if (kind == CollectionHandleKinds.Counters)
+        {
+            return RequireScope(principal, ScopeReadCounters, out failure);
+        }
+
+        if (!RequireScope(principal, ScopeEventPipe, out failure))
+        {
+            return false;
+        }
+
+        if (kind == MethodParameterCaptureUseCases.HandleKind)
+        {
+            return RequireExplicitScope(principal, ScopeSensitiveParameterRead, out failure);
+        }
+
+        return true;
+    }
+
+    private static DiagnosticResult<object> HandleUnavailableError(
+        string? side,
+        string handle,
+        DiagnosticHandleLookupResult lookupResult)
     {
         var prefix = string.IsNullOrWhiteSpace(side) ? "Handle" : $"{side} handle";
-        return DiagnosticResult.Fail<object>(
-            $"{prefix} '{handle}' is unknown or expired.",
-            new DiagnosticError(
-                "HandleExpired",
-                "Drill-down handles live ~10min and are invalidated when the target process exits.",
-                handle),
-            new NextActionHint(ToolName,
-                "Re-run the original collector on the same pid to issue a fresh handle.",
-                null));
+        var recovery = RecoveryHint(lookupResult.Tombstone);
+        return lookupResult.Status switch
+        {
+            DiagnosticHandleLookupStatus.CapacityEvicted => DiagnosticResult.Fail<object>(
+                $"{prefix} '{handle}' was evicted because the in-memory handle store reached capacity.",
+                new DiagnosticError(
+                    "HandleCapacityEvicted",
+                    $"The artifact was removed before its TTL to enforce the bounded handle store. Re-run the original collector; operators can raise Diagnostics:HandleStore:MaxEntries (environment Diagnostics__HandleStore__MaxEntries) up to {DiagnosticHandleStoreOptions.MaxAllowedEntries}.",
+                    handle),
+                recovery),
+            DiagnosticHandleLookupStatus.Expired => DiagnosticResult.Fail<object>(
+                $"{prefix} '{handle}' expired after its TTL elapsed.",
+                new DiagnosticError(
+                    "HandleExpired",
+                    "Re-run the original collector to issue a fresh handle and query it before handleExpiresAt.",
+                    handle),
+                recovery),
+            _ => DiagnosticResult.Fail<object>(
+                $"{prefix} '{handle}' is not known to this server/session.",
+                new DiagnosticError(
+                    "HandleNotFound",
+                    "The handle may be invalid, belong to another server instance/session, or have lost its bounded tombstone after a restart or sustained churn.",
+                    handle),
+                new NextActionHint(
+                    "inspect_process",
+                    "Verify that you are connected to the same running server/session; otherwise re-run the original collector to issue a fresh handle.",
+                    null)),
+        };
+    }
+
+    private static NextActionHint RecoveryHint(DiagnosticHandleTombstone? tombstone)
+    {
+        if (tombstone is null)
+        {
+            return new NextActionHint(
+                "inspect_process",
+                "Verify that the target and server/session are still available, then re-run the original collector.",
+                null);
+        }
+
+        var kind = tombstone?.Kind;
+        var processId = tombstone?.ProcessId;
+        var tool = kind switch
+        {
+            DiagnosticTools.HeapSnapshotKind => "inspect_heap",
+            DiagnosticTools.ThreadSnapshotKind => "collect_thread_snapshot",
+            "cpu-sample" or "allocation-sample" or DiagnosticTools.NativeAllocHandleKind or DiagnosticTools.OffCpuHandleKind or MethodParameterCaptureUseCases.HandleKind
+                => "collect_sample",
+            _ => "collect_events",
+        };
+        var arguments = processId is { } pid
+            ? new Dictionary<string, object?> { ["processId"] = pid }
+            : null;
+        return new NextActionHint(
+            tool,
+            "Re-run the original collector with the same parameters to issue a fresh handle.",
+            arguments);
     }
 
     private static DiagnosticResult<object> InvalidKindPair(string currentKind, string baselineKind)
@@ -759,18 +944,6 @@ public sealed partial class QuerySnapshotTool
         }
 
         failure = Forbidden(scope, $"requires scope '{scope}'");
-        return false;
-    }
-
-    private static bool RequireAnyOfScope(BearerPrincipal? principal, string a, string b, out DiagnosticResult<object>? failure)
-    {
-        if (principal is null || principal.HasScope(a) || principal.HasScope(b))
-        {
-            failure = null;
-            return true;
-        }
-
-        failure = Forbidden($"{a}|{b}", $"requires one of scope '{a}' or '{b}'");
         return false;
     }
 

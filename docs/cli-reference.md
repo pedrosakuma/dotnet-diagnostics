@@ -498,6 +498,16 @@ A `collect` or `inspect-heap` command prints a handle plus the views you can re-
 Handles are evicted when they expire (a TTL) or when the target process exits — a 5 s in-process sweep drops
 dead-target handles so you never drill into a stale trace.
 
+The same strictly bounded store as the MCP server is used. Configure its
+capacity before starting the CLI with
+`Diagnostics__HandleStore__MaxEntries` (default `32`, valid range `1..1024`).
+When full, it first removes expired entries, then evicts the handle with the
+earliest expiry deadline (oldest registration breaks ties). A bounded
+four-per-entry tombstone set lets `query` distinguish `HandleExpired`,
+`HandleCapacityEvicted`, and `HandleNotFound`; capacity errors tell you to
+re-run the originating command and name the capacity setting. No evicted
+artifact is retained for this diagnosis.
+
 For CPU/allocation sample handles (`cpu-sample`, `allocation-sample`, `native-alloc-sample`), the session
 exposes drilldown views computed from the merged call tree without re-sampling:
 
