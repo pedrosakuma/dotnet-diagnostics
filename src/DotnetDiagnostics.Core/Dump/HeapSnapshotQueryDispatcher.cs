@@ -395,24 +395,29 @@ public static class HeapSnapshotQueryDispatcher
             new DiagnosticError("InvalidArgument", $"Argument '{parameterName}' {requirement}.", parameterName),
             new NextActionHint("inspect_process", "Re-issue with valid arguments. See tool schema for ranges and defaults."));
 
-    private static Dictionary<string, object?> BuildRecaptureArguments(
+    private static Dictionary<string, object?>? BuildRecaptureArguments(
         HeapSnapshotArtifact snapshot,
         string option)
     {
-        var arguments = new Dictionary<string, object?>
+        return snapshot.Origin switch
         {
-            ["source"] = snapshot.Origin == HeapSnapshotOrigin.Dump ? "dump" : "live",
-            [option] = true,
+            HeapSnapshotOrigin.Dump when !string.IsNullOrWhiteSpace(snapshot.DumpFilePath) =>
+                new Dictionary<string, object?>
+                {
+                    ["source"] = "dump",
+                    ["dumpFilePath"] = snapshot.DumpFilePath,
+                    [option] = true,
+                },
+            HeapSnapshotOrigin.Live when snapshot.ProcessId > 0 =>
+                new Dictionary<string, object?>
+                {
+                    ["source"] = "live",
+                    ["processId"] = snapshot.ProcessId,
+                    [option] = true,
+                },
+            // These recapture options require ClrMD data that source="gcdump" cannot produce.
+            HeapSnapshotOrigin.GcDump => null,
+            _ => null,
         };
-        if (snapshot.Origin == HeapSnapshotOrigin.Dump && !string.IsNullOrWhiteSpace(snapshot.DumpFilePath))
-        {
-            arguments["dumpFilePath"] = snapshot.DumpFilePath;
-        }
-        else
-        {
-            arguments["processId"] = snapshot.ProcessId;
-        }
-
-        return arguments;
     }
 }

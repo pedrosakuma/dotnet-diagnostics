@@ -359,7 +359,12 @@ internal static class DiagnosticToolProcessInspection
         [
             new NextActionHint("collect_events",
                 "No kernel-level pressure detected. Move up the stack to runtime counters.",
-                new Dictionary<string, object?> { ["processId"] = s.ProcessId, ["durationSeconds"] = 5 }),
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "counters",
+                    ["processId"] = s.ProcessId,
+                    ["durationSeconds"] = 5,
+                }),
         ];
     }
 

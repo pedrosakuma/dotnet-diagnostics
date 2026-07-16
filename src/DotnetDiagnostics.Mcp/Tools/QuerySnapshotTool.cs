@@ -812,7 +812,7 @@ public sealed partial class QuerySnapshotTool
         var recovery = tombstone.Kind switch
         {
             DiagnosticTools.HeapSnapshotKind => new RecoveryTarget("inspect_heap"),
-            DiagnosticTools.ThreadSnapshotKind => new RecoveryTarget("collect_thread_snapshot", Replayable: true),
+            DiagnosticTools.ThreadSnapshotKind => new RecoveryTarget("collect_thread_snapshot"),
             "cpu-sample" => new RecoveryTarget("collect_sample", "cpu", Replayable: true),
             "allocation-sample" => new RecoveryTarget("collect_sample", "allocation", Replayable: true),
             DiagnosticTools.NativeAllocHandleKind => new RecoveryTarget("collect_sample", "native-alloc", Replayable: true),

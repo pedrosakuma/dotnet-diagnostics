@@ -476,25 +476,30 @@ internal static class DiagnosticToolHeapDump
         IReadOnlyDictionary<string, object?>? retryArguments = null)
         => AttachGuard.GuardAttachAsync(tool, processId, body, cancellationToken, retryArguments: retryArguments);
 
-    private static Dictionary<string, object?> BuildRecaptureArguments(
+    private static Dictionary<string, object?>? BuildRecaptureArguments(
         HeapSnapshotArtifact snapshot,
         string option)
     {
-        var arguments = new Dictionary<string, object?>
+        return snapshot.Origin switch
         {
-            ["source"] = snapshot.Origin == HeapSnapshotOrigin.Dump ? "dump" : "live",
-            [option] = true,
+            HeapSnapshotOrigin.Dump when !string.IsNullOrWhiteSpace(snapshot.DumpFilePath) =>
+                new Dictionary<string, object?>
+                {
+                    ["source"] = "dump",
+                    ["dumpFilePath"] = snapshot.DumpFilePath,
+                    [option] = true,
+                },
+            HeapSnapshotOrigin.Live when snapshot.ProcessId > 0 =>
+                new Dictionary<string, object?>
+                {
+                    ["source"] = "live",
+                    ["processId"] = snapshot.ProcessId,
+                    [option] = true,
+                },
+            // Duplicate-string aggregation requires ClrMD and cannot be populated by source="gcdump".
+            HeapSnapshotOrigin.GcDump => null,
+            _ => null,
         };
-        if (snapshot.Origin == HeapSnapshotOrigin.Dump && !string.IsNullOrWhiteSpace(snapshot.DumpFilePath))
-        {
-            arguments["dumpFilePath"] = snapshot.DumpFilePath;
-        }
-        else
-        {
-            arguments["processId"] = snapshot.ProcessId;
-        }
-
-        return arguments;
     }
 
     private static bool TryParseUnsignedHexOrInt(string value, out ulong result)

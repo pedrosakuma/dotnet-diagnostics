@@ -63,6 +63,13 @@ internal static class NextActionHintSchemaAssertions
                 $"required suggested argument '{required}' for '{hint.NextTool}' cannot be null");
         }
 
+        if (hint.NextTool is "collect_events" or "collect_sample")
+        {
+            arguments.Should().ContainKey(
+                "kind",
+                $"replayable '{hint.NextTool}' hints must preserve the originating collector discriminator");
+        }
+
         foreach (var (name, value) in arguments)
         {
             if (value is null)

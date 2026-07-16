@@ -15,7 +15,6 @@ public sealed class QuerySnapshotHandleSecurityTests
     public static TheoryData<string, string, string?> ReplayableRecoveryHints()
         => new()
         {
-            { DiagnosticTools.ThreadSnapshotKind, "collect_thread_snapshot", null },
             { "cpu-sample", "collect_sample", "cpu" },
             { "allocation-sample", "collect_sample", "allocation" },
             { DiagnosticTools.NativeAllocHandleKind, "collect_sample", "native-alloc" },
@@ -42,6 +41,7 @@ public sealed class QuerySnapshotHandleSecurityTests
         => new()
         {
             { DiagnosticTools.HeapSnapshotKind, "inspect_heap", null },
+            { DiagnosticTools.ThreadSnapshotKind, "collect_thread_snapshot", null },
             { CollectionHandleKinds.EventSource, "collect_events", "event_source" },
             { MethodParameterCaptureUseCases.HandleKind, "collect_sample", "method-params" },
         };
