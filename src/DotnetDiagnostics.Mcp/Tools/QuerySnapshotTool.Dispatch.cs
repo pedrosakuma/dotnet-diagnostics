@@ -295,7 +295,7 @@ public sealed partial class QuerySnapshotTool
 
     private static Task<DiagnosticResult<object>> HandleCountersCollectionAsync(QuerySnapshotDispatchContext context)
     {
-        if (!RequireAnyOfScope(context.Principal, ScopeReadCounters, ScopeEventPipe, out var forbidden))
+        if (!RequireScope(context.Principal, ScopeReadCounters, out var forbidden))
         {
             return Task.FromResult(forbidden!);
         }
@@ -419,6 +419,10 @@ public sealed partial class QuerySnapshotTool
         {
             return Task.FromResult(eventPipeForbidden!);
         }
+        if (!RequireExplicitScope(context.Principal, ScopeSensitiveParameterRead, out var modifierForbidden))
+        {
+            return Task.FromResult(modifierForbidden!);
+        }
 
         if (context.Lookup.Artifact is not MethodParameterCaptureArtifact artifact)
         {
@@ -430,11 +434,6 @@ public sealed partial class QuerySnapshotTool
             : context.View!;
         if (string.Equals(resolvedView, MethodParameterCaptureQueryDispatcher.EventsView, StringComparison.OrdinalIgnoreCase))
         {
-            if (!RequireExplicitScope(context.Principal, ScopeSensitiveParameterRead, out var modifierForbidden))
-            {
-                return Task.FromResult(modifierForbidden!);
-            }
-
             if (!context.SecurityOptions.AllowMethodParameterCapture)
             {
                 return Task.FromResult(DiagnosticResult.Fail<object>(

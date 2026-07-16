@@ -2404,7 +2404,9 @@ view→parameter mapping.
 **Authorization.** The static gate accepts any drilldown-capable bearer; after
 resolving the handle kind the tool re-applies the exact legacy scope at runtime
 (heap → `heap-read`, thread → `ptrace`, off-CPU → `eventpipe`, call-tree →
-`investigation-export`, collections → `read-counters`/`eventpipe`). Unknown handle kinds, unknown views, and parameter-shape violations return
+`investigation-export`, counters → `read-counters`, other EventPipe collections
+→ `eventpipe`, method-parameter handles → `eventpipe` plus the explicit
+`sensitive-parameter-read` modifier scope for every view). Unknown handle kinds, unknown views, and parameter-shape violations return
 structured `InvalidArgument` / `UnsupportedHandleKind` envelopes. Missing
 handles return `HandleExpired`, `HandleCapacityEvicted`, or `HandleNotFound`
 according to the bounded metadata described above — never a 500.

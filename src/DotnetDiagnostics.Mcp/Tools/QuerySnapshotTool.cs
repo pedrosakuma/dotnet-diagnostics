@@ -38,7 +38,8 @@ namespace DotnetDiagnostics.Mcp.Tools;
 ///   <item><description>thread-snapshot → <c>ptrace</c></description></item>
 ///   <item><description>off-cpu-snapshot → <c>eventpipe</c></description></item>
 ///   <item><description>cpu-sample / allocation-sample / native-alloc-sample (call-tree view) → <c>investigation-export</c></description></item>
-///   <item><description>counters / exception-snapshot / crash-guard-snapshot / gc-events / event-source / activities / log-snapshot / jit-snapshot / threadpool-snapshot / contention-snapshot / db-snapshot / kestrel-snapshot / networking-snapshot / in-flight-requests / startup-snapshot → any of <c>read-counters</c> or <c>eventpipe</c> (matches <c>query_collection</c>)</description></item>
+///   <item><description>counters → <c>read-counters</c>; exception-snapshot / crash-guard-snapshot / gc-events / event-source / activities / log-snapshot / jit-snapshot / threadpool-snapshot / contention-snapshot / db-snapshot / kestrel-snapshot / networking-snapshot / in-flight-requests / startup-snapshot → <c>eventpipe</c></description></item>
+///   <item><description>method-params-capture → <c>eventpipe</c> plus the explicit <c>sensitive-parameter-read</c> modifier scope for every view</description></item>
 /// </list>
 /// <para>Unknown handle kinds, unknown views and parameter shape violations all return
 /// the structured <c>InvalidArgument</c> / <c>UnsupportedHandleKind</c> envelopes the
@@ -751,7 +752,7 @@ public sealed partial class QuerySnapshotTool
 
         if (kind == CollectionHandleKinds.Counters)
         {
-            return RequireAnyOfScope(principal, ScopeReadCounters, ScopeEventPipe, out failure);
+            return RequireScope(principal, ScopeReadCounters, out failure);
         }
 
         if (!RequireScope(principal, ScopeEventPipe, out failure))
@@ -759,11 +760,7 @@ public sealed partial class QuerySnapshotTool
             return false;
         }
 
-        if (kind == MethodParameterCaptureUseCases.HandleKind
-            && string.Equals(
-                string.IsNullOrWhiteSpace(view) ? MethodParameterCaptureQueryDispatcher.SummaryView : view.Trim(),
-                MethodParameterCaptureQueryDispatcher.EventsView,
-                StringComparison.OrdinalIgnoreCase))
+        if (kind == MethodParameterCaptureUseCases.HandleKind)
         {
             return RequireExplicitScope(principal, ScopeSensitiveParameterRead, out failure);
         }
@@ -947,18 +944,6 @@ public sealed partial class QuerySnapshotTool
         }
 
         failure = Forbidden(scope, $"requires scope '{scope}'");
-        return false;
-    }
-
-    private static bool RequireAnyOfScope(BearerPrincipal? principal, string a, string b, out DiagnosticResult<object>? failure)
-    {
-        if (principal is null || principal.HasScope(a) || principal.HasScope(b))
-        {
-            failure = null;
-            return true;
-        }
-
-        failure = Forbidden($"{a}|{b}", $"requires one of scope '{a}' or '{b}'");
         return false;
     }
 

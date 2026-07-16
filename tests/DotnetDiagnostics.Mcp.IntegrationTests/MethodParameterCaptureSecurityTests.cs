@@ -123,7 +123,7 @@ public sealed class MethodParameterCaptureSecurityTests
     }
 
     [Fact]
-    public async Task QuerySnapshot_MethodParams_Summary_DoesNotRequireSensitiveOptIn()
+    public async Task QuerySnapshot_MethodParams_Summary_RequiresExplicitSensitiveScope()
     {
         var store = new MemoryDiagnosticHandleStore();
         var handle = store.Register(4242, MethodParameterCaptureUseCases.HandleKind, Artifact(), TimeSpan.FromMinutes(10), origin: HandleOrigin.Live);
@@ -135,6 +135,29 @@ public sealed class MethodParameterCaptureSecurityTests
             new SensitiveValueGate(new SecurityOptions()),
             new SecurityOptions(),
             TestPrincipalAccessors.WithScopes("eventpipe"),
+            new ClrMdNativeAddressResolver(),
+            new StubFrameResolver(),
+            handle.Id,
+            view: "summary",
+            cancellationToken: CancellationToken.None);
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("Forbidden");
+    }
+
+    [Fact]
+    public async Task QuerySnapshot_MethodParams_Summary_DoesNotRequireValuePolicyOrOptIn()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var handle = store.Register(4242, MethodParameterCaptureUseCases.HandleKind, Artifact(), TimeSpan.FromMinutes(10), origin: HandleOrigin.Live);
+
+        var result = await QuerySnapshotTool.QuerySnapshot(
+            store,
+            new StubDumpInspector(),
+            new SensitiveDataRedactor(new SecurityOptions()),
+            new SensitiveValueGate(new SecurityOptions()),
+            new SecurityOptions(),
+            TestPrincipalAccessors.WithScopes("eventpipe", "sensitive-parameter-read"),
             new ClrMdNativeAddressResolver(),
             new StubFrameResolver(),
             handle.Id,

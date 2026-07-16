@@ -4,6 +4,7 @@ using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
 
@@ -11,6 +12,62 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
 public sealed class QuerySnapshotHandleSecurityTests
 {
+    [Fact]
+    public async Task CountersDiff_RequiresReadCountersInsteadOfEventPipe()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var current = store.Register(1, CollectionHandleKinds.Counters, new object(), TimeSpan.FromMinutes(10));
+
+        var result = await Query(
+            store,
+            TestPrincipalAccessors.WithScopes("eventpipe"),
+            current.Id,
+            view: "diff");
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("Forbidden");
+        result.Error.Message.Should().Contain("read-counters");
+    }
+
+    [Fact]
+    public async Task CounterTombstone_RequiresReadCountersBeforeReturningDetails()
+    {
+        var store = new MemoryDiagnosticHandleStore(maxEntries: 1);
+        var evicted = store.Register(424242, CollectionHandleKinds.Counters, new object(), TimeSpan.FromMinutes(10));
+        store.Register(1, CollectionHandleKinds.EventSource, new object(), TimeSpan.FromMinutes(10));
+
+        var result = await Query(
+            store,
+            TestPrincipalAccessors.WithScopes("eventpipe"),
+            evicted.Id,
+            view: "summary");
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("Forbidden");
+        result.Summary.Should().NotContain("capacity");
+        result.Summary.Should().NotContain("424242");
+    }
+
+    [Fact]
+    public async Task MethodParameterTombstone_RequiresSensitiveScopeForSummary()
+    {
+        var store = new MemoryDiagnosticHandleStore(maxEntries: 1);
+        var evicted = store.Register(424242, MethodParameterCaptureUseCases.HandleKind, new object(), TimeSpan.FromMinutes(10));
+        store.Register(1, CollectionHandleKinds.EventSource, new object(), TimeSpan.FromMinutes(10));
+
+        var result = await Query(
+            store,
+            TestPrincipalAccessors.WithScopes("eventpipe"),
+            evicted.Id,
+            view: "summary");
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("Forbidden");
+        result.Error.Message.Should().Contain("sensitive-parameter-read");
+        result.Summary.Should().NotContain("capacity");
+        result.Summary.Should().NotContain("424242");
+    }
+
     [Fact]
     public async Task CapacityTombstone_RequiresExactKindScopeBeforeReturningDetails()
     {
