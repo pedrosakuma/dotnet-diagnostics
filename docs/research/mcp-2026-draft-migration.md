@@ -1,20 +1,22 @@
 # MCP 2026 Draft Migration Assessment
 
-**Issue**: #546 (Phase 16 P1) · **Branch**: `docs/mcp-2026-draft-migration-assessment` · **Date**: 2026-07-06
-**Status**: Research spike — no production migration. Output is this findings doc only.
+**Issue**: #546 (Phase 16 P1) · **Original assessment**: 2026-07-06 · **Last revalidated**: 2026-07-16
+**Status**: Research spike — no production migration. Revalidated against SDK `2.0.0-preview.3`.
 
 ## Executive summary
 
-**Recommendation: WAIT for spec finalization and a more complete/stable SDK 2.x before doing the real migration.**
+**Recommendation: WAIT for the 2026-07-28 spec finalization and stable SDK 2.x before doing the production migration, but prepare the now-concrete MRTR and package-migration work.**
 
-The repo is in a **mixed position** against the 2026 draft:
+The repo is in a substantially better position than at the original assessment:
 
 - **Good news:** the main diagnostic drilldown model is already close to SEP-2567. `IDiagnosticHandleStore` already mints opaque server handles, and follow-up calls already pass those handles as ordinary tool arguments.
-- **Medium risk:** the core MCP registration surface is likely to stay mostly source-compatible. In a throwaway SDK `2.0.0-preview.1` spike, repo-style `AddMcpServer(...).WithHttpTransport().WithTools<T>().MapMcp(...)`, `[McpServerTool]`, `RequestContext<CallToolRequestParams>`, and `McpServer.ElicitAsync(...)` all still compiled.
-- **High risk:** the repo has a **second**, separate state model in the orchestrator attach/proxy path that is explicitly tied to `Mcp-Session-Id`. That state is outside `IDiagnosticHandleStore`, and SEP-2567 breaks it directly.
-- **Highest uncertainty:** dump approval currently depends on native MCP elicitation (`server.ElicitAsync(...)`). SEP-2322 replaces that wire pattern with MRTR (`input_required` + retry). The preview SDK still exposes `ElicitAsync`, but its observed wire output was not fully draft-conformant yet, so it is too early to trust as a migration target.
+- **Resolved architectural blocker:** #554 / PR #559 made explicit investigation handles the primary orchestrator routing token. Session binding remains only as a compatibility fallback, so SEP-2567 no longer requires an orchestrator redesign before migration.
+- **Core SDK shape remains compatible:** repo-style registration, tools, `RequestContext<CallToolRequestParams>`, and Streamable HTTP still compile against `2.0.0-preview.3`.
+- **The original wire-compliance blocker is fixed:** raw HTTP validation against `2.0.0-preview.3` confirmed `resultType: "complete"` on `server/discover`, `tools/list`, and `tools/call`.
+- **Dump approval now has a concrete migration requirement:** `McpServer.ElicitAsync(...)` throws `InvalidOperationException("Elicitation is not supported in stateless mode.")` on `2026-07-28` Streamable HTTP. The tool must use explicit MRTR via `InputRequiredException`, then consume `RequestParams.InputResponses` and `RequestState` on retry.
+- **Tasks has a concrete package shape but remains gated:** `2.0.0-preview.3` moved Tasks into `ModelContextProtocol.Extensions.Tasks`; the extension and its low-level composition APIs are still preview/experimental, so #548 should continue waiting for stable 2.x.
 
-The preview spike changed the urgency recommendation in one important way: **do not start a production SDK upgrade now**. The preview already auto-implements `server/discover`, but in local testing it still emitted `server/discover`, `tools/list`, and `tools/call` results **without the draft-required `resultType` field**, which is a strong sign that the preview is not yet a safe endpoint for a real migration PR.
+The production recommendation therefore remains **wait**, but for release-timing rather than an unknown protocol or SDK shape. The remaining work can now be split into narrow, testable migrations instead of another broad feasibility spike.
 
 ## Draft changes reviewed
 
@@ -56,6 +58,11 @@ There is **no hidden MCP-session affinity** in this store. Handle lifetime is TT
 The list surface can vary by **authorization** because of the scope filter (`BuildScopeListToolsFilter`), but not by connection-local mutable state (`src/DotnetDiagnostics.Mcp/Hosting/DiagnosticServiceRegistration.cs:312-341`). That is acceptable under the draft because auth is per-request input, not protocol session state.
 
 ### What breaks
+
+> **2026-07-16 status:** this blocker was addressed by #554 / PR #559. Explicit
+> `investigationHandleId` / `investigationHandleIds` routing is now primary;
+> session lookup is a compatibility fallback. The analysis below records the
+> pre-fix state that motivated that work.
 
 ### 3. Orchestrator attach/proxy state is session-bound and must be redesigned
 
@@ -185,11 +192,30 @@ The current design already has two properties that map well to MRTR:
 
 So the repo does **not** need to unlearn a big persistent-session approval design.
 
-### What is still unknown
+### What the `preview.3` revalidation established
 
-The SDK 2.0 preview still exposes `McpServer.ElicitAsync(...)`, and a repo-style tool compiling against it was straightforward in the throwaway spike. However, that alone does **not** prove the SDK's runtime MRTR path is ready for this repo, because the same preview also emitted draft-version responses without the required `resultType` field in basic `server/discover`, `tools/list`, and `tools/call` testing.
+The SDK now documents and implements a clear split:
 
-**Practical reading:** do not hand-rewrite the dump-approval flow against raw MRTR objects yet. Wait until the SDK's draft implementation is visibly complete enough to trust its wire behavior, or until the SDK team publishes a clear app-level MRTR authoring pattern for `ElicitAsync`-style flows.
+- stateful/legacy sessions may continue using `McpServer.ElicitAsync(...)`;
+- stateless `2026-07-28` Streamable HTTP tools must throw `InputRequiredException`;
+- retries carry `InputResponses` and `RequestState` on `CallToolRequestParams`.
+
+This was validated with a raw two-round HTTP spike:
+
+1. the first `tools/call` returned `resultType: "input_required"` with an
+   `elicitation/create` input request and opaque `requestState`;
+2. the retry echoed `requestState`, supplied an accepted Boolean response in
+   `inputResponses`, and returned `resultType: "complete"`.
+
+Calling the repo's current high-level pattern (`server.ElicitAsync(...)`) on
+the same stateless server returned a complete tool error and logged
+`InvalidOperationException("Elicitation is not supported in stateless mode.")`.
+The existing broad catch in `DumpApprovalElicitation` would fail closed, which
+is safe but would make native approval unusable after the protocol migration.
+
+**Practical reading:** the dump-approval change is no longer an API discovery
+problem. It is a focused dual-era implementation task that must preserve the
+current fail-closed behavior while adding explicit MRTR retry handling.
 
 ## SDK 2.0.0-preview.1 spike findings
 
@@ -254,7 +280,7 @@ That suggests `server/discover` is SDK-managed rather than something this repo w
 
 ## Preview runtime behavior that argues against migrating now
 
-The strongest finding of the entire spike was **negative**:
+The strongest finding of the original `preview.1` spike was **negative**:
 
 - `server/discover`
 - `tools/list`
@@ -268,7 +294,31 @@ Examples observed locally:
 - `tools/list` returned `tools`, `ttlMs`, `cacheScope` — but no `resultType`.
 - `tools/call` returned `content` / `structuredContent` — but no `resultType`.
 
-So while the preview is useful for shape-checking, it does **not** yet look trustworthy as a production migration target for a repo that cares about spec compliance.
+This specific blocker was fixed in `2.0.0-preview.3`.
+
+## SDK 2.0.0-preview.3 revalidation
+
+`2.0.0-preview.3` was released on 2026-07-15. Its release notes explicitly
+include “Fix missing resultType on complete result responses” and extract Tasks
+into `ModelContextProtocol.Extensions.Tasks`.
+
+The revalidation used a standalone .NET 10 ASP.NET Core server with
+`ModelContextProtocol` and `ModelContextProtocol.AspNetCore`
+`2.0.0-preview.3`, driven by raw `2026-07-28` Streamable HTTP requests.
+
+Observed results:
+
+- `server/discover` returned `resultType: "complete"`;
+- `tools/list` returned `resultType: "complete"`;
+- `tools/call` returned `resultType: "complete"`;
+- explicit MRTR returned `resultType: "input_required"` and completed on retry;
+- `McpServer.ElicitAsync(...)` still compiled, but failed at runtime in
+  stateless HTTP exactly as documented by the SDK.
+
+The SDK is now credible enough to define the migration plan and tests, but it
+is still a preview targeting a protocol revision that has not yet been
+ratified. That is not sufficient justification for moving the production
+server off stable SDK `1.4.0`.
 
 ## Other useful preview observations
 
@@ -284,32 +334,37 @@ So while the preview is useful for shape-checking, it does **not** yet look trus
 | Tool registration / `RequestContext` signatures | **Mostly safe** | Preview build suggests source compatibility is good. |
 | Auth middleware | **Mostly safe** | No dependency on `initialize` or protocol sessions. |
 | Request-scoped progress notifications | **Mostly safe** | Still valid in draft; comments need cleanup. |
-| Dump approval elicitation | **Needs focused migration** | Highest-risk tool-level MCP change because SEP-2322 rewrites the wire contract. |
-| Orchestrator attach/proxy session binding | **Breaks conceptually** | Explicitly depends on `Mcp-Session-Id` / `SessionId`; must be redesigned. |
+| Dump approval elicitation | **Concrete focused migration** | Replace stateless HTTP `ElicitAsync` with explicit `InputRequiredException` + retry handling while retaining legacy compatibility. |
+| Orchestrator attach/proxy session binding | **Addressed** | #554 / PR #559 made explicit handles primary; session binding is a fallback. |
 | `ping` / `logging/setLevel` / `roots/list_changed` | **Low/no impact found** | No direct repo usage found. |
 | `subscriptions/listen` | **Low impact today** | Repo does not depend on out-of-band list/resource change streams. |
-| SDK 2.0 preview as migration base | **Not ready** | Useful for exploration, not yet trustworthy for production migration. |
+| SDK 2.0 preview as migration base | **Wire shape validated, release gate remains** | `preview.3` fixes `resultType` and validates MRTR, but is still preview against an unratified revision. |
 
 ## Recommended migration order
 
 1. **Do not upgrade the main repo to SDK 2.0 preview yet.**
-   - The preview is good enough for research, not for production alignment.
-   - The missing `resultType` in live testing is the clearest blocker.
+   - The wire-compliance blocker is fixed, but the protocol is scheduled for
+     2026-07-28 and the SDK is still preview.
+   - Prepare the package/API diff and integration-test matrix without merging
+     preview dependencies into production.
 
-2. **Design the orchestrator state refactor independently of the SDK upgrade.**
-   - Remove reliance on session-bound attach state.
-   - Move toward explicit investigation-handle threading.
-   - This is real migration work, but it is protocol-shape work, not package-version churn.
+2. **Treat the orchestrator state refactor as complete.**
+   - #554 / PR #559 delivered explicit handle threading.
+   - Retain and test the legacy session fallback during the dual-era window.
 
-3. **When the spec is final and the SDK is stable enough, do a narrow transport/protocol migration spike first.**
+3. **When the spec is final and the SDK is stable, do a narrow transport/protocol migration first.**
    - bump protocol version,
    - validate `server/discover`, per-request `_meta`, standard HTTP headers,
    - confirm `resultType` on all result shapes,
-   - confirm `ElicitAsync` really surfaces MRTR correctly.
+   - move Tasks references to `ModelContextProtocol.Extensions.Tasks`,
+   - retain validation for legacy `2025-11-25` clients where supported.
 
-4. **Only then migrate the dump-approval flow if needed.**
-   - If stable SDK 2.x preserves `ElicitAsync` and translates it cleanly to MRTR, keep the current high-level code shape.
-   - If not, rewrite only this focused area against the stable MRTR surface.
+4. **Migrate dump approval as an explicit dual-era MRTR flow.**
+   - Use `InputRequiredException` for stateless `2026-07-28` HTTP.
+   - Consume and validate `InputResponses` / `RequestState` on retry.
+   - Preserve the current `confirm=true` fallback for clients without native
+     interaction support and the fail-closed behavior for advertised-but-broken
+     approval flows.
 
 5. **After transport + elicitation are proven, clean up residual docs/comments/tests.**
    - cancellation wording,
@@ -323,23 +378,26 @@ So while the preview is useful for shape-checking, it does **not** yet look trus
 More concretely:
 
 - **Wait** on changing `Directory.Packages.props`, the main solution, and the live MCP server behavior until the draft is finalized and the SDK's wire behavior is clearly complete.
-- **Start early** only on migration work that is obviously required regardless of SDK polish — chiefly the orchestrator's session-bound state model.
+- **Start early** on test and design work whose API shape is now proven:
+  explicit MRTR dump approval, Tasks package extraction, and dual-era protocol
+  coverage.
 
 That is the best balance between urgency and avoiding throwaway work.
 
-## Suggested follow-up issue list (do not file yet)
+## Follow-up work at finalization
 
 1. **Protocol 2026 finalization bump + dual-era validation**
    - Upgrade to stable SDK 2.x.
    - Validate `server/discover`, per-request `_meta`, headers, `resultType`, and legacy-client fallback behavior.
 
-2. **Explicit investigation-handle routing redesign**
-   - Remove default dependence on `Mcp-Session-Id` / `IInvestigationSessionBinder`.
-   - Thread investigation handles explicitly through follow-up orchestrator operations.
+2. **Explicit investigation-handle routing redesign — completed**
+   - Delivered by #554 / PR #559.
 
-3. **Dump-approval MRTR validation / rewrite**
-   - Confirm whether stable SDK `ElicitAsync` is sufficient.
-   - If not, implement the `input_required` / retry pattern explicitly for `collect_process_dump`.
+3. **Dump-approval MRTR rewrite**
+   - Implement the now-validated `input_required` / retry pattern explicitly
+     for `collect_process_dump`.
+   - Keep the legacy elicitation/fallback path during the supported dual-era
+     window.
 
 4. **HTTP/proxy/test modernization for standardized headers**
    - Ensure custom HTTP paths/tests/proxy code remain correct under `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` requirements.
@@ -351,9 +409,13 @@ That is the best balance between urgency and avoiding throwaway work.
 
 The repo's **diagnostic artifact handle model is already in the right architectural direction**.
 
-The two things that matter most are:
+The two things that matter most now are:
 
-1. **the orchestrator's session-bound investigation state is not draft-compatible and needs redesign**, and
-2. **the SDK preview is not mature enough yet to justify a production migration PR**, even though it is already useful for source-shape validation.
+1. **the remaining tool-level incompatibility is dump approval's use of
+   `ElicitAsync` on stateless HTTP**, with a validated explicit-MRTR replacement;
+2. **the release gate remains spec finalization plus stable SDK 2.x**, not an
+   unresolved architecture or wire-format blocker.
 
-That combination supports a clear plan: **document the impact now, design around explicit handles next, and wait for stable SDK/spec convergence before touching the main MCP server implementation.**
+That combination supports a clear plan: **prepare the narrow migration and its
+dual-era tests now, then change production dependencies and protocol behavior
+only after the 2026-07-28 revision and stable SDK 2.x land.**
