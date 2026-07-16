@@ -90,7 +90,7 @@ separates observed signals from bounded hypotheses. This is where a blind agent 
     "hypotheses": [
       { "name": "cpu.compute-demand", "confidence": "high",
         "summary": "The process spent a large share of the window doing compute work.",
-        "supportingEvidence": [{ "name": "cpu-usage", "value": 95.36, "comparison": ">=", "threshold": 70, "rationale": "High CPU supports elevated compute demand." }],
+        "supportingEvidence": [{ "name": "cpu-usage", "value": 95.36, "comparison": ">=", "threshold": 90, "rationale": "CPU crossed the critical threshold used to assign high confidence." }],
         "contradictingEvidence": [],
         "nextStep": "Capture on-CPU samples and inspect exclusive hot frames before assigning a cause." },
       { "name": "threadpool.backlog", "confidence": "moderate",

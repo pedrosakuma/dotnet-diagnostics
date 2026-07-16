@@ -155,7 +155,8 @@ dotnet-diagnostics-cli inspect --view triage --json
 
 Human-readable output leads with `Assessment`, then prints `Observed signals`, `Hypotheses`
 (confidence, supporting/contradicting evidence, and next step), and ranked indicators. JSON uses
-the same `modelVersion=2` contract as MCP. A low-CPU snapshot with a small transient queue is
+the same `modelVersion=2` contract as MCP. Hypotheses are ordered by confidence and then the
+strongest supporting observed-signal level. A low-CPU snapshot with a small transient queue is
 `inconclusive`; it is not labeled `io-bound`.
 
 For compatibility, JSON continues to serialize `verdict`, `secondaryVerdicts`, `severity`,

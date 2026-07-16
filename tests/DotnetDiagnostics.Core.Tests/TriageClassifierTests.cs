@@ -39,7 +39,7 @@ public sealed class TriageClassifierTests
         hypothesis.Name.Should().Be(TriageClassifier.CpuComputeDemandHypothesis);
         hypothesis.Confidence.Should().Be("high");
         hypothesis.SupportingEvidence.Should().ContainSingle(e =>
-            e.Name == "cpu-usage" && e.Comparison == ">=" && e.Threshold == 70);
+            e.Name == "cpu-usage" && e.Comparison == ">=" && e.Threshold == 90);
     }
 
     [Fact]
@@ -88,6 +88,9 @@ public sealed class TriageClassifierTests
         result.Severity.Should().Be(TriageSeverity.Critical);
         result.Hypotheses.Should().ContainSingle()
             .Which.Confidence.Should().Be("high");
+        result.Hypotheses.Should().ContainSingle()
+            .Which.SupportingEvidence.Should().ContainSingle(e =>
+                e.Name == "alloc-rate" && e.Threshold == 100);
     }
 
     [Fact]
@@ -195,6 +198,16 @@ public sealed class TriageClassifierTests
             h.Name == TriageClassifier.ThreadPoolBacklogHypothesis && h.Confidence == "high");
         result.Hypotheses.Should().Contain(h =>
             h.Name == TriageClassifier.WaitingOrBackpressureHypothesis && h.Confidence == "high");
+        var backlog = result.Hypotheses!.Single(h => h.Name == TriageClassifier.ThreadPoolBacklogHypothesis);
+        backlog.SupportingEvidence.Should().Contain(e =>
+            e.Name == "threadpool-queue-length" && e.Threshold == 200);
+        backlog.SupportingEvidence.Should().Contain(e =>
+            e.Name == "request-duration-p95" && e.Threshold == 500);
+        var waiting = result.Hypotheses.Single(h => h.Name == TriageClassifier.WaitingOrBackpressureHypothesis);
+        waiting.SupportingEvidence.Should().Contain(e =>
+            e.Name == "threadpool-queue-length" && e.Threshold == 50);
+        waiting.SupportingEvidence.Should().Contain(e =>
+            e.Name == "request-duration-p95" && e.Threshold == 2_000);
     }
 
     [Fact]
@@ -252,6 +265,45 @@ public sealed class TriageClassifierTests
             h.SupportingEvidence.Count > 0
             && h.SupportingEvidence.All(e => !string.IsNullOrWhiteSpace(e.Rationale))
             && !string.IsNullOrWhiteSpace(h.NextStep));
+    }
+
+    [Fact]
+    public void Classify_HighConfidenceHypotheses_DisplayTheirEscalationThresholds()
+    {
+        var gc = TriageClassifier.Classify(SnapshotOf(("time-in-gc", 35)));
+        gc.Hypotheses.Should().ContainSingle()
+            .Which.SupportingEvidence.Should().Contain(e =>
+                e.Name == "time-in-gc" && e.Threshold == 30);
+
+        var contention = TriageClassifier.Classify(
+            SnapshotOf(("monitor-lock-contention-count", 75)),
+            requestDurationP95: 0.8);
+        var contentionHypothesis = contention.Hypotheses.Should().ContainSingle().Subject;
+        contentionHypothesis.Confidence.Should().Be("high");
+        contentionHypothesis.SupportingEvidence.Should().Contain(e =>
+            e.Name == "monitor-lock-contention-count" && e.Threshold == 50);
+        contentionHypothesis.SupportingEvidence.Should().Contain(e =>
+            e.Name == "request-duration-p95" && e.Threshold == 500);
+
+        var gen2 = TriageClassifier.Classify(SnapshotOf(("gen-2-gc-count", 12)));
+        gen2.Hypotheses.Should().ContainSingle()
+            .Which.SupportingEvidence.Should().Contain(e =>
+                e.Name == "gen-2-gc-count" && e.Threshold == 10);
+    }
+
+    [Fact]
+    public void Classify_EqualConfidence_PrioritizesCriticalSignalsAheadOfWeakerCpu()
+    {
+        var result = TriageClassifier.Classify(SnapshotOf(
+            ("cpu-usage", 75),
+            ("threadpool-queue-length", 250),
+            ("monitor-lock-contention-count", 75)));
+
+        result.Hypotheses!.Select(h => h.Name).Should().Equal(
+            TriageClassifier.ThreadPoolBacklogHypothesis,
+            TriageClassifier.SynchronizationContentionHypothesis,
+            TriageClassifier.CpuComputeDemandHypothesis);
+        result.Hypotheses.Should().OnlyContain(h => h.Confidence == "moderate");
     }
 
     [Fact]

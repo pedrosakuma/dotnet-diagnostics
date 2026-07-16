@@ -28,7 +28,10 @@ public sealed record TriageResult(
     /// <summary>Direct threshold crossings from the captured window. These are observations, not diagnoses.</summary>
     public IReadOnlyList<TriageObservedSignal>? ObservedSignals { get; init; }
 
-    /// <summary>Ordered, evidence-backed interpretations that require drill-down before assigning a cause.</summary>
+    /// <summary>
+    /// Evidence-backed interpretations ordered by confidence, then by the strongest supporting
+    /// observed-signal level. Each requires drill-down before assigning a cause.
+    /// </summary>
     public IReadOnlyList<TriageHypothesis>? Hypotheses { get; init; }
 }
 

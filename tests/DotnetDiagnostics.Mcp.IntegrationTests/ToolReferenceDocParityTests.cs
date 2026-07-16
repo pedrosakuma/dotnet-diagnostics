@@ -71,6 +71,19 @@ public sealed class ToolReferenceDocParityTests
         EnumerateToolNames().Should().HaveCount(16);
     }
 
+    [Fact]
+    public void ToolReference_DocumentsSweepFieldsUnderTheSweepProjection()
+    {
+        var doc = ReadToolReference();
+
+        doc.Should().Contain("`data.sweep.triage`");
+        doc.Should().Contain("`data.sweep.handles`");
+        doc.Should().Contain("`data.sweep.failures`");
+        doc.Should().NotContain("`data.triage`");
+        doc.Should().NotContain("`data.handles`");
+        doc.Should().NotContain("`data.failures`");
+    }
+
     private static IReadOnlyList<string> EnumerateToolNames()
     {
         var names = new SortedSet<string>(StringComparer.Ordinal);

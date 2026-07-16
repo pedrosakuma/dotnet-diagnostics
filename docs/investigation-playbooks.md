@@ -23,8 +23,8 @@ a symptom and walks through the tool calls in order.
 Before stepping through vitals manually, run `collect_events(kind="sweep")`. It fans out the
 five EventPipe-safe collectors (counters + gc + exceptions + threadpool + resource) **concurrently**
 in ~6 s and returns observed signals, bounded hypotheses, each sub-summary, and per-collector
-drill-down handles in `data.handles`. Follow the highest-ranked hypothesis hint (and
-`data.handles[...]` for `query_snapshot`) instead of re-collecting. When assessment is
+drill-down handles in `data.sweep.handles`. Follow the highest-ranked hypothesis hint (and
+`data.sweep.handles[...]` for `query_snapshot`) instead of re-collecting. When assessment is
 `inconclusive`, extend the relevant capture rather than assigning a cause from one window.
 
 ### Step 1 — Quick vitals

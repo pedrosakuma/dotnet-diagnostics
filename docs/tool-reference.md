@@ -197,7 +197,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="networking")` | The full `ByOperation[]` list. Summary keeps headline HTTP/DNS/TLS/socket counts + latency tails; drill in with `query_snapshot(handle, view=byOperation|queue|tls|dns)`. |
 | `collect_events(kind="requests")` | The full in-flight request list. Summary keeps the headline counts + the oldest requests inline; drill in with `query_snapshot(handle, view=requests|longRunning)`. |
 | `collect_events(kind="startup")` | The loader/DI event lists and full timeline. Summary keeps headline counts, top assembly/module aggregates, and notes. |
-| `collect_events(kind="sweep")` | The five sub-snapshots' bulky lists (counters, gc, exceptions, threadpool, resource). Summary keeps observed signals + hypotheses + per-collector handles. Each sub-collector's full payload stays behind its handle (`data.handles`). |
+| `collect_events(kind="sweep")` | The five sub-snapshots' bulky lists (counters, gc, exceptions, threadpool, resource). Summary keeps observed signals + hypotheses + per-collector handles. Each sub-collector's full payload stays behind its handle (`data.sweep.handles`). |
 | `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph\|deadlocks\|unique-stacks\|async-stalls\|wait-chains)`. |
 
 Explicit `topN` always wins over the depth default — if you pass
@@ -215,10 +215,10 @@ process. Instead of issuing five sequential collections (~25–40 s), it fans ou
 EventPipe-safe collectors — `counters`, `gc`, `exceptions`, `threadpool` and `resource` — **concurrently**
 in a single round-trip and returns one consolidated envelope:
 
-- `data.triage` — `modelVersion=2`, neutral assessment/severity, observed signals, evidence-backed hypotheses, ranked indicators, and deprecated verdict compatibility fields.
-- `data.counters` / `data.gc` / `data.exceptions` / `data.threadpool` / `data.resource` — each sub-snapshot's summary inline.
-- `data.handles` — per-collector drill-down handles (`counters`, `gc`, `exceptions`, `threadpool`); pass these to `query_snapshot` to follow up without re-collecting.
-- `data.failures` — per-collector failure notes; empty when every collector succeeded (one slow/failed collector never blocks the rest).
+- `data.sweep.triage` — `modelVersion=2`, neutral assessment/severity, observed signals, evidence-backed hypotheses, ranked indicators, and deprecated verdict compatibility fields.
+- `data.sweep.counters` / `data.sweep.gc` / `data.sweep.exceptions` / `data.sweep.threadpool` / `data.sweep.resource` — each sub-snapshot's summary inline.
+- `data.sweep.handles` — per-collector drill-down handles (`counters`, `gc`, `exceptions`, `threadpool`); pass these to `query_snapshot` to follow up without re-collecting.
+- `data.sweep.failures` — per-collector failure notes; empty when every collector succeeded (one slow/failed collector never blocks the rest).
 
 `durationSeconds` defaults to 6 and is floored at 6 s so each EventPipe session has time to start and
 emit at least one interval. The top-level `Hints[]` point at the next neutral drill-down for the
@@ -866,7 +866,8 @@ evidence-selected drill-down. The payload explicitly separates:
 
 - `observedSignals[]` — direct threshold crossings with value, comparison, threshold, unit, and rationale.
 - `hypotheses[]` — bounded interpretations with `confidence`, `supportingEvidence`,
-  `contradictingEvidence`, and a neutral `nextStep`.
+  `contradictingEvidence`, and a neutral `nextStep`, ordered by confidence and then the
+  strongest supporting observed-signal level.
 - `topIndicators[]` and raw `evidence` — retained for independent interpretation.
 - `assessment` — `healthy`, `inconclusive`, `degraded`, or `critical`.
 
