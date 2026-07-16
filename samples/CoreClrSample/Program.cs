@@ -211,6 +211,20 @@ app.MapGet("/threadpool/queue", (int? globalItems, int? localItems, int? blockMs
 })
 .WithName("QueueThreadPoolWork");
 
+app.MapGet("/method-params", () =>
+{
+    const string label = "known-label";
+    var payload = "known-prefix-" + new string('x', 5_000);
+    var checksum = 0;
+    for (var sequence = 123; sequence < 126; sequence++)
+    {
+        checksum ^= MethodParameterFixture.Capture(sequence, label, payload);
+    }
+
+    return Results.Json(new { checksum });
+})
+.WithName("CaptureMethodParameters");
+
 app.Run();
 
 [MethodImpl(MethodImplOptions.NoInlining)]
@@ -284,6 +298,13 @@ static class AsyncFixture
         await Never.Task.ConfigureAwait(false);
         return $"never-{id}";
     }
+}
+
+static class MethodParameterFixture
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Capture(int sequence, string label, string payload)
+        => HashCode.Combine(sequence, label.Length, payload.Length);
 }
 
 sealed record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)

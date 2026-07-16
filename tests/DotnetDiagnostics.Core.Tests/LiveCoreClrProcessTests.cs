@@ -121,52 +121,75 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
     }
 
     [LinuxOrWindowsOnlyFact(skipReason: "method-parameter capture V1 requires linux-x64 or win-x64 profiler payloads.", Timeout = 120_000)]
-    public async Task MethodParameterCapture_CapturesCpuBurnArgument_EndToEnd()
+    public async Task MethodParameterCapture_CapturesKnownValuesAndBounds_EndToEnd()
     {
         EnsureSampleRunning();
-        if (System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture != System.Runtime.InteropServices.Architecture.X64)
-        {
-            throw SkipException.ForReason("method-parameter capture V1 currently ships linux-x64/win-x64 profiler payloads only.");
-        }
+        EnsureMethodParameterCaptureSupported();
 
         var handles = new MemoryDiagnosticHandleStore();
         var resolver = new FixedProcessContextResolver(Pid);
-        var collector = new MethodParameterCaptureCollector(new MvidReader(), new SensitiveDataRedactor(new SecurityOptions()));
+        var (collector, sharedPathCreated, captureStarted, _) = CreateMethodParameterCollector();
         var baseUrl = await _sample!.WaitForListeningUrlAsync(TimeSpan.FromSeconds(30), "/weatherforecast");
         using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
 
-        var trigger = Task.Run(async () =>
-        {
-            await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-            using var response = await http.GetAsync("/cpu-burn?ms=123", CancellationToken.None).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-        });
-
-        var result = await MethodParameterCaptureUseCases.CollectAsync(
+        var captureTask = MethodParameterCaptureUseCases.CollectAsync(
             collector,
             handles,
             resolver,
             Pid,
-            durationSeconds: 8,
-            maxEvents: 10,
-            previewCount: 10,
-            methods:
-            [
-                new MethodFilter("CoreClrSample.dll", "Program", "<<Main>$>g__BurnCpu|0_10")
-                {
-                    Signature = ["System.Int32"],
-                },
-            ],
+            durationSeconds: 6,
+            maxEvents: 2,
+            previewCount: 2,
+            methods: [MethodParameterCaptureFilter()],
             cancellationToken: CancellationToken.None);
 
-        await trigger.ConfigureAwait(false);
+        var sharedPath = await WaitForCaptureSignalAsync(sharedPathCreated.Task, captureTask, "profiler shared-path creation");
+        await WaitForCaptureSignalAsync(captureStarted.Task, captureTask, "EventPipe Capturing/Start");
+
+        var socketPath = Directory.EnumerateFiles(sharedPath, "*.sock").Should().ContainSingle().Which;
+        if (OperatingSystem.IsLinux())
+        {
+            System.Text.Encoding.UTF8.GetByteCount(socketPath).Should().BeLessThan(108, "Unix-domain socket paths must fit sockaddr_un.sun_path");
+        }
+
+        using var response = await http.GetAsync("/method-params", CancellationToken.None);
+        response.EnsureSuccessStatusCode();
+        var result = await captureTask.WaitAsync(TimeSpan.FromSeconds(30));
 
         result.Error.Should().BeNull();
         result.Data.Should().NotBeNull();
         result.Handle.Should().NotBeNullOrWhiteSpace();
-        result.Data!.CaptureCount.Should().BeGreaterThan(0);
+        result.Data!.CaptureCount.Should().Be(2);
+        result.Data.MaxEvents.Should().Be(2);
+        result.Data.StopReason.Should().Be("max_events_reached");
+        result.Data.ValuesTruncated.Should().BeTrue();
+        result.Data.TruncatedValueCount.Should().Be(2);
+        var resolvedMethod = result.Data.Events.Select(invocation => invocation.Method).Distinct().Should().ContainSingle().Which;
+        resolvedMethod.MetadataToken.Should().BeGreaterThan(0);
+        resolvedMethod.ModuleVersionId.Should().NotBe(Guid.Empty.ToString("D"));
+        resolvedMethod.Signature.Should().Equal("System.Int32", "System.String", "System.String");
+        result.Data.Events.Should().OnlyContain(invocation =>
+            invocation.Method.ModuleName == "CoreClrSample.dll"
+            && invocation.Method.TypeName == "MethodParameterFixture"
+            && invocation.Method.MethodName == "Capture");
         result.Data.Events.SelectMany(invocation => invocation.Parameters)
-            .Should().Contain(parameter => parameter.Name == "milliseconds" && parameter.TypeName == "System.Int32" && parameter.Value == "123");
+            .Where(parameter => parameter.Name == "sequence")
+            .Should().OnlyContain(parameter => parameter.TypeName == "System.Int32")
+            .And.Contain(parameter => parameter.Value == "123")
+            .And.Contain(parameter => parameter.Value == "124");
+        result.Data.Events.SelectMany(invocation => invocation.Parameters)
+            .Where(parameter => parameter.Name == "label")
+            .Should().OnlyContain(parameter => parameter.TypeName == "System.String" && parameter.Value == "known-label");
+        result.Data.Events.SelectMany(invocation => invocation.Parameters)
+            .Where(parameter => parameter.Name == "payload")
+            .Should().OnlyContain(parameter =>
+                parameter.TypeName == "System.String"
+                && parameter.Value.StartsWith("known-prefix-", StringComparison.Ordinal)
+                && parameter.Value.Length == 256
+                && parameter.Truncated
+                && parameter.Notes.Contains("value-cap", StringComparer.Ordinal)
+                && parameter.Notes.Contains("preview-cap", StringComparer.Ordinal));
+        Directory.Exists(sharedPath).Should().BeFalse("the control socket and profiler shared directory must be cleaned after capture");
 
         var drilled = await QuerySnapshotTool.QuerySnapshot(
             handles,
@@ -186,7 +209,68 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         var query = drilled.Data.Should().BeOfType<MethodParameterCaptureQueryResult>().Subject;
         query.Events.Should().NotBeNull();
         query.Events!.Events.SelectMany(invocation => invocation.Parameters)
-            .Should().Contain(parameter => parameter.Name == "milliseconds" && parameter.TypeName == "System.Int32" && parameter.Value == "123");
+            .Should().Contain(parameter => parameter.Name == "label" && parameter.TypeName == "System.String" && parameter.Value == "known-label");
+        query.Events.Events.SelectMany(invocation => invocation.Parameters)
+            .Where(parameter => parameter.Name == "payload")
+            .Should().OnlyContain(parameter =>
+                parameter.TypeName == "System.String"
+                && parameter.Value.StartsWith("known-prefix-", StringComparison.Ordinal)
+                && System.Text.Encoding.UTF8.GetByteCount(parameter.Value) == 4_096
+                && parameter.Truncated
+                && parameter.Notes.Contains("value-cap", StringComparer.Ordinal)
+                && !parameter.Notes.Contains("preview-cap", StringComparer.Ordinal));
+    }
+
+    [LinuxOrWindowsOnlyFact(skipReason: "method-parameter capture V1 requires linux-x64 or win-x64 profiler payloads.", Timeout = 120_000)]
+    public async Task MethodParameterCapture_Cancellation_StopsCaptureAndCleansSharedPath()
+    {
+        EnsureSampleRunning();
+        EnsureMethodParameterCaptureSupported();
+
+        var (collector, sharedPathCreated, captureStarted, captureStopped) = CreateMethodParameterCollector();
+        using var cancellation = new CancellationTokenSource();
+        var captureTask = collector.CollectAsync(
+            Pid,
+            CreateMethodParameterCaptureRequest(TimeSpan.FromSeconds(30), maxEvents: 10),
+            cancellation.Token);
+
+        var sharedPath = await WaitForCaptureSignalAsync(sharedPathCreated.Task, captureTask, "profiler shared-path creation");
+        await WaitForCaptureSignalAsync(captureStarted.Task, captureTask, "EventPipe Capturing/Start");
+        cancellation.Cancel();
+
+        var result = await captureTask.WaitAsync(TimeSpan.FromSeconds(30));
+
+        result.Error.Should().BeNull();
+        result.Cancelled.Should().BeTrue();
+        result.Data.Should().NotBeNull();
+        result.Data!.StopReason.Should().Be("cancelled");
+        captureStopped.Task.IsCompletedSuccessfully.Should().BeTrue("the real profiler must acknowledge the stop command before EventPipe teardown");
+        Directory.Exists(sharedPath).Should().BeFalse("cancellation must clean the control socket and profiler shared directory");
+    }
+
+    [LinuxOrWindowsOnlyFact(skipReason: "method-parameter capture V1 requires linux-x64 or win-x64 profiler payloads.", Timeout = 120_000)]
+    public async Task MethodParameterCapture_TargetExit_ReturnsStructuredFailureAndCleansSharedPath()
+    {
+        EnsureSampleRunning();
+        EnsureMethodParameterCaptureSupported();
+
+        var (collector, sharedPathCreated, captureStarted, _) = CreateMethodParameterCollector();
+        var captureTask = collector.CollectAsync(
+            Pid,
+            CreateMethodParameterCaptureRequest(TimeSpan.FromSeconds(30), maxEvents: 10),
+            CancellationToken.None);
+
+        var sharedPath = await WaitForCaptureSignalAsync(sharedPathCreated.Task, captureTask, "profiler shared-path creation");
+        await WaitForCaptureSignalAsync(captureStarted.Task, captureTask, "EventPipe Capturing/Start");
+        _sample!.Process.Kill(entireProcessTree: true);
+        await _sample.Process.WaitForExitAsync();
+
+        var result = await captureTask.WaitAsync(TimeSpan.FromSeconds(30));
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("Internal");
+        result.Error.Message.Should().Contain($"Target process {Pid} exited while waiting for parameter capture stop");
+        Directory.Exists(sharedPath).Should().BeFalse("target exit must clean the control socket and profiler shared directory");
     }
 
     [Fact]
@@ -2952,6 +3036,76 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
 
     private static string? LocateProjectDll(string topLevelDirectory, string projectDirectoryName, string assemblyName)
         => SampleLocator.LocateProjectDll(topLevelDirectory, projectDirectoryName, assemblyName);
+
+    private static void EnsureMethodParameterCaptureSupported()
+    {
+        if (System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture != System.Runtime.InteropServices.Architecture.X64)
+        {
+            throw SkipException.ForReason("method-parameter capture V1 currently ships linux-x64/win-x64 profiler payloads only.");
+        }
+    }
+
+    private static MethodFilter MethodParameterCaptureFilter()
+        => new("CoreClrSample.dll", "MethodParameterFixture", "Capture")
+        {
+            Signature = ["System.Int32", "System.String", "System.String"],
+        };
+
+    private static async Task<TSignal> WaitForCaptureSignalAsync<TSignal, TData>(
+        Task<TSignal> signal,
+        Task<DiagnosticResult<TData>> captureTask,
+        string stage)
+    {
+        Task completed;
+        try
+        {
+            completed = await Task.WhenAny(signal, captureTask).WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        catch (TimeoutException)
+        {
+            throw new Xunit.Sdk.XunitException($"Timed out waiting for {stage}; the capture task was still running.");
+        }
+
+        if (completed == signal)
+        {
+            return await signal;
+        }
+
+        var result = await captureTask;
+        throw new Xunit.Sdk.XunitException(
+            $"Capture ended before {stage}: error={result.Error?.Kind ?? "<none>"}; message={result.Error?.Message ?? result.Summary}");
+    }
+
+    private MethodParameterCaptureRequest CreateMethodParameterCaptureRequest(TimeSpan duration, int maxEvents)
+        => new(
+            [MethodParameterCaptureFilter()],
+            duration,
+            maxEvents,
+            PreviewCount: maxEvents,
+            RuntimeVersion: "10.0.0",
+            new ProcessContext(Pid, RuntimeFlavor.CoreClr, true, true, false, "10.0.0", "explicit"));
+
+    private static (
+        MethodParameterCaptureCollector Collector,
+        TaskCompletionSource<string> SharedPathCreated,
+        TaskCompletionSource<bool> CaptureStarted,
+        TaskCompletionSource<bool> CaptureStopped) CreateMethodParameterCollector()
+    {
+        var sharedPathCreated = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var captureStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var captureStopped = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hooks = new MethodParameterCaptureLifecycleHooks(
+            path => sharedPathCreated.TrySetResult(path),
+            () => captureStarted.TrySetResult(true),
+            () => captureStopped.TrySetResult(true));
+        var collector = new MethodParameterCaptureCollector(
+            new MvidReader(),
+            new SensitiveDataRedactor(new SecurityOptions()),
+            logger: null,
+            lifecycleHooks: hooks);
+
+        return (collector, sharedPathCreated, captureStarted, captureStopped);
+    }
 
     private sealed class FixedProcessContextResolver(int processId) : IProcessContextResolver
     {
