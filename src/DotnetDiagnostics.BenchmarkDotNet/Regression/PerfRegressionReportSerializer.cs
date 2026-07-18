@@ -174,6 +174,9 @@ public static class PerfRegressionReportSerializer
         sb.Append("- Decision: **").Append(report.Decision).AppendLine("**");
         sb.Append("- Policy: `").Append(report.Policy.Version).AppendLine("`");
         sb.Append("- Environment compatible: **").Append(report.Compatibility.Compatible ? "yes" : "no").AppendLine("**");
+        sb.Append("- Attribution compatible: **")
+            .Append(report.AttributionCompatibility.Compatible ? "yes" : "no")
+            .AppendLine("**");
         sb.Append("- Recommendation: **advisory** (never gate-eligible from one cohort)").AppendLine();
         sb.Append("- Total observed runner time: **")
             .Append(report.Feasibility.TotalRunnerMinutes.ToString("0.##", CultureInfo.InvariantCulture))
@@ -190,6 +193,16 @@ public static class PerfRegressionReportSerializer
             sb.AppendLine("## Compatibility failures");
             sb.AppendLine();
             foreach (var mismatch in report.Compatibility.Mismatches)
+            {
+                sb.Append("- ").AppendLine(mismatch);
+            }
+            sb.AppendLine();
+        }
+        if (!report.AttributionCompatibility.Compatible)
+        {
+            sb.AppendLine("## Attribution compatibility failures");
+            sb.AppendLine();
+            foreach (var mismatch in report.AttributionCompatibility.Mismatches)
             {
                 sb.Append("- ").AppendLine(mismatch);
             }

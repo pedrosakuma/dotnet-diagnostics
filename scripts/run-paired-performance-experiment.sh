@@ -88,9 +88,12 @@ build_ref() {
   local label=$2
   local started
   started=$(now_ns)
-  dotnet restore "$directory/benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj"
-  dotnet build "$directory/benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj" \
-    --no-restore --configuration Release
+  (
+    cd "$directory"
+    dotnet restore benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj
+    dotnet build benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj \
+      --no-restore --configuration Release
+  )
   record_stage restore_build "restore-build-$label" "$started" \
     "$(path_bytes "$directory/benchmarks/DiagnosedBenchmarks/bin/Release")" "$label"
 }

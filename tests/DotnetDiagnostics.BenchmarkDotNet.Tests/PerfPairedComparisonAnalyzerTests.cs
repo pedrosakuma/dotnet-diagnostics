@@ -25,6 +25,7 @@ public sealed class PerfPairedComparisonAnalyzerTests
         manifest.MainBuild.CommitSha.Should().Be("main-sha");
         manifest.PullRequestBuild.CommitSha.Should().Be("pr-sha");
         report.Compatibility.Compatible.Should().BeTrue();
+        report.AttributionCompatibility.Compatible.Should().BeTrue();
         report.Verdict.Should().Be(PerfRegressionVerdict.Regression);
         report.EligibleForGate.Should().BeFalse();
         report.Recommendation.Should().Be(PerfGateRecommendation.Advisory);
@@ -148,6 +149,32 @@ public sealed class PerfPairedComparisonAnalyzerTests
         longReport.Workloads.Should().BeEquivalentTo(
             shortReport.Workloads,
             options => options.Excluding(static member => member.Path.EndsWith(".Rationale", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void DiagnosticProvenanceMismatch_DoesNotVetoCleanPairVerdict()
+    {
+        var pairs = Pairs(
+            mainCandidateTimes: [120, 120, 120],
+            pullRequestCandidateTimes: [144, 144, 144]);
+        var mismatchedDiagnostic = Diagnostic(pairs) with
+        {
+            Environment = pairs[0].PullRequest.Environment with { RunnerImage = "different-image" },
+        };
+
+        var (_, report) = PerfPairedComparisonAnalyzer.Analyze(
+            pairs,
+            Feasibility(),
+            mismatchedDiagnostic);
+
+        report.Compatibility.Compatible.Should().BeTrue();
+        report.AttributionCompatibility.Compatible.Should().BeFalse();
+        report.Verdict.Should().Be(PerfRegressionVerdict.Regression);
+        report.Workloads.Single(static workload => workload.WorkloadId == "cpu-lookup")
+            .Variants.Single(static variant => variant.Variant == PerfMeasurementRun.CandidateVariant)
+            .Timing.Verdict.Should().Be(PerfRegressionVerdict.Regression);
+        report.Notes.Should().Contain(note =>
+            note.Contains("attribution cannot support", StringComparison.Ordinal));
     }
 
     [Fact]

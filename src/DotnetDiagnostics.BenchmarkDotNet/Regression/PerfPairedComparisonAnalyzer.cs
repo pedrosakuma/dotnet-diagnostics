@@ -14,8 +14,9 @@ public static class PerfPairedComparisonAnalyzer
         policy ??= new PerfPairedRegressionPolicy();
         ValidatePolicy(policy);
 
-        var compatibility = CheckCompatibility(pairs, diagnosticRun);
+        var compatibility = CheckCompatibility(pairs);
         var orderedPairs = pairs.OrderBy(static pair => pair.PairNumber).ToArray();
+        var attributionCompatibility = CheckAttributionCompatibility(orderedPairs, diagnosticRun);
         var mainBuild = orderedPairs.Length == 0
             ? new PerfBuildIdentity("unknown")
             : RefBuild(orderedPairs[0].Main);
@@ -50,7 +51,7 @@ public static class PerfPairedComparisonAnalyzer
                 Calibrate(
                     "pull_request",
                     orderedPairs.Select(static pair => pair.PullRequest).ToArray(),
-                    diagnosticRun),
+                    attributionCompatibility.Compatible ? diagnosticRun : null),
             }
             : Array.Empty<PerfFixtureCalibrationSummary>();
         var falsePositiveCount = workloads.Count(static workload =>
@@ -65,13 +66,14 @@ public static class PerfPairedComparisonAnalyzer
             row.Suitability != PerfOperationalSuitability.Unsuitable)
                 ? PerfExperimentDecision.PartialGo
                 : PerfExperimentDecision.NoGo;
-        var notes = BuildNotes(compatibility, orderedPairs, workloads);
+        var notes = BuildNotes(compatibility, attributionCompatibility, orderedPairs, workloads);
 
         var report = new PerfPairedRegressionReport(
             PerfPairedRegressionReport.SchemaV1,
             DateTimeOffset.UtcNow,
             policy,
             compatibility,
+            attributionCompatibility,
             workloads,
             calibration,
             diagnosticRun?.Attribution ?? Array.Empty<PerfDiagnosticAttribution>(),
@@ -86,9 +88,7 @@ public static class PerfPairedComparisonAnalyzer
         return (manifest, report);
     }
 
-    private static PerfCompatibilityResult CheckCompatibility(
-        IReadOnlyList<PerfPairedMeasurement> pairs,
-        PerfDiagnosticRun? diagnosticRun)
+    private static PerfCompatibilityResult CheckCompatibility(IReadOnlyList<PerfPairedMeasurement> pairs)
     {
         var mismatches = new List<string>();
         if (pairs.Count < 3)
@@ -145,26 +145,46 @@ public static class PerfPairedComparisonAnalyzer
             }
         }
 
-        if (diagnosticRun is not null)
+        return new PerfCompatibilityResult(
+            mismatches.Count == 0,
+            mismatches.Distinct(StringComparer.Ordinal).ToArray());
+    }
+
+    private static PerfCompatibilityResult CheckAttributionCompatibility(
+        PerfPairedMeasurement[] pairs,
+        PerfDiagnosticRun? diagnosticRun)
+    {
+        if (diagnosticRun is null)
         {
-            if (!string.Equals(diagnosticRun.Schema, PerfDiagnosticRun.SchemaV1, StringComparison.Ordinal))
-            {
-                mismatches.Add($"Diagnostic run uses unsupported schema '{diagnosticRun.Schema}'.");
-            }
-            if (diagnosticRun.Environment != expectedEnvironment)
-            {
-                mismatches.Add("Diagnostic run has different runtime/runner environment provenance.");
-            }
-            if (diagnosticRun.CandidateBuild != expectedPullRequestBuild)
-            {
-                mismatches.Add("Diagnostic run does not identify the measured pull-request build.");
-            }
-            if (!WorkloadsEqual(diagnosticRun.Workload, ordered[0].PullRequest.Workload))
-            {
-                mismatches.Add("Diagnostic run has a different pull-request workload identity, version, or parameters.");
-            }
+            return new PerfCompatibilityResult(
+                false,
+                ["No separate diagnostic attribution run was supplied."]);
+        }
+        if (pairs.Length == 0)
+        {
+            return new PerfCompatibilityResult(
+                false,
+                ["No clean pair exists to establish diagnostic provenance."]);
         }
 
+        var mismatches = new List<string>();
+        var expected = pairs[0].PullRequest;
+        if (!string.Equals(diagnosticRun.Schema, PerfDiagnosticRun.SchemaV1, StringComparison.Ordinal))
+        {
+            mismatches.Add($"Diagnostic run uses unsupported schema '{diagnosticRun.Schema}'.");
+        }
+        if (diagnosticRun.Environment != expected.Environment)
+        {
+            mismatches.Add("Diagnostic run has different runtime/runner environment provenance.");
+        }
+        if (diagnosticRun.CandidateBuild != RefBuild(expected))
+        {
+            mismatches.Add("Diagnostic run does not identify the measured pull-request build.");
+        }
+        if (!WorkloadsEqual(diagnosticRun.Workload, expected.Workload))
+        {
+            mismatches.Add("Diagnostic run has a different pull-request workload identity, version, or parameters.");
+        }
         return new PerfCompatibilityResult(
             mismatches.Count == 0,
             mismatches.Distinct(StringComparer.Ordinal).ToArray());
@@ -398,6 +418,7 @@ public static class PerfPairedComparisonAnalyzer
 
     private static List<string> BuildNotes(
         PerfCompatibilityResult compatibility,
+        PerfCompatibilityResult attributionCompatibility,
         PerfPairedMeasurement[] pairs,
         IReadOnlyList<PerfWorkloadComparisonResult> workloads)
     {
@@ -411,6 +432,12 @@ public static class PerfPairedComparisonAnalyzer
         if (!compatibility.Compatible)
         {
             notes.Add("Environment or capture incompatibility prevented pooled comparison.");
+        }
+        if (!attributionCompatibility.Compatible)
+        {
+            notes.Add(
+                "Diagnostic attribution provenance is incompatible or absent; clean-pair metric verdicts remain valid, "
+                + "but attribution cannot support a future gate.");
         }
         if (pairs.Length < 3)
         {

@@ -76,25 +76,29 @@ jobs:
       - name: Build preliminary advisory report
         shell: bash
         run: |
+          root="$GITHUB_WORKSPACE"
           report_started=$(date +%s%N)
           pair_args=()
           for pair in 1 2 3; do
             if (( pair % 2 == 1 )); then order=main_then_pr; else order=pr_then_main; fi
-            pair_args+=(--pair "$pair|$order|artifacts/paired/compact/measurements/main-$pair.json|artifacts/paired/compact/measurements/pull_request-$pair.json")
+            pair_args+=(--pair "$pair|$order|$root/artifacts/paired/compact/measurements/main-$pair.json|$root/artifacts/paired/compact/measurements/pull_request-$pair.json")
           done
-          dotnet run --project refs/pr/benchmarks/DiagnosedBenchmarks \
-            --configuration Release --no-build -- \
-            perf-regression paired-report \
-            "${pair_args[@]}" \
-            --diagnostic artifacts/paired/compact/diagnostic.json \
-            --stage-metrics artifacts/paired/stages.tsv \
-            --job-start-unix-ms "$JOB_START_UNIX_MS" \
-            --compact-root artifacts/paired/compact \
-            --raw-root artifacts/paired/raw \
-            --output-manifest artifacts/paired/preliminary-evidence/manifest.json \
-            --output-feasibility artifacts/paired/preliminary-evidence/feasibility.json \
-            --output-json artifacts/paired/preliminary-report/report.json \
-            --output-markdown artifacts/paired/preliminary-report/report.md
+          (
+            cd refs/pr/benchmarks/DiagnosedBenchmarks
+            dotnet run --project . \
+              --configuration Release --no-build -- \
+              perf-regression paired-report \
+              "${pair_args[@]}" \
+              --diagnostic "$root/artifacts/paired/compact/diagnostic.json" \
+              --stage-metrics "$root/artifacts/paired/stages.tsv" \
+              --job-start-unix-ms "$JOB_START_UNIX_MS" \
+              --compact-root "$root/artifacts/paired/compact" \
+              --raw-root "$root/artifacts/paired/raw" \
+              --output-manifest "$root/artifacts/paired/preliminary-evidence/manifest.json" \
+              --output-feasibility "$root/artifacts/paired/preliminary-evidence/feasibility.json" \
+              --output-json "$root/artifacts/paired/preliminary-report/report.json" \
+              --output-markdown "$root/artifacts/paired/preliminary-report/report.md"
+          )
           report_ended=$(date +%s%N)
           report_seconds=$(awk -v start="$report_started" -v end="$report_ended" 'BEGIN { printf "%.4f", (end - start) / 1000000000 }')
           report_bytes=$(find artifacts/paired/preliminary-report -type f -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')
@@ -152,24 +156,28 @@ jobs:
       - name: Finalize advisory report and summary
         shell: bash
         run: |
+          root="$GITHUB_WORKSPACE"
           pair_args=()
           for pair in 1 2 3; do
             if (( pair % 2 == 1 )); then order=main_then_pr; else order=pr_then_main; fi
-            pair_args+=(--pair "$pair|$order|artifacts/paired/compact/measurements/main-$pair.json|artifacts/paired/compact/measurements/pull_request-$pair.json")
+            pair_args+=(--pair "$pair|$order|$root/artifacts/paired/compact/measurements/main-$pair.json|$root/artifacts/paired/compact/measurements/pull_request-$pair.json")
           done
-          dotnet run --project refs/pr/benchmarks/DiagnosedBenchmarks \
-            --configuration Release --no-build -- \
-            perf-regression paired-report \
-            "${pair_args[@]}" \
-            --diagnostic artifacts/paired/compact/diagnostic.json \
-            --stage-metrics artifacts/paired/stages.tsv \
-            --job-start-unix-ms "$JOB_START_UNIX_MS" \
-            --compact-root artifacts/paired/compact \
-            --raw-root artifacts/paired/raw \
-            --output-manifest artifacts/paired/evidence/manifest.json \
-            --output-feasibility artifacts/paired/evidence/feasibility.json \
-            --output-json artifacts/paired/report/report.json \
-            --output-markdown artifacts/paired/report/report.md
+          (
+            cd refs/pr/benchmarks/DiagnosedBenchmarks
+            dotnet run --project . \
+              --configuration Release --no-build -- \
+              perf-regression paired-report \
+              "${pair_args[@]}" \
+              --diagnostic "$root/artifacts/paired/compact/diagnostic.json" \
+              --stage-metrics "$root/artifacts/paired/stages.tsv" \
+              --job-start-unix-ms "$JOB_START_UNIX_MS" \
+              --compact-root "$root/artifacts/paired/compact" \
+              --raw-root "$root/artifacts/paired/raw" \
+              --output-manifest "$root/artifacts/paired/evidence/manifest.json" \
+              --output-feasibility "$root/artifacts/paired/evidence/feasibility.json" \
+              --output-json "$root/artifacts/paired/report/report.json" \
+              --output-markdown "$root/artifacts/paired/report/report.md"
+          )
           cat artifacts/paired/report/report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload final policy-neutral provenance

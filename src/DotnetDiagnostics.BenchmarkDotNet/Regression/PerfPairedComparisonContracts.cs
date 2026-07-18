@@ -205,6 +205,7 @@ public sealed record PerfPairedRegressionReport(
     DateTimeOffset CreatedAt,
     PerfPairedRegressionPolicy Policy,
     PerfCompatibilityResult Compatibility,
+    PerfCompatibilityResult AttributionCompatibility,
     IReadOnlyList<PerfWorkloadComparisonResult> Workloads,
     IReadOnlyList<PerfFixtureCalibrationSummary> Calibration,
     IReadOnlyList<PerfDiagnosticAttribution> Attribution,
