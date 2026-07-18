@@ -72,6 +72,14 @@ The issue #647 pilot under `benchmarks/DiagnosedBenchmarks` demonstrates the ful
 the immutable input documents, raw BenchmarkDotNet output, EventPipe artifacts, and regenerable
 JSON/Markdown report.
 
+The issue #651 follow-up adds `PerfPairedMeasurement`, `PerfPairedExperimentManifest`, and
+`PerfPairedRegressionReport`. It pairs clean captures from two refs on the same VM, requires at
+least three alternating pairs, and compares only exact workload contracts. Workload-set changes
+are explicit: `new_unbaselined`, `removed`, and `contract_changed` entries retain evidence but do
+not receive metric verdicts. The paired report is policy-versioned and always advisory for a
+single cohort; its feasibility section records checkout, restore/build, clean-pair, diagnostic,
+report, and bulk-upload duration and bytes separately.
+
 Storage is intentionally tiered. Keep the compact normalized signals (metric name, stable
 method/type/site identity, value, unit, direction, sampling metadata, and provenance) for baseline
 history. Keep raw EventPipe captures only for a bounded investigation window; the compact document

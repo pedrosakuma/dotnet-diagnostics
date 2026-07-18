@@ -128,6 +128,97 @@ The next rollout step is advisory-only history collection. A later soft gate
 should require repeated compatible low-variance results. Hard timing gates
 remain out of scope until dedicated-runner evidence exists.
 
+## Paired-ref operational experiment
+
+Issue [#651](https://github.com/pedrosakuma/dotnet-diagnostics/issues/651)
+turns the next step into a manual same-VM experiment rather than a gate. The
+`paired-performance-experiment.yml` workflow:
+
+1. checks out `main` and the selected PR ref into separate directories on one
+   `ubuntu-latest` VM and records both resolved commit SHAs;
+2. selects one SDK from `global.json`, verifies both refs resolve the same SDK,
+   and restores/builds each benchmark project once;
+3. runs three clean pairs in alternating order (`main -> PR`, `PR -> main`,
+   `main -> PR`);
+4. runs the existing EventPipe diagnostic fixture only after all six clean
+   per-ref captures complete;
+5. uploads immutable measurement/normalized-signal inputs separately from the
+   regenerable policy-derived report.
+
+The normal entry point is `workflow_dispatch`. GitHub does not index a new
+dispatchable workflow until its file reaches the default branch, so the stacked
+PR also supports one exact opt-in `run-paired-performance` label event. Adding
+that label is a human action; other labels, synchronize events, and ordinary PR
+activity cannot start the experiment.
+
+The comparison contract is strict. A scenario is comparable only when workload
+version, parameters, control designation, and the complete variant set match.
+PR-only scenarios are `new_unbaselined`, main-only scenarios are `removed`, and
+shared identities with changed contracts are `contract_changed`. These states
+are reported but cannot contribute a regression verdict. A new workload becomes
+comparable only after merge and reviewed baseline acceptance.
+
+The policy-neutral manifest records pair order, capture IDs/timestamps, real
+build SHAs, runner/runtime/image provenance, and feasibility. The versioned
+`issue-651-advisory-v1` report applies thresholds afterward. Changing thresholds
+therefore regenerates a report without mutating historical measurements.
+Diagnostic elapsed time is carried only as a feasibility stage; the analyzer
+never consumes it as a measurement.
+
+Feasibility stages record duration and input bytes for checkout and
+restore/build per ref, each clean pair, diagnostics, report generation, and the
+two bulk artifact uploads. Total observed runner minutes include workflow setup
+through final report generation. The tiny final metadata upload is excluded
+from the duration model and called out in the workflow; its file sizes remain
+visible. The report evaluates likely every-PR, selected/label-triggered,
+nightly, and manual cadence under explicit policy budgets.
+
+This first experiment remains **within-VM evidence**. Even a successful run says
+nothing yet about variance across hosted runner allocations, image revisions,
+or days, and it contains no dedicated-runner evidence. Those cohorts remain
+required by #651 before any timing soft or hard gate can be considered. One
+cohort always produces `eligibleForGate: false`, an `advisory` recommendation,
+and at most a `partial_go` operational decision.
+
+### Actual-main hosted paired evidence
+
+Workflow run `29649248742` completed the three alternating pairs on one
+`ubuntu-latest` VM after #649 merged. The immutable manifest identifies actual
+`main` commit `4025bd0af4314ab4f4e5cbf88abba5358d38d5c9` and PR commit
+`44961e5a162ad91c8256312ddb35b318ec646b49`; environment and diagnostic
+attribution compatibility both passed. This supersedes the preliminary stacked
+run `29644836857` for the merge-readiness decision. Repeated hosted
+allocations/days and a dedicated runner are still required before timing gates.
+
+The environment was Ubuntu 24.04.4 LTS, linux-x64, concurrent workstation GC,
+hosted image `ubuntu24-20260714.240.1`, SDK 10.0.302 selected through
+`global.json`, and runtime .NET 10.0.10. All four workload identities and both
+variants had identical contracts across refs, so no workload was
+`new_unbaselined`, `removed`, or `contract_changed`.
+
+| Evidence | Result |
+| --- | --- |
+| Injected-fixture detection | main 3/3 (100%); PR 3/3 (100%) |
+| Unchanged-control false positives | main 0/1 (0%); PR 0/1 (0%) |
+| Cross-ref verdict | Inconclusive; no variant produced repeated regression agreement |
+| Attribution | CPU and allocation matched; ThreadPool/wait remained unmatched |
+| Total observed runner time | 13.88 minutes |
+| Restore/build | 21.59s main; 17.85s PR |
+| Clean pairs | 244.93s, 243.23s, 240.38s |
+| Separate diagnostics | 45.32s |
+| Report generation | 0.72s |
+| Bulk uploads | 1.14s compact; 1.21s raw |
+| Compact/raw inputs | 33,897 B / 378,219 B |
+| Downloaded provenance/report | 6,466 B / 36,066 B |
+
+The `issue-651-advisory-v1` cost policy classifies every-PR execution as
+**unsuitable** (13.88m exceeds the 10m budget), selected/label-triggered PR
+execution as **conditional**, and nightly/manual advisory execution as
+**suitable**. This is a **partial-GO** for continued advisory evidence
+collection, not a gate: detection and false-positive targets passed within this
+one VM, but neither cross-runner/day variance nor dedicated-runner stability has
+been measured.
+
 ## Waiting-attribution follow-up
 
 Issue [#650](https://github.com/pedrosakuma/dotnet-diagnostics/issues/650)
