@@ -216,12 +216,16 @@ before its targets can pass.
 Regardless of the result, the implementation always emits
 `eligibleForGate: false` and an `advisory` recommendation.
 
-The repository Actions runner API returned `total_count: 0` on 2026-07-18 and
-no repository variables were configured. A dedicated job is therefore skipped
-unless an operator first verifies an online runner carrying every label
-`self-hosted`, `linux`, `x64`, and `dotnet-diagnostics-perf`, then sets
-`PERF_DEDICATED_RUNNER_ENABLED=true`. This explicit two-part contract avoids
-queueing indefinitely on an invented label. The reproduction sequence is:
+At `2026-07-18T23:23:11.2661408Z`, an authenticated
+`GET /repos/pedrosakuma/dotnet-diagnostics/actions/runners` observation
+returned `{"total_count":0,"runners":[]}`. The paired authenticated
+`GET /repos/pedrosakuma/dotnet-diagnostics/actions/variables` observation
+returned `{"total_count":0,"variables":[]}`. A dedicated job is therefore
+skipped unless an operator first verifies an online runner carrying every
+label `self-hosted`, `linux`, `x64`, and `dotnet-diagnostics-perf`, then sets
+`PERF_DEDICATED_RUNNER_ENABLED=true`. This timestamped repository-API
+provenance and explicit two-part contract avoid queueing indefinitely on an
+invented label. The reproduction sequence is:
 
 ```bash
 gh api repos/pedrosakuma/dotnet-diagnostics/actions/runners \
