@@ -105,18 +105,21 @@ measure_ref() {
   local pair=$4
   local output="$compact_root/measurements/$label-$pair.json"
   local artifacts="$raw_root/$label/clean-$pair"
-  dotnet run --project "$directory/benchmarks/DiagnosedBenchmarks" \
-    --configuration Release --no-build -- \
-    perf-regression measure \
-    --run-id "$run_prefix-$label-$pair" \
-    --output "$output" \
-    --artifacts "$artifacts" \
-    --runner-class "$runner_class" \
-    --runner-image "$runner_image" \
-    --baseline-build-id "$sha" \
-    --baseline-commit "$sha" \
-    --candidate-build-id "$sha" \
-    --candidate-commit "$sha"
+  (
+    cd "$directory/benchmarks/DiagnosedBenchmarks"
+    dotnet run --project . \
+      --configuration Release --no-build -- \
+      perf-regression measure \
+      --run-id "$run_prefix-$label-$pair" \
+      --output "$output" \
+      --artifacts "$artifacts" \
+      --runner-class "$runner_class" \
+      --runner-image "$runner_image" \
+      --baseline-build-id "$sha" \
+      --baseline-commit "$sha" \
+      --candidate-build-id "$sha" \
+      --candidate-commit "$sha"
+  )
 }
 
 for pair in 1 2 3; do
@@ -139,15 +142,18 @@ for pair in 1 2 3; do
 done
 
 diagnostic_started=$(now_ns)
-dotnet run --project "$refs_root/pr/benchmarks/DiagnosedBenchmarks" \
-  --configuration Release --no-build -- \
-  perf-regression diagnose \
-  --output "$compact_root/diagnostic.json" \
-  --artifacts "$raw_root/pull_request/diagnostic" \
-  --runner-class "$runner_class" \
-  --runner-image "$runner_image" \
-  --candidate-build-id "$pr_sha" \
-  --candidate-commit "$pr_sha"
+(
+  cd "$refs_root/pr/benchmarks/DiagnosedBenchmarks"
+  dotnet run --project . \
+    --configuration Release --no-build -- \
+    perf-regression diagnose \
+    --output "$compact_root/diagnostic.json" \
+    --artifacts "$raw_root/pull_request/diagnostic" \
+    --runner-class "$runner_class" \
+    --runner-image "$runner_image" \
+    --candidate-build-id "$pr_sha" \
+    --candidate-commit "$pr_sha"
+)
 record_stage diagnostics diagnostics-pull-request "$diagnostic_started" \
   "$(path_bytes "$compact_root/diagnostic.json" "$raw_root/pull_request/diagnostic")" pull_request
 
