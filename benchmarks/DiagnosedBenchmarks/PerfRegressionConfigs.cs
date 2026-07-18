@@ -44,3 +44,23 @@ internal sealed class DiagnosticPerfRegressionConfig : ManualConfig
         AddExporter(MarkdownExporter.GitHub);
     }
 }
+
+internal sealed class WaitDiagnosticPerfRegressionConfig : ManualConfig
+{
+    public WaitDiagnosticPerfRegressionConfig(string artifactsPath, DotnetDiagnosticsDiagnoser diagnoser)
+    {
+        ArtifactsPath = artifactsPath;
+        AddJob(Job.Default
+            .WithStrategy(RunStrategy.Monitoring)
+            .WithWarmupCount(0)
+            .WithIterationCount(1)
+            .WithInvocationCount(1)
+            .WithUnrollFactor(1)
+            .WithLaunchCount(1)
+            .WithId("DiagnoseWait"));
+        AddDiagnoser(diagnoser);
+        AddLogger(ConsoleLogger.Default);
+        AddColumnProvider(DefaultColumnProviders.Instance);
+        AddExporter(MarkdownExporter.GitHub);
+    }
+}

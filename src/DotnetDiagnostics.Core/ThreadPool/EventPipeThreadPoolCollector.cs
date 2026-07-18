@@ -25,6 +25,7 @@ public sealed class EventPipeThreadPoolCollector : IThreadPoolCollector
         [5] = "Stabilizing",
         [6] = "Starvation",
         [7] = "ThreadTimedOut",
+        [8] = "CooperativeBlocking",
     };
 
     private static readonly Dictionary<int, string> RuntimeEventIds = new()

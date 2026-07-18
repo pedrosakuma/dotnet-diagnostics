@@ -11,7 +11,8 @@ namespace DiagnosedBenchmarks;
 internal static class PerfRegressionSpikeRunner
 {
     private const string WorkloadId = "issue-647-ci-regression-pilots";
-    private const string WorkloadVersion = "v1";
+    private const string WorkloadVersion = "v2";
+    private const int WaitDiagnosticLaunches = 3;
 
     private static readonly Dictionary<string, BenchmarkContract> CleanContracts =
         new Dictionary<string, BenchmarkContract>(StringComparer.Ordinal)
@@ -40,9 +41,11 @@ internal static class PerfRegressionSpikeRunner
             [nameof(PerfRegressionDiagnosticBenchmarks.DiagnoseCpuLookupCandidate)] =
                 new("cpu-string-lookup", "CultureAwareLookupCandidate"),
             [nameof(PerfRegressionDiagnosticBenchmarks.DiagnoseAllocationCandidate)] =
-                new("allocation-churn", "AllocationCandidate"),
-            [nameof(PerfRegressionDiagnosticBenchmarks.DiagnoseWaitCandidate)] =
-                new("sync-over-async", "hill-climbing or starvation"),
+                new("allocation-churn", "AllocationCandidate", IsControl: false),
+            [nameof(PerfRegressionWaitDiagnosticBenchmarks.DiagnoseWaitCandidate)] =
+                new("sync-over-async", "parsed ThreadPool blocking or starvation adjustment", IsControl: false),
+            [nameof(PerfRegressionWaitDiagnosticBenchmarks.DiagnoseWaitControl)] =
+                new("sync-over-async", "no parsed ThreadPool blocking or starvation adjustment", IsControl: true),
         };
 
     public static int Run(string[] args)
@@ -108,10 +111,23 @@ internal static class PerfRegressionSpikeRunner
         using var diagnoser = new DotnetDiagnosticsDiagnoser();
         var summary = BenchmarkRunner.Run<PerfRegressionDiagnosticBenchmarks>(
             new DiagnosticPerfRegressionConfig(Path.GetFullPath(artifacts), diagnoser));
-        EnsureSuccessful(summary, DiagnosticContracts.Count);
+        EnsureSuccessful(summary, 2);
+
+        Summary? waitSummary = null;
+        var waitEntries = new List<BenchmarkDiagnosticEntry>();
+        for (var launch = 1; launch <= WaitDiagnosticLaunches; launch++)
+        {
+            using var waitDiagnoser = new DotnetDiagnosticsDiagnoser();
+            waitSummary = BenchmarkRunner.Run<PerfRegressionWaitDiagnosticBenchmarks>(
+                new WaitDiagnosticPerfRegressionConfig(
+                    Path.Combine(Path.GetFullPath(artifacts), $"wait-launch-{launch}"),
+                    waitDiagnoser));
+            EnsureSuccessful(waitSummary, 2);
+            waitEntries.AddRange(waitDiagnoser.Entries);
+        }
 
         var rows = new List<PerfDiagnosticAttribution>();
-        foreach (var entry in diagnoser.Entries)
+        foreach (var entry in diagnoser.Entries.Concat(waitEntries))
         {
             var contract = DiagnosticContracts.SingleOrDefault(pair =>
                 entry.Benchmark.Contains(pair.Key, StringComparison.Ordinal)).Value;
@@ -123,9 +139,14 @@ internal static class PerfRegressionSpikeRunner
             var artifactText = File.Exists(entry.ArtifactPath)
                 ? File.ReadAllText(entry.ArtifactPath)
                 : string.Empty;
-            var signals = ExtractSignals(entry.Kind, artifactText);
-            var matched = string.Equals(entry.Kind, "threadpool", StringComparison.Ordinal)
-                ? HasThreadPoolAttribution(signals)
+            var threadPoolEvidence = string.Equals(entry.Kind, "threadpool", StringComparison.Ordinal)
+                ? ThreadPoolPerfDiagnosticExtractor.Extract(artifactText)
+                : null;
+            var signals = threadPoolEvidence?.Signals ?? ExtractSignals(entry.Kind, artifactText);
+            var matched = threadPoolEvidence is not null
+                ? contract.IsControl
+                    ? !threadPoolEvidence.HasCausalWait
+                    : threadPoolEvidence.HasCausalWait
                 : entry.Headline.Contains(contract.ExpectedEvidence, StringComparison.Ordinal)
                     || signals.Any(signal =>
                         (signal.StableId?.Contains(contract.ExpectedEvidence, StringComparison.Ordinal) ?? false)
@@ -142,14 +163,15 @@ internal static class PerfRegressionSpikeRunner
                 matched,
                 entry.IsError,
                 signals,
-                RawArtifact(entry.ArtifactPath, relativeArtifactPath)));
+                RawArtifact(entry.ArtifactPath, relativeArtifactPath),
+                contract.IsControl));
         }
 
         var run = new PerfDiagnosticRun(
             PerfDiagnosticRun.SchemaV1,
             DateTimeOffset.UtcNow,
             candidateBuild,
-            Environment(summary, runnerClass, runnerImage),
+            Environment(waitSummary!, runnerClass, runnerImage),
             Workload(),
             rows);
         Write(output, PerfRegressionReportSerializer.SerializeDiagnosticRun(run));
@@ -232,6 +254,13 @@ internal static class PerfRegressionSpikeRunner
                 ["cpu-lookup-values"] = "32",
                 ["cpu-lookup-passes"] = "256",
                 ["diagnostic-window-seconds"] = "5",
+                ["wait-diagnostic-eventpipe-startup-delay-ms"] = "2000",
+                ["wait-diagnostic-launches"] = WaitDiagnosticLaunches.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture),
+                ["wait-diagnostic-window-seconds"] = "8",
+                ["wait-diagnostic-workers"] = "warmed-threadpool-thread-count-plus-8-clamped-12-64",
+                ["wait-operation-count"] = "8",
+                ["wait-operation-delay-ms"] = "1",
             });
 
     private static PerfBuildIdentity BuildIdentity(Options options, string prefix)
@@ -252,7 +281,6 @@ internal static class PerfRegressionSpikeRunner
         {
             "cpu" => CpuSignals(document.RootElement),
             "allocation" => AllocationSignals(document.RootElement),
-            "threadpool" => ThreadPoolSignals(document.RootElement),
             _ => Array.Empty<PerfDiagnosticSignal>(),
         };
     }
@@ -357,82 +385,8 @@ internal static class PerfRegressionSpikeRunner
         return signals;
     }
 
-    private static IReadOnlyList<PerfDiagnosticSignal> ThreadPoolSignals(JsonElement root)
-    {
-        var summary = root.GetProperty("Summary").GetString() ?? string.Empty;
-        var data = root.GetProperty("Data");
-        return
-        [
-            new(
-                "threadpool.workerPeak",
-                "Peak worker threads",
-                null,
-                ParseSummaryNumber(summary, "workers latest/peak=", useSecondNumber: true),
-                "threads",
-                PerfSignalDirection.Lower),
-            new(
-                "threadpool.hillClimbingEvents",
-                "Hill-climbing events",
-                null,
-                ParseSummaryNumber(summary, "hill-climbing events="),
-                "events",
-                PerfSignalDirection.Lower),
-            new(
-                "threadpool.starvationReasons",
-                "Starvation reasons",
-                null,
-                ParseSummaryNumber(summary, "starvation reasons="),
-                "count",
-                PerfSignalDirection.Lower),
-            new(
-                "threadpool.enqueueEvents",
-                "Enqueue events",
-                null,
-                data.GetProperty("TotalEnqueueEvents").GetInt64(),
-                "events",
-                PerfSignalDirection.Neutral),
-        ];
-    }
-
-    private static int ParseSummaryNumber(string summary, string marker, bool useSecondNumber = false)
-    {
-        var start = summary.IndexOf(marker, StringComparison.Ordinal);
-        if (start < 0)
-        {
-            return 0;
-        }
-        start += marker.Length;
-        if (useSecondNumber)
-        {
-            var separator = summary.IndexOf('/', start);
-            if (separator < 0)
-            {
-                return 0;
-            }
-            start = separator + 1;
-        }
-        var end = start;
-        while (end < summary.Length && char.IsDigit(summary[end]))
-        {
-            end++;
-        }
-        return int.TryParse(
-            summary.AsSpan(start, end - start),
-            System.Globalization.NumberStyles.None,
-            System.Globalization.CultureInfo.InvariantCulture,
-            out var value)
-            ? value
-            : 0;
-    }
-
     private static double Percent(long value, long total)
         => total == 0 ? 0 : Math.Round(value * 100.0 / total, 2);
-
-    private static bool HasThreadPoolAttribution(IReadOnlyList<PerfDiagnosticSignal> signals)
-        => signals.Any(static signal =>
-            (string.Equals(signal.Name, "threadpool.hillClimbingEvents", StringComparison.Ordinal)
-                || string.Equals(signal.Name, "threadpool.starvationReasons", StringComparison.Ordinal))
-            && signal.Value > 0);
 
     private static PerfRawArtifactReference? RawArtifact(string fullPath, string relativePath)
     {
@@ -485,7 +439,7 @@ internal static class PerfRegressionSpikeRunner
 
     private sealed record BenchmarkContract(string Scenario, string Variant, bool IsControl);
 
-    private sealed record DiagnosticContract(string Scenario, string ExpectedEvidence);
+    private sealed record DiagnosticContract(string Scenario, string ExpectedEvidence, bool IsControl = false);
 
     private sealed class Options
     {

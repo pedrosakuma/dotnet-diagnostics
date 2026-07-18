@@ -218,3 +218,49 @@ execution as **conditional**, and nightly/manual advisory execution as
 collection, not a gate: detection and false-positive targets passed within this
 one VM, but neither cross-runner/day variance nor dedicated-runner stability has
 been measured.
+
+## Waiting-attribution follow-up
+
+Issue [#650](https://github.com/pedrosakuma/dotnet-diagnostics/issues/650)
+keeps clean BenchmarkDotNet measurement and EventPipe attribution in separate
+process launches. Both waiting variants execute eight one-millisecond delayed
+operations and return the same sum. The baseline awaits the operations
+concurrently; the candidate synchronously waits for each operation in sequence,
+so inputs and outcome remain equivalent while the scheduling behavior differs.
+
+The diagnostic-only fixture waits two seconds before activating the load to let
+the EventPipe session start, then runs three independent candidate launches and
+three unchanged controls. Compact matching reads the structured
+`Data.HillClimbing[].Reason` payload and requires a positive `Starvation` or
+`CooperativeBlocking` adjustment in every candidate launch. Generic summary
+text, ordinary hill-climbing, enqueue counts, and worker growth alone are
+retained as context but never treated as causal attribution. Any absent,
+unrelated, or errored candidate launch keeps the waiting scenario ineligible
+for a gate. Controls must retain zero equivalent blocking/starvation
+attribution.
+
+Local Windows evidence on .NET 10.0.10 produced the following result:
+
+| Launch | Clean baseline | Clean candidate | Time delta | Candidate `CooperativeBlocking` adjustments | Workers added | Control equivalent attribution |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 15.41 ms | 124.09 ms | +705.41% | 62 | 106 | 0 |
+| 2 | 15.51 ms | 123.01 ms | +693.13% | 52 | 127 | 0 |
+| 3 | 15.55 ms | 124.70 ms | +702.11% | 41 | 57 | 0 |
+
+The clean waiting measurements had 0.47% baseline CV and 0.69% candidate CV;
+all three crossed the timing threshold. The physically separate diagnostic
+experiment completed in 243.66 seconds. Its complete 25-file artifact tree,
+including the regenerable report and logs, was 251,416 bytes. The durable
+compact diagnostic document was 26,336 bytes, while the six short-lived hashed
+raw ThreadPool references totaled 51,203 bytes. Diagnostic elapsed time is
+feasibility evidence only and does not enter any benchmark measurement or
+regression verdict.
+
+**Partial-GO.** The parsed waiting attribution is reproducible enough for the
+advisory pilot: three of three candidates retained causal cooperative-blocking
+evidence and three of three controls did not. The generated report marks the
+waiting regression's attribution consistent, but remains advisory and
+gate-ineligible because the unchanged timing control was noisy on this local
+runner. Gate enablement remains a **NO-GO** in this follow-up because it
+provides one local runner's attribution evidence, not the paired
+main-versus-PR and multi-runner calibration tracked separately in issue #651.

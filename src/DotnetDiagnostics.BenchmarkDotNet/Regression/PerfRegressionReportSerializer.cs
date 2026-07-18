@@ -140,6 +140,7 @@ public static class PerfRegressionReportSerializer
             foreach (var row in scenario.Attribution)
             {
                 sb.Append("- `").Append(row.Kind).Append("`: ")
+                    .Append(row.IsControl ? "control " : string.Empty)
                     .Append(row.Matched && !row.IsError ? "matched" : "not matched")
                     .Append(" — ").Append(EscapeInline(row.Headline))
                     .Append(" (`").Append(Path.GetFileName(row.ArtifactPath)).AppendLine("`)");
