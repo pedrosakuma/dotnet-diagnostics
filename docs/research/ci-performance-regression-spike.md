@@ -180,16 +180,15 @@ required by #651 before any timing soft or hard gate can be considered. One
 cohort always produces `eligibleForGate: false`, an `advisory` recommendation,
 and at most a `partial_go` operational decision.
 
-### Initial hosted paired evidence
+### Actual-main hosted paired evidence
 
-Workflow run `29644836857` completed the three alternating pairs on one
-`ubuntu-latest` VM. Because this follow-up was still stacked before #649 merged,
-the baseline was the #649 head `1f48d53055d776a1866660e84cbe2d01c0a4f095`,
-not `main`; the candidate was
-`0f7705af66ff84e6e8ab147d9d6752e5cd1aba15`. This validates stacked
-orchestration and within-VM operating cost. A post-merge run against actual
-`main`, repeated hosted allocations/days, and a dedicated runner are still
-required.
+Workflow run `29649248742` completed the three alternating pairs on one
+`ubuntu-latest` VM after #649 merged. The immutable manifest identifies actual
+`main` commit `4025bd0af4314ab4f4e5cbf88abba5358d38d5c9` and PR commit
+`44961e5a162ad91c8256312ddb35b318ec646b49`; environment and diagnostic
+attribution compatibility both passed. This supersedes the preliminary stacked
+run `29644836857` for the merge-readiness decision. Repeated hosted
+allocations/days and a dedicated runner are still required before timing gates.
 
 The environment was Ubuntu 24.04.4 LTS, linux-x64, concurrent workstation GC,
 hosted image `ubuntu24-20260714.240.1`, SDK 10.0.302 selected through
@@ -203,17 +202,17 @@ variants had identical contracts across refs, so no workload was
 | Unchanged-control false positives | main 0/1 (0%); PR 0/1 (0%) |
 | Cross-ref verdict | Inconclusive; no variant produced repeated regression agreement |
 | Attribution | CPU and allocation matched; ThreadPool/wait remained unmatched |
-| Total observed runner time | 12.60 minutes |
-| Restore/build | 22.06s main; 16.78s PR |
-| Clean pairs | 223.52s, 220.93s, 216.78s |
-| Separate diagnostics | 40.34s |
-| Report generation | 0.74s |
-| Bulk uploads | 1.07s compact; 1.17s raw |
-| Compact/raw inputs | 33,310 B / 375,680 B |
-| Downloaded provenance/report | 6,465 B / 35,342 B |
+| Total observed runner time | 13.88 minutes |
+| Restore/build | 21.59s main; 17.85s PR |
+| Clean pairs | 244.93s, 243.23s, 240.38s |
+| Separate diagnostics | 45.32s |
+| Report generation | 0.72s |
+| Bulk uploads | 1.14s compact; 1.21s raw |
+| Compact/raw inputs | 33,897 B / 378,219 B |
+| Downloaded provenance/report | 6,466 B / 36,066 B |
 
 The `issue-651-advisory-v1` cost policy classifies every-PR execution as
-**unsuitable** (12.60m exceeds the 10m budget), selected/label-triggered PR
+**unsuitable** (13.88m exceeds the 10m budget), selected/label-triggered PR
 execution as **conditional**, and nightly/manual advisory execution as
 **suitable**. This is a **partial-GO** for continued advisory evidence
 collection, not a gate: detection and false-positive targets passed within this
