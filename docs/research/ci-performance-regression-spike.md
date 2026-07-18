@@ -145,6 +145,12 @@ turns the next step into a manual same-VM experiment rather than a gate. The
 5. uploads immutable measurement/normalized-signal inputs separately from the
    regenerable policy-derived report.
 
+The normal entry point is `workflow_dispatch`. GitHub does not index a new
+dispatchable workflow until its file reaches the default branch, so the stacked
+PR also supports one exact opt-in `run-paired-performance` label event. Adding
+that label is a human action; other labels, synchronize events, and ordinary PR
+activity cannot start the experiment.
+
 The comparison contract is strict. A scenario is comparable only when workload
 version, parameters, control designation, and the complete variant set match.
 PR-only scenarios are `new_unbaselined`, main-only scenarios are `removed`, and
