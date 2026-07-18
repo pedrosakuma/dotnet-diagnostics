@@ -179,3 +179,43 @@ or days, and it contains no dedicated-runner evidence. Those cohorts remain
 required by #651 before any timing soft or hard gate can be considered. One
 cohort always produces `eligibleForGate: false`, an `advisory` recommendation,
 and at most a `partial_go` operational decision.
+
+### Initial hosted paired evidence
+
+Workflow run `29644836857` completed the three alternating pairs on one
+`ubuntu-latest` VM. Because this follow-up was still stacked before #649 merged,
+the baseline was the #649 head `1f48d53055d776a1866660e84cbe2d01c0a4f095`,
+not `main`; the candidate was
+`0f7705af66ff84e6e8ab147d9d6752e5cd1aba15`. This validates stacked
+orchestration and within-VM operating cost. A post-merge run against actual
+`main`, repeated hosted allocations/days, and a dedicated runner are still
+required.
+
+The environment was Ubuntu 24.04.4 LTS, linux-x64, concurrent workstation GC,
+hosted image `ubuntu24-20260714.240.1`, SDK 10.0.302 selected through
+`global.json`, and runtime .NET 10.0.10. All four workload identities and both
+variants had identical contracts across refs, so no workload was
+`new_unbaselined`, `removed`, or `contract_changed`.
+
+| Evidence | Result |
+| --- | --- |
+| Injected-fixture detection | main 3/3 (100%); PR 3/3 (100%) |
+| Unchanged-control false positives | main 0/1 (0%); PR 0/1 (0%) |
+| Cross-ref verdict | Inconclusive; no variant produced repeated regression agreement |
+| Attribution | CPU and allocation matched; ThreadPool/wait remained unmatched |
+| Total observed runner time | 12.60 minutes |
+| Restore/build | 22.06s main; 16.78s PR |
+| Clean pairs | 223.52s, 220.93s, 216.78s |
+| Separate diagnostics | 40.34s |
+| Report generation | 0.74s |
+| Bulk uploads | 1.07s compact; 1.17s raw |
+| Compact/raw inputs | 33,310 B / 375,680 B |
+| Downloaded provenance/report | 6,465 B / 35,342 B |
+
+The `issue-651-advisory-v1` cost policy classifies every-PR execution as
+**unsuitable** (12.60m exceeds the 10m budget), selected/label-triggered PR
+execution as **conditional**, and nightly/manual advisory execution as
+**suitable**. This is a **partial-GO** for continued advisory evidence
+collection, not a gate: detection and false-positive targets passed within this
+one VM, but neither cross-runner/day variance nor dedicated-runner stability has
+been measured.
