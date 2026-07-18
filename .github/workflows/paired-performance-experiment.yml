@@ -67,7 +67,7 @@ jobs:
   paired-performance-experiment:
     name: Manual advisory paired-ref experiment
     if: >-
-      github.event_name == 'workflow_call'
+      inputs.cohort_id != ''
       || github.event_name == 'workflow_dispatch'
       || github.event.label.name == 'run-paired-performance'
     runs-on: ${{ fromJSON(inputs.runs_on_json || '["ubuntu-latest"]') }}
