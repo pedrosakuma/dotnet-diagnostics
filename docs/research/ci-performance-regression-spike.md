@@ -77,24 +77,24 @@ than converted into a success-shaped result.
 
 ## Hosted-runner evidence
 
-PR workflow run `29631647973` performed three clean launches and one separate
+PR workflow run `29632122059` performed three clean launches and one separate
 diagnostic launch on one `ubuntu-latest` VM. The compact artifact is
 `performance-regression-signals-1`; the 30-day raw artifact is
 `performance-regression-raw-1`. The environment was Ubuntu 24.04.4 LTS,
-linux-x64, concurrent workstation GC, SDK 10.0.302 selected through the
-repository's 10.0.201 `global.json` roll-forward policy, and runtime .NET
-10.0.10.
+linux-x64, concurrent workstation GC, hosted image
+`ubuntu24-20260714.240.1`, SDK 10.0.302 selected through the repository's
+10.0.201 `global.json` roll-forward policy, and runtime .NET 10.0.10.
 
 | Pilot | Signal | Median delta | Baseline/candidate CV | Threshold agreement | Result |
 | --- | --- | ---: | ---: | ---: | --- |
-| Allocation churn | Time | +17.07% | 3.68% / 3.82% | 3/3 | Regression |
+| Allocation churn | Time | +14.10% | 0.59% / 7.48% | 2/3 | Regression |
 | Allocation churn | Bytes/op | +19.83% | 0% / 0% | 3/3 | Regression |
-| CPU string lookup | Time | +76.15% | 1.49% / 0.97% | 3/3 | Regression |
-| Sync over async | Time | +212,458.23% | 0.20% / 5.28% | 3/3 | Regression |
+| CPU string lookup | Time | +80.79% | 0.58% / 0.64% | 3/3 | Regression |
+| Sync over async | Time | +221,567.82% | 1.80% / 5.02% | 3/3 | Regression |
 | Sync over async | Bytes/op | 0 to 72 B | 0% / 0% | 3/3 | Regression |
-| Unchanged control | Time | +1.50% | 1.20% / 0.88% | 0/3 regressions | Inconclusive, no false regression |
+| Unchanged control | Time | +0.17% | 0.43% / 0.28% | 0/3 regressions | Inconclusive, no false regression |
 
-The separate attribution launch captured 2,795 CPU samples and assigned 93.85%
+The separate attribution launch captured 2,775 CPU samples and assigned 91.68%
 exclusive cost to `CultureAwareLookupCandidate()`. Allocation sampling retained
 the expected `AllocationCandidate()` site and `System.String` as the dominant
 type. ThreadPool sampling again captured no worker growth, hill-climbing,
