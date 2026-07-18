@@ -239,6 +239,46 @@ dedicated cohort both exist, timing soft and hard gates remain blocked. The
 dedicated job accepts only scheduled or default-branch manual main-vs-main
 calibration and never executes pull-request code on the persistent runner.
 
+### Independent hosted allocation evidence
+
+PR workflow run `29664191176` executed three separate `ubuntu-latest` jobs
+against main `a091476291daf58350077afeea269d03483349fa` and PR
+`116b0fb7a86f224a87706585d5f9336552688f8c`. GitHub assigned distinct runner
+allocations `GitHub Actions 1000048778`, `1000048779`, and `1000048780`.
+All three resolved Ubuntu image `ubuntu24-20260714.240.1`, SDK 10.0.302 through
+the repository's 10.0.201 roll-forward policy, and runtime .NET 10.0.10. The
+SDK/runtime/image/ref/workload compatibility group was exact, and all workload
+contracts remained comparable.
+
+| Evidence | Result |
+| --- | --- |
+| Hosted allocations / UTC days | 3 / 1 |
+| Injected-regression detection | main 9/9, PR 9/9 = 100% (95% CI 70.09-100%) |
+| Unchanged-control false positives | main 0/3, PR 0/3 = 0% (95% CI 0-56.15%) |
+| CPU lookup cross-allocation timing CV | 0.24-1.09% |
+| Waiting cross-allocation timing CV | 0.39-0.63% |
+| Unchanged-control cross-allocation timing CV | 0.12-0.70% |
+| Allocation-churn cross-allocation timing CV | 12.02-18.74% |
+| Per-cohort runner time | 15.16m, 14.95m, 15.12m |
+| Total measured cohort runner time | 45.24m |
+| Logical compact/raw inputs | 152,813 B / 1,259,434 B |
+| Complete downloaded artifact tree | 1,819,703 B across 17 artifacts |
+| Compressed artifact storage | 344,482 B |
+| Separate attribution | environment-compatible; CPU, allocation, and all waiting candidate/control launches matched in every cohort |
+
+The point detection and false-positive targets passed, but their confidence
+intervals remain wide. This one date supplies cross-allocation evidence, not
+cross-day evidence. More importantly, all four allocation-churn timing rows
+exceeded the 10% cross-allocation CV policy limit. The other timing pilots and
+unchanged control were stable across allocations, so the result is
+workload-specific rather than a blanket hosted-runner failure.
+
+**Partial-GO:** retain scheduled/manual advisory collection and the compact
+cohort format. **NO-GO for timing soft or hard gates:** allocation-churn timing
+is too noisy, only one UTC day is represented, and no dedicated runner exists.
+Allocation metrics remain deterministic evidence, but this calibration does
+not enable any gate.
+
 ### Actual-main hosted paired evidence
 
 Workflow run `29649248742` completed the three alternating pairs on one
