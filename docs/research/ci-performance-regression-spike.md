@@ -74,11 +74,35 @@ than converted into a success-shaped result.
 
 ## Hosted-runner evidence
 
-The PR workflow performs three clean launches and one separate diagnostic
-launch on `ubuntu-latest`, uploads compact signals for 90 days and raw captures
-for 30 days, and writes the prototype report to the job summary. This section
-must be updated with that run's artifact and measured variance before the spike
-PR leaves draft.
+PR workflow run `29631647973` performed three clean launches and one separate
+diagnostic launch on one `ubuntu-latest` VM. The compact artifact is
+`performance-regression-signals-1`; the 30-day raw artifact is
+`performance-regression-raw-1`. The environment was Ubuntu 24.04.4 LTS,
+linux-x64, concurrent workstation GC, SDK 10.0.302 selected through the
+repository's 10.0.201 `global.json` roll-forward policy, and runtime .NET
+10.0.10.
+
+| Pilot | Signal | Median delta | Baseline/candidate CV | Threshold agreement | Result |
+| --- | --- | ---: | ---: | ---: | --- |
+| Allocation churn | Time | +17.07% | 3.68% / 3.82% | 3/3 | Regression |
+| Allocation churn | Bytes/op | +19.83% | 0% / 0% | 3/3 | Regression |
+| CPU string lookup | Time | +76.15% | 1.49% / 0.97% | 3/3 | Regression |
+| Sync over async | Time | +212,458.23% | 0.20% / 5.28% | 3/3 | Regression |
+| Sync over async | Bytes/op | 0 to 72 B | 0% / 0% | 3/3 | Regression |
+| Unchanged control | Time | +1.50% | 1.20% / 0.88% | 0/3 regressions | Inconclusive, no false regression |
+
+The separate attribution launch captured 2,795 CPU samples and assigned 93.85%
+exclusive cost to `CultureAwareLookupCandidate()`. Allocation sampling retained
+the expected `AllocationCandidate()` site and `System.String` as the dominant
+type. ThreadPool sampling again captured no worker growth, hill-climbing,
+starvation, or enqueue events, so the waiting regression remained unattributed.
+The report therefore produced `regression` with an `advisory` recommendation,
+`eligibleForGate: false`, and zero unchanged-control false positives.
+
+This is persistent detection evidence, not a timing-gate calibration. Three
+launches on one hosted VM do not measure variation between runner allocations,
+images, or days. Additional advisory history is required before interpreting
+the low within-job CV as a stable hosted-runner property.
 
 No dedicated-runner evidence is available in this spike.
 
