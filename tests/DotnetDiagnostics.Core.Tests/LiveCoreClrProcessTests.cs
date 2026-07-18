@@ -746,7 +746,23 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
 
         await driver;
 
-        snapshot.ProcessExited.Should().BeTrue();
+        if (snapshot.ProcessExited)
+        {
+            sample.Process.HasExited.Should().BeTrue();
+        }
+        else
+        {
+            // A crash observer such as vstest --blame-crash can hold the target alive while
+            // writing its dump after EventPipe has already delivered the unhandled event.
+            await sample.Process.WaitForExitAsync()
+                .WaitAsync(TimeSpan.FromSeconds(20));
+            var exitedAt = new DateTimeOffset(sample.Process.ExitTime.ToUniversalTime(), TimeSpan.Zero);
+            exitedAt.Should().BeAfter(
+                snapshot.StartedAt + snapshot.Duration,
+                "ProcessExited may be false only when OS termination occurs after the snapshot completed");
+        }
+
+        sample.Process.ExitCode.Should().NotBe(0);
         snapshot.UnhandledExceptionObserved.Should().BeTrue();
         snapshot.TotalExceptions.Should().BeGreaterThan(5);
         snapshot.FinalException.Should().NotBeNull();
@@ -3202,6 +3218,8 @@ internal sealed class LiveHttpSample : IAsyncDisposable
     }
 
     public int ProcessId => _process?.Id ?? throw new InvalidOperationException("Sample not started.");
+
+    public Process Process => _process ?? throw new InvalidOperationException("Sample not started.");
 
     public string BaseUrl { get; private set; } = string.Empty;
 
