@@ -62,6 +62,46 @@ cat BenchmarkDotNet.Artifacts/results/*-dotnet-diagnostics-report.md
 cat BenchmarkDotNet.Artifacts/diagnostics/*.gc.json
 ```
 
+## CI regression spike
+
+The `perf-regression` command is a dedicated issue #647 fixture. It is intentionally separate from
+the collector-hotpath benchmarks above:
+
+```bash
+# Run this from the repository root. Repeat measure at least three times.
+dotnet run --project benchmarks/DiagnosedBenchmarks -c Release -- \
+  perf-regression measure \
+  --run-id local-1 \
+  --output artifacts/perf/measurement-1.json \
+  --artifacts artifacts/perf/clean-1 \
+  --runner-class local \
+  --baseline-build-id fixture-baseline \
+  --candidate-build-id fixture-candidate
+
+dotnet run --project benchmarks/DiagnosedBenchmarks -c Release -- \
+  perf-regression diagnose \
+  --output artifacts/perf/diagnostic.json \
+  --artifacts artifacts/perf/diagnostic \
+  --runner-class local \
+  --candidate-build-id fixture-candidate
+
+dotnet run --project benchmarks/DiagnosedBenchmarks -c Release -- \
+  perf-regression report \
+  --run artifacts/perf/measurement-1.json \
+  --run artifacts/perf/measurement-2.json \
+  --run artifacts/perf/measurement-3.json \
+  --diagnostic artifacts/perf/diagnostic.json \
+  --output-json artifacts/perf/report.json \
+  --output-markdown artifacts/perf/report.md
+```
+
+The clean run stores runner/runtime provenance, workload parameters, BenchmarkDotNet mean,
+standard deviation, sample count, and allocations per operation. The diagnostic run stores only
+bounded normalized signals plus content-addressed references to short-lived raw captures. The final
+report can be regenerated from those immutable compact inputs and refuses incompatible or
+duplicate-capture comparisons. A gate recommendation also requires a complete, stable unchanged
+control and compatible runner-image provenance.
+
 ## Important caveats
 
 This pattern **diagnoses** benchmarks; it does not produce publication-grade timings.

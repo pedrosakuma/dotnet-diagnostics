@@ -11,6 +11,11 @@ if (args.Length > 0 && string.Equals(args[0], "analyze-traces", StringComparison
     return await HotpathTraceAnalyzer.RunAsync(args[1..]).ConfigureAwait(false);
 }
 
+if (args.Length > 0 && string.Equals(args[0], "perf-regression", StringComparison.OrdinalIgnoreCase))
+{
+    return PerfRegressionSpikeRunner.Run(args[1..]);
+}
+
 if (args.Length >= 2 && string.Equals(args[0], "--analyze-nettrace", StringComparison.Ordinal))
 {
     return NettraceSelfTimeAnalyzer.AnalyzeToConsole(

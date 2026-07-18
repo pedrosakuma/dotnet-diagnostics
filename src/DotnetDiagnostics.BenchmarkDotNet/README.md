@@ -48,6 +48,36 @@ allocations. Each `[DiagnosticKind]` method gets one EventPipe collection per ki
 child PID; results land in `<artifacts>/diagnostics/*.json` and a consolidated
 `*-dotnet-diagnostics-report.md`.
 
+## CI regression comparisons
+
+Performance gates need two physically separate runs:
+
+1. **Clean measurement:** ordinary BenchmarkDotNet jobs plus native diagnosers produce timing and
+   allocation observations. Persist at least three independent run documents.
+2. **Diagnostic attribution:** a monitoring job with `DotnetDiagnosticsDiagnoser` produces
+   EventPipe artifacts that explain where cost moved. Its timing is never benchmark-quality and
+   never enters the regression calculation.
+
+`DotnetDiagnostics.BenchmarkDotNet.Regression` provides the versioned
+`PerfMeasurementRun`, `PerfDiagnosticRun`, and `PerfRegressionReport` contracts plus an analyzer.
+It checks runtime, OS/RID, architecture, GC mode, runner class/image, workload version, parameters,
+and build identity before comparing runs. Duplicate capture IDs/timestamps, fewer than three
+compatible repetitions, missing or unstable unchanged controls, excessive run-level coefficient of
+variation, or an environment mismatch produce `inconclusive` or `environment_changed`, not a
+gate-shaped result. Allocation movement from a zero baseline additionally requires an absolute
+32 B/op effect floor.
+
+The issue #647 pilot under `benchmarks/DiagnosedBenchmarks` demonstrates the full
+`measure` → `diagnose` → `report` flow. Its GitHub Actions workflow is advisory-only and uploads
+the immutable input documents, raw BenchmarkDotNet output, EventPipe artifacts, and regenerable
+JSON/Markdown report.
+
+Storage is intentionally tiered. Keep the compact normalized signals (metric name, stable
+method/type/site identity, value, unit, direction, sampling metadata, and provenance) for baseline
+history. Keep raw EventPipe captures only for a bounded investigation window; the compact document
+references each raw artifact by relative path, byte size, SHA-256, and retention period. The final
+verdict is derived output and can be regenerated rather than becoming the only retained evidence.
+
 ## Supported collect kinds
 
 `counters`, `exceptions`, `gc`, `cpu`, `allocation`, `datas`, `catalog`, `activities`, `logs`,
