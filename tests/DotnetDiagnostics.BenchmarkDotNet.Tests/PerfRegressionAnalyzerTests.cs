@@ -98,6 +98,95 @@ public sealed class PerfRegressionAnalyzerTests
     }
 
     [Fact]
+    public void ThreadPoolAttribution_RequiresThreePositiveIndependentLaunches()
+    {
+        var runs = WithStableControl(Runs(
+            baselineTimes: [100, 100, 100],
+            candidateTimes: [120, 120, 120],
+            baselineAllocations: [64, 64, 64],
+            candidateAllocations: [64, 64, 64]));
+        var candidateAttribution = Enumerable.Range(1, 3)
+            .Select(index => new PerfDiagnosticAttribution(
+                "cpu-lookup",
+                "threadpool",
+                $"launch {index}: parsed starvation",
+                $"wait-{index}.threadpool.json",
+                "parsed starvation",
+                Matched: true))
+            .ToArray();
+        var controlAttribution = Enumerable.Range(1, 3)
+            .Select(index => new PerfDiagnosticAttribution(
+                "cpu-lookup",
+                "threadpool",
+                $"control launch {index}: no causal wait",
+                $"wait-control-{index}.threadpool.json",
+                "no parsed starvation",
+                Matched: true,
+                IsControl: true))
+            .ToArray();
+
+        var report = PerfRegressionAnalyzer.Analyze(
+            runs,
+            Diagnostic(runs, [.. candidateAttribution, .. controlAttribution]));
+
+        report.Scenarios.Single(static scenario => !scenario.IsControl)
+            .AttributionConsistent.Should().BeTrue();
+        report.EligibleForGate.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ThreadPoolAttribution_AbsentOrUnrelatedLaunch_DisablesGateEligibility()
+    {
+        var runs = WithStableControl(Runs(
+            baselineTimes: [100, 100, 100],
+            candidateTimes: [120, 120, 120],
+            baselineAllocations: [64, 64, 64],
+            candidateAllocations: [64, 64, 64]));
+        var attribution = new[]
+        {
+            new PerfDiagnosticAttribution("cpu-lookup", "threadpool", "starvation", "wait-1.json", "starvation", true),
+            new PerfDiagnosticAttribution("cpu-lookup", "threadpool", "unrelated climbing", "wait-2.json", "starvation", false),
+            new PerfDiagnosticAttribution("cpu-lookup", "threadpool", "starvation", "wait-3.json", "starvation", true),
+            new PerfDiagnosticAttribution("cpu-lookup", "threadpool", "control clear", "control-1.json", "no starvation", true, IsControl: true),
+            new PerfDiagnosticAttribution("cpu-lookup", "threadpool", "control clear", "control-2.json", "no starvation", true, IsControl: true),
+            new PerfDiagnosticAttribution("cpu-lookup", "threadpool", "control clear", "control-3.json", "no starvation", true, IsControl: true),
+        };
+
+        var report = PerfRegressionAnalyzer.Analyze(runs, Diagnostic(runs, attribution));
+
+        report.Scenarios.Single(static scenario => !scenario.IsControl)
+            .AttributionConsistent.Should().BeFalse();
+        report.EligibleForGate.Should().BeFalse();
+        report.Notes.Should().Contain(note =>
+            note.Contains("lacks consistent separate diagnostic attribution", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ThreadPoolAttribution_ControlWithEquivalentEvidence_DisablesGateEligibility()
+    {
+        var runs = WithStableControl(Runs(
+            baselineTimes: [100, 100, 100],
+            candidateTimes: [120, 120, 120],
+            baselineAllocations: [64, 64, 64],
+            candidateAllocations: [64, 64, 64]));
+        var attribution = new[]
+        {
+            new PerfDiagnosticAttribution("cpu-lookup", "threadpool", "blocking", "wait-1.json", "blocking", true),
+            new PerfDiagnosticAttribution("cpu-lookup", "threadpool", "blocking", "wait-2.json", "blocking", true),
+            new PerfDiagnosticAttribution("cpu-lookup", "threadpool", "blocking", "wait-3.json", "blocking", true),
+            new PerfDiagnosticAttribution("cpu-lookup", "threadpool", "control clear", "control-1.json", "no blocking", true, IsControl: true),
+            new PerfDiagnosticAttribution("cpu-lookup", "threadpool", "control also blocked", "control-2.json", "no blocking", false, IsControl: true),
+            new PerfDiagnosticAttribution("cpu-lookup", "threadpool", "control clear", "control-3.json", "no blocking", true, IsControl: true),
+        };
+
+        var report = PerfRegressionAnalyzer.Analyze(runs, Diagnostic(runs, attribution));
+
+        report.Scenarios.Single(static scenario => !scenario.IsControl)
+            .AttributionConsistent.Should().BeFalse();
+        report.EligibleForGate.Should().BeFalse();
+    }
+
+    [Fact]
     public void DuplicateCaptureDocuments_AreRejectedAsIncompatible()
     {
         var run = Runs(
@@ -302,7 +391,8 @@ public sealed class PerfRegressionAnalyzerTests
                         "raw/candidate.cpu.json",
                         128_000,
                         "bce8b16592d51d00415c59ca141deea40fb082290d75d4c33bfe255cc96739a4",
-                        30)),
+                        30),
+                    IsControl: true),
             ]);
 
         var json = PerfRegressionReportSerializer.SerializeDiagnosticRun(original);
@@ -312,7 +402,9 @@ public sealed class PerfRegressionAnalyzerTests
         restored.Attribution.Single().Signals.Should().ContainSingle()
             .Which.StableId.Should().Be("Benchmarks!Candidate()");
         restored.Attribution.Single().RawArtifact.Should().NotBeNull();
+        restored.Attribution.Single().IsControl.Should().BeTrue();
         json.Should().Contain("\"contentSha256\"");
+        json.Should().Contain("\"isControl\": true");
         json.Should().Contain("\"retentionDays\": 30");
     }
 

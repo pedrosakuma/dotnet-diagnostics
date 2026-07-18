@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Activities;
+using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
@@ -124,7 +125,7 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
             "jit" => Materialize(kind, await EventCollectionUseCases.CollectJit(
                 services.GetRequiredService<IJitCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
             "threadpool" => Materialize(kind, await EventCollectionUseCases.CollectThreadPool(
-                services.GetRequiredService<IThreadPoolCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
+                services.GetRequiredService<IThreadPoolCollector>(), resolver, handles, processId, durationSeconds, SamplingDepth.Detail, cancellationToken).ConfigureAwait(false)),
             "contention" => Materialize(kind, await EventCollectionUseCases.CollectContention(
                 services.GetRequiredService<IContentionCollector>(), resolver, handles, processId, durationSeconds, cancellationToken: cancellationToken).ConfigureAwait(false)),
             "db" => Materialize(kind, await EventCollectionUseCases.CollectDb(
