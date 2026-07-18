@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "id": "sync-over-async",
+  "version": "1.0.0",
+  "supportedLivePlatforms": [ "windows", "linux" ],
+  "reportedSymptom": "Requests time out under load while CPU remains low.",
+  "groundTruth": "GetAwaiter().GetResult blocks ThreadPool workers on loopback I/O and the queue grows faster than workers can drain it.",
+  "workload": {
+    "setup": "Launch a fresh Release BadCodeSample process over loopback.",
+    "activation": "Start overlapping GET /sync-over-async?n=40&delaySeconds=3 requests after the EventCounter session startup delay.",
+    "cleanup": "Cancel outstanding requests and terminate the sample process tree.",
+    "parameters": {
+      "endpoint": "/sync-over-async",
+      "n": "40",
+      "delaySeconds": "3",
+      "concurrentRequests": "12"
+    },
+    "warmupMilliseconds": 1200,
+    "observationSeconds": 6
+  },
+  "budget": {
+    "maximumRuntimeSeconds": 20,
+    "maximumEvidenceItems": 40
+  },
+  "expectedEvidence": [
+    {
+      "id": "cpu-remains-low",
+      "kind": "counterComparison",
+      "metric": "cpu-usage",
+      "comparison": "lessThan",
+      "threshold": 50
+    },
+    {
+      "id": "threadpool-backlog",
+      "kind": "counterComparison",
+      "metric": "threadpool-queue-length",
+      "comparison": "greaterThanOrEqual",
+      "threshold": 20
+    },
+    {
+      "id": "blocking-wait-frames",
+      "kind": "stackFrameMatch",
+      "containsAny": [ "TaskAwaiter.GetResult", "SpinThenBlockingWait", "Task.Wait" ],
+      "minimumMatches": 3
+    }
+  ],
+  "misleadingSignals": [
+    "Request latency alone suggests insufficient compute even though the process is mostly waiting."
+  ],
+  "temptingWrongHypotheses": [ "cpu-compute-demand", "scale-out" ],
+  "acceptableHypotheses": [ "threadpool-starvation-from-sync-over-async" ],
+  "acceptableAttributions": [ "System.Runtime.CompilerServices.TaskAwaiter.GetResult" ],
+  "acceptableNextActions": [ "inspect-blocked-thread-stacks" ],
+  "forbiddenConclusions": [ "cpu-compute-demand", "scale-out" ],
+  "requiredCausalityPosture": "blocking-mechanism-observed"
+}

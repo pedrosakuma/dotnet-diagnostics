@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "sync-over-async",
+  "scenarioVersion": "1.0.0",
+  "trial": 1,
+  "environment": {
+    "os": "linux",
+    "architecture": "x64",
+    "frameworkDescription": ".NET 10.0.10",
+    "runtimeVersion": "10.0.10"
+  },
+  "activation": {
+    "status": "Passed",
+    "failureKind": "None",
+    "detail": "attempts=12; successes=0; requestFailures=0",
+    "durationSeconds": 6.186834
+  },
+  "collection": {
+    "status": "Passed",
+    "failureKind": "None",
+    "detail": null,
+    "durationSeconds": 6.437014
+  },
+  "metrics": [
+    {
+      "name": "cpu-usage",
+      "value": 0.15363828324984524,
+      "unit": "%"
+    },
+    {
+      "name": "threadpool-queue-length",
+      "value": 457,
+      "unit": null
+    },
+    {
+      "name": "threadpool-thread-count",
+      "value": 98,
+      "unit": null
+    }
+  ],
+  "signals": [],
+  "frames": [
+    {
+      "displayName": "System.Threading.Tasks.Task.SpinThenBlockingWait(Int32, System.Threading.CancellationToken)",
+      "matchCount": 72
+    },
+    {
+      "displayName": "System.Threading.Tasks.Task.WaitAll(System.Threading.Tasks.Task[])",
+      "matchCount": 12
+    },
+    {
+      "displayName": "System.Threading.Tasks.Task.WaitAllCore(System.ReadOnlySpan\u00601\u003CSystem.Threading.Tasks.Task\u003E, Int32, System.Threading.CancellationToken)",
+      "matchCount": 12
+    }
+  ],
+  "relations": [],
+  "notes": []
+}
