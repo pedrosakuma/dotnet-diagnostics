@@ -1,0 +1,116 @@
+name: Performance Regression Spike
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/performance-regression-spike.yml
+      - benchmarks/DiagnosedBenchmarks/**
+      - src/DotnetDiagnostics.BenchmarkDotNet/**
+      - src/DotnetDiagnostics.Core/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  perf-regression-spike:
+    name: Advisory performance regression spike
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Restore and build spike
+        run: |
+          dotnet restore benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj
+          dotnet build benchmarks/DiagnosedBenchmarks/DiagnosedBenchmarks.csproj \
+            --no-restore --configuration Release
+
+      # Each command starts a fresh BenchmarkDotNet launch. The analyzer requires
+      # all three compatible documents and never gates on one capture.
+      - name: Run three independent clean measurements
+        shell: bash
+        run: |
+          mkdir -p artifacts/perf-regression
+          for run in 1 2 3; do
+            dotnet run --project benchmarks/DiagnosedBenchmarks \
+              --configuration Release --no-build -- \
+              perf-regression measure \
+              --run-id "github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${run}" \
+              --output "artifacts/perf-regression/measurement-${run}.json" \
+              --artifacts "artifacts/perf-regression/clean-${run}" \
+              --runner-class github-hosted-ubuntu-latest \
+              --baseline-build-id issue-647-fixture-baseline-v1 \
+              --candidate-build-id "${GITHUB_SHA}" \
+              --candidate-commit "${GITHUB_SHA}"
+          done
+
+      # This is a separate process and BenchmarkDotNet job. Its five-second
+      # timings are diagnostic windows and never enter the measurement report.
+      - name: Run separate EventPipe attribution
+        run: |
+          dotnet run --project benchmarks/DiagnosedBenchmarks \
+            --configuration Release --no-build -- \
+            perf-regression diagnose \
+            --output artifacts/perf-regression/diagnostic.json \
+            --artifacts artifacts/perf-regression/diagnostic \
+            --runner-class github-hosted-ubuntu-latest \
+            --candidate-build-id "${GITHUB_SHA}" \
+            --candidate-commit "${GITHUB_SHA}"
+
+      - name: Build advisory regression report
+        shell: bash
+        run: |
+          dotnet run --project benchmarks/DiagnosedBenchmarks \
+            --configuration Release --no-build -- \
+            perf-regression report \
+            --run artifacts/perf-regression/measurement-1.json \
+            --run artifacts/perf-regression/measurement-2.json \
+            --run artifacts/perf-regression/measurement-3.json \
+            --diagnostic artifacts/perf-regression/diagnostic.json \
+            --output-json artifacts/perf-regression/report.json \
+            --output-markdown artifacts/perf-regression/report.md
+          cat artifacts/perf-regression/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Advisory-only: a regression verdict does not change the command's exit
+      # code. This job fails only when the harness cannot build, run, or report.
+      - name: Upload compact comparison evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: performance-regression-signals-${{ github.run_attempt }}
+          path: |
+            artifacts/perf-regression/measurement-*.json
+            artifacts/perf-regression/diagnostic.json
+            artifacts/perf-regression/report.json
+            artifacts/perf-regression/report.md
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload short-lived raw captures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: performance-regression-raw-${{ github.run_attempt }}
+          path: |
+            artifacts/perf-regression/clean-*
+            artifacts/perf-regression/diagnostic
+          if-no-files-found: error
+          retention-days: 30
