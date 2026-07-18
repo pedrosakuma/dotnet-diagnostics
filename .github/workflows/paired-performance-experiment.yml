@@ -1,0 +1,184 @@
+name: Paired Performance Experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: Main/baseline ref or immutable SHA
+        required: true
+        default: main
+      candidate_ref:
+        description: PR head ref or immutable SHA (defaults to the dispatched ref SHA)
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  paired-performance-experiment:
+    name: Manual advisory paired-ref experiment
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Start feasibility clock
+        shell: bash
+        run: echo "JOB_START_UNIX_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
+
+      - name: Checkout experiment orchestration
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          path: orchestration
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: orchestration/global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: paired-perf-${{ runner.os }}-${{ hashFiles('orchestration/Directory.Packages.props', 'orchestration/**/*.csproj') }}
+          restore-keys: |
+            paired-perf-${{ runner.os }}-
+
+      - name: Checkout, build, and run three alternating clean pairs
+        shell: bash
+        env:
+          BASELINE_REF: ${{ inputs.baseline_ref }}
+          CANDIDATE_REF_INPUT: ${{ inputs.candidate_ref }}
+        run: |
+          candidate_ref="${CANDIDATE_REF_INPUT:-$GITHUB_SHA}"
+          bash orchestration/scripts/run-paired-performance-experiment.sh \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" \
+            "$BASELINE_REF" \
+            "$candidate_ref" \
+            "$GITHUB_WORKSPACE" \
+            github-hosted-ubuntu-latest \
+            "${ImageOS:-unknown}-${ImageVersion:-unknown}" \
+            "github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+      - name: Build preliminary advisory report
+        shell: bash
+        run: |
+          report_started=$(date +%s%N)
+          pair_args=()
+          for pair in 1 2 3; do
+            if (( pair % 2 == 1 )); then order=main_then_pr; else order=pr_then_main; fi
+            pair_args+=(--pair "$pair|$order|artifacts/paired/compact/measurements/main-$pair.json|artifacts/paired/compact/measurements/pull_request-$pair.json")
+          done
+          dotnet run --project refs/pr/benchmarks/DiagnosedBenchmarks \
+            --configuration Release --no-build -- \
+            perf-regression paired-report \
+            "${pair_args[@]}" \
+            --diagnostic artifacts/paired/compact/diagnostic.json \
+            --stage-metrics artifacts/paired/stages.tsv \
+            --job-start-unix-ms "$JOB_START_UNIX_MS" \
+            --compact-root artifacts/paired/compact \
+            --raw-root artifacts/paired/raw \
+            --output-manifest artifacts/paired/preliminary-evidence/manifest.json \
+            --output-feasibility artifacts/paired/preliminary-evidence/feasibility.json \
+            --output-json artifacts/paired/preliminary-report/report.json \
+            --output-markdown artifacts/paired/preliminary-report/report.md
+          report_ended=$(date +%s%N)
+          report_seconds=$(awk -v start="$report_started" -v end="$report_ended" 'BEGIN { printf "%.4f", (end - start) / 1000000000 }')
+          report_bytes=$(find artifacts/paired/preliminary-report -type f -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')
+          printf 'report\treport-generation\t%s\t%s\t\t\n' "$report_seconds" "$report_bytes" >> artifacts/paired/stages.tsv
+
+      - name: Start compact evidence upload clock
+        shell: bash
+        run: |
+          echo "COMPACT_UPLOAD_START_NS=$(date +%s%N)" >> "$GITHUB_ENV"
+          bytes=$(find artifacts/paired/compact -type f -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')
+          echo "COMPACT_UPLOAD_BYTES=$bytes" >> "$GITHUB_ENV"
+
+      - name: Upload immutable compact evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: paired-performance-compact-${{ github.run_attempt }}
+          path: |
+            artifacts/paired/compact/measurements
+            artifacts/paired/compact/diagnostic.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Record compact upload feasibility
+        shell: bash
+        run: |
+          ended=$(date +%s%N)
+          seconds=$(awk -v start="$COMPACT_UPLOAD_START_NS" -v end="$ended" 'BEGIN { printf "%.4f", (end - start) / 1000000000 }')
+          printf 'upload\tupload-compact\t%s\t%s\t\t\n' "$seconds" "$COMPACT_UPLOAD_BYTES" >> artifacts/paired/stages.tsv
+
+      - name: Start raw evidence upload clock
+        shell: bash
+        run: |
+          echo "RAW_UPLOAD_START_NS=$(date +%s%N)" >> "$GITHUB_ENV"
+          bytes=$(find artifacts/paired/raw -type f -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')
+          echo "RAW_UPLOAD_BYTES=$bytes" >> "$GITHUB_ENV"
+
+      - name: Upload short-lived raw evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: paired-performance-raw-${{ github.run_attempt }}
+          path: artifacts/paired/raw
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Record raw upload feasibility
+        shell: bash
+        run: |
+          ended=$(date +%s%N)
+          seconds=$(awk -v start="$RAW_UPLOAD_START_NS" -v end="$ended" 'BEGIN { printf "%.4f", (end - start) / 1000000000 }')
+          printf 'upload\tupload-raw\t%s\t%s\t\t\n' "$seconds" "$RAW_UPLOAD_BYTES" >> artifacts/paired/stages.tsv
+
+      # Regenerate from the same immutable captures after the bulk upload stages
+      # are known. The tiny final metadata upload is intentionally not included
+      # in the cost model; its input size remains visible in the artifact.
+      - name: Finalize advisory report and summary
+        shell: bash
+        run: |
+          pair_args=()
+          for pair in 1 2 3; do
+            if (( pair % 2 == 1 )); then order=main_then_pr; else order=pr_then_main; fi
+            pair_args+=(--pair "$pair|$order|artifacts/paired/compact/measurements/main-$pair.json|artifacts/paired/compact/measurements/pull_request-$pair.json")
+          done
+          dotnet run --project refs/pr/benchmarks/DiagnosedBenchmarks \
+            --configuration Release --no-build -- \
+            perf-regression paired-report \
+            "${pair_args[@]}" \
+            --diagnostic artifacts/paired/compact/diagnostic.json \
+            --stage-metrics artifacts/paired/stages.tsv \
+            --job-start-unix-ms "$JOB_START_UNIX_MS" \
+            --compact-root artifacts/paired/compact \
+            --raw-root artifacts/paired/raw \
+            --output-manifest artifacts/paired/evidence/manifest.json \
+            --output-feasibility artifacts/paired/evidence/feasibility.json \
+            --output-json artifacts/paired/report/report.json \
+            --output-markdown artifacts/paired/report/report.md
+          cat artifacts/paired/report/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload final policy-neutral provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: paired-performance-provenance-${{ github.run_attempt }}
+          path: |
+            artifacts/paired/evidence
+            artifacts/paired/stages.tsv
+            artifacts/paired/refs.env
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload final policy-derived report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: paired-performance-report-${{ github.run_attempt }}
+          path: artifacts/paired/report
+          if-no-files-found: error
+          retention-days: 90
