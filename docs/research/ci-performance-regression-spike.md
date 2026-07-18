@@ -127,3 +127,49 @@ No dedicated-runner evidence is available in this spike.
 The next rollout step is advisory-only history collection. A later soft gate
 should require repeated compatible low-variance results. Hard timing gates
 remain out of scope until dedicated-runner evidence exists.
+
+## Paired-ref operational experiment
+
+Issue [#651](https://github.com/pedrosakuma/dotnet-diagnostics/issues/651)
+turns the next step into a manual same-VM experiment rather than a gate. The
+`paired-performance-experiment.yml` workflow:
+
+1. checks out `main` and the selected PR ref into separate directories on one
+   `ubuntu-latest` VM and records both resolved commit SHAs;
+2. selects one SDK from `global.json`, verifies both refs resolve the same SDK,
+   and restores/builds each benchmark project once;
+3. runs three clean pairs in alternating order (`main -> PR`, `PR -> main`,
+   `main -> PR`);
+4. runs the existing EventPipe diagnostic fixture only after all six clean
+   per-ref captures complete;
+5. uploads immutable measurement/normalized-signal inputs separately from the
+   regenerable policy-derived report.
+
+The comparison contract is strict. A scenario is comparable only when workload
+version, parameters, control designation, and the complete variant set match.
+PR-only scenarios are `new_unbaselined`, main-only scenarios are `removed`, and
+shared identities with changed contracts are `contract_changed`. These states
+are reported but cannot contribute a regression verdict. A new workload becomes
+comparable only after merge and reviewed baseline acceptance.
+
+The policy-neutral manifest records pair order, capture IDs/timestamps, real
+build SHAs, runner/runtime/image provenance, and feasibility. The versioned
+`issue-651-advisory-v1` report applies thresholds afterward. Changing thresholds
+therefore regenerates a report without mutating historical measurements.
+Diagnostic elapsed time is carried only as a feasibility stage; the analyzer
+never consumes it as a measurement.
+
+Feasibility stages record duration and input bytes for checkout and
+restore/build per ref, each clean pair, diagnostics, report generation, and the
+two bulk artifact uploads. Total observed runner minutes include workflow setup
+through final report generation. The tiny final metadata upload is excluded
+from the duration model and called out in the workflow; its file sizes remain
+visible. The report evaluates likely every-PR, selected/label-triggered,
+nightly, and manual cadence under explicit policy budgets.
+
+This first experiment remains **within-VM evidence**. Even a successful run says
+nothing yet about variance across hosted runner allocations, image revisions,
+or days, and it contains no dedicated-runner evidence. Those cohorts remain
+required by #651 before any timing soft or hard gate can be considered. One
+cohort always produces `eligibleForGate: false`, an `advisory` recommendation,
+and at most a `partial_go` operational decision.

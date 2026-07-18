@@ -52,6 +52,11 @@ internal static class PerfRegressionSpikeRunner
             return Usage("Missing mode.");
         }
 
+        if (string.Equals(args[0], "paired-report", StringComparison.OrdinalIgnoreCase))
+        {
+            return PerfPairedExperimentRunner.Run(args[1..]);
+        }
+
         var options = Options.Parse(args[1..]);
         return args[0].ToLowerInvariant() switch
         {
@@ -470,10 +475,11 @@ internal static class PerfRegressionSpikeRunner
     {
         Console.Error.WriteLine(error);
         Console.Error.WriteLine(
-            "Usage: perf-regression measure|diagnose|report [--key value]. "
+            "Usage: perf-regression measure|diagnose|report|paired-report [--key value]. "
             + "Measure requires --run-id, --output, --artifacts, --baseline-build-id, --candidate-build-id. "
             + "Diagnose requires --output, --artifacts, --candidate-build-id. "
-            + "Report requires repeated --run, optional --diagnostic, --output-json, --output-markdown.");
+            + "Report requires repeated --run, optional --diagnostic, --output-json, --output-markdown. "
+            + "Paired-report requires repeated --pair plus stage metrics and output paths.");
         return 2;
     }
 

@@ -48,6 +48,45 @@ public static class PerfRegressionReportSerializer
         return JsonSerializer.Serialize(report, JsonOptions);
     }
 
+    public static string SerializeFeasibility(PerfExperimentFeasibility feasibility)
+    {
+        ArgumentNullException.ThrowIfNull(feasibility);
+        return JsonSerializer.Serialize(feasibility, JsonOptions);
+    }
+
+    public static PerfExperimentFeasibility DeserializeFeasibility(string json)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+        return JsonSerializer.Deserialize<PerfExperimentFeasibility>(json, JsonOptions)
+            ?? throw new JsonException("Experiment feasibility JSON was empty.");
+    }
+
+    public static string SerializePairedManifest(PerfPairedExperimentManifest manifest)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        return JsonSerializer.Serialize(manifest, JsonOptions);
+    }
+
+    public static PerfPairedExperimentManifest DeserializePairedManifest(string json)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+        return JsonSerializer.Deserialize<PerfPairedExperimentManifest>(json, JsonOptions)
+            ?? throw new JsonException("Paired experiment manifest JSON was empty.");
+    }
+
+    public static string SerializePairedReport(PerfPairedRegressionReport report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        return JsonSerializer.Serialize(report, JsonOptions);
+    }
+
+    public static PerfPairedRegressionReport DeserializePairedReport(string json)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+        return JsonSerializer.Deserialize<PerfPairedRegressionReport>(json, JsonOptions)
+            ?? throw new JsonException("Paired regression report JSON was empty.");
+    }
+
     public static string BuildMarkdown(PerfRegressionReport report)
     {
         ArgumentNullException.ThrowIfNull(report);
@@ -124,6 +163,135 @@ public static class PerfRegressionReportSerializer
         return sb.ToString();
     }
 
+    public static string BuildPairedMarkdown(PerfPairedRegressionReport report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+
+        var sb = new StringBuilder();
+        sb.AppendLine("# Paired CI performance experiment");
+        sb.AppendLine();
+        sb.Append("- Verdict: **").Append(report.Verdict).AppendLine("**");
+        sb.Append("- Decision: **").Append(report.Decision).AppendLine("**");
+        sb.Append("- Policy: `").Append(report.Policy.Version).AppendLine("`");
+        sb.Append("- Environment compatible: **").Append(report.Compatibility.Compatible ? "yes" : "no").AppendLine("**");
+        sb.Append("- Recommendation: **advisory** (never gate-eligible from one cohort)").AppendLine();
+        sb.Append("- Total observed runner time: **")
+            .Append(report.Feasibility.TotalRunnerMinutes.ToString("0.##", CultureInfo.InvariantCulture))
+            .AppendLine(" minutes**");
+        sb.Append("- Compact/raw artifact input: **")
+            .Append(FormatBytes(report.Feasibility.CompactArtifactBytes))
+            .Append(" / ")
+            .Append(FormatBytes(report.Feasibility.RawArtifactBytes))
+            .AppendLine("**");
+        sb.AppendLine();
+
+        if (!report.Compatibility.Compatible)
+        {
+            sb.AppendLine("## Compatibility failures");
+            sb.AppendLine();
+            foreach (var mismatch in report.Compatibility.Mismatches)
+            {
+                sb.Append("- ").AppendLine(mismatch);
+            }
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("## Workload set");
+        sb.AppendLine();
+        sb.AppendLine("| workload | status | main version | PR version | variants main / PR | verdict |");
+        sb.AppendLine("| --- | --- | --- | --- | --- | --- |");
+        foreach (var workload in report.Workloads)
+        {
+            sb.Append("| ").Append(EscapeCell(workload.WorkloadId))
+                .Append(" | ").Append(workload.Status)
+                .Append(" | ").Append(EscapeCell(workload.MainVersion))
+                .Append(" | ").Append(EscapeCell(workload.PullRequestVersion))
+                .Append(" | ").Append(EscapeCell(string.Join(", ", workload.MainVariants)))
+                .Append(" / ").Append(EscapeCell(string.Join(", ", workload.PullRequestVariants)))
+                .Append(" | ").Append(workload.Verdict).AppendLine(" |");
+        }
+        sb.AppendLine();
+
+        sb.AppendLine("## Comparable measurements");
+        sb.AppendLine();
+        sb.AppendLine("| workload | variant | metric | main median | PR median | delta | CV main/PR | agreement | verdict |");
+        sb.AppendLine("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |");
+        foreach (var workload in report.Workloads.Where(static workload =>
+                     workload.Status == PerfWorkloadSetStatus.Comparable))
+        {
+            foreach (var variant in workload.Variants)
+            {
+                AppendPairedMetric(sb, workload.WorkloadId, variant.Variant, variant.Timing);
+                AppendPairedMetric(sb, workload.WorkloadId, variant.Variant, variant.Allocation);
+            }
+        }
+        sb.AppendLine();
+
+        sb.AppendLine("## Fixture calibration");
+        sb.AppendLine();
+        sb.AppendLine("| ref | injected regressions detected | detection rate | unchanged-control false positives | false-positive rate |");
+        sb.AppendLine("| --- | ---: | ---: | ---: | ---: |");
+        foreach (var calibration in report.Calibration)
+        {
+            sb.Append("| ").Append(calibration.Ref)
+                .Append(" | ").Append(calibration.DetectedRegressionCount).Append('/').Append(calibration.InjectedRegressionCount)
+                .Append(" | ").Append(calibration.DetectionRatePercent.ToString("0.##", CultureInfo.InvariantCulture)).Append('%')
+                .Append(" | ").Append(calibration.FalsePositiveCount).Append('/').Append(calibration.UnchangedControlCount)
+                .Append(" | ").Append(calibration.FalsePositiveRatePercent.ToString("0.##", CultureInfo.InvariantCulture)).AppendLine("% |");
+        }
+        sb.AppendLine();
+
+        sb.AppendLine("## Separate diagnostic attribution");
+        sb.AppendLine();
+        sb.AppendLine("> Attribution runs only after every clean pair. Diagnostic elapsed time never enters a regression verdict.");
+        sb.AppendLine();
+        foreach (var row in report.Attribution)
+        {
+            sb.Append("- `").Append(row.Scenario).Append('/').Append(row.Kind).Append("`: ")
+                .Append(row.Matched && !row.IsError ? "matched" : "not matched")
+                .Append(" - ").Append(EscapeInline(row.Headline)).AppendLine();
+        }
+        if (report.Attribution.Count == 0)
+        {
+            sb.AppendLine("_No diagnostic attribution was supplied._");
+        }
+        sb.AppendLine();
+
+        sb.AppendLine("## Operational feasibility");
+        sb.AppendLine();
+        sb.AppendLine("| phase | name | duration | artifact input | ref | pair |");
+        sb.AppendLine("| --- | --- | ---: | ---: | --- | ---: |");
+        foreach (var stage in report.Feasibility.Stages)
+        {
+            sb.Append("| ").Append(stage.Kind)
+                .Append(" | ").Append(EscapeCell(stage.Name))
+                .Append(" | ").Append(stage.DurationSeconds.ToString("0.##", CultureInfo.InvariantCulture)).Append(" s")
+                .Append(" | ").Append(FormatBytes(stage.ArtifactBytes))
+                .Append(" | ").Append(EscapeCell(stage.Ref ?? string.Empty))
+                .Append(" | ").Append(stage.PairNumber?.ToString(CultureInfo.InvariantCulture) ?? string.Empty)
+                .AppendLine(" |");
+        }
+        sb.AppendLine();
+        sb.AppendLine("| cadence | budget | suitability | rationale |");
+        sb.AppendLine("| --- | ---: | --- | --- |");
+        foreach (var assessment in report.Cadence)
+        {
+            sb.Append("| ").Append(assessment.Cadence)
+                .Append(" | ").Append(assessment.BudgetMinutes.ToString("0.##", CultureInfo.InvariantCulture)).Append(" min")
+                .Append(" | ").Append(assessment.Suitability)
+                .Append(" | ").Append(EscapeCell(assessment.Rationale)).AppendLine(" |");
+        }
+        sb.AppendLine();
+
+        sb.AppendLine("## Evidence boundary");
+        sb.AppendLine();
+        foreach (var note in report.Notes)
+        {
+            sb.Append("- ").AppendLine(note);
+        }
+        return sb.ToString();
+    }
+
     private static void AppendMetric(
         StringBuilder sb,
         PerfScenarioRegressionResult scenario,
@@ -139,6 +307,37 @@ public static class PerfRegressionReportSerializer
             .Append("% / ").Append(metric.CandidateCoefficientOfVariationPercent.ToString("0.##", CultureInfo.InvariantCulture)).Append('%')
             .Append(" | ").Append(metric.RegressionAgreementCount).Append('/').Append(metric.Repetitions)
             .Append(" | ").Append(metric.Verdict).AppendLine(" |");
+    }
+
+    private static void AppendPairedMetric(
+        StringBuilder sb,
+        string workload,
+        string variant,
+        PerfMetricRegressionResult metric)
+    {
+        sb.Append("| ").Append(EscapeCell(workload))
+            .Append(" | ").Append(EscapeCell(variant))
+            .Append(" | ").Append(metric.Metric)
+            .Append(" | ").Append(metric.BaselineMedian.ToString("0.####", CultureInfo.InvariantCulture)).Append(' ').Append(metric.Unit)
+            .Append(" | ").Append(metric.CandidateMedian.ToString("0.####", CultureInfo.InvariantCulture)).Append(' ').Append(metric.Unit)
+            .Append(" | ").Append(metric.DeltaPercent.ToString("+0.##;-0.##;0", CultureInfo.InvariantCulture)).Append('%')
+            .Append(" | ").Append(metric.BaselineCoefficientOfVariationPercent.ToString("0.##", CultureInfo.InvariantCulture))
+            .Append("% / ").Append(metric.CandidateCoefficientOfVariationPercent.ToString("0.##", CultureInfo.InvariantCulture)).Append('%')
+            .Append(" | ").Append(metric.RegressionAgreementCount).Append('/').Append(metric.Repetitions)
+            .Append(" | ").Append(metric.Verdict).AppendLine(" |");
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = ["B", "KiB", "MiB", "GiB"];
+        var value = (double)Math.Max(0, bytes);
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+        return $"{value.ToString("0.##", CultureInfo.InvariantCulture)} {units[unit]}";
     }
 
     private static string EscapeCell(string value)

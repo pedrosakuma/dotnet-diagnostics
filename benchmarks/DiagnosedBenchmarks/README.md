@@ -102,6 +102,42 @@ report can be regenerated from those immutable compact inputs and refuses incomp
 duplicate-capture comparisons. A gate recommendation also requires a complete, stable unchanged
 control and compatible runner-image provenance.
 
+### Paired-ref experiment
+
+Issue #651 adds a manual, advisory-only workflow at
+`.github/workflows/paired-performance-experiment.yml`. It checks out `main` and a PR ref into
+separate directories on one GitHub-hosted VM, builds each ref once, then runs three clean pairs in
+alternating order (`main -> PR`, `PR -> main`, `main -> PR`). The existing `measure` and `diagnose`
+commands remain unchanged. A separate `paired-report` command consumes their immutable JSON:
+
+```bash
+dotnet run --project benchmarks/DiagnosedBenchmarks -c Release --no-build -- \
+  perf-regression paired-report \
+  --pair '1|main_then_pr|main-1.json|pr-1.json' \
+  --pair '2|pr_then_main|main-2.json|pr-2.json' \
+  --pair '3|main_then_pr|main-3.json|pr-3.json' \
+  --diagnostic diagnostic.json \
+  --stage-metrics stages.tsv \
+  --job-start-unix-ms 1784361600000 \
+  --compact-root artifacts/compact \
+  --raw-root artifacts/raw \
+  --output-manifest manifest.json \
+  --output-feasibility feasibility.json \
+  --output-json report.json \
+  --output-markdown report.md
+```
+
+Only matching workload identity, version, parameters, control designation, and variant sets are
+compared. PR-only workloads are `new_unbaselined`, main-only workloads are `removed`, and changed
+contracts are `contract_changed`; none receives a regression verdict. The policy-neutral manifest,
+per-ref measurements, normalized diagnostic signals, real commit SHAs, runner image, alternating
+order, stage durations, and artifact bytes remain separate from the versioned policy-derived
+report. Diagnostic attribution starts only after all clean pairs and its elapsed time is excluded
+from every metric verdict.
+
+One workflow cohort measures within-VM order and operating cost only. It cannot establish
+multi-runner/day stability, provides no dedicated-runner evidence, and is never gate-eligible.
+
 ## Important caveats
 
 This pattern **diagnoses** benchmarks; it does not produce publication-grade timings.
