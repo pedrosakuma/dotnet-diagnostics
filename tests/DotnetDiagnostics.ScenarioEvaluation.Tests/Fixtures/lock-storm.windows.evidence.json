@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "lock-storm",
+  "scenarioVersion": "1.0.0",
+  "trial": 1,
+  "environment": {
+    "os": "windows",
+    "architecture": "x64",
+    "frameworkDescription": ".NET 10.0.10",
+    "runtimeVersion": "10.0.10"
+  },
+  "activation": {
+    "status": "Passed",
+    "failureKind": "None",
+    "detail": "attempts=1; successes=0; requestFailures=0",
+    "durationSeconds": 2.329446
+  },
+  "collection": {
+    "status": "Passed",
+    "failureKind": "None",
+    "detail": null,
+    "durationSeconds": 0.315797
+  },
+  "metrics": [
+    {
+      "name": "managed-thread-count",
+      "value": 27,
+      "unit": "threads"
+    },
+    {
+      "name": "monitor-lock-count",
+      "value": 4,
+      "unit": "locks"
+    }
+  ],
+  "signals": [
+    {
+      "signal": "correlation.thread-overlap",
+      "salience": 0.666667,
+      "buckets": [
+        {
+          "key": "thread owns System.Object",
+          "magnitude": 18,
+          "unit": "threads"
+        }
+      ],
+      "nextAction": "query_snapshot"
+    },
+    {
+      "signal": "threads.by-wait-state",
+      "salience": 0.666667,
+      "buckets": [
+        {
+          "key": "Monitor.Enter (contended)",
+          "magnitude": 18,
+          "unit": "threads"
+        },
+        {
+          "key": "Monitor.Wait",
+          "magnitude": 3,
+          "unit": "threads"
+        },
+        {
+          "key": "Thread.Sleep",
+          "magnitude": 1,
+          "unit": "threads"
+        },
+        {
+          "key": "WaitHandle.Wait",
+          "magnitude": 1,
+          "unit": "threads"
+        }
+      ],
+      "nextAction": "query_snapshot"
+    }
+  ],
+  "frames": [],
+  "relations": [
+    {
+      "relation": "thread-owner-overlap",
+      "ownerWaitReason": "Thread.Sleep",
+      "waitingThreadCount": 18
+    }
+  ],
+  "notes": []
+}

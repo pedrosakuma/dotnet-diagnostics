@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "id": "lock-storm",
+  "version": "1.0.0",
+  "supportedLivePlatforms": [ "windows", "linux" ],
+  "reportedSymptom": "Throughput collapses while most worker threads appear idle or asleep.",
+  "groundTruth": "One thread sleeps while holding a monitor and the remaining contenders queue on that owner.",
+  "workload": {
+    "setup": "Launch a fresh Release BadCodeSample process over loopback.",
+    "activation": "Start GET /lock-storm?seconds=5&blockers=20 and snapshot while the storm is active.",
+    "cleanup": "Cancel the request and terminate the sample process tree.",
+    "parameters": {
+      "endpoint": "/lock-storm",
+      "seconds": "5",
+      "blockers": "20"
+    },
+    "warmupMilliseconds": 2000,
+    "observationSeconds": 5
+  },
+  "budget": {
+    "maximumRuntimeSeconds": 15,
+    "maximumEvidenceItems": 40
+  },
+  "expectedEvidence": [
+    {
+      "id": "monitor-wait-concentration",
+      "kind": "signalBucketMatch",
+      "signal": "threads.by-wait-state",
+      "containsAny": [ "Monitor.Enter (contended)" ],
+      "comparison": "greaterThanOrEqual",
+      "threshold": 3
+    },
+    {
+      "id": "owner-overlap-signal",
+      "kind": "signalPresent",
+      "signal": "correlation.thread-overlap"
+    },
+    {
+      "id": "sleeping-owner-with-waiters",
+      "kind": "threadOwnerCorrelation",
+      "comparison": "greaterThanOrEqual",
+      "threshold": 3,
+      "relation": "thread-owner-overlap",
+      "ownerWaitReason": "Thread.Sleep"
+    }
+  ],
+  "misleadingSignals": [
+    "A sleeping owner and parked waiters can look like unrelated idle threads when viewed separately."
+  ],
+  "temptingWrongHypotheses": [ "external-io-wait", "gc-pause" ],
+  "acceptableHypotheses": [ "sleeping-monitor-owner-serializes-work" ],
+  "acceptableAttributions": [ "monitor-owner-thread-sleep" ],
+  "acceptableNextActions": [ "query-lock-graph" ],
+  "forbiddenConclusions": [ "external-io-wait", "gc-pause", "correlation-alone-proves-source-line" ],
+  "requiredCausalityPosture": "correlated-owner-and-waiters"
+}

@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "id": "culture-lookup",
+  "version": "1.0.0",
+  "supportedLivePlatforms": [ "windows" ],
+  "reportedSymptom": "A trivial in-memory lookup pegs a CPU core.",
+  "groundTruth": "InvariantCultureIgnoreCase forces culture-aware globalization hashing for every dictionary lookup.",
+  "workload": {
+    "setup": "Launch a fresh Release BadCodeSample process over loopback.",
+    "activation": "Drive sustained GET /culture-lookup?iterations=3000000 requests after the CPU sampler arms.",
+    "cleanup": "Cancel load generation and terminate the sample process tree.",
+    "parameters": {
+      "endpoint": "/culture-lookup",
+      "iterations": "3000000",
+      "minimumWorkers": "4",
+      "maximumWorkers": "16"
+    },
+    "warmupMilliseconds": 1000,
+    "observationSeconds": 8
+  },
+  "budget": {
+    "maximumRuntimeSeconds": 20,
+    "maximumEvidenceItems": 30
+  },
+  "expectedEvidence": [
+    {
+      "id": "cpu-self-time-signal",
+      "kind": "signalPresent",
+      "signal": "cpu.self-time.concentration"
+    },
+    {
+      "id": "globalization-hash-leaf",
+      "kind": "signalBucketMatch",
+      "signal": "cpu.self-time.concentration",
+      "containsAny": [ "IcuGetHashCodeOfString", "NlsGetHashCodeOfString", "GetHashCodeOfString" ],
+      "comparison": "greaterThanOrEqual",
+      "threshold": 20
+    }
+  ],
+  "misleadingSignals": [
+    "Inclusive ThreadPool dispatch frames can rank above the responsible exclusive leaf."
+  ],
+  "temptingWrongHypotheses": [ "threadpool-runtime-overhead", "scale-compute" ],
+  "acceptableHypotheses": [ "cpu-expensive-globalization-hash" ],
+  "acceptableAttributions": [ "System.Globalization.CompareInfo.GetHashCodeOfString" ],
+  "acceptableNextActions": [ "query-cpu-top-methods-exclusive" ],
+  "forbiddenConclusions": [ "threadpool-runtime-overhead", "scale-compute" ],
+  "requiredCausalityPosture": "attributed-runtime-cost"
+}

@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "culture-lookup",
+  "scenarioVersion": "1.0.0",
+  "trial": 1,
+  "environment": {
+    "os": "windows",
+    "architecture": "x64",
+    "frameworkDescription": ".NET 10.0.10",
+    "runtimeVersion": "10.0.10"
+  },
+  "activation": {
+    "status": "Passed",
+    "failureKind": "None",
+    "detail": "attempts=75; successes=59; requestFailures=0",
+    "durationSeconds": 11.100286
+  },
+  "collection": {
+    "status": "Passed",
+    "failureKind": "None",
+    "detail": null,
+    "durationSeconds": 8
+  },
+  "metrics": [
+    {
+      "name": "total-samples",
+      "value": 18770,
+      "unit": "samples"
+    }
+  ],
+  "signals": [
+    {
+      "signal": "cpu.self-time.concentration",
+      "salience": 0.508791,
+      "buckets": [
+        {
+          "key": "System.Globalization.CompareInfo.IcuGetHashCodeOfString(value class System.ReadOnlySpan\u00601\u003Cwchar\u003E,value class System.Globalization.CompareOptions)",
+          "magnitude": 50.9,
+          "unit": "%"
+        },
+        {
+          "key": "System.Threading.Monitor.Wait(class System.Object,int32)",
+          "magnitude": 17,
+          "unit": "%"
+        },
+        {
+          "key": "Interop\u002BKernel32.GetQueuedCompletionStatus(int,unsigned int32\u0026,unsigned int\u0026,int\u0026,int32)",
+          "magnitude": 13.4,
+          "unit": "%"
+        },
+        {
+          "key": "System.Threading.PortableThreadPool\u002BIOCompletionPoller.Poll()",
+          "magnitude": 11.3,
+          "unit": "%"
+        },
+        {
+          "key": "System.Threading.WaitHandle.WaitOneNoCheck(int32,bool,class System.Object,value class WaitHandleWaitSourceMap)",
+          "magnitude": 5.5,
+          "unit": "%"
+        }
+      ],
+      "nextAction": "query_snapshot"
+    }
+  ],
+  "frames": [],
+  "relations": [],
+  "notes": []
+}
