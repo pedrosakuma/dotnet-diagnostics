@@ -71,7 +71,8 @@ public sealed record PerfEnvironmentProvenance(
     string RuntimeIdentifier,
     string Architecture,
     string GcMode,
-    string RunnerClass);
+    string RunnerClass,
+    string? RunnerImage = null);
 
 /// <summary>Stable workload identity and parameters shared by every repetition.</summary>
 public sealed record PerfWorkloadProvenance(
@@ -157,7 +158,8 @@ public sealed record PerfRegressionPolicy(
     int MinimumThresholdAgreement = 2,
     double TimingRegressionThresholdPercent = 10,
     double AllocationRegressionThresholdPercent = 15,
-    double MaximumCoefficientOfVariationPercent = 10);
+    double MaximumCoefficientOfVariationPercent = 10,
+    double MinimumZeroBaselineAllocationIncreaseBytes = 32);
 
 /// <summary>Compatibility decision made before any metric verdict.</summary>
 public sealed record PerfCompatibilityResult(

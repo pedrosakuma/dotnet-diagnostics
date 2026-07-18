@@ -8,11 +8,11 @@ public sealed class PerfRegressionAnalyzerTests
     [Fact]
     public void RepeatedCompatibleTimingRegression_WithAttribution_IsSoftGateCandidate()
     {
-        var runs = Runs(
+        var runs = WithStableControl(Runs(
             baselineTimes: [100, 101, 99],
             candidateTimes: [112, 114, 111],
             baselineAllocations: [64, 64, 64],
-            candidateAllocations: [64, 64, 64]);
+            candidateAllocations: [64, 64, 64]));
         var attribution = new[]
         {
             new PerfDiagnosticAttribution(
@@ -29,18 +29,20 @@ public sealed class PerfRegressionAnalyzerTests
         report.Verdict.Should().Be(PerfRegressionVerdict.Regression);
         report.EligibleForGate.Should().BeTrue();
         report.Recommendation.Should().Be(PerfGateRecommendation.SoftGateCandidate);
-        report.Scenarios.Single().Timing.RegressionAgreementCount.Should().Be(3);
-        report.Scenarios.Single().AttributionConsistent.Should().BeTrue();
+        report.Scenarios.Single(static scenario => !scenario.IsControl)
+            .Timing.RegressionAgreementCount.Should().Be(3);
+        report.Scenarios.Single(static scenario => !scenario.IsControl)
+            .AttributionConsistent.Should().BeTrue();
     }
 
     [Fact]
     public void StableAllocationRegression_IsHardGateCandidate()
     {
-        var runs = Runs(
+        var runs = WithStableControl(Runs(
             baselineTimes: [100, 100, 100],
             candidateTimes: [100, 100, 100],
             baselineAllocations: [100, 100, 100],
-            candidateAllocations: [120, 120, 120]);
+            candidateAllocations: [120, 120, 120]));
         var attribution = new[]
         {
             new PerfDiagnosticAttribution(
@@ -60,6 +62,26 @@ public sealed class PerfRegressionAnalyzerTests
     }
 
     [Fact]
+    public void RegressionWithoutControl_IsNeverGateEligible()
+    {
+        var runs = Runs(
+            baselineTimes: [100, 100, 100],
+            candidateTimes: [120, 120, 120],
+            baselineAllocations: [64, 64, 64],
+            candidateAllocations: [64, 64, 64]);
+        var diagnostic = Diagnostic(
+            runs,
+            [new PerfDiagnosticAttribution("cpu-lookup", "cpu", "matched", "cpu.json", "matched", true)]);
+
+        var report = PerfRegressionAnalyzer.Analyze(runs, diagnostic);
+
+        report.Verdict.Should().Be(PerfRegressionVerdict.Regression);
+        report.EligibleForGate.Should().BeFalse();
+        report.Recommendation.Should().Be(PerfGateRecommendation.Advisory);
+        report.Notes.Should().Contain(note => note.Contains("No unchanged control", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void RegressionWithoutAttribution_KeepsOverallRecommendationAdvisory()
     {
         var runs = Runs(
@@ -73,6 +95,41 @@ public sealed class PerfRegressionAnalyzerTests
         report.Verdict.Should().Be(PerfRegressionVerdict.Regression);
         report.Recommendation.Should().Be(PerfGateRecommendation.Advisory);
         report.EligibleForGate.Should().BeFalse();
+    }
+
+    [Fact]
+    public void DuplicateCaptureDocuments_AreRejectedAsIncompatible()
+    {
+        var run = Runs(
+            baselineTimes: [100],
+            candidateTimes: [120],
+            baselineAllocations: [64],
+            candidateAllocations: [64]).Single();
+
+        var report = PerfRegressionAnalyzer.Analyze([run, run, run]);
+
+        report.Verdict.Should().Be(PerfRegressionVerdict.EnvironmentChanged);
+        report.Compatibility.Mismatches.Should().Contain(mismatch =>
+            mismatch.Contains("duplicate captures", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ZeroAllocationBaseline_RequiresAbsoluteEffectFloor()
+    {
+        var belowFloor = PerfRegressionAnalyzer.Analyze(Runs(
+            baselineTimes: [100, 100, 100],
+            candidateTimes: [100, 100, 100],
+            baselineAllocations: [0, 0, 0],
+            candidateAllocations: [1, 1, 1]));
+        var aboveFloor = PerfRegressionAnalyzer.Analyze(Runs(
+            baselineTimes: [100, 100, 100],
+            candidateTimes: [100, 100, 100],
+            baselineAllocations: [0, 0, 0],
+            candidateAllocations: [72, 72, 72]));
+
+        belowFloor.Scenarios.Single().Allocation.Verdict.Should().Be(PerfRegressionVerdict.Inconclusive);
+        aboveFloor.Scenarios.Single().Allocation.Verdict.Should().Be(PerfRegressionVerdict.Regression);
+        aboveFloor.Scenarios.Single().Allocation.Rationale.Should().Contain("32 B/op zero-baseline");
     }
 
     [Fact]
@@ -319,4 +376,25 @@ public sealed class PerfRegressionAnalyzerTests
                 ]))
             .ToArray();
     }
+
+    private static PerfMeasurementRun[] WithStableControl(PerfMeasurementRun[] runs)
+        => runs.Select(static run => run with
+        {
+            Observations =
+            [
+                .. run.Observations,
+                new PerfBenchmarkObservation(
+                    "unchanged-control",
+                    PerfMeasurementRun.BaselineVariant,
+                    true,
+                    100,
+                    64),
+                new PerfBenchmarkObservation(
+                    "unchanged-control",
+                    PerfMeasurementRun.CandidateVariant,
+                    true,
+                    100,
+                    64),
+            ],
+        }).ToArray();
 }

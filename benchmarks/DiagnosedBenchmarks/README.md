@@ -99,7 +99,8 @@ The clean run stores runner/runtime provenance, workload parameters, BenchmarkDo
 standard deviation, sample count, and allocations per operation. The diagnostic run stores only
 bounded normalized signals plus content-addressed references to short-lived raw captures. The final
 report can be regenerated from those immutable compact inputs and refuses incompatible or
-single-capture comparisons.
+duplicate-capture comparisons. A gate recommendation also requires a complete, stable unchanged
+control and compatible runner-image provenance.
 
 ## Important caveats
 

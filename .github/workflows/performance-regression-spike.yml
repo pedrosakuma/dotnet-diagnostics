@@ -57,6 +57,7 @@ jobs:
               --output "artifacts/perf-regression/measurement-${run}.json" \
               --artifacts "artifacts/perf-regression/clean-${run}" \
               --runner-class github-hosted-ubuntu-latest \
+              --runner-image "${ImageOS:-unknown}-${ImageVersion:-unknown}" \
               --baseline-build-id issue-647-fixture-baseline-v1 \
               --candidate-build-id "${GITHUB_SHA}" \
               --candidate-commit "${GITHUB_SHA}"
@@ -72,6 +73,7 @@ jobs:
             --output artifacts/perf-regression/diagnostic.json \
             --artifacts artifacts/perf-regression/diagnostic \
             --runner-class github-hosted-ubuntu-latest \
+            --runner-image "${ImageOS:-unknown}-${ImageVersion:-unknown}" \
             --candidate-build-id "${GITHUB_SHA}" \
             --candidate-commit "${GITHUB_SHA}"
 

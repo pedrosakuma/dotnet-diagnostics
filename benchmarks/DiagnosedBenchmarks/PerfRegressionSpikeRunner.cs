@@ -42,7 +42,7 @@ internal static class PerfRegressionSpikeRunner
             [nameof(PerfRegressionDiagnosticBenchmarks.DiagnoseAllocationCandidate)] =
                 new("allocation-churn", "AllocationCandidate"),
             [nameof(PerfRegressionDiagnosticBenchmarks.DiagnoseWaitCandidate)] =
-                new("sync-over-async", "workers latest/peak"),
+                new("sync-over-async", "hill-climbing or starvation"),
         };
 
     public static int Run(string[] args)
@@ -70,6 +70,7 @@ internal static class PerfRegressionSpikeRunner
         var baselineBuild = BuildIdentity(options, "baseline");
         var candidateBuild = BuildIdentity(options, "candidate");
         var runnerClass = options.ValueOrDefault("runner-class", "local");
+        var runnerImage = options.Single("runner-image");
 
         var summary = BenchmarkRunner.Run<PerfRegressionCleanBenchmarks>(
             new CleanPerfRegressionConfig(Path.GetFullPath(artifacts)));
@@ -82,7 +83,7 @@ internal static class PerfRegressionSpikeRunner
             DateTimeOffset.UtcNow,
             baselineBuild,
             candidateBuild,
-            Environment(summary, runnerClass),
+            Environment(summary, runnerClass, runnerImage),
             Workload(),
             observations);
 
@@ -96,6 +97,7 @@ internal static class PerfRegressionSpikeRunner
         var output = options.RequiredSingle("output");
         var artifacts = options.RequiredSingle("artifacts");
         var runnerClass = options.ValueOrDefault("runner-class", "local");
+        var runnerImage = options.Single("runner-image");
         var candidateBuild = BuildIdentity(options, "candidate");
 
         using var diagnoser = new DotnetDiagnosticsDiagnoser();
@@ -117,10 +119,12 @@ internal static class PerfRegressionSpikeRunner
                 ? File.ReadAllText(entry.ArtifactPath)
                 : string.Empty;
             var signals = ExtractSignals(entry.Kind, artifactText);
-            var matched = entry.Headline.Contains(contract.ExpectedEvidence, StringComparison.Ordinal)
-                || signals.Any(signal =>
-                    (signal.StableId?.Contains(contract.ExpectedEvidence, StringComparison.Ordinal) ?? false)
-                    || signal.DisplayName.Contains(contract.ExpectedEvidence, StringComparison.Ordinal));
+            var matched = string.Equals(entry.Kind, "threadpool", StringComparison.Ordinal)
+                ? HasThreadPoolAttribution(signals)
+                : entry.Headline.Contains(contract.ExpectedEvidence, StringComparison.Ordinal)
+                    || signals.Any(signal =>
+                        (signal.StableId?.Contains(contract.ExpectedEvidence, StringComparison.Ordinal) ?? false)
+                        || signal.DisplayName.Contains(contract.ExpectedEvidence, StringComparison.Ordinal));
             var relativeArtifactPath = Path.GetRelativePath(
                 Path.GetDirectoryName(Path.GetFullPath(output))!,
                 entry.ArtifactPath);
@@ -140,7 +144,7 @@ internal static class PerfRegressionSpikeRunner
             PerfDiagnosticRun.SchemaV1,
             DateTimeOffset.UtcNow,
             candidateBuild,
-            Environment(summary, runnerClass),
+            Environment(summary, runnerClass, runnerImage),
             Workload(),
             rows);
         Write(output, PerfRegressionReportSerializer.SerializeDiagnosticRun(run));
@@ -195,7 +199,10 @@ internal static class PerfRegressionSpikeRunner
             statistics.N);
     }
 
-    private static PerfEnvironmentProvenance Environment(Summary summary, string runnerClass)
+    private static PerfEnvironmentProvenance Environment(
+        Summary summary,
+        string runnerClass,
+        string? runnerImage)
     {
         var host = summary.HostEnvironmentInfo;
         var gcMode = $"server={host.IsServerGC};concurrent={host.IsConcurrentGC}";
@@ -205,7 +212,8 @@ internal static class PerfRegressionSpikeRunner
             RuntimeInformation.RuntimeIdentifier,
             host.Architecture,
             gcMode,
-            runnerClass);
+            runnerClass,
+            runnerImage);
     }
 
     private static PerfWorkloadProvenance Workload()
@@ -414,6 +422,12 @@ internal static class PerfRegressionSpikeRunner
 
     private static double Percent(long value, long total)
         => total == 0 ? 0 : Math.Round(value * 100.0 / total, 2);
+
+    private static bool HasThreadPoolAttribution(IReadOnlyList<PerfDiagnosticSignal> signals)
+        => signals.Any(static signal =>
+            (string.Equals(signal.Name, "threadpool.hillClimbingEvents", StringComparison.Ordinal)
+                || string.Equals(signal.Name, "threadpool.starvationReasons", StringComparison.Ordinal))
+            && signal.Value > 0);
 
     private static PerfRawArtifactReference? RawArtifact(string fullPath, string relativePath)
     {

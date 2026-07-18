@@ -86,10 +86,12 @@ public static class PerfRegressionAnalyzer
         var controls = scenarios.Where(static scenario => scenario.IsControl).ToArray();
         var pilots = scenarios.Where(static scenario => !scenario.IsControl).ToArray();
         var falsePositiveCount = controls.Count(static scenario => scenario.Verdict == PerfRegressionVerdict.Regression);
+        var controlsPassed = controls.Length > 0 && controls.All(scenario => ControlPassed(scenario, policy));
         var overallVerdict = OverallVerdict(pilots);
-        var recommendation = OverallRecommendation(pilots, falsePositiveCount);
+        var recommendation = OverallRecommendation(pilots, falsePositiveCount, controlsPassed);
         var eligibleForGate = overallVerdict == PerfRegressionVerdict.Regression
             && falsePositiveCount == 0
+            && controlsPassed
             && pilots.Where(static scenario => scenario.Verdict == PerfRegressionVerdict.Regression)
                 .All(static scenario => scenario.AttributionConsistent);
 
@@ -100,6 +102,14 @@ public static class PerfRegressionAnalyzer
         if (falsePositiveCount > 0)
         {
             notes.Add($"{falsePositiveCount} unchanged control scenario(s) crossed a regression threshold; gating is disabled.");
+        }
+        if (controls.Length == 0)
+        {
+            notes.Add("No unchanged control scenario was supplied; gating is disabled.");
+        }
+        else if (!controlsPassed && falsePositiveCount == 0)
+        {
+            notes.Add("Unchanged controls were incomplete, noisy, or repeatedly crossed an improvement threshold; gating is disabled.");
         }
         if (pilots.Any(static scenario => scenario.Verdict == PerfRegressionVerdict.Regression && !scenario.AttributionConsistent))
         {
@@ -131,6 +141,14 @@ public static class PerfRegressionAnalyzer
         }
 
         var expected = runs[0];
+        if (runs.Select(static run => run.RunId).Distinct(StringComparer.Ordinal).Count() != runs.Count)
+        {
+            mismatches.Add("Measurement run IDs must be unique; duplicate captures are not independent repetitions.");
+        }
+        if (runs.Select(static run => run.CapturedAt).Distinct().Count() != runs.Count)
+        {
+            mismatches.Add("Measurement capture timestamps must be unique; duplicate captures are not independent repetitions.");
+        }
         foreach (var run in runs)
         {
             if (!string.Equals(run.Schema, PerfMeasurementRun.SchemaV1, StringComparison.Ordinal))
@@ -212,11 +230,12 @@ public static class PerfRegressionAnalyzer
             .ToArray();
         var baseline = complete.Select(static pair => pair.Baseline).ToArray();
         var candidate = complete.Select(static pair => pair.Candidate).ToArray();
-        var deltas = complete.Select(static pair => PercentDelta(pair.Baseline, pair.Candidate)).ToArray();
         var baselineCv = CoefficientOfVariation(baseline);
         var candidateCv = CoefficientOfVariation(candidate);
-        var regressionCount = deltas.Count(delta => delta >= threshold);
-        var improvementCount = deltas.Count(delta => delta <= -threshold);
+        var regressionCount = complete.Count(pair =>
+            IsRegression(metric, pair.Baseline, pair.Candidate, threshold, policy));
+        var improvementCount = complete.Count(pair =>
+            pair.Baseline != 0 && PercentDelta(pair.Baseline, pair.Candidate) <= -threshold);
 
         PerfRegressionVerdict verdict;
         string rationale;
@@ -234,7 +253,10 @@ public static class PerfRegressionAnalyzer
         else if (regressionCount >= policy.MinimumThresholdAgreement)
         {
             verdict = PerfRegressionVerdict.Regression;
-            rationale = $"{regressionCount}/{complete.Length} repetitions exceeded the +{threshold:F1}% threshold.";
+            rationale = metric == PerfMetricKind.Allocation && baseline.All(static value => value == 0)
+                ? $"{regressionCount}/{complete.Length} repetitions exceeded the "
+                    + $"+{policy.MinimumZeroBaselineAllocationIncreaseBytes:F0} B/op zero-baseline threshold."
+                : $"{regressionCount}/{complete.Length} repetitions exceeded the +{threshold:F1}% threshold.";
         }
         else if (improvementCount >= policy.MinimumThresholdAgreement)
         {
@@ -310,9 +332,11 @@ public static class PerfRegressionAnalyzer
 
     private static PerfGateRecommendation OverallRecommendation(
         PerfScenarioRegressionResult[] pilots,
-        int falsePositiveCount)
+        int falsePositiveCount,
+        bool controlsPassed)
     {
         if (falsePositiveCount > 0
+            || !controlsPassed
             || pilots.Length == 0
             || pilots.Any(static scenario =>
                 scenario.Verdict == PerfRegressionVerdict.Regression
@@ -327,6 +351,33 @@ public static class PerfRegressionAnalyzer
         return pilots.Any(static scenario => scenario.Recommendation == PerfGateRecommendation.HardGateCandidate)
             ? PerfGateRecommendation.HardGateCandidate
             : PerfGateRecommendation.Advisory;
+    }
+
+    private static bool ControlPassed(
+        PerfScenarioRegressionResult scenario,
+        PerfRegressionPolicy policy)
+        => MetricStable(scenario.Timing, policy) && MetricStable(scenario.Allocation, policy);
+
+    private static bool MetricStable(PerfMetricRegressionResult metric, PerfRegressionPolicy policy)
+        => metric.Repetitions >= policy.MinimumRepetitions
+            && metric.BaselineCoefficientOfVariationPercent <= policy.MaximumCoefficientOfVariationPercent
+            && metric.CandidateCoefficientOfVariationPercent <= policy.MaximumCoefficientOfVariationPercent
+            && metric.RegressionAgreementCount < policy.MinimumThresholdAgreement
+            && metric.ImprovementAgreementCount < policy.MinimumThresholdAgreement;
+
+    private static bool IsRegression(
+        PerfMetricKind metric,
+        double baseline,
+        double candidate,
+        double percentageThreshold,
+        PerfRegressionPolicy policy)
+    {
+        if (baseline != 0)
+        {
+            return PercentDelta(baseline, candidate) >= percentageThreshold;
+        }
+        return metric == PerfMetricKind.Allocation
+            && candidate - baseline >= policy.MinimumZeroBaselineAllocationIncreaseBytes;
     }
 
     private static double PercentDelta(double baseline, double candidate)
@@ -381,5 +432,6 @@ public static class PerfRegressionAnalyzer
         ArgumentOutOfRangeException.ThrowIfNegative(policy.TimingRegressionThresholdPercent);
         ArgumentOutOfRangeException.ThrowIfNegative(policy.AllocationRegressionThresholdPercent);
         ArgumentOutOfRangeException.ThrowIfNegative(policy.MaximumCoefficientOfVariationPercent);
+        ArgumentOutOfRangeException.ThrowIfNegative(policy.MinimumZeroBaselineAllocationIncreaseBytes);
     }
 }

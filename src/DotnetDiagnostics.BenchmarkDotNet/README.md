@@ -60,10 +60,12 @@ Performance gates need two physically separate runs:
 
 `DotnetDiagnostics.BenchmarkDotNet.Regression` provides the versioned
 `PerfMeasurementRun`, `PerfDiagnosticRun`, and `PerfRegressionReport` contracts plus an analyzer.
-It checks runtime, OS/RID, architecture, GC mode, runner class, workload version, parameters, and
-build identity before comparing runs. Fewer than three compatible repetitions, excessive run-level
-coefficient of variation, or an environment mismatch produce `inconclusive` or
-`environment_changed`, not a gate-shaped result.
+It checks runtime, OS/RID, architecture, GC mode, runner class/image, workload version, parameters,
+and build identity before comparing runs. Duplicate capture IDs/timestamps, fewer than three
+compatible repetitions, missing or unstable unchanged controls, excessive run-level coefficient of
+variation, or an environment mismatch produce `inconclusive` or `environment_changed`, not a
+gate-shaped result. Allocation movement from a zero baseline additionally requires an absolute
+32 B/op effect floor.
 
 The issue #647 pilot under `benchmarks/DiagnosedBenchmarks` demonstrates the full
 `measure` → `diagnose` → `report` flow. Its GitHub Actions workflow is advisory-only and uploads
