@@ -110,6 +110,11 @@ separate directories on one GitHub-hosted VM, builds each ref once, then runs th
 alternating order (`main -> PR`, `PR -> main`, `main -> PR`). The existing `measure` and `diagnose`
 commands remain unchanged. A separate `paired-report` command consumes their immutable JSON:
 
+Before the workflow exists on the default branch, GitHub cannot dispatch it by name. A maintainer
+can add the exact `run-paired-performance` label to a PR to start the same human-triggered
+experiment against that PR's base and head SHAs. Other labels and ordinary PR activity do not run
+the job. After merge, `workflow_dispatch` defaults to `main` and the dispatched ref.
+
 ```bash
 dotnet run --project benchmarks/DiagnosedBenchmarks -c Release --no-build -- \
   perf-regression paired-report \
