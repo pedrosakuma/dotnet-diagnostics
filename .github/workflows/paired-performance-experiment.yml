@@ -1,6 +1,44 @@
 name: Paired Performance Experiment
 
 on:
+  workflow_call:
+    inputs:
+      baseline_ref:
+        description: Baseline ref or immutable SHA
+        required: true
+        type: string
+      candidate_ref:
+        description: Candidate ref or immutable SHA
+        required: true
+        type: string
+      cohort_id:
+        description: Unique cohort identifier within the caller workflow
+        required: true
+        type: string
+      evidence_scope:
+        description: Policy-neutral evidence scope
+        required: true
+        type: string
+      runner_class:
+        description: Stable runner class recorded in measurement provenance
+        required: false
+        default: github-hosted-ubuntu-latest
+        type: string
+      runner_label:
+        description: Human-readable runner label contract
+        required: false
+        default: ubuntu-latest
+        type: string
+      runner_kind:
+        description: Calibration runner population
+        required: false
+        default: github_hosted
+        type: string
+      runs_on_json:
+        description: JSON array passed to runs-on by a verified caller
+        required: false
+        default: '["ubuntu-latest"]'
+        type: string
   workflow_dispatch:
     inputs:
       baseline_ref:
@@ -29,9 +67,10 @@ jobs:
   paired-performance-experiment:
     name: Manual advisory paired-ref experiment
     if: >-
-      github.event_name == 'workflow_dispatch'
+      github.event_name == 'workflow_call'
+      || github.event_name == 'workflow_dispatch'
       || github.event.label.name == 'run-paired-performance'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs_on_json || '["ubuntu-latest"]') }}
     timeout-minutes: 45
     steps:
       - name: Start feasibility clock
@@ -60,8 +99,11 @@ jobs:
       - name: Checkout, build, and run three alternating clean pairs
         shell: bash
         env:
-          BASELINE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.baseline_ref || github.event.pull_request.base.sha }}
-          CANDIDATE_REF_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_ref || github.event.pull_request.head.sha }}
+          BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.baseline_ref }}
+          CANDIDATE_REF_INPUT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.candidate_ref }}
+          COHORT_ID: ${{ inputs.cohort_id || 'single' }}
+          EVIDENCE_SCOPE: ${{ inputs.evidence_scope || 'single_github_hosted_vm' }}
+          RUNNER_CLASS: ${{ inputs.runner_class || 'github-hosted-ubuntu-latest' }}
         run: |
           candidate_ref="${CANDIDATE_REF_INPUT:-$GITHUB_SHA}"
           bash orchestration/scripts/run-paired-performance-experiment.sh \
@@ -69,9 +111,9 @@ jobs:
             "$BASELINE_REF" \
             "$candidate_ref" \
             "$GITHUB_WORKSPACE" \
-            github-hosted-ubuntu-latest \
+            "$RUNNER_CLASS" \
             "${ImageOS:-unknown}-${ImageVersion:-unknown}" \
-            "github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            "github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${COHORT_ID}"
 
       - name: Build preliminary advisory report
         shell: bash
@@ -92,6 +134,7 @@ jobs:
               --diagnostic "$root/artifacts/paired/compact/diagnostic.json" \
               --stage-metrics "$root/artifacts/paired/stages.tsv" \
               --job-start-unix-ms "$JOB_START_UNIX_MS" \
+              --evidence-scope "$EVIDENCE_SCOPE" \
               --compact-root "$root/artifacts/paired/compact" \
               --raw-root "$root/artifacts/paired/raw" \
               --output-manifest "$root/artifacts/paired/preliminary-evidence/manifest.json" \
@@ -114,7 +157,7 @@ jobs:
       - name: Upload immutable compact evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: paired-performance-compact-${{ github.run_attempt }}
+          name: paired-performance-compact-${{ inputs.cohort_id || 'single' }}-${{ github.run_attempt }}
           path: |
             artifacts/paired/compact/measurements
             artifacts/paired/compact/diagnostic.json
@@ -138,7 +181,7 @@ jobs:
       - name: Upload short-lived raw evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: paired-performance-raw-${{ github.run_attempt }}
+          name: paired-performance-raw-${{ inputs.cohort_id || 'single' }}-${{ github.run_attempt }}
           path: artifacts/paired/raw
           if-no-files-found: error
           retention-days: 30
@@ -155,8 +198,15 @@ jobs:
       # in the cost model; its input size remains visible in the artifact.
       - name: Finalize advisory report and summary
         shell: bash
+        env:
+          COHORT_ID: ${{ inputs.cohort_id || 'single' }}
+          EVIDENCE_SCOPE: ${{ inputs.evidence_scope || 'single_github_hosted_vm' }}
+          RUNNER_LABEL: ${{ inputs.runner_label || 'ubuntu-latest' }}
+          RUNNER_KIND: ${{ inputs.runner_kind || 'github_hosted' }}
         run: |
           root="$GITHUB_WORKSPACE"
+          source "$root/artifacts/paired/refs.env"
+          allocation_id="github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${COHORT_ID}-${RUNNER_NAME:-unknown}"
           pair_args=()
           for pair in 1 2 3; do
             if (( pair % 2 == 1 )); then order=main_then_pr; else order=pr_then_main; fi
@@ -171,19 +221,28 @@ jobs:
               --diagnostic "$root/artifacts/paired/compact/diagnostic.json" \
               --stage-metrics "$root/artifacts/paired/stages.tsv" \
               --job-start-unix-ms "$JOB_START_UNIX_MS" \
+              --evidence-scope "$EVIDENCE_SCOPE" \
               --compact-root "$root/artifacts/paired/compact" \
               --raw-root "$root/artifacts/paired/raw" \
               --output-manifest "$root/artifacts/paired/evidence/manifest.json" \
               --output-feasibility "$root/artifacts/paired/evidence/feasibility.json" \
               --output-json "$root/artifacts/paired/report/report.json" \
-              --output-markdown "$root/artifacts/paired/report/report.md"
+              --output-markdown "$root/artifacts/paired/report/report.md" \
+              --output-cohort "$root/artifacts/paired/cohort/cohort.json" \
+              --cohort-id "github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${COHORT_ID}" \
+              --allocation-id "$allocation_id" \
+              --workflow-run-id "$GITHUB_RUN_ID" \
+              --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --selected-sdk "$SELECTED_SDK" \
+              --runner-kind "$RUNNER_KIND" \
+              --runner-label "$RUNNER_LABEL"
           )
           cat artifacts/paired/report/report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload final policy-neutral provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: paired-performance-provenance-${{ github.run_attempt }}
+          name: paired-performance-provenance-${{ inputs.cohort_id || 'single' }}-${{ github.run_attempt }}
           path: |
             artifacts/paired/evidence
             artifacts/paired/stages.tsv
@@ -194,7 +253,15 @@ jobs:
       - name: Upload final policy-derived report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: paired-performance-report-${{ github.run_attempt }}
+          name: paired-performance-report-${{ inputs.cohort_id || 'single' }}-${{ github.run_attempt }}
           path: artifacts/paired/report
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload policy-neutral calibration cohort
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: paired-performance-cohort-${{ inputs.cohort_id || 'single' }}-${{ github.run_attempt }}
+          path: artifacts/paired/cohort/cohort.json
           if-no-files-found: error
           retention-days: 90

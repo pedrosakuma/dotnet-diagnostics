@@ -180,6 +180,65 @@ required by #651 before any timing soft or hard gate can be considered. One
 cohort always produces `eligibleForGate: false`, an `advisory` recommendation,
 and at most a `partial_go` operational decision.
 
+### Cross-allocation and cross-day calibration protocol
+
+The next #651 phase keeps `paired-performance-experiment.yml` as the only
+measurement implementation and makes it reusable as one allocation. The
+`paired-performance-calibration.yml` caller launches three independent
+GitHub-hosted jobs in parallel. Every job still performs three alternating
+within-VM clean pairs and only then runs EventPipe attribution. It emits a
+self-contained policy-neutral cohort document containing:
+
+- unique workflow/cohort/allocation and clean-capture IDs;
+- selected SDK, runtime, OS/RID, architecture, GC mode, runner class/label,
+  hosted image, immutable ref identities, and workload contracts;
+- all six clean per-ref measurement documents;
+- within-job runner minutes and compact/raw input bytes.
+
+The aggregate report applies versioned policy
+`issue-651-calibration-advisory-v1`. Exact SDK/runtime/image/ref/workload
+compatibility defines a group; incompatible environments are kept as separate
+groups and never pooled. For each compatible group the report distinguishes
+the original within-VM pairs from cross-allocation and cross-day evidence,
+reports detection and false-positive rates with Wilson 95% intervals, reports
+within-cohort and cross-allocation/day CVs, and sums runner minutes and artifact
+volume. New/unbaselined, removed, and contract-changed workloads retain the
+#652 classifications and remain excluded from cross-ref verdicts.
+
+The schedule runs on three adjacent UTC days and automatically downloads up to
+five prior successful scheduled calibration runs. This cadence maximizes the
+chance of collecting three days on one exact hosted image version; image
+revisions still form separate groups and are never pooled. Manual dispatches
+can name prior run IDs explicitly. Three matrix jobs on one date count as three
+hosted allocations, not as multi-day evidence. Policy requires three
+exact-compatible allocations across three UTC days for a runner population
+before its targets can pass.
+Regardless of the result, the implementation always emits
+`eligibleForGate: false` and an `advisory` recommendation.
+
+The repository Actions runner API returned `total_count: 0` on 2026-07-18 and
+no repository variables were configured. A dedicated job is therefore skipped
+unless an operator first verifies an online runner carrying every label
+`self-hosted`, `linux`, `x64`, and `dotnet-diagnostics-perf`, then sets
+`PERF_DEDICATED_RUNNER_ENABLED=true`. This explicit two-part contract avoids
+queueing indefinitely on an invented label. The reproduction sequence is:
+
+```bash
+gh api repos/pedrosakuma/dotnet-diagnostics/actions/runners \
+  --jq '.runners[] | select(.status == "online") | {name, labels: [.labels[].name]}'
+gh variable set PERF_DEDICATED_RUNNER_ENABLED \
+  --repo pedrosakuma/dotnet-diagnostics --body true
+gh workflow run paired-performance-calibration.yml \
+  --repo pedrosakuma/dotnet-diagnostics --ref main \
+  -f baseline_ref=main \
+  -f candidate_ref=main
+```
+
+Until compatible multi-day hosted evidence and a separately qualifying
+dedicated cohort both exist, timing soft and hard gates remain blocked. The
+dedicated job accepts only scheduled or default-branch manual main-vs-main
+calibration and never executes pull-request code on the persistent runner.
+
 ### Actual-main hosted paired evidence
 
 Workflow run `29649248742` completed the three alternating pairs on one

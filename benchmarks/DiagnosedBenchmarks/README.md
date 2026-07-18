@@ -143,6 +143,44 @@ from every metric verdict.
 One workflow cohort measures within-VM order and operating cost only. It cannot establish
 multi-runner/day stability, provides no dedicated-runner evidence, and is never gate-eligible.
 
+The follow-up `paired-performance-calibration.yml` workflow reuses that exact protocol rather
+than introducing another benchmark path. Each of its three hosted matrix jobs is a separate
+GitHub-hosted job/allocation and emits one self-contained, policy-neutral `cohort.json`.
+The aggregate job groups cohorts only when runner kind/label, SDK, runtime, hosted image, ref
+SHAs, and workload contracts match exactly. Different groups are reported but never pooled.
+The report separates each cohort's three within-VM pairs from cross-allocation CV and, when
+prior scheduled/manual runs are supplied, cross-day CV. Detection and unchanged-control
+false-positive rates include Wilson 95% intervals. Runner minutes and compact/raw input bytes
+are summed independently from metric verdicts.
+
+Scheduled runs execute on three adjacent UTC days and automatically include up to five previous
+successful scheduled runs, maximizing the chance of retaining one exact hosted image version.
+A manual dispatch can include explicit prior workflow IDs through `prior_run_ids`. Three
+parallel hosted jobs on one date are cross-allocation evidence, not multi-day evidence; image
+revisions still form separate groups rather than being pooled.
+All reports remain advisory and `eligibleForGate: false`.
+
+The repository had no registered self-hosted runner when this calibration was added. The
+dedicated job therefore stays skipped unless an operator first verifies an online runner with
+all labels `self-hosted`, `linux`, `x64`, and `dotnet-diagnostics-perf`, then sets repository
+variable `PERF_DEDICATED_RUNNER_ENABLED=true`. The exact verification and dispatch sequence is:
+
+```bash
+gh api repos/pedrosakuma/dotnet-diagnostics/actions/runners \
+  --jq '.runners[] | select(.status == "online") | {name, labels: [.labels[].name]}'
+gh variable set PERF_DEDICATED_RUNNER_ENABLED \
+  --repo pedrosakuma/dotnet-diagnostics --body true
+gh workflow run paired-performance-calibration.yml \
+  --repo pedrosakuma/dotnet-diagnostics --ref main \
+  -f baseline_ref=main \
+  -f candidate_ref=main
+```
+
+Do not set the variable until the exact label set is visible and online. GitHub can otherwise
+leave a self-hosted job queued before `timeout-minutes` starts. The dedicated path accepts only
+scheduled or default-branch manual main-vs-main calibration; it never runs pull-request code on
+the persistent runner.
+
 The waiting pilot gives both variants the same eight delayed operations and verifies the same
 summed result. The baseline awaits them concurrently; the candidate synchronously blocks on each
 operation in sequence. Its physically separate EventPipe fixture delays load activation for two
