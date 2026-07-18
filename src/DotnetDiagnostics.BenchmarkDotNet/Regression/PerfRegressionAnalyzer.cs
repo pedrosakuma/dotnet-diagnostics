@@ -68,7 +68,7 @@ public static class PerfRegressionAnalyzer
             var scenarioAttribution = attributionRows
                 .Where(row => string.Equals(row.Scenario, scenario, StringComparison.Ordinal))
                 .ToArray();
-            var attributionConsistent = isControl || scenarioAttribution.Any(static row => row.Matched && !row.IsError);
+            var attributionConsistent = isControl || HasConsistentAttribution(scenarioAttribution, policy);
             var verdict = Combine(timing.Verdict, allocation.Verdict);
             var scenarioRecommendation = Recommend(verdict, timing, allocation, attributionConsistent, isControl);
 
@@ -201,6 +201,26 @@ public static class PerfRegressionAnalyzer
             && left.Parameters.All(pair =>
                 right.Parameters.TryGetValue(pair.Key, out var value)
                 && string.Equals(pair.Value, value, StringComparison.Ordinal));
+
+    private static bool HasConsistentAttribution(
+        IReadOnlyList<PerfDiagnosticAttribution> attribution,
+        PerfRegressionPolicy policy)
+    {
+        var threadPoolRows = attribution
+            .Where(static row => string.Equals(row.Kind, "threadpool", StringComparison.Ordinal))
+            .ToArray();
+        if (threadPoolRows.Length > 0)
+        {
+            var candidateRows = threadPoolRows.Where(static row => !row.IsControl).ToArray();
+            var controlRows = threadPoolRows.Where(static row => row.IsControl).ToArray();
+            return candidateRows.Length >= policy.MinimumRepetitions
+                && candidateRows.All(static row => row.Matched && !row.IsError)
+                && controlRows.Length >= policy.MinimumRepetitions
+                && controlRows.All(static row => row.Matched && !row.IsError);
+        }
+
+        return attribution.Any(static row => row.Matched && !row.IsError);
+    }
 
     private static (PerfBenchmarkObservation? Baseline, PerfBenchmarkObservation? Candidate) ScenarioPair(
         PerfMeasurementRun run,

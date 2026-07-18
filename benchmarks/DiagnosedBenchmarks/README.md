@@ -102,6 +102,13 @@ report can be regenerated from those immutable compact inputs and refuses incomp
 duplicate-capture comparisons. A gate recommendation also requires a complete, stable unchanged
 control and compatible runner-image provenance.
 
+The waiting pilot gives both variants the same eight delayed operations and verifies the same
+summed result. The baseline awaits them concurrently; the candidate synchronously blocks on each
+operation in sequence. Its physically separate EventPipe fixture delays load activation for two
+seconds so the ThreadPool session is established first, then performs three independent candidate
+and control launches. Attribution matches only parsed `Starvation` or `CooperativeBlocking`
+adjustment events; generic summaries and unrelated hill-climbing do not qualify.
+
 ## Important caveats
 
 This pattern **diagnoses** benchmarks; it does not produce publication-grade timings.

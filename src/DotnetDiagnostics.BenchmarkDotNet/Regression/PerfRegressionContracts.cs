@@ -119,7 +119,8 @@ public sealed record PerfDiagnosticAttribution(
     bool Matched,
     bool IsError = false,
     IReadOnlyList<PerfDiagnosticSignal>? Signals = null,
-    PerfRawArtifactReference? RawArtifact = null);
+    PerfRawArtifactReference? RawArtifact = null,
+    bool IsControl = false);
 
 /// <summary>
 /// Compact, normalized signal retained for future comparisons after the raw capture expires.

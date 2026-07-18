@@ -21,7 +21,7 @@ public class PerfRegressionCleanBenchmarks
     public int AllocationCandidate() => PerfRegressionWorkloads.AllocationCandidate();
 
     [Benchmark]
-    public int WaitBaseline() => PerfRegressionWorkloads.AsyncBaseline();
+    public Task<int> WaitBaseline() => PerfRegressionWorkloads.AsyncBaseline();
 
     [Benchmark]
     public int WaitCandidate() => PerfRegressionWorkloads.SyncOverAsyncCandidate();
@@ -63,23 +63,76 @@ public class PerfRegressionDiagnosticBenchmarks
         return checksum;
     }
 
-    [Benchmark]
-    [DiagnosticKind(BenchmarkDiagnosticKind.ThreadPool, DurationSeconds = 3)]
-    public long DiagnoseWaitCandidate()
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(DiagnosticSeconds);
-        var workers = Enumerable.Range(0, Math.Clamp(Environment.ProcessorCount * 2, 8, 32))
-            .Select(_ => Task.Run(() =>
-            {
-                while (DateTime.UtcNow < deadline)
-                {
-                    PerfRegressionWorkloads.SyncOverAsyncCandidate();
-                }
-            }))
-            .ToArray();
+}
 
-        Task.WaitAll(workers);
-        return workers.Length;
+public class PerfRegressionWaitDiagnosticBenchmarks
+{
+    private const int EventPipeStartupDelayMilliseconds = 2_000;
+    private int _originalWorkerMin;
+    private int _originalIocpMin;
+    private int _workers;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        ThreadPool.GetMinThreads(out _originalWorkerMin, out _originalIocpMin);
+        _workers = Math.Clamp(ThreadPool.ThreadCount + 8, 12, 64);
+        if (!ThreadPool.SetMinThreads(_workers, _originalIocpMin))
+        {
+            throw new InvalidOperationException($"Unable to set the ThreadPool worker minimum to {_workers}.");
+        }
+
+        using var ready = new Barrier(_workers + 1);
+        var warmup = Enumerable.Range(0, _workers)
+            .Select(_ => Task.Run(() => ready.SignalAndWait()))
+            .ToArray();
+        if (!ready.SignalAndWait(TimeSpan.FromSeconds(10)))
+        {
+            throw new TimeoutException("ThreadPool workers did not warm up before the diagnostic run.");
+        }
+        Task.WaitAll(warmup);
+    }
+
+    [GlobalCleanup]
+    public void Cleanup()
+        => ThreadPool.SetMinThreads(_originalWorkerMin, _originalIocpMin);
+
+    [Benchmark]
+    [DiagnosticKind(BenchmarkDiagnosticKind.ThreadPool, DurationSeconds = 8)]
+    public int DiagnoseWaitCandidate()
+        => RunWaitFixture(blockOnAsync: true);
+
+    [Benchmark]
+    [DiagnosticKind(BenchmarkDiagnosticKind.ThreadPool, DurationSeconds = 8)]
+    public int DiagnoseWaitControl()
+        => RunWaitFixture(blockOnAsync: false);
+
+    private int RunWaitFixture(bool blockOnAsync)
+    {
+        Thread.Sleep(EventPipeStartupDelayMilliseconds);
+
+        using var ready = new Barrier(_workers + 1);
+        var operations = blockOnAsync
+            ? Enumerable.Range(0, _workers)
+                .Select(_ => Task.Run(() =>
+                {
+                    ready.SignalAndWait();
+                    return PerfRegressionWorkloads.SyncOverAsyncCandidate();
+                }))
+                .ToArray()
+            : Enumerable.Range(0, _workers)
+                .Select(_ => Task.Run(async () =>
+                {
+                    ready.SignalAndWait();
+                    return await PerfRegressionWorkloads.AsyncBaseline();
+                }))
+                .ToArray();
+        if (!ready.SignalAndWait(TimeSpan.FromSeconds(10)))
+        {
+            throw new TimeoutException("ThreadPool workers did not activate during the diagnostic run.");
+        }
+
+        return Task.WhenAll(operations).GetAwaiter().GetResult().Sum();
     }
 }
 
@@ -88,6 +141,8 @@ internal static class PerfRegressionWorkloads
     private const int LookupPasses = 256;
     private const int BaselinePayloadCount = 10;
     private const int CandidateExtraPayloadCount = 2;
+    private const int WaitOperationCount = 8;
+    private const int WaitOperationDelayMilliseconds = 1;
     private const string Needle = "repository";
 
     private static readonly string[] LookupValues =
@@ -157,11 +212,30 @@ internal static class PerfRegressionWorkloads
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public static int AsyncBaseline() => 1;
+    public static async Task<int> AsyncBaseline()
+    {
+        var operations = Enumerable.Range(0, WaitOperationCount)
+            .Select(static _ => DelayedUnitAsync())
+            .ToArray();
+        return (await Task.WhenAll(operations)).Sum();
+    }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static int SyncOverAsyncCandidate()
-        => Task.Run(static () => 1).GetAwaiter().GetResult();
+    {
+        var result = 0;
+        for (var operation = 0; operation < WaitOperationCount; operation++)
+        {
+            result += DelayedUnitAsync().GetAwaiter().GetResult();
+        }
+        return result;
+    }
+
+    private static async Task<int> DelayedUnitAsync()
+    {
+        await Task.Delay(WaitOperationDelayMilliseconds);
+        return 1;
+    }
 
     private static string[] CreatePayload(int count)
     {

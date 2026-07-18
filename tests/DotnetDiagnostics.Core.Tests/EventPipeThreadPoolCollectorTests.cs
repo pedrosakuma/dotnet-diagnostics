@@ -24,6 +24,7 @@ public sealed class EventPipeThreadPoolCollectorTests
     [Theory]
     [InlineData("0", "Warmup")]
     [InlineData("6", "Starvation")]
+    [InlineData("8", "CooperativeBlocking")]
     [InlineData("Starvation", "Starvation")]
     [InlineData("99", "99")]
     public void NormalizeAdjustmentReason_MapsNumericRuntimeEnumValues(
