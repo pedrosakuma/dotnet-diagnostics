@@ -37,9 +37,33 @@ internal static class PerfPairedExperimentRunner
         Write(feasibilityPath, PerfRegressionReportSerializer.SerializeFeasibility(feasibility));
         Write(jsonPath, PerfRegressionReportSerializer.SerializePairedReport(report));
         Write(markdownPath, markdown);
+        var cohortPath = options.Single("output-cohort");
+        if (cohortPath is not null)
+        {
+            var cohort = new PerfCalibrationCohortEvidence(
+                PerfCalibrationCohortEvidence.SchemaV1,
+                options.RequiredSingle("cohort-id"),
+                options.RequiredSingle("allocation-id"),
+                options.RequiredSingle("workflow-run-id"),
+                int.Parse(options.RequiredSingle("workflow-run-attempt"), CultureInfo.InvariantCulture),
+                options.RequiredSingle("selected-sdk"),
+                ParseRunnerKind(options.RequiredSingle("runner-kind")),
+                options.RequiredSingle("runner-label"),
+                manifest,
+                pairs);
+            Write(cohortPath, PerfRegressionReportSerializer.SerializeCalibrationCohort(cohort));
+        }
         Console.WriteLine(markdown);
         return 0;
     }
+
+    private static PerfCalibrationRunnerKind ParseRunnerKind(string value)
+        => value switch
+        {
+            "github_hosted" => PerfCalibrationRunnerKind.GitHubHosted,
+            "dedicated" => PerfCalibrationRunnerKind.Dedicated,
+            _ => throw new FormatException($"Unknown calibration runner kind '{value}'."),
+        };
 
     private static PerfExperimentFeasibility ReadFeasibility(Options options)
     {

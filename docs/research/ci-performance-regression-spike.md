@@ -180,6 +180,109 @@ required by #651 before any timing soft or hard gate can be considered. One
 cohort always produces `eligibleForGate: false`, an `advisory` recommendation,
 and at most a `partial_go` operational decision.
 
+### Cross-allocation and cross-day calibration protocol
+
+The next #651 phase keeps `paired-performance-experiment.yml` as the only
+measurement implementation and makes it reusable as one allocation. The
+`paired-performance-calibration.yml` caller launches three independent
+GitHub-hosted jobs in parallel. Every job still performs three alternating
+within-VM clean pairs and only then runs EventPipe attribution. It emits a
+self-contained policy-neutral cohort document containing:
+
+- unique workflow/cohort/allocation and clean-capture IDs;
+- selected SDK, runtime, OS/RID, architecture, GC mode, runner class/label,
+  hosted image, immutable ref identities, and workload contracts;
+- all six clean per-ref measurement documents;
+- within-job runner minutes and compact/raw input bytes.
+
+The aggregate report applies versioned policy
+`issue-651-calibration-advisory-v1`. Exact SDK/runtime/image/ref/workload
+compatibility defines a group; incompatible environments are kept as separate
+groups and never pooled. For each compatible group the report distinguishes
+the original within-VM pairs from cross-allocation and cross-day evidence,
+reports detection and false-positive rates with Wilson 95% intervals, reports
+within-cohort and cross-allocation/day CVs, and sums runner minutes and artifact
+volume. New/unbaselined, removed, and contract-changed workloads retain the
+#652 classifications and remain excluded from cross-ref verdicts.
+
+The schedule runs on three adjacent UTC days and automatically downloads up to
+five prior successful scheduled calibration runs. This cadence maximizes the
+chance of collecting three days on one exact hosted image version; image
+revisions still form separate groups and are never pooled. Manual dispatches
+can name prior run IDs explicitly. Three matrix jobs on one date count as three
+hosted allocations, not as multi-day evidence. Policy requires three
+exact-compatible allocations across three UTC days for a runner population
+before its targets can pass.
+Regardless of the result, the implementation always emits
+`eligibleForGate: false` and an `advisory` recommendation.
+
+At `2026-07-18T23:23:11.2661408Z`, an authenticated
+`GET /repos/pedrosakuma/dotnet-diagnostics/actions/runners` observation
+returned `{"total_count":0,"runners":[]}`. The paired authenticated
+`GET /repos/pedrosakuma/dotnet-diagnostics/actions/variables` observation
+returned `{"total_count":0,"variables":[]}`. A dedicated job is therefore
+skipped unless an operator first verifies an online runner carrying every
+label `self-hosted`, `linux`, `x64`, and `dotnet-diagnostics-perf`, then sets
+`PERF_DEDICATED_RUNNER_ENABLED=true`. This timestamped repository-API
+provenance and explicit two-part contract avoid queueing indefinitely on an
+invented label. The reproduction sequence is:
+
+```bash
+gh api repos/pedrosakuma/dotnet-diagnostics/actions/runners \
+  --jq '.runners[] | select(.status == "online") | {name, labels: [.labels[].name]}'
+gh variable set PERF_DEDICATED_RUNNER_ENABLED \
+  --repo pedrosakuma/dotnet-diagnostics --body true
+gh workflow run paired-performance-calibration.yml \
+  --repo pedrosakuma/dotnet-diagnostics --ref main \
+  -f baseline_ref=main \
+  -f candidate_ref=main
+```
+
+Until compatible multi-day hosted evidence and a separately qualifying
+dedicated cohort both exist, timing soft and hard gates remain blocked. The
+dedicated job accepts only scheduled or default-branch manual main-vs-main
+calibration and never executes pull-request code on the persistent runner.
+
+### Independent hosted allocation evidence
+
+PR workflow run `29664191176` executed three separate `ubuntu-latest` jobs
+against main `a091476291daf58350077afeea269d03483349fa` and PR
+`116b0fb7a86f224a87706585d5f9336552688f8c`. GitHub assigned distinct runner
+allocations `GitHub Actions 1000048778`, `1000048779`, and `1000048780`.
+All three resolved Ubuntu image `ubuntu24-20260714.240.1`, SDK 10.0.302 through
+the repository's 10.0.201 roll-forward policy, and runtime .NET 10.0.10. The
+SDK/runtime/image/ref/workload compatibility group was exact, and all workload
+contracts remained comparable.
+
+| Evidence | Result |
+| --- | --- |
+| Hosted allocations / UTC days | 3 / 1 |
+| Injected-regression detection | main 9/9, PR 9/9 = 100% (95% CI 70.09-100%) |
+| Unchanged-control false positives | main 0/3, PR 0/3 = 0% (95% CI 0-56.15%) |
+| CPU lookup cross-allocation timing CV | 0.24-1.09% |
+| Waiting cross-allocation timing CV | 0.39-0.63% |
+| Unchanged-control cross-allocation timing CV | 0.12-0.70% |
+| Allocation-churn cross-allocation timing CV | 12.02-18.74% |
+| Per-cohort runner time | 15.16m, 14.95m, 15.12m |
+| Total measured cohort runner time | 45.24m |
+| Logical compact/raw inputs | 152,813 B / 1,259,434 B |
+| Complete downloaded artifact tree | 1,819,703 B across 17 artifacts |
+| Compressed artifact storage | 344,482 B |
+| Separate attribution | environment-compatible; CPU, allocation, and all waiting candidate/control launches matched in every cohort |
+
+The point detection and false-positive targets passed, but their confidence
+intervals remain wide. This one date supplies cross-allocation evidence, not
+cross-day evidence. More importantly, all four allocation-churn timing rows
+exceeded the 10% cross-allocation CV policy limit. The other timing pilots and
+unchanged control were stable across allocations, so the result is
+workload-specific rather than a blanket hosted-runner failure.
+
+**Partial-GO:** retain scheduled/manual advisory collection and the compact
+cohort format. **NO-GO for timing soft or hard gates:** allocation-churn timing
+is too noisy, only one UTC day is represented, and no dedicated runner exists.
+Allocation metrics remain deterministic evidence, but this calibration does
+not enable any gate.
+
 ### Actual-main hosted paired evidence
 
 Workflow run `29649248742` completed the three alternating pairs on one

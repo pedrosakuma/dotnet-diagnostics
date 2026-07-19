@@ -87,6 +87,45 @@ public static class PerfRegressionReportSerializer
             ?? throw new JsonException("Paired regression report JSON was empty.");
     }
 
+    public static string SerializeCalibrationCohort(PerfCalibrationCohortEvidence cohort)
+    {
+        ArgumentNullException.ThrowIfNull(cohort);
+        return JsonSerializer.Serialize(cohort, JsonOptions);
+    }
+
+    public static PerfCalibrationCohortEvidence DeserializeCalibrationCohort(string json)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+        return JsonSerializer.Deserialize<PerfCalibrationCohortEvidence>(json, JsonOptions)
+            ?? throw new JsonException("Calibration cohort JSON was empty.");
+    }
+
+    public static string SerializeCalibrationEvidence(PerfCalibrationEvidencePackage evidence)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+        return JsonSerializer.Serialize(evidence, JsonOptions);
+    }
+
+    public static PerfCalibrationEvidencePackage DeserializeCalibrationEvidence(string json)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+        return JsonSerializer.Deserialize<PerfCalibrationEvidencePackage>(json, JsonOptions)
+            ?? throw new JsonException("Calibration evidence JSON was empty.");
+    }
+
+    public static string SerializeCalibrationReport(PerfCalibrationReport report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        return JsonSerializer.Serialize(report, JsonOptions);
+    }
+
+    public static PerfCalibrationReport DeserializeCalibrationReport(string json)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+        return JsonSerializer.Deserialize<PerfCalibrationReport>(json, JsonOptions)
+            ?? throw new JsonException("Calibration report JSON was empty.");
+    }
+
     public static string BuildMarkdown(PerfRegressionReport report)
     {
         ArgumentNullException.ThrowIfNull(report);
@@ -296,6 +335,112 @@ public static class PerfRegressionReportSerializer
                 .Append(" | ").Append(EscapeCell(assessment.Rationale)).AppendLine(" |");
         }
         sb.AppendLine();
+
+        sb.AppendLine("## Evidence boundary");
+        sb.AppendLine();
+        foreach (var note in report.Notes)
+        {
+            sb.Append("- ").AppendLine(note);
+        }
+        return sb.ToString();
+    }
+
+    public static string BuildCalibrationMarkdown(PerfCalibrationReport report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+
+        var sb = new StringBuilder();
+        sb.AppendLine("# Paired CI performance calibration");
+        sb.AppendLine();
+        sb.Append("- Decision: **").Append(report.Decision).AppendLine("**");
+        sb.Append("- Policy: `").Append(report.Policy.Version).AppendLine("`");
+        sb.Append("- Recommendation: **advisory**").AppendLine();
+        sb.Append("- Eligible for gate: **no**").AppendLine();
+        sb.Append("- Hosted cohorts/days: **").Append(report.HostedCohortCount)
+            .Append(" / ").Append(report.HostedDistinctDayCount).AppendLine("**");
+        sb.Append("- Dedicated cohorts/days: **").Append(report.DedicatedCohortCount)
+            .Append(" / ").Append(report.DedicatedDistinctDayCount).AppendLine("**");
+        sb.Append("- Timing gate consideration supported: **")
+            .Append(report.EvidenceSupportsTimingGateConsideration ? "yes" : "no")
+            .AppendLine("**");
+        sb.AppendLine();
+
+        foreach (var group in report.Groups)
+        {
+            sb.Append("## Compatibility group `").Append(group.GroupId).AppendLine("`");
+            sb.AppendLine();
+            sb.Append("- Runner: `").Append(group.RunnerKind).Append("` / `")
+                .Append(EscapeInline(group.RunnerLabel)).AppendLine("`");
+            sb.Append("- SDK/runtime/image: `").Append(EscapeInline(group.SelectedSdkVersion))
+                .Append("` / `").Append(EscapeInline(group.Environment.RuntimeVersion))
+                .Append("` / `").Append(EscapeInline(group.Environment.RunnerImage ?? "unknown"))
+                .AppendLine("`");
+            sb.Append("- Main/PR: `").Append(EscapeInline(group.MainBuild.CommitSha ?? group.MainBuild.Id))
+                .Append("` / `").Append(EscapeInline(group.PullRequestBuild.CommitSha ?? group.PullRequestBuild.Id))
+                .AppendLine("`");
+            sb.Append("- Independent allocations / UTC days: **")
+                .Append(group.IndependentAllocationCount).Append(" / ").Append(group.DistinctDayCount)
+                .AppendLine("**");
+            sb.Append("- Runner minutes: **")
+                .Append(group.TotalRunnerMinutes.ToString("0.##", CultureInfo.InvariantCulture))
+                .AppendLine("**");
+            sb.Append("- Compact/raw inputs: **").Append(FormatBytes(group.CompactArtifactBytes))
+                .Append(" / ").Append(FormatBytes(group.RawArtifactBytes)).AppendLine("**");
+            sb.Append("- Calibration targets met: **").Append(group.MeetsCalibrationTargets ? "yes" : "no")
+                .AppendLine("**");
+            sb.AppendLine();
+
+            sb.AppendLine("### Detection and false positives");
+            sb.AppendLine();
+            sb.AppendLine("| ref | detection (95% CI) | false positives (95% CI) |");
+            sb.AppendLine("| --- | ---: | ---: |");
+            foreach (var detection in group.DetectionRates)
+            {
+                var falsePositive = group.FalsePositiveRates.Single(rate =>
+                    string.Equals(rate.Ref, detection.Ref, StringComparison.Ordinal));
+                sb.Append("| ").Append(detection.Ref)
+                    .Append(" | ").Append(detection.PositiveCount).Append('/').Append(detection.ObservationCount)
+                    .Append(" = ").Append(detection.RatePercent.ToString("0.##", CultureInfo.InvariantCulture))
+                    .Append("% (").Append(detection.Lower95Percent.ToString("0.##", CultureInfo.InvariantCulture))
+                    .Append('-').Append(detection.Upper95Percent.ToString("0.##", CultureInfo.InvariantCulture))
+                    .Append("%) | ").Append(falsePositive.PositiveCount).Append('/')
+                    .Append(falsePositive.ObservationCount).Append(" = ")
+                    .Append(falsePositive.RatePercent.ToString("0.##", CultureInfo.InvariantCulture))
+                    .Append("% (").Append(falsePositive.Lower95Percent.ToString("0.##", CultureInfo.InvariantCulture))
+                    .Append('-').Append(falsePositive.Upper95Percent.ToString("0.##", CultureInfo.InvariantCulture))
+                    .AppendLine("%) |");
+            }
+            sb.AppendLine();
+
+            sb.AppendLine("### Timing variance");
+            sb.AppendLine();
+            sb.AppendLine("| workload | variant | ref | within-cohort CV min/median/max | cross-allocation CV | cross-day CV |");
+            sb.AppendLine("| --- | --- | --- | ---: | ---: | ---: |");
+            foreach (var row in group.Variance.Where(static row => row.Metric == PerfMetricKind.Time))
+            {
+                sb.Append("| ").Append(EscapeCell(row.WorkloadId))
+                    .Append(" | ").Append(EscapeCell(row.Variant))
+                    .Append(" | ").Append(EscapeCell(row.Ref))
+                    .Append(" | ").Append(row.MinimumWithinCohortCoefficientOfVariationPercent.ToString("0.##", CultureInfo.InvariantCulture))
+                    .Append("% / ").Append(row.MedianWithinCohortCoefficientOfVariationPercent.ToString("0.##", CultureInfo.InvariantCulture))
+                    .Append("% / ").Append(row.MaximumWithinCohortCoefficientOfVariationPercent.ToString("0.##", CultureInfo.InvariantCulture))
+                    .Append("% | ").Append(row.CrossAllocationCoefficientOfVariationPercent.ToString("0.##", CultureInfo.InvariantCulture))
+                    .Append("% | ").Append(row.CrossDayCoefficientOfVariationPercent?.ToString("0.##", CultureInfo.InvariantCulture) ?? "missing")
+                    .AppendLine(row.CrossDayCoefficientOfVariationPercent.HasValue ? "% |" : " |");
+            }
+            sb.AppendLine();
+
+            if (group.TargetFailures.Count > 0)
+            {
+                sb.AppendLine("### Target gaps");
+                sb.AppendLine();
+                foreach (var failure in group.TargetFailures)
+                {
+                    sb.Append("- ").AppendLine(failure);
+                }
+                sb.AppendLine();
+            }
+        }
 
         sb.AppendLine("## Evidence boundary");
         sb.AppendLine();
