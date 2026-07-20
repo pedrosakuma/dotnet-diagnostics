@@ -922,6 +922,68 @@ public sealed class SessionReplTests
         stderr.Should().Contain("Usage: target <pid>");
     }
 
+    // --- Launched-session pid lock (issue #659) ---------------------------------------------------
+
+    [Fact]
+    public async Task Target_NoArgs_InLaunchedSession_StillReportsBinding()
+    {
+        var (services, _) = BuildServices();
+        var (exit, stdout, stderr) = await RunReplAsync("target\nexit\n", services, initialTargetPid: 4242);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("Target bound to pid 4242");
+        stderr.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("target 1234")]
+    [InlineData("target --pid 1234")]
+    [InlineData("target clear")]
+    [InlineData("target some-other-process")]
+    public async Task Target_AnyRetarget_InLaunchedSession_IsRejected(string command)
+    {
+        var (services, _) = BuildServices();
+        var (exit, _, stderr) = await RunReplAsync(command + "\ntarget\nexit\n", services, initialTargetPid: 4242);
+
+        exit.Should().Be(0);
+        stderr.Should().Contain("launched pid 4242 itself");
+        stderr.Should().Contain("fixed for the session's lifetime");
+    }
+
+    [Fact]
+    public async Task Target_Retarget_InLaunchedSession_DoesNotMutateBinding()
+    {
+        var (services, _) = BuildServices();
+        var (exit, stdout, _) = await RunReplAsync("target 1234\ntarget\nexit\n", services, initialTargetPid: 4242);
+
+        exit.Should().Be(0);
+        // The rejected retarget must not have taken effect — the status query still shows the launched pid.
+        stdout.Should().Contain("Target bound to pid 4242");
+        stdout.Should().NotContain("Target bound to pid 1234");
+    }
+
+    [Fact]
+    public async Task Command_ExplicitDifferentPid_InLaunchedSession_IsRejected()
+    {
+        var (services, _) = BuildServices();
+        var (exit, _, stderr) = await RunReplAsync("capabilities --pid 9999\nexit\n", services, initialTargetPid: 4242);
+
+        exit.Should().Be(0);
+        stderr.Should().Contain("launched pid 4242 itself");
+        stderr.Should().Contain("pid 9999 separately");
+    }
+
+    [Fact]
+    public async Task Command_ExplicitSamePid_InLaunchedSession_IsAllowed()
+    {
+        var (services, resolver) = BuildCapabilityServices();
+        var (exit, _, stderr) = await RunReplAsync("capabilities --pid 4242\nexit\n", services, initialTargetPid: 4242);
+
+        exit.Should().Be(0);
+        stderr.Should().NotContain("fixed for the session's lifetime");
+        resolver.LastRequestedPid.Should().Be(4242);
+    }
+
     [Fact]
     public async Task Use_IsAnAliasForTarget()
     {
@@ -1312,11 +1374,17 @@ public sealed class SessionReplTests
         string input, CancellationToken ct = default)
     {
         var (services, _) = BuildServices();
-        return RunReplAsync(input, services, ct);
+        return RunReplAsync(input, services, initialTargetPid: null, ct);
     }
 
-    private static async Task<(int Exit, string Stdout, string Stderr)> RunReplAsync(
+    private static Task<(int Exit, string Stdout, string Stderr)> RunReplAsync(
         string input, IServiceProvider services, CancellationToken ct = default)
+        => RunReplAsync(input, services, initialTargetPid: null, ct);
+
+    // Mirrors CliHost.RunAsync's `session --launch` path: an `initialTargetPid` simulates a session
+    // that spawned its own target, which flips SessionRepl._launchedTarget on (issue #659 lock tests).
+    private static async Task<(int Exit, string Stdout, string Stderr)> RunReplAsync(
+        string input, IServiceProvider services, int? initialTargetPid, CancellationToken ct = default)
     {
         var defaultRoot = Path.Combine(Path.GetTempPath(), "session-repl-test-" + Guid.NewGuid().ToString("N"));
         var provider = new MutableArtifactRootProvider(defaultRoot);
@@ -1325,7 +1393,7 @@ public sealed class SessionReplTests
         var stderr = new StringWriter(new StringBuilder());
         try
         {
-            var exit = await SessionRepl.RunAsync(services, provider, stdin, stdout, stderr, null, ct);
+            var exit = await SessionRepl.RunAsync(services, provider, stdin, stdout, stderr, initialTargetPid, ct);
             return (exit, stdout.ToString(), stderr.ToString());
         }
         finally

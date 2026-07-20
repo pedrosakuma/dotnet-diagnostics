@@ -65,6 +65,21 @@ internal static class CliCommandExecution
                 executionOptions.Context == CliExecutionContext.OneShot ? 2 : 0);
         }
 
+        // Issue #659: a `session --launch -- <app>` session locks the target to the pid it spawned —
+        // the ptrace-parent relationship and process cleanup only hold for that one pid. Reject an
+        // explicitly-passed --pid/-p (numeric or resolved-by-name) that doesn't match it; the same pid
+        // passed explicitly is a harmless no-op and still executes normally.
+        if (executionOptions.LaunchedTargetPid is { } lockedPid
+            && !prepared.InheritedTarget
+            && options.Pid is { } explicitPid
+            && explicitPid != lockedPid)
+        {
+            await stderr.WriteLineAsync(string.Create(
+                CultureInfo.InvariantCulture,
+                $"This session launched pid {lockedPid} itself; the target is fixed for the session's lifetime. Exit the session ('exit') to investigate pid {explicitPid} separately.")).ConfigureAwait(false);
+            return new CliExecutionOutcome(prepared.Options, Result: null, ExitCode: 0);
+        }
+
         if (executionOptions.LaunchedTargetPid is { } launchedTargetPid
             && options.Pid is { } resolvedPid
             && resolvedPid == launchedTargetPid)
