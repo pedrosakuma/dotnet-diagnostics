@@ -477,8 +477,12 @@ diag(pid 1234)> exit
 
 Starting with `session --launch -- dotnet App.dll` spawns the target as a child, binds its pid for the
 whole session (so live attach works under `ptrace_scope=1` with no privilege), and kills it on exit.
-`--launch` is a startup-only flag; inside the REPL the target is already live — use `target <pid>` to
-switch.
+`--launch` is a startup-only flag — it cannot be repeated per-command inside the REPL. The bound pid is
+also **fixed for the session's lifetime** (issue #659): since the zero-privilege attach and the child's
+lifecycle only hold for the pid the session itself spawned, `target <other-pid>`/`target clear` and any
+per-command `--pid <other-pid>` are rejected with an explanatory error; exit the session to investigate
+a different process. A no-argument `target` (status query) and a redundant `--pid <the-launched-pid>`
+still work.
 
 ### Target binding
 
@@ -496,7 +500,8 @@ Live-target commands — `capabilities`, `collect`, `dump`, `inspect-heap --sour
 `get-bytes --kind module` — inherit the bound pid when `--pid` is omitted, and print a
 `· using bound target pid N` note. Offline commands (`inspect-heap --source dump`, `get-bytes --kind dump`)
 and pid-less commands (`processes`, `query`) never inherit it. **An explicit per-command `--pid` always
-overrides the binding.**
+overrides the binding** — except in a `session --launch`-started session, where the pid is locked for
+the session's lifetime and any different `--pid`/`target` is rejected (see above).
 
 ### Handles and `query`
 

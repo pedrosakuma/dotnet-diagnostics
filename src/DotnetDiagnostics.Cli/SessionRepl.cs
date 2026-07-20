@@ -116,7 +116,7 @@ internal sealed class SessionRepl
             {
                 await stdout.WriteLineAsync(string.Create(
                     CultureInfo.InvariantCulture,
-                    $"Launched target bound to pid {launchedPid} (this process is its ptrace parent, so live attach works without privilege). 'target clear' to unbind.")).ConfigureAwait(false);
+                    $"Launched target bound to pid {launchedPid} (this process is its ptrace parent, so live attach works without privilege). The target is fixed for the session's lifetime — 'exit' to investigate a different process.")).ConfigureAwait(false);
             }
 
             while (!_sessionCts.IsCancellationRequested)
@@ -267,6 +267,13 @@ internal sealed class SessionRepl
     /// default pid for live-target commands; <c>target clear|none|off|unset</c> unbinds it. Binding is
     /// lazy — the pid is not validated here; the next command surfaces the authoritative attach failure.
     /// </summary>
+    /// <remarks>
+    /// <b>Launched sessions (issue #659).</b> When the session itself spawned the target
+    /// (<c>session --launch -- &lt;app&gt;</c>, <see cref="_launchedTarget"/>), the bound pid is fixed for
+    /// the session's lifetime: the ptrace-parent relationship and process cleanup only hold for that one
+    /// pid, so any argument here that would change it (a different pid, a name, or <c>clear</c>) is
+    /// rejected. A no-argument <c>target</c> still works as a read-only status query.
+    /// </remarks>
     private async Task HandleTargetAsync(IServiceProvider services, List<string> tokens, TextWriter stdout, TextWriter stderr)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -278,6 +285,14 @@ internal sealed class SessionRepl
         if (pidFlagForm)
         {
             args = args.Skip(1).ToList();
+        }
+
+        if (_launchedTarget && (pidFlagForm || args.Count > 0))
+        {
+            await stderr.WriteLineAsync(string.Create(
+                CultureInfo.InvariantCulture,
+                $"This session launched pid {_targetPid} itself; the target is fixed for the session's lifetime and cannot be changed. Exit the session ('exit') to investigate a different process.")).ConfigureAwait(false);
+            return;
         }
 
         if (!pidFlagForm && args.Count == 0)
@@ -624,7 +639,9 @@ internal sealed class SessionRepl
           help                            Show this list.
           exit | quit                     Leave the session (Ctrl-D / EOF also exits).
         Event catalog query filters: --provider-filter <text>, --root-method-filter <event-name>.
-        A bound target (shown as 'diag(pid <id>)>') is overridden by an explicit --pid on any command.
+        A bound target (shown as 'diag(pid <id>)>') is overridden by an explicit --pid on any command
+        — except in a session started with --launch, where the target is fixed for the session's
+        lifetime and 'target'/--pid cannot change it (exit to investigate a different process).
         Ctrl-C cancels the running command and keeps the session alive; press it again to force-quit.
         On a real terminal: Up/Down-arrow recall history (not persisted to disk), Tab/Ctrl+Space completes.
         """;
