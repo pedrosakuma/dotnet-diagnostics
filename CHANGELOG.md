@@ -2,7 +2,27 @@
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-07-20
+
+Highlights: **`dotnet-diagnostics-cli session` REPL ergonomics + a session-integrity fix.**
+The stateful `session` REPL gains command history (Up/Down recall) and IntelliSense-style
+multi-candidate tab-completion, bringing it to functional parity with one-shot commands for
+everyday interactive use. Separately, `session --launch` now locks its target pid for the
+whole session lifetime, closing a gap where an operator could accidentally retarget away
+from the process the session itself launched (and owns the lifecycle of).
+
+### Added
+- **`session` REPL command history and tab-completion** (#657, #658) — the CLI's
+  `session` REPL now keeps an in-process command history (Up/Down arrow recall) and
+  offers IntelliSense-style multi-candidate tab-completion for command names, `--pid`,
+  and other option values, matching one-shot command parity.
+
 ### Changed
+- **`session --launch` locks its target for the session lifetime** (#659, #660) — once a
+  session launches its own target process, `target <pid>`/`target clear` and any explicit
+  `--pid`/`-p` override that names a different process are rejected for the rest of that
+  session; the launched process's pid is fixed, preventing accidental retargeting away from
+  the process the session itself started (and is responsible for cleaning up on exit).
 - **Evidence-backed triage (#622)** — `inspect_process(view="triage")`, CLI `inspect --view
   triage`, and sweep triage now separate threshold-backed `observedSignals` from bounded
   `hypotheses` with confidence, supporting/contradicting evidence, and neutral next steps.
