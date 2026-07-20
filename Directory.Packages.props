@@ -39,6 +39,10 @@
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.5" />
     <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
   </ItemGroup>
+  <ItemGroup Label="Cli">
+    <!-- Issue #657: session REPL command history (up/down arrow) and tab-completion. -->
+    <PackageVersion Include="PrettyPrompt" Version="6.0.4" />
+  </ItemGroup>
   <ItemGroup Label="Kubernetes">
     <PackageVersion Include="KubernetesClient" Version="19.0.2" />
   </ItemGroup>

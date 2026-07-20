@@ -93,6 +93,16 @@ internal sealed class SessionRepl
             Console.CancelKeyPress += handler;
         }
 
+        // Issue #657: command history (up/down arrow) and tab-completion via PrettyPrompt, but only
+        // when stdin/stdout are a genuine, non-redirected terminal — PrettyPrompt throws if it can't
+        // read raw keys from a redirected stdin, which is exactly the case for tests, CI, and piped
+        // input, all of which keep using the plain ReadLineAsync fallback below unchanged.
+        var useInteractivePrompt = ownsConsole && !Console.IsOutputRedirected && !Console.IsInputRedirected;
+        var replPromptConfig = useInteractivePrompt ? new PrettyPrompt.PromptConfiguration() : null;
+        await using var replPrompt = useInteractivePrompt
+            ? new PrettyPrompt.Prompt(callbacks: new SessionReplPromptCallbacks(() => _targetPid), configuration: replPromptConfig)
+            : null;
+
         var evictor = store is not null ? new DeadProcessHandleEvictor(store) : null;
         var sweep = evictor is not null
             ? Task.Run(() => evictor.RunAsync(SweepInterval, cancellationToken: _sessionCts.Token))
@@ -111,17 +121,28 @@ internal sealed class SessionRepl
 
             while (!_sessionCts.IsCancellationRequested)
             {
-                var prompt = _targetPid is { } targetPid
+                var promptText = _targetPid is { } targetPid
                     ? string.Create(CultureInfo.InvariantCulture, $"diag(pid {targetPid})> ")
                     : "diag> ";
-                await stdout.WriteAsync(prompt).ConfigureAwait(false);
-                await stdout.FlushAsync().ConfigureAwait(false);
 
-                var line = await ReadLineAsync(stdin, _sessionCts.Token).ConfigureAwait(false);
+                string? line;
+                if (replPrompt is not null)
+                {
+                    replPromptConfig!.Prompt = promptText;
+                    line = await ReadReplPromptLineAsync(replPrompt).ConfigureAwait(false);
+                }
+                else
+                {
+                    await stdout.WriteAsync(promptText).ConfigureAwait(false);
+                    await stdout.FlushAsync().ConfigureAwait(false);
+                    line = await ReadLineAsync(stdin, _sessionCts.Token).ConfigureAwait(false);
+                }
+
                 if (line is null)
                 {
                     break; // EOF, or idle Ctrl-C (which also cancelled _sessionCts)
                 }
+
 
                 var trimmed = line.Trim();
                 if (trimmed.Length == 0)
@@ -494,6 +515,47 @@ internal sealed class SessionRepl
     }
 
     /// <summary>
+    /// Reads a line via a real interactive <see cref="PrettyPrompt.Prompt"/> (issue #657) — history
+    /// (up/down arrow) and tab-completion instead of the plain <see cref="ReadLineAsync"/> path.
+    /// Abandons the read on <see cref="_sessionCts"/> cancellation the same way <see cref="ReadLineAsync"/>
+    /// does (see its remarks). <c>!response.IsSuccess</c> means PrettyPrompt itself handled a Ctrl-C
+    /// (its raw mode disables OS-level SIGINT delivery while it is reading, so
+    /// <see cref="OnConsoleCancel"/> never fires here) — cancel the session ourselves so the caller's
+    /// exit-code calculation still reports 130, matching the plain reader path's idle-Ctrl-C contract.
+    /// </summary>
+    private async Task<string?> ReadReplPromptLineAsync(PrettyPrompt.Prompt prompt)
+    {
+        var readTask = prompt.ReadLineAsync();
+        var cancelSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using (_sessionCts.Token.Register(static s => ((TaskCompletionSource)s!).TrySetResult(), cancelSignal).ConfigureAwait(false))
+        {
+            var completed = await Task.WhenAny(readTask, cancelSignal.Task).ConfigureAwait(false);
+            if (completed != readTask)
+            {
+                return null; // session cancelled while idle — the abandoned read ends with the process
+            }
+        }
+
+        PrettyPrompt.PromptResult response;
+        try
+        {
+            response = await readTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+
+        if (!response.IsSuccess)
+        {
+            _sessionCts.Cancel();
+            return null;
+        }
+
+        return response.Text;
+    }
+
+    /// <summary>
     /// Splits a REPL line into argv-style tokens, honouring double quotes so paths with spaces work
     /// (e.g. <c>dump --out "C:\my dumps"</c>). Deliberately simple — no escape sequences.
     /// </summary>
@@ -564,6 +626,7 @@ internal sealed class SessionRepl
         Event catalog query filters: --provider-filter <text>, --root-method-filter <event-name>.
         A bound target (shown as 'diag(pid <id>)>') is overridden by an explicit --pid on any command.
         Ctrl-C cancels the running command and keeps the session alive; press it again to force-quit.
+        On a real terminal: Up/Down-arrow recall history (not persisted to disk), Tab/Ctrl+Space completes.
         """;
 
     internal static string HelpText => SessionHelp;
