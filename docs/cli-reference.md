@@ -446,6 +446,18 @@ to spawn the target as a child and bind it for the whole session (zero-privilege
 handle published by `collect` or `inspect-heap` stays alive (until it expires or the
 target exits), so you can drill in repeatedly with `query` and never pay the collection cost twice.
 
+When stdin/stdout are a genuine interactive terminal (not redirected/piped — as in CI or when scripting),
+the REPL line editor adds (issue #657):
+
+- **Command history** — Up/Down-arrow (or Ctrl-P/Ctrl-N) recall previous commands from this session. History
+  is in-memory only and not persisted to disk (session commands routinely carry pids and file paths).
+- **Tab-completion** — Tab (or Ctrl+Space) offers command names, flags, and known enum values (e.g. `--kind`,
+  `--source`, `--view`) for the current word, narrowing as you type. A bound `target` pid is offered for
+  `--pid`/`-p`.
+
+Redirected/piped input (e.g. `echo 'processes' | dotnet-diagnostics-cli session`, or the test harness)
+transparently falls back to plain line reading — no history or completion, same as before.
+
 ```text
 $ dotnet-diagnostics-cli session
 dotnet-diagnostics session — stateful diagnostics REPL. ...

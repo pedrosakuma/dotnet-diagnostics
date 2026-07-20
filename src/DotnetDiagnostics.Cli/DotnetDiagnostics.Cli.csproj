@@ -37,6 +37,11 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
+    <!-- Issue #657: session REPL command history (up/down arrow) and tab-completion. Only
+         engaged when both stdin and stdout are a real interactive terminal (see SessionRepl's
+         ownsInteractiveConsole gate) — the plain TextReader.ReadLineAsync path (used by tests
+         and redirected/CI stdio) is unaffected. -->
+    <PackageReference Include="PrettyPrompt" />
   </ItemGroup>
 
   <ItemGroup>
