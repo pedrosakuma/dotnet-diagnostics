@@ -2,7 +2,31 @@
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-07-21
+
+Highlights: **Unified ephemeral-process capture (issue #665).** Diagnosing a short-lived process
+(test hosts, CLI batch jobs, anything that exits within seconds) no longer requires manual PID
+disambiguation or risks a `ProcessNotFound` race between sequential collection calls — three
+complementary capabilities now cover the whole launch → discover → collect → collect-again
+workflow, and were live-smoke-tested against a real `dotnet test` run (not just the automated
+suite) to confirm the original field-reported friction is gone end-to-end.
+
 ### Added
+- **Launch-and-suspend-then-arm for `collect_events(kind="startup")`** (#665 Part A) — an MCP
+  client can ask the server to launch a target command (stdio transport only, gated by
+  `Diagnostics:AllowProcessLaunch`), hold it suspended on a reverse-connect diagnostic port until
+  EventPipe is armed, then resume — covering the entire lifetime of even a very short-lived
+  process, with zero discovery race.
+- **`commandLineContains` filter on `inspect_process(view="list")`** (#665 Part B) — a
+  case-insensitive substring filter against each process's command line, letting a caller
+  disambiguate among several candidates spawned by a wrapper it doesn't control (e.g. several
+  `testhost.exe` under `dotnet test`) without inspecting the full unfiltered list. Also added as
+  `--command-line-contains` on the standalone CLI's `processes` command for the same workflow
+  outside the MCP server.
+- **`collect_batch` tool** (#665 Part C) — runs up to 4 `collect_sample`/`collect_events` kinds
+  concurrently against the same resolved process, for the same shared duration window, in a
+  single call, eliminating the process-exit race of issuing those kinds as separate sequential
+  calls against a short-lived process.
 - **CPU sample per-phase timing breakdown** (#663) — `collect_sample(kind="cpu")` / CLI
   `collect --kind cpu` now return a `timings` object that breaks elapsed wall-clock time into
   capture, symbolication, SourceLink/source-line resolution, aggregation, and total duration
