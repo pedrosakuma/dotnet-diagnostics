@@ -14,7 +14,10 @@ internal sealed class CallTreeBuilder
 {
     private readonly Node _root = new(new SampledFrame(string.Empty, "<root>"));
 
-    public void AddStack(List<(string Key, string Module, string Display)> rootToLeaf, string leafKey)
+    public void AddStack(
+        List<(string Key, string Module, string Display)> rootToLeaf,
+        string leafKey,
+        SelfSampleBreakdown? leafSelfSamples = null)
     {
         var current = _root;
         current.Inclusive++;
@@ -30,6 +33,11 @@ internal sealed class CallTreeBuilder
             if (key == leafKey && i == rootToLeaf.Count - 1)
             {
                 child.Exclusive++;
+                if (leafSelfSamples is not null)
+                {
+                    child.RunningSelf += leafSelfSamples.RunningSamples;
+                    child.WaitingSelf += leafSelfSamples.WaitingSamples;
+                }
             }
             current = child;
         }
@@ -43,7 +51,12 @@ internal sealed class CallTreeBuilder
             .OrderByDescending(c => c.Inclusive)
             .Select(Materialize)
             .ToList();
-        return new CallTreeNode(n.Frame, n.Inclusive, n.Exclusive, children);
+        return new CallTreeNode(n.Frame, n.Inclusive, n.Exclusive, children)
+        {
+            SelfSamples = n.RunningSelf > 0 || n.WaitingSelf > 0
+                ? new SelfSampleBreakdown(n.RunningSelf, n.WaitingSelf)
+                : null,
+        };
     }
 
     private sealed class Node
@@ -52,6 +65,8 @@ internal sealed class CallTreeBuilder
         public SampledFrame Frame { get; }
         public long Inclusive;
         public long Exclusive;
+        public long RunningSelf;
+        public long WaitingSelf;
         public Dictionary<string, Node> Children { get; } = new(StringComparer.Ordinal);
     }
 }

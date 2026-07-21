@@ -8,6 +8,12 @@
   capture, symbolication, SourceLink/source-line resolution, aggregation, and total duration
   buckets (plus session start/drain and optional closed-generic enrichment timings).
 
+### Changed
+- **CoreCLR CPU samples now split running vs waiting self-time** (#664) — `collect_sample(kind="cpu")`,
+  CPU `query_snapshot` drilldowns, and CLI `collect --kind cpu` / `session query` now expose
+  `selfSamples.runningSamples` vs `selfSamples.waitingSamples` so EventPipe SampleProfiler
+  captures no longer imply every hot self-time frame was truly on-core.
+
 ### Fixed
 - **Self-contained drilldown handles survive producer exit** (#662) — `collect_sample` CPU / allocation / off-CPU / native-alloc artifacts, the affected `collect_events` snapshots, and thread snapshots now expire by TTL instead of being evicted immediately when the target process exits; live-only thread views (`resolve-address`, `frame-vars`) now return a structured `ProcessExited` error instead of failing the whole handle.
 

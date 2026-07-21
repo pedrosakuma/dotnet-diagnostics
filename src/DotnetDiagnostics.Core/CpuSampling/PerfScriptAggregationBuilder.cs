@@ -93,7 +93,7 @@ internal sealed class PerfScriptAggregationBuilder
             }
         }
 
-        _callTree.AddStack(rootToLeaf, leafKey);
+        _callTree.AddStack(rootToLeaf, leafKey, new SelfSampleBreakdown(1, 0));
     }
 
     public PerfScriptAggregationResult Build(int topN, bool truncated = false)
@@ -112,7 +112,10 @@ internal sealed class PerfScriptAggregationBuilder
                     Frame: new SampledFrame(Module: module, Method: display),
                     InclusiveSamples: kv.Value,
                     ExclusiveSamples: _exclusive.GetValueOrDefault(kv.Key),
-                    Identity: identity);
+                    Identity: identity)
+                {
+                    SelfSamples = new SelfSampleBreakdown(_exclusive.GetValueOrDefault(kv.Key), 0),
+                };
             })
             .ToList();
 

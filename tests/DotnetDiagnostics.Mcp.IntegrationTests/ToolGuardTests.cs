@@ -156,7 +156,10 @@ public sealed class ToolGuardTests
             new SampledFrame("MyApp.dll", "MyApp.Services.OrderService.Process"),
             10,
             4,
-            Array.Empty<CallTreeNode>());
+            Array.Empty<CallTreeNode>())
+        {
+            SelfSamples = new SelfSampleBreakdown(3, 1),
+        };
         var artifact = new CpuSampleTraceArtifact(
             123,
             DateTimeOffset.UtcNow,
@@ -173,7 +176,10 @@ public sealed class ToolGuardTests
                     TypeFullName: "MyApp.Services.OrderService",
                     MethodName: "Process",
                     GenericArity: 0),
-            });
+            })
+        {
+            SelfSamples = new SelfSampleBreakdown(3, 1),
+        };
         var handles = new MemoryDiagnosticHandleStore();
         var handle = handles.Register(artifact.ProcessId, "cpu-sample", artifact, TimeSpan.FromMinutes(10));
 
@@ -185,6 +191,8 @@ public sealed class ToolGuardTests
         view!.Root.Children.Single().Identity.Should().NotBeNull();
         view.Root.Children.Single().Identity!.MetadataToken.Should().Be(0x06000456);
         view.Root.Children.Single().Identity.ModuleVersionId.Should().Be(Guid.Parse("44444444-4444-4444-4444-444444444444"));
+        view.Root.Children.Single().SelfSamples.Should().Be(new SelfSampleBreakdown(3, 1));
+        view.SelfSamples.Should().Be(new SelfSampleBreakdown(3, 1));
     }
 
     [Fact]

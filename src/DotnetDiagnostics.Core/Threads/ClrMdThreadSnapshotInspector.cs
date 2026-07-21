@@ -350,25 +350,9 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
     private static (bool IsLikelyBlocked, string? Reason) ClassifyTopFrame(ManagedStackFrame? top)
     {
         if (top is null) return (false, null);
-        var name = top.DisplayName ?? string.Empty;
-        // Cheap heuristics — same set used by perf engineers eyeballing stacks.
-        if (Contains(name, "Monitor.Wait")) return (true, "Monitor.Wait");
-        if (Contains(name, "Monitor.ReliableEnter") || Contains(name, "Monitor.Enter")) return (true, "Monitor.Enter (contended)");
-        if (Contains(name, "Thread.Sleep")) return (true, "Thread.Sleep");
-        if (Contains(name, "Thread.Join")) return (true, "Thread.Join");
-        if (Contains(name, "ManualResetEvent") || Contains(name, "AutoResetEvent") || Contains(name, "ManualResetEventSlim")) return (true, "ResetEvent.Wait");
-        if (Contains(name, "Semaphore") && Contains(name, "Wait")) return (true, "Semaphore.Wait");
-        if (Contains(name, "WaitHandle.Wait")) return (true, "WaitHandle.Wait");
-        if (Contains(name, "Task.Wait") || Contains(name, "Task.WaitAll") || Contains(name, "Task.WaitAny")) return (true, "Task.Wait (blocking)");
-        if (Contains(name, "SpinWait") || Contains(name, "SpinLock")) return (true, "SpinWait/SpinLock");
-        if (Contains(name, "Park") || Contains(name, "WaitOne")) return (true, "WaitOne/Park");
-        if (Contains(name, "Socket") && (Contains(name, "Receive") || Contains(name, "Accept") || Contains(name, "Poll"))) return (true, "Socket I/O");
-        if (Contains(name, "Read") && Contains(name, "Stream")) return (true, "Stream.Read");
-        return (false, null);
+        var match = WellKnownWaitFrameClassifier.Classify(top.DisplayName);
+        return match is null ? (false, null) : (true, match.Reason);
     }
-
-    private static bool Contains(string haystack, string needle) =>
-        haystack.Contains(needle, StringComparison.Ordinal);
 
     private static bool HasFlag(ClrThreadState state, string flagName) =>
         state.ToString().Contains(flagName, StringComparison.OrdinalIgnoreCase);

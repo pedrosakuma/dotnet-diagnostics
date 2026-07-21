@@ -564,6 +564,9 @@ public static class SamplerUseCases
             ?? (sample.TopHotspots.Count > 0
                 ? sample.TopHotspots.Aggregate((a, b) => b.ExclusiveSamples > a.ExclusiveSamples ? b : a)
                 : null);
+        var overallSelfSplit = sample.SelfSamples is { } overall
+            ? $" Self split: {overall.RunningSamples} running / {overall.WaitingSamples} waiting."
+            : string.Empty;
         var inlineSample = sample;
         var droppedHotspots = 0;
         if (depth == SamplingDepth.Summary && sample.TopHotspots.Count > 3)
@@ -576,14 +579,21 @@ public static class SamplerUseCases
         if (topSelfTime is not null && topSelfTime.ExclusiveSamples > 0)
         {
             var selfPercent = sample.TotalSamples > 0 ? topSelfTime.ExclusiveSamples * 100.0 / sample.TotalSamples : 0;
+            var splitSuffix = topSelfTime.SelfSamples is { } self
+                ? $" Self split: {self.RunningSamples} running / {self.WaitingSamples} waiting."
+                : string.Empty;
             leadPhrase =
-                $"Hottest self-time method: {topSelfTime.Frame.Method} ({topSelfTime.ExclusiveSamples} exclusive, {selfPercent:0.#}% of samples). " +
+                $"Hottest self-time method: {topSelfTime.Frame.Method} ({topSelfTime.ExclusiveSamples} exclusive, {selfPercent:0.#}% of samples).{splitSuffix} " +
                 $"Rank self-time with query_snapshot(handle=\"{handleId}\", view=\"top-methods\") or walk the call path with view=\"call-tree\".";
         }
         else if (top is not null)
         {
+            var splitSuffix = top.SelfSamples is { } self
+                ? $" Self split: {self.RunningSamples} running / {self.WaitingSamples} waiting."
+                : string.Empty;
             leadPhrase =
-                $"Top inclusive method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive) — " +
+                $"Top inclusive method: {top.Frame.Method} ({top.InclusiveSamples} inclusive / {top.ExclusiveSamples} exclusive).{splitSuffix} " +
+                "That top entry may reflect a wait/blocking primitive on CoreCLR EventPipe captures — " +
                 $"no dominant self-time frame (the workload looks blocked/wait-bound or symbols are unresolved). " +
                 $"Walk the call path with query_snapshot(handle=\"{handleId}\", view=\"call-tree\").";
         }
@@ -594,8 +604,8 @@ public static class SamplerUseCases
 
         var summary = top is not null
             ? (depth == SamplingDepth.Summary && droppedHotspots > 0
-                ? $"Captured {sample.TotalSamples} samples over {durationSeconds}s — showing top {inlineSample.TopHotspots.Count} of {sample.TopHotspots.Count} hotspot(s) (dropped {droppedHotspots}; handle has all). {leadPhrase}"
-                : $"Captured {sample.TotalSamples} samples over {durationSeconds}s. {leadPhrase}")
+                ? $"Captured {sample.TotalSamples} samples over {durationSeconds}s — showing top {inlineSample.TopHotspots.Count} of {sample.TopHotspots.Count} hotspot(s) (dropped {droppedHotspots}; handle has all).{overallSelfSplit} {leadPhrase}"
+                : $"Captured {sample.TotalSamples} samples over {durationSeconds}s.{overallSelfSplit} {leadPhrase}")
             : $"Captured {sample.TotalSamples} samples but no method aggregation surfaced — increase durationSeconds or verify the target is under load.";
         if (!string.IsNullOrEmpty(tracePath))
         {

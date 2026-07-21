@@ -56,6 +56,95 @@ public sealed class CpuSampleSignalsTests
         CpuSampleSignals.Detect(sample, "h").Should().BeEmpty();
     }
 
+    [Fact]
+    public void Inline_IgnoresWaitDominatedSelfTime()
+    {
+        var sample = new CpuSample(
+            ProcessId: 4242,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(10),
+            TotalSamples: 100,
+            TopHotspots: new[] { new Hotspot(new SampledFrame("System.Private.CoreLib.dll", "System.Threading.LowLevelLifoSemaphore.WaitForSignal"), 100, 100)
+            {
+                SelfSamples = new SelfSampleBreakdown(0, 100),
+            } })
+        {
+            SelfSamples = new SelfSampleBreakdown(0, 100),
+            TopSelfTime = new Hotspot(new SampledFrame("System.Private.CoreLib.dll", "System.Threading.LowLevelLifoSemaphore.WaitForSignal"), 100, 100)
+            {
+                SelfSamples = new SelfSampleBreakdown(0, 100),
+            },
+        };
+
+        CpuSampleSignals.Detect(sample, "h").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Inline_PrefersRunningLeader_OverWaitDominatedTopSelfTime()
+    {
+        var sample = new CpuSample(
+            ProcessId: 4242,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(10),
+            TotalSamples: 100,
+            TopHotspots:
+            [
+                new Hotspot(new SampledFrame("System.Private.CoreLib.dll", "System.Threading.LowLevelLifoSemaphore.WaitForSignal"), 100, 100)
+                {
+                    SelfSamples = new SelfSampleBreakdown(0, 100),
+                },
+                new Hotspot(new SampledFrame("MyApp.dll", "MyApp.HotLoop()"), 55, 55)
+                {
+                    SelfSamples = new SelfSampleBreakdown(55, 0),
+                },
+            ])
+        {
+            SelfSamples = new SelfSampleBreakdown(55, 100),
+            TopSelfTime = new Hotspot(new SampledFrame("System.Private.CoreLib.dll", "System.Threading.LowLevelLifoSemaphore.WaitForSignal"), 100, 100)
+            {
+                SelfSamples = new SelfSampleBreakdown(0, 100),
+            },
+        };
+
+        var concentration = CpuSampleSignals.Detect(sample, "h")
+            .Should().ContainSingle(s => s.Signal == "cpu.self-time.concentration").Subject;
+        concentration.Buckets[0].Key.Should().Be("MyApp.HotLoop()");
+        concentration.Buckets[0].Magnitude.Should().Be(100);
+    }
+
+    [Fact]
+    public void Inline_UsesTopRunningSelfTime_WhenTopHotspotsMissIt()
+    {
+        var sample = new CpuSample(
+            ProcessId: 4242,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(10),
+            TotalSamples: 100,
+            TopHotspots:
+            [
+                new Hotspot(new SampledFrame("System.Private.CoreLib.dll", "System.Threading.LowLevelLifoSemaphore.WaitForSignal"), 100, 100)
+                {
+                    SelfSamples = new SelfSampleBreakdown(0, 100),
+                },
+            ])
+        {
+            SelfSamples = new SelfSampleBreakdown(40, 100),
+            TopSelfTime = new Hotspot(new SampledFrame("System.Private.CoreLib.dll", "System.Threading.LowLevelLifoSemaphore.WaitForSignal"), 100, 100)
+            {
+                SelfSamples = new SelfSampleBreakdown(0, 100),
+            },
+            TopRunningSelfTime = new Hotspot(new SampledFrame("MyApp.dll", "MyApp.RealCpuHotspot()"), 40, 40)
+            {
+                SelfSamples = new SelfSampleBreakdown(40, 0),
+            },
+        };
+
+        var concentration = CpuSampleSignals.Detect(sample, "h")
+            .Should().ContainSingle(s => s.Signal == "cpu.self-time.concentration").Subject;
+        concentration.Buckets[0].Key.Should().Be("MyApp.RealCpuHotspot()");
+        concentration.Buckets[0].Magnitude.Should().Be(100);
+    }
+
     // ---- Resource path (from the stored CpuSampleTraceArtifact, full tree) ----------------------
 
     [Fact]
@@ -84,6 +173,26 @@ public sealed class CpuSampleSignalsTests
         CpuSampleSignals.Detect(artifact, "h").Should().BeEmpty();
     }
 
+    [Fact]
+    public void Artifact_IgnoresWaitDominatedNamespaces()
+    {
+        var waitingLeaf = new CallTreeNode(
+            new SampledFrame("System.Private.CoreLib.dll", "System.Threading.LowLevelLifoSemaphore.WaitForSignal"),
+            100,
+            100,
+            Array.Empty<CallTreeNode>())
+        {
+            SelfSamples = new SelfSampleBreakdown(0, 100),
+        };
+        var root = new CallTreeNode(new SampledFrame(string.Empty, "<root>"), 100, 0, new[] { waitingLeaf });
+        var artifact = new CpuSampleTraceArtifact(4242, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(10), 100, root)
+        {
+            SelfSamples = new SelfSampleBreakdown(0, 100),
+        };
+
+        CpuSampleSignals.Detect(artifact, "h").Should().BeEmpty();
+    }
+
     private static CpuSampleTraceArtifact ArtifactWithLeaves(long total, params (string Module, string Method, long Exclusive)[] leaves)
     {
         var leafSum = leaves.Sum(l => l.Exclusive);
@@ -101,6 +210,9 @@ public sealed class CpuSampleSignalsTests
             StartedAt: DateTimeOffset.UtcNow,
             Duration: TimeSpan.FromSeconds(10),
             TotalSamples: total,
-            Root: root);
+            Root: root)
+        {
+            SelfSamples = new SelfSampleBreakdown(total, 0),
+        };
     }
 }

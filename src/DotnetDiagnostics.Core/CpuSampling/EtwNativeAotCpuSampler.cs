@@ -311,7 +311,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
                 }
             }
 
-            builder.AddStack(frames, leafKey);
+            builder.AddStack(frames, leafKey, new SelfSampleBreakdown(1, 0));
         }
 
         var ranked = inclusive
@@ -330,7 +330,10 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
                     Frame: new SampledFrame(Module: module, Method: display),
                     InclusiveSamples: kv.Value,
                     ExclusiveSamples: exclusive.GetValueOrDefault(kv.Key),
-                    Identity: null);
+                    Identity: null)
+                {
+                    SelfSamples = new SelfSampleBreakdown(exclusive.GetValueOrDefault(kv.Key), 0),
+                };
             })
             .ToList();
 
@@ -350,7 +353,9 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
 
         var summary = new CpuSample(processId, startedAt, duration, total, hotspots)
         {
+            SelfSamples = new SelfSampleBreakdown(total, 0),
             TopSelfTime = CpuSampleAnalytics.TopSelfTime(root, total),
+            TopRunningSelfTime = CpuSampleAnalytics.TopRunningSelfTime(root, total),
             Timings = new CpuSampleTimings(
                 CaptureDuration: TimeSpan.Zero,
                 SymbolicationDuration: TimeSpan.Zero,
@@ -358,7 +363,10 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
                 AggregationDuration: aggregationStopwatch.Elapsed,
                 TotalDuration: TimeSpan.Zero),
         };
-        var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, null, null, symbolSource);
+        var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, null, null, symbolSource)
+        {
+            SelfSamples = new SelfSampleBreakdown(total, 0),
+        };
         return new CpuSampleResult(summary, artifact);
     }
 

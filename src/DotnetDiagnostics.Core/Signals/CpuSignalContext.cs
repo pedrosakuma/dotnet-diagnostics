@@ -18,9 +18,21 @@ namespace DotnetDiagnostics.Core.Signals;
 /// Resource path (re-derived from the stored call tree). <c>null</c> on the inline path, where only
 /// <see cref="TopSelfTime"/> and the inclusive-capped <see cref="Hotspots"/> are available.
 /// </param>
+/// <param name="OverallSelfSamples">
+/// Optional overall self/exclusive-time split. When present, CPU-self-time signals use
+/// <see cref="CpuSampling.SelfSampleBreakdown.RunningSamples"/> as their denominator so wait-heavy
+/// EventPipe captures do not masquerade as consumed CPU.
+/// </param>
+/// <param name="TopRunningSelfTime">
+/// Optional uncapped running-self leader. When available, inline CPU signals prefer this over
+/// <see cref="TopSelfTime"/> so a wait-dominated exclusive leader does not hide the actual
+/// running hotspot.
+/// </param>
 public sealed record CpuSignalContext(
     long TotalSamples,
     IReadOnlyList<Hotspot> Hotspots,
     string HandleId,
     Hotspot? TopSelfTime = null,
-    IReadOnlyList<MethodSampleStat>? SelfTimeRanked = null);
+    IReadOnlyList<MethodSampleStat>? SelfTimeRanked = null,
+    SelfSampleBreakdown? OverallSelfSamples = null,
+    Hotspot? TopRunningSelfTime = null);

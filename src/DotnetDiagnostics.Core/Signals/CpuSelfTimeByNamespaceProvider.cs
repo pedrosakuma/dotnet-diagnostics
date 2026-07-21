@@ -28,9 +28,15 @@ public sealed class CpuSelfTimeByNamespaceProvider : ISignalProvider<CpuSignalCo
             yield break;
         }
 
+        var totalSelfSamples = context.OverallSelfSamples?.RunningSamples ?? context.TotalSamples;
+        if (totalSelfSamples <= 0)
+        {
+            yield break;
+        }
+
         var byNamespace = ranked
             .GroupBy(m => m.Namespace, StringComparer.Ordinal)
-            .Select(g => (Namespace: g.Key, Exclusive: g.Sum(m => m.ExclusiveSamples)))
+            .Select(g => (Namespace: g.Key, Exclusive: g.Sum(m => m.SelfSamples?.RunningSamples ?? m.ExclusiveSamples)))
             .Where(g => g.Exclusive > 0)
             .OrderByDescending(g => g.Exclusive)
             .ToArray();
@@ -40,7 +46,7 @@ public sealed class CpuSelfTimeByNamespaceProvider : ISignalProvider<CpuSignalCo
             yield break;
         }
 
-        var topShare = byNamespace[0].Exclusive / (double)context.TotalSamples;
+        var topShare = byNamespace[0].Exclusive / (double)totalSelfSamples;
         if (topShare < MinTopNamespaceShare)
         {
             yield break;
@@ -48,7 +54,7 @@ public sealed class CpuSelfTimeByNamespaceProvider : ISignalProvider<CpuSignalCo
 
         var buckets = byNamespace
             .Take(MaxBuckets)
-            .Select(g => new SignalBucket(g.Namespace, Math.Round(g.Exclusive * 100.0 / context.TotalSamples, 1), "%", context.HandleId))
+            .Select(g => new SignalBucket(g.Namespace, Math.Round(g.Exclusive * 100.0 / totalSelfSamples, 1), "%", context.HandleId))
             .ToArray();
 
         yield return new SignalGroup(
