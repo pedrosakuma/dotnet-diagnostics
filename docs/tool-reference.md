@@ -1527,6 +1527,16 @@ top-N hotspots by inclusive and exclusive sample counts.
   "startedAt": "2026-05-18T20:00:00Z",
   "duration": "00:00:10",
   "totalSamples": 4218,
+  "timings": {
+    "captureDuration": "00:00:10.8420000",
+    "symbolicationDuration": "00:00:02.4180000",
+    "sourceLineResolutionDuration": "00:00:01.7310000",
+    "aggregationDuration": "00:00:00.6540000",
+    "totalDuration": "00:00:15.7120000",
+    "sessionStartDuration": "00:00:00.6110000",
+    "sessionDrainDuration": "00:00:00.2310000",
+    "methodInstantiationResolutionDuration": "00:00:00"
+  },
   "topHotspots": [
     {
       "frame": { "module": "MyApi", "method": "MyApi.Service.DoWork(int)" },
@@ -1537,6 +1547,23 @@ top-N hotspots by inclusive and exclusive sample counts.
   "symbolSource": "ElfDemangled"
 }
 ```
+
+`timings` breaks the elapsed wall-clock cost into per-phase buckets:
+
+- `captureDuration` — end-to-end sampling-session time for the collection window itself, including
+  EventPipe/ETW/perf startup + shutdown/drain around the requested window.
+- `symbolicationDuration` — post-capture symbol/materialization work before source lookup (for the
+  CoreCLR path this includes `.nettrace` → `TraceLog` conversion plus method-identity recovery; the
+  optional closed-generic ClrMD pass is also counted here).
+- `sourceLineResolutionDuration` — PDB / SourceLink file:line lookup for the top hotspots when
+  `resolveSourceLines=true`; zero when source resolution is disabled or the backend does not support it.
+- `aggregationDuration` — counting/ranking samples into the merged call tree and top-N hotspot list.
+- `totalDuration` — full wall-clock elapsed time seen by the caller from tool start to returned result.
+- `sessionStartDuration` — setup time before the requested sampling window begins (notably EventPipe
+  arm/start overhead on CoreCLR).
+- `sessionDrainDuration` — stop/drain time after the window closes while the trace stream flushes.
+- `methodInstantiationResolutionDuration` — optional ClrMD closed-generic enrichment time when
+  `resolveMethodInstantiations=true`; otherwise zero.
 
 `symbolSource` is populated for **NativeAOT** samples only (see #35) and
 reports the aggregate symbol-resolution quality of `topHotspots`:

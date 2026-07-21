@@ -10,6 +10,39 @@ public sealed record Hotspot(
     long ExclusiveSamples,
     DotnetDiagnostics.Core.Memory.MethodIdentity? Identity = null);
 
+/// <summary>Per-phase elapsed timings for a CPU sampling pass.</summary>
+public sealed record CpuSampleTimings(
+    TimeSpan CaptureDuration,
+    TimeSpan SymbolicationDuration,
+    TimeSpan SourceLineResolutionDuration,
+    TimeSpan AggregationDuration,
+    TimeSpan TotalDuration)
+{
+    public static CpuSampleTimings Empty { get; } = new(
+        TimeSpan.Zero,
+        TimeSpan.Zero,
+        TimeSpan.Zero,
+        TimeSpan.Zero,
+        TimeSpan.Zero);
+
+    /// <summary>
+    /// Time spent starting the capture session before the requested sampling window begins. For
+    /// CoreCLR EventPipe this isolates the EventPipe arm/start overhead from the capture window.
+    /// </summary>
+    public TimeSpan SessionStartDuration { get; init; }
+
+    /// <summary>
+    /// Time spent after the capture window closing and draining the session/trace stream.
+    /// </summary>
+    public TimeSpan SessionDrainDuration { get; init; }
+
+    /// <summary>
+    /// Optional post-capture ClrMD enrichment time used to recover closed generic method
+    /// instantiations for the hottest managed frames.
+    /// </summary>
+    public TimeSpan MethodInstantiationResolutionDuration { get; init; }
+}
+
 /// <summary>Aggregated CPU sample over a window.</summary>
 public sealed record CpuSample(
     int ProcessId,
@@ -37,4 +70,10 @@ public sealed record CpuSample(
     /// sampler does not compute it (the consumer then falls back to the inclusive-ranked hotspots).
     /// </summary>
     public Hotspot? TopSelfTime { get; init; }
+
+    /// <summary>
+    /// Per-phase elapsed timings for capture and post-processing. Populated by the shipping CPU
+    /// sampler backends; synthetic/test instances default to all-zero timings.
+    /// </summary>
+    public CpuSampleTimings Timings { get; init; } = CpuSampleTimings.Empty;
 }

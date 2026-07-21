@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- **CPU sample per-phase timing breakdown** (#663) — `collect_sample(kind="cpu")` / CLI
+  `collect --kind cpu` now return a `timings` object that breaks elapsed wall-clock time into
+  capture, symbolication, SourceLink/source-line resolution, aggregation, and total duration
+  buckets (plus session start/drain and optional closed-generic enrichment timings).
+
 ### Fixed
 - **Self-contained drilldown handles survive producer exit** (#662) — `collect_sample` CPU / allocation / off-CPU / native-alloc artifacts, the affected `collect_events` snapshots, and thread snapshots now expire by TTL instead of being evicted immediately when the target process exits; live-only thread views (`resolve-address`, `frame-vars`) now return a structured `ProcessExited` error instead of failing the whole handle.
 
