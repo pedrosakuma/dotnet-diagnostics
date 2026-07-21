@@ -740,7 +740,11 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
 
         var snapshot = await collector.CollectAsync(
             sample.ProcessId,
-            TimeSpan.FromSeconds(8),
+            // 14s (not the original 8s) — the driver does two sequential HTTP round-trips (a
+            // 30-exception storm, then the crash), both slower under CI CPU contention from
+            // parallel non-live test collections (issue #667); the extra margin keeps both
+            // events inside the EventPipe collection window even when the runner is loaded.
+            TimeSpan.FromSeconds(14),
             maxRecent: 5,
             cancellationToken: CancellationToken.None);
 
@@ -1158,7 +1162,10 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
         using var response = await http.GetAsync("/async-pending?count=3", CancellationToken.None);
         response.EnsureSuccessStatusCode();
-        await Task.Delay(500);
+        // 1500ms (not the original 500ms) gives the runtime more headroom under CI CPU
+        // contention from parallel non-live test collections (issue #667) to actually park the
+        // fixture's nested async state machines before the heap walk runs.
+        await Task.Delay(1500);
 
         var inspector = new ClrMdDumpInspector();
         var snapshot = await inspector.InspectLiveAsync(Pid, cancellationToken: CancellationToken.None);
@@ -1223,7 +1230,10 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
         using var response = await http.GetAsync("/timer-leak?count=32", CancellationToken.None);
         response.EnsureSuccessStatusCode();
-        await Task.Delay(500, CancellationToken.None);
+        // 1500ms (not the original 500ms) — see issue #667: CI CPU contention from parallel
+        // non-live test collections can otherwise delay the fixture's timer state settling
+        // before the heap walk runs.
+        await Task.Delay(1500, CancellationToken.None);
 
         HeapSnapshotArtifact snapshot;
         try
@@ -1256,7 +1266,10 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
         using var response = await http.GetAsync("/alc-leak?count=3", CancellationToken.None);
         response.EnsureSuccessStatusCode();
-        await Task.Delay(500, CancellationToken.None);
+        // 1500ms (not the original 500ms) — see issue #667: CI CPU contention from parallel
+        // non-live test collections can otherwise delay the fixture's collectible-ALC state
+        // settling before the heap walk runs.
+        await Task.Delay(1500, CancellationToken.None);
 
         HeapSnapshotArtifact snapshot;
         try
@@ -2562,7 +2575,10 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
 
         var snapshot = await collector.CollectAsync(
             badSample.ProcessId,
-            TimeSpan.FromSeconds(4),
+            // 8s (not the original 4s) gives ~6.8s of margin after the 1.2s driver delay for the
+            // N+1 query burst + EventPipe delivery to land inside the window even when the CI
+            // runner is under CPU contention from parallel non-live test collections (issue #667).
+            TimeSpan.FromSeconds(8),
             cancellationToken: CancellationToken.None);
 
         await driver;
