@@ -120,7 +120,8 @@ public sealed class InspectProcessTool
         IPreflightInspector preflightInspector,
         [Description("Projection to compute. Defaults to 'list'. Values: " +
             "'triage' (collect counters ~5s, return threshold-backed observedSignals, bounded hypotheses with confidence/supporting/contradicting evidence, ranked topIndicators, and neutral drill-down hints; verdict/secondaryVerdicts remain deprecated compatibility fields until v1.0); " +
-            "'list' (every .NET process visible to the diagnostic IPC; ignores processId); " +
+            "'list' (every .NET process visible to the diagnostic IPC; ignores processId; optionally " +
+            "narrowed by commandLineContains); " +
             "'info' (process metadata); 'capabilities' (CoreCLR vs NativeAOT, supported collectors); " +
             "'container' (cgroup limits + signals); 'memory_trend' (working-set trend over durationSeconds/sampleEverySeconds); " +
             "'resources' (single sample or trend); 'runtime-config' (filtered runtime env vars + best-effort ClrMD GC/ThreadPool settings); " +
@@ -130,6 +131,10 @@ public sealed class InspectProcessTool
         string? view = ListView,
         [Description("Operating system process id of the target. Required by no view: list ignores it, every other view auto-resolves the lone visible .NET process when omitted.")]
         int? processId = null,
+        [Description("view='list' only. Case-insensitive substring filter against DotnetProcess.CommandLine. " +
+            "Use to disambiguate among several candidates spawned by a wrapper the caller doesn't control " +
+            "(e.g. 'testhost.exe' plus a test-assembly name under 'dotnet test'). Ignored by every other view.")]
+        string? commandLineContains = null,
         [Description("view=memory_trend only — duration of the observation window in seconds. Must be >= 2 and defaults to 10. view=resources uses 0 for a single sample (default) and >= 2 for trend mode. view=triage uses durationSeconds for counter collection (defaults to 5).")]
         int? durationSeconds = null,
         [Description("view=memory_trend or view=resources only — interval between consecutive samples in seconds. Must be >= 1. Defaults to 2.")]
@@ -165,7 +170,7 @@ public sealed class InspectProcessTool
 
         return canonical switch
         {
-            ListView => ProjectList(discovery),
+            ListView => ProjectList(discovery, commandLineContains),
             InfoView => Wrap(
                 await DiagnosticTools.GetProcessInfo(discovery, resolver, processId, cancellationToken)
                     .ConfigureAwait(false),
@@ -225,11 +230,11 @@ public sealed class InspectProcessTool
         };
     }
 
-    private static DiagnosticResult<InspectProcessReport> ProjectList(IProcessDiscovery discovery)
+    private static DiagnosticResult<InspectProcessReport> ProjectList(IProcessDiscovery discovery, string? commandLineContains)
     {
         // view=list deliberately bypasses the resolver and the WithContext stamp — the legacy
         // ListDotnetProcesses tool never set ResolvedProcess on its envelope.
-        var inner = DiagnosticTools.ListDotnetProcesses(discovery);
+        var inner = DiagnosticTools.ListDotnetProcesses(discovery, commandLineContains);
         return Wrap(inner, ListView, (report, data) => report with { List = data });
     }
 
