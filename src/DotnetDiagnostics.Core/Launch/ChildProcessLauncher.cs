@@ -30,14 +30,18 @@ public static class ChildProcessLauncher
     /// process's console (real-time output for interactive use); when non-null the child's stdout and
     /// stderr are redirected and pumped to <paramref name="consoleSink"/> instead — used by the CLI in
     /// <c>--json</c> mode so the launched app's logging never contaminates the machine-readable envelope
-    /// on stdout. The optional <paramref name="environment"/> entries are layered onto the child's
-    /// inherited environment (used to inject <c>DOTNET_DiagnosticPorts</c> for cold-start capture).
+    /// on stdout, and by the MCP server's <c>launch</c> path (issue #665 Part A) where stdio reserves
+    /// stdout exclusively for JSON-RPC framing. The optional <paramref name="environment"/> entries are
+    /// layered onto the child's inherited environment (used to inject <c>DOTNET_DiagnosticPorts</c> for
+    /// cold-start capture). <paramref name="workingDirectory"/>, when set, overrides the child's
+    /// inherited current directory.
     /// </summary>
     public static LaunchedTarget Launch(
         string fileName,
         IReadOnlyList<string> arguments,
         TextWriter? consoleSink = null,
-        IReadOnlyDictionary<string, string>? environment = null)
+        IReadOnlyDictionary<string, string>? environment = null,
+        string? workingDirectory = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
         ArgumentNullException.ThrowIfNull(arguments);
@@ -50,6 +54,11 @@ public static class ChildProcessLauncher
             RedirectStandardError = redirect,
             RedirectStandardInput = false,
         };
+
+        if (!string.IsNullOrEmpty(workingDirectory))
+        {
+            startInfo.WorkingDirectory = workingDirectory;
+        }
 
         foreach (var arg in arguments)
         {

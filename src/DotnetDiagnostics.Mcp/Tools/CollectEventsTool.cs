@@ -16,6 +16,7 @@ using DotnetDiagnostics.Core.GatedCapture;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
+using DotnetDiagnostics.Core.Launch;
 using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ProcessDiscovery;
@@ -31,6 +32,7 @@ using DotnetDiagnostics.Mcp.Diagnostics;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 using DotnetDiagnostics.Mcp.Security;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -130,6 +132,8 @@ public sealed partial class CollectEventsTool
         EventSourceAllowlist allowlist,
         SensitiveValueGate sensitiveGate,
         IPrincipalAccessor principalAccessor,
+        SecurityOptions securityOptions,
+        ILoggerFactory? loggerFactory = null,
         [Description(
             "Which EventPipe family to collect (default 'counters'): " +
             "'counters' (EventCounter snapshot — cheap first signal; uses the 'read-counters' scope), " +
@@ -217,6 +221,13 @@ public sealed partial class CollectEventsTool
         int sampleIntervalSeconds = 2,
         [Description("Threshold-gated capture only. captureKind='dump' confirmation gate — writing a heap dump to disk requires confirmDump=true (defense-in-depth, mirrors collect_process_dump). Ignored for other capture kinds.")]
         bool confirmDump = false,
+        // kind=startup launch-and-suspend-then-arm (issue #665 Part A)
+        [Description(
+            "kind='startup' only (mutually exclusive with processId). Spawns fileName/arguments suspended on a fresh " +
+            "reverse-connect diagnostic port, arms the EventPipe startup session BEFORE the target's managed code runs, " +
+            "then resumes — eliminating the discovery/attach race for short-lived processes. The launched process is " +
+            "always terminated after capture. Requires --stdio transport and server config 'Diagnostics:AllowProcessLaunch=true'.")]
+        LaunchSpec? launch = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         RequestContext<CallToolRequestParams>? requestContext = null,
         CancellationToken cancellationToken = default)
@@ -225,6 +236,23 @@ public sealed partial class CollectEventsTool
                 kind, AllowedKinds, nameof(kind), out var canonicalKind, out var dispatchFailure))
         {
             return dispatchFailure!;
+        }
+
+        if (launch is not null)
+        {
+            if (canonicalKind != "startup")
+            {
+                var message = $"launch is only supported with kind='startup'. Got kind='{canonicalKind}'.";
+                return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                    message, new DiagnosticError("InvalidArgument", message, nameof(launch)));
+            }
+
+            if (processId is not null)
+            {
+                const string message = "launch and processId are mutually exclusive — launch spawns its own target process.";
+                return DiagnosticResult.Fail<CollectEventsEnvelope>(
+                    message, new DiagnosticError("InvalidArgument", message, nameof(launch)));
+            }
         }
 
         var principal = principalAccessor.Current;
@@ -306,6 +334,9 @@ public sealed partial class CollectEventsTool
             MaxCaptures = maxCaptures,
             SampleIntervalSeconds = sampleIntervalSeconds,
             ConfirmDump = confirmDump,
+            Launch = launch,
+            SecurityOptions = securityOptions,
+            LoggerFactory = loggerFactory,
             Deprecation = deprecation,
             RequestContext = requestContext,
             Principal = principal,

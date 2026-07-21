@@ -533,7 +533,7 @@ internal static class CliHost
         try
         {
             target = await SuspendedColdStartLauncher
-                .LaunchSuspendedAsync(program, argv, consoleSink, ColdStartConnectTimeout, coldCts.Token)
+                .LaunchSuspendedAsync(program, argv, consoleSink, ColdStartConnectTimeout, cancellationToken: coldCts.Token)
                 .ConfigureAwait(false);
 
             using var host = BuildHost(options);
