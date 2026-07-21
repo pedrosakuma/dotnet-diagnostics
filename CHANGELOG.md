@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- **CPU sample per-phase timing breakdown** (#663) — `collect_sample(kind="cpu")` / CLI
+  `collect --kind cpu` now return a `timings` object that breaks elapsed wall-clock time into
+  capture, symbolication, SourceLink/source-line resolution, aggregation, and total duration
+  buckets (plus session start/drain and optional closed-generic enrichment timings).
+
 ## [0.18.0] — 2026-07-20
 
 Highlights: **`dotnet-diagnostics-cli session` REPL ergonomics + a session-integrity fix.**

@@ -118,6 +118,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         CancellationToken cancellationToken)
     {
         var startedAt = DateTimeOffset.UtcNow;
+        var totalStopwatch = Stopwatch.StartNew();
         var captureDir = Path.Combine(Path.GetTempPath(), $"diagmcp-etw-{processId}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(captureDir);
 
@@ -126,8 +127,22 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
 
         try
         {
+            var captureStopwatch = Stopwatch.StartNew();
             await CaptureEtwAsync(sessionName, etlPath, duration, cancellationToken).ConfigureAwait(false);
-            return ProcessEtl(etlPath, processId, startedAt, duration, topN, sourceResolution);
+            var captureDuration = captureStopwatch.Elapsed;
+            var processed = ProcessEtl(etlPath, processId, startedAt, duration, topN, sourceResolution);
+            return processed.Result with
+            {
+                Summary = processed.Result.Summary with
+                {
+                    Timings = new CpuSampleTimings(
+                        CaptureDuration: captureDuration,
+                        SymbolicationDuration: processed.SymbolicationDuration,
+                        SourceLineResolutionDuration: TimeSpan.Zero,
+                        AggregationDuration: processed.AggregationDuration,
+                        TotalDuration: totalStopwatch.Elapsed),
+                },
+            };
         }
         finally
         {
@@ -184,7 +199,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         }
     }
 
-    private CpuSampleResult ProcessEtl(
+    private EtwCpuProcessingResult ProcessEtl(
         string etlPath,
         int processId,
         DateTimeOffset startedAt,
@@ -199,6 +214,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
 
         // Determine symbol path: include the target executable directory + standard paths.
         var symbolPath = _symbolPathBuilder.BuildForProcess(processId, sourceResolution?.SymbolPath);
+        var symbolicationStopwatch = Stopwatch.StartNew();
 
         // Convert ETL → ETLX. Disable remote symbol resolution during conversion
         // to avoid network hangs. We resolve symbols locally afterward via LookupSymbolsForModule.
@@ -213,7 +229,13 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
         try
         {
             using var traceLog = TraceLog.OpenOrConvert(etlxPath);
-            return AggregateFromTraceLog(traceLog, processId, startedAt, duration, topN, symbolPath);
+            var processed = AggregateFromTraceLog(traceLog, processId, startedAt, duration, topN, symbolPath);
+            var aggregationDuration = processed.Summary.Timings.AggregationDuration;
+            var totalProcessingDuration = symbolicationStopwatch.Elapsed;
+            var symbolicationDuration = totalProcessingDuration > aggregationDuration
+                ? totalProcessingDuration - aggregationDuration
+                : TimeSpan.Zero;
+            return new EtwCpuProcessingResult(processed, symbolicationDuration, aggregationDuration);
         }
         finally
         {
@@ -249,6 +271,7 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
             }
         }
 
+        var aggregationStopwatch = Stopwatch.StartNew();
         var events = traceLog.Events
             .Where(e => e is SampledProfileTraceData && e.ProcessID == processId);
 
@@ -325,10 +348,24 @@ public sealed class EtwNativeAotCpuSampler : ICpuSampler
                 ? NativeAotSymbolDemangler.SymbolSource.PdbResolved
                 : NativeAotSymbolDemangler.SymbolSource.Stripped;
 
-        var summary = new CpuSample(processId, startedAt, duration, total, hotspots) { TopSelfTime = CpuSampleAnalytics.TopSelfTime(root, total) };
+        var summary = new CpuSample(processId, startedAt, duration, total, hotspots)
+        {
+            TopSelfTime = CpuSampleAnalytics.TopSelfTime(root, total),
+            Timings = new CpuSampleTimings(
+                CaptureDuration: TimeSpan.Zero,
+                SymbolicationDuration: TimeSpan.Zero,
+                SourceLineResolutionDuration: TimeSpan.Zero,
+                AggregationDuration: aggregationStopwatch.Elapsed,
+                TotalDuration: TimeSpan.Zero),
+        };
         var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, null, null, symbolSource);
         return new CpuSampleResult(summary, artifact);
     }
+
+    private sealed record EtwCpuProcessingResult(
+        CpuSampleResult Result,
+        TimeSpan SymbolicationDuration,
+        TimeSpan AggregationDuration);
 
     private static string ResolveMethodName(TraceCallStack frame)
     {

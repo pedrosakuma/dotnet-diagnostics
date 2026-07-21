@@ -834,6 +834,38 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         result.Artifact.Root.Children.Should().NotBeEmpty("the call-tree artifact must capture at least one stack");
     }
 
+    [SkipOnLinuxCiFact("Quarantined on Linux CI: crashes test host inside libcoreclr's EventPipe SampleProfiler. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
+    public async Task CpuSampler_PopulatesTimingBreakdown()
+    {
+        EnsureSampleRunning();
+
+        var sampler = new EventPipeCpuSampler();
+        var requestedDuration = TimeSpan.FromSeconds(3);
+        var result = await sampler.SampleAsync(
+            Pid,
+            requestedDuration,
+            topN: 10,
+            sourceResolution: new SourceResolutionOptions(Enabled: true, SymbolPath: null, MaxResolved: 5),
+            cancellationToken: CancellationToken.None);
+
+        var timings = result.Summary.Timings;
+        var phasedTotal = timings.CaptureDuration
+            + timings.SymbolicationDuration
+            + timings.SourceLineResolutionDuration
+            + timings.AggregationDuration;
+
+        timings.CaptureDuration.Should().BeGreaterThanOrEqualTo(requestedDuration);
+        timings.SessionStartDuration.Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
+        timings.SessionDrainDuration.Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
+        timings.SymbolicationDuration.Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
+        timings.SourceLineResolutionDuration.Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
+        timings.AggregationDuration.Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
+        timings.MethodInstantiationResolutionDuration.Should().Be(TimeSpan.Zero, "ClrMD method-instantiation enrichment was not requested");
+        timings.TotalDuration.Should().BeGreaterThanOrEqualTo(phasedTotal);
+        (timings.TotalDuration - phasedTotal).Should().BeLessThan(TimeSpan.FromSeconds(5),
+            "the per-phase breakdown should explain essentially all observed elapsed time");
+    }
+
     [SkipOnLinuxCiFact("Quarantined on Linux CI: the gated cpu-sample capture uses the EventPipe SampleProfiler crash path. Tracked in #147 (dotnet/runtime#128525). Runnable locally and on Windows CI.")]
     public async Task GatedCapture_FiresCpuSample_WhenCpuThresholdTrips()
     {
