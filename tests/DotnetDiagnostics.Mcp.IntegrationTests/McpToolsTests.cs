@@ -48,13 +48,14 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         
         // #213: the unified-tool surface is now the only surface. The default
         // test factory does NOT enable orchestrator tools (no K8s configuration); those tools
-        // are covered by dedicated orchestrator integration tests. We assert the 12 non-orchestrator
-        // tools that any sidecar exposes.
+        // are covered by dedicated orchestrator integration tests. We assert the 13 non-orchestrator
+        // tools that any sidecar exposes (issue #665 Part C added collect_batch as the 13th).
         toolNames.Should().BeEquivalentTo(new[]
         {
             "inspect_process",
             "collect_events",
             "collect_sample",
+            "collect_batch",
             "query_snapshot",
             "inspect_heap",
             "get_bytes",
@@ -76,6 +77,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             ["inspect_process"] = Array.Empty<string>(),
             ["collect_events"] = Array.Empty<string>(),
             ["collect_sample"] = Array.Empty<string>(),
+            ["collect_batch"] = new[] { "requests" },
             ["query_snapshot"] = new[] { "handle" },
             ["inspect_heap"] = new[] { "source" },
             ["get_bytes"] = new[] { "kind" },
@@ -620,6 +622,182 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         envelope.Sweep.Triage.Hypotheses.Should().NotBeNull();
         envelope.Sweep.Counters.Should().NotBeNull();
         envelope.Sweep.Handles.Should().ContainKey("counters");
+    }
+
+    [Fact]
+    public async Task CollectBatch_RunsCpuAndCounters_AgainstSelfHost()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "cpu" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
+                },
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 6,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var report = DeserializeStructured<CollectBatchReport>(result);
+        report.Should().NotBeNull();
+        report!.ProcessId.Should().Be(Environment.ProcessId);
+        report.DurationSeconds.Should().Be(6);
+        report.Results.Should().HaveCount(2);
+
+        var cpuEntry = report.Results.Single(r => r.Tool == "collect_sample" && r.Kind == "cpu");
+        cpuEntry.Error.Should().BeNull();
+        cpuEntry.Data.Should().NotBeNull();
+        cpuEntry.Data!.Value.GetProperty("kind").GetString().Should().Be("cpu");
+
+        var countersEntry = report.Results.Single(r => r.Tool == "collect_events" && r.Kind == "counters");
+        countersEntry.Error.Should().BeNull();
+        countersEntry.Data.Should().NotBeNull();
+        countersEntry.Data!.Value.GetProperty("kind").GetString().Should().Be("counters");
+    }
+
+    [Fact]
+    public async Task CollectBatch_RejectsMethodParamsKind_BeforeAnySessionOpens()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "method-params" },
+                },
+                ["processId"] = Environment.ProcessId,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
+        text.Should().Contain("\"kind\":\"InvalidArgument\"");
+        text.Should().Contain("method-params");
+    }
+
+    [Fact]
+    public async Task CollectBatch_RejectsDuplicateEntries()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "cpu" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "cpu" },
+                },
+                ["processId"] = Environment.ProcessId,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
+        text.Should().Contain("\"kind\":\"InvalidArgument\"");
+        text.Should().Contain("duplicate");
+    }
+
+    [Fact]
+    public async Task CollectBatch_RejectsMoreThanFourEntries()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "gc" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "exceptions" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "threadpool" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "jit" },
+                },
+                ["processId"] = Environment.ProcessId,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
+        text.Should().Contain("\"kind\":\"InvalidArgument\"");
+        text.Should().Contain("at most 4");
+    }
+
+    [Fact]
+    public async Task CollectBatch_RejectsUnknownKind()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "not-a-real-kind" },
+                },
+                ["processId"] = Environment.ProcessId,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
+        text.Should().Contain("\"kind\":\"InvalidArgument\"");
+    }
+
+    [Fact]
+    public async Task CollectBatch_RejectsSweepKind_BecauseItIsItsOwnNestedFanout()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "sweep" },
+                },
+                ["processId"] = Environment.ProcessId,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
+        text.Should().Contain("\"kind\":\"InvalidArgument\"");
+        text.Should().Contain("sweep");
+    }
+
+    [Fact]
+    public async Task CollectBatch_RejectsNullEntry()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object?[] { null },
+                ["processId"] = Environment.ProcessId,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
+        text.Should().Contain("\"kind\":\"InvalidArgument\"");
+        text.Should().Contain("must not be null");
     }
 
     [Fact]

@@ -51,7 +51,7 @@ public sealed class ToolReferenceDocParityTests
     {
         // Anchors the reflected surface so an accidental drop (or a stray extra tool) is caught
         // alongside the doc-parity check rather than silently changing what the theory enumerates.
-        EnumerateToolNames().Should().HaveCount(16);
+        EnumerateToolNames().Should().HaveCount(17);
     }
 
     [Fact]

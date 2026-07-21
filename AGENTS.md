@@ -6,7 +6,7 @@
 
 `dotnet-diagnostics-mcp` is an **MCP server** that lets an LLM perform on-demand performance diagnostics on running **.NET 10** applications — locally or in a Kubernetes sidecar. Normal EventPipe and ClrMD diagnostics require no target code changes or prior instrumentation. The explicit exception is `collect_sample(kind="method-params")`: an opt-in, privileged, security-gated dynamic profiler attach that temporarily instruments an allowlist of methods.
 
-The server attaches to the .NET runtime diagnostic IPC socket and exposes a full **16-tool** MCP surface: 12 tools by default plus 3 Kubernetes-orchestrator tools and `discover_azure` when their configuration gates are enabled. It supports either **Streamable HTTP** (default, with bearer-token auth — designed for sidecar / shared-deploy) or **stdio** (`--stdio`, recommended for local dev — the MCP client owns the process lifecycle, no daemon or bearer token; see issue #74).
+The server attaches to the .NET runtime diagnostic IPC socket and exposes a full **17-tool** MCP surface: 13 tools by default plus 3 Kubernetes-orchestrator tools and `discover_azure` when their configuration gates are enabled. It supports either **Streamable HTTP** (default, with bearer-token auth — designed for sidecar / shared-deploy) or **stdio** (`--stdio`, recommended for local dev — the MCP client owns the process lifecycle, no daemon or bearer token; see issue #74).
 
 The repo also ships **`dotnet-diagnostics-cli`** (`src/DotnetDiagnostics.Cli`, assembly name `dotnet-diagnostics`), a Core-only standalone CLI for humans / scripts / CI — one-shot sub-commands plus a stateful `session` REPL, **no HTTP, no bearer, no daemon** — and **`dotnet-diagnostics-benchmarkdotnet`**, an in-process BenchmarkDotNet diagnoser. All three packages publish from the same release tag. The CLI references **Core only** (asserted by `NoServerReferenceTests`); document it in [`docs/cli-reference.md`](./docs/cli-reference.md), not the MCP tool reference.
 
@@ -207,14 +207,20 @@ processes. From the audit in issue [#616](https://github.com/pedrosakuma/dotnet-
 frames, not avoidable managed work — no speculative micro-optimization was applied. Read it before
 assuming a collector needs CPU tuning; add a new benchmark there instead of guessing at a hotpath.
 
-### 🎯 One MCP tool per concept (16 tools)
+### 🎯 One MCP tool per concept (17 tools)
 
-Anthropic recommends ≤10 tools per LLM context. We have 16 tools: #213 consolidated
+Anthropic recommends ≤10 tools per LLM context. We have 17 tools: #213 consolidated
 24 legacy aliases into 7 unified discriminator tools (`inspect_process`, `collect_events`, `collect_sample`,
 `query_snapshot`, `inspect_heap`, `list_orchestrator`, `get_bytes`), `discover_azure` was added
 alongside the cloud-integrations work (#16), plus 8 non-aliased tools
 (`collect_process_dump`, `collect_thread_snapshot`, `capture_method_bytes`, `start_investigation`,
-`export_investigation_summary`, `compare_to_baseline`, `attach_to_pod`, `detach_from_pod`).
+`export_investigation_summary`, `compare_to_baseline`, `attach_to_pod`, `detach_from_pod`), and
+`collect_batch` (issue #665 Part C) — an **explicit, acknowledged exception** to the cap: a
+new dedicated tool rather than a bolt-on parameter, because the cross-tool `{tool, kind}` fan-out
+it needs (`collect_sample` kinds + `collect_events` kinds, concurrently, against one resolved
+process) doesn't fit either existing tool's "one kind, one populated field" envelope contract. See
+`docs/design/ephemeral-process-capture-design.md` Part C ("Rejected alternatives") for the full
+comparison against the `alsoCollect` bolt-on and `kind="batch"` shapes that were considered first.
 **Don't add tools speculatively**. New capabilities should either:
 
 1. Extend an existing tool with a parameter, or
