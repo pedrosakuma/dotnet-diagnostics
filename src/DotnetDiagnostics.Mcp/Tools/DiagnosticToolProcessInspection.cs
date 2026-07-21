@@ -20,8 +20,9 @@ internal static class DiagnosticToolProcessInspection
 {
     private static readonly string[] HostingCounterProviders = ["Microsoft.AspNetCore.Hosting"];
 
-    public static DiagnosticResult<IReadOnlyList<DotnetProcess>> ListDotnetProcesses(IProcessDiscovery discovery)
-        => ProcessInspectionUseCases.ListProcesses(discovery);
+    public static DiagnosticResult<IReadOnlyList<DotnetProcess>> ListDotnetProcesses(
+        IProcessDiscovery discovery, string? commandLineContains = null)
+        => ProcessInspectionUseCases.ListProcesses(discovery, commandLineContains);
 
     public static Task<DiagnosticResult<DotnetProcess>> GetProcessInfo(
         IProcessDiscovery discovery,

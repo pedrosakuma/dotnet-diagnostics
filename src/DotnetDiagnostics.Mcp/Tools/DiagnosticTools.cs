@@ -59,8 +59,9 @@ public sealed class DiagnosticTools
         "Lists all .NET processes on the local machine that expose a Diagnostic IPC endpoint. " +
         "Returns process id, runtime version, OS, architecture and the managed entrypoint assembly. " +
         "Usually the first tool to call in any investigation.")]
-    public static DiagnosticResult<IReadOnlyList<DotnetProcess>> ListDotnetProcesses(IProcessDiscovery discovery)
-        => DiagnosticToolProcessInspection.ListDotnetProcesses(discovery);
+    public static DiagnosticResult<IReadOnlyList<DotnetProcess>> ListDotnetProcesses(
+        IProcessDiscovery discovery, string? commandLineContains = null)
+        => DiagnosticToolProcessInspection.ListDotnetProcesses(discovery, commandLineContains);
 
     [RequireScope("read-counters")]
     [Description(

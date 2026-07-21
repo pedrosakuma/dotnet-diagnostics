@@ -869,6 +869,7 @@ in-flight-request, triage, or preflight projections under one stable envelope.
 |---|---|---|---|
 | `view` | `"list" \| "info" \| "capabilities" \| "container" \| "memory_trend" \| "runtime-config" \| "resources" \| "requests-now" \| "triage" \| "preflight"` | `"list"` | Which bootstrap projection to compute. |
 | `processId` | `int?` | auto | Target PID. **Ignored when `view="list"`** (the list view is process-agnostic). When omitted on `view="memory_trend"` or `view="resources"` the server auto-resolves the lone reachable .NET process; `view="runtime-config"` and `view="requests-now"` also auto-resolve but still require a real .NET process because they open a live diagnostics path. |
+| `commandLineContains` | `string?` | none | Used only by `view="list"` — case-insensitive substring filter against each process's `commandLine`, to disambiguate among several candidates spawned by a wrapper you don't control (e.g. `testhost.exe` under `dotnet test`). Ignored by every other view. |
 | `durationSeconds` | `int` | view-specific | Used by `view="memory_trend"`, `view="resources"`, and `view="triage"`. Triage defaults to 5 seconds and requires `>= 1`. |
 | `sampleEverySeconds` | `int` | `2` | Used only by `view="memory_trend"` / `view="resources"`. Must be ≥ 1. |
 | `depth` | `SamplingDepth?` | `Summary` | Used only by `view="container"`; forwarded to `inspect_process(view="container")`. |
@@ -958,7 +959,11 @@ Unknown view values surface as the standard discriminator-dispatch error
 Lists every .NET process on the local machine that exposes a Diagnostic IPC
 endpoint (Unix socket on Linux, named pipe on Windows).
 
-**Parameters:** none.
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `commandLineContains` | `string?` | none | Case-insensitive substring filter against each process's `commandLine`. Use to disambiguate among several candidates spawned by a wrapper you don't control (e.g. several `testhost.exe` processes under `dotnet test`) without inspecting the full unfiltered list. Omit for the full unfiltered list (default, unchanged behavior). |
 
 **Returns:** array of `DotnetProcess`:
 
@@ -976,7 +981,9 @@ endpoint (Unix socket on Linux, named pipe on Windows).
 ```
 
 **Notes:** processes that respond too slowly or whose IPC endpoint is
-unreachable are silently omitted.
+unreachable are silently omitted. When `commandLineContains` matches nothing,
+the array is empty and the response's `summary` names the filter that was
+applied so you can tell "nothing running" apart from a typo'd filter.
 
 ---
 

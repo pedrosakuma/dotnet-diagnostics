@@ -508,6 +508,57 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task ListDotnetProcesses_CommandLineContains_NarrowsToMatchingSubset()
+    {
+        await using var client = await ConnectAsync();
+
+        var unfiltered = await client.CallToolAsync(
+            "inspect_process",
+            new Dictionary<string, object?> { ["view"] = "list" },
+            cancellationToken: CancellationToken.None);
+        var unfilteredEnvelope = DeserializeStructured<InspectProcessReport>(unfiltered);
+        var self = unfilteredEnvelope!.List!.Single(p => p.ProcessId == Environment.ProcessId);
+
+        // Pick a substring from this test host's own real command line so the filter is
+        // guaranteed to match at least the self-hosted process, whatever the CI runner's
+        // actual invocation looks like.
+        var needle = self.CommandLine.Split(' ', StringSplitOptions.RemoveEmptyEntries).Last();
+
+        var filtered = await client.CallToolAsync(
+            "inspect_process",
+            new Dictionary<string, object?> { ["view"] = "list", ["commandLineContains"] = needle },
+            cancellationToken: CancellationToken.None);
+
+        filtered.IsError.Should().NotBe(true);
+        var filteredEnvelope = DeserializeStructured<InspectProcessReport>(filtered);
+        filteredEnvelope.Should().NotBeNull();
+        filteredEnvelope!.List.Should().NotBeNull();
+        filteredEnvelope.List!.Should().Contain(p => p.ProcessId == Environment.ProcessId);
+        filteredEnvelope.List!.Count.Should().BeLessOrEqualTo(unfilteredEnvelope.List!.Count);
+    }
+
+    [Fact]
+    public async Task ListDotnetProcesses_CommandLineContains_NoMatch_ReturnsEmptyList()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "inspect_process",
+            new Dictionary<string, object?>
+            {
+                ["view"] = "list",
+                ["commandLineContains"] = $"definitely-not-a-real-process-{Guid.NewGuid():N}",
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var envelope = DeserializeStructured<InspectProcessReport>(result);
+        envelope.Should().NotBeNull();
+        envelope!.List.Should().NotBeNull();
+        envelope.List!.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task GetProcessInfo_ReturnsSelf()
     {
         await using var client = await ConnectAsync();

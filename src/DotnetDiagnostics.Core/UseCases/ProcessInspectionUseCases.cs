@@ -16,26 +16,43 @@ namespace DotnetDiagnostics.Core.UseCases;
 public static class ProcessInspectionUseCases
 {
     /// <summary>
-    /// Lists every .NET process on the local machine that exposes a Diagnostic IPC endpoint.
-    /// Never touches the resolver and never sets <see cref="DiagnosticResult{T}.ResolvedProcess"/>.
+    /// Lists every .NET process on the local machine that exposes a Diagnostic IPC endpoint,
+    /// optionally narrowed by a case-insensitive substring filter against
+    /// <see cref="DotnetProcess.CommandLine"/> (issue #665 part B — disambiguates among several
+    /// candidates spawned by a wrapper the caller doesn't control, e.g. several
+    /// <c>testhost.exe</c> under <c>dotnet test</c>). Never touches the resolver and never sets
+    /// <see cref="DiagnosticResult{T}.ResolvedProcess"/>.
     /// </summary>
-    public static DiagnosticResult<IReadOnlyList<DotnetProcess>> ListProcesses(IProcessDiscovery discovery)
+    public static DiagnosticResult<IReadOnlyList<DotnetProcess>> ListProcesses(
+        IProcessDiscovery discovery,
+        string? commandLineContains = null)
     {
         ArgumentNullException.ThrowIfNull(discovery);
 
         var processes = discovery.ListProcesses();
+        if (!string.IsNullOrEmpty(commandLineContains))
+        {
+            processes = processes
+                .Where(p => p.CommandLine.Contains(commandLineContains, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
         if (processes.Count == 0)
         {
+            var summary = string.IsNullOrEmpty(commandLineContains)
+                ? "No attachable .NET processes found. If the target runs in a container, make sure the sidecar shares its PID namespace and runs as the same UID."
+                : $"No .NET process found matching commandLineContains='{commandLineContains}'. If the target runs in a container, make sure the sidecar shares its PID namespace and runs as the same UID.";
             return DiagnosticResult.Ok(
                 processes,
-                "No attachable .NET processes found. If the target runs in a container, make sure the sidecar shares its PID namespace and runs as the same UID.",
+                summary,
                 new NextActionHint("inspect_process", "Re-run once the target is up to confirm the runtime exposes a diagnostic endpoint."));
         }
 
         var preview = string.Join(", ", processes.Take(3).Select(p => $"{p.ProcessId}={p.ManagedEntrypointAssemblyName ?? "?"}"));
+        var filterNote = string.IsNullOrEmpty(commandLineContains) ? string.Empty : $" matching commandLineContains='{commandLineContains}'";
         return DiagnosticResult.Ok(
             processes,
-            $"Found {processes.Count} .NET process(es): {preview}{(processes.Count > 3 ? ", …" : "")}.",
+            $"Found {processes.Count} .NET process(es){filterNote}: {preview}{(processes.Count > 3 ? ", …" : "")}.",
             new NextActionHint(
                 "inspect_process",
                 "Probe the target process to confirm which collectors are supported (CoreCLR vs NativeAOT).",
