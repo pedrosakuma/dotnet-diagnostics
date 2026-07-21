@@ -221,7 +221,7 @@ The standalone CLI now exposes the same **Core-only** sampler families the MCP s
 
 | Kind | What it captures | Key flags | Summary shape |
 |---|---|---|---|
-| `cpu` | On-CPU stacks via EventPipe SampleProfiler (CoreCLR) or perf/ETW (NativeAOT/native). | `--top`, `--symbol-path`, `--export-trace`, `--resolve-source-lines`, `--resolve-method-instantiations`, `--native-aot-map` | top hotspots by inclusive/exclusive samples, plus `signals[]` such as `cpu.self-time.*` when something dominates |
+| `cpu` | On-CPU stacks via EventPipe SampleProfiler (CoreCLR) or perf/ETW (NativeAOT/native). | `--top`, `--symbol-path`, `--export-trace`, `--resolve-source-lines`, `--resolve-method-instantiations`, `--native-aot-map` | top hotspots by inclusive/exclusive samples, a `timings` breakdown (`captureDuration`, `symbolicationDuration`, `sourceLineResolutionDuration`, `aggregationDuration`, `totalDuration`), plus `signals[]` such as `cpu.self-time.*` when something dominates |
 | `allocation` | Managed allocation samples (`GCAllocationTick`) with top types by bytes/count and call-tree drilldown. | `--top` | top types by bytes/count, plus `signals[]` such as `allocations.by-type` / `allocations.by-site` |
 | `off_cpu` / `off-cpu` | Off-CPU stacks (where threads wait / block) via perf or ETW backend. | `--top`, `--symbol-path` | top blocking stacks ranked by off-CPU time |
 | `native-alloc` | Native allocator-call hotspots (`malloc` / `calloc` / `realloc`) via perf/ETW backend. Counts are sampled **calls**, not bytes. | `--top`, `--native-alloc-sample-period` | top allocator stacks + shared call-tree handle |

@@ -126,10 +126,14 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
 
         var perfDataPath = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-perf-{processId}-{Guid.NewGuid():N}.data");
         var startedAt = DateTimeOffset.UtcNow;
+        var totalStopwatch = Stopwatch.StartNew();
 
         try
         {
+            var captureStopwatch = Stopwatch.StartNew();
             await RecordAsync(processId, perfDataPath, duration, cancellationToken).ConfigureAwait(false);
+            var captureDuration = captureStopwatch.Elapsed;
+            var postProcessingStopwatch = Stopwatch.StartNew();
             var aggregate = await RunScriptAsync(
                 perfDataPath,
                 processId: 0,
@@ -138,6 +142,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
                 moduleName,
                 modulePath,
                 cancellationToken).ConfigureAwait(false);
+            var symbolicationDuration = postProcessingStopwatch.Elapsed;
             var stampedRoot = CallTreeIdentityProjector.Stamp(aggregate.Root, aggregate.Identities);
             // Compute the global self-time leader from the SAME (identity-stamped) tree the artifact
             // stores, so the inline signals match the signals:// Resource path.
@@ -146,6 +151,12 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             {
                 SymbolSource = aggregate.SymbolSource,
                 TopSelfTime = topSelfTime,
+                Timings = new CpuSampleTimings(
+                    CaptureDuration: captureDuration,
+                    SymbolicationDuration: symbolicationDuration,
+                    SourceLineResolutionDuration: TimeSpan.Zero,
+                    AggregationDuration: TimeSpan.Zero,
+                    TotalDuration: totalStopwatch.Elapsed),
             };
             var artifact = new CpuSampleTraceArtifact(
                 processId, startedAt, duration, aggregate.Total, stampedRoot, null, aggregate.Identities, aggregate.SymbolSource);

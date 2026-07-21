@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.Tracing;
 using System.Globalization;
 using DotnetDiagnostics.Core.Artifacts;
@@ -101,15 +102,16 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         var exportPath = exportTrace ? ResolveExportPath(processId) : null;
         var tracePath = exportPath ?? Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-{processId}-{Guid.NewGuid():N}.nettrace");
         var startedAt = DateTimeOffset.UtcNow;
+        var totalStopwatch = Stopwatch.StartNew();
 
         try
         {
-            await CollectTraceAsync(client, resumeAsync, processId, tracePath, duration, exportPath is not null, cancellationToken).ConfigureAwait(false);
+            var captureTimings = await CollectTraceAsync(client, resumeAsync, processId, tracePath, duration, exportPath is not null, cancellationToken).ConfigureAwait(false);
             if (exportPath is not null)
             {
                 SafeArtifactPath.SetRestrictiveFilePermissions(exportPath);
             }
-            var (total, hotspots, root, sources, identities) = AggregateHotspots(
+            var aggregate = AggregateHotspots(
                 tracePath,
                 processId,
                 topN,
@@ -119,10 +121,25 @@ public sealed class EventPipeCpuSampler : ICpuSampler
             // Rank self-time (exclusive) across the WHOLE merged tree, not the inclusive-capped
             // TopHotspots — the true global leaf can sit outside the inclusive top-N on a deep stack.
             // Same ranking the query_snapshot(view="top-methods", rankBy="exclusive") view uses.
-            var topSelfTime = CpuSampleAnalytics.TopSelfTime(root, total);
-            var summary = new CpuSample(processId, startedAt, duration, total, hotspots) { TopSelfTime = topSelfTime };
+            var topSelfTime = CpuSampleAnalytics.TopSelfTime(aggregate.Root, aggregate.Total);
+            var timings = new CpuSampleTimings(
+                CaptureDuration: captureTimings.TotalDuration,
+                SymbolicationDuration: aggregate.SymbolicationDuration + aggregate.MethodInstantiationResolutionDuration,
+                SourceLineResolutionDuration: aggregate.SourceLineResolutionDuration,
+                AggregationDuration: aggregate.AggregationDuration,
+                TotalDuration: totalStopwatch.Elapsed)
+            {
+                SessionStartDuration = captureTimings.SessionStartDuration,
+                SessionDrainDuration = captureTimings.SessionDrainDuration,
+                MethodInstantiationResolutionDuration = aggregate.MethodInstantiationResolutionDuration,
+            };
+            var summary = new CpuSample(processId, startedAt, duration, aggregate.Total, aggregate.Hotspots)
+            {
+                TopSelfTime = topSelfTime,
+                Timings = timings,
+            };
             var relativeTrace = exportPath is null ? null : RelativeToRoot(exportPath);
-            var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, total, root, sources, identities, TracePath: relativeTrace);
+            var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, aggregate.Total, aggregate.Root, aggregate.Sources, aggregate.Identities, TracePath: relativeTrace);
             return new CpuSampleResult(summary, artifact);
         }
         finally
@@ -153,7 +170,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         return rel.Replace(Path.DirectorySeparatorChar, '/');
     }
 
-    private async Task CollectTraceAsync(DiagnosticsClient? providedClient, Func<ValueTask>? resumeAsync, int pid, string outputPath, TimeSpan duration, bool restricted, CancellationToken ct)
+    private async Task<CpuCapturePhaseTimings> CollectTraceAsync(DiagnosticsClient? providedClient, Func<ValueTask>? resumeAsync, int pid, string outputPath, TimeSpan duration, bool restricted, CancellationToken ct)
     {
         var providers = new[]
         {
@@ -165,9 +182,11 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         };
 
         var client = providedClient ?? new DiagnosticsClient(pid);
+        var sessionStartStopwatch = Stopwatch.StartNew();
         var session = await client
             .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: true, circularBufferMB: 256, TimeSpan.FromSeconds(30), ct)
             .ConfigureAwait(false);
+        var sessionStartDuration = sessionStartStopwatch.Elapsed;
 
         // Cold start: resume the suspended runtime only after the sampling session exists, so startup
         // CPU (JIT, static ctors, module init) is captured rather than lost before attach.
@@ -185,22 +204,36 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 : File.Create(outputPath);
             await session.EventStream.CopyToAsync(output, ct).ConfigureAwait(false);
         }, ct);
+        var stoppedAndDrained = false;
 
         try
         {
+            var captureStopwatch = Stopwatch.StartNew();
             await Task.Delay(duration, ct).ConfigureAwait(false);
-        }
-        finally
-        {
+            var captureDuration = captureStopwatch.Elapsed;
+            var drainStopwatch = Stopwatch.StartNew();
             await EventPipeSessionShutdown.StopAndDrainAsync(
                 session,
                 copyTask,
                 ex => _logger.LogDebug(ex, "Stopping CPU-sampling EventPipe session for pid {Pid} failed.", pid))
                 .ConfigureAwait(false);
+            stoppedAndDrained = true;
+            return new CpuCapturePhaseTimings(sessionStartDuration, captureDuration, drainStopwatch.Elapsed);
+        }
+        finally
+        {
+            if (!stoppedAndDrained)
+            {
+                await EventPipeSessionShutdown.StopAndDrainAsync(
+                    session,
+                    copyTask,
+                    ex => _logger.LogDebug(ex, "Stopping CPU-sampling EventPipe session for pid {Pid} failed.", pid))
+                    .ConfigureAwait(false);
+            }
         }
     }
 
-    private (long Total, IReadOnlyList<Hotspot> Hotspots, CallTreeNode Root, IReadOnlyDictionary<DotnetDiagnostics.Core.Memory.SymbolRef, DotnetDiagnostics.Core.Memory.SourceLocation>? Sources, IReadOnlyDictionary<DotnetDiagnostics.Core.Memory.SymbolRef, DotnetDiagnostics.Core.Memory.MethodIdentity>? Identities) AggregateHotspots(
+    private CpuAggregationResult AggregateHotspots(
         string tracePath,
         int pid,
         int topN,
@@ -208,15 +241,26 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         MethodInstantiationResolutionOptions? methodInstantiationResolution,
         CancellationToken cancellationToken)
     {
+        var symbolicationStopwatch = Stopwatch.StartNew();
         var etlxPath = TraceLog.CreateFromEventPipeDataFile(tracePath);
         try
         {
             using var traceLog = new TraceLog(etlxPath);
+            var symbolicationDuration = symbolicationStopwatch.Elapsed;
             var process = traceLog.Processes.LastProcessWithID(pid);
             if (process is null)
             {
                 _logger.LogDebug("Process {Pid} not found in trace.", pid);
-                return (0, Array.Empty<Hotspot>(), EmptyRoot(), null, null);
+                return new CpuAggregationResult(
+                    0,
+                    Array.Empty<Hotspot>(),
+                    EmptyRoot(),
+                    null,
+                    null,
+                    symbolicationDuration,
+                    TimeSpan.Zero,
+                    TimeSpan.Zero,
+                    TimeSpan.Zero);
             }
 
             var inclusive = new Dictionary<string, long>(StringComparer.Ordinal);
@@ -227,6 +271,7 @@ public sealed class EventPipeCpuSampler : ICpuSampler
             var codeAddressByKey = new Dictionary<string, Microsoft.Diagnostics.Tracing.Etlx.TraceCodeAddress>(StringComparer.Ordinal);
             var rootBuilder = new CallTreeBuilder();
             long total = 0;
+            var aggregationStopwatch = Stopwatch.StartNew();
 
             foreach (var traceEvent in process.EventsInProcess)
             {
@@ -309,25 +354,33 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                 foreach (var (k, m, d) in stackFrames) treeFrames.Add((k, m, d));
                 rootBuilder.AddStack(treeFrames, leafKey);
             }
-
             var ranked = inclusive
                 .OrderByDescending(kv => kv.Value)
                 .Take(topN)
                 .ToArray();
+            var root = rootBuilder.Build();
+            var aggregationDuration = aggregationStopwatch.Elapsed;
 
             IReadOnlyDictionary<DotnetDiagnostics.Core.Memory.SymbolRef, DotnetDiagnostics.Core.Memory.SourceLocation>? sources = null;
+            TimeSpan sourceLineResolutionDuration = TimeSpan.Zero;
             if (sourceResolution is { Enabled: true })
             {
+                var sourceStopwatch = Stopwatch.StartNew();
                 sources = ResolveSources(traceLog, ranked, modules, codeAddressByKey, sourceResolution);
+                sourceLineResolutionDuration = sourceStopwatch.Elapsed;
             }
 
+            var identityStopwatch = Stopwatch.StartNew();
             var identityMap = BuildMethodIdentities(ranked, modules, codeAddressByKey, sources);
             var openHotspots = BuildHotspots(ranked, modules, exclusive, identityMap);
+            var symbolicationPhaseDuration = symbolicationDuration + identityStopwatch.Elapsed;
             IReadOnlyDictionary<DotnetDiagnostics.Core.Memory.SymbolRef, DotnetDiagnostics.Core.Memory.MethodIdentity> identities = identityMap;
             var hotspots = openHotspots;
+            TimeSpan methodInstantiationResolutionDuration = TimeSpan.Zero;
 
             if (methodInstantiationResolution is { Enabled: true, MaxResolved: > 0 })
             {
+                var methodInstantiationStopwatch = Stopwatch.StartNew();
                 var candidates = BuildMethodInstantiationCandidates(
                     ranked,
                     modules,
@@ -351,9 +404,20 @@ public sealed class EventPipeCpuSampler : ICpuSampler
                     identities = enrichedIdentities;
                     sources = enrichedSources;
                 }
+
+                methodInstantiationResolutionDuration = methodInstantiationStopwatch.Elapsed;
             }
 
-            return (total, hotspots, rootBuilder.Build(), sources, identities);
+            return new CpuAggregationResult(
+                total,
+                hotspots,
+                root,
+                sources,
+                identities,
+                symbolicationPhaseDuration,
+                sourceLineResolutionDuration,
+                aggregationDuration,
+                methodInstantiationResolutionDuration);
         }
         finally
         {
@@ -848,6 +912,25 @@ public sealed class EventPipeCpuSampler : ICpuSampler
         }
         return result;
     }
+
+    private sealed record CpuCapturePhaseTimings(
+        TimeSpan SessionStartDuration,
+        TimeSpan CaptureDuration,
+        TimeSpan SessionDrainDuration)
+    {
+        public TimeSpan TotalDuration => SessionStartDuration + CaptureDuration + SessionDrainDuration;
+    }
+
+    private sealed record CpuAggregationResult(
+        long Total,
+        IReadOnlyList<Hotspot> Hotspots,
+        CallTreeNode Root,
+        IReadOnlyDictionary<DotnetDiagnostics.Core.Memory.SymbolRef, DotnetDiagnostics.Core.Memory.SourceLocation>? Sources,
+        IReadOnlyDictionary<DotnetDiagnostics.Core.Memory.SymbolRef, DotnetDiagnostics.Core.Memory.MethodIdentity>? Identities,
+        TimeSpan SymbolicationDuration,
+        TimeSpan SourceLineResolutionDuration,
+        TimeSpan AggregationDuration,
+        TimeSpan MethodInstantiationResolutionDuration);
 
     private static CallTreeNode EmptyRoot() => new(new SampledFrame(string.Empty, "<root>"), 0, 0, Array.Empty<CallTreeNode>());
 

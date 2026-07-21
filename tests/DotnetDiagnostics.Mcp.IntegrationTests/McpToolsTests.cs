@@ -301,6 +301,8 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         envelope.Cpu.Should().NotBeNull();
         envelope.Cpu!.ProcessId.Should().Be(Environment.ProcessId);
         envelope.Cpu.TotalSamples.Should().BeGreaterThan(0);
+        envelope.Cpu.Timings.TotalDuration.Should().BeGreaterThan(TimeSpan.Zero);
+        envelope.Cpu.Timings.CaptureDuration.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(1));
     }
 
     [Fact]
