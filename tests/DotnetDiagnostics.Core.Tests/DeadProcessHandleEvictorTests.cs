@@ -180,5 +180,21 @@ public class DeadProcessHandleEvictorTests
         errors.Should().BeGreaterThan(0, "the per-tick exception must be reported, not thrown out of the loop");
     }
 
+    // --- IsProcessAlive (issue #675) — the canonical OS-level check reused by the CLI session REPL ----
+
+    [Fact]
+    public void IsProcessAlive_CurrentProcess_ReturnsTrue()
+    {
+        DeadProcessHandleEvictor.IsProcessAlive(Environment.ProcessId).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsProcessAlive_OutOfRangePid_ReturnsFalse()
+    {
+        // Far outside any real OS process-id range — a definitive "no such process" case
+        // (ArgumentException from Process.GetProcessById), not merely "assumed dead".
+        DeadProcessHandleEvictor.IsProcessAlive(999_999_999).Should().BeFalse();
+    }
+
     private sealed record Payload(string Value);
 }

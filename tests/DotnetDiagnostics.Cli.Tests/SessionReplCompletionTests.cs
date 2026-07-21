@@ -156,4 +156,42 @@ public sealed class SessionReplCompletionTests
     {
         SessionReplCompletion.IsStartingFlagToken(text, caret).Should().Be(expected);
     }
+
+    // --- Live-capture completion detection (issue #675) --------------------------------------------
+
+    [Fact]
+    public void IsLiveCaptureKindCompletion_CollectKindFlag_ReturnsTrue()
+    {
+        SessionReplCompletion.IsLiveCaptureKindCompletion(["collect", "--kind"]).Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsLiveCaptureKindCompletion_GetBytesKindFlag_ReturnsFalse()
+    {
+        // get-bytes --kind offers dump kinds too, which don't require a live process; only
+        // collect --kind is unconditionally live-only.
+        SessionReplCompletion.IsLiveCaptureKindCompletion(["get-bytes", "--kind"]).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsLiveCaptureKindCompletion_CollectPidFlag_ReturnsFalse()
+    {
+        SessionReplCompletion.IsLiveCaptureKindCompletion(["collect", "--pid"]).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsLiveCaptureKindCompletion_ExplicitPidOverridesBoundTarget_ReturnsFalse()
+    {
+        // collect --pid 5678 --kind <TAB> targets pid 5678 explicitly, overriding whatever the session's
+        // bound target is — so it must NOT be flagged as live-only even though the last token is --kind
+        // (code review, issue #675).
+        SessionReplCompletion.IsLiveCaptureKindCompletion(["collect", "--pid", "5678", "--kind"]).Should().BeFalse();
+        SessionReplCompletion.IsLiveCaptureKindCompletion(["collect", "-p", "5678", "--kind"]).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsLiveCaptureKindCompletion_EmptyTokens_ReturnsFalse()
+    {
+        SessionReplCompletion.IsLiveCaptureKindCompletion([]).Should().BeFalse();
+    }
 }

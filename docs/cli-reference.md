@@ -508,6 +508,24 @@ and pid-less commands (`processes`, `query`) never inherit it. **An explicit per
 overrides the binding** — except in a `session --launch`-started session, where the pid is locked for
 the session's lifetime and any different `--pid`/`target` is rejected (see above).
 
+#### Target-exit signal (issue #675)
+
+A background check independently watches the bound target every ~5 s and — separately from any
+handle you may have collected — prints a **one-time** notice the first time it detects the bound pid
+has exited:
+
+```text
+diag(pid 1234)> [session] target pid 1234 has exited; self-contained handles (e.g. process dumps) remain queryable, but new captures against this pid will fail and any live-sourced handles for this pid are dropped by the periodic sweep.
+```
+
+A no-argument `target` also actively re-checks liveness and reflects it in the report (`Target bound to
+pid 1234 (exited).`), and on a real terminal, tab-completing `collect --kind <TAB>` after the notice
+annotates every candidate (`cpu  (target exited)`) since a new capture against a dead pid will fail
+immediately — self-contained follow-ups (`query --handle <id> --view <view>`) are unaffected, per #662,
+and so is `collect --pid <other-pid> --kind <TAB>` (an explicit `--pid`/`-p` overrides the exited
+session binding for that one invocation, so it isn't annotated).
+Binding a fresh live pid (`target <pid>`) clears the exited state.
+
 ### Handles and `query`
 
 A `collect` or `inspect-heap` command prints a handle plus the views you can re-render:

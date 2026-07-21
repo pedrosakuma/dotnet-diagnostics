@@ -29,6 +29,13 @@ namespace DotnetDiagnostics.Cli;
 /// <see cref="DeadProcessHandleEvictor"/> (the same driver behind the server's
 /// <c>HandleEvictionBackgroundService</c>): it drops handles whose target process has exited so the
 /// user never drills into a dead trace.</para>
+/// <para><b>Target-liveness notice (issue #675).</b> A second 5s timer (<see cref="MonitorTargetLivenessAsync"/>)
+/// independently watches the session-bound <see cref="_targetPid"/> (which may have no handles yet) and
+/// prints a one-time console notice the first time it detects the bound target has exited, since the
+/// handle-eviction sweep above is otherwise silent and a user could only discover the exit by way of a
+/// failing command. <c>target</c> (no args) also reports current liveness explicitly, and tab-completion
+/// (<see cref="SessionReplPromptCallbacks"/>) annotates <c>collect --kind</c> candidates once the target
+/// is known dead.</para>
 /// </remarks>
 internal sealed class SessionRepl
 {
@@ -44,11 +51,32 @@ internal sealed class SessionRepl
     // --pid inherit it so the user supplies the pid once per session instead of per command.
     private int? _targetPid;
 
+    // Guards read-compare-write sequences across _targetPid/_targetExited (issue #675 code review):
+    // the background MonitorTargetLivenessAsync task and HandleTargetAsync's rebind/clear paths run on
+    // different threads, so a plain volatile bool alone isn't enough to prevent a stale liveness check
+    // from latching _targetExited for a binding that has since changed underneath it.
+    private readonly object _targetLock = new();
+
+    // Bumped under _targetLock on every rebind/clear (issue #675 code review, round 3): closes the
+    // narrow "ABA" gap the pid-only staleness guard misses — the OS reusing the exact same numeric pid
+    // for a fresh process within the ~5s sweep window. A stale isProcessAlive(pid) result can no longer
+    // latch _targetExited for a binding whose generation has since moved on, even when the pid matches.
+    private long _targetGeneration;
+
+    // Set once the current _targetPid is known to have exited (issue #675) — reset whenever
+    // _targetPid is (re)bound to a fresh pid. Drives both the one-time proactive console notice
+    // (MonitorTargetLivenessAsync) and the liveness-aware tab-completion annotation (passed to
+    // SessionReplPromptCallbacks).
+    private volatile bool _targetExited;
+
     // Set when the session itself launched the target (issue #365, `session --launch -- <app>`), so
     // the opening banner can explain the bound pid came from the launched child.
     private readonly bool _launchedTarget;
 
-    private SessionRepl(int? initialTargetPid, CancellationToken externalToken)
+    /// <summary>Internal (not <c>private</c>) so <see cref="CheckTargetLiveness"/> is directly unit-testable
+    /// against a freshly-constructed instance (issue #675) without going through the full <see cref="RunAsync"/>
+    /// loop / a real terminal.</summary>
+    internal SessionRepl(int? initialTargetPid, CancellationToken externalToken)
     {
         _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
         _targetPid = initialTargetPid;
@@ -100,13 +128,14 @@ internal sealed class SessionRepl
         var useInteractivePrompt = ownsConsole && !Console.IsOutputRedirected && !Console.IsInputRedirected;
         var replPromptConfig = useInteractivePrompt ? new PrettyPrompt.PromptConfiguration() : null;
         await using var replPrompt = useInteractivePrompt
-            ? new PrettyPrompt.Prompt(callbacks: new SessionReplPromptCallbacks(() => _targetPid), configuration: replPromptConfig)
+            ? new PrettyPrompt.Prompt(callbacks: new SessionReplPromptCallbacks(() => _targetPid, () => _targetExited), configuration: replPromptConfig)
             : null;
 
         var evictor = store is not null ? new DeadProcessHandleEvictor(store) : null;
         var sweep = evictor is not null
             ? Task.Run(() => evictor.RunAsync(SweepInterval, cancellationToken: _sessionCts.Token))
             : Task.CompletedTask;
+        var targetLivenessMonitor = Task.Run(() => MonitorTargetLivenessAsync(DeadProcessHandleEvictor.IsProcessAlive, stdout, _sessionCts.Token));
 
         int exitCode;
         try
@@ -194,10 +223,120 @@ internal sealed class SessionRepl
             {
             }
 
+            try
+            {
+                await targetLivenessMonitor.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+
             _sessionCts.Dispose();
         }
 
         return exitCode;
+    }
+
+    /// <summary>
+    /// Synchronous, directly-testable half of the target-liveness watch (issue #675): the first time
+    /// <paramref name="targetPid"/> is found to have exited it latches <see cref="_targetExited"/> and
+    /// returns the one-time console notice text; every other case (still alive, no target bound, or
+    /// already latched for this binding) returns <c>null</c> so the caller prints nothing.
+    /// </summary>
+    /// <param name="isProcessAlive">Liveness probe — production callers pass
+    /// <see cref="DeadProcessHandleEvictor.IsProcessAlive"/> (a definitive OS-process check); tests inject
+    /// a deterministic stand-in.</param>
+    /// <param name="targetPid">The pid snapshot to check — normally captured together with
+    /// <paramref name="generation"/> via <see cref="SnapshotTarget"/> at the moment the caller decided to
+    /// check.</param>
+    /// <param name="generation">The binding-generation snapshot captured alongside
+    /// <paramref name="targetPid"/> (see <see cref="SnapshotTarget"/>).</param>
+    /// <remarks>
+    /// Guards against two rebind races (both surfaced by code review): a snapshot the caller read
+    /// slightly before this call executes can go stale while the (possibly slow) liveness probe is in
+    /// flight — e.g. the background monitor reads the binding, then a concurrent <c>target
+    /// &lt;new-pid&gt;</c> rebinds and resets <see cref="_targetExited"/> before this method's probe
+    /// returns. Comparing <c>_targetPid</c> against the snapshot catches a rebind to a <i>different</i>
+    /// pid; comparing <see cref="_targetGeneration"/> additionally catches the narrower "ABA" case where
+    /// the OS reuses the exact same pid for a fresh process within the sweep window. Both comparisons
+    /// happen atomically (under <see cref="_targetLock"/>) with the final latch.
+    /// </remarks>
+    internal string? CheckTargetLiveness(Func<int, bool> isProcessAlive, int? targetPid, long generation)
+    {
+        ArgumentNullException.ThrowIfNull(isProcessAlive);
+
+        if (targetPid is not { } pid || _targetExited)
+        {
+            return null;
+        }
+
+        if (isProcessAlive(pid))
+        {
+            return null; // still alive
+        }
+
+        // Re-check (and latch) under the same lock used by rebind/clear so a stale probe — the target
+        // may have been rebound (possibly to the same numeric pid, hence the generation check) or
+        // cleared on another thread between the isProcessAlive(pid) call above and this point — can
+        // never poison a fresh binding.
+        lock (_targetLock)
+        {
+            if (_targetExited || _targetPid != pid || _targetGeneration != generation)
+            {
+                return null;
+            }
+
+            _targetExited = true;
+        }
+
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"[session] target pid {pid} has exited; self-contained handles (e.g. process dumps) remain queryable, but new captures against this pid will fail and any live-sourced handles for this pid are dropped by the periodic sweep.");
+    }
+
+    /// <summary>Atomically reads <see cref="_targetPid"/> together with <see cref="_targetGeneration"/>
+    /// so a caller that will later act on a possibly-stale snapshot (see <see cref="CheckTargetLiveness"/>)
+    /// can detect a same-pid rebind, not just a different-pid one.</summary>
+    internal (int? Pid, long Generation) SnapshotTarget()
+    {
+        lock (_targetLock)
+        {
+            return (_targetPid, _targetGeneration);
+        }
+    }
+
+    /// <summary>
+    /// Background loop (issue #675) that independently watches the session-bound <see cref="_targetPid"/>
+    /// for a live→exited transition (via <see cref="CheckTargetLiveness"/>) and prints a one-time console
+    /// notice — unlike the handle-eviction sweep above, this fires even before any handle has been
+    /// collected for that pid (a bound-but-not-yet-collected target still benefits from the signal), and
+    /// never repeats for the same binding. Runs unconditionally (no DI dependency — the OS-level liveness
+    /// probe needs nothing beyond the pid itself).
+    /// </summary>
+    private async Task MonitorTargetLivenessAsync(Func<int, bool> isProcessAlive, TextWriter stdout, CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(SweepInterval);
+        while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+        {
+            string? notice;
+            try
+            {
+                var (pid, generation) = SnapshotTarget();
+                notice = CheckTargetLiveness(isProcessAlive, pid, generation);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Defense-in-depth (code review, issue #675): mirrors DeadProcessHandleEvictor.RunAsync's
+                // own per-tick swallow — a transient liveness-probe failure must never tear down this
+                // long-lived background loop for the rest of the session.
+                continue;
+            }
+
+            if (notice is not null)
+            {
+                await stdout.WriteLineAsync(notice).ConfigureAwait(false);
+            }
+        }
     }
 
     private async Task RunOneAsync(
@@ -299,9 +438,17 @@ internal sealed class SessionRepl
         {
             if (_targetPid is { } current)
             {
+                // Issue #675: an explicit status query actively re-checks liveness (rather than
+                // only relying on the ≤5s-lagged background monitor) so 'target' always answers
+                // truthfully. Goes through CheckTargetLiveness (not IProcessDiscovery) so the check
+                // is a definitive OS-process probe rather than one that can false-positive on a
+                // transient diagnostic-IPC failure.
+                var (snapshotPid, snapshotGeneration) = SnapshotTarget();
+                CheckTargetLiveness(DeadProcessHandleEvictor.IsProcessAlive, snapshotPid, snapshotGeneration);
+                var suffix = _targetExited ? " (exited)" : string.Empty;
                 await stdout.WriteLineAsync(string.Create(
                     CultureInfo.InvariantCulture,
-                    $"Target bound to pid {current}. Live-target commands use it unless you pass --pid; 'target clear' to unbind.")).ConfigureAwait(false);
+                    $"Target bound to pid {current}{suffix}. Live-target commands use it unless you pass --pid; 'target clear' to unbind.")).ConfigureAwait(false);
             }
             else
             {
@@ -318,7 +465,13 @@ internal sealed class SessionRepl
                 || string.Equals(args[0], "off", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(args[0], "unset", StringComparison.OrdinalIgnoreCase)))
         {
-            _targetPid = null;
+            lock (_targetLock)
+            {
+                _targetPid = null;
+                _targetExited = false;
+                _targetGeneration++;
+            }
+
             await stdout.WriteLineAsync("Target cleared.").ConfigureAwait(false);
             return;
         }
@@ -328,7 +481,13 @@ internal sealed class SessionRepl
         {
             if (pid > 0)
             {
-                _targetPid = pid;
+                lock (_targetLock)
+                {
+                    _targetPid = pid;
+                    _targetExited = false;
+                    _targetGeneration++;
+                }
+
                 await stdout.WriteLineAsync(string.Create(
                     CultureInfo.InvariantCulture,
                     $"Target bound to pid {pid}. capabilities/collect/inspect-heap/dump/get-bytes now use it unless you pass --pid.")).ConfigureAwait(false);
@@ -364,7 +523,13 @@ internal sealed class SessionRepl
 
             if (CliProcessSelector.TryResolveName(args[0], discovery.ListProcesses(), out var resolvedPid, out var error))
             {
-                _targetPid = resolvedPid;
+                lock (_targetLock)
+                {
+                    _targetPid = resolvedPid;
+                    _targetExited = false;
+                    _targetGeneration++;
+                }
+
                 await stdout.WriteLineAsync(string.Create(
                     CultureInfo.InvariantCulture,
                     $"Target bound to pid {resolvedPid}. capabilities/collect/inspect-heap/dump/get-bytes now use it unless you pass --pid.")).ConfigureAwait(false);

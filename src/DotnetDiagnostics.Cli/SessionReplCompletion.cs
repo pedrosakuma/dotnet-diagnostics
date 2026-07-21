@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Linq;
 
 namespace DotnetDiagnostics.Cli;
 
@@ -79,6 +80,29 @@ internal static class SessionReplCompletion
             _ => GetFlagCandidates(command),
         };
     }
+
+    /// <summary>
+    /// Whether the word being completed is <c>collect --kind &lt;TAB&gt;</c> — the specific completion
+    /// site issue #675 calls out as misleading once the bound target is known to have exited: every
+    /// <see cref="CliCommandCatalog.CollectKinds"/> candidate requires a live process to start a new
+    /// capture, so it will fail immediately against a dead pid. Used by
+    /// <see cref="SessionReplPromptCallbacks"/> to decide whether to annotate (not filter — the
+    /// candidates are still valid once a live target is rebound) the completion items with a warning.
+    /// Self-contained follow-ups (<c>query --handle</c>) are unaffected on purpose: per #662, those
+    /// handles remain queryable after the producer process exits.
+    /// </summary>
+    /// <remarks>
+    /// Returns <c>false</c> when the command already carries an explicit <c>--pid</c>/<c>-p</c> token —
+    /// that overrides the session's bound (exited) target for this one invocation, so the "will fail"
+    /// warning would be misleading (code review, issue #675): e.g.
+    /// <c>collect --pid 5678 --kind &lt;TAB&gt;</c> targets pid 5678, not the exited session binding.
+    /// </remarks>
+    internal static bool IsLiveCaptureKindCompletion(IReadOnlyList<string> tokensBeforeWord)
+        => tokensBeforeWord.Count > 0
+            && string.Equals(tokensBeforeWord[0], "collect", StringComparison.Ordinal)
+            && string.Equals(tokensBeforeWord[^1], "--kind", StringComparison.Ordinal)
+            && !tokensBeforeWord.Any(token => string.Equals(token, "--pid", StringComparison.Ordinal)
+                || string.Equals(token, "-p", StringComparison.Ordinal));
 
     private static IReadOnlyList<string> GetFlagCandidates(string command)
         => CliCommandCatalog.TryGetCommand(command, out var descriptor) && descriptor is not null

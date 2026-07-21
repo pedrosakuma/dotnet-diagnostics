@@ -903,10 +903,15 @@ public sealed class SessionReplTests
     [Fact]
     public async Task Target_ShowsBinding_AfterBind()
     {
-        var (exit, stdout, _) = await RunReplAsync("target 4321\ntarget\nexit\n");
+        // Uses this test process's own (guaranteed-alive) pid: the background liveness monitor now runs
+        // unconditionally (issue #675 fix — no longer gated on IProcessDiscovery), so binding to a pid
+        // that isn't a real running process would non-deterministically pick up an "(exited)" suffix
+        // depending on scheduling.
+        var pid = Environment.ProcessId;
+        var (exit, stdout, _) = await RunReplAsync($"target {pid}\ntarget\nexit\n");
 
         exit.Should().Be(0);
-        stdout.Should().Contain("Target bound to pid 4321.");
+        stdout.Should().Contain($"Target bound to pid {pid}.");
     }
 
     [Fact]
@@ -935,6 +940,102 @@ public sealed class SessionReplTests
 
         exit.Should().Be(0);
         stderr.Should().Contain("Usage: target <pid>");
+    }
+
+    // --- Target-liveness UX (issue #675) ------------------------------------------------------------
+
+    [Fact]
+    public async Task Target_NoArgs_WithLiveTarget_DoesNotReportExited()
+    {
+        // This test process's own pid is guaranteed alive for the duration of the test.
+        var pid = Environment.ProcessId;
+        var (exit, stdout, _) = await RunReplAsync($"target {pid}\ntarget\nexit\n");
+
+        exit.Should().Be(0);
+        stdout.Should().Contain($"Target bound to pid {pid}.");
+        stdout.Should().NotContain("(exited)");
+    }
+
+    [Fact]
+    public async Task Target_NoArgs_WithDeadTarget_ReportsExited()
+    {
+        // A pid far outside any real OS process-id range (see DeadProcessHandleEvictor.IsProcessAlive,
+        // which is a plain Process.GetProcessById probe) so this is a real, definitive "not alive" case
+        // rather than a stubbed IProcessDiscovery answer — exercising the exact same canonical check
+        // production code uses instead of a test-only substitute.
+        const int deadPid = 999_999_999;
+        var (exit, stdout, _) = await RunReplAsync($"target {deadPid}\ntarget\nexit\n");
+
+        exit.Should().Be(0);
+        stdout.Should().Contain($"Target bound to pid {deadPid} (exited).");
+    }
+
+    [Fact]
+    public void CheckTargetLiveness_TargetExited_ReturnsNoticeOnce()
+    {
+        var repl = new SessionRepl(initialTargetPid: 4321, CancellationToken.None);
+        var (_, generation) = repl.SnapshotTarget();
+
+        var first = repl.CheckTargetLiveness(isProcessAlive: _ => false, targetPid: 4321, generation);
+        first.Should().NotBeNull();
+        first.Should().Contain("target pid 4321 has exited");
+
+        // Second check for the same (still-dead) binding must not re-fire.
+        var second = repl.CheckTargetLiveness(isProcessAlive: _ => false, targetPid: 4321, generation);
+        second.Should().BeNull();
+    }
+
+    [Fact]
+    public void CheckTargetLiveness_TargetAlive_ReturnsNull()
+    {
+        var repl = new SessionRepl(initialTargetPid: 4321, CancellationToken.None);
+        var (_, generation) = repl.SnapshotTarget();
+
+        repl.CheckTargetLiveness(isProcessAlive: _ => true, targetPid: 4321, generation).Should().BeNull();
+    }
+
+    [Fact]
+    public void CheckTargetLiveness_NoTargetBound_ReturnsNull()
+    {
+        var repl = new SessionRepl(initialTargetPid: null, CancellationToken.None);
+        var (_, generation) = repl.SnapshotTarget();
+
+        repl.CheckTargetLiveness(isProcessAlive: _ => false, targetPid: null, generation).Should().BeNull();
+    }
+
+    [Fact]
+    public void CheckTargetLiveness_StaleSnapshotAfterRebind_DoesNotLatchNewBinding()
+    {
+        // Simulates the rebind race the review flagged: a caller (e.g. the background monitor)
+        // snapshotted _targetPid as 100 before this check ran, but the session has since rebound to a
+        // different pid (999) by the time the (now-stale) liveness probe comes back "dead". The stale
+        // check must not latch _targetExited for the new binding.
+        var repl = new SessionRepl(initialTargetPid: 999, CancellationToken.None);
+        var (_, generation) = repl.SnapshotTarget();
+
+        var result = repl.CheckTargetLiveness(isProcessAlive: _ => false, targetPid: 100, generation);
+
+        result.Should().BeNull();
+        // The new binding (999) must still be reported as alive, not poisoned by the stale check.
+        repl.CheckTargetLiveness(isProcessAlive: _ => true, targetPid: 999, generation).Should().BeNull();
+    }
+
+    [Fact]
+    public void CheckTargetLiveness_StaleGenerationSamePid_DoesNotLatchNewBinding()
+    {
+        // Narrower "ABA" variant flagged by code review (round 3): the OS can reuse the exact same
+        // numeric pid for a fresh process within the sweep window, so a pid match alone isn't proof the
+        // binding is the one the stale snapshot was taken against. A snapshot generation older than the
+        // session's current one must not latch _targetExited even when the pid still matches.
+        var repl = new SessionRepl(initialTargetPid: 4321, CancellationToken.None);
+        var (_, currentGeneration) = repl.SnapshotTarget();
+        var staleGeneration = currentGeneration - 1;
+
+        var result = repl.CheckTargetLiveness(isProcessAlive: _ => false, targetPid: 4321, staleGeneration);
+
+        result.Should().BeNull();
+        // The actual current binding must still be reported as alive, not poisoned by the stale check.
+        repl.CheckTargetLiveness(isProcessAlive: _ => true, targetPid: 4321, currentGeneration).Should().BeNull();
     }
 
     // --- Launched-session pid lock (issue #659) ---------------------------------------------------
