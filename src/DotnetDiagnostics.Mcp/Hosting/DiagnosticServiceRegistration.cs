@@ -281,6 +281,7 @@ internal static class DiagnosticServiceRegistration
             .WithTools<DiagnosticTools>()
             .WithTools<CollectEventsTool>()
             .WithTools<CollectSampleTool>()
+            .WithTools<CollectBatchTool>()
             .WithTools<GetBytesTool>()
             .WithTools<InspectProcessTool>()
             .WithTools<InspectHeapTool>()

@@ -39,7 +39,7 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
         var measurement = ToolCatalogMeasurement.Measure(result);
         _output.WriteLine(measurement.ToReport());
 
-        measurement.Tools.Should().HaveCount(16,
+        measurement.Tools.Should().HaveCount(17,
             "the budget must measure the maximal shipping surface, including orchestrator and Azure discovery");
         measurement.SerializedBytes.Should().BeLessThanOrEqualTo(MaximumCatalogBytes,
             "tools/list growth consumes model context on every client catalog refresh; update the measurement report and justify any budget increase");

@@ -131,6 +131,39 @@ public sealed class ToolScopeIntegrationTests
     }
 
     [Fact]
+    public async Task CollectBatch_Entry_Missing_Scope_Is_Rejected_By_Internal_PreAuth_Before_Any_Session_Opens()
+    {
+        // collect_batch's own outer gate is RequireAnyScope("read-counters", "eventpipe"), so a
+        // read-counters-only token passes that union gate and reaches the method body. But a
+        // collect_sample(kind="cpu") entry needs 'eventpipe', which this token doesn't have — the
+        // per-entry pre-authorization loop (issue #665 Part C) must reject the whole call with a
+        // structured InsufficientScope error before any session opens, mirroring how
+        // CollectEventsTool re-checks scope per kind internally.
+        await using var factory = CreateFactory(
+            ("counters-only", "counters-secret-batch", new[] { "read-counters" }));
+        await using var client = await ConnectWithTokenAsync(factory, "counters-secret-batch");
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            arguments: new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "cpu" },
+                },
+                ["durationSeconds"] = 1,
+            },
+            cancellationToken: CancellationToken.None);
+
+        // Not the outer-filter forbidden envelope (that's IsError=true) — this is collect_batch's
+        // own internal DiagnosticResult.Fail, returned as ordinary structured content.
+        result.IsError.Should().NotBe(true);
+        var text = result.Content.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
+        text.Should().Contain("\"kind\":\"InsufficientScope\"");
+        text.Should().Contain("eventpipe");
+    }
+
+    [Fact]
     public async Task ListTools_SurfaceScopeMetadata_For_Current_Bearer()
     {
         await using var factory = CreateFactory(

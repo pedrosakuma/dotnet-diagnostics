@@ -1435,6 +1435,63 @@ modifier scope `sensitive-parameter-read` (root / `*` tokens do **not** auto-gra
 
 ---
 
+## `collect_batch`
+
+Runs several `collect_sample`/`collect_events` kinds concurrently, against the same resolved
+process, for the same shared duration window, inside a single call (issue #665 Part C).
+Eliminates the process-exit race of issuing those kinds as separate sequential calls against a
+short-lived process (test hosts, CLI batch jobs, anything that may have already exited by the
+time a second round-trip starts). Each requested entry is dispatched by calling that kind's own
+existing `collect_sample`/`collect_events` entry point directly, so every entry's `data` shape is
+identical to calling that kind directly — see that kind's own section above/below for its payload.
+
+`kind="method-params"` is **not** eligible for batching — it stays a single-purpose
+`collect_sample` call (security-sensitive; requires its own explicit acknowledgement flow).
+`kind="sweep"` is likewise excluded — `sweep` is itself a nested multi-session fan-out
+(`SweepUseCase` opens 4 concurrent EventPipe sessions and enforces its own duration floor),
+which would silently break `collect_batch`'s "one shared duration, ≤4 sessions" guarantees;
+call `collect_events(kind="sweep")` directly instead.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `requests` | `CollectBatchRequest[]` | — (required) | 1–4 entries, each `{tool, kind}`. `tool` is `collect_sample` or `collect_events`; `kind` is one of that tool's own `AllowedKinds`. Null entries, duplicate `{tool, kind}` pairs, `kind="method-params"`, and `kind="sweep"` are rejected. |
+| `processId` | `int?` | auto | Target process id. Resolved once and shared by every requested entry. |
+| `durationSeconds` | `int` | `10` | Shared collection window for every requested entry. ≥ 1. Individual entries cannot override this in v1 — call the specific tool directly if one kind genuinely needs a different window. |
+
+**Returns:** `CollectBatchReport` — `processId`, `durationSeconds`, and `results` (one
+`CollectBatchEntryResult` per requested entry, in request order). Each entry carries
+`tool`, `kind`, `summary`, `data` (that entry's own payload, serialized generically as a JSON
+value since `collect_sample`/`collect_events` kinds don't share one static C# type — the shape is
+otherwise identical to calling that kind directly), `handle` / `handleExpiresAt` (pass to
+`query_snapshot` exactly as if the entry had been collected by a standalone call), and `error`
+(populated instead of `data`/`handle` when only that one entry failed).
+
+**Partial-failure semantics.** A `collect_batch` call never fails outright just because one
+entry's target exited mid-window — the top-level result stays successful and `results` is always
+returned once dispatch begins; each entry independently carries its own `error` when it failed.
+The top-level call only fails outright (no `results` at all) for request-shape validation,
+pre-authorization, or `processId`-resolution failures — nothing has started yet in those cases.
+
+**Authorization.** `collect_batch` itself is gated by `RequireAnyScope("read-counters",
+"eventpipe")`, mirroring `collect_events`. Before opening any session it additionally
+**pre-authorizes every requested entry** against that entry's own real required scope — every
+`collect_sample` kind eligible for batching requires `eventpipe`; each `collect_events` kind
+requires the same scope it would if called directly (`read-counters` for `kind="counters"`, and so
+on — see `collect_events`'s own Authorization note above). The whole call fails before any session
+opens if any single entry is unauthorized (no partial start).
+
+**v1 scope cuts.** No per-entry option overrides (`topN`, `symbolPath`, `depth`, provider lists,
+…) — every entry runs with that kind's own defaults; call `collect_sample`/`collect_events`
+directly for fine-grained per-kind tuning. Capped at 4 entries per call (resource-boundedness,
+see [`resource-boundedness.md`](./resource-boundedness.md)). See
+[`docs/design/ephemeral-process-capture-design.md`](./design/ephemeral-process-capture-design.md)
+Part C for the full design rationale, including why a dedicated tool was chosen over a bolt-on
+`alsoCollect` parameter or a `kind="batch"` value on an existing tool.
+
+---
+
 ## `collect_events(kind="counters")`
 
 Subscribes to one or more legacy EventCounter providers and, optionally, one or

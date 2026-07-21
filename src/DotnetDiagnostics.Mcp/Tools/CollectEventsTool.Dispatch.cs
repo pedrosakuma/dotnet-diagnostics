@@ -140,6 +140,14 @@ public sealed partial class CollectEventsTool
             ["replica_counters"] = CreateHandler("read-counters", _ => 5, RunReplicaCountersKindAsync),
         };
 
+    /// <summary>
+    /// Looks up the per-kind required scope from <see cref="KindHandlers"/> (e.g. for
+    /// <c>collect_batch</c>'s pre-authorization loop, issue #665 Part C) without duplicating the
+    /// kind→scope table and risking drift. Returns <c>null</c> for an unknown kind.
+    /// </summary>
+    internal static string? GetRequiredScope(string kind)
+        => KindHandlers.TryGetValue(kind, out var handler) ? handler.RequiredScope : null;
+
     private static CollectEventsKindHandler CreateHandler(
         string requiredScope,
         Func<CollectEventsDispatchContext, int> defaultDuration,

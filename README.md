@@ -7,7 +7,7 @@ Normal EventPipe and ClrMD diagnostics require no target code changes or prior i
 The explicit exception is `collect_sample(kind="method-params")`, an opt-in, privileged,
 security-gated dynamic profiler attach that temporarily instruments an allowlist of methods.
 
-> **Status:** 16 unified tools in the full surface (12 default plus 4 configuration-gated),
+> **Status:** 17 unified tools in the full surface (13 default plus 4 configuration-gated),
 > HTTP + stdio transports, IoT-style triage (6+ steps → 2 steps).
 > See [`docs/`](./docs) for full reference.
 
@@ -171,16 +171,17 @@ as `dotnet-diagnostics-cli-<version>-<rid>`. **Full reference:** [`docs/cli-refe
 
 ## Tools Overview
 
-**16 unified tools.** Full schemas and return shapes: [`docs/tool-reference.md`](./docs/tool-reference.md).
+**17 unified tools.** Full schemas and return shapes: [`docs/tool-reference.md`](./docs/tool-reference.md).
 
 <details>
-<summary><strong>The 16 tools at a glance</strong></summary>
+<summary><strong>The 17 tools at a glance</strong></summary>
 
 | Tool | Purpose |
 |---|---|
 | `inspect_process` | Process discovery, capabilities, environment/resources, memory trends, preflight, and evidence-backed triage |
 | `collect_events` | EventCounters/Meters and bounded EventPipe event families (GC, exceptions, activities, logs, JIT, networking, and more) |
 | `collect_sample` | CPU, off-CPU, managed/native allocation, and explicitly gated method-parameter capture |
+| `collect_batch` | Run several collect_sample/collect_events kinds concurrently against one resolved process in one call (eliminates the process-exit race of separate calls) |
 | `query_snapshot` | Re-project retained handles into call trees, diffs, histograms, events, roots, and other focused views |
 | `inspect_heap` | Live or dump heap walk with retained-type, root, retention-path, and async-state-machine drilldowns |
 | `get_bytes` | Materialize authorized module, PDB, dump, or trace bytes from a server-side artifact |
