@@ -71,6 +71,7 @@ public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
         Validate(opts);
 
         var capturedAt = DateTimeOffset.UtcNow;
+        var processStartedAtUtc = TryGetProcessStartedAtUtc(processId);
         var sw = Stopwatch.StartNew();
         var warnings = new List<string>();
         var window = TimeSpan.FromSeconds(DefaultWindowSeconds);
@@ -113,10 +114,28 @@ public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
             Locks: Array.Empty<MonitorLockState>())
         {
             Source = BackendId,
+            ProcessStartedAtUtc = processStartedAtUtc,
             SnapshotKind = "perf-replay-approx",
             WindowSeconds = DefaultWindowSeconds,
             Warnings = warnings,
         };
+    }
+
+    private static DateTimeOffset? TryGetProcessStartedAtUtc(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     internal static IReadOnlyList<ManagedThread> BuildApproximateThreads(

@@ -1,4 +1,6 @@
+using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.UseCases;
 using FluentAssertions;
 using Xunit;
 
@@ -72,6 +74,56 @@ public class DeadProcessHandleEvictorTests
 
         removed.Should().Be(0);
         store.TryGet<Payload>(dump.Id).Should().NotBeNull("dump-origin handles are not PID-evictable");
+    }
+
+    [Fact]
+    public void EvictDeadProcesses_SelfContainedArtifactsSurviveExit_ButMethodParamHandlesDoNot()
+    {
+        // Regression guard for #662: self-contained drilldown artifacts stay queryable after the
+        // producer exits, so they must be TTL-evicted only. Method-parameter capture is the
+        // deliberate exception because its handle lifetime is tied to the live profiler attach.
+        const int pid = 200;
+        var store = new MemoryDiagnosticHandleStore();
+        var survivingHandles = new[]
+        {
+            store.Register(pid, "cpu-sample", new Payload("cpu"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, "allocation-sample", new Payload("alloc"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, SamplerUseCases.OffCpuHandleKind, new Payload("offcpu"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, SamplerUseCases.NativeAllocHandleKind, new Payload("native"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.Counters, new Payload("counters"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.ExceptionSnapshot, new Payload("exceptions"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.GcEvents, new Payload("gc"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.EventCatalog, new Payload("catalog"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.GcDatas, new Payload("datas"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.LogSnapshot, new Payload("logs"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.JitSnapshot, new Payload("jit"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.ThreadPoolSnapshot, new Payload("threadpool"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.ContentionSnapshot, new Payload("contention"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.DbSnapshot, new Payload("db"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.KestrelSnapshot, new Payload("kestrel"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.NetworkingSnapshot, new Payload("networking"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.InFlightRequests, new Payload("requests"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.StartupSnapshot, new Payload("startup"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.Activities, new Payload("activities"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, CollectionHandleKinds.EventSource, new Payload("event-source"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+            store.Register(pid, SamplerUseCases.ThreadSnapshotKind, new Payload("thread"), TimeSpan.FromMinutes(5), evictWhenProcessExits: false, origin: HandleOrigin.Live),
+        };
+        var methodParams = store.Register(
+            pid,
+            MethodParameterCaptureUseCases.HandleKind,
+            new Payload("method-params"),
+            TimeSpan.FromMinutes(5),
+            evictWhenProcessExits: true,
+            origin: HandleOrigin.Live);
+
+        var evictor = new DeadProcessHandleEvictor(store, isProcessAlive: _ => false);
+
+        evictor.EvictDeadProcesses().Should().Be(1);
+        store.TryGet<Payload>(methodParams.Id).Should().BeNull("method-parameter capture stays tied to the live process");
+        foreach (var handle in survivingHandles)
+        {
+            store.TryGet<Payload>(handle.Id).Should().NotBeNull($"handle kind '{handle.Kind}' must survive producer exit");
+        }
     }
 
     [Fact]

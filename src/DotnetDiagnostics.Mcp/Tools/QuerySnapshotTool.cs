@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Linq;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Collection;
@@ -398,15 +399,13 @@ public sealed partial class QuerySnapshotTool
             }
         }
 
-        var resolution = snapshot.Origin == ThreadSnapshotOrigin.Live
-            ? await AttachGuard.GuardAttachAsync(
-                "query_snapshot",
-                snapshot.ProcessId,
-                ResolveAsync,
-                cancellationToken,
-                retryArguments: BuildResolveAddressRetryArguments(handle, address))
-                .ConfigureAwait(false)
-            : await ResolveAsync().ConfigureAwait(false);
+        var resolution = await ResolveLiveThreadSnapshotViewAsync(
+            snapshot,
+            handle,
+            ResolveAddressView,
+            ResolveAsync,
+            BuildResolveAddressRetryArguments(handle, address),
+            cancellationToken).ConfigureAwait(false);
         if (resolution.Error is not null)
         {
             return AsObjectEnvelope(resolution);
@@ -494,18 +493,16 @@ public sealed partial class QuerySnapshotTool
             }
         }
 
-        var resolution = snapshot.Origin == ThreadSnapshotOrigin.Live
-            ? await AttachGuard.GuardAttachAsync(
-                "query_snapshot",
-                snapshot.ProcessId,
-                ResolveAsync,
-                cancellationToken,
-                retryArguments: BuildFrameVariablesRetryArguments(
-                    handle,
-                    threadId.Value,
-                    includeSensitiveValues))
-                .ConfigureAwait(false)
-            : await ResolveAsync().ConfigureAwait(false);
+        var resolution = await ResolveLiveThreadSnapshotViewAsync(
+            snapshot,
+            handle,
+            FrameVarsView,
+            ResolveAsync,
+            BuildFrameVariablesRetryArguments(
+                handle,
+                threadId.Value,
+                includeSensitiveValues),
+            cancellationToken).ConfigureAwait(false);
         if (resolution.Error is not null)
         {
             return AsObjectEnvelope(resolution);
@@ -547,6 +544,79 @@ public sealed partial class QuerySnapshotTool
             ["threadId"] = threadId,
             ["includeSensitiveValues"] = includeSensitiveValues,
         };
+
+    private static async Task<DiagnosticResult<T>> ResolveLiveThreadSnapshotViewAsync<T>(
+        ThreadSnapshotArtifact snapshot,
+        string handle,
+        string view,
+        Func<Task<DiagnosticResult<T>>> resolveAsync,
+        IReadOnlyDictionary<string, object?> retryArguments,
+        CancellationToken cancellationToken)
+    {
+        if (snapshot.Origin != ThreadSnapshotOrigin.Live)
+        {
+            return await resolveAsync().ConfigureAwait(false);
+        }
+
+        if (snapshot.ProcessStartedAtUtc is not null && !MatchesOriginalLiveProcess(snapshot))
+        {
+            return ThreadSnapshotLiveProcessExited<T>(snapshot.ProcessId, handle, view);
+        }
+
+        var resolution = await AttachGuard.GuardAttachAsync(
+            "query_snapshot",
+            snapshot.ProcessId,
+            resolveAsync,
+            cancellationToken,
+            retryArguments: retryArguments).ConfigureAwait(false);
+
+        return resolution.Error is not null
+            && !string.Equals(resolution.Error.Kind, "Busy", StringComparison.Ordinal)
+            && !MatchesOriginalLiveProcess(snapshot)
+            ? ThreadSnapshotLiveProcessExited<T>(snapshot.ProcessId, handle, view)
+            : resolution;
+    }
+
+    private static DiagnosticResult<T> ThreadSnapshotLiveProcessExited<T>(int processId, string handle, string view)
+        => DiagnosticResult.Fail<T>(
+            $"query_snapshot(view='{view}') requires the original live process behind thread snapshot '{handle}', but pid {processId} has exited or been reused.",
+            new DiagnosticError(
+                "ProcessExited",
+                $"Live-origin thread-snapshot view '{view}' re-attaches via ClrMD and cannot run after the original pid {processId} exits or its pid is reused.",
+                handle),
+            new NextActionHint(
+                "collect_thread_snapshot",
+                "Re-capture the thread snapshot while the target is still running, then retry this live-only view.",
+                new Dictionary<string, object?> { ["processId"] = processId })
+            { Priority = NextActionHintPriority.High });
+
+    private static bool MatchesOriginalLiveProcess(ThreadSnapshotArtifact snapshot)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(snapshot.ProcessId);
+            if (process.HasExited)
+            {
+                return false;
+            }
+
+            if (snapshot.ProcessStartedAtUtc is not { } capturedStartedAtUtc)
+            {
+                return true;
+            }
+
+            var currentStartedAtUtc = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+            return currentStartedAtUtc == capturedStartedAtUtc;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
 
     private static DiagnosticResult<object> TryBuildDiff(
         IDiagnosticHandleStore handles,

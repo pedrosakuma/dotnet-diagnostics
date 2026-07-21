@@ -634,7 +634,9 @@ are rendered as hex strings and `Display` is always safe to show verbatim — th
 never returns a bare pointer. Native/unresolved frames on every thread snapshot are enriched the
 same way at capture time (`AddressKind` / `Rva` / `BuildId` on each frame, `DisplayName` becomes
 `module+0x<rva>` or `<unmapped-or-not-captured 0x…>`). Hand the `(buildId, rva)` to
-`dotnet-native-mcp` for symbolication.
+`dotnet-native-mcp` for symbolication. For **live-origin** thread snapshots, this specific view
+still requires the original process; after it exits the handle survives, but `query_snapshot`
+returns a structured `ProcessExited` error for `resolve-address`.
 
 `view="frame-vars"` (thread-snapshot, issue #449) is the ClrMD `!clrstack -a` equivalent. It
 re-opens the snapshot origin (dump file or live pid — same ptrace / dump-read footprint as
@@ -647,7 +649,9 @@ the current managed exception type is surfaced when the thread is faulting. It i
 ClrMD 3.x exposes object references but not source-level names, and value-type (struct/primitive) or
 optimized-away locals are not enumerable. Raw string previews and the exception message require
 `includeSensitiveValues` AND `Diagnostics:AllowSensitiveHeapValues` or the `sensitive-heap-read`
-scope.
+scope. For **live-origin** thread snapshots, this view still requires the original process; after
+it exits the handle survives, but `query_snapshot` returns a structured `ProcessExited` error for
+`frame-vars`.
 
 > **Note — `event-source` truncation:** the collector stops storing events
 > once it reaches `maxEvents`, but keeps counting the total. The
@@ -2364,8 +2368,9 @@ is refused, not crashed).
 Captures managed thread states plus the SyncBlock lock graph (holder address,
 owning thread, waiter count) from a live process or a dump. Returns the top-3
 blocked threads inline plus a `thread-snapshot` `handle` (~10 min TTL) for
-deadlock / unique-stack / wait-chain drilldown. Dump-origin handles are **not**
-evicted when the producer PID exits.
+deadlock / unique-stack / wait-chain drilldown. Handles now survive producer-PID
+exit until TTL; only `resolve-address` and `frame-vars` still require the original
+live process.
 
 **Parameters:**
 
@@ -2416,6 +2421,9 @@ contract.
 - **thread** (`collect_thread_snapshot`): `top-blocked` (default),
   `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`,
   `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`.
+  Live-origin handles remain queryable after process exit for the artifact-only
+  views; `resolve-address` and `frame-vars` instead return a structured
+  `ProcessExited` error once the original live process is gone.
 - **off-CPU** (`collect_sample(kind="off_cpu")`): `topStacks` (default),
   `byThread`, `stack`.
 - **collection** (`collect_events(kind=…)`): `summary` (default), plus

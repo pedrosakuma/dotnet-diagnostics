@@ -63,19 +63,22 @@ internal static class DiagnosticToolThreadingAndJit
         {
             var opts = new ThreadSnapshotOptions(maxFramesPerThread, includeRuntimeFrames, includeNativeFrames, symbolPath);
             ThreadSnapshotArtifact snapshot;
-            bool evictOnExit;
             if (hasDump)
             {
                 snapshot = await inspector.InspectDumpAsync(dumpFilePath!, opts, cancellationToken).ConfigureAwait(false);
-                evictOnExit = false;
             }
             else
             {
                 snapshot = await inspector.InspectLiveAsync(livePid, opts, cancellationToken).ConfigureAwait(false);
-                evictOnExit = true;
             }
 
-            var handle = handles.Register(snapshot.ProcessId, ThreadSnapshotKind, snapshot, ThreadSnapshotHandleTtl, evictWhenProcessExits: evictOnExit);
+            var handle = handles.Register(
+                snapshot.ProcessId,
+                ThreadSnapshotKind,
+                snapshot,
+                ThreadSnapshotHandleTtl,
+                evictWhenProcessExits: false,
+                origin: snapshot.Origin == ThreadSnapshotOrigin.Live ? HandleOrigin.Live : HandleOrigin.Dump);
             var origin = snapshot.Origin.ToString().ToLowerInvariant();
             var blocked = snapshot.Threads.Count(t => t.IsLikelyBlocked);
             var contended = snapshot.Locks.Count(l => l.IsContended);
@@ -247,7 +250,7 @@ internal static class DiagnosticToolThreadingAndJit
         {
             return DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
                 $"Handle '{handle}' is unknown or expired.",
-                new DiagnosticError("HandleExpired", "Thread snapshot handles live ~10min; live-origin handles are also invalidated when the target PID exits.", handle),
+                new DiagnosticError("HandleExpired", "Thread snapshot handles live ~10min and expire by TTL.", handle),
                 new NextActionHint("collect_thread_snapshot", "Re-capture to issue a fresh handle."));
         }
 

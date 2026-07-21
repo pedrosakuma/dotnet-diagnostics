@@ -69,6 +69,7 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
     {
         var warnings = new List<string>();
         var capturedAt = DateTimeOffset.UtcNow;
+        var processStartedAtUtc = TryGetProcessStartedAtUtc(processId);
         var sw = System.Diagnostics.Stopwatch.StartNew();
         using var target = DataTarget.AttachToProcess(processId, suspend: true);
         var clrInfo = target.ClrVersions.FirstOrDefault()
@@ -87,6 +88,7 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
             Locks: locks)
         {
             Source = "clrmd-thread-walk",
+            ProcessStartedAtUtc = processStartedAtUtc,
             ThreadPool = threadPool,
             Warnings = warnings.Count > 0 ? warnings : null,
         };
@@ -121,6 +123,23 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
             ThreadPool = threadPool,
             Warnings = warnings.Count > 0 ? warnings : null,
         };
+    }
+
+    private static DateTimeOffset? TryGetProcessStartedAtUtc(int processId)
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById(processId);
+            return new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     private (IReadOnlyList<ManagedThread> Threads, IReadOnlyList<MonitorLockState> Locks, ThreadPoolSnapshot? ThreadPool) Capture(

@@ -98,7 +98,13 @@ public static class SamplerUseCases
             return WithContext(AttachGuard.ClassifyAttachFailure<CpuSample>("collect_sample", pid, ex), ctx);
         }
 
-        var handle = handles.Register(pid, "cpu-sample", result.Artifact, SampleHandleTtl);
+        var handle = handles.Register(
+            pid,
+            "cpu-sample",
+            result.Artifact,
+            SampleHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
         var signals = CpuSampleSignals.Detect(result.Summary, handle.Id);
 
         var hints = new List<NextActionHint>
@@ -168,7 +174,13 @@ public static class SamplerUseCases
         }
 
         var sample = result.Summary;
-        var handle = handles.Register(pid, "allocation-sample", new AllocationSampleArtifact(sample, result.Artifact), SampleHandleTtl);
+        var handle = handles.Register(
+            pid,
+            "allocation-sample",
+            new AllocationSampleArtifact(sample, result.Artifact),
+            SampleHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
         var signals = AllocationSignals.Detect(sample, handle.Id);
 
         var topType = sample.TopByBytes.Count > 0 ? sample.TopByBytes[0] : null;
@@ -265,7 +277,13 @@ public static class SamplerUseCases
         }
 
         var summary = result.Summary;
-        var handle = handles.Register(pid, OffCpuHandleKind, result.Artifact, SampleHandleTtl);
+        var handle = handles.Register(
+            pid,
+            OffCpuHandleKind,
+            result.Artifact,
+            SampleHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
 
         var inlineSummary = summary;
         var droppedStacks = 0;
@@ -359,7 +377,13 @@ public static class SamplerUseCases
         }
 
         var sample = result.Summary;
-        var handle = handles.Register(pid, NativeAllocHandleKind, result.Artifact, SampleHandleTtl);
+        var handle = handles.Register(
+            pid,
+            NativeAllocHandleKind,
+            result.Artifact,
+            SampleHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
 
         var topAllocator = sample.TopAllocators.Count > 0 ? sample.TopAllocators[0] : null;
         var summaryText = topAllocator is not null
@@ -430,19 +454,22 @@ public static class SamplerUseCases
         {
             var opts = new ThreadSnapshotOptions(maxFramesPerThread, includeRuntimeFrames, includeNativeFrames, symbolPath);
             ThreadSnapshotArtifact snapshot;
-            bool evictOnExit;
             if (hasDump)
             {
                 snapshot = await inspector.InspectDumpAsync(dumpFilePath!, opts, cancellationToken).ConfigureAwait(false);
-                evictOnExit = false;
             }
             else
             {
                 snapshot = await inspector.InspectLiveAsync(livePid, opts, cancellationToken).ConfigureAwait(false);
-                evictOnExit = true;
             }
 
-            var handle = handles.Register(snapshot.ProcessId, ThreadSnapshotKind, snapshot, ThreadSnapshotHandleTtl, evictWhenProcessExits: evictOnExit);
+            var handle = handles.Register(
+                snapshot.ProcessId,
+                ThreadSnapshotKind,
+                snapshot,
+                ThreadSnapshotHandleTtl,
+                evictWhenProcessExits: false,
+                origin: snapshot.Origin == ThreadSnapshotOrigin.Live ? HandleOrigin.Live : HandleOrigin.Dump);
             var origin = snapshot.Origin.ToString().ToLowerInvariant();
             var blocked = snapshot.Threads.Count(t => t.IsLikelyBlocked);
             var contended = snapshot.Locks.Count(l => l.IsContended);
