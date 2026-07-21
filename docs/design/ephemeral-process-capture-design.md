@@ -126,6 +126,21 @@ public sealed record AlsoCollectSpec(string Tool, string Kind);
   should stay an explicit single-purpose call), duplicate `{tool, kind}` pairs, and an
   `alsoCollect` list longer than a small cap (e.g. 3) to bound total EventPipe session count
   against one target.
+- **Authorization for every secondary kind, not just the outer call** (caught in review — this is
+  a correctness requirement, not a nice-to-have). The `[RequireScope]`/`[RequireAnyScope]`
+  attributes on `CollectSampleTool.CollectSample`/`CollectEventsTool.CollectEvents` are enforced
+  once, on the *outer* tool invocation, by the MCP authorization filter
+  (`src/DotnetDiagnostics.Mcp/Security/ToolScopeAuthorizationFilter.cs`). Fanning out to a
+  secondary tool's use-case method directly (bypassing its own `[McpServerTool]` entry point)
+  does **not** re-run that tool's scope check. Concretely, without an explicit fix, a caller
+  authorized only for `read-counters` could call
+  `collect_events(kind="counters", alsoCollect=[{tool:"collect_sample",kind:"cpu"}])` and get a
+  `collect_sample`-class result despite never presenting the `eventpipe` scope
+  `collect_sample` normally requires. Before starting *any* session, the dispatcher must
+  pre-authorize every `{tool, kind}` pair in `alsoCollect` — including kind-specific modifier
+  scopes and config gates where they exist — against the caller's principal, exactly as if each
+  were called directly, and fail the whole request (no session opened) on the first
+  unauthorized entry.
 - **Partial failure semantics** (needs explicit design, flag as an open question in the tracking
   issue before implementation): if the primary kind succeeds but one `alsoCollect` entry fails
   (e.g. the process exited between session starts), does the whole call fail, or does it return
@@ -176,6 +191,39 @@ for the standalone CLI. For non-stdio (HTTP/sidecar) transports, the tool should
 the K8s sidecar shares only the target's PID namespace, not its filesystem/environment" error —
 do not attempt it there.
 
+**Correction from review**: stdio cannot simply layer a literal modifier-scope check on top of
+its existing principal the way the rest of this section originally assumed. `--stdio` always
+registers a single synthetic `StdioRootPrincipalAccessor` carrying only the `root` pseudo-scope
+(`src/DotnetDiagnostics.Mcp/Program.cs:219-224`), and `HasExplicitScope` — the check every
+modifier scope (`sensitive-parameter-read`, `sensitive-heap-read`, …) uses — **deliberately does
+not honour `root`**
+(`src/DotnetDiagnostics.Mcp/Security/BearerPrincipal.cs:69-78`). Requiring a literal
+`process-launch` modifier scope exactly like `sensitive-parameter-read` would therefore make
+`launch` **unreachable over its only intended transport** — every stdio call would fail the
+modifier check it can never satisfy. (The doc's original citation of `dump-write` as a precedent
+for this pattern was also wrong: `dump-write` is a **primary** scope, granted by root like any
+other primary scope, not a literal-only modifier — `docs/authorization.md:46`.)
+
+The gate for `launch` therefore cannot reuse the modifier-scope mechanism verbatim. Two options,
+to be settled in the dedicated design note referenced in open question 2 below, not silently
+picked here:
+
+- **(a)** Treat `Diagnostics:AllowProcessLaunch=true` as sufficient authorization on `--stdio`
+  (mirroring how stdio already collapses every primary-scope check to "the local client owns the
+  process"), with no separate scope check at all under stdio — the config flag alone is the gate,
+  and the *transport* restriction (stdio-only) is what keeps this from being reachable over a
+  network. This is simplest but means an operator who flips the flag on a shared stdio-adjacent
+  host (unusual, but not impossible) gets no finer-grained control.
+- **(b)** Introduce a **new stdio principal variant** (or a config-driven scope override for the
+  existing one) that can be denied `process-launch` even though it holds `root` for every primary
+  scope — i.e. make `process-launch` a primary scope that participates in root's union
+  (`RootScope` today unions every primary scope but explicitly excludes modifier scopes,
+  `BearerPrincipal.cs:69-82`) plus a way to *carve it back out* for stdio specifically. More
+  consistent with the rest of the scope model but needs new plumbing that doesn't exist today.
+
+Recommend (a) for v1 given stdio is single-tenant/local-dev by construction, revisit only if field
+usage shows a need for finer control.
+
 ### Proposed shape
 
 Add one new parameter to `collect_sample` and `collect_events` (mutually exclusive with
@@ -205,51 +253,91 @@ LaunchSpec? launch = null
 
 - Reuses `SuspendedColdStartLauncher.LaunchSuspendedAsync` (`coldStart=true`, matching #446's
   proven pre-attach-event coverage) or plain `ChildProcessLauncher.Launch` (`coldStart=false`,
-  cheaper, for callers who don't need pre-attach events and just want the race eliminated) — no
-  new launch primitive needed, both already exist in Core and are host-neutral.
-- Dispatch order for `coldStart=true`: launch suspended → arm the requested collector's EventPipe
-  session on `SuspendedTarget.Client` → `ResumeAsync()` → run the collector's existing
-  post-session parsing exactly as today. This mirrors the CLI's own (not yet written) MCP-side
-  usage of the same primitive — no new session-arming logic, just a new caller.
+  cheaper, for callers who don't need pre-attach events and just want the race eliminated) for the
+  child-process/reverse-connect plumbing itself — that part needs no new primitive.
+- **Correction from review — not every kind can arm on a `SuspendedTarget` today.** The claim that
+  every collector can arm against `SuspendedTarget.Client` with no new session-arming logic is
+  false as the collectors are shaped today. Only `EventPipeStartupCollector` currently accepts a
+  `SuspendedTarget` (`src/DotnetDiagnostics.Core/Startup/EventPipeStartupCollector.cs:75`,
+  `IStartupCollector.cs:22`) — it was built for exactly this cold-start shape. `cpu`/`allocation`
+  each construct their own `EventPipeCpuSampler`/`EventPipeAllocationSampler` session against a
+  plain `DiagnosticsClient(pid)` (`EventPipeCpuSampler.cs:57-76`,
+  `EventPipeAllocationSampler.cs:93-106`), and `EventPipeCounterCollector` does the same
+  (`EventPipeCounterCollector.cs:104-106`); `off_cpu`/`native-alloc` are OS-native
+  perf/ETW-backed, not EventPipe, and have no notion of a diagnostic-port connector at all.
+  **v1 must restrict `launch` to the kinds that actually have (or get) a `SuspendedTarget`-capable
+  arming path** — starting with `collect_events(kind="startup")`, which already has one — and
+  either extend `cpu`/`allocation`/`counters` to accept an already-connected `DiagnosticsClient`
+  (a real, if modest, refactor of each collector's entry point) or explicitly exclude them from
+  `launch` until that refactor lands. This must be scoped as its own follow-up design item, not
+  assumed away.
 - **Lifecycle / cleanup** (the one piece with no existing precedent — MCP tool calls are
   stateless per-request; there is no session object to own cleanup the way
   `SessionRepl`/`session --launch` does): `TerminateAfterCapture` defaults to `true` — the server
   disposes the `SuspendedTarget`/`LaunchedTarget` (which kills the child) once the collection
-  window ends, matching "server stays stateless" (`AGENTS.md` non-goals). `TerminateAfterCapture:
-  false` leaves the process running and returns its `ProcessId` in the response so a caller can
-  drive further one-shot tools against it directly by pid — but the server keeps no handle open
-  for it (consistent with statelessness); document that the caller is now responsible for the
-  process's lifetime.
-- **Security gate**, mirroring `sensitive-parameter-read`'s triple-gate pattern
-  (`docs/authorization.md:67`, `docs/design/method-parameter-capture-design.md:39-90`):
+  window ends, matching "server stays stateless" (`AGENTS.md` non-goals).
+  **Correction from review**: `TerminateAfterCapture: false` cannot simply "leave the process
+  running" the way this originally read — disposal is the *only* teardown operation either
+  wrapper exposes (`LaunchedTarget` kills the child on dispose;
+  `SuspendedTarget.DisposeAsync` additionally tears down the connector + deletes the reverse-connect
+  socket, `src/DotnetDiagnostics.Core/Launch/SuspendedTarget.cs:53-65`). Neither offers a "detach
+  without killing" operation today. Shipping `TerminateAfterCapture: false` in v1 would require a
+  new release/detach method on both wrappers that stops tracking the child without sending it a
+  signal — real new code, not a parameter default. **Recommend cutting `TerminateAfterCapture`
+  from v1 entirely** (always terminate after capture, matching the volatile/short-lived-process
+  scenario this issue is about) and revisiting "leave it running" as a separate follow-up only if
+  a concrete use case needs it.
+- **Correction from review — stdout must never be inherited.** Because `launch` is stdio-only,
+  and `--stdio` reserves the process's own stdout exclusively for JSON-RPC framing
+  (`src/DotnetDiagnostics.Mcp/Program.cs` stdio transport wiring), the child **must never** be
+  spawned with `consoleSink: null` (which makes `ChildProcessLauncher.Launch` let it inherit the
+  parent's console, `src/DotnetDiagnostics.Core/Launch/ChildProcessLauncher.cs`). Any stray write
+  to stdout by the launched app (its own logging, an uncaught exception, etc.) would interleave
+  with and corrupt the MCP JSON-RPC stream, breaking the entire session, not just this call. The
+  `launch` code path must always pass a non-null sink (redirect to server-side logs, a bounded
+  in-memory buffer surfaced in the response, or `TextWriter.Null`) — never inherit console.
+- **Security gate**, loosely mirroring `sensitive-parameter-read`'s multi-gate shape
+  (`docs/authorization.md:67`, `docs/design/method-parameter-capture-design.md:39-90`) but adapted
+  per the stdio-reachability correction above:
   1. existing tool-level primary scope (`eventpipe`, unchanged),
-  2. new **modifier** scope `process-launch` (literal-membership only — `*`/root does not
-     auto-grant it, same as `sensitive-parameter-read`/`dump-write`),
-  3. new server config gate `Diagnostics:AllowProcessLaunch` (env `Diagnostics__AllowProcessLaunch`),
-     default `false`.
-  Even under `--stdio` (where scopes normally degrade to root/`*`), the modifier-scope check must
-  still apply literally — matching the existing modifier-scope pattern — since command execution
-  is qualitatively riskier than every other stdio-default-permitted operation.
+  2. server config gate `Diagnostics:AllowProcessLaunch` (env `Diagnostics__AllowProcessLaunch`),
+     default `false` — this is the actual gate for stdio callers (see the stdio-reachability
+     discussion above; a literal `process-launch` modifier scope, unlike `sensitive-parameter-read`,
+     cannot be the *sole* stdio-facing gate because stdio's root-only principal can never satisfy a
+     literal modifier check),
+  3. transport check rejecting `launch` outright on any non-stdio transport.
+  Whether a `process-launch` scope is introduced at all — and if so, how it interacts with stdio
+  — is deliberately left to open question 2 below rather than decided here.
 - **No new tool**, no new top-level MCP surface — `launch` is just another mutually-exclusive
-  input shape on the same two tools, same envelope, same handle/drilldown story downstream.
+  input shape on the same two tools, same envelope, same handle/drilldown story downstream (for
+  the subset of kinds that end up supporting it — see the arming-path correction above).
 
 ### Open questions to resolve before implementation (flag on #665, do not silently decide in the PR)
 
-1. Partial-failure semantics for Part C (above).
+1. Partial-failure semantics for Part C (above) — and the pre-authorization design for every
+   `alsoCollect` entry (also above; this one is a correctness requirement, not just a UX choice,
+   so it must be resolved, not deferred, before Part C's implementation PR).
 2. Exact error surfaced when `launch` is combined with a non-stdio transport — should this be a
    static `[RequireScope]`-style rejection (visible in `tools/list` metadata) or a runtime check
    like `method-params`' `sensitive-parameter-read` (only visible at call time)? Given transport
    is a server-wide, not per-call, property, a static capability flag advertised in `tools/list`
    (like the orchestrator's config-gated tools) may fit better than a runtime-only check — needs
    its own short design note, mirroring how `discover_azure`/K8s tools are conditionally
-   registered.
+   registered. This note must also settle whether a `process-launch` scope exists at all and, if
+   so, how it composes with stdio's root-only principal (see the stdio-reachability correction
+   above) — do not carry the `sensitive-parameter-read` triple-gate pattern over unmodified.
 3. Whether `coldStart=false` (plain attach-after-spawn, no suspend) is worth shipping in v1 at
    all, or whether `coldStart=true` alone already covers the motivating scenario well enough to
    cut scope.
-4. Whether `launch` should support the same "child dies when caller disconnects" guarantee
-   `session --launch` gives the CLI — MCP has no persistent connection/session concept for
-   `Destructive=false, ReadOnly=true` collectors, so `TerminateAfterCapture` is the closest
-   equivalent; confirm this is acceptable before implementation.
+4. Which kinds actually get a `launch`-capable arming path in v1 (see the arming-path correction
+   above) — at minimum requires either extending `cpu`/`allocation`/`counters` to accept an
+   already-connected `DiagnosticsClient`, or shipping `launch` only for `collect_events(kind=
+   "startup")` (the one kind already wired for `SuspendedTarget`) plus whichever others get that
+   refactor. Do not assume the full kind list works "for free".
+5. `TerminateAfterCapture` is cut from v1 per the lifecycle correction above; if a future need for
+   "leave it running" surfaces, it requires a genuine detach-without-kill API on
+   `LaunchedTarget`/`SuspendedTarget` that does not exist today — track that as separate follow-up
+   work, not a parameter default.
 
 ## Suggested implementation sequencing
 
