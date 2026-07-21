@@ -93,6 +93,16 @@ public sealed class CliOptionsTests
     }
 
     [Fact]
+    public void Parse_CommandLineContains_IsCaptured()
+    {
+        var options = CliOptions.Parse(new[] { "processes", "--command-line-contains", "testhost" }, out var error);
+
+        error.Should().BeNull();
+        options.Should().NotBeNull();
+        options!.CommandLineContains.Should().Be("testhost");
+    }
+
+    [Fact]
     public void Parse_Watch_IsCaptured()
     {
         var options = CliOptions.Parse(new[] { "collect", "--kind", "counters", "--watch", "2" }, out var error);
