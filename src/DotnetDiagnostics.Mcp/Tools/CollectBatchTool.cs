@@ -245,6 +245,8 @@ public sealed class CollectBatchTool
                     allowlist,
                     sensitiveGate,
                     principalAccessor,
+                    securityOptions,
+                    loggerFactory,
                     kind: kind,
                     processId: pid,
                     durationSeconds: durationSeconds,

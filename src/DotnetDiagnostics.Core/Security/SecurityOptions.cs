@@ -25,6 +25,10 @@ namespace DotnetDiagnostics.Core.Security;
 ///   <c>collect_sample(kind="method-params")</c> is disabled regardless of bearer scopes.
 ///   When true, callers still need the literal <c>sensitive-parameter-read</c> modifier scope
 ///   and must pass <c>includeSensitiveValues=true</c> per call.</description></item>
+///   <item><description><c>AllowProcessLaunch</c> — bool. When false (default),
+///   <c>collect_events(kind="startup", launch=...)</c> is disabled (issue #665 Part A). When
+///   true, the server may spawn a target process under <c>--stdio</c> and arm an EventPipe
+///   session before the target's managed code runs.</description></item>
 /// </list>
 /// </remarks>
 public sealed class SecurityOptions
@@ -48,4 +52,9 @@ public sealed class SecurityOptions
 
     /// <summary>Deployment-wide opt-in for live method-parameter capture. Defaults to false.</summary>
     public bool AllowMethodParameterCapture { get; set; }
+
+    /// <summary>Deployment-wide opt-in for the <c>launch</c>-and-suspend-then-arm capture path
+    /// on <c>collect_events(kind="startup")</c>. Defaults to false. Independent of and in
+    /// addition to the stdio-transport-only restriction (issue #665 Part A).</summary>
+    public bool AllowProcessLaunch { get; set; }
 }

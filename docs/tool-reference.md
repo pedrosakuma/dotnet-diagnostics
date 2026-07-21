@@ -2147,6 +2147,24 @@ child mode, which waits for the diagnostic endpoint to come up before collecting
 does **not** recover pre-attach events. The collector always includes this
 caveat in `notes`; it does not pretend to recover pre-attach events.
 
+**Launch-and-suspend-then-arm (`launch`, issue #665 Part A):** instead of attaching
+to an already-running `processId`, the server can spawn the target itself, suspended
+on a fresh reverse-connect diagnostic port, arm the EventPipe startup session before
+the target's managed code runs, then resume — eliminating the discovery/attach race
+entirely for short-lived processes. Pass a `launch` object (`fileName`, `arguments`,
+optional `workingDirectory`, `environmentVariables`, `connectTimeoutSeconds`, default
+10s) instead of `processId` — the two are mutually exclusive, and `launch` is only
+accepted for `kind="startup"` in v1. Requirements:
+
+- The server must be running under `--stdio` (a shared HTTP deployment cannot let
+  one caller spawn processes on the host); other transports get a `NotSupported` error.
+- The deployment must opt in with `Diagnostics:AllowProcessLaunch=true`; otherwise the
+  call fails with `ProcessLaunchDisabled`.
+- The launched process's stdout/stderr are always redirected to the server's own
+  logs (never inherited — `--stdio` reserves stdout exclusively for JSON-RPC framing).
+- The launched process is always terminated after capture — there is no
+  detach-without-kill option in v1.
+
 JIT-at-startup is not duplicated here; use `collect_events(kind="jit")` for JIT
 and tiered-compilation startup work. Static-constructor duration is not exposed
 as a clean EventPipe signal in this collector, so it is documented in `notes`
@@ -2156,9 +2174,10 @@ rather than inferred.
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `processId` | `int?` | auto | Target process id |
+| `processId` | `int?` | auto | Target process id. Mutually exclusive with `launch`. |
 | `durationSeconds` | `int` | `10` | Window length |
 | `depth` | `SamplingDepth` | `Summary` | `Summary` keeps headline counts and short loader/DI slices inline; `Detail` / `Raw` keep the captured lists inline |
+| `launch` | `LaunchSpec?` | `null` | Spawn-and-suspend-then-arm instead of attaching to `processId` (stdio-only, requires `Diagnostics:AllowProcessLaunch=true`, `kind="startup"` only). |
 
 **Returns:** `StartupSnapshot` with assembly/module load counts, DI event counts,
 observed DI activity span, loader event lists, DI event list, merged timeline,

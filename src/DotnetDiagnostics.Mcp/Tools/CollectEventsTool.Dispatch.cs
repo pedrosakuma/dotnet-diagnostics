@@ -15,6 +15,7 @@ using DotnetDiagnostics.Core.GatedCapture;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
+using DotnetDiagnostics.Core.Launch;
 using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ProcessDiscovery;
@@ -29,6 +30,7 @@ using DotnetDiagnostics.Mcp.Diagnostics;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 using DotnetDiagnostics.Mcp.Security;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -108,6 +110,9 @@ public sealed partial class CollectEventsTool
         public required int MaxCaptures { get; init; }
         public required int SampleIntervalSeconds { get; init; }
         public required bool ConfirmDump { get; init; }
+        public required LaunchSpec? Launch { get; init; }
+        public required SecurityOptions SecurityOptions { get; init; }
+        public required ILoggerFactory? LoggerFactory { get; init; }
         public required LegacyDiagnosticsFlagDeprecation? Deprecation { get; init; }
         public required RequestContext<CallToolRequestParams>? RequestContext { get; init; }
         public required BearerPrincipal? Principal { get; init; }
@@ -450,19 +455,21 @@ public sealed partial class CollectEventsTool
             cancellationToken);
 
     private static Task<DiagnosticResult<CollectEventsEnvelope>> RunStartupAsync(CollectEventsDispatchContext context, int effectiveDuration, CancellationToken cancellationToken)
-        => RunTimedCollectionAsync(
-            context,
-            effectiveDuration,
-            ct => DiagnosticTools.CollectStartup(
-                context.StartupCollector,
-                context.Resolver,
-                context.Handles,
-                context.ProcessId,
+        => context.Launch is not null
+            ? RunStartupLaunchAsync(context, effectiveDuration, cancellationToken)
+            : RunTimedCollectionAsync(
+                context,
                 effectiveDuration,
-                context.Depth,
-                ct),
-            (env, data) => env with { Startup = data },
-            cancellationToken);
+                ct => DiagnosticTools.CollectStartup(
+                    context.StartupCollector,
+                    context.Resolver,
+                    context.Handles,
+                    context.ProcessId,
+                    effectiveDuration,
+                    context.Depth,
+                    ct),
+                (env, data) => env with { Startup = data },
+                cancellationToken);
 
     private static Task<DiagnosticResult<CollectEventsEnvelope>> RunSweepAsync(CollectEventsDispatchContext context, int effectiveDuration, CancellationToken cancellationToken)
         => RunTimedCollectionAsync(

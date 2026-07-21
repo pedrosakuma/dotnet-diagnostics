@@ -42,4 +42,9 @@ internal sealed class StdioRootPrincipalAccessor : IPrincipalAccessor
         scopes: System.Collections.Immutable.ImmutableHashSet.Create(BearerPrincipal.RootScope));
 
     public BearerPrincipal? Current => RootPrincipal;
+
+    /// <summary>True when <paramref name="accessor"/> is exactly the stdio-transport singleton
+    /// registered by <c>Program.RunStdioAsync</c> — a reliable, zero-new-plumbing way to detect
+    /// "this call arrived over --stdio" (issue #665 Part A's <c>launch</c> path is stdio-only).</summary>
+    public static bool IsCurrent(IPrincipalAccessor accessor) => ReferenceEquals(accessor, Instance);
 }

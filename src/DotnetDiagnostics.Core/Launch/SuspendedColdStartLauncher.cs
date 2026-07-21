@@ -27,24 +27,37 @@ public static class SuspendedColdStartLauncher
     /// reverse-connect diagnostic port, waits up to <paramref name="connectTimeout"/> for the runtime to
     /// connect, and returns a <see cref="SuspendedTarget"/> that owns the child + the listening server.
     /// The runtime stays suspended until the caller invokes <see cref="SuspendedTarget.ResumeAsync"/>.
+    /// <paramref name="workingDirectory"/> and <paramref name="additionalEnvironment"/> are forwarded to
+    /// <see cref="ChildProcessLauncher.Launch"/> as-is; <c>DOTNET_DiagnosticPorts</c> always wins over any
+    /// caller-supplied entry of the same name so the cold-start wiring can never be overridden.
     /// </summary>
     public static async Task<SuspendedTarget> LaunchSuspendedAsync(
         string fileName,
         IReadOnlyList<string> arguments,
         TextWriter? consoleSink,
         TimeSpan connectTimeout,
+        string? workingDirectory = null,
+        IReadOnlyDictionary<string, string>? additionalEnvironment = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
         ArgumentNullException.ThrowIfNull(arguments);
 
         var portPath = CreatePortPath();
-        var env = new Dictionary<string, string>(StringComparer.Ordinal)
+        var env = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (additionalEnvironment is not null)
         {
-            ["DOTNET_DiagnosticPorts"] = string.Create(CultureInfo.InvariantCulture, $"{portPath},suspend"),
-        };
+            foreach (var pair in additionalEnvironment)
+            {
+                env[pair.Key] = pair.Value;
+            }
+        }
 
-        var target = ChildProcessLauncher.Launch(fileName, arguments, consoleSink, env);
+        // Always wins over a same-named caller entry — the cold-start reverse-connect wiring must
+        // never be silently overridable via additionalEnvironment.
+        env["DOTNET_DiagnosticPorts"] = string.Create(CultureInfo.InvariantCulture, $"{portPath},suspend");
+
+        var target = ChildProcessLauncher.Launch(fileName, arguments, consoleSink, env, workingDirectory);
         try
         {
             using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
