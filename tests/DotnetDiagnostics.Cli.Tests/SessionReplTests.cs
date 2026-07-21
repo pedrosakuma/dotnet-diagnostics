@@ -461,6 +461,21 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_CpuSampleHandle_TopMethodsView_RendersSelfSampleSplit()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view top-methods --top 2\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("\"selfSamples\"");
+        stdout.Should().Contain("\"runningSamples\": 40");
+        stdout.Should().Contain("\"waitingSamples\": 60");
+    }
+
+    [Fact]
     public async Task Query_CpuSampleHandle_HotPathView_FollowsDominantChild()
     {
         var (services, store) = BuildServices();
@@ -1243,10 +1258,19 @@ public sealed class SessionReplTests
 
     private static CpuSampleTraceArtifact CpuTrace()
     {
-        var leafA = new CallTreeNode(new SampledFrame("App.dll", "LeafA"), 40, 40, Array.Empty<CallTreeNode>());
-        var leafB = new CallTreeNode(new SampledFrame("App.dll", "LeafB"), 60, 60, Array.Empty<CallTreeNode>());
+        var leafA = new CallTreeNode(new SampledFrame("App.dll", "LeafA"), 40, 40, Array.Empty<CallTreeNode>())
+        {
+            SelfSamples = new SelfSampleBreakdown(40, 0),
+        };
+        var leafB = new CallTreeNode(new SampledFrame("App.dll", "LeafB"), 60, 60, Array.Empty<CallTreeNode>())
+        {
+            SelfSamples = new SelfSampleBreakdown(0, 60),
+        };
         var root = new CallTreeNode(new SampledFrame("App.dll", "Root"), 100, 0, new[] { leafA, leafB });
-        return new CpuSampleTraceArtifact(Environment.ProcessId, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root);
+        return new CpuSampleTraceArtifact(Environment.ProcessId, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root)
+        {
+            SelfSamples = new SelfSampleBreakdown(40, 60),
+        };
     }
 
     private static Core.Gc.GcSummary GcSummaryArtifact()

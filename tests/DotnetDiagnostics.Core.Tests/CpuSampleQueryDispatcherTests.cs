@@ -132,6 +132,19 @@ public class CpuSampleQueryDispatcherTests
     }
 
     [Fact]
+    public void RenderTopMethods_EmitsRunningVsWaitingSelfSplit()
+    {
+        var outcome = CpuSampleQueryDispatcher.RenderTopMethods(ClassifiedTrace(), Handle, sortBy: "exclusive", topN: 2);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.SelfSamples.Should().Be(new SelfSampleBreakdown(40, 60));
+        outcome.Data.Methods[0].Method.Should().Be("System.Threading.LowLevelLifoSemaphore.WaitForSignal");
+        outcome.Data.Methods[0].SelfSamples.Should().Be(new SelfSampleBreakdown(0, 60));
+        outcome.Data.Methods[1].Method.Should().Be("MyApp.Worker.BurnCpu");
+        outcome.Data.Methods[1].SelfSamples.Should().Be(new SelfSampleBreakdown(40, 0));
+    }
+
+    [Fact]
     public void RenderTopMethods_InvalidSort_ReturnsInvalidArgument()
         => CpuSampleQueryDispatcher.RenderTopMethods(TwoPaths(), Handle, sortBy: "bytes", topN: 10)
             .Error!.Kind.Should().Be("InvalidArgument");
@@ -181,6 +194,18 @@ public class CpuSampleQueryDispatcherTests
     }
 
     [Fact]
+    public void RenderHotPath_EmitsLeafRunningVsWaitingSelfSplit()
+    {
+        var outcome = CpuSampleQueryDispatcher.RenderHotPath(ClassifiedTrace(), Handle, thresholdPercent: 50);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.SelfSamples.Should().Be(new SelfSampleBreakdown(40, 60));
+        outcome.Data.Frames.Should().ContainSingle();
+        outcome.Data.Frames[0].Method.Should().Be("System.Threading.LowLevelLifoSemaphore.WaitForSignal");
+        outcome.Data.Frames[0].SelfSamples.Should().Be(new SelfSampleBreakdown(0, 60));
+    }
+
+    [Fact]
     public void RenderHotPath_ThresholdOutOfRange_ReturnsInvalidArgument()
         => CpuSampleQueryDispatcher.RenderHotPath(Recursive(), Handle, thresholdPercent: 0)
             .Error!.Kind.Should().Be("InvalidArgument");
@@ -218,6 +243,19 @@ public class CpuSampleQueryDispatcherTests
 
         outcome.Error.Should().BeNull();
         outcome.Data!.Callers.Should().ContainSingle(c => c.Method == "<root>");
+    }
+
+    [Fact]
+    public void RenderCallTree_PropagatesSelfSampleSplit()
+    {
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(ClassifiedTrace(), Handle, rootMethodFilter: null, maxDepth: 8, maxNodes: 200);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.SelfSamples.Should().Be(new SelfSampleBreakdown(40, 60));
+        outcome.Data.Root.Children[0].Frame.Method.Should().Be("System.Threading.LowLevelLifoSemaphore.WaitForSignal");
+        outcome.Data.Root.Children[0].SelfSamples.Should().Be(new SelfSampleBreakdown(0, 60));
+        outcome.Data.Root.Children[1].Frame.Method.Should().Be("MyApp.Worker.BurnCpu");
+        outcome.Data.Root.Children[1].SelfSamples.Should().Be(new SelfSampleBreakdown(40, 0));
     }
 
     [Fact]
@@ -261,5 +299,30 @@ public class CpuSampleQueryDispatcherTests
         var leafB = new CallTreeNode(new SampledFrame("App.dll", "LeafB"), 60, 60, Array.Empty<CallTreeNode>());
         var root = new CallTreeNode(new SampledFrame("App.dll", "Root"), 100, 0, new[] { leafA, leafB });
         return new CpuSampleTraceArtifact(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root);
+    }
+
+    private static CpuSampleTraceArtifact ClassifiedTrace()
+    {
+        var waiting = new CallTreeNode(
+            new SampledFrame("System.Private.CoreLib.dll", "System.Threading.LowLevelLifoSemaphore.WaitForSignal"),
+            60,
+            60,
+            Array.Empty<CallTreeNode>())
+        {
+            SelfSamples = new SelfSampleBreakdown(0, 60),
+        };
+        var running = new CallTreeNode(
+            new SampledFrame("MyApp.dll", "MyApp.Worker.BurnCpu"),
+            40,
+            40,
+            Array.Empty<CallTreeNode>())
+        {
+            SelfSamples = new SelfSampleBreakdown(40, 0),
+        };
+        var root = new CallTreeNode(new SampledFrame(string.Empty, "<root>"), 100, 0, new[] { waiting, running });
+        return new CpuSampleTraceArtifact(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root)
+        {
+            SelfSamples = new SelfSampleBreakdown(40, 60),
+        };
     }
 }

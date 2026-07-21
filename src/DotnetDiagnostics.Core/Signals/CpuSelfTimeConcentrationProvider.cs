@@ -28,26 +28,68 @@ public sealed class CpuSelfTimeConcentrationProvider : ISignalProvider<CpuSignal
             yield break;
         }
 
+        var totalSelfSamples = context.OverallSelfSamples?.RunningSamples ?? context.TotalSamples;
+        if (totalSelfSamples <= 0)
+        {
+            yield break;
+        }
+
         var frames = new List<(string Method, long Exclusive)>();
         if (context.SelfTimeRanked is { Count: > 0 } ranked)
         {
-            foreach (var m in ranked)
+            foreach (var m in ranked
+                         .OrderByDescending(m => m.SelfSamples?.RunningSamples ?? m.ExclusiveSamples)
+                         .ThenByDescending(m => m.ExclusiveSamples))
             {
-                if (m.ExclusiveSamples <= 0)
+                var runningExclusive = m.SelfSamples?.RunningSamples ?? m.ExclusiveSamples;
+                if (runningExclusive <= 0)
                 {
                     continue;
                 }
 
-                frames.Add((m.Method, m.ExclusiveSamples));
+                frames.Add((m.Method, runningExclusive));
                 if (frames.Count >= MaxBuckets)
                 {
                     break;
                 }
             }
         }
-        else if (context.TopSelfTime is { ExclusiveSamples: > 0 } top)
+        else
         {
-            frames.Add((top.Frame.Method, top.ExclusiveSamples));
+            var candidates = context.Hotspots;
+            if (context.TopRunningSelfTime is { } runningTop)
+            {
+                candidates = candidates.Append(runningTop).ToArray();
+            }
+
+            if (context.TopSelfTime is { } top)
+            {
+                candidates = candidates
+                    .Append(top)
+                    .GroupBy(h => string.Concat(h.Frame.Module, "\u0000", h.Frame.Method), StringComparer.Ordinal)
+                    .Select(group => group
+                        .OrderByDescending(h => h.SelfSamples?.RunningSamples ?? h.ExclusiveSamples)
+                        .ThenByDescending(h => h.ExclusiveSamples)
+                        .First())
+                    .ToArray();
+            }
+
+            foreach (var candidate in candidates
+                         .OrderByDescending(h => h.SelfSamples?.RunningSamples ?? h.ExclusiveSamples)
+                         .ThenByDescending(h => h.ExclusiveSamples))
+            {
+                var runningExclusive = candidate.SelfSamples?.RunningSamples ?? candidate.ExclusiveSamples;
+                if (runningExclusive <= 0)
+                {
+                    continue;
+                }
+
+                frames.Add((candidate.Frame.Method, runningExclusive));
+                if (frames.Count >= MaxBuckets)
+                {
+                    break;
+                }
+            }
         }
 
         if (frames.Count == 0)
@@ -55,14 +97,14 @@ public sealed class CpuSelfTimeConcentrationProvider : ISignalProvider<CpuSignal
             yield break;
         }
 
-        var top1Share = frames[0].Exclusive / (double)context.TotalSamples;
+        var top1Share = frames[0].Exclusive / (double)totalSelfSamples;
         if (top1Share < MinTop1Share)
         {
             yield break;
         }
 
         var buckets = frames
-            .Select(f => new SignalBucket(f.Method, Math.Round(f.Exclusive * 100.0 / context.TotalSamples, 1), "%", context.HandleId))
+            .Select(f => new SignalBucket(f.Method, Math.Round(f.Exclusive * 100.0 / totalSelfSamples, 1), "%", context.HandleId))
             .ToArray();
 
         var summary = buckets.Length > 1

@@ -8,7 +8,15 @@ public sealed record CallTreeNode(
     long InclusiveSamples,
     long ExclusiveSamples,
     IReadOnlyList<CallTreeNode> Children,
-    MethodIdentity? Identity = null);
+    MethodIdentity? Identity = null)
+{
+    /// <summary>
+    /// Optional split of this node's <see cref="ExclusiveSamples"/> into running vs waiting
+    /// observations. Populated for CPU-sample trees; omitted for allocation/native-alloc trees
+    /// that reuse the same call-tree shape.
+    /// </summary>
+    public SelfSampleBreakdown? SelfSamples { get; init; }
+}
 
 /// <summary>Reprojects a call tree with per-frame <see cref="MethodIdentity"/> payloads.</summary>
 public static class CallTreeIdentityProjector
@@ -44,7 +52,14 @@ public sealed record CallTreeView(
     long TotalSamples,
     int NodeCount,
     bool Truncated,
-    CallTreeNode Root);
+    CallTreeNode Root)
+{
+    /// <summary>
+    /// Overall split of sampled leaf/self observations for this call-tree capture, when the
+    /// originating artifact carried wait/run classification.
+    /// </summary>
+    public SelfSampleBreakdown? SelfSamples { get; init; }
+}
 
 /// <summary>
 /// In-memory artifact registered under a handle when the CPU sampler completes. The summary
@@ -71,6 +86,12 @@ public sealed record CpuSampleTraceArtifact(
 
     public IReadOnlyDictionary<SymbolRef, MethodIdentity> MethodIdentities { get; init; }
         = MethodIdentities ?? EmptyIdentities;
+
+    /// <summary>
+    /// Overall split of sampled leaf/self observations for CPU captures, when available. Omitted
+    /// for non-CPU artifacts that reuse this call-tree container.
+    /// </summary>
+    public SelfSampleBreakdown? SelfSamples { get; init; }
 
     private static readonly IReadOnlyDictionary<SymbolRef, SourceLocation> EmptyResolved
         = new Dictionary<SymbolRef, SourceLocation>();

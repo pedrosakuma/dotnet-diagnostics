@@ -221,7 +221,7 @@ The standalone CLI now exposes the same **Core-only** sampler families the MCP s
 
 | Kind | What it captures | Key flags | Summary shape |
 |---|---|---|---|
-| `cpu` | On-CPU stacks via EventPipe SampleProfiler (CoreCLR) or perf/ETW (NativeAOT/native). | `--top`, `--symbol-path`, `--export-trace`, `--resolve-source-lines`, `--resolve-method-instantiations`, `--native-aot-map` | top hotspots by inclusive/exclusive samples, a `timings` breakdown (`captureDuration`, `symbolicationDuration`, `sourceLineResolutionDuration`, `aggregationDuration`, `totalDuration`), plus `signals[]` such as `cpu.self-time.*` when something dominates |
+| `cpu` | CPU stack samples via EventPipe SampleProfiler (CoreCLR) or true on-core perf/ETW (NativeAOT/native). CoreCLR's SampleProfiler snapshots managed thread stacks and can therefore include blocked/waiting threads. | `--top`, `--symbol-path`, `--export-trace`, `--resolve-source-lines`, `--resolve-method-instantiations`, `--native-aot-map` | top hotspots by inclusive/exclusive samples, `selfSamples.runningSamples` vs `selfSamples.waitingSamples`, a `timings` breakdown (`captureDuration`, `symbolicationDuration`, `sourceLineResolutionDuration`, `aggregationDuration`, `totalDuration`), plus `signals[]` such as `cpu.self-time.*` when something dominates |
 | `allocation` | Managed allocation samples (`GCAllocationTick`) with top types by bytes/count and call-tree drilldown. | `--top` | top types by bytes/count, plus `signals[]` such as `allocations.by-type` / `allocations.by-site` |
 | `off_cpu` / `off-cpu` | Off-CPU stacks (where threads wait / block) via perf or ETW backend. | `--top`, `--symbol-path` | top blocking stacks ranked by off-CPU time |
 | `native-alloc` | Native allocator-call hotspots (`malloc` / `calloc` / `realloc`) via perf/ETW backend. Counts are sampled **calls**, not bytes. | `--top`, `--native-alloc-sample-period` | top allocator stacks + shared call-tree handle |
@@ -530,16 +530,23 @@ exposes drilldown views computed from the merged call tree without re-sampling:
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
-| `call-tree` (default) | the merged inclusive/exclusive call tree | `--max-depth` (tree depth, default `8`), `--max-nodes`, `--min-count`, `--root-method-filter`, `--rank-by` |
-| `top-methods` | methods ranked by sample cost | `--top` (default `20`), `--rank-by exclusive\|inclusive` |
+| `call-tree` (default) | the merged inclusive/exclusive call tree; CPU handles can also carry `selfSamples` on the view and per node | `--max-depth` (tree depth, default `8`), `--max-nodes`, `--min-count`, `--root-method-filter`, `--rank-by` |
+| `top-methods` | methods ranked by sample cost; CPU handles include per-method `selfSamples.runningSamples` vs `selfSamples.waitingSamples` | `--top` (default `20`), `--rank-by exclusive\|inclusive` |
 | `by-module` | samples grouped by owning module | `--top`, `--rank-by` |
 | `by-namespace` | samples grouped by namespace | `--top`, `--rank-by` |
-| `hot-path` | the dominant stack from the root down | `--threshold` (percent, default `50`) |
-| `caller-callee` | a focus method with its direct callers + callees | `--root-method-filter <substring>` (required), `--top` |
+| `hot-path` | the dominant stack from the root down; CPU handles include per-frame `selfSamples` | `--threshold` (percent, default `50`) |
+| `caller-callee` | a focus method with its direct callers + callees; CPU handles include the focus method's `selfSamples` | `--root-method-filter <substring>` (required), `--top` |
 
 `--rank-by inclusive` ranks/credits by inclusive samples; any other value (including the default) uses
 exclusive samples. `caller-callee` requires `--root-method-filter` to resolve exactly one method: zero matches
 return a `NotFound` envelope, more than one returns `InvalidArgument` with the candidate list.
+
+For `collect --kind cpu`, interpret `selfSamples` as a **self/exclusive-time split**:
+`runningSamples` are leaf frames that do not match a known wait primitive; `waitingSamples`
+are leaf frames such as `Monitor.Wait`, `WaitHandle.Wait*`, `LowLevelLifoSemaphore.*`,
+`SemaphoreSlim.Wait*`, `Task.Wait`, or ThreadPool idle waits. On CoreCLR this helps you spot
+when EventPipe SampleProfiler is surfacing blocked managed threads rather than genuine on-core
+work. For direct blocking analysis, pivot to `collect --kind off_cpu` or `collect --kind thread-snapshot`.
 
 GC handles (`collect --kind gc`) expose pause-analysis views over the events already collected:
 

@@ -730,11 +730,16 @@ NextActionHints: throttle > 5% suggests `collect_sample(kind="cpu")` directly; m
 
 ### Off-CPU sampling (`collect_sample(kind="off_cpu")` + `query_snapshot`)
 
-Complements `collect_sample(kind="cpu")` (which shows **on-CPU** — where the app
-spends time executing) with **off-CPU** — where threads were **blocked**
-(I/O, locks, condvars, monitor wait). It resolves the classic blind-spot "low CPU
-but high latency": on-CPU sampling can't see it because the threads aren't
-running.
+Complements `collect_sample(kind="cpu")` with **off-CPU** — where threads were
+**blocked** (I/O, locks, condvars, monitor wait). For **CoreCLR** targets,
+`collect_sample(kind="cpu")` uses the managed EventPipe SampleProfiler, which
+periodically snapshots managed thread stacks and therefore can include threads
+parked in wait primitives; it is **not** a true OS scheduler "only when running
+on-core" profiler there. For **NativeAOT** targets, the Linux `perf` and Windows
+ETW backends *are* true on-core profilers. The CPU sample result now exposes a
+`selfSamples.runningSamples` vs `selfSamples.waitingSamples` split so callers can
+see when a hot self-time frame is wait-dominated, but use `collect_sample(kind="off_cpu")`
+or `collect_thread_snapshot` for genuine wait-chain / blocking analysis.
 
 - **Linux:** uses `perf record -a -e sched:sched_switch --call-graph dwarf`
   system-wide (the `sched_switch` tracepoint only fires on the thread leaving
@@ -1501,9 +1506,23 @@ and also includes `http.server.request.duration` p95 when available.
 
 ## `collect_sample(kind="cpu")`
 
-Captures a CPU sample via the `Microsoft-DotNETCore-SampleProfiler` provider,
-writes a temporary `.nettrace`, parses it with `TraceLog` and aggregates the
-top-N hotspots by inclusive and exclusive sample counts.
+Captures a CPU sample and aggregates the top-N hotspots by inclusive and exclusive
+sample counts. The backend is runtime-specific:
+
+- **CoreCLR (Linux + Windows)** — EventPipe `Microsoft-DotNETCore-SampleProfiler`.
+  This periodically samples **managed thread stacks** at a fixed interval; it does
+  **not** distinguish whether that managed thread was actually scheduled on a CPU
+  core at the instant it was sampled. Wait/blocking primitives can therefore
+  dominate the self-time ranking. To make that visible, the result now emits
+  `selfSamples.runningSamples` vs `selfSamples.waitingSamples` overall and on each
+  hotspot / drilldown method entry.
+- **NativeAOT** — Linux `perf` or Windows ETW sampled-profile backends. These are
+  true on-core profilers; their `selfSamples` usually land entirely in
+  `runningSamples`.
+
+When a CoreCLR capture is wait-heavy, follow up with `collect_sample(kind="off_cpu")`
+or `collect_thread_snapshot` for direct blocking analysis rather than treating the
+wait frame itself as the CPU bottleneck.
 
 **Parameters:**
 
@@ -1527,6 +1546,10 @@ top-N hotspots by inclusive and exclusive sample counts.
   "startedAt": "2026-05-18T20:00:00Z",
   "duration": "00:00:10",
   "totalSamples": 4218,
+  "selfSamples": {
+    "runningSamples": 2974,
+    "waitingSamples": 1244
+  },
   "timings": {
     "captureDuration": "00:00:10.8420000",
     "symbolicationDuration": "00:00:02.4180000",
@@ -1541,7 +1564,11 @@ top-N hotspots by inclusive and exclusive sample counts.
     {
       "frame": { "module": "MyApi", "method": "MyApi.Service.DoWork(int)" },
       "inclusiveSamples": 1820,
-      "exclusiveSamples": 320
+      "exclusiveSamples": 320,
+      "selfSamples": {
+        "runningSamples": 301,
+        "waitingSamples": 19
+      }
     }
   ],
   "symbolSource": "ElfDemangled"
@@ -1564,6 +1591,18 @@ top-N hotspots by inclusive and exclusive sample counts.
 - `sessionDrainDuration` — stop/drain time after the window closes while the trace stream flushes.
 - `methodInstantiationResolutionDuration` — optional ClrMD closed-generic enrichment time when
   `resolveMethodInstantiations=true`; otherwise zero.
+
+`selfSamples` is the **self/exclusive-time** split, not a second inclusive ranking:
+
+- `runningSamples` — self samples whose leaf frame did **not** match a known
+  wait/blocking primitive.
+- `waitingSamples` — self samples whose leaf frame matched a known wait/blocking
+  primitive such as `Monitor.Wait`, `WaitHandle.Wait*`, `LowLevelLifoSemaphore.*`,
+  `SemaphoreSlim.Wait*`, `Task.Wait`, or ThreadPool idle-wait frames.
+
+On CoreCLR this is a best-effort interpretation of SampleProfiler leaf frames; on
+NativeAOT CPU backends it reflects genuine on-core samples and therefore usually
+lands entirely in `runningSamples`.
 
 `symbolSource` is populated for **NativeAOT** samples only (see #35) and
 reports the aggregate symbol-resolution quality of `topHotspots`:
@@ -1588,6 +1627,15 @@ the self-time rolls up into, e.g. `System.Globalization` or
 `System.Text.RegularExpressions`, without naming the cause). The same signals are
 readable as the `signals://cpu-sample/{handle}` Resource, re-derived over the full
 call tree.
+
+**Drilldowns.** `query_snapshot` views over the returned `cpu-sample` handle now
+surface the same split:
+
+- `view="call-tree"` — the top-level view and each tree node can carry `selfSamples`.
+- `view="top-methods"` / `view="hot-path"` / `view="caller-callee"` — each method
+  row carries `selfSamples` beside inclusive/exclusive counts.
+- `view="by-module"` / `view="by-namespace"` — each aggregate row carries the
+  summed self-time split for that bucket.
 
 **Routing.** `collect_sample(kind="cpu")` dispatches based on
 `inspect_process(view="capabilities")`:

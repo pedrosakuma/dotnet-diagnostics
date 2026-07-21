@@ -147,10 +147,13 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
             // Compute the global self-time leader from the SAME (identity-stamped) tree the artifact
             // stores, so the inline signals match the signals:// Resource path.
             var topSelfTime = CpuSampleAnalytics.TopSelfTime(stampedRoot, aggregate.Total);
+            var topRunningSelfTime = CpuSampleAnalytics.TopRunningSelfTime(stampedRoot, aggregate.Total);
             var summary = new CpuSample(processId, startedAt, duration, aggregate.Total, aggregate.Hotspots)
             {
+                SelfSamples = new SelfSampleBreakdown(aggregate.Total, 0),
                 SymbolSource = aggregate.SymbolSource,
                 TopSelfTime = topSelfTime,
+                TopRunningSelfTime = topRunningSelfTime,
                 Timings = new CpuSampleTimings(
                     CaptureDuration: captureDuration,
                     SymbolicationDuration: symbolicationDuration,
@@ -159,7 +162,10 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
                     TotalDuration: totalStopwatch.Elapsed),
             };
             var artifact = new CpuSampleTraceArtifact(
-                processId, startedAt, duration, aggregate.Total, stampedRoot, null, aggregate.Identities, aggregate.SymbolSource);
+                processId, startedAt, duration, aggregate.Total, stampedRoot, null, aggregate.Identities, aggregate.SymbolSource)
+            {
+                SelfSamples = new SelfSampleBreakdown(aggregate.Total, 0),
+            };
             return new CpuSampleResult(summary, artifact);
         }
         finally

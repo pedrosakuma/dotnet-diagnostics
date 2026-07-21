@@ -23,7 +23,7 @@ public static class CpuSampleSignals
     public static IReadOnlyList<SignalGroup> Detect(CpuSample sample, string handleId)
     {
         ArgumentNullException.ThrowIfNull(sample);
-        return Detect(new CpuSignalContext(sample.TotalSamples, sample.TopHotspots, handleId, sample.TopSelfTime));
+        return Detect(new CpuSignalContext(sample.TotalSamples, sample.TopHotspots, handleId, sample.TopSelfTime, null, sample.SelfSamples, sample.TopRunningSelfTime));
     }
 
     /// <summary>
@@ -39,12 +39,22 @@ public static class CpuSampleSignals
         var selfRanked = CpuSampleAnalytics.RankMethods(artifact.Root, artifact.TotalSamples, byInclusive: false);
         var hotspots = CpuSampleAnalytics
             .RankMethods(artifact.Root, artifact.TotalSamples, byInclusive: true)
-            .Select(m => new Hotspot(new SampledFrame(m.Module, m.Method), m.InclusiveSamples, m.ExclusiveSamples, m.Identity))
+            .Select(m => new Hotspot(new SampledFrame(m.Module, m.Method), m.InclusiveSamples, m.ExclusiveSamples, m.Identity)
+            {
+                SelfSamples = m.SelfSamples,
+            })
             .ToArray();
 
         var topSelfTime = CpuSampleAnalytics.TopSelfTime(artifact.Root, artifact.TotalSamples);
 
-        return Detect(new CpuSignalContext(artifact.TotalSamples, hotspots, handleId, topSelfTime, selfRanked));
+        return Detect(new CpuSignalContext(
+            artifact.TotalSamples,
+            hotspots,
+            handleId,
+            topSelfTime,
+            selfRanked,
+            artifact.SelfSamples,
+            CpuSampleAnalytics.TopRunningSelfTime(artifact.Root, artifact.TotalSamples)));
     }
 
     /// <summary>Runs every registered provider over the context and ranks the union by salience.</summary>

@@ -96,10 +96,17 @@ public static class CpuSampleQueryDispatcher
         }
 
         var (pruned, nodeCount, truncated) = PruneTree(root, maxDepth, maxNodes);
-        var view = new CallTreeView(artifact.ProcessId, artifact.TotalSamples, nodeCount, truncated, pruned);
+        var view = new CallTreeView(artifact.ProcessId, artifact.TotalSamples, nodeCount, truncated, pruned)
+        {
+            SelfSamples = artifact.SelfSamples ?? CpuSampleAnalytics.TotalSelfSamples(root),
+        };
         var summary = truncated
             ? $"Showing {nodeCount} nodes (truncated; raise maxNodes or maxDepth, or narrow with rootMethodFilter). Root: {root.Frame.Method} — {root.InclusiveSamples} inclusive samples."
             : $"Showing the full sub-tree rooted at {root.Frame.Method} ({nodeCount} nodes, {root.InclusiveSamples} inclusive samples).";
+        if (view.SelfSamples is { } self)
+        {
+            summary += $" Self split: {self.RunningSamples} running / {self.WaitingSamples} waiting.";
+        }
 
         var drilldownMethod = pruned.Children.Count > 0 ? pruned.Children[0].Frame.Method : null;
         return drilldownMethod is null
@@ -127,11 +134,14 @@ public static class CpuSampleQueryDispatcher
         var root = CallTreeIdentityProjector.Stamp(artifact.Root, artifact.MethodIdentities);
         var ranked = CpuSampleAnalytics.RankMethods(root, artifact.TotalSamples, byInclusive: normalizedSort == "inclusive");
         var top = ranked.Take(topN).ToList();
-        var view = new TopMethodsView(artifact.ProcessId, artifact.TotalSamples, normalizedSort, top.Count, top);
+        var view = new TopMethodsView(artifact.ProcessId, artifact.TotalSamples, normalizedSort, top.Count, top)
+        {
+            SelfSamples = artifact.SelfSamples ?? CpuSampleAnalytics.TotalSelfSamples(root),
+        };
 
         var summary = top.Count == 0
             ? "No methods aggregated — the trace captured no attributable frames."
-            : $"Top {top.Count} method(s) by {normalizedSort} samples (of {ranked.Count} total). Hottest: {top[0].Method} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive).";
+            : $"Top {top.Count} method(s) by {normalizedSort} samples (of {ranked.Count} total). Hottest: {top[0].Method} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive){FormatSelfSamples(top[0].SelfSamples)}.";
 
         return top.Count == 0
             ? DiagnosticResult.Ok(view, summary)
@@ -157,11 +167,14 @@ public static class CpuSampleQueryDispatcher
         var root = CallTreeIdentityProjector.Stamp(artifact.Root, artifact.MethodIdentities);
         var ranked = CpuSampleAnalytics.RankGroups(root, artifact.TotalSamples, keySelector);
         var top = ranked.Take(topN).ToList();
-        var view = new GroupedSamplesView(artifact.ProcessId, artifact.TotalSamples, groupBy, top.Count, top);
+        var view = new GroupedSamplesView(artifact.ProcessId, artifact.TotalSamples, groupBy, top.Count, top)
+        {
+            SelfSamples = artifact.SelfSamples ?? CpuSampleAnalytics.TotalSelfSamples(root),
+        };
 
         var summary = top.Count == 0
             ? $"No {groupBy} groups aggregated."
-            : $"Top {top.Count} {groupBy}(s) by exclusive samples (of {ranked.Count}). Hottest: {top[0].Group} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive).";
+            : $"Top {top.Count} {groupBy}(s) by exclusive samples (of {ranked.Count}). Hottest: {top[0].Group} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive){FormatSelfSamples(top[0].SelfSamples)}.";
 
         return DiagnosticResult.Ok(view, summary,
             new NextActionHint("query_snapshot", "Rank individual methods.",
@@ -179,11 +192,14 @@ public static class CpuSampleQueryDispatcher
 
         var root = CallTreeIdentityProjector.Stamp(artifact.Root, artifact.MethodIdentities);
         var (frames, depth) = CpuSampleAnalytics.BuildHotPath(root, artifact.TotalSamples, thresholdPercent / 100d);
-        var view = new HotPathView(artifact.ProcessId, artifact.TotalSamples, thresholdPercent, depth, frames);
+        var view = new HotPathView(artifact.ProcessId, artifact.TotalSamples, thresholdPercent, depth, frames)
+        {
+            SelfSamples = artifact.SelfSamples ?? CpuSampleAnalytics.TotalSelfSamples(root),
+        };
 
         var summary = frames.Count == 0
             ? "No dominant call chain — the root has no children."
-            : $"Hot path is {depth} frame(s) deep at a {thresholdPercent:0.#}% threshold. Leaf: {frames[^1].Method} ({frames[^1].InclusivePercent:0.#}% inclusive).";
+            : $"Hot path is {depth} frame(s) deep at a {thresholdPercent:0.#}% threshold. Leaf: {frames[^1].Method} ({frames[^1].InclusivePercent:0.#}% inclusive{FormatSelfSamples(frames[^1].SelfSamples)}).";
 
         var hintArguments = new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallTreeView };
         if (frames.Count > 0)
@@ -234,10 +250,13 @@ public static class CpuSampleQueryDispatcher
 
         var focus = matches[0];
         var built = CpuSampleAnalytics.BuildCallerCallee(root, artifact.TotalSamples, focus.Key, focus.Representative, topN);
-        var view = built with { ProcessId = artifact.ProcessId };
+        var view = built with
+        {
+            ProcessId = artifact.ProcessId,
+        };
 
         var summary =
-            $"{view.Method}: {view.InclusiveSamples} inclusive ({view.InclusivePercent:0.#}%) / {view.ExclusiveSamples} exclusive samples — {view.Callers.Count} caller(s), {view.Callees.Count} callee(s).";
+            $"{view.Method}: {view.InclusiveSamples} inclusive ({view.InclusivePercent:0.#}%) / {view.ExclusiveSamples} exclusive samples{FormatSelfSamples(view.SelfSamples)} — {view.Callers.Count} caller(s), {view.Callees.Count} callee(s).";
 
         var nextMethod = view.Callers.Count > 0
             ? view.Callers[0].Method
@@ -316,4 +335,9 @@ public static class CpuSampleQueryDispatcher
             $"Argument '{parameterName}' {requirement}.",
             new DiagnosticError("InvalidArgument", $"Argument '{parameterName}' {requirement}.", parameterName),
             new NextActionHint("inspect_process", "Re-issue with valid arguments. See tool schema for ranges and defaults."));
+
+    private static string FormatSelfSamples(SelfSampleBreakdown? selfSamples)
+        => selfSamples is null
+            ? string.Empty
+            : $", self split {selfSamples.RunningSamples} running / {selfSamples.WaitingSamples} waiting";
 }
