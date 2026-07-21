@@ -17,6 +17,14 @@ internal sealed record CliOptions
     /// <summary>Target process name/prefix selector from <c>--pid &lt;name&gt;</c>. Resolved by the CLI before dispatch.</summary>
     public string? PidName { get; init; }
 
+    /// <summary>
+    /// Case-insensitive substring filter against each process's command line (<c>--command-line-contains</c>),
+    /// used only by <c>processes</c> to disambiguate among several candidates spawned by a wrapper the
+    /// caller doesn't control (e.g. several <c>testhost.exe</c> under <c>dotnet test</c>) — issue #665 part B,
+    /// mirroring the MCP <c>inspect_process(view="list")</c> filter.
+    /// </summary>
+    public string? CommandLineContains { get; init; }
+
     /// <summary>True when the caller supplied either a numeric pid or a name/prefix selector.</summary>
     public bool HasPid => Pid is not null || PidName is not null;
 
@@ -403,6 +411,7 @@ internal sealed record CliOptions
             new FlagOptionDescriptor(state => state.Launch = true, "--launch"),
             new FlagOptionDescriptor(state => state.SuspendStartup = true, "--suspend-startup"),
             new PidOptionDescriptor("--pid", "-p"),
+            new StringOptionDescriptor((state, value) => state.CommandLineContains = value, "--command-line-contains"),
             new StringOptionDescriptor((state, value) => state.Kind = value, "--kind"),
             new IntOptionDescriptor((state, value) => state.DurationSeconds = value, "--duration", "-d"),
             new IntOptionDescriptor((state, value) => state.IntervalSeconds = value, "--interval"),
@@ -475,6 +484,8 @@ internal sealed record CliOptions
         public int? Pid { get; set; }
 
         public string? PidName { get; set; }
+
+        public string? CommandLineContains { get; set; }
 
         public bool Json { get; set; }
 
@@ -614,6 +625,7 @@ internal sealed record CliOptions
                 Command = Command,
                 Pid = Pid,
                 PidName = PidName,
+                CommandLineContains = CommandLineContains,
                 Json = Json,
                 SavePath = SavePath,
                 ComparePaths = ComparePaths,

@@ -26,10 +26,10 @@ internal static partial class CliCommands
         return new CliCommandResult(false, false, new { shell = options.CompletionShell, script }, script);
     }
 
-    private static CliCommandResult Processes(IServiceProvider services)
+    private static CliCommandResult Processes(IServiceProvider services, CliOptions options)
     {
         var discovery = services.GetRequiredService<IProcessDiscovery>();
-        var result = ProcessInspectionUseCases.ListProcesses(discovery);
+        var result = ProcessInspectionUseCases.ListProcesses(discovery, options.CommandLineContains);
 
         return BuildResult(result, static (sb, processes) =>
         {

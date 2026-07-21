@@ -132,7 +132,7 @@ internal static partial class CliCommands
 
         return options.Command switch
         {
-            "processes" => Processes(services),
+            "processes" => Processes(services, options),
             "capabilities" => await CapabilitiesAsync(services, options, cancellationToken).ConfigureAwait(false),
             "doctor" => Doctor(services, options),
             "collect" => await CollectAsync(services, options, cancellationToken).ConfigureAwait(false),

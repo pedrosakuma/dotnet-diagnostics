@@ -99,6 +99,23 @@ public sealed class CliHostTests
     }
 
     [Fact]
+    public async Task RunAsync_ProcessesCommandLineContains_FiltersByCommandLineSubstring()
+    {
+        // Issue #665 part B CLI symmetry: --command-line-contains is a case-insensitive substring
+        // filter against each process's command line. A filter guaranteed not to match anything real
+        // still returns an Ok envelope (never fails) and its summary names the filter.
+        var (exit, stdout, _) = await RunAsync("processes", "--command-line-contains", "zz-no-such-substring-zz", "--json");
+
+        exit.Should().Be(0);
+
+        using var doc = JsonDocument.Parse(stdout);
+        doc.RootElement.TryGetProperty("summary", out var summary).Should().BeTrue();
+        summary.GetString().Should().Contain("zz-no-such-substring-zz");
+        doc.RootElement.TryGetProperty("data", out var data).Should().BeTrue();
+        data.GetArrayLength().Should().Be(0);
+    }
+
+    [Fact]
     public async Task RunAsync_Processes_HumanOutputHasHeaderOrEmptyHint()
     {
         var (exit, stdout, _) = await RunAsync("processes");

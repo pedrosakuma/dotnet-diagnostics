@@ -97,9 +97,14 @@ Exit codes: `0` success (a `dump` preview is also a success), `1` a structured f
 
 List attachable .NET processes (pid, runtime, OS/arch, entrypoint).
 
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--command-line-contains` | `string?` | none | Case-insensitive substring filter against each process's command line, to disambiguate among several candidates spawned by a wrapper you don't control (e.g. several `testhost.exe` under `dotnet test`) — issue #665 part B, mirroring the MCP `inspect_process(view="list")` filter. |
+
 ```bash
 dotnet-diagnostics-cli processes
 dotnet-diagnostics-cli processes --json
+dotnet-diagnostics-cli processes --command-line-contains testhost
 ```
 
 ### `capabilities`

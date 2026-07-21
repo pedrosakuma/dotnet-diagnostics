@@ -31,7 +31,7 @@ internal static class CliCommandCatalog
         "--native-alloc-sample-period", "--max-frames-per-thread", "--watch",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
         "--symptom", "--hypothesis", "--max-tool-calls", "--top-hotspots",
-        "--capture-when", "--capture", "--window", "--max-captures",
+        "--capture-when", "--capture", "--window", "--max-captures", "--command-line-contains",
     ];
 
     public static readonly IReadOnlyList<string> DepthValues = ["summary", "detail", "raw"];
@@ -106,12 +106,18 @@ Options:
         new(
             "processes",
             "List attachable .NET processes.",
-            null,
+"""
+processes options:
+      --command-line-contains <text>  Case-insensitive substring filter against each process's command
+                                line, to disambiguate among several candidates spawned by a wrapper
+                                you don't control (e.g. several testhost.exe under 'dotnet test').
+""",
 """
   dotnet-diagnostics-cli processes
   dotnet-diagnostics-cli processes --json
+  dotnet-diagnostics-cli processes --command-line-contains testhost
 """,
-            []),
+            ["--command-line-contains"]),
         new(
             "capabilities",
             "Probe a target's diagnostic capability matrix.",
