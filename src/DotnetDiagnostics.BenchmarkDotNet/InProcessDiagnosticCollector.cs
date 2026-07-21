@@ -194,7 +194,13 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
                 new DiagnosticError("NotSupported", ex.Message, ex.GetType().FullName));
         }
 
-        var handle = handles.Register(processId, "cpu-sample", result.Artifact, CpuSampleHandleTtl);
+        var handle = handles.Register(
+            processId,
+            "cpu-sample",
+            result.Artifact,
+            CpuSampleHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
         var summary = BuildCpuSummary(result.Summary, result.Artifact.Root, durationSeconds);
         return DiagnosticResult.OkWithHandle(
             result.Summary,
@@ -315,7 +321,12 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
 
         var coLocated = processId == Environment.ProcessId;
         var handle = handles.Register(
-            processId, "allocation-sample", new AllocationSampleArtifact(result.Summary, result.Artifact), CpuSampleHandleTtl);
+            processId,
+            "allocation-sample",
+            new AllocationSampleArtifact(result.Summary, result.Artifact),
+            CpuSampleHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
         var summary = BuildAllocationSummary(result.Summary, durationSeconds, coLocated);
         return DiagnosticResult.OkWithHandle(
             result.Summary,

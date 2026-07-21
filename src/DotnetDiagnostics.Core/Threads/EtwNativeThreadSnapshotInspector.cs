@@ -105,6 +105,7 @@ public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
         CancellationToken cancellationToken)
     {
         var capturedAt = DateTimeOffset.UtcNow;
+        var processStartedAtUtc = TryGetProcessStartedAtUtc(processId);
         var stopwatch = Stopwatch.StartNew();
         var captureDir = Path.Combine(Path.GetTempPath(), $"diagmcp-etw-threads-{processId}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(captureDir);
@@ -132,12 +133,30 @@ public sealed class EtwNativeThreadSnapshotInspector : IThreadSnapshotInspector
                 Locks: Array.Empty<MonitorLockState>())
             {
                 Source = "etw-native-stack",
+                ProcessStartedAtUtc = processStartedAtUtc,
                 Warnings = warnings.Count > 0 ? warnings : null,
             };
         }
         finally
         {
             TryDeleteDirectory(captureDir);
+        }
+    }
+
+    private static DateTimeOffset? TryGetProcessStartedAtUtc(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
         }
     }
 

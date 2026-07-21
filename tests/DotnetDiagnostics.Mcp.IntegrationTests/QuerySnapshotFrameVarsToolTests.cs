@@ -169,6 +169,83 @@ public sealed class QuerySnapshotFrameVarsToolTests
         hint.ShouldMatchCanonicalSchema();
     }
 
+    [Fact]
+    public async Task ArtifactOnlyThreadView_LiveOriginHandleSurvivesProcessExit()
+    {
+        const int processId = 962700;
+        var store = new MemoryDiagnosticHandleStore();
+        var handle = store.Register(
+            processId,
+            DiagnosticTools.ThreadSnapshotKind,
+            ThreadArtifact(ThreadSnapshotOrigin.Live, processId),
+            TimeSpan.FromMinutes(10),
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
+        new DeadProcessHandleEvictor(store, isProcessAlive: _ => false).EvictDeadProcesses().Should().Be(0);
+
+        var result = await QuerySnapshotTool.QuerySnapshot(
+            store,
+            new StubDumpInspector(),
+            new SensitiveDataRedactor(null),
+            new SensitiveValueGate(null),
+            TestPrincipalAccessors.Root,
+            new ClrMdNativeAddressResolver(),
+            new StubFrameResolver(Empty()),
+            handle: handle.Id,
+            view: "top-blocked",
+            cancellationToken: CancellationToken.None);
+
+        result.Error.Should().BeNull();
+        var query = result.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
+        query.View.Should().Be("top-blocked");
+        query.Threads.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task FrameVars_LiveOriginExitedProcess_ReturnsStructuredProcessExitedError()
+    {
+        const int processId = 962701;
+        var store = new MemoryDiagnosticHandleStore();
+        var handle = store.Register(
+            processId,
+            DiagnosticTools.ThreadSnapshotKind,
+            ThreadArtifact(ThreadSnapshotOrigin.Live, processId),
+            TimeSpan.FromMinutes(10),
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
+        var resolver = new ThrowingFrameResolver();
+        new DeadProcessHandleEvictor(store, isProcessAlive: _ => false).EvictDeadProcesses().Should().Be(0);
+
+        var result = await Invoke(store, resolver, handle.Id, threadId: 12);
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("ProcessExited");
+        result.Summary.Should().Contain("requires the original live process");
+        resolver.CallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task FrameVars_LiveOriginProcessIdentityMismatch_ReturnsStructuredProcessExitedError()
+    {
+        var processId = Environment.ProcessId;
+        var store = new MemoryDiagnosticHandleStore();
+        var handle = store.Register(
+            processId,
+            DiagnosticTools.ThreadSnapshotKind,
+            ThreadArtifact(ThreadSnapshotOrigin.Live, processId) with
+            {
+                ProcessStartedAtUtc = DateTimeOffset.UtcNow.AddMinutes(1),
+            },
+            TimeSpan.FromMinutes(10),
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
+        var result = await Invoke(store, new ThrowingFrameResolver(), handle.Id, threadId: 12);
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("ProcessExited");
+        result.Summary.Should().Contain("exited or been reused");
+    }
+
 
     private static Task<DotnetDiagnostics.Core.DiagnosticResult<object>> Invoke(
         MemoryDiagnosticHandleStore store,
@@ -246,13 +323,28 @@ public sealed class QuerySnapshotFrameVarsToolTests
     private sealed class StubFrameResolver : IFrameVariableResolver
     {
         private readonly FrameVariablesResult _result;
+        private int _callCount;
         public StubFrameResolver(FrameVariablesResult result) => _result = result;
+        public int CallCount => Volatile.Read(ref _callCount);
         public bool LastSensitive { get; private set; }
 
         public Task<FrameVariablesResult> ResolveAsync(ThreadSnapshotArtifact artifact, int managedThreadId, bool includeSensitiveValues, CancellationToken cancellationToken = default)
         {
+            Interlocked.Increment(ref _callCount);
             LastSensitive = includeSensitiveValues;
             return Task.FromResult(_result);
+        }
+    }
+
+    private sealed class ThrowingFrameResolver : IFrameVariableResolver
+    {
+        private int _callCount;
+        public int CallCount => Volatile.Read(ref _callCount);
+
+        public Task<FrameVariablesResult> ResolveAsync(ThreadSnapshotArtifact artifact, int managedThreadId, bool includeSensitiveValues, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _callCount);
+            throw new InvalidOperationException("live process is gone");
         }
     }
 

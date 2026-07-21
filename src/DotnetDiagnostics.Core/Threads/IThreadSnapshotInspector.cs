@@ -66,6 +66,11 @@ public sealed record ThreadSnapshotArtifact(
     public string? Source { get; init; }
     /// <summary>Path to the originating dump file when <see cref="Origin"/> is <see cref="ThreadSnapshotOrigin.Dump"/>; <c>null</c> for live captures.</summary>
     public string? DumpFilePath { get; init; }
+    /// <summary>
+    /// Start time of the original live process when <see cref="Origin"/> is <see cref="ThreadSnapshotOrigin.Live"/>.
+    /// Used to reject PID reuse when a later drilldown view must re-attach via ClrMD.
+    /// </summary>
+    public DateTimeOffset? ProcessStartedAtUtc { get; init; }
     /// <summary>On-disk size of the originating dump file; <c>null</c> for live captures.</summary>
     public long? DumpFileSizeBytes { get; init; }
     /// <summary>Diagnostic warnings emitted during the walk (degraded data, ClrMD limitations, …).</summary>

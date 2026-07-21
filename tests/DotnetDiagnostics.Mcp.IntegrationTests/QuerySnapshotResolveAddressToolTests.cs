@@ -115,6 +115,28 @@ public sealed class QuerySnapshotResolveAddressToolTests
         hint.ShouldMatchCanonicalSchema();
     }
 
+    [Fact]
+    public async Task ResolveAddress_LiveOriginExitedProcess_ReturnsStructuredProcessExitedError()
+    {
+        const int processId = 962702;
+        var store = new MemoryDiagnosticHandleStore();
+        var handle = store.Register(
+            processId,
+            DiagnosticTools.ThreadSnapshotKind,
+            ThreadArtifact(ThreadSnapshotOrigin.Live, processId),
+            TimeSpan.FromMinutes(10),
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
+        var resolver = new ThrowingResolver();
+        new DeadProcessHandleEvictor(store, isProcessAlive: _ => false).EvictDeadProcesses().Should().Be(0);
+
+        var result = await Invoke(store, resolver, handle.Id, "0x1234");
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("ProcessExited");
+        result.Summary.Should().Contain("requires the original live process");
+    }
+
     private static Task<DotnetDiagnostics.Core.DiagnosticResult<object>> Invoke(
         MemoryDiagnosticHandleStore store,
         INativeAddressResolver resolver,
@@ -186,6 +208,15 @@ public sealed class QuerySnapshotResolveAddressToolTests
             await _release.Task.WaitAsync(cancellationToken);
             return Array.Empty<NativeAddressLocation>();
         }
+    }
+
+    private sealed class ThrowingResolver : INativeAddressResolver
+    {
+        public Task<IReadOnlyList<NativeAddressLocation>> ResolveAsync(
+            ThreadSnapshotArtifact artifact,
+            IReadOnlyList<ulong> addresses,
+            CancellationToken cancellationToken = default)
+            => throw new InvalidOperationException("live process is gone");
     }
 
     private sealed class StubDumpInspector : IDumpInspector

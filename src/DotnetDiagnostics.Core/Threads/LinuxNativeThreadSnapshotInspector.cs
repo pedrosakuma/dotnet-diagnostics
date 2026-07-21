@@ -73,6 +73,7 @@ public sealed class LinuxNativeThreadSnapshotInspector : IThreadSnapshotInspecto
         EnsureAttachPermissions(processId);
 
         var capturedAt = DateTimeOffset.UtcNow;
+        var processStartedAtUtc = TryGetProcessStartedAtUtc(processId);
         var warnings = new List<string>();
         var stopwatch = Stopwatch.StartNew();
 
@@ -115,8 +116,26 @@ public sealed class LinuxNativeThreadSnapshotInspector : IThreadSnapshotInspecto
             Locks: Array.Empty<MonitorLockState>())
         {
             Source = "linux-native-stack",
+            ProcessStartedAtUtc = processStartedAtUtc,
             Warnings = warnings.Count > 0 ? warnings : null,
         };
+    }
+
+    private static DateTimeOffset? TryGetProcessStartedAtUtc(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

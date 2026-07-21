@@ -436,7 +436,7 @@ public sealed class DiagnosticTools
                 $"Handle '{handle}' is unknown or expired.",
                 new DiagnosticError(
                     "HandleExpired",
-                    "Collection handles live ~10min and are invalidated when the target process exits.",
+                    "Collection handles live ~10min and expire by TTL.",
                     handle),
                 new NextActionHint("collect_events", "Re-run the original collector on the same pid to issue a fresh handle.", null));
         }
@@ -1147,7 +1147,7 @@ public sealed class DiagnosticTools
         "dumpFilePath analyses an already-captured WithHeap/Full dump offline. When both are omitted " +
         "the server auto-selects a live .NET process (live mode). Returns inline threads-summary + " +
         "lock-graph headlines plus a handle (~10min TTL) the LLM can drill into via " +
-        "query_snapshot. Dump-origin handles are NOT evicted when the producer PID exits.")]
+        "query_snapshot. Handles survive producer PID exit until TTL; only the live-only 'resolve-address' and 'frame-vars' views still require the original live process.")]
     public static Task<DiagnosticResult<ThreadSnapshotQueryResult>> CollectThreadSnapshot(
         IThreadSnapshotInspector inspector,
         IDiagnosticHandleStore handles,
@@ -1245,7 +1245,7 @@ public sealed class DiagnosticTools
         "`async-stalls` (best-effort grouping of async state-machine waits; useful when no SyncBlocks are contended), " +
         "`wait-chains` (Linux-native-stack only: groups off-CPU kernel wait stacks into representative chains; empty on exact CoreCLR snapshots), and " +
         "`threadpool` (SOS !threadpool-style snapshot of worker/IOCP counts plus global/local queue depths and pending work items when the backend captured them). " +
-        "Handles expire ~10 minutes after capture; live-origin handles are invalidated when the target PID exits.")]
+        "Handles expire ~10 minutes after capture and survive target-process exit; only live-origin `resolve-address` and `frame-vars` re-attach via ClrMD and therefore require the original process to still be running.")]
     public static DiagnosticResult<ThreadSnapshotQueryResult> QueryThreadSnapshot(
         IDiagnosticHandleStore handles,
         [Description("Snapshot handle returned by collect_thread_snapshot.")] string handle,

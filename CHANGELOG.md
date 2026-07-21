@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Self-contained drilldown handles survive producer exit** (#662) — `collect_sample` CPU / allocation / off-CPU / native-alloc artifacts, the affected `collect_events` snapshots, and thread snapshots now expire by TTL instead of being evicted immediately when the target process exits; live-only thread views (`resolve-address`, `frame-vars`) now return a structured `ProcessExited` error instead of failing the whole handle.
+
 ## [0.18.0] — 2026-07-20
 
 Highlights: **`dotnet-diagnostics-cli session` REPL ergonomics + a session-integrity fix.**

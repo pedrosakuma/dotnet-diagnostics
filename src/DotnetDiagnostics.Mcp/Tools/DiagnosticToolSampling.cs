@@ -113,7 +113,13 @@ internal static class DiagnosticToolSampling
             return WithContext(ClassifyAttachFailure<CpuSample>("collect_sample", pid, ex), ctx);
         }
 
-        var handle = handles.Register(pid, "cpu-sample", result.Artifact, CpuSampleHandleTtl);
+        var handle = handles.Register(
+            pid,
+            "cpu-sample",
+            result.Artifact,
+            CpuSampleHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
         var signals = CpuSampleSignals.Detect(result.Summary, handle.Id);
         var hints = new List<NextActionHint>();
 
@@ -176,7 +182,13 @@ internal static class DiagnosticToolSampling
         }
 
         var sample = result.Summary;
-        var handle = handles.Register(pid, "allocation-sample", new AllocationSampleArtifact(sample, result.Artifact), CpuSampleHandleTtl);
+        var handle = handles.Register(
+            pid,
+            "allocation-sample",
+            new AllocationSampleArtifact(sample, result.Artifact),
+            CpuSampleHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
         var signals = AllocationSignals.Detect(sample, handle.Id);
 
         var topType = sample.TopByBytes.Count > 0 ? sample.TopByBytes[0] : null;
@@ -225,7 +237,7 @@ internal static class DiagnosticToolSampling
         {
             return DiagnosticResult.Fail<CallTreeView>(
                 $"Handle '{handle}' is unknown or expired.",
-                new DiagnosticError("HandleExpired", "Drill-down handles live ~10min and are invalidated when the target process exits.", handle),
+                new DiagnosticError("HandleExpired", "Drill-down handles live ~10min and expire by TTL.", handle),
                 new NextActionHint("collect_sample", "Re-run the sampler on the same pid to issue a fresh handle.",
                     new Dictionary<string, object?> { ["kind"] = "cpu", ["durationSeconds"] = 10 }));
         }
@@ -298,7 +310,13 @@ internal static class DiagnosticToolSampling
         }
 
         var summary = result.Summary;
-        var handle = handles.Register(pid, OffCpuHandleKind, result.Artifact, CpuSampleHandleTtl);
+        var handle = handles.Register(
+            pid,
+            OffCpuHandleKind,
+            result.Artifact,
+            CpuSampleHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
 
         var inlineSummary = summary;
         var droppedStacks = 0;
@@ -392,7 +410,13 @@ internal static class DiagnosticToolSampling
         }
 
         var sample = result.Summary;
-        var handle = handles.Register(pid, NativeAllocHandleKind, result.Artifact, CpuSampleHandleTtl);
+        var handle = handles.Register(
+            pid,
+            NativeAllocHandleKind,
+            result.Artifact,
+            CpuSampleHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
 
         var topAllocator = sample.TopAllocators.Count > 0 ? sample.TopAllocators[0] : null;
         var summaryText = topAllocator is not null
@@ -431,7 +455,7 @@ internal static class DiagnosticToolSampling
         {
             return DiagnosticResult.Fail<OffCpuQueryView>(
                 $"Handle '{handle}' is unknown or expired.",
-                new DiagnosticError("HandleExpired", "Off-CPU handles live ~10min and are invalidated when the target process exits.", handle),
+                new DiagnosticError("HandleExpired", "Off-CPU handles live ~10min and expire by TTL.", handle),
                 new NextActionHint("collect_sample", "Re-run the off-CPU sampler to issue a fresh handle.",
                     new Dictionary<string, object?> { ["kind"] = "off_cpu", ["durationSeconds"] = 10 }));
         }

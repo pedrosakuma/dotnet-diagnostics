@@ -166,7 +166,13 @@ public static class EventCollectionUseCases
 
         // The handle always carries the FULL snapshot (query_snapshot drilldown stays cheap),
         // but the inline payload is depth-gated to keep first-look responses small.
-        var handle = handles.Register(pid, CollectionHandleKinds.Counters, snapshot, CollectionHandleTtl);
+        var handle = handles.Register(
+            pid,
+            CollectionHandleKinds.Counters,
+            snapshot,
+            CollectionHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
 
         // Signal-grouping ("vector") layer (#514/#527): forward only the salient, diagnosis-agnostic
         // counter movement rather than making the consumer re-derive it from the full counter table.
@@ -240,7 +246,7 @@ public static class EventCollectionUseCases
             depth,
             new HandledCollectionStrategy<ExceptionSnapshot>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxRecent, ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.ExceptionSnapshot, snap),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.ExceptionSnapshot, snap, evictWhenProcessExits: false),
                 BuildResult: (snap, handle, context) =>
                 {
                     var topType = snap.ByType.OrderByDescending(c => c.Count).FirstOrDefault();
@@ -354,7 +360,7 @@ public static class EventCollectionUseCases
             depth,
             new HandledCollectionStrategy<GcSummary>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxEvents, ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.GcEvents, snap),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.GcEvents, snap, evictWhenProcessExits: false),
                 BuildResult: (gc, handle, context) =>
                 {
                     var inlineGc = gc;
@@ -418,7 +424,7 @@ public static class EventCollectionUseCases
             depth,
             new HandledCollectionStrategy<EventCatalogSnapshot>(
                 CollectAsync: (pid, ct) => collector.CaptureAsync(pid, TimeSpan.FromSeconds(durationSeconds), providers, maxEvents, ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.EventCatalog, snap),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.EventCatalog, snap, evictWhenProcessExits: false),
                 BuildResult: (snapshot, handle, context) =>
                 {
                     var inlineSnapshot = snapshot;
@@ -483,7 +489,7 @@ public static class EventCollectionUseCases
             SamplingDepth.Detail,
             new HandledCollectionStrategy<GcDatasSnapshot>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxEvents, ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.GcDatas, snap),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.GcDatas, snap, evictWhenProcessExits: false),
                 BuildEarlyResult: (snapshot, context) =>
                 {
                     if (snapshot.HasData)
@@ -566,7 +572,7 @@ public static class EventCollectionUseCases
                     maxMessageBytes,
                     includeJsonPayload: depth != SamplingDepth.Summary,
                     ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.LogSnapshot, snap),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.LogSnapshot, snap, evictWhenProcessExits: false),
                 BuildResult: (snapshot, handle, context) =>
                 {
                     var inlineSnapshot = snapshot;
@@ -625,7 +631,7 @@ public static class EventCollectionUseCases
             depth,
             new HandledCollectionStrategy<JitSnapshot>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.JitSnapshot, snap),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.JitSnapshot, snap, evictWhenProcessExits: false),
                 BuildResult: (snapshot, handle, context) =>
                 {
                     var inlineSnapshot = snapshot;
@@ -683,7 +689,7 @@ public static class EventCollectionUseCases
             depth,
             new HandledCollectionStrategy<ThreadPoolEventSnapshot>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.ThreadPoolSnapshot, snap),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.ThreadPoolSnapshot, snap, evictWhenProcessExits: false),
                 BuildResult: (snapshot, handle, context) =>
                 {
                     var inlineSnapshot = snapshot;
@@ -742,7 +748,7 @@ public static class EventCollectionUseCases
             depth,
             new HandledCollectionStrategy<ContentionSnapshot>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.ContentionSnapshot, snap),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.ContentionSnapshot, snap, evictWhenProcessExits: false),
                 BuildResult: (snapshot, handle, context) =>
                 {
                     var inlineSnapshot = context.Depth == SamplingDepth.Summary
@@ -805,7 +811,7 @@ public static class EventCollectionUseCases
             depth,
             new HandledCollectionStrategy<DbSnapshot>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), intervalSeconds, ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.DbSnapshot, snap),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.DbSnapshot, snap, evictWhenProcessExits: false),
                 BuildResult: (snapshot, handle, context) =>
                 {
                     var inlineSnapshot = context.Depth == SamplingDepth.Summary
@@ -876,7 +882,13 @@ public static class EventCollectionUseCases
             };
         }
 
-        var handle = handles.Register(pid, CollectionHandleKinds.KestrelSnapshot, snapshot, CollectionHandleTtl);
+        var handle = handles.Register(
+            pid,
+            CollectionHandleKinds.KestrelSnapshot,
+            snapshot,
+            CollectionHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
         var hints = new List<NextActionHint>();
 
         string summary;
@@ -952,7 +964,13 @@ public static class EventCollectionUseCases
             inlineSnapshot = snapshot with { Requests = snapshot.Requests.Take(10).ToList() };
         }
 
-        var handle = handles.Register(pid, CollectionHandleKinds.InFlightRequests, snapshot, CollectionHandleTtl);
+        var handle = handles.Register(
+            pid,
+            CollectionHandleKinds.InFlightRequests,
+            snapshot,
+            CollectionHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
         var hints = new List<NextActionHint>();
 
         string summary;
@@ -1014,7 +1032,7 @@ public static class EventCollectionUseCases
             depth,
             new HandledCollectionStrategy<NetworkingSnapshot>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), intervalSeconds, ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.NetworkingSnapshot, snap),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.NetworkingSnapshot, snap, evictWhenProcessExits: false),
                 BuildResult: (snapshot, handle, context) =>
                 {
                     var inlineSnapshot = context.Depth == SamplingDepth.Summary
@@ -1067,7 +1085,7 @@ public static class EventCollectionUseCases
             depth,
             new HandledCollectionStrategy<StartupSnapshot>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.StartupSnapshot, snap),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.StartupSnapshot, snap, evictWhenProcessExits: false),
                 BuildResult: (snapshot, handle, context) =>
                 {
                     var inlineSnapshot = context.Depth == SamplingDepth.Summary
@@ -1139,7 +1157,13 @@ public static class EventCollectionUseCases
         var summary = $"Cold-start capture over {durationSeconds}s (suspended reverse-connect; pre-attach events included): assemblies={snapshot.TotalAssemblyLoads}, modules={snapshot.TotalModuleLoads}, DI events={snapshot.TotalDiEvents}, service providers built={snapshot.DiServiceProviderBuiltCount}, observed DI span={snapshot.ObservedDiActivityDuration.TotalMilliseconds:F1}ms." +
                       (snapshot.Truncated ? " Retained startup event lists were truncated by collector safety caps; totals remain exact." : string.Empty);
 
-        var handle = handles.Register(pid, CollectionHandleKinds.StartupSnapshot, snapshot, CollectionHandleTtl);
+        var handle = handles.Register(
+            pid,
+            CollectionHandleKinds.StartupSnapshot,
+            snapshot,
+            CollectionHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
         return DiagnosticResult.OkWithHandle(
             inlineSnapshot,
             summary,
@@ -1189,7 +1213,13 @@ public static class EventCollectionUseCases
                 "Cross-check ActivitySource timing with runtime counters for the same process.",
                 new Dictionary<string, object?> { ["kind"] = "counters", ["processId"] = pid, ["durationSeconds"] = durationSeconds });
 
-        var handle = handles.Register(pid, CollectionHandleKinds.Activities, capture, CollectionHandleTtl);
+        var handle = handles.Register(
+            pid,
+            CollectionHandleKinds.Activities,
+            capture,
+            CollectionHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
         return WithContext(DiagnosticResult.OkWithHandle(
             capture,
             summary,
@@ -1302,7 +1332,13 @@ public static class EventCollectionUseCases
                 ? $"Captured {capture.Events.Count} event(s) from '{providerName}' over {durationSeconds}s. Dropped {droppedCapEvents} Event(s) from inline (handle has all)."
                 : $"Captured {capture.Events.Count} event(s) from '{providerName}' over {durationSeconds}s.");
 
-        var handle = handles.Register(pid, CollectionHandleKinds.EventSource, capture, CollectionHandleTtl);
+        var handle = handles.Register(
+            pid,
+            CollectionHandleKinds.EventSource,
+            capture,
+            CollectionHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
         return WithContext(DiagnosticResult.OkWithHandle(
             inlineCapture,
             summary,
