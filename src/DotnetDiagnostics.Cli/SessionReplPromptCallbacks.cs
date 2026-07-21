@@ -2,6 +2,7 @@ using PrettyPrompt;
 using PrettyPrompt.Completion;
 using PrettyPrompt.Consoles;
 using PrettyPrompt.Documents;
+using PrettyPrompt.Highlighting;
 
 namespace DotnetDiagnostics.Cli;
 
@@ -46,10 +47,12 @@ internal sealed class SessionReplPromptCallbacks : PromptCallbacks
     internal const string EofExitText = "exit";
 
     private readonly Func<int?> _getBoundPid;
+    private readonly Func<bool> _isTargetExited;
 
-    public SessionReplPromptCallbacks(Func<int?> getBoundPid)
+    public SessionReplPromptCallbacks(Func<int?> getBoundPid, Func<bool> isTargetExited)
     {
         _getBoundPid = getBoundPid ?? throw new ArgumentNullException(nameof(getBoundPid));
+        _isTargetExited = isTargetExited ?? throw new ArgumentNullException(nameof(isTargetExited));
     }
 
     protected override IEnumerable<(KeyPressPattern Pattern, KeyPressCallbackAsync Callback)> GetKeyPressCallbacks()
@@ -103,8 +106,19 @@ internal sealed class SessionReplPromptCallbacks : PromptCallbacks
 
         var candidates = SessionReplCompletion.GetCandidates(tokensBeforeWord, typedPrefix, _getBoundPid());
 
+        // Issue #675: once the bound target is known to have exited, every `collect --kind` candidate
+        // will fail immediately (it requires a live process to start a new capture) — annotate rather
+        // than hide them, since a fresh `target <pid>` still makes them valid again this session.
+        var warnDead = _isTargetExited() && SessionReplCompletion.IsLiveCaptureKindCompletion(tokensBeforeWord);
+
         IReadOnlyList<CompletionItem> items = candidates
-            .Select(static candidate => new CompletionItem(replacementText: candidate))
+            .Select(candidate => warnDead
+                ? new CompletionItem(
+                    replacementText: candidate,
+                    displayText: $"{candidate}  (target exited)",
+                    getExtendedDescription: _ => Task.FromResult<FormattedString>(
+                        "Bound target has exited; this capture requires a live process and will fail until you 'target <pid>' a running one."))
+                : new CompletionItem(replacementText: candidate))
             .ToArray();
         return Task.FromResult(items);
     }

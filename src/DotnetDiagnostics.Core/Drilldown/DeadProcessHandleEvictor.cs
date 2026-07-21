@@ -28,7 +28,7 @@ public sealed class DeadProcessHandleEvictor
     public DeadProcessHandleEvictor(IDiagnosticHandleStore store, Func<int, bool>? isProcessAlive = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
-        _isProcessAlive = isProcessAlive ?? DefaultIsProcessAlive;
+        _isProcessAlive = isProcessAlive ?? IsProcessAlive;
     }
 
     /// <summary>
@@ -89,7 +89,15 @@ public sealed class DeadProcessHandleEvictor
         }
     }
 
-    private static bool DefaultIsProcessAlive(int pid)
+    /// <summary>
+    /// Canonical, definitive OS-process-liveness probe (a plain <see cref="Process.GetProcessById(int)"/>
+    /// check — no diagnostic-IPC round trip, so it never confuses a transient diagnostic-endpoint failure
+    /// with the process actually having exited). Public so other liveness-sensitive UX shares this exact
+    /// definition instead of re-deriving its own — e.g. the CLI <c>session</c> REPL's proactive
+    /// target-exit notice (issue #675) uses this rather than <c>IProcessDiscovery.TryGetProcess</c>,
+    /// whose <c>null</c> result can also mean "diagnostic socket unreachable" for a still-alive process.
+    /// </summary>
+    public static bool IsProcessAlive(int pid)
     {
         try
         {
@@ -104,6 +112,15 @@ public sealed class DeadProcessHandleEvictor
         catch (InvalidOperationException)
         {
             return false;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // Process.HasExited throws this for an indeterminate OS-level failure (e.g. a permission
+            // error retrieving the exit code) — this does NOT mean the process has exited. Treat it as
+            // "still alive" (conservative default) rather than either crashing the caller's loop or
+            // false-latching an exited state for a process we simply couldn't confirm — the exact class
+            // of bug this method was introduced to eliminate (see class remarks above).
+            return true;
         }
     }
 }
