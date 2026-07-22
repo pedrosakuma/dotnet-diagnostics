@@ -232,11 +232,13 @@ real natural-language phrasing.
   that clears it for more than one candidate (an ambiguous response), is left
   empty and reported in `UnmappedFields` rather than guessed -- an unresolved
   field always scores as unsupported, never as an accidental match.
-- **Negation-aware**: a candidate whose own tokens are immediately preceded by
-  a negation marker ("not", "never", ...) in the response is excluded even
-  when the bag-of-words overlap is otherwise strong, so "not <accepted
-  phrase>" cannot silently map to the accepted id. This is a proximity
-  heuristic, not real negation-scope parsing.
+- **Negation-aware**: a candidate whose own tokens are immediately preceded,
+  within the same clause, by a negation marker ("not", "never", ...) in the
+  response is excluded even when the bag-of-words overlap is otherwise
+  strong, so "not <candidate phrase>" cannot silently map to the accepted
+  id. Clause boundaries (`.`, `,`, `;`, `:`, "but", "however", "although")
+  bound the check so a contrastive "not X, but Y" only negates X, not the
+  affirmed Y. This is a proximity heuristic, not real negation-scope parsing.
 - **Uncertainty**: `UncertaintyAssessment` scans the separate narrative field
   for hedging phrases (e.g. "correlat...", "further investigation") versus
   overclaiming phrases (e.g. "definitely the cause", "no other possible

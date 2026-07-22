@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
@@ -48,18 +49,26 @@ public static class ScenarioAgentResponseMapper
         "while", "behind", "some", "somewhere",
     };
 
-    // Words that negate whatever candidate token follows within NegationWindow tokens. Kept small
-    // and conservative: this is an order-sensitive proximity check, not real negation-scope parsing,
-    // so it only guards against the common "not <candidate phrase>" shape a wrong-diagnosis response
-    // would use, without rejecting hedged-but-correct phrasing where "not" refers to something else
-    // entirely (e.g. "correlated ... not yet proven" -- "not" here precedes "proven", not the
-    // candidate's own tokens).
+    // Words that negate whatever candidate token follows within NegationWindow tokens, bounded to the
+    // same clause (see ClauseBoundaryPattern) so a contrastive construction like "not X, but Y" negates
+    // only X, not Y. This is still an order-sensitive proximity check, not real negation-scope parsing --
+    // it guards against the common "not <candidate phrase>" shape a wrong-diagnosis response would use,
+    // without rejecting hedged-but-correct phrasing where "not" refers to something else entirely (e.g.
+    // "correlated ... not yet proven" -- "not" here precedes "proven", not the candidate's own tokens).
     private static readonly HashSet<string> NegationMarkers = new(StringComparer.Ordinal)
     {
         "not", "no", "never", "cannot", "doesnt", "isnt", "wasnt", "arent", "non",
     };
 
     private const int NegationWindow = 3;
+
+    // Clause separators: sentence/clause-ending punctuation plus common contrastive conjunctions. Splitting
+    // on these before tokenizing keeps the negation-proximity check (IsNegated) from crossing into an
+    // unrelated clause, e.g. "Not a GC pause, but sleeping monitor owner serializes work" must not treat
+    // "sleeping..." as negated just because "not" appears a few tokens earlier in a *different* clause.
+    private static readonly Regex ClauseBoundaryPattern = new(
+        @"[.,;:]|\bbut\b|\bhowever\b|\balthough\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly string[] HedgeTerms =
     [
@@ -136,7 +145,7 @@ public static class ScenarioAgentResponseMapper
             return null;
         }
 
-        var responseTokens = TokenizeOrdered(text);
+        var responseTokens = TokenizeOrdered(text, out var clauseIndex);
         if (responseTokens.Count == 0)
         {
             return null;
@@ -152,10 +161,11 @@ public static class ScenarioAgentResponseMapper
                 continue;
             }
 
-            // A candidate whose own tokens are immediately preceded by a negation marker in the
-            // response ("not <candidate phrase>") is excluded even though the bag-of-words overlap
-            // looks strong -- otherwise a rejected diagnosis would silently score as accepted.
-            if (!IsNegated(responseTokens, candidateTokens))
+            // A candidate whose own tokens are immediately preceded (within the same clause) by a
+            // negation marker in the response ("not <candidate phrase>") is excluded even though the
+            // bag-of-words overlap looks strong -- otherwise a rejected diagnosis would silently
+            // score as accepted.
+            if (!IsNegated(responseTokens, clauseIndex, candidateTokens))
             {
                 matches.Add(candidate);
             }
@@ -168,7 +178,7 @@ public static class ScenarioAgentResponseMapper
         return matches.Count == 1 ? matches[0] : null;
     }
 
-    private static bool IsNegated(List<string> orderedResponseTokens, HashSet<string> candidateTokens)
+    private static bool IsNegated(List<string> orderedResponseTokens, List<int> clauseIndex, HashSet<string> candidateTokens)
     {
         for (var i = 0; i < orderedResponseTokens.Count; i++)
         {
@@ -177,10 +187,11 @@ public static class ScenarioAgentResponseMapper
                 continue;
             }
 
+            var clause = clauseIndex[i];
             var windowStart = Math.Max(0, i - NegationWindow);
             for (var j = windowStart; j < i; j++)
             {
-                if (NegationMarkers.Contains(orderedResponseTokens[j]))
+                if (clauseIndex[j] == clause && NegationMarkers.Contains(orderedResponseTokens[j]))
                 {
                     return true;
                 }
@@ -203,12 +214,34 @@ public static class ScenarioAgentResponseMapper
     }
 
     private static HashSet<string> Tokenize(string text)
-        => TokenizeOrdered(text).ToHashSet(StringComparer.Ordinal);
+        => TokenizeOrdered(text, out _).ToHashSet(StringComparer.Ordinal);
 
-    private static List<string> TokenizeOrdered(string text)
-        => [.. Normalize(text)
-            .Split('-', StringSplitOptions.RemoveEmptyEntries)
-            .Where(token => !StopWords.Contains(token))];
+    private static List<string> TokenizeOrdered(string text, out List<int> clauseIndex)
+    {
+        var tokens = new List<string>();
+        clauseIndex = [];
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return tokens;
+        }
+
+        var clauses = ClauseBoundaryPattern.Split(text);
+        for (var clause = 0; clause < clauses.Length; clause++)
+        {
+            foreach (var token in Normalize(clauses[clause]).Split('-', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (StopWords.Contains(token))
+                {
+                    continue;
+                }
+
+                tokens.Add(token);
+                clauseIndex.Add(clause);
+            }
+        }
+
+        return tokens;
+    }
 
     private static string Normalize(string text)
     {

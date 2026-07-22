@@ -171,6 +171,29 @@ public sealed class ScenarioAgentResponseMapperTests
         mapped.Interpretation.HypothesisIds.Should().BeEmpty();
     }
 
+    [Fact]
+    public void Map_ContrastiveNegationInAnotherClause_DoesNotFalselyNegateTheAffirmedHypothesis()
+    {
+        // "Not <wrong candidate>, but <accepted candidate>" negates only the wrong candidate's
+        // clause. A negation guard that ignores clause boundaries would incorrectly treat the
+        // affirmed accepted hypothesis as negated too, just because "not" appears a few tokens
+        // earlier in the *other* clause.
+        var manifest = LoadManifest("lock-storm");
+        var response = new AgentScenarioResponse(
+            CitedEvidenceIds: [],
+            Hypothesis: "Not a GC pause, but a sleeping monitor owner serializes work.",
+            Attribution: manifest.AcceptableAttributions[0],
+            NextAction: manifest.AcceptableNextActions[0].Replace('-', ' '),
+            CausalityStatement: manifest.RequiredCausalityPosture.Replace('-', ' '),
+            Conclusions: [],
+            Narrative: string.Empty);
+
+        var mapped = ScenarioAgentResponseMapper.Map(manifest, response);
+
+        mapped.UnmappedFields.Should().NotContainKey("hypothesis");
+        mapped.Interpretation.HypothesisIds.Should().Equal("sleeping-monitor-owner-serializes-work");
+    }
+
     private static ScenarioManifest LoadManifest(string scenarioId)
         => ScenarioManifestLoader.LoadAll().Single(item => item.Id == scenarioId);
 }
