@@ -210,3 +210,40 @@ remains open.
    interpretation contract with evidence citations and uncertainty.
 4. Add more scenarios only when they exercise a new evidence shape; do not grow
    a catalog of variants that reuse the same oracle.
+
+## Addendum: agent-response mapper prototype (#681, item 3)
+
+`ScenarioAgentResponseMapper` (`tests/DotnetDiagnostics.ScenarioEvaluation.Tests/ScenarioAgentResponseMapper.cs`)
+prototypes turning free-text-shaped diagnosis output into the scoreable
+`StructuredInterpretation` contract, closing the gap that every prior test
+(`ScenarioReplayTests`) only ever fed `ScenarioEvaluator` hand-authored gold
+interpretations built directly from manifest ids -- never anything resembling
+real natural-language phrasing.
+
+- **Input**: `AgentScenarioResponse` -- free-text hypothesis/attribution/
+  next-action/causality-statement/conclusions plus a narrative paragraph.
+- **Mapping**: a deterministic, offline token-set (Jaccard similarity)
+  match against each scenario manifest's own controlled vocabulary
+  (`acceptableHypotheses` + `temptingWrongHypotheses`, `acceptableAttributions`,
+  `acceptableNextActions`, and a small fixed causality-posture taxonomy drawn
+  from the postures the shipped manifests actually use). No LLM call, no
+  network access, no stemming/synonym table.
+- **Unmapped-by-default**: a field that does not clear the match threshold is
+  left empty and reported in `UnmappedFields` rather than guessed -- an
+  unresolved field always scores as unsupported, never as an accidental match.
+- **Uncertainty**: `UncertaintyAssessment` scans the separate narrative field
+  for hedging phrases (e.g. "correlat...", "further investigation") versus
+  overclaiming phrases (e.g. "definitely the cause", "no other possible
+  explanation"), independent of the scored interpretation fields.
+- **Validated** end-to-end in `ScenarioAgentResponseMapperTests`: a
+  hedged/accepted narrative for `lock-storm` maps to every correct id and
+  scores `1.0`; an overclaiming, wrong narrative fails to map attribution/
+  next-action/causality, is flagged `OverclaimsCertainty`, and scores the
+  `ScenarioEvaluationReport` as `Failed`; `sync-over-async` and
+  `culture-lookup` resolve their controlled fields from paraphrased manifest
+  text; an unrecognizable hypothesis is reported as unmapped, never guessed.
+
+This stays advisory only -- it is not wired into any production MCP tool or
+PR gate, and the token-overlap heuristic is a known-limited stand-in for an
+eventual real agent-level rubric (#646 goal 7), not a claim that it can score
+arbitrary free text reliably.
