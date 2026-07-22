@@ -35,15 +35,31 @@ public static class ScenarioAgentResponseMapper
         "causal-claim-without-evidence",
     ];
 
+    // Negation words are deliberately kept OUT of the stopword list (unlike "a", "the", etc.) --
+    // dropping them would let a candidate be matched even when the response explicitly negates it
+    // (see NegationMarkers / IsNegated below, which needs them present in the token sequence).
     private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
     {
         "a", "an", "the", "and", "or", "of", "to", "it", "its", "that", "this", "these", "those",
-        "is", "are", "was", "were", "be", "been", "being", "than", "then", "so", "but", "not", "no",
+        "is", "are", "was", "were", "be", "been", "being", "than", "then", "so", "but",
         "do", "does", "did", "has", "have", "had", "will", "would", "can", "could", "may", "might",
         "must", "should", "we", "you", "they", "he", "she", "i", "because", "due", "which", "who",
         "whom", "with", "without", "by", "on", "in", "at", "as", "for", "from", "one", "like",
         "while", "behind", "some", "somewhere",
     };
+
+    // Words that negate whatever candidate token follows within NegationWindow tokens. Kept small
+    // and conservative: this is an order-sensitive proximity check, not real negation-scope parsing,
+    // so it only guards against the common "not <candidate phrase>" shape a wrong-diagnosis response
+    // would use, without rejecting hedged-but-correct phrasing where "not" refers to something else
+    // entirely (e.g. "correlated ... not yet proven" -- "not" here precedes "proven", not the
+    // candidate's own tokens).
+    private static readonly HashSet<string> NegationMarkers = new(StringComparer.Ordinal)
+    {
+        "not", "no", "never", "cannot", "doesnt", "isnt", "wasnt", "arent", "non",
+    };
+
+    private const int NegationWindow = 3;
 
     private static readonly string[] HedgeTerms =
     [
@@ -120,25 +136,58 @@ public static class ScenarioAgentResponseMapper
             return null;
         }
 
-        var responseTokens = Tokenize(text);
+        var responseTokens = TokenizeOrdered(text);
         if (responseTokens.Count == 0)
         {
             return null;
         }
 
-        string? best = null;
-        var bestScore = 0.0;
+        var responseTokenSet = responseTokens.ToHashSet(StringComparer.Ordinal);
+        var matches = new List<string>();
         foreach (var candidate in candidates)
         {
-            var score = Jaccard(responseTokens, Tokenize(candidate));
-            if (score > bestScore)
+            var candidateTokens = Tokenize(candidate);
+            if (Jaccard(responseTokenSet, candidateTokens) < MatchThreshold)
             {
-                bestScore = score;
-                best = candidate;
+                continue;
+            }
+
+            // A candidate whose own tokens are immediately preceded by a negation marker in the
+            // response ("not <candidate phrase>") is excluded even though the bag-of-words overlap
+            // looks strong -- otherwise a rejected diagnosis would silently score as accepted.
+            if (!IsNegated(responseTokens, candidateTokens))
+            {
+                matches.Add(candidate);
             }
         }
 
-        return bestScore >= MatchThreshold ? best : null;
+        // More than one candidate clearing the threshold means the response is ambiguous between
+        // (at least) two controlled-vocabulary ids -- e.g. it hedges between the right and a wrong
+        // hypothesis in the same sentence. Silently picking the "best" one would hide that
+        // ambiguity and risk a false-clean score, so this is reported as unmapped instead.
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private static bool IsNegated(List<string> orderedResponseTokens, HashSet<string> candidateTokens)
+    {
+        for (var i = 0; i < orderedResponseTokens.Count; i++)
+        {
+            if (!candidateTokens.Contains(orderedResponseTokens[i]))
+            {
+                continue;
+            }
+
+            var windowStart = Math.Max(0, i - NegationWindow);
+            for (var j = windowStart; j < i; j++)
+            {
+                if (NegationMarkers.Contains(orderedResponseTokens[j]))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static double Jaccard(HashSet<string> a, HashSet<string> b)
@@ -154,10 +203,12 @@ public static class ScenarioAgentResponseMapper
     }
 
     private static HashSet<string> Tokenize(string text)
-        => Normalize(text)
+        => TokenizeOrdered(text).ToHashSet(StringComparer.Ordinal);
+
+    private static List<string> TokenizeOrdered(string text)
+        => [.. Normalize(text)
             .Split('-', StringSplitOptions.RemoveEmptyEntries)
-            .Where(token => !StopWords.Contains(token))
-            .ToHashSet(StringComparer.Ordinal);
+            .Where(token => !StopWords.Contains(token))];
 
     private static string Normalize(string text)
     {

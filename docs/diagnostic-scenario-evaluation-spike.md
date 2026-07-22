@@ -228,9 +228,15 @@ real natural-language phrasing.
   `acceptableNextActions`, and a small fixed causality-posture taxonomy drawn
   from the postures the shipped manifests actually use). No LLM call, no
   network access, no stemming/synonym table.
-- **Unmapped-by-default**: a field that does not clear the match threshold is
-  left empty and reported in `UnmappedFields` rather than guessed -- an
-  unresolved field always scores as unsupported, never as an accidental match.
+- **Unmapped-by-default**: a field that does not clear the match threshold, or
+  that clears it for more than one candidate (an ambiguous response), is left
+  empty and reported in `UnmappedFields` rather than guessed -- an unresolved
+  field always scores as unsupported, never as an accidental match.
+- **Negation-aware**: a candidate whose own tokens are immediately preceded by
+  a negation marker ("not", "never", ...) in the response is excluded even
+  when the bag-of-words overlap is otherwise strong, so "not <accepted
+  phrase>" cannot silently map to the accepted id. This is a proximity
+  heuristic, not real negation-scope parsing.
 - **Uncertainty**: `UncertaintyAssessment` scans the separate narrative field
   for hedging phrases (e.g. "correlat...", "further investigation") versus
   overclaiming phrases (e.g. "definitely the cause", "no other possible
@@ -240,8 +246,13 @@ real natural-language phrasing.
   scores `1.0`; an overclaiming, wrong narrative fails to map attribution/
   next-action/causality, is flagged `OverclaimsCertainty`, and scores the
   `ScenarioEvaluationReport` as `Failed`; `sync-over-async` and
-  `culture-lookup` resolve their controlled fields from paraphrased manifest
-  text; an unrecognizable hypothesis is reported as unmapped, never guessed.
+  `culture-lookup` resolve their controlled fields when phrased as the
+  manifest's own hypothesis/attribution/next-action/causality text with
+  hyphens replaced by spaces -- this exercises normalization, not
+  independently authored prose the way the `lock-storm` cases do; a negated
+  accepted hypothesis and a hypothesis ambiguous between the accepted and a
+  tempting-wrong id are both reported as unmapped rather than guessed; an
+  unrecognizable hypothesis is reported as unmapped too.
 
 This stays advisory only -- it is not wired into any production MCP tool or
 PR gate, and the token-overlap heuristic is a known-limited stand-in for an

@@ -128,6 +128,49 @@ public sealed class ScenarioAgentResponseMapperTests
         mapped.Uncertainty.OverclaimsCertainty.Should().BeFalse();
     }
 
+    [Fact]
+    public void Map_NegatedAcceptedHypothesis_DoesNotSilentlyMatch()
+    {
+        // "not <accepted phrase>" has near-perfect token overlap with the accepted hypothesis id --
+        // without a negation guard this would silently map (and score) as the correct diagnosis.
+        var manifest = LoadManifest("lock-storm");
+        var response = new AgentScenarioResponse(
+            CitedEvidenceIds: [],
+            Hypothesis: "This is not a sleeping monitor owner serializes work situation.",
+            Attribution: manifest.AcceptableAttributions[0],
+            NextAction: manifest.AcceptableNextActions[0].Replace('-', ' '),
+            CausalityStatement: manifest.RequiredCausalityPosture.Replace('-', ' '),
+            Conclusions: [],
+            Narrative: string.Empty);
+
+        var mapped = ScenarioAgentResponseMapper.Map(manifest, response);
+
+        mapped.UnmappedFields.Should().ContainKey("hypothesis");
+        mapped.Interpretation.HypothesisIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Map_AmbiguousHypothesisBetweenAcceptedAndWrong_IsReportedAsUnmappedRatherThanGuessed()
+    {
+        // The response's own wording clears the match threshold for both the accepted hypothesis
+        // and a tempting-wrong one. Picking whichever scores higher would hide that the response
+        // itself endorses a wrong hypothesis alongside the right one.
+        var manifest = LoadManifest("lock-storm");
+        var response = new AgentScenarioResponse(
+            CitedEvidenceIds: [],
+            Hypothesis: "Sleeping monitor owner serializes work or external IO wait.",
+            Attribution: manifest.AcceptableAttributions[0],
+            NextAction: manifest.AcceptableNextActions[0].Replace('-', ' '),
+            CausalityStatement: manifest.RequiredCausalityPosture.Replace('-', ' '),
+            Conclusions: [],
+            Narrative: string.Empty);
+
+        var mapped = ScenarioAgentResponseMapper.Map(manifest, response);
+
+        mapped.UnmappedFields.Should().ContainKey("hypothesis");
+        mapped.Interpretation.HypothesisIds.Should().BeEmpty();
+    }
+
     private static ScenarioManifest LoadManifest(string scenarioId)
         => ScenarioManifestLoader.LoadAll().Single(item => item.Id == scenarioId);
 }
