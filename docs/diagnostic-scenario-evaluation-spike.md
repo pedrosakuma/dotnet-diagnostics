@@ -232,18 +232,20 @@ real natural-language phrasing.
   that clears it for more than one candidate (an ambiguous response), is left
   empty and reported in `UnmappedFields` rather than guessed -- an unresolved
   field always scores as unsupported, never as an accidental match.
-- **Negation-aware**: a candidate whose own tokens are immediately preceded,
-  within the same clause, by a negation marker ("not", "never", ...) in the
-  response is excluded even when the bag-of-words overlap is otherwise
-  strong, so "not <candidate phrase>" cannot silently map to the accepted
-  id. Common negated contractions ("isn't", "doesn't", "can't", "won't", ...)
-  are expanded to their non-contracted form first, so they produce a real
-  "not" token instead of meaningless fragments. Clause boundaries (sentence-
-  ending `.`, `,`, `;`, `:`, `!`, `?`, plus "but", "however", "although", "or")
-  bound the check so a contrastive "not X, but Y" -- or "Not X! Y." -- only
-  negates X, not the affirmed Y. Punctuation only counts as a boundary when
-  followed by whitespace or end of text, so a dotted attribution id like
-  `System.Globalization.CompareInfo.GetHashCodeOfString` is never split
+- **Negation-aware**: a candidate whose own tokens are immediately preceded or
+  followed, within the same clause, by a negation marker ("not", "never", ...)
+  in the response is excluded even when the bag-of-words overlap is otherwise
+  strong -- catching both a leading "not <candidate phrase>" and a trailing
+  "<candidate phrase> ... is not the cause". Common negated contractions
+  ("isn't", "doesn't", "can't", "won't", ...) -- including with a Unicode
+  "smart quote" apostrophe -- are normalized/expanded to their non-contracted
+  form first, so they produce a real "not" token instead of meaningless
+  fragments. Clause boundaries (sentence-ending `.`, `,`, `;`, `:`, `!`, `?`,
+  plus "but", "however", "although", "or") bound the check so a contrastive
+  "not X, but Y" -- or "Not X! Y." -- only negates X, not the affirmed Y.
+  Punctuation only counts as a boundary when followed (after any closing
+  quote/bracket) by whitespace or end of text, so a dotted attribution id
+  like `System.Globalization.CompareInfo.GetHashCodeOfString` is never split
   mid-identifier. This is a proximity heuristic, not real negation-scope
   parsing.
 - **Per-clause matching**: each candidate is scored against every clause's own
@@ -256,7 +258,12 @@ real natural-language phrasing.
 - **Uncertainty**: `UncertaintyAssessment` scans the separate narrative field
   for hedging phrases (e.g. "correlat...", "further investigation") versus
   overclaiming phrases (e.g. "definitely the cause", "no other possible
-  explanation"), independent of the scored interpretation fields.
+  explanation"), independent of the scored interpretation fields. A negation
+  marker in the few words immediately before a matched phrase suppresses that
+  occurrence (e.g. "this is not definitely the cause" does not count as an
+  overclaim), bounded to a small word window and never crossing a
+  `.`/`!`/`?` sentence boundary, so an unrelated negation earlier in a long
+  sentence does not suppress a distinct, later hedge/overclaim phrase.
 - **Validated** end-to-end in `ScenarioAgentResponseMapperTests`: a
   hedged/accepted narrative for `lock-storm` maps to every correct id and
   scores `1.0`; an overclaiming, wrong narrative fails to map attribution/
@@ -266,9 +273,10 @@ real natural-language phrasing.
   manifest's own hypothesis/attribution/next-action/causality text with
   hyphens replaced by spaces -- this exercises normalization, not
   independently authored prose the way the `lock-storm` cases do; a negated
-  accepted hypothesis (plain and contraction-based) and a hypothesis
-  ambiguous between the accepted and a tempting-wrong id (both via an
-  explicit "or" and via dilution of a short wrong candidate) are all reported
+  accepted hypothesis (plain, contraction-based including a typographic
+  apostrophe, and post-candidate) and a hypothesis ambiguous between the
+  accepted and a tempting-wrong id (both via an explicit "or" and via
+  dilution of a short wrong candidate) are all reported
   as unmapped rather than guessed; a contrastive negation across a comma or
   an exclamation mark correctly negates only the wrong candidate's clause,
   leaving the affirmed accepted hypothesis mapped; an unrecognizable

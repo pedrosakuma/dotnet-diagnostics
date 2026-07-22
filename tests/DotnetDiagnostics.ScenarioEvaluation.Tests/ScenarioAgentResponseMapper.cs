@@ -70,13 +70,21 @@ public static class ScenarioAgentResponseMapper
     // own token set, so a short candidate phrase mentioned alongside an unrelated one in the same
     // sentence ("sleeping monitor owner serializes work or gc pause") is not diluted below the match
     // threshold by the other clause's unrelated tokens.
-    // The punctuation alternatives require a trailing whitespace/end-of-string boundary so a
-    // dotted, namespace-qualified attribution id (e.g. "System.Globalization.CompareInfo.
-    // GetHashCodeOfString") is never split mid-identifier -- only real sentence/clause punctuation
-    // (followed by a space or end of text) counts as a boundary.
+    // The punctuation alternatives require a trailing whitespace/end-of-string boundary (optionally
+    // preceded by a closing quote or bracket, e.g. `pause!"` or `pause!)`) so a dotted, namespace-
+    // qualified attribution id (e.g. "System.Globalization.CompareInfo.GetHashCodeOfString") is never
+    // split mid-identifier -- only real sentence/clause punctuation (followed, after any closing
+    // quote/bracket, by a space or end of text) counts as a boundary.
     private static readonly Regex ClauseBoundaryPattern = new(
-        @"[.,;:!?](?=\s|$)|\bbut\b|\bhowever\b|\balthough\b|\bor\b",
+        @"[.,;:!?][""'\u2019\u201d)\]]*(?=\s|$)|\bbut\b|\bhowever\b|\balthough\b|\bor\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Typographic (curly) quote characters are normalized to their ASCII equivalents before contraction
+    // expansion, so free text using "smart quotes" (e.g. "isn't" with a Unicode right single quote) still
+    // matches the ContractionExpansions patterns below instead of falling through to raw apostrophe-split
+    // fragments that lose the negation.
+    private static string NormalizeQuotes(string text)
+        => text.Replace('\u2019', '\'').Replace('\u2018', '\'');
 
     // Expanded before clause splitting so a negated contraction ("isn't", "doesn't", ...) produces a
     // real "not" token instead of "isnt" -> "isn"/"t" fragments that neither match NegationMarkers nor
@@ -153,16 +161,65 @@ public static class ScenarioAgentResponseMapper
         return new MappedAgentInterpretation(interpretation, AssessUncertainty(response.Narrative), unmapped);
     }
 
+    // A negation cue immediately before a matched overclaim phrase means the response is rejecting
+    // that overclaim ("This is not definitely the cause"), not making it -- so that occurrence must
+    // not count. Bounded to the nearest UncertaintyNegationWindow words before the phrase (and never
+    // crossing a `.`/`!`/`?` sentence boundary), so an unrelated negation earlier in the same sentence
+    // does not suppress a distinct, later hedge/overclaim phrase in that sentence.
+    private static readonly Regex UncertaintyNegationPattern = new(
+        @"\b(not|no|never|isn't|isnt|doesn't|doesnt|cannot|can't|cant|wasn't|wasnt)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private const int UncertaintyNegationWindow = 4;
+
     private static UncertaintyAssessment AssessUncertainty(string narrative)
     {
         var lowered = (narrative ?? string.Empty).ToLowerInvariant();
-        var hedges = HedgeTerms.Where(term => lowered.Contains(term, StringComparison.Ordinal)).ToArray();
-        var overclaims = OverclaimTerms.Where(term => lowered.Contains(term, StringComparison.Ordinal)).ToArray();
+        var hedges = HedgeTerms.Where(term => ContainsUnnegatedOccurrence(lowered, term)).ToArray();
+        var overclaims = OverclaimTerms.Where(term => ContainsUnnegatedOccurrence(lowered, term)).ToArray();
         return new UncertaintyAssessment(
             AcknowledgesLimits: hedges.Length > 0,
             OverclaimsCertainty: overclaims.Length > 0,
             HedgeTermsMatched: hedges,
             OverclaimTermsMatched: overclaims);
+    }
+
+    private static bool ContainsUnnegatedOccurrence(string lowered, string term)
+    {
+        var searchFrom = 0;
+        while (true)
+        {
+            var index = lowered.IndexOf(term, searchFrom, StringComparison.Ordinal);
+            if (index < 0)
+            {
+                return false;
+            }
+
+            var sentenceStart = 0;
+            for (var i = 0; i < index; i++)
+            {
+                if (lowered[i] is '.' or '!' or '?')
+                {
+                    sentenceStart = i + 1;
+                }
+            }
+
+            // Only the last few words before the phrase count as "immediately preceding" -- this
+            // keeps an unrelated negation earlier in a long sentence from suppressing a distinct,
+            // later hedge/overclaim phrase in that same sentence.
+            var precedingWords = lowered[sentenceStart..index]
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var windowWords = precedingWords.Length <= UncertaintyNegationWindow
+                ? precedingWords
+                : precedingWords[^UncertaintyNegationWindow..];
+            var preceding = string.Join(' ', windowWords);
+            if (!UncertaintyNegationPattern.IsMatch(preceding))
+            {
+                return true;
+            }
+
+            searchFrom = index + term.Length;
+        }
     }
 
     private static string? MatchVocabulary(string text, IReadOnlyList<string> candidates)
@@ -240,8 +297,22 @@ public static class ScenarioAgentResponseMapper
             }
 
             var clause = clauseIndex[i];
+
+            // Check both directions within the same clause: "not <candidate>" (negation marker
+            // before the candidate token) and "<candidate> ... is not" (negation marker shortly
+            // after), so a trailing rejection like "sleeping monitor owner serializes work is not
+            // the cause" is caught too, not just a leading one.
             var windowStart = Math.Max(0, i - NegationWindow);
             for (var j = windowStart; j < i; j++)
+            {
+                if (clauseIndex[j] == clause && NegationMarkers.Contains(orderedResponseTokens[j]))
+                {
+                    return true;
+                }
+            }
+
+            var windowEnd = Math.Min(orderedResponseTokens.Count - 1, i + NegationWindow);
+            for (var j = i + 1; j <= windowEnd; j++)
             {
                 if (clauseIndex[j] == clause && NegationMarkers.Contains(orderedResponseTokens[j]))
                 {
@@ -277,7 +348,7 @@ public static class ScenarioAgentResponseMapper
             return tokens;
         }
 
-        var expanded = text;
+        var expanded = NormalizeQuotes(text);
         foreach (var (pattern, replacement) in ContractionExpansions)
         {
             expanded = pattern.Replace(expanded, replacement);

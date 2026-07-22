@@ -263,6 +263,93 @@ public sealed class ScenarioAgentResponseMapperTests
         mapped.Interpretation.HypothesisIds.Should().BeEmpty();
     }
 
+    [Fact]
+    public void Map_PostCandidateNegation_DoesNotSilentlyMatch()
+    {
+        // A negation marker appearing shortly *after* the candidate phrase ("X is not the cause")
+        // must be caught too, not just a leading "not X" -- otherwise a response that explicitly
+        // rejects the accepted hypothesis at the end of the sentence would silently map as correct.
+        var manifest = LoadManifest("lock-storm");
+        var response = new AgentScenarioResponse(
+            CitedEvidenceIds: [],
+            Hypothesis: "A sleeping monitor owner serializes work is not the cause here.",
+            Attribution: manifest.AcceptableAttributions[0],
+            NextAction: manifest.AcceptableNextActions[0].Replace('-', ' '),
+            CausalityStatement: manifest.RequiredCausalityPosture.Replace('-', ' '),
+            Conclusions: [],
+            Narrative: string.Empty);
+
+        var mapped = ScenarioAgentResponseMapper.Map(manifest, response);
+
+        mapped.UnmappedFields.Should().ContainKey("hypothesis");
+        mapped.Interpretation.HypothesisIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Map_NegationBeforeClosingQuoteAndSentenceEnd_StillEndsTheClause()
+    {
+        // A closing quote right after the sentence-ending "!" must not defeat the clause boundary --
+        // "Not <wrong candidate>!" <accepted candidate>." should behave exactly like the unquoted
+        // "Not X! Y." case: the accepted hypothesis in the next sentence stays affirmed.
+        var manifest = LoadManifest("lock-storm");
+        var response = new AgentScenarioResponse(
+            CitedEvidenceIds: [],
+            Hypothesis: "\"Not a GC pause!\" A sleeping monitor owner serializes work.",
+            Attribution: manifest.AcceptableAttributions[0],
+            NextAction: manifest.AcceptableNextActions[0].Replace('-', ' '),
+            CausalityStatement: manifest.RequiredCausalityPosture.Replace('-', ' '),
+            Conclusions: [],
+            Narrative: string.Empty);
+
+        var mapped = ScenarioAgentResponseMapper.Map(manifest, response);
+
+        mapped.UnmappedFields.Should().NotContainKey("hypothesis");
+        mapped.Interpretation.HypothesisIds.Should().Equal("sleeping-monitor-owner-serializes-work");
+    }
+
+    [Fact]
+    public void Map_TypographicApostropheContraction_DoesNotSilentlyMatch()
+    {
+        // A Unicode "smart quote" apostrophe (U+2019) in "isn't" must be normalized before contraction
+        // expansion runs, so it is caught by the same negation guard as the ASCII apostrophe form.
+        var manifest = LoadManifest("lock-storm");
+        var response = new AgentScenarioResponse(
+            CitedEvidenceIds: [],
+            Hypothesis: "This isn\u2019t a sleeping monitor owner serializes work situation.",
+            Attribution: manifest.AcceptableAttributions[0],
+            NextAction: manifest.AcceptableNextActions[0].Replace('-', ' '),
+            CausalityStatement: manifest.RequiredCausalityPosture.Replace('-', ' '),
+            Conclusions: [],
+            Narrative: string.Empty);
+
+        var mapped = ScenarioAgentResponseMapper.Map(manifest, response);
+
+        mapped.UnmappedFields.Should().ContainKey("hypothesis");
+        mapped.Interpretation.HypothesisIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Map_NegatedOverclaimPhrase_IsNotFlaggedAsOverclaiming()
+    {
+        // The narrative explicitly rejects the overclaim phrase ("is not definitely the cause");
+        // raw substring matching would still flag OverclaimsCertainty even though the sentence is
+        // hedging, not overclaiming.
+        var manifest = LoadManifest("lock-storm");
+        var response = new AgentScenarioResponse(
+            CitedEvidenceIds: manifest.ExpectedEvidence.Select(item => item.Id).ToArray(),
+            Hypothesis: "A sleeping monitor owner serializes work while waiters queue behind it.",
+            Attribution: "The thread holding the monitor is asleep -- owner thread sleep.",
+            NextAction: "Next: query the lock graph.",
+            CausalityStatement: "The owner and waiters are correlated; this remains a correlation, not a proven cause.",
+            Conclusions: [],
+            Narrative: "This is not definitely the cause -- further investigation could add certainty.");
+
+        var mapped = ScenarioAgentResponseMapper.Map(manifest, response);
+
+        mapped.Uncertainty.OverclaimsCertainty.Should().BeFalse();
+        mapped.Uncertainty.AcknowledgesLimits.Should().BeTrue();
+    }
+
     private static ScenarioManifest LoadManifest(string scenarioId)
         => ScenarioManifestLoader.LoadAll().Single(item => item.Id == scenarioId);
 }
