@@ -282,6 +282,18 @@ dotnet-diagnostics-cli collect --kind thread-snapshot --dump-file ./app.dmp --in
 > `sweep` runs a bounded parallel triage sweep across several collectors at once and returns a single
 > consolidated verdict, the fastest "what's wrong right now" one-shot.
 
+> **No arbitrary multi-kind batch (unlike MCP `collect_batch`).** The MCP server has a
+> `collect_batch` tool (issue #665 Part C) that fans out a *caller-chosen* set of `collect_sample`/
+> `collect_events` kinds concurrently against one process/window, avoiding the process-exit race of
+> issuing them as separate sequential tool calls with LLM decision latency in between. The CLI's
+> answer to "several signals over one shared window" is the fixed-shape `sweep` kind above (same
+> `Task.WhenAll` fan-out, just a pre-selected collector set); its answer to "the target might not
+> survive a second round-trip" is `--capture-when`/`--capture`/`--window` (a single threshold-gated
+> capture, not N kinds at once). An arbitrary-kind CLI batch was discussed and declined (issue #677):
+> the `session` REPL already keeps the target's handle/pid bound across commands typed back-to-back
+> (no LLM round-trip latency to race), and a one-shot batch verb would need new human-mode rendering
+> for N heterogeneous results with no clear net win over `sweep` + a follow-up `collect --kind`.
+
 ### `inspect-heap`
 
 Walk the managed heap of a live process or a `.dmp`.
