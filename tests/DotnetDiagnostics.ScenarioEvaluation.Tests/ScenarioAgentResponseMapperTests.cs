@@ -350,6 +350,30 @@ public sealed class ScenarioAgentResponseMapperTests
         mapped.Uncertainty.AcknowledgesLimits.Should().BeTrue();
     }
 
+    [Fact]
+    public void Map_NegatedOverclaimPhraseWithTypographicApostrophe_IsNotFlaggedAsOverclaiming()
+    {
+        // Same intent as Map_NegatedOverclaimPhrase_IsNotFlaggedAsOverclaiming, but negated via a
+        // Unicode "smart quote" contraction ("isn't" with U+2019) instead of "is not" -- the
+        // narrative-side quote normalization must match the one already applied on the tokenization
+        // side, or this would inconsistently flag an overclaim depending on which apostrophe glyph
+        // the response happened to use.
+        var manifest = LoadManifest("lock-storm");
+        var response = new AgentScenarioResponse(
+            CitedEvidenceIds: manifest.ExpectedEvidence.Select(item => item.Id).ToArray(),
+            Hypothesis: "A sleeping monitor owner serializes work while waiters queue behind it.",
+            Attribution: "The thread holding the monitor is asleep -- owner thread sleep.",
+            NextAction: "Next: query the lock graph.",
+            CausalityStatement: "The owner and waiters are correlated; this remains a correlation, not a proven cause.",
+            Conclusions: [],
+            Narrative: "This isn\u2019t definitely the cause -- further investigation could add certainty.");
+
+        var mapped = ScenarioAgentResponseMapper.Map(manifest, response);
+
+        mapped.Uncertainty.OverclaimsCertainty.Should().BeFalse();
+        mapped.Uncertainty.AcknowledgesLimits.Should().BeTrue();
+    }
+
     private static ScenarioManifest LoadManifest(string scenarioId)
         => ScenarioManifestLoader.LoadAll().Single(item => item.Id == scenarioId);
 }

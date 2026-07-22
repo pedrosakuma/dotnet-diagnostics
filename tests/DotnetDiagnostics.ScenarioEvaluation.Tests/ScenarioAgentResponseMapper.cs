@@ -174,7 +174,7 @@ public static class ScenarioAgentResponseMapper
 
     private static UncertaintyAssessment AssessUncertainty(string narrative)
     {
-        var lowered = (narrative ?? string.Empty).ToLowerInvariant();
+        var lowered = NormalizeQuotes((narrative ?? string.Empty).ToLowerInvariant());
         var hedges = HedgeTerms.Where(term => ContainsUnnegatedOccurrence(lowered, term)).ToArray();
         var overclaims = OverclaimTerms.Where(term => ContainsUnnegatedOccurrence(lowered, term)).ToArray();
         return new UncertaintyAssessment(
