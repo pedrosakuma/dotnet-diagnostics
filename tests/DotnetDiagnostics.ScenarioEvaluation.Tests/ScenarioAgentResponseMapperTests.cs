@@ -194,6 +194,75 @@ public sealed class ScenarioAgentResponseMapperTests
         mapped.Interpretation.HypothesisIds.Should().Equal("sleeping-monitor-owner-serializes-work");
     }
 
+    [Fact]
+    public void Map_NegatedContractionAcceptedHypothesis_DoesNotSilentlyMatch()
+    {
+        // "isn't" must be treated the same as "is not" -- naive tokenization turns it into
+        // meaningless fragments ("isn", "t") that never match a configured negation marker,
+        // which would let a contraction-negated wrong claim silently score as the right one.
+        var manifest = LoadManifest("lock-storm");
+        var response = new AgentScenarioResponse(
+            CitedEvidenceIds: [],
+            Hypothesis: "This isn't a sleeping monitor owner serializes work situation.",
+            Attribution: manifest.AcceptableAttributions[0],
+            NextAction: manifest.AcceptableNextActions[0].Replace('-', ' '),
+            CausalityStatement: manifest.RequiredCausalityPosture.Replace('-', ' '),
+            Conclusions: [],
+            Narrative: string.Empty);
+
+        var mapped = ScenarioAgentResponseMapper.Map(manifest, response);
+
+        mapped.UnmappedFields.Should().ContainKey("hypothesis");
+        mapped.Interpretation.HypothesisIds.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Map_NegationSeparatedByExclamationMark_DoesNotCrossSentenceBoundary()
+    {
+        // "Not <wrong candidate>! <accepted candidate>." must behave like the comma/"but" case:
+        // the "!" ends the negated clause, so the accepted hypothesis in the next sentence is
+        // affirmed, not swept up by the earlier negation.
+        var manifest = LoadManifest("lock-storm");
+        var response = new AgentScenarioResponse(
+            CitedEvidenceIds: [],
+            Hypothesis: "Not a GC pause! A sleeping monitor owner serializes work.",
+            Attribution: manifest.AcceptableAttributions[0],
+            NextAction: manifest.AcceptableNextActions[0].Replace('-', ' '),
+            CausalityStatement: manifest.RequiredCausalityPosture.Replace('-', ' '),
+            Conclusions: [],
+            Narrative: string.Empty);
+
+        var mapped = ScenarioAgentResponseMapper.Map(manifest, response);
+
+        mapped.UnmappedFields.Should().NotContainKey("hypothesis");
+        mapped.Interpretation.HypothesisIds.Should().Equal("sleeping-monitor-owner-serializes-work");
+    }
+
+    [Fact]
+    public void Map_ShortWrongCandidateAlongsideAcceptedViaOr_IsReportedAsUnmappedRatherThanGuessed()
+    {
+        // A short tempting-wrong candidate ("gc-pause", 2 tokens) mentioned alongside the longer
+        // accepted candidate in the same sentence must still trigger ambiguity: scoring against
+        // the *whole* flattened response token set would dilute "gc-pause" below the match
+        // threshold (diluted by the unrelated accepted-hypothesis tokens) and hide that the
+        // response explicitly floats a wrong alternative. Per-clause scoring (splitting on "or")
+        // keeps each alternative's score undiluted.
+        var manifest = LoadManifest("lock-storm");
+        var response = new AgentScenarioResponse(
+            CitedEvidenceIds: [],
+            Hypothesis: "Sleeping monitor owner serializes work or GC pause.",
+            Attribution: manifest.AcceptableAttributions[0],
+            NextAction: manifest.AcceptableNextActions[0].Replace('-', ' '),
+            CausalityStatement: manifest.RequiredCausalityPosture.Replace('-', ' '),
+            Conclusions: [],
+            Narrative: string.Empty);
+
+        var mapped = ScenarioAgentResponseMapper.Map(manifest, response);
+
+        mapped.UnmappedFields.Should().ContainKey("hypothesis");
+        mapped.Interpretation.HypothesisIds.Should().BeEmpty();
+    }
+
     private static ScenarioManifest LoadManifest(string scenarioId)
         => ScenarioManifestLoader.LoadAll().Single(item => item.Id == scenarioId);
 }

@@ -236,9 +236,23 @@ real natural-language phrasing.
   within the same clause, by a negation marker ("not", "never", ...) in the
   response is excluded even when the bag-of-words overlap is otherwise
   strong, so "not <candidate phrase>" cannot silently map to the accepted
-  id. Clause boundaries (`.`, `,`, `;`, `:`, "but", "however", "although")
-  bound the check so a contrastive "not X, but Y" only negates X, not the
-  affirmed Y. This is a proximity heuristic, not real negation-scope parsing.
+  id. Common negated contractions ("isn't", "doesn't", "can't", "won't", ...)
+  are expanded to their non-contracted form first, so they produce a real
+  "not" token instead of meaningless fragments. Clause boundaries (sentence-
+  ending `.`, `,`, `;`, `:`, `!`, `?`, plus "but", "however", "although", "or")
+  bound the check so a contrastive "not X, but Y" -- or "Not X! Y." -- only
+  negates X, not the affirmed Y. Punctuation only counts as a boundary when
+  followed by whitespace or end of text, so a dotted attribution id like
+  `System.Globalization.CompareInfo.GetHashCodeOfString` is never split
+  mid-identifier. This is a proximity heuristic, not real negation-scope
+  parsing.
+- **Per-clause matching**: each candidate is scored against every clause's own
+  token set (not the whole flattened response) and the best clause score is
+  kept. Scoring against the flattened response would dilute a short candidate
+  phrase (e.g. a 2-token wrong hypothesis) mentioned alongside an unrelated,
+  longer accepted candidate in the same sentence, hiding an explicitly stated
+  alternative diagnosis below the match threshold. Splitting on "or" also
+  means "X or Y" style hedges are scored as two independent alternatives.
 - **Uncertainty**: `UncertaintyAssessment` scans the separate narrative field
   for hedging phrases (e.g. "correlat...", "further investigation") versus
   overclaiming phrases (e.g. "definitely the cause", "no other possible
@@ -252,9 +266,13 @@ real natural-language phrasing.
   manifest's own hypothesis/attribution/next-action/causality text with
   hyphens replaced by spaces -- this exercises normalization, not
   independently authored prose the way the `lock-storm` cases do; a negated
-  accepted hypothesis and a hypothesis ambiguous between the accepted and a
-  tempting-wrong id are both reported as unmapped rather than guessed; an
-  unrecognizable hypothesis is reported as unmapped too.
+  accepted hypothesis (plain and contraction-based) and a hypothesis
+  ambiguous between the accepted and a tempting-wrong id (both via an
+  explicit "or" and via dilution of a short wrong candidate) are all reported
+  as unmapped rather than guessed; a contrastive negation across a comma or
+  an exclamation mark correctly negates only the wrong candidate's clause,
+  leaving the affirmed accepted hypothesis mapped; an unrecognizable
+  hypothesis is reported as unmapped too.
 
 This stays advisory only -- it is not wired into any production MCP tool or
 PR gate, and the token-overlap heuristic is a known-limited stand-in for an

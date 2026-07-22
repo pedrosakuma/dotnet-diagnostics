@@ -62,13 +62,40 @@ public static class ScenarioAgentResponseMapper
 
     private const int NegationWindow = 3;
 
-    // Clause separators: sentence/clause-ending punctuation plus common contrastive conjunctions. Splitting
-    // on these before tokenizing keeps the negation-proximity check (IsNegated) from crossing into an
-    // unrelated clause, e.g. "Not a GC pause, but sleeping monitor owner serializes work" must not treat
-    // "sleeping..." as negated just because "not" appears a few tokens earlier in a *different* clause.
+    // Clause separators: sentence-ending punctuation plus common contrastive/alternative conjunctions.
+    // Splitting on these before tokenizing serves two purposes: (1) it keeps the negation-proximity
+    // check (IsNegated) from crossing into an unrelated clause, e.g. "Not a GC pause, but sleeping
+    // monitor owner serializes work" must not treat "sleeping..." as negated just because "not" appears
+    // a few tokens earlier in a *different* clause; (2) it lets MatchVocabulary score each clause on its
+    // own token set, so a short candidate phrase mentioned alongside an unrelated one in the same
+    // sentence ("sleeping monitor owner serializes work or gc pause") is not diluted below the match
+    // threshold by the other clause's unrelated tokens.
+    // The punctuation alternatives require a trailing whitespace/end-of-string boundary so a
+    // dotted, namespace-qualified attribution id (e.g. "System.Globalization.CompareInfo.
+    // GetHashCodeOfString") is never split mid-identifier -- only real sentence/clause punctuation
+    // (followed by a space or end of text) counts as a boundary.
     private static readonly Regex ClauseBoundaryPattern = new(
-        @"[.,;:]|\bbut\b|\bhowever\b|\balthough\b",
+        @"[.,;:!?](?=\s|$)|\bbut\b|\bhowever\b|\balthough\b|\bor\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Expanded before clause splitting so a negated contraction ("isn't", "doesn't", ...) produces a
+    // real "not" token instead of "isnt" -> "isn"/"t" fragments that neither match NegationMarkers nor
+    // stay attached to the word they negate.
+    private static readonly (Regex Pattern, string Replacement)[] ContractionExpansions =
+    [
+        (new Regex(@"\bisn't\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), "is not"),
+        (new Regex(@"\baren't\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), "are not"),
+        (new Regex(@"\bwasn't\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), "was not"),
+        (new Regex(@"\bweren't\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), "were not"),
+        (new Regex(@"\bdoesn't\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), "does not"),
+        (new Regex(@"\bdon't\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), "do not"),
+        (new Regex(@"\bdidn't\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), "did not"),
+        (new Regex(@"\bcan't\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), "cannot"),
+        (new Regex(@"\bwon't\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), "will not"),
+        (new Regex(@"\bcouldn't\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), "could not"),
+        (new Regex(@"\bshouldn't\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), "should not"),
+        (new Regex(@"\bwouldn't\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), "would not"),
+    ];
 
     private static readonly string[] HedgeTerms =
     [
@@ -151,12 +178,20 @@ public static class ScenarioAgentResponseMapper
             return null;
         }
 
-        var responseTokenSet = responseTokens.ToHashSet(StringComparer.Ordinal);
+        var clauseTokenSets = GroupByClause(responseTokens, clauseIndex);
         var matches = new List<string>();
         foreach (var candidate in candidates)
         {
             var candidateTokens = Tokenize(candidate);
-            if (Jaccard(responseTokenSet, candidateTokens) < MatchThreshold)
+
+            // Score against each clause's own tokens (not the whole flattened response) and take the
+            // best: scoring against the flattened response would dilute a short candidate phrase
+            // mentioned in one clause with unrelated tokens from every other clause, silently hiding
+            // an explicitly stated alternative diagnosis in the same sentence.
+            var bestClauseScore = clauseTokenSets.Count == 0
+                ? 0
+                : clauseTokenSets.Max(clauseTokens => Jaccard(clauseTokens, candidateTokens));
+            if (bestClauseScore < MatchThreshold)
             {
                 continue;
             }
@@ -176,6 +211,23 @@ public static class ScenarioAgentResponseMapper
         // hypothesis in the same sentence. Silently picking the "best" one would hide that
         // ambiguity and risk a false-clean score, so this is reported as unmapped instead.
         return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private static List<HashSet<string>> GroupByClause(List<string> orderedTokens, List<int> clauseIndex)
+    {
+        var groups = new Dictionary<int, HashSet<string>>();
+        for (var i = 0; i < orderedTokens.Count; i++)
+        {
+            if (!groups.TryGetValue(clauseIndex[i], out var set))
+            {
+                set = new HashSet<string>(StringComparer.Ordinal);
+                groups[clauseIndex[i]] = set;
+            }
+
+            set.Add(orderedTokens[i]);
+        }
+
+        return [.. groups.Values];
     }
 
     private static bool IsNegated(List<string> orderedResponseTokens, List<int> clauseIndex, HashSet<string> candidateTokens)
@@ -225,7 +277,13 @@ public static class ScenarioAgentResponseMapper
             return tokens;
         }
 
-        var clauses = ClauseBoundaryPattern.Split(text);
+        var expanded = text;
+        foreach (var (pattern, replacement) in ContractionExpansions)
+        {
+            expanded = pattern.Replace(expanded, replacement);
+        }
+
+        var clauses = ClauseBoundaryPattern.Split(expanded);
         for (var clause = 0; clause < clauses.Length; clause++)
         {
             foreach (var token in Normalize(clauses[clause]).Split('-', StringSplitOptions.RemoveEmptyEntries))
