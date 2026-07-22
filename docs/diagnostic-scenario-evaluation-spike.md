@@ -225,9 +225,15 @@ real natural-language phrasing.
 - **Mapping**: a deterministic, offline token-set (Jaccard similarity)
   match against each scenario manifest's own controlled vocabulary
   (`acceptableHypotheses` + `temptingWrongHypotheses`, `acceptableAttributions`,
-  `acceptableNextActions`, and a small fixed causality-posture taxonomy drawn
-  from the postures the shipped manifests actually use). No LLM call, no
-  network access, no stemming/synonym table.
+  `acceptableNextActions`, `forbiddenConclusions`, and a small fixed causality-
+  posture taxonomy drawn from the postures the shipped manifests actually
+  use). No LLM call, no network access, no stemming/synonym table. Each
+  free-text conclusion is matched independently against `forbiddenConclusions`
+  -- `ScenarioEvaluator` only ever scores `ConclusionIds` by exact-id
+  intersection against that list, so a natural-prose conclusion ("This is
+  caused by external IO wait") must resolve to the forbidden id
+  ("external-io-wait") the same way every other field's free text does, or
+  the unsupported-conclusions scoring dimension would never trigger.
 - **Unmapped-by-default**: a field that does not clear the match threshold, or
   that clears it for more than one candidate (an ambiguous response), is left
   empty and reported in `UnmappedFields` rather than guessed -- an unresolved

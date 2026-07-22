@@ -150,13 +150,27 @@ public static class ScenarioAgentResponseMapper
             unmapped["causality"] = response.CausalityStatement;
         }
 
+        // Conclusions are free text but only ever scored against the manifest's *forbidden*
+        // conclusion ids (ScenarioEvaluator only ever intersects ConclusionIds with
+        // ForbiddenConclusions) -- there is no positive "acceptable conclusions" vocabulary to match
+        // against. Each conclusion sentence is matched independently (reusing the same negation-aware
+        // MatchVocabulary as every other field) so a free-text conclusion like "This is caused by
+        // external IO wait" resolves to the forbidden id "external-io-wait" instead of being left as
+        // an unmatched, never-flagged raw string.
+        var conclusionIds = response.Conclusions
+            .Select(text => MatchVocabulary(text, manifest.ForbiddenConclusions))
+            .Where(id => id is not null)
+            .Select(id => id!)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
         var interpretation = new StructuredInterpretation(
             EvidenceIds: response.CitedEvidenceIds,
             HypothesisIds: hypothesisId is null ? [] : [hypothesisId],
             AttributionIds: attributionId is null ? [] : [attributionId],
             NextActionIds: nextActionId is null ? [] : [nextActionId],
             CausalityPosture: causalityPosture ?? "unclassified-causality-posture",
-            ConclusionIds: [.. response.Conclusions.Select(Normalize).Where(value => value.Length > 0)]);
+            ConclusionIds: conclusionIds);
 
         return new MappedAgentInterpretation(interpretation, AssessUncertainty(response.Narrative), unmapped);
     }

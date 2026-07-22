@@ -374,6 +374,29 @@ public sealed class ScenarioAgentResponseMapperTests
         mapped.Uncertainty.AcknowledgesLimits.Should().BeTrue();
     }
 
+    [Fact]
+    public void Map_FreeTextConclusion_ResolvesToForbiddenConclusionId()
+    {
+        // Conclusions are documented as free text, so a natural-prose restatement of a forbidden
+        // conclusion ("This is caused by external IO wait") must resolve to the manifest's forbidden
+        // id ("external-io-wait") the same way every other field's free text does -- otherwise
+        // ScenarioEvaluator's id-based intersection against ForbiddenConclusions would never flag it,
+        // silently defeating the unsupported-conclusions scoring dimension.
+        var manifest = LoadManifest("lock-storm");
+        var response = new AgentScenarioResponse(
+            CitedEvidenceIds: [],
+            Hypothesis: manifest.AcceptableHypotheses[0].Replace('-', ' '),
+            Attribution: manifest.AcceptableAttributions[0],
+            NextAction: manifest.AcceptableNextActions[0].Replace('-', ' '),
+            CausalityStatement: manifest.RequiredCausalityPosture.Replace('-', ' '),
+            Conclusions: ["This is caused by external IO wait."],
+            Narrative: string.Empty);
+
+        var mapped = ScenarioAgentResponseMapper.Map(manifest, response);
+
+        mapped.Interpretation.ConclusionIds.Should().Equal("external-io-wait");
+    }
+
     private static ScenarioManifest LoadManifest(string scenarioId)
         => ScenarioManifestLoader.LoadAll().Single(item => item.Id == scenarioId);
 }
