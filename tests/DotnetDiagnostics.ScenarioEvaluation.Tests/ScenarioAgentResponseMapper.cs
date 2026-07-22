@@ -153,14 +153,14 @@ public static class ScenarioAgentResponseMapper
         // Conclusions are free text but only ever scored against the manifest's *forbidden*
         // conclusion ids (ScenarioEvaluator only ever intersects ConclusionIds with
         // ForbiddenConclusions) -- there is no positive "acceptable conclusions" vocabulary to match
-        // against. Each conclusion sentence is matched independently (reusing the same negation-aware
-        // MatchVocabulary as every other field) so a free-text conclusion like "This is caused by
+        // against. Each conclusion sentence is matched independently via MatchAllVocabulary (which,
+        // unlike MatchVocabulary, returns every candidate clearing the threshold rather than rejecting
+        // multi-candidate matches as ambiguous) so a free-text conclusion like "This is caused by
         // external IO wait" resolves to the forbidden id "external-io-wait" instead of being left as
-        // an unmatched, never-flagged raw string.
+        // an unmatched, never-flagged raw string, and a conclusion asserting more than one forbidden
+        // id at once ("external IO wait or GC pause") flags both rather than being silently dropped.
         var conclusionIds = response.Conclusions
-            .Select(text => MatchVocabulary(text, manifest.ForbiddenConclusions))
-            .Where(id => id is not null)
-            .Select(id => id!)
+            .SelectMany(text => MatchAllVocabulary(text, manifest.ForbiddenConclusions))
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
@@ -238,19 +238,38 @@ public static class ScenarioAgentResponseMapper
 
     private static string? MatchVocabulary(string text, IReadOnlyList<string> candidates)
     {
+        var matches = FindMatchingCandidates(text, candidates);
+
+        // More than one candidate clearing the threshold means the response is ambiguous between
+        // (at least) two controlled-vocabulary ids -- e.g. it hedges between the right and a wrong
+        // hypothesis in the same sentence. Silently picking the "best" one would hide that
+        // ambiguity and risk a false-clean score, so this is reported as unmapped instead.
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    // Unlike every other field, a forbidden-conclusion sentence legitimately asserting more than one
+    // forbidden id at once ("external IO wait or GC pause") should flag *both*, not be silently
+    // dropped the way an ambiguous single-select field (hypothesis/attribution/next-action/causality)
+    // is -- ScenarioEvaluator only cares whether ConclusionIds intersects ForbiddenConclusions at all,
+    // so under-reporting here would hide a genuinely asserted forbidden conclusion.
+    private static List<string> MatchAllVocabulary(string text, IReadOnlyList<string> candidates)
+        => FindMatchingCandidates(text, candidates);
+
+    private static List<string> FindMatchingCandidates(string text, IReadOnlyList<string> candidates)
+    {
+        var matches = new List<string>();
         if (string.IsNullOrWhiteSpace(text) || candidates.Count == 0)
         {
-            return null;
+            return matches;
         }
 
         var responseTokens = TokenizeOrdered(text, out var clauseIndex);
         if (responseTokens.Count == 0)
         {
-            return null;
+            return matches;
         }
 
         var clauseTokenSets = GroupByClause(responseTokens, clauseIndex);
-        var matches = new List<string>();
         foreach (var candidate in candidates)
         {
             var candidateTokens = Tokenize(candidate);
@@ -277,11 +296,7 @@ public static class ScenarioAgentResponseMapper
             }
         }
 
-        // More than one candidate clearing the threshold means the response is ambiguous between
-        // (at least) two controlled-vocabulary ids -- e.g. it hedges between the right and a wrong
-        // hypothesis in the same sentence. Silently picking the "best" one would hide that
-        // ambiguity and risk a false-clean score, so this is reported as unmapped instead.
-        return matches.Count == 1 ? matches[0] : null;
+        return matches;
     }
 
     private static List<HashSet<string>> GroupByClause(List<string> orderedTokens, List<int> clauseIndex)

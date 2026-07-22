@@ -397,6 +397,29 @@ public sealed class ScenarioAgentResponseMapperTests
         mapped.Interpretation.ConclusionIds.Should().Equal("external-io-wait");
     }
 
+    [Fact]
+    public void Map_ConclusionAssertingMultipleForbiddenIds_FlagsBothRatherThanDroppingThem()
+    {
+        // Unlike a single-select field (hypothesis/attribution/next-action/causality), a conclusion
+        // sentence asserting more than one forbidden id at once must flag all of them: silently
+        // dropping the sentence because it is "ambiguous" (the way MatchVocabulary does for
+        // single-select fields) would hide a genuinely asserted forbidden conclusion from
+        // ScenarioEvaluator's ConclusionIds/ForbiddenConclusions intersection.
+        var manifest = LoadManifest("lock-storm");
+        var response = new AgentScenarioResponse(
+            CitedEvidenceIds: [],
+            Hypothesis: manifest.AcceptableHypotheses[0].Replace('-', ' '),
+            Attribution: manifest.AcceptableAttributions[0],
+            NextAction: manifest.AcceptableNextActions[0].Replace('-', ' '),
+            CausalityStatement: manifest.RequiredCausalityPosture.Replace('-', ' '),
+            Conclusions: ["It is either external IO wait or a GC pause."],
+            Narrative: string.Empty);
+
+        var mapped = ScenarioAgentResponseMapper.Map(manifest, response);
+
+        mapped.Interpretation.ConclusionIds.Should().BeEquivalentTo(["external-io-wait", "gc-pause"]);
+    }
+
     private static ScenarioManifest LoadManifest(string scenarioId)
         => ScenarioManifestLoader.LoadAll().Single(item => item.Id == scenarioId);
 }
