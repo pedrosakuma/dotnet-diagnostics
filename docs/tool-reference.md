@@ -588,8 +588,10 @@ GC `Generation`/`Reason`/`Type`, the `PauseDuration` (GCStart→GCStop elapsed),
 the same rows by pause descending and returns the top `topN` (each keeps its timeline `Index` for
 cross-reference). `byGeneration` reports `Count` + total/mean/max pause per generation bucket
 (`gen0`/`gen1`/`gen2`/`background`); background GCs form their own mutually-exclusive bucket, so
-`gen2` counts non-background gen2 collections only. Note these views describe only the events
-retained on the artifact (the collector caps at `maxEvents`).
+`gen2` counts non-background gen2 collections only. These pause-detail views describe only the
+raw events retained on the artifact (the collector caps at `maxEvents`) and expose
+`retained`/`dropped`. The summary's `totalCollections`, total/max pause, and `generations[]` counts
+continue aggregating after that cap and remain exact for the full collection window.
 
 The `heap-stats` view (issue #384) re-projects the per-collection `GCHeapStats` samples retained
 behind the same `gc-events` handle — no new collection. Each sample carries the per-generation heap
@@ -1502,7 +1504,8 @@ bounded generation-tag variants).
   series;
 - `meterProcessCumulative`: the process-lifetime cumulative value from that Meter series;
 - `gcCollectorWindowCount`: GC events observed during this batch's
-  `gcCollectorWindowSeconds` window.
+  `gcCollectorWindowSeconds` window. This count comes from the GC collector's exact generation
+  aggregate and continues updating after its 200-row raw-event retention cap.
 
 Null Meter fields mean that the target runtime did not publish the requested series during the
 window; they are never inferred from the incompatible EventCounter or GC-window values.
@@ -1966,7 +1969,7 @@ returns aggregate + per-collection details.
 |---|---|---|---|
 | `processId` | `int` | — | Target process id |
 | `durationSeconds` | `int` | `10` | Window length |
-| `maxEvents` | `int` | `200` | Cap on individual GC events returned |
+| `maxEvents` | `int` | `200` | Cap on retained raw GC event rows and heap-stat samples. Exact totals, total/max pause, and generation counts continue updating after the cap. |
 
 **Long-running pattern:** this tool supports MCP Tasks (`execution.taskSupport:
 "optional"`). Spec clients should use task-augmented `tools/call`; clients that
@@ -1996,9 +1999,17 @@ don't implement Tasks should use the in-request `notifications/progress` +
       "type": "NonConcurrentGC",
       "pauseDuration": "00:00:00.0021000"
     }
-  ]
+  ],
+  "droppedEvents": 0,
+  "droppedHeapStats": 0
 }
 ```
+
+`totalCollections`, `totalPauseTime`, `maxPauseTime`, and `generations[]` cover every paired
+GC start/stop observed in the window, even after `events` reaches `maxEvents`. `events` and
+`heapStats` retain only their first `maxEvents` rows; `droppedEvents` and `droppedHeapStats`
+explicitly report omitted detail. Drilldown pause-detail views expose retained/dropped counts so
+their prefix-only scope is unambiguous.
 
 **Notes:** to capture a full gcdump (heap snapshot), use `collect_process_dump`
 with `dumpType = "WithHeap"` and analyze offline with `dotnet-dump`.

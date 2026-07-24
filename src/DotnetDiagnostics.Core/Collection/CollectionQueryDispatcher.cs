@@ -198,13 +198,26 @@ public static class CollectionQueryDispatcher
     {
         object payload = view.ToLowerInvariant() switch
         {
-            "events" => new GcEventsView(g.TotalCollections, Math.Min(topN, g.Events.Count), g.Events.Take(topN).ToList()),
+            "events" => new GcEventsView(
+                g.TotalCollections,
+                g.Events.Count,
+                g.DroppedEvents,
+                Math.Min(topN, g.Events.Count),
+                g.Events.Take(topN).ToList()),
             "pausehistogram" => BuildHistogram(g),
             "timeline" => BuildTimeline(g, topN),
             "longestpauses" => BuildLongestPauses(g, topN),
             "bygeneration" => BuildByGeneration(g),
             "heap-stats" or "heapstats" => BuildHeapStats(g, topN),
-            _ /* summary */ => new GcSummaryView(g.TotalCollections, g.TotalPauseTime, g.MaxPauseTime, g.Generations),
+            _ /* summary */ => new GcSummaryView(
+                g.TotalCollections,
+                g.TotalPauseTime,
+                g.MaxPauseTime,
+                g.Generations,
+                g.Events.Count,
+                g.DroppedEvents,
+                g.HeapStats?.Count ?? 0,
+                g.DroppedHeapStats),
         };
 
         return new CollectionQueryResult(
@@ -239,7 +252,8 @@ public static class CollectionQueryDispatcher
         }
 
         var buckets = bounds.Select((b, i) => new GcPauseBucket(b.Label, b.UpperBoundMs, counts[i])).ToList();
-        return new GcPauseHistogramView(g.TotalCollections, g.MaxPauseTime, buckets);
+        return new GcPauseHistogramView(
+            g.TotalCollections, g.Events.Count, g.DroppedEvents, g.MaxPauseTime, buckets);
     }
 
     // Orders retained GC events by start time (stable on original ordinal to break 1ms-resolution
@@ -271,7 +285,8 @@ public static class CollectionQueryDispatcher
     {
         var entries = BuildTimelineEntries(g);
         var slice = entries.Take(topN).ToList();
-        return new GcTimelineView(g.TotalCollections, slice.Count, slice);
+        return new GcTimelineView(
+            g.TotalCollections, g.Events.Count, g.DroppedEvents, slice.Count, slice);
     }
 
     private static GcLongestPausesView BuildLongestPauses(GcSummary g, int topN)
@@ -281,7 +296,8 @@ public static class CollectionQueryDispatcher
             .ThenBy(e => e.Index)
             .Take(topN)
             .ToList();
-        return new GcLongestPausesView(g.TotalCollections, ranked.Count, ranked);
+        return new GcLongestPausesView(
+            g.TotalCollections, g.Events.Count, g.DroppedEvents, ranked.Count, ranked);
     }
 
     private static GcByGenerationView BuildByGeneration(GcSummary g)
@@ -315,7 +331,8 @@ public static class CollectionQueryDispatcher
             .OrderBy(s => OrderOf(s.Bucket))
             .ToList();
 
-        return new GcByGenerationView(g.TotalCollections, stats);
+        return new GcByGenerationView(
+            g.TotalCollections, g.Events.Count, g.DroppedEvents, stats);
     }
 
     private static GcHeapStatsView BuildHeapStats(GcSummary g, int topN)

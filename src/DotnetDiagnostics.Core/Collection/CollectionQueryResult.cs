@@ -86,17 +86,25 @@ public sealed record GcSummaryView(
     int TotalCollections,
     TimeSpan TotalPauseTime,
     TimeSpan MaxPauseTime,
-    IReadOnlyList<Gc.GenerationStats> Generations);
+    IReadOnlyList<Gc.GenerationStats> Generations,
+    int RetainedEvents,
+    int DroppedEvents,
+    int RetainedHeapStats,
+    int DroppedHeapStats);
 
 /// <summary>Raw GC events (capped by <c>topN</c>).</summary>
 public sealed record GcEventsView(
     int TotalCollections,
+    int Retained,
+    int Dropped,
     int Returned,
     IReadOnlyList<Gc.GcEvent> Events);
 
 /// <summary>GC pause histogram — buckets by pause duration so the LLM can describe the tail.</summary>
 public sealed record GcPauseHistogramView(
     int TotalCollections,
+    int Retained,
+    int Dropped,
     TimeSpan MaxPauseTime,
     IReadOnlyList<GcPauseBucket> Buckets);
 
@@ -107,11 +115,15 @@ public sealed record GcPauseHistogramView(
 public sealed record GcPauseBucket(string Label, int UpperBoundMs, int Count);
 
 /// <summary>Per-GC timeline ordered by start time, capped to the earliest <c>topN</c> collections.</summary>
-/// <param name="TotalCollections">Total GCs retained on the artifact (may be capped by the collector's maxEvents).</param>
+/// <param name="TotalCollections">Exact number of GCs observed in the collection window.</param>
+/// <param name="Retained">Raw GC event rows retained on the artifact.</param>
+/// <param name="Dropped">Raw GC event rows omitted after the retention cap.</param>
 /// <param name="Returned">Number of timeline rows actually returned (earliest by start time).</param>
 /// <param name="Entries">The chronological GC rows.</param>
 public sealed record GcTimelineView(
     int TotalCollections,
+    int Retained,
+    int Dropped,
     int Returned,
     IReadOnlyList<GcTimelineEntry> Entries);
 
@@ -135,14 +147,20 @@ public sealed record GcTimelineEntry(
 /// <summary>The N longest GC pauses, ranked by pause descending. Each entry keeps its timeline <see cref="GcTimelineEntry.Index"/>.</summary>
 public sealed record GcLongestPausesView(
     int TotalCollections,
+    int Retained,
+    int Dropped,
     int Returned,
     IReadOnlyList<GcTimelineEntry> Pauses);
 
 /// <summary>Pause statistics split per generation, with background GCs called out as their own mutually-exclusive bucket.</summary>
-/// <param name="TotalCollections">Total GCs retained on the artifact.</param>
+/// <param name="TotalCollections">Exact number of GCs observed in the collection window.</param>
+/// <param name="Retained">Raw GC event rows used for these pause-detail buckets.</param>
+/// <param name="Dropped">Raw GC event rows omitted after the retention cap.</param>
 /// <param name="Generations">One row per non-empty bucket (gen0/gen1/gen2/background), in that order.</param>
 public sealed record GcByGenerationView(
     int TotalCollections,
+    int Retained,
+    int Dropped,
     IReadOnlyList<GcGenerationPauseStats> Generations);
 
 /// <summary>Count + total/mean/max pause for one generation bucket.</summary>

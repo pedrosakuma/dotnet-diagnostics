@@ -719,11 +719,11 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         var driver = Task.Run(async () =>
         {
             await Task.Delay(TimeSpan.FromMilliseconds(1500));
-            for (var i = 0; i < 8; i++)
+            for (var i = 0; i < 260; i++)
             {
                 _ = new byte[128 * 1024];
                 GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
-                await Task.Delay(TimeSpan.FromMilliseconds(200));
+                await Task.Delay(TimeSpan.FromMilliseconds(20));
             }
         });
 
@@ -737,7 +737,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
                     new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "gc" },
                 },
                 ["processId"] = Environment.ProcessId,
-                ["durationSeconds"] = 6,
+                ["durationSeconds"] = 10,
             },
             cancellationToken: CancellationToken.None);
         await driver;
@@ -748,7 +748,31 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         report!.Gen2Evidence.Should().NotBeNull();
         report.Gen2Evidence!.MeterRatePerSecond.Should().NotBeNull();
         report.Gen2Evidence.MeterProcessCumulative.Should().BeGreaterThan(0);
-        report.Gen2Evidence.GcCollectorWindowCount.Should().BeGreaterThan(0);
+        report.Gen2Evidence.GcCollectorWindowCount.Should().BeGreaterThan(200);
+
+        var gcEntry = report.Results
+            .Single(static entry => entry.Tool == "collect_events" && entry.Kind == "gc");
+        var gcData = gcEntry.Data!.Value.GetProperty("gc");
+        gcData.GetProperty("totalCollections").GetInt32().Should().BeGreaterThan(200);
+        gcData.GetProperty("droppedEvents").GetInt32().Should().BeGreaterThan(0);
+        var gcQuery = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = gcEntry.Handle,
+                ["view"] = "events",
+                ["topN"] = 250,
+            },
+            cancellationToken: CancellationToken.None);
+
+        gcQuery.IsError.Should().NotBe(true);
+        var gcSnapshot = DeserializeStructured<CollectionQueryResult>(gcQuery);
+        gcSnapshot.Should().NotBeNull();
+        var gcPayload = gcSnapshot!.Payload.Should().BeOfType<JsonElement>().Subject;
+        gcPayload.GetProperty("retained").GetInt32().Should().Be(200);
+        gcPayload.GetProperty("dropped").GetInt32().Should().BeGreaterThan(0);
+        gcPayload.GetProperty("returned").GetInt32().Should().Be(200);
+        gcPayload.GetProperty("events").GetArrayLength().Should().Be(200);
 
         var countersHandle = report.Results
             .Single(static entry => entry.Tool == "collect_events" && entry.Kind == "counters")
