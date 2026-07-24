@@ -44,16 +44,20 @@ public sealed class TriageClassifierTests
         };
     }
 
+    private static CounterSnapshot SnapshotOfWithProcessorCount(
+        int processorCount,
+        params (string Name, double Value)[] counters)
+        => SnapshotOf(counters) with { ProcessorCount = processorCount };
+
     [Fact]
     public void Classify_CpuBurn_RecognizesOneSaturatedCoreOnManyCoreHost()
     {
         var result = TriageClassifier.Classify(
-            SnapshotOf(("cpu-usage", 6.51)),
-            requestDurationP95: null,
-            logicalProcessorCount: 16);
+            SnapshotOfWithProcessorCount(16, ("cpu-usage", 6.51)));
 
         result.Evidence.CpuUsage.Should().Be(6.51);
         result.Evidence.LogicalProcessorCount.Should().Be(16);
+        result.Evidence.CpuTopologyStatus.Should().Be("observed");
         result.Evidence.EffectiveCoreUsage.Should().BeApproximately(1.0416, 0.0001);
         result.Assessment.Should().NotBe(TriageClassifier.HealthyAssessment);
         result.ObservedSignals.Should().Contain(signal =>
@@ -61,6 +65,34 @@ public sealed class TriageClassifierTests
         result.Hypotheses.Should().Contain(hypothesis =>
             hypothesis.Name == TriageClassifier.CpuComputeDemandHypothesis);
         result.Verdict.Should().Be(TriageClassifier.CpuBound);
+    }
+
+    [Fact]
+    public void Classify_UsesTargetRuntimeTopologyWhenCollectorTopologyDiffers()
+    {
+        var targetProcessorCount = Environment.ProcessorCount == 37 ? 38 : 37;
+        var hostNormalizedCpu = 100.0 / targetProcessorCount;
+
+        var result = TriageClassifier.Classify(
+            SnapshotOfWithProcessorCount(targetProcessorCount, ("cpu-usage", hostNormalizedCpu)));
+
+        result.Evidence.LogicalProcessorCount.Should().Be(targetProcessorCount);
+        result.Evidence.LogicalProcessorCount.Should().NotBe(Environment.ProcessorCount);
+        result.Evidence.EffectiveCoreUsage.Should().BeApproximately(1, 0.001);
+        result.ObservedSignals.Should().Contain(signal =>
+            signal.Name == "cpu.effective-core-consumption");
+    }
+
+    [Fact]
+    public void Classify_LeavesEffectiveCoreUsageUnknownWhenTargetOmitsProcessorCount()
+    {
+        var result = TriageClassifier.Classify(SnapshotOf(("cpu-usage", 6.51)));
+
+        result.Evidence.LogicalProcessorCount.Should().BeNull();
+        result.Evidence.CpuTopologyStatus.Should().Be("unknown");
+        result.Evidence.EffectiveCoreUsage.Should().BeNull();
+        result.ObservedSignals.Should().NotContain(signal =>
+            signal.Name == "cpu.effective-core-consumption");
     }
 
     [Fact]
@@ -76,11 +108,11 @@ public sealed class TriageClassifierTests
     public void Classify_CultureLookup_PrioritizesTopologyAdjustedCpuWithoutInferringWaitCause()
     {
         var result = TriageClassifier.Classify(
-            SnapshotOf(
+            SnapshotOfWithProcessorCount(
+                16,
                 ("cpu-usage", 43),
                 ("threadpool-queue-length", 120)),
-            requestDurationP95: 0.8,
-            logicalProcessorCount: 16);
+            requestDurationP95: 0.8);
 
         result.Evidence.CpuUsage.Should().Be(43);
         result.Evidence.EffectiveCoreUsage.Should().BeApproximately(6.88, 0.001);
@@ -124,6 +156,21 @@ public sealed class TriageClassifierTests
         result.ObservedSignals.Should().BeEmpty();
         result.Hypotheses.Should().BeEmpty();
         result.Assessment.Should().Be(TriageClassifier.HealthyAssessment);
+    }
+
+    [Fact]
+    public void Classify_SubMegabyteHighRelativeGrowth_CannotProduceCriticalIndicator()
+    {
+        var result = TriageClassifier.Classify(SnapshotWithTrends(
+            ("gc-heap-size", 0.1, 0.9, "MB")));
+
+        result.Assessment.Should().Be(TriageClassifier.HealthyAssessment);
+        result.ObservedSignals.Should().BeEmpty();
+        result.Hypotheses.Should().BeEmpty();
+        result.TopIndicators.Should().ContainSingle(indicator =>
+            indicator.Name == "gc-heap-size-growth"
+            && indicator.Level == "normal"
+            && indicator.Score < 20);
     }
 
     [Fact]

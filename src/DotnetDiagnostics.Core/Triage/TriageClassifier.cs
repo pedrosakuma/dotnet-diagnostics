@@ -102,22 +102,6 @@ public static class TriageClassifier
     /// <param name="requestDurationP95">Optional HTTP request duration p95 from Meters.</param>
     /// <returns>A transparent <see cref="TriageResult"/>.</returns>
     public static TriageResult Classify(CounterSnapshot snapshot, double? requestDurationP95 = null)
-        => Classify(snapshot, requestDurationP95, logicalProcessorCount: null);
-
-    /// <summary>
-    /// Projects a counter snapshot into observed signals, hypotheses, and legacy compatibility
-    /// fields while using collector-visible topology to estimate effective core consumption.
-    /// </summary>
-    /// <param name="snapshot">The counter snapshot to classify.</param>
-    /// <param name="requestDurationP95">Optional HTTP request duration p95 from Meters.</param>
-    /// <param name="logicalProcessorCount">
-    /// Collector-visible logical processor count used to estimate effective core consumption.
-    /// </param>
-    /// <returns>A transparent <see cref="TriageResult"/>.</returns>
-    public static TriageResult Classify(
-        CounterSnapshot snapshot,
-        double? requestDurationP95,
-        int? logicalProcessorCount)
     {
         var cpu = GetCounter(snapshot, "cpu-usage");
         var timeInGc = GetCounter(snapshot, "time-in-gc");
@@ -127,8 +111,9 @@ public static class TriageClassifier
         var gen2Count = GetCounter(snapshot, "gen-2-gc-count");
         var heapSize = GetCounter(snapshot, "gc-heap-size");
         var exceptionCount = GetCounter(snapshot, "exception-count");
-        double? effectiveCoreUsage = cpu is not null && logicalProcessorCount is > 0
-            ? cpu.Value * logicalProcessorCount.Value / 100
+        var targetProcessorCount = snapshot.ProcessorCount is > 0 ? snapshot.ProcessorCount : null;
+        double? effectiveCoreUsage = cpu is not null && targetProcessorCount is > 0
+            ? cpu.Value * targetProcessorCount.Value / 100
             : null;
 
         var evidence = new TriageEvidence(
@@ -142,7 +127,8 @@ public static class TriageClassifier
             ExceptionCount: exceptionCount,
             RequestDurationP95: requestDurationP95)
         {
-            LogicalProcessorCount = logicalProcessorCount is > 0 ? logicalProcessorCount : null,
+            LogicalProcessorCount = targetProcessorCount,
+            CpuTopologyStatus = targetProcessorCount is null ? "unknown" : "observed",
             EffectiveCoreUsage = effectiveCoreUsage,
             GcHeapSizeTrend = GetCounterTrend(snapshot, "gc-heap-size"),
             LohSizeTrend = GetCounterTrend(snapshot, "loh-size"),
@@ -803,6 +789,12 @@ public static class TriageClassifier
                 continue;
             }
 
+            if (!IsMaterialMemoryGrowth(trend))
+            {
+                indicators.Add(($"{name}-growth", trend.RelativeChangePercent, "%", 19, "normal"));
+                continue;
+            }
+
             var (score, level) = trend.RelativeChangePercent switch
             {
                 >= 100 => (100, "critical"),
@@ -863,10 +855,12 @@ public static class TriageClassifier
 
     private static List<(string Name, TriageCounterTrend Trend)> GetMaterialMemoryGrowth(TriageEvidence evidence)
         => EnumerateMemoryTrends(evidence)
-            .Where(static item =>
-                item.Trend.RelativeChangePercent >= MemoryGrowthRelativeThresholdPercent
-                && item.Trend.DeltaMegabytes >= MemoryGrowthAbsoluteThresholdMegabytes)
+            .Where(static item => IsMaterialMemoryGrowth(item.Trend))
             .ToList();
+
+    private static bool IsMaterialMemoryGrowth(TriageCounterTrend trend)
+        => trend.RelativeChangePercent >= MemoryGrowthRelativeThresholdPercent
+           && trend.DeltaMegabytes >= MemoryGrowthAbsoluteThresholdMegabytes;
 
     private static IEnumerable<(string Name, TriageCounterTrend Trend)> EnumerateMemoryTrends(
         TriageEvidence evidence)

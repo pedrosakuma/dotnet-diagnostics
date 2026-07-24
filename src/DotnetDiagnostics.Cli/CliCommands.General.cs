@@ -125,7 +125,7 @@ internal static partial class CliCommands
         var requestDuration = HeadlineCounters.FindRequestDuration(snapshot.Meters);
         var requestDurationP95 = requestDuration?.Histogram?.P95;
 
-        var triage = TriageClassifier.Classify(snapshot, requestDurationP95, Environment.ProcessorCount);
+        var triage = TriageClassifier.Classify(snapshot, requestDurationP95);
 
         var indicatorsText = triage.TopIndicators?.Count > 0
             ? $" | top: {string.Join(", ", triage.TopIndicators.Take(3).Select(i => $"{i.Name}={i.Value}{i.Unit ?? string.Empty}({i.Level})"))}"

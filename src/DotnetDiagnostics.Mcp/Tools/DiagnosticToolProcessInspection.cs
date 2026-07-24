@@ -195,7 +195,7 @@ internal static class DiagnosticToolProcessInspection
 
         var requestDuration = HeadlineCounters.FindRequestDuration(snapshot.Meters);
         var requestDurationP95 = requestDuration?.Histogram?.P95;
-        var triage = TriageClassifier.Classify(snapshot, requestDurationP95, Environment.ProcessorCount);
+        var triage = TriageClassifier.Classify(snapshot, requestDurationP95);
         var hints = BuildTriageHints(triage, pid);
 
         var indicatorsText = triage.TopIndicators?.Count > 0

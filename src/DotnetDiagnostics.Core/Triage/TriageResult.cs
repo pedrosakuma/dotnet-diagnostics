@@ -170,10 +170,16 @@ public sealed record TriageEvidence(
     double? RequestDurationP95)
 {
     /// <summary>
-    /// Logical processor count used to translate host-normalized <see cref="CpuUsage"/> into
-    /// effective core consumption. Null when the caller cannot supply topology.
+    /// Target runtime's <c>System.Runtime/ProcessorCount</c> event value used to translate
+    /// host-normalized <see cref="CpuUsage"/> into effective core consumption.
     /// </summary>
     public int? LogicalProcessorCount { get; init; }
+
+    /// <summary>
+    /// <c>observed</c> when <see cref="LogicalProcessorCount"/> came from the target runtime;
+    /// otherwise <c>unknown</c>. Collector/sidecar topology is never substituted.
+    /// </summary>
+    public string CpuTopologyStatus { get; init; } = "unknown";
 
     /// <summary>
     /// Estimated cores consumed by the process: host-normalized CPU percent multiplied by

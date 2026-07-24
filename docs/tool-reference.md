@@ -184,7 +184,7 @@ Per-tool `Summary` semantics:
 
 | Tool | What `Summary` drops inline |
 | --- | --- |
-| `collect_events(kind="counters")` | All non-headline counters (keeps ~14: cpu-usage, working-set, gc-heap-size, gen-2-gc-count, time-in-gc, alloc-rate, threadpool-thread-count, threadpool-queue-length, exception-count, monitor-lock-contention-count + ASP.NET Core requests/failed/current + Kestrel connections-per-sec). **Auto-hints** trigger on elevated CPU, ThreadPool backlog, GC time, allocation + Gen2 activity, and contention. Low CPU + queueing is described as inconclusive unless elevated request latency corroborates waiting/backpressure; it never asserts I/O from counters alone. |
+| `collect_events(kind="counters")` | All non-headline counters (keeps ~14: cpu-usage, working-set, gc-heap-size, gen-2-gc-count, time-in-gc, alloc-rate, threadpool-thread-count, threadpool-queue-length, exception-count, monitor-lock-contention-count + ASP.NET Core requests/failed/current + Kestrel connections-per-sec). The target's one-shot `System.Runtime/ProcessorCount` event is retained separately as `processorCount`. **Auto-hints** trigger on elevated CPU, ThreadPool backlog, GC time, allocation + Gen2 activity, and contention. Low CPU + queueing is described as inconclusive unless elevated request latency corroborates waiting/backpressure; it never asserts I/O from counters alone. |
 | `inspect_process(view="container")` | The `Notes[]` (caveats about cgroup v1 / missing PSI). Cgroup values themselves remain. |
 | `collect_sample(kind="cpu")` | `TopHotspots` truncated to the top 3 (handle keeps `topN`, default 25). |
 | `collect_sample(kind="off_cpu")` | `TopBlockingStacks` truncated to the top 3 (handle keeps `topN`). |
@@ -901,9 +901,10 @@ evidence-selected drill-down. The payload explicitly separates:
   `contradictingEvidence`, and a neutral `nextStep`, ordered by confidence and then the
   strongest supporting observed-signal level.
 - `topIndicators[]` and raw `evidence` — retained for independent interpretation. CPU evidence
-  keeps the runtime's host-normalized `cpuUsage` and, when topology is available,
-  `logicalProcessorCount` plus `effectiveCoreUsage`. The latter is an estimate in cores, so a
-  single busy core is visible even when a many-core host makes the percentage look small.
+  keeps the runtime's host-normalized `cpuUsage` and the target runtime's one-shot
+  `System.Runtime/ProcessorCount` event as `logicalProcessorCount`. `effectiveCoreUsage` is derived only
+  from those two target values, so sidecar or CLI quotas cannot change the estimate.
+  `cpuTopologyStatus` is explicitly `unknown` when the target event is unavailable.
 - `evidence.gcHeapSizeTrend`, `lohSizeTrend`, and `workingSetTrend` — first/last values, delta,
   relative change, and normalized MB delta from the same capture window.
 - `assessment` — `healthy`, `inconclusive`, `degraded`, or `critical`.
@@ -940,8 +941,9 @@ The `cpu.effective-core-consumption` signal crosses at 0.8 estimated cores. Memo
 shape-based rather than endpoint-size-based: `memory.intra-window-growth` requires at least 20%
 first-to-last growth and at least 1 MB of absolute growth in GC heap, LOH, or working set. Its
 `memory.footprint-growth` hypothesis deliberately does **not** call the shape a leak; repeat a
-longer trend and compare heap snapshots before assigning a retention cause. The processor count is
-the collector-visible topology and may differ from a target with a separately configured affinity.
+longer trend and compare heap snapshots before assigning a retention cause. Memory-growth
+`topIndicators` use the same 20% + 1 MB materiality rule; a high relative change below 1 MB remains
+`normal` rather than contradicting a healthy assessment.
 
 **Compatibility/deprecation:** `verdict`, `secondaryVerdicts`, `severity`, `evidence`, and
 `topIndicators` remain serialized, so existing JSON consumers continue to receive their fields.

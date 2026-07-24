@@ -68,9 +68,12 @@ Tool results arrive in `result.content[].text` as JSON envelopes.
 separates observed signals from bounded hypotheses. This is where a blind agent starts.
 
 On a many-core host the runtime percentage can be host-normalized and therefore much lower than
-95%. Current triage also reports `logicalProcessorCount` and `effectiveCoreUsage`, and emits
-`cpu.effective-core-consumption` when the estimate reaches approximately one core. That preserves
-the observed topology without changing the diagnosis-agnostic `cpu.compute-demand` handoff.
+95%. Current triage also reports the target runtime's one-shot `System.Runtime/ProcessorCount` event as
+`logicalProcessorCount`, derives `effectiveCoreUsage` from that target value, and emits
+`cpu.effective-core-consumption` when the estimate reaches approximately one core. Sidecar quotas
+are deliberately ignored; missing target topology is reported as `cpuTopologyStatus="unknown"`.
+That preserves the observed topology without changing the diagnosis-agnostic
+`cpu.compute-demand` handoff.
 
 ```jsonc
 // inspect_process(view="triage", processId=<pid>)

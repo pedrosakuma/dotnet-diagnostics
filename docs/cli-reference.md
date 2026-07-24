@@ -164,10 +164,13 @@ the same `modelVersion=2` contract as MCP. Hypotheses are ordered by confidence 
 strongest supporting observed-signal level. A low-CPU snapshot with a small transient queue is
 `inconclusive`; it is not labeled `io-bound`.
 
-Topology-adjusted CPU emits `cpu.effective-core-consumption` at approximately one busy core even
-when host-normalized CPU is small. Material first-to-last GC heap, LOH, or working-set growth emits
+Topology-adjusted CPU uses the target's one-shot `System.Runtime/ProcessorCount` event, never the CLI
+process's topology, and emits `cpu.effective-core-consumption` at approximately one busy core even
+when host-normalized CPU is small. `cpuTopologyStatus` is `unknown` when the target event is
+unavailable. Material first-to-last GC heap, LOH, or working-set growth emits
 `memory.intra-window-growth`; the bounded `memory.footprint-growth` hypothesis describes the shape
-without claiming a leak or prescribing a solution.
+without claiming a leak or prescribing a solution. Memory-growth indicators apply the same 20% and
+1 MB materiality floor as the observed signal.
 
 For compatibility, JSON continues to serialize `verdict`, `secondaryVerdicts`, `severity`,
 `evidence`, and `topIndicators`. `verdict` and `secondaryVerdicts` are deprecated for removal in

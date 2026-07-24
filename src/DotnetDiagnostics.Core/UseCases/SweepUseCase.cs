@@ -81,7 +81,7 @@ public static class SweepUseCase
             ? HeadlineCounters.FindRequestDuration(meters)?.Histogram?.P95
             : null;
         var triage = triageCounters is not null
-            ? TriageClassifier.Classify(triageCounters, requestDurationP95, Environment.ProcessorCount)
+            ? TriageClassifier.Classify(triageCounters, requestDurationP95)
             : new TriageResult(
                 "unknown",
                 TriageSeverity.Healthy,
