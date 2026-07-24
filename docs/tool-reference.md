@@ -496,7 +496,8 @@ inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap
 For classified CPU samples, `waitingSelfPercent` is the primary comparison symptom:
 `runningSelfSamples` and `waitingSelfSamples` remain distinct overall and per frame. A removed
 waiting hotspot plus a different running leader is therefore an improvement when waiting
-collapses; row rank turnover alone does not override that primary symptom.
+meaningfully collapses. Scalar and row evidence are otherwise combined: two unrelated all-running
+hotspots remain regression evidence when waiting is unchanged at zero.
 
 `heap-snapshot` `view="growth"` is the retention-aware **live heap leak hunt** (issue #463).
 Capture two live heap snapshots N seconds apart — `inspect_heap(source="live", includeRetentionPaths=true)` —
@@ -3151,13 +3152,16 @@ Registered lower-is-better names are `threadpool-queue-length`,
 `threadpool-pending-work-items`, `threadpool-thread-count`, `request-p95-milliseconds`,
 `request-p95-seconds`, and `request-latency-p95`. Registered higher-is-better names are
 `requests-completed`, `request-throughput`, `requests-per-second`, and `throughput`. Matching is
-case-insensitive and ignores punctuation.
+case-insensitive and ignores punctuation. If multiple names in one summary normalize to the same
+key, ordinal name order deterministically selects the retained value and `Notes` reports the
+collision.
 
 `HotspotSummary.SelfSamples` preserves the running/waiting split used by this decision. Legacy
 summaries without that split remain readable, but a simultaneous added+removed hotspot with no
 comparable directional metrics is `incomparable`, not a confident regression. Conflicting
 directional symptoms return `mixed`; unrecognized or one-sided key metrics appear in
-`KeyMetricDeltas`/`Notes` but do not silently drive the verdict.
+`KeyMetricDeltas`/`Notes` but do not silently drive the verdict. An unchanged comparable metric
+does not erase an incomparable verdict-relevant metric.
 
 ---
 

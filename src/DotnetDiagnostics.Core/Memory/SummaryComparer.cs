@@ -233,39 +233,41 @@ public sealed class SummaryComparer : ISummaryComparer
             return Array.Empty<KeyMetricDelta>();
         }
 
-        baseline ??= new Dictionary<string, double>();
-        current ??= new Dictionary<string, double>();
-        var names = baseline.Keys
-            .Concat(current.Keys)
+        var baselineMetrics = CanonicalizeMetrics(baseline, "baseline", notes);
+        var currentMetrics = CanonicalizeMetrics(current, "current", notes);
+        var names = baselineMetrics.Keys
+            .Concat(currentMetrics.Keys)
             .Distinct(StringComparer.Ordinal)
             .OrderBy(static name => name, StringComparer.Ordinal)
             .ToArray();
         var deltas = new List<KeyMetricDelta>(names.Length);
 
-        foreach (var name in names)
+        foreach (var canonicalName in names)
         {
-            var hasBaseline = baseline.TryGetValue(name, out var baselineValue);
-            var hasCurrent = current.TryGetValue(name, out var currentValue);
+            var hasBaseline = baselineMetrics.TryGetValue(canonicalName, out var baselineMetric);
+            var hasCurrent = currentMetrics.TryGetValue(canonicalName, out var currentMetric);
+            var name = hasBaseline ? baselineMetric!.Name : currentMetric!.Name;
+            var hasDirection = MetricDirections.TryGetValue(canonicalName, out var direction);
             if (!hasBaseline || !hasCurrent)
             {
                 deltas.Add(new KeyMetricDelta(
                     name,
-                    hasBaseline ? baselineValue : null,
-                    hasCurrent ? currentValue : null,
-                    "unknown",
+                    hasBaseline ? baselineMetric!.Value : null,
+                    hasCurrent ? currentMetric!.Value : null,
+                    hasDirection ? DirectionName(direction) : "unknown",
                     Incomparable));
                 notes.Add($"Key metric '{name}' is absent from one summary; it does not drive the verdict.");
                 continue;
             }
 
-            if (!MetricDirections.TryGetValue(NormalizeMetricName(name), out var direction))
+            if (!hasDirection)
             {
-                deltas.Add(new KeyMetricDelta(name, baselineValue, currentValue, "unknown", Incomparable));
+                deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable));
                 notes.Add($"Key metric '{name}' has no registered better-direction semantics; its delta is reported but does not drive the verdict.");
                 continue;
             }
 
-            var delta = currentValue - baselineValue;
+            var delta = currentMetric!.Value - baselineMetric!.Value;
             var outcome = Math.Abs(delta) <= double.Epsilon
                 ? Unchanged
                 : (delta < 0) == (direction == MetricDirection.Lower)
@@ -273,9 +275,9 @@ public sealed class SummaryComparer : ISummaryComparer
                     : Regressed;
             deltas.Add(new KeyMetricDelta(
                 name,
-                baselineValue,
-                currentValue,
-                direction == MetricDirection.Lower ? "lower" : "higher",
+                baselineMetric.Value,
+                currentMetric.Value,
+                DirectionName(direction),
                 outcome));
         }
 
@@ -294,10 +296,40 @@ public sealed class SummaryComparer : ISummaryComparer
         if (improved && regressed) return Evidence.Mixed;
         if (improved) return Evidence.Improved;
         if (regressed) return Evidence.Regressed;
-        return deltas.All(static delta => delta.Outcome == Incomparable)
+        return deltas.Any(static delta => delta.Outcome == Incomparable)
             ? Evidence.Incomparable
             : Evidence.Unchanged;
     }
+
+    private static Dictionary<string, CanonicalMetric> CanonicalizeMetrics(
+        IReadOnlyDictionary<string, double>? metrics,
+        string side,
+        List<string> notes)
+    {
+        var result = new Dictionary<string, CanonicalMetric>(StringComparer.Ordinal);
+        if (metrics is null)
+        {
+            return result;
+        }
+
+        foreach (var metric in metrics.OrderBy(static item => item.Key, StringComparer.Ordinal))
+        {
+            var canonicalName = NormalizeMetricName(metric.Key);
+            if (result.TryAdd(canonicalName, new CanonicalMetric(metric.Key, metric.Value)))
+            {
+                continue;
+            }
+
+            notes.Add(
+                $"{side} key metrics '{result[canonicalName].Name}' and '{metric.Key}' normalize to '{canonicalName}'; " +
+                $"keeping '{result[canonicalName].Name}' deterministically.");
+        }
+
+        return result;
+    }
+
+    private static string DirectionName(MetricDirection direction)
+        => direction == MetricDirection.Lower ? "lower" : "higher";
 
     private static SampleActivity Activity(SelfSampleBreakdown? samples)
     {
@@ -327,6 +359,8 @@ public sealed class SummaryComparer : ISummaryComparer
         Lower,
         Higher,
     }
+
+    private sealed record CanonicalMetric(string Name, double Value);
 
     private enum SampleActivity
     {

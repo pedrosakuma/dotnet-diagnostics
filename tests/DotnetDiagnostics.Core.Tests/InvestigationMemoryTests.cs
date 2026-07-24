@@ -264,6 +264,120 @@ public class InvestigationMemoryTests
     }
 
     [Fact]
+    public void Compare_UnchangedMetricPlusMissingVerdictMetric_IsIncomparable()
+    {
+        var exporter = NewExporter();
+        var artifact = ClassifiedArtifactFor(100, ("M.dll", "M.Run", 50, 50, 50, 0));
+        var baseline = exporter.Export(new ExportRequest("before", artifact)).Summary;
+        var current = exporter.Export(new ExportRequest("after", artifact)).Summary;
+        baseline = baseline with
+        {
+            Findings = baseline.Findings with
+            {
+                KeyMetrics = new Dictionary<string, double>
+                {
+                    ["threadpool-queue-length"] = 0,
+                    ["requests-completed"] = 50,
+                },
+            },
+        };
+        current = current with
+        {
+            Findings = current.Findings with
+            {
+                KeyMetrics = new Dictionary<string, double>
+                {
+                    ["threadpool-queue-length"] = 0,
+                },
+            },
+        };
+
+        var diff = new SummaryComparer().Compare(baseline, current);
+
+        diff.Verdict.Should().Be("incomparable");
+        diff.KeyMetricDeltas.Should().Contain(delta =>
+            delta.Name == "requests-completed" && delta.Outcome == "incomparable");
+    }
+
+    [Fact]
+    public void Compare_MetricNamesMatchCaseAndPunctuationInsensitively()
+    {
+        var exporter = NewExporter();
+        var artifact = ClassifiedArtifactFor(100, ("M.dll", "M.Run", 50, 50, 50, 0));
+        var baseline = exporter.Export(new ExportRequest("before", artifact)).Summary;
+        var current = exporter.Export(new ExportRequest("after", artifact)).Summary;
+        baseline = baseline with
+        {
+            Findings = baseline.Findings with
+            {
+                KeyMetrics = new Dictionary<string, double>
+                {
+                    ["ThreadPool Queue Length"] = 236,
+                },
+            },
+        };
+        current = current with
+        {
+            Findings = current.Findings with
+            {
+                KeyMetrics = new Dictionary<string, double>
+                {
+                    ["threadpool-queue-length"] = 0,
+                },
+            },
+        };
+
+        var diff = new SummaryComparer().Compare(baseline, current);
+
+        diff.Verdict.Should().Be("improvement");
+        diff.KeyMetricDeltas.Should().ContainSingle()
+            .Which.Should().Match<KeyMetricDelta>(delta =>
+                delta.Name == "ThreadPool Queue Length"
+                && delta.BaselineValue == 236
+                && delta.CurrentValue == 0
+                && delta.Outcome == "improved");
+        diff.Notes.Should().NotContain(note => note.Contains("absent", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Compare_CanonicalMetricCollision_KeepsOrdinalFirstName()
+    {
+        var exporter = NewExporter();
+        var artifact = ClassifiedArtifactFor(100, ("M.dll", "M.Run", 50, 50, 50, 0));
+        var baseline = exporter.Export(new ExportRequest("before", artifact)).Summary;
+        var current = exporter.Export(new ExportRequest("after", artifact)).Summary;
+        baseline = baseline with
+        {
+            Findings = baseline.Findings with
+            {
+                KeyMetrics = new Dictionary<string, double>
+                {
+                    ["threadpool-queue-length"] = 999,
+                    ["ThreadPool Queue Length"] = 100,
+                },
+            },
+        };
+        current = current with
+        {
+            Findings = current.Findings with
+            {
+                KeyMetrics = new Dictionary<string, double>
+                {
+                    ["threadpool_queue_length"] = 50,
+                },
+            },
+        };
+
+        var diff = new SummaryComparer().Compare(baseline, current);
+
+        diff.Verdict.Should().Be("improvement");
+        diff.KeyMetricDeltas.Should().ContainSingle()
+            .Which.BaselineValue.Should().Be(100);
+        diff.Notes.Should().ContainSingle(note =>
+            note.Contains("keeping 'ThreadPool Queue Length' deterministically", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Compare_DetectsImageJumpInProvenance()
     {
         var artifact = ArtifactFor(("M.dll", "M.A", 100, 80));

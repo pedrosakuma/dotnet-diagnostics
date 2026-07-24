@@ -167,7 +167,8 @@ are identical regardless of which "door" you use; only the transport differs.
 For CPU captures with running/waiting self-sample classification, `waitingSelfPercent` is the
 primary symptom and the per-frame matrix preserves `runningExclusiveSamples` separately from
 `waitingExclusiveSamples`. Do not interpret a new running leader as a regression when the old
-blocking leader disappeared and waiting collapsed. Legacy investigation summaries that lack
+blocking leader disappeared and waiting meaningfully collapsed; unrelated all-running hotspot
+replacement remains regression evidence. Legacy investigation summaries that lack
 comparable symptom metrics or running/waiting classification report hotspot rank turnover as
 `incomparable`; conflicting queue/throughput evidence reports `mixed`.
 

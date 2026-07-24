@@ -296,6 +296,36 @@ public sealed class ComparableProjectorTests
     }
 
     [Fact]
+    public void CpuProjector_UnrelatedAllRunningHotspotReplacement_IsRegression()
+    {
+        var projector = new CpuSampleComparableProjector();
+        var baseline = projector.Project(
+            ClassifiedCpuTraceForProjector(
+                "MyApp.dll",
+                "MyApp.OldHotspot",
+                exclusiveSamples: 60,
+                runningSamples: 60,
+                waitingSamples: 0,
+                totalSamples: 100),
+            "before");
+        var current = projector.Project(
+            ClassifiedCpuTraceForProjector(
+                "MyApp.dll",
+                "MyApp.NewHotspot",
+                exclusiveSamples: 40,
+                runningSamples: 40,
+                waitingSamples: 0,
+                totalSamples: 100),
+            "after");
+
+        var diff = SnapshotDiffer.Compare(new[] { baseline, current });
+
+        diff.Verdict.Should().Be("regression");
+        diff.MetricSeries.Single(series => series.Definition.Name == "waitingSelfPercent")
+            .Direction.Should().Be("flat");
+    }
+
+    [Fact]
     public void NativeAllocProjector_UsesExclusivePercentAsLowerBetterPrimary_WithNativeKind()
     {
         var baseline = new NativeAllocSampleComparableProjector().Project(CpuTraceForProjector("libnative.so", "malloc", identity: null, exclusiveSamples: 5, totalSamples: 100), "baseline");
