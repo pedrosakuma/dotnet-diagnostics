@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
@@ -126,6 +127,61 @@ public sealed class ReplicaCounterFanoutTests
     }
 
     [Fact]
+    public async Task CompareAsync_ResolvesStoredSelectorsAndPassesPodLocalProcessIds()
+    {
+        var selector = new InvestigationProcessSelector(ManagedEntrypointAssemblyName: "CoreClrSample");
+        var store = new MemoryInvestigationStore();
+        store.Add(ActiveHandle("inv-a", "pod-a", processSelector: selector));
+        store.Add(ActiveHandle("inv-b", "pod-b", processSelector: selector));
+
+        var proxy = new StubProxyClient
+        {
+            ["pod-a"] = CountersResult(30, 100, 0, 101, "pod-a"),
+            ["pod-b"] = CountersResult(31, 105, 0, 207, "pod-b"),
+        };
+        proxy.ProcessLists["pod-a"] = ProcessListResult(
+            Process(1, "DotnetDiagnostics.Mcp", "dotnet DotnetDiagnostics.Mcp.dll"),
+            Process(101, "CoreClrSample", "dotnet CoreClrSample.dll --p6-target=a"));
+        proxy.ProcessLists["pod-b"] = ProcessListResult(
+            Process(2, "DotnetDiagnostics.Mcp", "dotnet DotnetDiagnostics.Mcp.dll"),
+            Process(207, "CoreClrSample", "dotnet CoreClrSample.dll --p6-target=b"));
+
+        var fanout = await ReplicaCounterFanout.CompareAsync(
+            store, proxy, callerBearerName: null, investigationHandleIds: null,
+            durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
+
+        fanout.PodErrors.Should().BeEmpty();
+        fanout.Skew!.Replicas.Should().Contain(r => r.PodName == "pod-a" && r.ProcessId == 101);
+        fanout.Skew.Replicas.Should().Contain(r => r.PodName == "pod-b" && r.ProcessId == 207);
+        proxy.CounterProcessIds.Should().BeEquivalentTo(
+            new Dictionary<string, int> { ["pod-a"] = 101, ["pod-b"] = 207 });
+    }
+
+    [Fact]
+    public async Task CompareAsync_AmbiguousSelectorIsIsolatedAsPerPodError()
+    {
+        var selector = new InvestigationProcessSelector(ManagedEntrypointAssemblyName: "Worker");
+        var store = new MemoryInvestigationStore();
+        store.Add(ActiveHandle("inv-good", "good", processSelector: selector));
+        store.Add(ActiveHandle("inv-ambiguous", "ambiguous", processSelector: selector));
+
+        var proxy = new StubProxyClient { ["good"] = CountersResult(50, 200, 2, 41, "good") };
+        proxy.ProcessLists["good"] = ProcessListResult(Process(41, "Worker", "dotnet Worker.dll --slot=one"));
+        proxy.ProcessLists["ambiguous"] = ProcessListResult(
+            Process(51, "Worker", "dotnet Worker.dll --slot=one"),
+            Process(52, "Worker", "dotnet Worker.dll --slot=two"));
+
+        var fanout = await ReplicaCounterFanout.CompareAsync(
+            store, proxy, callerBearerName: null, investigationHandleIds: null,
+            durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
+
+        fanout.Skew!.Replicas.Should().ContainSingle(r => r.PodName == "good");
+        fanout.PodErrors.Should().ContainSingle()
+            .Which.Should().Contain("ambiguous").And.Contain("PIDs 51, 52");
+        proxy.Calls.Should().ContainSingle().Which.Should().Be("good");
+    }
+
+    [Fact]
     public async Task CompareAsync_ExplicitEmptyHandleList_DoesNotFallBackToCallerWideDiscovery()
     {
         var store = new MemoryInvestigationStore();
@@ -140,7 +196,11 @@ public sealed class ReplicaCounterFanoutTests
         fanout.Skew.Should().BeNull();
     }
 
-    private static InvestigationHandle ActiveHandle(string handleId, string podName, string? ownerBearerName = null) => new(
+    private static InvestigationHandle ActiveHandle(
+        string handleId,
+        string podName,
+        string? ownerBearerName = null,
+        InvestigationProcessSelector? processSelector = null) => new(
         HandleId: handleId,
         Namespace: "ns",
         PodName: podName,
@@ -150,7 +210,18 @@ public sealed class ReplicaCounterFanoutTests
         State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
-        OwnerBearerName: ownerBearerName);
+        OwnerBearerName: ownerBearerName,
+        ProcessSelector: processSelector);
+
+    private static DotnetProcess Process(int processId, string entrypoint, string commandLine)
+        => new(processId, commandLine, "linux", "x64", "10.0.0", entrypoint);
+
+    private static CallToolResult ProcessListResult(params DotnetProcess[] processes)
+    {
+        var result = DiagnosticResult.Ok(new InspectProcessReport("list", List: processes), "listed processes");
+        var json = JsonSerializer.Serialize(result, SerializeOptions);
+        return new CallToolResult { StructuredContent = JsonSerializer.Deserialize<JsonElement>(json) };
+    }
 
     private static CallToolResult CountersResult(double cpu, double heap, double queue, int pid, string podName)
     {
@@ -182,20 +253,32 @@ public sealed class ReplicaCounterFanoutTests
         private readonly Dictionary<string, CallToolResult> _byPod = new(StringComparer.Ordinal);
 
         public Dictionary<string, Exception> Throw { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, CallToolResult> ProcessLists { get; } = new(StringComparer.Ordinal);
         public List<string> Calls { get; } = new();
+        public Dictionary<string, int> CounterProcessIds { get; } = new(StringComparer.Ordinal);
 
         public CallToolResult this[string podName] { set => _byPod[podName] = value; }
 
         public Task<CallToolResult> CallToolAsync(InvestigationHandle handle, CallToolRequestParams request, CancellationToken cancellationToken)
         {
-            lock (Calls)
-            {
-                Calls.Add(handle.PodName);
-            }
-
             if (Throw.TryGetValue(handle.PodName, out var ex))
             {
                 return Task.FromException<CallToolResult>(ex);
+            }
+
+            if (request.Name == "inspect_process")
+            {
+                return Task.FromResult(ProcessLists[handle.PodName]);
+            }
+
+            lock (Calls)
+            {
+                Calls.Add(handle.PodName);
+                if (request.Arguments is not null &&
+                    request.Arguments.TryGetValue("processId", out var processId))
+                {
+                    CounterProcessIds[handle.PodName] = processId.GetInt32();
+                }
             }
 
             return Task.FromResult(_byPod[handle.PodName]);

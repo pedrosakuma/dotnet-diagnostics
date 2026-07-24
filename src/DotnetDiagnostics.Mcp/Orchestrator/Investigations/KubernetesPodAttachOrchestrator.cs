@@ -85,6 +85,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         var container = SelectContainerOrThrow(pod, request.ContainerName);
         ValidatePodRunning(pod);
         ValidatePodPrepared(pod, request.RequirePreparedTarget);
+        var processSelector = NormalizeProcessSelector(request.ProcessSelector);
 
         var now = _timeProvider.GetUtcNow();
         var ttl = TimeSpan.FromSeconds(request.TtlSeconds ?? _options.DefaultInvestigationTtlSeconds);
@@ -102,7 +103,8 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             State: InvestigationState.Attaching,
             AttachedAt: now,
             ExpiresAt: now + ttl,
-            OwnerBearerName: request.OwnerBearerName);
+            OwnerBearerName: request.OwnerBearerName,
+            ProcessSelector: processSelector);
 
         // Atomic check-and-reserve: when reuse is allowed and a target tuple already has an
         // Active/Attaching handle, return it instead of patching a second ephemeral container.
@@ -128,6 +130,26 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
                     $"An investigation for {ns}/{request.PodName}/{container.Name} is already active in another MCP session. " +
                     "Wait for that session to detach, or have its owner share their session id, before attaching here.");
             }
+
+            if (processSelector is not null)
+            {
+                if (existing.ProcessSelector is null)
+                {
+                    throw new OrchestratorException(
+                        OrchestratorErrorKinds.InvalidArgument,
+                        $"Investigation {existing.HandleId} was attached without a process selector; " +
+                        $"detach it before attaching the same Pod with selector ({processSelector.Describe()}).");
+                }
+                else if (!existing.ProcessSelector.IsEquivalentTo(processSelector))
+                {
+                    throw new OrchestratorException(
+                        OrchestratorErrorKinds.InvalidArgument,
+                        $"Investigation {existing.HandleId} already has process selector " +
+                        $"({existing.ProcessSelector.Describe()}); detach it before attaching the same Pod " +
+                        $"with a different selector ({processSelector.Describe()}).");
+                }
+            }
+
             _logger.LogInformation(
                 "Reusing investigation handle {HandleId} for {Namespace}/{Pod}/{Container} (state={State}).",
                 existing.HandleId, ns, request.PodName, container.Name, existing.State);
@@ -171,6 +193,25 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             "Attached investigation {HandleId} to {Namespace}/{Pod}/{Container} as ephemeral '{EphemeralName}'.",
             active.HandleId, ns, request.PodName, container.Name, ephemeralName);
         return active;
+    }
+
+    private static InvestigationProcessSelector? NormalizeProcessSelector(
+        InvestigationProcessSelector? selector)
+    {
+        if (selector is null)
+        {
+            return null;
+        }
+
+        var normalized = selector.Normalize();
+        if (normalized.IsEmpty)
+        {
+            throw new OrchestratorException(
+                OrchestratorErrorKinds.InvalidArgument,
+                "processSelector must set managedEntrypointAssemblyName, commandLineContains, or both.");
+        }
+
+        return normalized;
     }
 
     private async Task MarkFailedAsync(InvestigationHandle handle, string reason)

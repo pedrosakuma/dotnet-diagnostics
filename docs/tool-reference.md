@@ -287,7 +287,12 @@ pre-collected **serial** snapshots — this is **live + simultaneous**.
 Requirements: orchestrator mode (`Orchestrator:Enabled=true`), the `read-counters` **and**
 `orchestrator-attach` scopes, and at least one **Active** investigation handle. Prefer passing
 those handles explicitly via `investigationHandleIds=[...]`; omitting them falls back to the
-legacy session-bound discovery path. Like
+legacy session-bound discovery path. When a Pod exposes multiple .NET processes, set
+`processSelector` on its `attach_to_pod` call. The fan-out resolves that selector through the
+Pod-local `inspect_process(view="list")`, requires exactly one match, and forwards the resolved
+Pod-local PID to `collect_events(kind="counters")`. It never guesses from PID ordering. Missing
+or ambiguous matches remain explicit entries in `data.podErrors` and do not sink healthy replicas.
+Like
 `distributed_trace`, the call always runs **locally on the orchestrator** and is never proxied into a
 single Pod. The result envelope carries a `ReplicaCounters` skew: per-replica `Replicas[]` readings,
 per-metric `Metrics[]` dispersion (min/max/mean/stddev, absolute + relative spread, min/max Pod), the
@@ -296,7 +301,7 @@ in `data.podErrors`; if **every** attached Pod fails, the call returns a `Replic
 error carrying those messages.
 
 ```text
-# after attach_to_pod against each replica:
+# after attach_to_pod(processSelector={managedEntrypointAssemblyName:"MyService"}) against each replica:
 collect_events(kind="replica_counters")(durationSeconds=5)
 ```
 
@@ -2960,8 +2965,14 @@ verb (deliberately **not** folded into `list_orchestrator`).
 | `ttlSeconds` | `int?` | `Orchestrator:DefaultInvestigationTtlSeconds` (1800) | Per-investigation TTL |
 | `requirePreparedTarget` | `bool` | `true` | When true, refuses to attach to Pods that don't carry the prepared opt-in label |
 | `allowReuseExistingSession` | `bool` | `true` | When true, returns an existing investigation for the same target instead of injecting a second ephemeral container |
+| `processSelector` | `object?` | `null` | Transport-neutral process identity stored on the handle for `replica_counters`. Set `managedEntrypointAssemblyName` for an exact case-insensitive match and optionally `commandLineContains` to disambiguate multiple instances. |
 
-**Returns:** `AttachSession` (investigation handle + resolved target). Use the
+The selector is resolved inside each Pod after attach; no OS PID is persisted or guessed. A selector
+must match exactly one visible .NET process. Reusing a handle preserves its selector; requesting a
+different selector, or adding one to a selector-less live handle, requires detach + reattach.
+
+**Returns:** `AttachSession` (investigation handle + resolved target, including the stored
+`processSelector`). Use the
 handle explicitly on follow-up orchestrator/fan-out calls
 (`detach_from_pod(handleId=...)`,
 `collect_events(kind="distributed_trace"|"replica_counters", investigationHandleIds=[...])`),

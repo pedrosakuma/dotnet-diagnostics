@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.ReplicaCounters;
 using DotnetDiagnostics.Mcp.Tools;
 using ModelContextProtocol.Protocol;
@@ -92,7 +93,26 @@ internal static class ReplicaCounterFanout
         perPodCts.CancelAfter(TimeSpan.FromSeconds(durationSeconds + 30));
         try
         {
-            var request = new CallToolRequestParams { Name = "collect_events", Arguments = arguments };
+            var countersArguments = arguments;
+            if (handle.ProcessSelector is not null)
+            {
+                var (processId, selectionFailure) = await ResolveProcessIdAsync(
+                    proxy,
+                    handle,
+                    handle.ProcessSelector,
+                    perPodCts.Token).ConfigureAwait(false);
+                if (processId is null)
+                {
+                    return (handle, null, selectionFailure);
+                }
+
+                countersArguments = new Dictionary<string, JsonElement>(arguments, StringComparer.Ordinal)
+                {
+                    ["processId"] = JsonSerializer.SerializeToElement(processId.Value),
+                };
+            }
+
+            var request = new CallToolRequestParams { Name = "collect_events", Arguments = countersArguments };
             var result = await proxy.CallToolAsync(handle, request, perPodCts.Token).ConfigureAwait(false);
             var snapshot = TryExtractSnapshot(result, out var failure);
             return (handle, snapshot, failure);
@@ -111,6 +131,44 @@ internal static class ReplicaCounterFanout
         }
     }
 
+    private static async Task<(int? ProcessId, string Failure)> ResolveProcessIdAsync(
+        IInvestigationProxyClient proxy,
+        InvestigationHandle handle,
+        InvestigationProcessSelector selector,
+        CancellationToken cancellationToken)
+    {
+        var request = new CallToolRequestParams
+        {
+            Name = "inspect_process",
+            Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+            {
+                ["view"] = JsonSerializer.SerializeToElement("list"),
+            },
+        };
+        var result = await proxy.CallToolAsync(handle, request, cancellationToken).ConfigureAwait(false);
+        var processes = TryExtractProcesses(result, out var failure);
+        if (processes is null)
+        {
+            return (null, failure);
+        }
+
+        var matches = processes.Where(selector.Matches).OrderBy(p => p.ProcessId).ToArray();
+        if (matches.Length == 1)
+        {
+            return (matches[0].ProcessId, string.Empty);
+        }
+
+        var description = selector.Describe();
+        if (matches.Length == 0)
+        {
+            return (null, $"process selector ({description}) matched no visible .NET process.");
+        }
+
+        return (null,
+            $"process selector ({description}) is ambiguous; matched PIDs " +
+            $"{string.Join(", ", matches.Select(p => p.ProcessId))}.");
+    }
+
     private static Dictionary<string, JsonElement> BuildCountersArguments(int durationSeconds, int intervalSeconds)
         => new(StringComparer.Ordinal)
         {
@@ -122,21 +180,10 @@ internal static class ReplicaCounterFanout
 
     private static CounterSnapshot? TryExtractSnapshot(CallToolResult result, out string failure)
     {
-        string json;
-        if (result.StructuredContent is { } structured)
+        var json = TryGetResultJson(result, "collect_events", out failure);
+        if (json is null)
         {
-            json = structured.GetRawText();
-        }
-        else
-        {
-            var text = result.Content.OfType<TextContentBlock>().FirstOrDefault();
-            if (text is null)
-            {
-                failure = "pod-local collect_events returned neither structured content nor a text block.";
-                return null;
-            }
-
-            json = text.Text;
+            return null;
         }
 
         DiagnosticResult<CollectEventsEnvelope>? envelope;
@@ -170,6 +217,71 @@ internal static class ReplicaCounterFanout
 
         failure = string.Empty;
         return snapshot;
+    }
+
+    private static IReadOnlyList<DotnetProcess>? TryExtractProcesses(
+        CallToolResult result,
+        out string failure)
+    {
+        var json = TryGetResultJson(result, "inspect_process", out failure);
+        if (json is null)
+        {
+            return null;
+        }
+
+        DiagnosticResult<InspectProcessReport>? envelope;
+        try
+        {
+            envelope = JsonSerializer.Deserialize<DiagnosticResult<InspectProcessReport>>(json, DeserializeOptions);
+        }
+        catch (JsonException ex)
+        {
+            failure = $"could not parse pod-local inspect_process response: {ex.Message}";
+            return null;
+        }
+
+        if (envelope is null)
+        {
+            failure = "pod-local inspect_process response deserialized to null.";
+            return null;
+        }
+
+        if (envelope.Error is not null)
+        {
+            failure = $"pod-local inspect_process failed: {envelope.Summary}";
+            return null;
+        }
+
+        if (envelope.Data?.List is not { } processes)
+        {
+            failure = "pod-local inspect_process(view=list) returned no process list.";
+            return null;
+        }
+
+        failure = string.Empty;
+        return processes;
+    }
+
+    private static string? TryGetResultJson(
+        CallToolResult result,
+        string toolName,
+        out string failure)
+    {
+        if (result.StructuredContent is { } structured)
+        {
+            failure = string.Empty;
+            return structured.GetRawText();
+        }
+
+        var text = result.Content.OfType<TextContentBlock>().FirstOrDefault();
+        if (text is null)
+        {
+            failure = $"pod-local {toolName} returned neither structured content nor a text block.";
+            return null;
+        }
+
+        failure = string.Empty;
+        return text.Text;
     }
 
     private static bool IsOwnedByCaller(InvestigationHandle handle, string? callerBearerName)
