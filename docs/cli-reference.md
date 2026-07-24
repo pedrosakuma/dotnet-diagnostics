@@ -8,7 +8,7 @@ ship from this repository and run the **same Core diagnostics engine**, but they
 | Consumer | A human, a shell script, a CI job | An LLM, via an MCP client |
 | Surface | Sub-commands you type | MCP tools the model calls |
 | Transport | None — in-process, one-shot or REPL | Streamable HTTP (bearer auth) or stdio |
-| State | One-shot, or a `session` REPL holding handles | MCP session holding handles |
+| State | One-shot inline results, or a `session` REPL holding queryable handles | MCP session holding handles |
 | Install | `dotnet tool install -g dotnet-diagnostics-cli` | `dotnet tool install -g dotnet-diagnostics-mcp` |
 
 If you want an LLM to drive diagnostics, use the **server** — see [`client-setup.md`](./client-setup.md) and
@@ -164,6 +164,12 @@ the same `modelVersion=2` contract as MCP. Hypotheses are ordered by confidence 
 strongest supporting observed-signal level. A low-CPU snapshot with a small transient queue is
 `inconclusive`; it is not labeled `io-bound`.
 
+When request latency remains elevated but the ThreadPool queue no longer crosses the backlog
+threshold, human output adds a `Signal separation` line: the starvation signal is absent in this
+window, while the remaining latency must be checked against workload/SLO expectations. This is a
+CLI rendering clarification only; it does not change the Core triage assessment or infer that a
+latency value is expected without operator context.
+
 For compatibility, JSON continues to serialize `verdict`, `secondaryVerdicts`, `severity`,
 `evidence`, and `topIndicators`. `verdict` and `secondaryVerdicts` are deprecated for removal in
 v1.0; migrate automation to `assessment`, `observedSignals`, and `hypotheses`.
@@ -219,6 +225,11 @@ dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
 dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
 dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch -- dotnet App.dll   # cold start
 ```
+
+Human `thread-snapshot --depth detail` output includes bounded decisive evidence inline: up to five
+blocked stack groups (six frames each), five contended locks with owner/waiter identities, and the
+captured ThreadPool queue/worker summary. Use `--json` for the complete typed payload. Summary depth
+keeps the compact headline.
 
 #### Sampler kinds
 
@@ -518,7 +529,8 @@ Live-target commands — `capabilities`, `collect`, `dump`, `inspect-heap --sour
 `· using bound target pid N` note. Offline commands (`inspect-heap --source dump`, `get-bytes --kind dump`)
 and pid-less commands (`processes`, `query`) never inherit it. **An explicit per-command `--pid` always
 overrides the binding** — except in a `session --launch`-started session, where the pid is locked for
-the session's lifetime and any different `--pid`/`target` is rejected (see above).
+the session's lifetime and any different `--pid`/`target` is rejected (see above). Follow-up hints
+omit `--pid N` when that same pid is already supplied by the session binding.
 
 #### Target-exit signal (issue #675)
 
@@ -549,6 +561,11 @@ A `collect` or `inspect-heap` command prints a handle plus the views you can re-
 `query --handle <id> --view <view>` re-renders that artifact under the chosen view with no new collection.
 Handles are evicted when they expire (a TTL) or when the target process exits — a 5 s in-process sweep drops
 dead-target handles so you never drill into a stale trace.
+
+Handles are **process-local**. A handle printed by a one-shot invocation disappears when that CLI
+process exits and cannot be queried by a later invocation; one-shot human and JSON output include
+this notice. Use `--depth detail` / `--json` for inline evidence, or run the originating command and
+`query` inside the same `session` REPL.
 
 The same strictly bounded store as the MCP server is used. Configure its
 capacity before starting the CLI with
@@ -665,6 +682,10 @@ inside a `session`) expose the call-stack / blocking views (`threads-summary`, `
 
 `frame-vars` requires `--thread-id` to pick the thread whose frame variables to resolve; the thread must
 be present in the captured snapshot.
+
+For every ranked/list query view, `--top N` is the common row/group cap. `--top-types N` remains a
+backward-compatible query alias; when both are supplied, `--top` wins. Views whose shape is controlled
+by a different bound (`call-tree` uses `--max-nodes`, `stack` selects one rank/thread) are unchanged.
 
 ### Cancellation (Ctrl-C)
 

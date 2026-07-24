@@ -15,6 +15,7 @@ using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ThreadPool;
+using DotnetDiagnostics.Core.Threads;
 
 namespace DotnetDiagnostics.Cli;
 
@@ -180,6 +181,79 @@ internal static partial class CliCommands
                 var tokenText = token is { } tk ? string.Create(CultureInfo.InvariantCulture, $"0x{tk:X8}") : "(none)";
                 sb.AppendLine(CultureInfo.InvariantCulture, $"    {id}: mvid={mvid} token={tokenText}");
             }
+        }
+    }
+
+    internal static void RenderThreadSnapshotEvidence(StringBuilder sb, ThreadSnapshotArtifact snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(sb);
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        const int maxGroups = 5;
+        const int maxFrames = 6;
+        const int maxLocks = 5;
+        const int maxWaiterIds = 8;
+
+        var blockedThreads = snapshot.Threads.Where(static thread => thread.IsLikelyBlocked).ToArray();
+        var allGroups = ThreadSnapshotUniqueStackGrouper.Group(blockedThreads);
+        var groups = allGroups.Take(maxGroups).ToArray();
+        var allLocks = snapshot.Locks
+            .Where(static lockState => lockState.IsContended || lockState.WaitingThreadCount > 0)
+            .OrderByDescending(static lockState => lockState.WaitingThreadCount)
+            .ThenBy(static lockState => lockState.ObjectAddress)
+            .ToArray();
+        var locks = allLocks.Take(maxLocks).ToArray();
+
+        if (groups.Length == 0 && locks.Length == 0 && snapshot.ThreadPool is null)
+        {
+            return;
+        }
+
+        sb.AppendLine();
+        sb.AppendLine(CultureInfo.InvariantCulture,
+            $"  Bounded evidence (up to {maxGroups} blocked stack groups × {maxFrames} frames; {maxLocks} contended locks):");
+
+        if (groups.Length > 0)
+        {
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"    Blocked stack groups (showing {groups.Length}/{allGroups.Count}):");
+            foreach (var group in groups)
+            {
+                var percentage = snapshot.Threads.Count == 0
+                    ? 0
+                    : (double)group.ThreadCount / snapshot.Threads.Count * 100;
+                var threadIds = string.Join(", ", group.SampleThreads.Select(static sample =>
+                    sample.ManagedThreadId.ToString(CultureInfo.InvariantCulture)));
+                sb.AppendLine(CultureInfo.InvariantCulture,
+                    $"      - {group.ThreadCount}/{snapshot.Threads.Count} thread(s) ({percentage:F1}%), wait={group.InferredWaitReason ?? "<unknown>"}, sample managed ids=[{threadIds}]");
+                foreach (var frame in group.CanonicalFrames.TakeLast(maxFrames))
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"          at {frame.DisplayName}");
+                }
+            }
+        }
+
+        if (locks.Length > 0)
+        {
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"    Contended locks (showing {locks.Length}/{allLocks.Length}):");
+            foreach (var lockState in locks)
+            {
+                var waiterIds = lockState.WaitingManagedThreadIds
+                    .Take(maxWaiterIds)
+                    .Select(static id => id.ToString(CultureInfo.InvariantCulture));
+                var waiterSample = lockState.WaitingManagedThreadIds.Count == 0
+                    ? "not captured"
+                    : string.Join(", ", waiterIds);
+                sb.AppendLine(CultureInfo.InvariantCulture,
+                    $"      - 0x{lockState.ObjectAddress:x} {lockState.ObjectTypeFullName ?? "<unknown>"}: owner managed {lockState.OwnerManagedThreadId} / OS {lockState.OwnerOSThreadId}; {lockState.WaitingThreadCount} waiter(s), sample managed ids=[{waiterSample}]");
+            }
+        }
+
+        if (snapshot.ThreadPool is { } threadPool)
+        {
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"    ThreadPool: pending={threadPool.PendingWorkItems}, workers={threadPool.Workers.Current} current/{threadPool.Workers.Active} active/{threadPool.Workers.Idle} idle, global queue={threadPool.Queues.GlobalQueueLength}, local queue={threadPool.Queues.LocalQueues.Sum(static queue => queue.QueueLength)}.");
         }
     }
 

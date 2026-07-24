@@ -379,7 +379,12 @@ internal sealed class SessionRepl
                 prepared,
                 stdout,
                 stderr,
-                new CliExecutionOptions(CliExecutionContext.Session, CliAnsi.IsEnabled(stdout, forceAnsi: null), ShowProgress: false, LaunchedTargetPid: _launchedTarget ? _targetPid : null),
+                new CliExecutionOptions(
+                    CliExecutionContext.Session,
+                    CliAnsi.IsEnabled(stdout, forceAnsi: null),
+                    ShowProgress: false,
+                    LaunchedTargetPid: _launchedTarget ? _targetPid : null,
+                    BoundTargetPid: _targetPid),
                 commandCts.Token)
                 .ConfigureAwait(false);
 

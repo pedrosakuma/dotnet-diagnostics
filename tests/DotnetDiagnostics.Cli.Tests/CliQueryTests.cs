@@ -32,6 +32,8 @@ public sealed class CliQueryTests
 
         exit.Should().Be(1);
         stdout.Should().Contain("NotSupported");
+        stdout.Should().Contain("handle from a previous command no longer exists");
+        stdout.Should().Contain("--depth detail");
     }
 
     [Fact]

@@ -314,16 +314,18 @@ dump options:
             "Drill-down query (unsupported in the one-shot CLI — see notes).",
 """
 query options:
-      --handle <id>             Drill-down handle (accepted but not honoured — see note).
-      --view <name>             Drill-down view (accepted but not honoured — see note).
+      --handle <id>             Session drill-down handle.
+      --view <name>             Session drill-down view.
+      --top <int>               Session query: cap ranked rows/groups consistently across views.
+      --top-types <int>         Backward-compatible alias for --top on query views.
       --provider-filter <text>  Session query: event-catalog provider substring filter.
       --changes-only            Session query: DATAS 'tuning' view; show only heap-count changes.
       --root-method-filter <t>  Session query: CPU method filter; event-catalog event-name filter.
       --thread-id <int>         Session query: ManagedThreadId; required for thread-snapshot 'frame-vars' view.
       --stack-rank <int>        Session query: 1-based rank for the off-CPU 'stack' view.
-  Note: drill-down handles are MCP-session scoped; the one-shot CLI emits its full result
-  inline on the originating command (use --depth detail / --json). 'query' always returns a
-  NotSupported envelope (exit 1).
+  Note: handles are process-local. A one-shot command's handle disappears when that command exits,
+  so one-shot 'query' always returns a NotSupported envelope (exit 1). Use --depth detail / --json
+  for inline evidence, or run both the originating command and query inside one 'session' REPL.
 
   Thread-snapshot views (session only):
     threads-summary  List all threads with state and top frame.
@@ -353,6 +355,7 @@ query options:
                 "--frames-to-hash",
                 "--min-count",
                 "--top",
+                "--top-types",
                 "--threshold",
                 "--stack-rank",
             ]),

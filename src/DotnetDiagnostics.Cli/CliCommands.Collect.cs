@@ -240,9 +240,11 @@ internal static partial class CliCommands
         IServiceProvider services,
         CliOptions options,
         CancellationToken cancellationToken)
-        => Wrap(options, await SamplerUseCases.CollectThreadSnapshot(
+    {
+        var handles = services.GetRequiredService<IDiagnosticHandleStore>();
+        var result = await SamplerUseCases.CollectThreadSnapshot(
             services.GetRequiredService<IThreadSnapshotInspector>(),
-            services.GetRequiredService<IDiagnosticHandleStore>(),
+            handles,
             services.GetRequiredService<IProcessContextResolver>(),
             services.GetRequiredService<SymbolServerAllowlist>(),
             principalAllowsSymbolsRemote: false,
@@ -253,7 +255,19 @@ internal static partial class CliCommands
             options.IncludeNativeFrames,
             options.SymbolPath,
             ParseDepth(options.Depth),
-            cancellationToken).ConfigureAwait(false));
+            cancellationToken).ConfigureAwait(false);
+
+        var snapshot = result.Handle is { } handle
+            ? handles.TryGet<ThreadSnapshotArtifact>(handle)
+            : null;
+        return BuildResultWithComparableSave(options, result, (sb, _) =>
+        {
+            if (snapshot is not null && ParseDepth(options.Depth) != SamplingDepth.Summary)
+            {
+                RenderThreadSnapshotEvidence(sb, snapshot);
+            }
+        });
+    }
 
     private static SamplingDepth ParseDepth(string? depth)
         => depth is not null && TryParseDepth(depth, out var parsedDepth)
