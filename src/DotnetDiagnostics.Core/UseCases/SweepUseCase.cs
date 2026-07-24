@@ -76,11 +76,12 @@ public static class SweepUseCase
         Note(failures, "threadpool", threadPool);
         if (resource is null) failures.Add("resource: collection failed");
 
-        var requestDurationP95 = counters.Data is { Meters: var meters }
+        var triageCounters = ResolveTriageCounterSnapshot(counters, handles);
+        var requestDurationP95 = triageCounters is { Meters: var meters }
             ? HeadlineCounters.FindRequestDuration(meters)?.Histogram?.P95
             : null;
-        var triage = counters.Data is not null
-            ? TriageClassifier.Classify(counters.Data, requestDurationP95)
+        var triage = triageCounters is not null
+            ? TriageClassifier.Classify(triageCounters, requestDurationP95, Environment.ProcessorCount)
             : new TriageResult(
                 "unknown",
                 TriageSeverity.Healthy,
@@ -137,6 +138,13 @@ public static class SweepUseCase
         return WithContext(result, resolved.Context);
     }
 
+    internal static CounterSnapshot? ResolveTriageCounterSnapshot(
+        DiagnosticResult<CounterSnapshot> counters,
+        IDiagnosticHandleStore handles)
+        => counters.Handle is { } handle
+            ? handles.TryGet<CounterSnapshot>(handle) ?? counters.Data
+            : counters.Data;
+
     internal static string FormatFailureText(int failureCount)
         => failureCount > 0
             ? $" {failureCount} collector(s) failed."
@@ -185,6 +193,10 @@ public static class SweepUseCase
                 case TriageClassifier.ManagedMemoryActivityHypothesis:
                     hints.Add(new NextActionHint("collect_sample", hypothesis.NextStep,
                         new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "allocation", ["durationSeconds"] = 10 }));
+                    break;
+                case TriageClassifier.MemoryFootprintGrowthHypothesis:
+                    hints.Add(new NextActionHint("inspect_process", hypothesis.NextStep,
+                        new Dictionary<string, object?> { ["processId"] = pid, ["view"] = "memory_trend", ["durationSeconds"] = 10 }));
                     break;
                 case TriageClassifier.ThreadPoolBacklogHypothesis:
                     AddHandleHint(hints, handles, "threadpool", "timeline", hypothesis.NextStep);

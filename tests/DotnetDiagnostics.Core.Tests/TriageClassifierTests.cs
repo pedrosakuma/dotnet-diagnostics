@@ -26,6 +26,106 @@ public sealed class TriageClassifierTests
             Notes: Array.Empty<string>());
     }
 
+    private static CounterSnapshot SnapshotWithTrends(
+        params (string Name, double First, double Last, string Unit)[] counters)
+    {
+        static CounterValue ValueOf(string name, double value, string unit)
+            => new("System.Runtime", name, name, value, CounterKind.Mean, unit);
+
+        return new CounterSnapshot(
+            ProcessId: 1234,
+            StartedAt: DateTimeOffset.UnixEpoch,
+            Duration: TimeSpan.FromSeconds(5),
+            Counters: counters.Select(c => ValueOf(c.Name, c.Last, c.Unit)).ToList(),
+            Meters: Array.Empty<MeterInstrumentValue>(),
+            Notes: Array.Empty<string>())
+        {
+            FirstCounters = counters.Select(c => ValueOf(c.Name, c.First, c.Unit)).ToList(),
+        };
+    }
+
+    [Fact]
+    public void Classify_CpuBurn_RecognizesOneSaturatedCoreOnManyCoreHost()
+    {
+        var result = TriageClassifier.Classify(
+            SnapshotOf(("cpu-usage", 6.51)),
+            requestDurationP95: null,
+            logicalProcessorCount: 16);
+
+        result.Evidence.CpuUsage.Should().Be(6.51);
+        result.Evidence.LogicalProcessorCount.Should().Be(16);
+        result.Evidence.EffectiveCoreUsage.Should().BeApproximately(1.0416, 0.0001);
+        result.Assessment.Should().NotBe(TriageClassifier.HealthyAssessment);
+        result.ObservedSignals.Should().Contain(signal =>
+            signal.Name == "cpu.effective-core-consumption");
+        result.Hypotheses.Should().Contain(hypothesis =>
+            hypothesis.Name == TriageClassifier.CpuComputeDemandHypothesis);
+        result.Verdict.Should().Be(TriageClassifier.CpuBound);
+    }
+
+    [Fact]
+    public void Classify_PreservesTwoParameterCompatibilityOverload()
+    {
+        typeof(TriageClassifier).GetMethod(
+            nameof(TriageClassifier.Classify),
+            [typeof(CounterSnapshot), typeof(double?)])
+            .Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Classify_CultureLookup_PrioritizesTopologyAdjustedCpuWithoutInferringWaitCause()
+    {
+        var result = TriageClassifier.Classify(
+            SnapshotOf(
+                ("cpu-usage", 43),
+                ("threadpool-queue-length", 120)),
+            requestDurationP95: 0.8,
+            logicalProcessorCount: 16);
+
+        result.Evidence.CpuUsage.Should().Be(43);
+        result.Evidence.EffectiveCoreUsage.Should().BeApproximately(6.88, 0.001);
+        result.TopIndicators.Should().Contain(indicator =>
+            indicator.Name == "effective-core-usage" && indicator.Level == "critical");
+        result.Hypotheses!.First().Name.Should().Be(TriageClassifier.CpuComputeDemandHypothesis);
+        result.Hypotheses.Should().NotContain(hypothesis =>
+            hypothesis.Name == TriageClassifier.WaitingOrBackpressureHypothesis);
+    }
+
+    [Fact]
+    public void Classify_Leak_SurfacesHeapLohAndWorkingSetGrowthInsteadOfHealthy()
+    {
+        var result = TriageClassifier.Classify(SnapshotWithTrends(
+            ("gc-heap-size", 22.59, 43.67, "MB"),
+            ("loh-size", 17_000_000, 33_650_000, "B"),
+            ("working-set", 110, 138.8, "MB"),
+            ("cpu-usage", 4, 5, "%"),
+            ("time-in-gc", 1, 2, "%")));
+
+        result.Assessment.Should().NotBe(TriageClassifier.HealthyAssessment);
+        result.Verdict.Should().Be(TriageClassifier.MemoryPressure);
+        var signal = result.ObservedSignals.Should().ContainSingle(item =>
+            item.Name == "memory.intra-window-growth").Subject;
+        signal.Summary.Should().ContainAll("gc-heap-size", "loh-size", "working-set");
+        result.Hypotheses.Should().ContainSingle(hypothesis =>
+            hypothesis.Name == TriageClassifier.MemoryFootprintGrowthHypothesis);
+        result.Evidence.GcHeapSizeTrend!.DeltaMegabytes.Should().BeApproximately(21.08, 0.01);
+        result.Evidence.LohSizeTrend!.DeltaMegabytes.Should().BeApproximately(16.65, 0.01);
+        result.Evidence.WorkingSetTrend!.DeltaMegabytes.Should().BeApproximately(28.8, 0.01);
+    }
+
+    [Fact]
+    public void Classify_SmallMemoryMovement_RemainsBelowMaterialGrowthSignal()
+    {
+        var result = TriageClassifier.Classify(SnapshotWithTrends(
+            ("gc-heap-size", 100, 100.5, "MB"),
+            ("loh-size", 20_000_000, 20_500_000, "B"),
+            ("working-set", 200, 200.5, "MB")));
+
+        result.ObservedSignals.Should().BeEmpty();
+        result.Hypotheses.Should().BeEmpty();
+        result.Assessment.Should().Be(TriageClassifier.HealthyAssessment);
+    }
+
     [Fact]
     public void Classify_HighCpu_ReturnsCpuBound()
     {

@@ -195,7 +195,7 @@ internal static class DiagnosticToolProcessInspection
 
         var requestDuration = HeadlineCounters.FindRequestDuration(snapshot.Meters);
         var requestDurationP95 = requestDuration?.Histogram?.P95;
-        var triage = TriageClassifier.Classify(snapshot, requestDurationP95);
+        var triage = TriageClassifier.Classify(snapshot, requestDurationP95, Environment.ProcessorCount);
         var hints = BuildTriageHints(triage, pid);
 
         var indicatorsText = triage.TopIndicators?.Count > 0
@@ -440,6 +440,11 @@ internal static class DiagnosticToolProcessInspection
                         new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "allocation", ["durationSeconds"] = 10 }));
                     hints.Add(new NextActionHint("inspect_process", "Measure working-set direction before distinguishing allocation churn from retained growth.",
                         new Dictionary<string, object?> { ["processId"] = pid, ["view"] = "memory_trend" }));
+                    break;
+
+                case TriageClassifier.MemoryFootprintGrowthHypothesis:
+                    hints.Add(new NextActionHint("inspect_process", hypothesis.NextStep,
+                        new Dictionary<string, object?> { ["processId"] = pid, ["view"] = "memory_trend", ["durationSeconds"] = 10 }));
                     break;
 
                 case TriageClassifier.ThreadPoolBacklogHypothesis:

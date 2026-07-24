@@ -67,6 +67,11 @@ Tool results arrive in `result.content[].text` as JSON envelopes.
 `inspect_process(view="triage")` collects counters for a few seconds and
 separates observed signals from bounded hypotheses. This is where a blind agent starts.
 
+On a many-core host the runtime percentage can be host-normalized and therefore much lower than
+95%. Current triage also reports `logicalProcessorCount` and `effectiveCoreUsage`, and emits
+`cpu.effective-core-consumption` when the estimate reaches approximately one core. That preserves
+the observed topology without changing the diagnosis-agnostic `cpu.compute-demand` handoff.
+
 ```jsonc
 // inspect_process(view="triage", processId=<pid>)
 {

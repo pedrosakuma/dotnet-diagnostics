@@ -900,7 +900,12 @@ evidence-selected drill-down. The payload explicitly separates:
 - `hypotheses[]` — bounded interpretations with `confidence`, `supportingEvidence`,
   `contradictingEvidence`, and a neutral `nextStep`, ordered by confidence and then the
   strongest supporting observed-signal level.
-- `topIndicators[]` and raw `evidence` — retained for independent interpretation.
+- `topIndicators[]` and raw `evidence` — retained for independent interpretation. CPU evidence
+  keeps the runtime's host-normalized `cpuUsage` and, when topology is available,
+  `logicalProcessorCount` plus `effectiveCoreUsage`. The latter is an estimate in cores, so a
+  single busy core is visible even when a many-core host makes the percentage look small.
+- `evidence.gcHeapSizeTrend`, `lohSizeTrend`, and `workingSetTrend` — first/last values, delta,
+  relative change, and normalized MB delta from the same capture window.
 - `assessment` — `healthy`, `inconclusive`, `degraded`, or `critical`.
 
 ```json
@@ -928,7 +933,15 @@ evidence-selected drill-down. The payload explicitly separates:
 
 Low CPU plus a small queue is deliberately inconclusive. A
 `work.waiting-or-backpressure` hypothesis requires low CPU, queueing, **and** elevated request
-p95 in the same window, and still does not claim I/O.
+p95 in the same window, and still does not claim I/O. It is not emitted when topology-adjusted
+CPU shows approximately one saturated core.
+
+The `cpu.effective-core-consumption` signal crosses at 0.8 estimated cores. Memory growth remains
+shape-based rather than endpoint-size-based: `memory.intra-window-growth` requires at least 20%
+first-to-last growth and at least 1 MB of absolute growth in GC heap, LOH, or working set. Its
+`memory.footprint-growth` hypothesis deliberately does **not** call the shape a leak; repeat a
+longer trend and compare heap snapshots before assigning a retention cause. The processor count is
+the collector-visible topology and may differ from a target with a separately configured affinity.
 
 **Compatibility/deprecation:** `verdict`, `secondaryVerdicts`, `severity`, `evidence`, and
 `topIndicators` remain serialized, so existing JSON consumers continue to receive their fields.

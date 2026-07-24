@@ -125,7 +125,7 @@ internal static partial class CliCommands
         var requestDuration = HeadlineCounters.FindRequestDuration(snapshot.Meters);
         var requestDurationP95 = requestDuration?.Histogram?.P95;
 
-        var triage = TriageClassifier.Classify(snapshot, requestDurationP95);
+        var triage = TriageClassifier.Classify(snapshot, requestDurationP95, Environment.ProcessorCount);
 
         var indicatorsText = triage.TopIndicators?.Count > 0
             ? $" | top: {string.Join(", ", triage.TopIndicators.Take(3).Select(i => $"{i.Name}={i.Value}{i.Unit ?? string.Empty}({i.Level})"))}"
@@ -386,6 +386,10 @@ internal static partial class CliCommands
                     break;
                 case TriageClassifier.ManagedMemoryActivityHypothesis:
                     hints.Add(new NextActionHint("collect", $"{hypothesis.NextStep} Run: collect --kind allocation --pid {pid} --duration 10"));
+                    break;
+                case TriageClassifier.MemoryFootprintGrowthHypothesis:
+                    hints.Add(new NextActionHint("inspect", $"{hypothesis.NextStep} Re-run: inspect --view triage --pid {pid} --duration 15"));
+                    hints.Add(new NextActionHint("inspect-heap", $"Capture a managed-heap snapshot without assigning a retention cause: inspect-heap --source gcdump --pid {pid}"));
                     break;
                 case TriageClassifier.ThreadPoolBacklogHypothesis:
                     hints.Add(new NextActionHint("collect", $"{hypothesis.NextStep} Run: collect --kind threadpool --pid {pid} --duration 10"));

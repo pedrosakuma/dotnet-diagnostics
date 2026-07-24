@@ -167,4 +167,44 @@ public sealed record TriageEvidence(
     double? Gen2GcCount,
     double? GcHeapSize,
     double? ExceptionCount,
-    double? RequestDurationP95);
+    double? RequestDurationP95)
+{
+    /// <summary>
+    /// Logical processor count used to translate host-normalized <see cref="CpuUsage"/> into
+    /// effective core consumption. Null when the caller cannot supply topology.
+    /// </summary>
+    public int? LogicalProcessorCount { get; init; }
+
+    /// <summary>
+    /// Estimated cores consumed by the process: host-normalized CPU percent multiplied by
+    /// <see cref="LogicalProcessorCount"/> and divided by 100.
+    /// </summary>
+    public double? EffectiveCoreUsage { get; init; }
+
+    /// <summary>First-to-last managed GC heap movement observed inside the counter window.</summary>
+    public TriageCounterTrend? GcHeapSizeTrend { get; init; }
+
+    /// <summary>First-to-last large-object heap movement observed inside the counter window.</summary>
+    public TriageCounterTrend? LohSizeTrend { get; init; }
+
+    /// <summary>First-to-last process working-set movement observed inside the counter window.</summary>
+    public TriageCounterTrend? WorkingSetTrend { get; init; }
+}
+
+/// <summary>
+/// Transparent first-to-last movement for one counter during the triage window.
+/// It describes observed shape only and does not claim retention or a leak.
+/// </summary>
+/// <param name="FirstValue">First observed counter value.</param>
+/// <param name="LastValue">Last observed counter value.</param>
+/// <param name="Delta">Last minus first in the counter's native unit.</param>
+/// <param name="Unit">Counter unit reported by the runtime.</param>
+/// <param name="RelativeChangePercent">Delta divided by the larger endpoint magnitude, as a percentage.</param>
+/// <param name="DeltaMegabytes">Delta normalized to decimal megabytes when the counter unit is recognized.</param>
+public sealed record TriageCounterTrend(
+    double FirstValue,
+    double LastValue,
+    double Delta,
+    string? Unit,
+    double RelativeChangePercent,
+    double? DeltaMegabytes);
