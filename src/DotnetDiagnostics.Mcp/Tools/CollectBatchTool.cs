@@ -49,8 +49,10 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// <c>kind="batch"</c> were rejected.</para>
 /// <para>Each entry is dispatched by calling that kind's own existing, unmodified
 /// <see cref="CollectSampleTool.CollectSample"/>/<see cref="CollectEventsTool.CollectEvents"/>
-/// entry point directly — not a reimplementation — so every entry's <c>Data</c> shape is
-/// byte-for-byte identical to calling that kind directly. That direct in-process call bypasses
+/// entry point directly — not a reimplementation. After all entries complete, a paired
+/// counters + GC batch may add a bounded LOH/GC salient projection and scope-labelled Gen2
+/// evidence; the full standalone artifact remains unchanged behind its handle. The direct
+/// in-process call bypasses
 /// only the outer <c>[McpServerTool]</c> authorization-filter boundary (a plain C# static call
 /// never goes through the MCP SDK's attribute-based filter); this tool's own
 /// <see cref="RequireAnyScopeAttribute"/> plus the explicit per-entry
@@ -93,11 +95,11 @@ public sealed class CollectBatchTool
         "Runs several collect_sample/collect_events kinds concurrently, against the same resolved " +
         "process, for the same shared duration window, inside a single call — eliminates the " +
         "process-exit race of issuing them as separate calls (short-lived test hosts, CLI batch " +
-        "jobs). Each requested entry's response Data has exactly the same shape it would have if " +
-        "called directly via collect_sample/collect_events (see docs/tool-reference.md for each " +
-        "kind's payload) and gets its own independent query_snapshot-compatible handle where " +
-        "applicable. kind='method-params' is not eligible for batching (security-sensitive; call " +
-        "collect_sample directly for it).")]
+        "jobs). Each requested entry gets its own independent query_snapshot-compatible handle. " +
+        "A paired counters+GC batch that observes Gen2 collections keeps a bounded salient " +
+        "headline/LOH/GC counter set inline and labels Gen2 interval/rate/cumulative/window scopes; " +
+        "the counter handle still retains the full standalone artifact. kind='method-params' is not " +
+        "eligible for batching (security-sensitive; call collect_sample directly for it).")]
     public static async Task<DiagnosticResult<CollectBatchReport>> CollectBatch(
         // DI services — the union of every dependency CollectSampleTool/CollectEventsTool take,
         // since each entry is dispatched by calling those tools' existing entry points directly.
@@ -277,7 +279,9 @@ public sealed class CollectBatchTool
             .ToArray();
         var results = await Task.WhenAll(tasks).ConfigureAwait(false);
 
-        var report = new CollectBatchReport(pid, durationSeconds, results);
+        var report = CollectBatchSalientEvidence.Apply(
+            new CollectBatchReport(pid, durationSeconds, results),
+            handles);
         var failureCount = results.Count(static r => r.Error is not null);
         var summary = failureCount == 0
             ? $"Batch over {durationSeconds}s against pid {pid}: {results.Length} entr{(results.Length == 1 ? "y" : "ies")} collected."
@@ -416,10 +420,26 @@ public sealed record CollectBatchRequest(string Tool, string Kind);
 /// <param name="ProcessId">The single resolved pid every entry ran against.</param>
 /// <param name="DurationSeconds">The shared window every entry used.</param>
 /// <param name="Results">One entry per requested {tool, kind}, in request order.</param>
+/// <param name="Gen2Evidence">Scope-labelled Gen2 correlation when counters and GC were paired.</param>
 public sealed record CollectBatchReport(
     int ProcessId,
     int DurationSeconds,
-    IReadOnlyList<CollectBatchEntryResult> Results);
+    IReadOnlyList<CollectBatchEntryResult> Results,
+    CollectBatchGen2Evidence? Gen2Evidence = null);
+
+/// <summary>
+/// Scope-labelled Gen2 values from a paired counters + GC batch. EventCounter increments, Meter
+/// rates/cumulative values, and GC event counts are intentionally separate because they cover
+/// different time scopes and must not be compared as if they were interchangeable.
+/// </summary>
+public sealed record CollectBatchGen2Evidence(
+    double? EventCounterIntervalDelta,
+    int EventCounterIntervalSeconds,
+    double? MeterRatePerSecond,
+    double? MeterProcessCumulative,
+    int GcCollectorWindowCount,
+    int GcCollectorWindowSeconds,
+    string Explanation);
 
 /// <param name="Tool">Echoes the request's Tool.</param>
 /// <param name="Kind">Echoes the request's Kind.</param>
@@ -428,9 +448,9 @@ public sealed record CollectBatchReport(
 /// heterogeneous per-kind payload types (CollectSampleEnvelope, CollectEventsEnvelope) can't share
 /// one static C# type, so this is JsonElement rather than a typed field, serialized with the same
 /// ModelContextProtocol.McpJsonUtilities.DefaultOptions the MCP SDK itself uses for structured
-/// content — so the shape matches a direct call byte-for-byte. Every kind's shape is still fully
-/// documented at docs/tool-reference.md for that kind; it just isn't statically declared here.
-/// Null when this entry failed.</param>
+/// content. A counters entry paired with GC may contain the documented bounded salient LOH/GC
+/// projection; its handle still resolves to the unmodified full counter artifact. Every kind's
+/// shape is documented at docs/tool-reference.md. Null when this entry failed.</param>
 /// <param name="Handle">That entry's own IDiagnosticHandleStore handle, if any — pass this to
 /// query_snapshot exactly as if the entry's kind had been collected by a standalone call.</param>
 /// <param name="HandleExpiresAt">Mirrors DiagnosticResult&lt;T&gt;.HandleExpiresAt for this entry.</param>

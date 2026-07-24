@@ -224,7 +224,11 @@ public sealed record CollectBatchEntryResult(
    `[McpServerTool]`/authorization-filter entry point, whose job step 2 already did once for the
    whole batch) — no changes to any individual collector's internals.
 5. Project each entry's `DiagnosticResult<T>` into `CollectBatchEntryResult` (`Data` serialized to
-   `JsonElement`, everything else copied through).
+   `JsonElement`, everything else copied through). If counters and GC were paired and GC observed
+   Gen2 activity, post-process only the counters inline projection: retain the fixed headline set
+   plus three LOH/GC counters (`gen-2-size`, `loh-size`, `gc-fragmentation`) under an 18-counter
+   cap, and add scope-labelled Gen2 evidence. The independent full artifacts behind both handles
+   remain unchanged.
 
 ### Partial-failure semantics (decided here, since this is a new envelope with no legacy
 compatibility to preserve — unlike the rejected `alsoCollect` draft, there is no ambiguity to defer)

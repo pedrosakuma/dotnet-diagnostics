@@ -1449,8 +1449,9 @@ process, for the same shared duration window, inside a single call (issue #665 P
 Eliminates the process-exit race of issuing those kinds as separate sequential calls against a
 short-lived process (test hosts, CLI batch jobs, anything that may have already exited by the
 time a second round-trip starts). Each requested entry is dispatched by calling that kind's own
-existing `collect_sample`/`collect_events` entry point directly, so every entry's `data` shape is
-identical to calling that kind directly — see that kind's own section above/below for its payload.
+existing `collect_sample`/`collect_events` entry point directly. The one intentional post-processing
+step is the bounded counters + GC correlation described below; the full standalone artifacts remain
+unchanged behind their handles.
 
 `kind="method-params"` is **not** eligible for batching — it stays a single-purpose
 `collect_sample` call (security-sensitive; requires its own explicit acknowledgement flow).
@@ -1468,12 +1469,39 @@ call `collect_events(kind="sweep")` directly instead.
 | `durationSeconds` | `int` | `10` | Shared collection window for every requested entry. ≥ 1. Individual entries cannot override this in v1 — call the specific tool directly if one kind genuinely needs a different window. |
 
 **Returns:** `CollectBatchReport` — `processId`, `durationSeconds`, and `results` (one
-`CollectBatchEntryResult` per requested entry, in request order). Each entry carries
+`CollectBatchEntryResult` per requested entry, in request order), plus optional `gen2Evidence`
+when both counters and GC were collected. Each entry carries
 `tool`, `kind`, `summary`, `data` (that entry's own payload, serialized generically as a JSON
 value since `collect_sample`/`collect_events` kinds don't share one static C# type — the shape is
-otherwise identical to calling that kind directly), `handle` / `handleExpiresAt` (pass to
+otherwise identical to calling that kind directly except for the bounded correlated counters
+projection below), `handle` / `handleExpiresAt` (pass to
 `query_snapshot` exactly as if the entry had been collected by a standalone call), and `error`
 (populated instead of `data`/`handle` when only that one entry failed).
+
+### Bounded inline counter selection
+
+`collect_batch` never copies the full counter table into a second response field. Counter selection
+is deterministic and bounded:
+
+| Batch contents | Counters guaranteed inline when the provider emitted them |
+|---|---|
+| `counters` without paired `gc`, or paired `gc` with no observed Gen2 collection | The normal headline set used by standalone Summary depth: CPU, working set, GC heap, Gen2 interval count, time in GC, allocation rate, ThreadPool threads/queue, active timers, exceptions, contention, ASP.NET Core request rate/failures/current requests, and Kestrel connection rate. |
+| `counters` + `gc` where the GC collector observed at least one Gen2 collection | The headline set above plus `System.Runtime/gen-2-size`, `loh-size`, and `gc-fragmentation`. The combined list is capped at 18 counters; the handle retains every captured counter. |
+| Any non-counter entry | Its standalone inline payload is unchanged. |
+
+`gen2Evidence` prevents values with different scopes from being mistaken for one another:
+
+- `eventCounterIntervalDelta`: the `gen-2-gc-count` increment from the **last 1-second
+  EventCounter reporting interval**;
+- `meterRatePerSecond`: the rate from the `dotnet.gc.collections` Gen2 Meter series, when that
+  Meter was captured;
+- `meterProcessCumulative`: the process-lifetime cumulative value from that Meter series, when
+  captured;
+- `gcCollectorWindowCount`: GC events observed during this batch's
+  `gcCollectorWindowSeconds` window.
+
+Null Meter fields mean that the counters capture did not include that Meter; they are never inferred
+from the incompatible EventCounter or GC-window values.
 
 **Partial-failure semantics.** A `collect_batch` call never fails outright just because one
 entry's target exited mid-window — the top-level result stays successful and `results` is always
