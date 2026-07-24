@@ -118,7 +118,7 @@ public sealed class SuspendedColdStartLauncherTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task LaunchedTarget_Dispose_RemovesArtifactsCreatedDuringTermination(bool useAsyncDispose)
+    public async Task LaunchedTarget_Dispose_RemovesArtifactsCreatedAfterKillBeforeReaping(bool useAsyncDispose)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -150,9 +150,8 @@ public sealed class SuspendedColdStartLauncherTests
             target = new LaunchedTarget(
                 process,
                 [longTempPath],
-                postTerminationObserver: () =>
+                postKillObserver: () =>
                 {
-                    process.HasExited.Should().BeTrue("the regression artifact must be created after termination");
                     File.WriteAllText(lateArtifact, "late");
                     File.WriteAllText(unrelatedArtifact, "unrelated");
                 });
@@ -167,7 +166,7 @@ public sealed class SuspendedColdStartLauncherTests
             }
 
             File.Exists(lateArtifact).Should().BeFalse(
-                "the post-termination scan must catch artifacts created after the initial scan");
+                "the pre-reap scan must catch artifacts created after kill was signaled");
             File.Exists(unrelatedArtifact).Should().BeTrue(
                 "cleanup must not delete artifacts that are not attributable to the launched pid");
         }

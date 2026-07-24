@@ -16,23 +16,23 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
     private readonly Process _process;
     private readonly int _processId;
     private readonly string[] _diagnosticArtifactDirectories;
-    private readonly Action? _postTerminationObserver;
+    private readonly Action? _postKillObserver;
     private bool _disposed;
 
     internal LaunchedTarget(Process process, string[]? diagnosticArtifactDirectories = null)
-        : this(process, diagnosticArtifactDirectories, postTerminationObserver: null)
+        : this(process, diagnosticArtifactDirectories, postKillObserver: null)
     {
     }
 
     internal LaunchedTarget(
         Process process,
         string[]? diagnosticArtifactDirectories,
-        Action? postTerminationObserver)
+        Action? postKillObserver)
     {
         _process = process ?? throw new ArgumentNullException(nameof(process));
         _processId = process.Id;
         _diagnosticArtifactDirectories = diagnosticArtifactDirectories ?? Array.Empty<string>();
-        _postTerminationObserver = postTerminationObserver;
+        _postKillObserver = postKillObserver;
     }
 
     /// <summary>Operating-system process id of the launched target.</summary>
@@ -68,10 +68,23 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
 
         _disposed = true;
         var diagnosticArtifacts = new HashSet<string>(StringComparer.Ordinal);
+        // TryKill probes HasExited and may reap an already-finished child, so remove the initial set
+        // first while the pid still unambiguously belongs to this Process instance.
         CaptureDiagnosticArtifacts(diagnosticArtifacts);
+        DeleteDiagnosticArtifacts(diagnosticArtifacts);
         try
         {
-            if (TryKill())
+            var killSignaled = TryKill();
+            if (killSignaled)
+            {
+                _postKillObserver?.Invoke();
+                // Scan again after signaling kill but before WaitForExit can reap and release the pid.
+                CaptureDiagnosticArtifacts(diagnosticArtifacts);
+            }
+
+            DeleteDiagnosticArtifacts(diagnosticArtifacts);
+
+            if (killSignaled)
             {
                 try
                 {
@@ -79,27 +92,13 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
                 }
                 catch (InvalidOperationException)
                 {
-                    // Reaped elsewhere; the post-termination scan below is still safe.
+                    // Reaped elsewhere; pid-qualified artifacts were already removed before this wait.
                 }
             }
         }
         finally
         {
-            try
-            {
-                RunPostTerminationArtifactScan(diagnosticArtifacts);
-            }
-            finally
-            {
-                try
-                {
-                    _process.Dispose();
-                }
-                finally
-                {
-                    DeleteDiagnosticArtifacts(diagnosticArtifacts);
-                }
-            }
+            _process.Dispose();
         }
     }
 
@@ -116,10 +115,23 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
 
         _disposed = true;
         var diagnosticArtifacts = new HashSet<string>(StringComparer.Ordinal);
+        // TryKill probes HasExited and may reap an already-finished child, so remove the initial set
+        // first while the pid still unambiguously belongs to this Process instance.
         CaptureDiagnosticArtifacts(diagnosticArtifacts);
+        DeleteDiagnosticArtifacts(diagnosticArtifacts);
         try
         {
-            if (TryKill())
+            var killSignaled = TryKill();
+            if (killSignaled)
+            {
+                _postKillObserver?.Invoke();
+                // Scan again after signaling kill but before WaitForExitAsync can reap and release the pid.
+                CaptureDiagnosticArtifacts(diagnosticArtifacts);
+            }
+
+            DeleteDiagnosticArtifacts(diagnosticArtifacts);
+
+            if (killSignaled)
             {
                 try
                 {
@@ -134,32 +146,8 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
         }
         finally
         {
-            try
-            {
-                RunPostTerminationArtifactScan(diagnosticArtifacts);
-            }
-            finally
-            {
-                try
-                {
-                    _process.Dispose();
-                }
-                finally
-                {
-                    DeleteDiagnosticArtifacts(diagnosticArtifacts);
-                }
-            }
+            _process.Dispose();
         }
-    }
-
-    private void RunPostTerminationArtifactScan(HashSet<string> artifacts)
-    {
-        if (HasExited)
-        {
-            _postTerminationObserver?.Invoke();
-        }
-
-        CaptureDiagnosticArtifacts(artifacts);
     }
 
     private void CaptureDiagnosticArtifacts(HashSet<string> artifacts)
