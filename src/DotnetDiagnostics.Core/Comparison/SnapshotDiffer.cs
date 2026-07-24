@@ -301,24 +301,133 @@ public static class SnapshotDiffer
             return MetricVerdict(from, to, minDeltaPct);
         }
 
-        // Some key-set projectors also expose scalar symptom metrics. Those primaries are the
-        // comparison axis; row turnover remains drilldown evidence and must not independently
-        // turn a healthier capture into a regression merely because a different row is now first.
-        return HasSharedDirectionalPrimaryMetric(from, to)
-            ? MetricVerdict(from, to, minDeltaPct)
-            : KeySetVerdict(from, to, keySetDir ?? BetterDirection.Lower, minDeltaPct);
+        var rowVerdict = KeySetVerdict(from, to, keySetDir ?? BetterDirection.Lower, minDeltaPct);
+        return string.Equals(from.Kind, "cpu-sample", StringComparison.Ordinal)
+            ? CpuSampleVerdict(from, to, rowVerdict, keySetDir ?? BetterDirection.Lower, minDeltaPct)
+            : rowVerdict;
     }
 
-    private static bool HasSharedDirectionalPrimaryMetric(ComparableSnapshot from, ComparableSnapshot to)
+    private static string CpuSampleVerdict(
+        ComparableSnapshot from,
+        ComparableSnapshot to,
+        string rowVerdict,
+        BetterDirection rowDirection,
+        double minDeltaPct)
     {
         var fromMetrics = MetricLookup(from);
         var toMetrics = MetricLookup(to);
-        return fromMetrics.Keys
-            .Intersect(toMetrics.Keys, StringComparer.Ordinal)
-            .Any(name =>
-                fromMetrics[name].Definition.Role == MetricRole.Primary
-                && fromMetrics[name].Definition.BetterDirection != BetterDirection.Neutral);
+        if (!fromMetrics.TryGetValue("waitingSelfPercent", out var fromWaiting)
+            || !toMetrics.TryGetValue("waitingSelfPercent", out var toWaiting))
+        {
+            return rowVerdict;
+        }
+
+        var waitingDirection = Direction(
+            BetterDirection.Lower,
+            fromWaiting.Value,
+            toWaiting.Value,
+            PercentDelta(fromWaiting.Value, toWaiting.Value),
+            minDeltaPct);
+        var fromRows = RowLookup(from);
+        var toRows = RowLookup(to);
+        var addedIds = toRows.Keys.Except(fromRows.Keys, StringComparer.Ordinal).ToArray();
+        var removedIds = fromRows.Keys.Except(toRows.Keys, StringComparer.Ordinal).ToArray();
+        var removedWaiting = removedIds.Any(id => IsWaitingDominated(fromRows[id]));
+        var removedRunning = removedIds.Any(id => IsRunningDominated(fromRows[id]));
+        var addedRunning = addedIds.Any(id => IsRunningDominated(toRows[id]));
+        var addedWaiting = addedIds.Any(id => IsWaitingDominated(toRows[id]));
+
+        // Only a real reduction in waiting, paired with removal of a waiting row and emergence of
+        // a running row, can suppress hotspot turnover. Shared-row regressions still surface.
+        if (waitingDirection == Improved && removedWaiting && addedRunning && !addedWaiting)
+        {
+            var sharedVerdict = SharedKeyVerdict(from, to, rowDirection, minDeltaPct);
+            return sharedVerdict is Regression or Mixed ? Mixed : Improvement;
+        }
+
+        // With no supporting waiting reduction, an unrelated replacement running hotspot remains
+        // regression evidence rather than becoming no_change/no_overlap because both waits are 0.
+        if (waitingDirection == Flat && removedRunning && addedRunning)
+        {
+            var sharedVerdict = SharedKeyVerdict(from, to, rowDirection, minDeltaPct);
+            return sharedVerdict is Improvement or Mixed ? Mixed : Regression;
+        }
+
+        return CombineSymptomAndRows(waitingDirection, rowVerdict);
     }
+
+    private static string CombineSymptomAndRows(string symptomDirection, string rowVerdict)
+        => symptomDirection switch
+        {
+            Improved => rowVerdict switch
+            {
+                Regression or Mixed or NoOverlap => Mixed,
+                _ => Improvement,
+            },
+            Regressed => rowVerdict switch
+            {
+                Improvement or Mixed => Mixed,
+                _ => Regression,
+            },
+            _ => rowVerdict,
+        };
+
+    private static string SharedKeyVerdict(
+        ComparableSnapshot from,
+        ComparableSnapshot to,
+        BetterDirection direction,
+        double minDeltaPct)
+    {
+        var notesSink = new List<string>();
+        var fromMap = KeyLookup(from, notesSink);
+        var toMap = KeyLookup(to, notesSink);
+        var improved = false;
+        var regressed = false;
+        foreach (var id in fromMap.Keys.Intersect(toMap.Keys, StringComparer.Ordinal))
+        {
+            switch (Direction(
+                direction,
+                fromMap[id].Value,
+                toMap[id].Value,
+                PercentDelta(fromMap[id].Value, toMap[id].Value),
+                minDeltaPct))
+            {
+                case Improved: improved = true; break;
+                case Regressed: regressed = true; break;
+                default: break;
+            }
+        }
+
+        return Collapse(improved, regressed);
+    }
+
+    private static Dictionary<string, ComparableRow> RowLookup(ComparableSnapshot snapshot)
+    {
+        var rows = new Dictionary<string, ComparableRow>(StringComparer.Ordinal);
+        foreach (var row in snapshot.Rows)
+        {
+            rows.TryAdd(KeyMatchId(row.Key), row);
+        }
+
+        return rows;
+    }
+
+    private static bool IsWaitingDominated(ComparableRow row)
+    {
+        var running = RowMetric(row, "runningExclusiveSamples");
+        var waiting = RowMetric(row, "waitingExclusiveSamples");
+        return waiting is > 0 && waiting > (running ?? 0);
+    }
+
+    private static bool IsRunningDominated(ComparableRow row)
+    {
+        var running = RowMetric(row, "runningExclusiveSamples");
+        var waiting = RowMetric(row, "waitingExclusiveSamples");
+        return running is > 0 && running > (waiting ?? 0);
+    }
+
+    private static double? RowMetric(ComparableRow row, string name)
+        => row.Metrics.FirstOrDefault(metric => string.Equals(metric.Definition.Name, name, StringComparison.Ordinal))?.Value;
 
     private static string MetricVerdict(ComparableSnapshot from, ComparableSnapshot to, double minDeltaPct)
     {
