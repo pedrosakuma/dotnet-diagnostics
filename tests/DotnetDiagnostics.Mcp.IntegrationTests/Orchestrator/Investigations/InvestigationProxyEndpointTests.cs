@@ -59,6 +59,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                 services.AddSingleton(opts);
                 services.AddSingleton<IInvestigationStore>(_store);
                 services.AddSingleton<IPortForwardManager>(_manager);
+                services.AddSingleton(ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable));
                 services.AddLogging();
                 services.AddRouting();
                 // The proxy endpoint chains .RequireRateLimiting("mcp") so the test
@@ -312,6 +313,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                 services.AddSingleton(opts);
                 services.AddSingleton<IInvestigationStore>(_store);
                 services.AddSingleton<IPortForwardManager>(_manager);
+                services.AddSingleton(ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable));
                 services.AddLogging(b =>
                 {
                     if (capture is not null) b.AddProvider(capture);
@@ -383,6 +385,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                 services.AddSingleton(opts);
                 services.AddSingleton<IInvestigationStore>(_store);
                 services.AddSingleton<IPortForwardManager>(_manager);
+                services.AddSingleton(ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable));
                 services.AddLogging();
                 services.AddRouting();
                 services.AddRateLimiter(o =>
@@ -545,15 +548,86 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Proxy_AllowsJsonRpcKnownTool_Passthrough()
     {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "caller",
+                System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach", "read-counters")),
+            allowCrossSessionAdmin: false);
+
         _store.Add(NewHandle("inv_jrpc_ok", InvestigationState.Active, "pod-token"));
         _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
 
-        var allowed = InvestigationProxyToolAllowlist.AllowedToolNames.First();
-        var payload = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"" + allowed + "\",\"arguments\":{}}}";
+        var payload = ToolCallPayload("collect_events", "{\"kind\":\"counters\"}");
         var response = await _client.PostAsync("/proxy/inv_jrpc_ok/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         _upstream.LastRequest.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsDumpTool_BeforeHandleLookup_EvenForTaskRequest()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "attach-ptrace",
+                System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach", "ptrace")),
+            allowCrossSessionAdmin: false);
+
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_process_dump\",\"arguments\":{},\"task\":{\"ttl\":60000}}}";
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_dump_scope/mcp",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("dump-write");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsPtraceTool_WhenCallerOnlyHasOrchestratorAttach()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "attach-only",
+                System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_ptrace_scope", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_ptrace_scope/mcp",
+            new StringContent(ToolCallPayload("collect_thread_snapshot"), Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ptrace");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsModifierGatedTool_WhenLiteralModifierScopeIsMissing()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "eventpipe-only",
+                System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach", "eventpipe")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_modifier_scope", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_modifier_scope/mcp",
+            new StringContent(
+                ToolCallPayload("collect_sample", "{\"kind\":\"method-params\"}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("sensitive-parameter-read");
+        _upstream.LastRequest.Should().BeNull();
     }
 
     [Fact]
@@ -639,6 +713,10 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         State: state,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5));
+
+    private static string ToolCallPayload(string toolName, string arguments = "{}")
+        => "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"" +
+           toolName + "\",\"arguments\":" + arguments + "}}";
 
     private static InvestigationHandle NewHandleOwned(string id, string ownerBearerName, string podToken) => new(
         HandleId: id,

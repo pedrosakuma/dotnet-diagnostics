@@ -134,6 +134,63 @@ internal static class InvestigationProxyEndpoints
             return;
         }
 
+        PooledRequestBodyBuffer? bufferedBody = null;
+        if (HasBody(context.Request))
+        {
+            var proxyOptions = context.RequestServices.GetRequiredService<OrchestratorOptions>();
+            try
+            {
+                bufferedBody = await ReadBoundedAsync(
+                    context.Request.Body,
+                    proxyOptions.ProxyRequestSizeLimitBytes,
+                    context.RequestAborted).ConfigureAwait(false);
+            }
+            catch (RequestBodyTooLargeException)
+            {
+                await WriteProblemAsync(context, StatusCodes.Status413PayloadTooLarge,
+                    "ProxyBodyTooLarge",
+                    $"Request body exceeds the configured proxy limit of {proxyOptions.ProxyRequestSizeLimitBytes} bytes.")
+                    .ConfigureAwait(false);
+                return;
+            }
+        }
+        using var bufferedBodyLease = bufferedBody;
+
+        if (bufferedBody is not null)
+        {
+            var rejection = FindRejectedToolCall(
+                bufferedBody.WrittenMemory,
+                context.RequestServices.GetRequiredService<ToolScopeRegistry>(),
+                context.GetBearerPrincipal());
+            if (rejection is not null)
+            {
+                if (rejection.Kind == ProxyToolRejectionKind.NotAllowed)
+                {
+                    logger.LogWarning(
+                        "Proxy rejected disallowed tool name '{Tool}' for handle {HandleId}.",
+                        rejection.ToolName, handleId);
+                    await WriteProblemAsync(context, StatusCodes.Status403Forbidden,
+                        "ProxyToolNotAllowed",
+                        $"Tool '{rejection.ToolName}' is not in the diagnostic proxy allowlist. " +
+                        "Only the documented diagnostics tools may traverse the proxy.")
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    logger.LogWarning(
+                        "Proxy rejected tool '{Tool}' for handle {HandleId}: missing scope {MissingScope}.",
+                        rejection.ToolName, handleId, rejection.MissingScope);
+                    await WriteProblemAsync(context, StatusCodes.Status403Forbidden,
+                        "ProxyToolScopeDenied",
+                        rejection.MissingExplicitScope
+                            ? $"Tool '{rejection.ToolName}' requires the literal modifier scope '{rejection.MissingScope}'."
+                            : $"Tool '{rejection.ToolName}' requires scope '{rejection.MissingScope}'.")
+                        .ConfigureAwait(false);
+                }
+                return;
+            }
+        }
+
         var store = context.RequestServices.GetRequiredService<IInvestigationStore>();
         var handle = store.GetById(handleId);
         if (handle is null)
@@ -223,50 +280,10 @@ internal static class InvestigationProxyEndpoints
         upstream.VersionPolicy = HttpVersionPolicy.RequestVersionExact;
         CopyRequestHeaders(context.Request, upstream, handle.PodLocalBearerToken);
 
-        PooledRequestBodyBuffer? bufferedBody = null;
         try
         {
-            if (HasBody(context.Request))
+            if (bufferedBody is not null)
             {
-                // M5: enforce the body cap pre-buffer. Kestrel's MaxRequestBodySize
-                // (set via the endpoint metadata) is the primary gate; we also bound
-                // the read here so a chunked-encoded body that lies about its length
-                // can't outgrow the cap before forwarding.
-                var options = context.RequestServices.GetRequiredService<OrchestratorOptions>();
-                try
-                {
-                    bufferedBody = await ReadBoundedAsync(
-                        context.Request.Body,
-                        options.ProxyRequestSizeLimitBytes,
-                        context.RequestAborted).ConfigureAwait(false);
-                }
-                catch (RequestBodyTooLargeException)
-                {
-                    await WriteProblemAsync(context, StatusCodes.Status413PayloadTooLarge,
-                        "ProxyBodyTooLarge",
-                        $"Request body exceeds the configured proxy limit of {options.ProxyRequestSizeLimitBytes} bytes.")
-                        .ConfigureAwait(false);
-                    return;
-                }
-
-                // H7: even though the route is /mcp only, a direct POST to the proxy
-                // bypasses the in-process call-tool filter's allowlist. Apply the same
-                // gate here on the JSON-RPC envelope so disallowed tool names never
-                // reach the pod-local MCP regardless of how the body arrived.
-                var disallowed = FindDisallowedToolName(bufferedBody.WrittenSpan);
-                if (disallowed is not null)
-                {
-                    logger.LogWarning(
-                        "Proxy rejected disallowed tool name '{Tool}' for handle {HandleId}.",
-                        disallowed, handleId);
-                    await WriteProblemAsync(context, StatusCodes.Status403Forbidden,
-                        "ProxyToolNotAllowed",
-                        $"Tool '{disallowed}' is not in the diagnostic proxy allowlist. " +
-                        "Only the read-only diagnostic tools published by DiagnosticTools may traverse the proxy.")
-                        .ConfigureAwait(false);
-                    return;
-                }
-
                 upstream.Content = new ByteArrayContent(bufferedBody.Buffer, 0, bufferedBody.Length);
                 foreach (var h in context.Request.Headers)
                 {
@@ -477,25 +494,55 @@ internal static class InvestigationProxyEndpoints
     /// to be in the diagnostic-tool allowlist. Other JSON-RPC methods
     /// (<c>initialize</c>, <c>resources/*</c>, <c>prompts/*</c>) pass through so
     /// the SDK handshake keeps working — only tool invocation is gated. Returns
-    /// the disallowed tool name when rejection is required, else null.
+    /// the first allowlist or scope rejection, else null. Batch envelopes run the
+    /// allowlist pass before authorization so a later unknown tool cannot be masked
+    /// by an earlier known-but-unauthorized call.
     /// </summary>
-    private static string? FindDisallowedToolName(ReadOnlySpan<byte> body)
+    private static ProxyToolRejection? FindRejectedToolCall(
+        ReadOnlyMemory<byte> body,
+        ToolScopeRegistry scopeRegistry,
+        BearerPrincipal? principal)
     {
         if (body.IsEmpty) return null;
         try
         {
-            var reader = new Utf8JsonReader(body, isFinalBlock: true, state: default);
-            if (!reader.Read())
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.ValueKind == JsonValueKind.Array)
             {
+                foreach (var item in document.RootElement.EnumerateArray())
+                {
+                    var rejection = FindRejectedToolCall(
+                        item,
+                        scopeRegistry,
+                        principal,
+                        authorizeScopes: false);
+                    if (rejection is not null)
+                    {
+                        return rejection;
+                    }
+                }
+
+                foreach (var item in document.RootElement.EnumerateArray())
+                {
+                    var rejection = FindRejectedToolCall(
+                        item,
+                        scopeRegistry,
+                        principal,
+                        authorizeScopes: true);
+                    if (rejection is not null)
+                    {
+                        return rejection;
+                    }
+                }
+
                 return null;
             }
 
-            return reader.TokenType switch
-            {
-                JsonTokenType.StartArray => FindDisallowedToolNameInArray(ref reader),
-                JsonTokenType.StartObject => FindDisallowedToolNameInObject(ref reader),
-                _ => null,
-            };
+            return FindRejectedToolCall(
+                document.RootElement,
+                scopeRegistry,
+                principal,
+                authorizeScopes: true);
         }
         catch (JsonException)
         {
@@ -505,149 +552,63 @@ internal static class InvestigationProxyEndpoints
         }
     }
 
-    private static string? FindDisallowedToolNameInArray(ref Utf8JsonReader reader)
+    private static ProxyToolRejection? FindRejectedToolCall(
+        JsonElement envelope,
+        ToolScopeRegistry scopeRegistry,
+        BearerPrincipal? principal,
+        bool authorizeScopes)
     {
-        while (reader.Read())
+        if (envelope.ValueKind != JsonValueKind.Object ||
+            !envelope.TryGetProperty("method", out var method) ||
+            method.ValueKind != JsonValueKind.String ||
+            !string.Equals(method.GetString(), "tools/call", StringComparison.Ordinal))
         {
-            switch (reader.TokenType)
-            {
-                case JsonTokenType.EndArray:
-                    return null;
-                case JsonTokenType.StartObject:
-                    var found = FindDisallowedToolNameInObject(ref reader);
-                    if (found is not null)
-                    {
-                        return found;
-                    }
-
-                    break;
-                default:
-                    if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
-                    {
-                        reader.Skip();
-                    }
-
-                    break;
-            }
+            return null;
         }
 
-        throw new JsonException("Incomplete JSON array.");
-    }
-
-    private static string? FindDisallowedToolNameInObject(ref Utf8JsonReader reader)
-    {
-        string? method = null;
-        string? toolName = null;
-        var hasParamsObject = false;
-        var hasName = false;
-
-        while (reader.Read())
+        if (!envelope.TryGetProperty("params", out var requestParams) ||
+            requestParams.ValueKind != JsonValueKind.Object ||
+            !requestParams.TryGetProperty("name", out var name) ||
+            name.ValueKind != JsonValueKind.String)
         {
-            if (reader.TokenType == JsonTokenType.EndObject)
-            {
-                if (!string.Equals(method, "tools/call", StringComparison.Ordinal))
-                {
-                    return null;
-                }
-
-                if (!hasParamsObject || !hasName)
-                {
-                    // Malformed tools/call — reject by returning a sentinel that
-                    // hits the structured 403 path; clients should send a
-                    // well-formed envelope.
-                    return "<missing-name>";
-                }
-
-                return InvestigationProxyToolAllowlist.IsAllowed(toolName)
-                    ? null
-                    : toolName ?? "<null>";
-            }
-
-            if (reader.TokenType != JsonTokenType.PropertyName)
-            {
-                throw new JsonException("Expected object property.");
-            }
-
-            var propertyName = reader.GetString();
-            if (!reader.Read())
-            {
-                throw new JsonException("Incomplete JSON object.");
-            }
-
-            if (string.Equals(propertyName, "method", StringComparison.Ordinal))
-            {
-                if (reader.TokenType == JsonTokenType.String)
-                {
-                    method = reader.GetString();
-                }
-
-                if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
-                {
-                    reader.Skip();
-                }
-
-                continue;
-            }
-
-            if (string.Equals(propertyName, "params", StringComparison.Ordinal))
-            {
-                if (reader.TokenType == JsonTokenType.StartObject)
-                {
-                    hasParamsObject = true;
-                    toolName = FindToolNameInParamsObject(ref reader, ref hasName);
-                }
-                else if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
-                {
-                    reader.Skip();
-                }
-
-                continue;
-            }
-
-            if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
-            {
-                reader.Skip();
-            }
+            return new ProxyToolRejection(
+                ProxyToolRejectionKind.NotAllowed,
+                "<missing-name>",
+                null,
+                false);
         }
 
-        throw new JsonException("Incomplete JSON object.");
-    }
-
-    private static string? FindToolNameInParamsObject(ref Utf8JsonReader reader, ref bool hasName)
-    {
-        string? toolName = null;
-
-        while (reader.Read())
+        var toolName = name.GetString()!;
+        if (!InvestigationProxyToolAllowlist.IsAllowed(toolName))
         {
-            if (reader.TokenType == JsonTokenType.EndObject)
-            {
-                return toolName;
-            }
-
-            if (reader.TokenType != JsonTokenType.PropertyName)
-            {
-                throw new JsonException("Expected params property.");
-            }
-
-            var propertyName = reader.GetString();
-            if (!reader.Read())
-            {
-                throw new JsonException("Incomplete params object.");
-            }
-
-            if (string.Equals(propertyName, "name", StringComparison.Ordinal))
-            {
-                hasName = reader.TokenType == JsonTokenType.String;
-                toolName = hasName ? reader.GetString() : null;
-            }
-
-            if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
-            {
-                reader.Skip();
-            }
+            return new ProxyToolRejection(
+                ProxyToolRejectionKind.NotAllowed,
+                toolName,
+                null,
+                false);
         }
 
-        throw new JsonException("Incomplete params object.");
+        if (!authorizeScopes)
+        {
+            return null;
+        }
+
+        IDictionary<string, JsonElement>? arguments = null;
+        if (requestParams.TryGetProperty("arguments", out var argumentObject) &&
+            argumentObject.ValueKind == JsonValueKind.Object)
+        {
+            arguments = argumentObject.EnumerateObject()
+                .ToDictionary(static property => property.Name, static property => property.Value, StringComparer.Ordinal);
+        }
+
+        var authorization = scopeRegistry.Authorize(toolName, arguments, principal);
+        return authorization.IsAllowed
+            ? null
+            : new ProxyToolRejection(
+                ProxyToolRejectionKind.ScopeDenied,
+                toolName,
+                authorization.MissingScope,
+                authorization.MissingExplicitScope);
     }
 
     private static Task WriteProblemAsync(HttpContext context, int status, string detail)
@@ -676,7 +637,7 @@ internal static class InvestigationProxyEndpoints
 
         public int Length { get; } = length;
 
-        public ReadOnlySpan<byte> WrittenSpan => Buffer.AsSpan(0, Length);
+        public ReadOnlyMemory<byte> WrittenMemory => Buffer.AsMemory(0, Length);
 
         public void Dispose()
         {
@@ -689,6 +650,18 @@ internal static class InvestigationProxyEndpoints
             _buffer = null;
         }
     }
+
+    private enum ProxyToolRejectionKind
+    {
+        NotAllowed,
+        ScopeDenied,
+    }
+
+    private sealed record ProxyToolRejection(
+        ProxyToolRejectionKind Kind,
+        string ToolName,
+        string? MissingScope,
+        bool MissingExplicitScope);
 }
 
 /// <summary>

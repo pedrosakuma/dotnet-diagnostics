@@ -58,7 +58,7 @@ internal static class ToolScopeAuthorizationFilter
             var accessor = principalAccessor();
             var principal = accessor?.Current ?? StdioRootPrincipalAccessor.Instance.Current;
 
-            var decision = Authorize(requirement.Value, principal);
+            var decision = registry.Authorize(toolName, request.Params?.Arguments, principal);
             var logger = loggerAccessor();
             if (decision.IsAllowed)
             {
@@ -66,7 +66,7 @@ internal static class ToolScopeAuthorizationFilter
                     "Tool {Tool} authorized for principal {TokenName} (scopes {RequiredScopes}).",
                     toolName,
                     principal?.Name ?? "(none)",
-                    FormatScopes(requirement.Value));
+                    FormatScopes(decision));
                 return await next(request, cancellationToken).ConfigureAwait(false);
             }
 
@@ -77,7 +77,7 @@ internal static class ToolScopeAuthorizationFilter
                 decision.MissingScope,
                 FormatPrincipalScopes(principal));
 
-            return BuildForbiddenResult(toolName, requirement.Value, principal, decision.MissingScope);
+            return BuildForbiddenResult(toolName, decision, principal);
         };
     }
 
@@ -120,13 +120,15 @@ internal static class ToolScopeAuthorizationFilter
 
     internal static CallToolResult BuildForbiddenResult(
         string toolName,
-        ToolScopeRegistry.Requirement requirement,
-        BearerPrincipal? principal,
-        string missingScope)
+        ToolScopeRegistry.AuthorizationResult authorization,
+        BearerPrincipal? principal)
     {
-        var requiredList = FormatScopes(requirement);
+        var requiredList = FormatScopes(authorization);
         var presentedList = FormatPrincipalScopes(principal);
-        var kindWord = requirement.IsAny ? "any of" : "scope";
+        var semantics = authorization.Primary.IsAny && authorization.ModifierScopes.IsDefaultOrEmpty
+            ? "any"
+            : "all";
+        var kindWord = semantics == "any" ? "any of" : "scope";
         var sb = new StringBuilder();
         sb.Append("forbidden: tool '")
           .Append(toolName)
@@ -147,16 +149,20 @@ internal static class ToolScopeAuthorizationFilter
             ["error"] = new System.Text.Json.Nodes.JsonObject
             {
                 ["kind"] = "forbidden",
-                ["message"] = $"tool requires scope '{missingScope}'",
+                ["message"] = authorization.MissingExplicitScope
+                    ? $"tool requires literal modifier scope '{authorization.MissingScope}'"
+                    : $"tool requires scope '{authorization.MissingScope}'",
                 ["tool"] = toolName,
                 ["required_scopes"] = new System.Text.Json.Nodes.JsonArray(
-                    requirement.Scopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
+                    authorization.RequiredScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
+                ["modifier_scopes"] = new System.Text.Json.Nodes.JsonArray(
+                    authorization.ModifierScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
                 ["principal_scopes"] = new System.Text.Json.Nodes.JsonArray(
                     (principal?.Scopes.OrderBy(s => s, StringComparer.Ordinal)
                                       .Select(s => (System.Text.Json.Nodes.JsonNode?)s)
                                       .ToArray())
                     ?? Array.Empty<System.Text.Json.Nodes.JsonNode?>()),
-                ["semantics"] = requirement.IsAny ? "any" : "all",
+                ["semantics"] = semantics,
             },
         };
 
@@ -177,6 +183,9 @@ internal static class ToolScopeAuthorizationFilter
 
     private static string FormatScopes(ToolScopeRegistry.Requirement requirement)
         => string.Join(", ", requirement.Scopes);
+
+    private static string FormatScopes(ToolScopeRegistry.AuthorizationResult authorization)
+        => string.Join(", ", authorization.RequiredScopes);
 
     private static string FormatPrincipalScopes(BearerPrincipal? principal)
     {

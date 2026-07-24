@@ -180,9 +180,95 @@ public sealed class InvestigationProxyCallToolFilterTests
     }
 
     [Fact]
+    public async Task RejectsDump_WhenCallerOnlyHasOrchestratorAttachAndPtrace()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes("orchestrator-attach", "ptrace"));
+        fx.Binder.Bind("session-dump", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(Params("collect_process_dump"), "session-dump");
+
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("dump-write");
+        fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RejectsMissingScope_BeforeExplicitHandleLookup()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes("orchestrator-attach", "ptrace"));
+        var result = await fx.Invoke(
+            Params("collect_process_dump", new Dictionary<string, JsonElement>
+            {
+                [InvestigationRoutingArguments.InvestigationHandleIdArgument] =
+                    JsonSerializer.SerializeToElement("inv-does-not-exist"),
+            }),
+            sessionId: null);
+
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("dump-write");
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().NotContain("unknown or no longer active");
+        fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RejectsPtraceTool_WhenCallerOnlyHasOrchestratorAttach()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes("orchestrator-attach"));
+        fx.Binder.Bind("session-ptrace", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(Params("collect_thread_snapshot"), "session-ptrace");
+
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("ptrace");
+        fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RejectsModifierGatedCall_WhenLiteralModifierScopeIsMissing()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes("orchestrator-attach", "eventpipe"));
+        fx.Binder.Bind("session-sensitive", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(
+            Params("collect_sample", new Dictionary<string, JsonElement>
+            {
+                ["kind"] = JsonSerializer.SerializeToElement("method-params"),
+            }),
+            "session-sensitive");
+
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("sensitive-parameter-read");
+        fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ForwardsAllowedCall_WhenAttachAndDiagnosticScopeArePresent()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes("orchestrator-attach", "read-counters"));
+        fx.Binder.Bind("session-counters", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(
+            Params("collect_events", new Dictionary<string, JsonElement>
+            {
+                ["kind"] = JsonSerializer.SerializeToElement("counters"),
+            }),
+            "session-counters");
+
+        result.IsError.Should().NotBeTrue();
+        fx.ProxyClient.CallCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task Forwards_WhenExplicitInvestigationHandleIdIsSupplied_ByAdminBearer()
     {
-        var fx = new Fixture(TestPrincipalAccessors.WithScopes("orchestrator-attach", "orchestrator-admin"));
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "orchestrator-admin",
+            "read-counters"));
         fx.Store.Add(ActiveHandle with { OwnerBearerName = "somebody-else" });
 
         var upstream = new CallToolResult
@@ -404,6 +490,8 @@ public sealed class InvestigationProxyCallToolFilterTests
 
     private sealed class Fixture
     {
+        public ToolScopeRegistry ScopeRegistry { get; } =
+            ToolScopeRegistry.Build(DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable);
         public InMemorySessionBinder Binder { get; } = new();
         public InMemoryInvestigationStore Store { get; } = new();
         public FakeProxyClient ProxyClient { get; } = new();
@@ -437,6 +525,7 @@ public sealed class InvestigationProxyCallToolFilterTests
                     Interlocked.Increment(ref LocalInvocations);
                     return ValueTask.FromResult(new CallToolResult());
                 },
+                ScopeRegistry,
                 Binder,
                 Store,
                 ProxyClient,
@@ -444,7 +533,7 @@ public sealed class InvestigationProxyCallToolFilterTests
                 PrincipalAccessor,
                 Observability,
                 loggerAccessor: () => null,
-                token);
+                cancellationToken: token);
         }
     }
 

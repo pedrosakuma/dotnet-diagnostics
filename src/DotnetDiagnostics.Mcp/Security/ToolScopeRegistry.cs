@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 using System.Reflection;
+using System.Text.Json;
+using DotnetDiagnostics.Mcp.Tools;
 using ModelContextProtocol.Server;
 
 namespace DotnetDiagnostics.Mcp.Security;
@@ -22,6 +24,8 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// </remarks>
 internal sealed class ToolScopeRegistry
 {
+    private const string SensitiveParameterReadScope = "sensitive-parameter-read";
+
     /// <summary>Resolved requirement for a tool. Exactly one of <see cref="All"/> /
     /// <see cref="Any"/> is non-empty.</summary>
     /// <param name="All">Scopes the principal must hold every one of (AND semantics).</param>
@@ -32,6 +36,17 @@ internal sealed class ToolScopeRegistry
     {
         public bool IsAny => !Any.IsDefault && Any.Length > 0;
         public ImmutableArray<string> Scopes => IsAny ? Any : All;
+    }
+
+    public readonly record struct AuthorizationResult(
+        bool IsAllowed,
+        string MissingScope,
+        bool MissingExplicitScope,
+        Requirement Primary,
+        ImmutableArray<string> ModifierScopes)
+    {
+        public ImmutableArray<string> RequiredScopes =>
+            Primary.Scopes.AddRange(ModifierScopes);
     }
 
     private readonly ImmutableDictionary<string, Requirement> _byToolName;
@@ -50,6 +65,62 @@ internal sealed class ToolScopeRegistry
 
     /// <summary>Tool names registered with this index (used by tests / startup logs).</summary>
     public IReadOnlyCollection<string> KnownToolNames => _byToolName.Keys.ToArray();
+
+    /// <summary>
+    /// Authorizes one concrete invocation. Primary scopes come from the tool attributes;
+    /// unconditional argument-dependent literal modifiers are resolved here so local dispatch
+    /// and both orchestrator proxy paths share one decision point.
+    /// </summary>
+    public AuthorizationResult Authorize(
+        string toolName,
+        IDictionary<string, JsonElement>? arguments,
+        BearerPrincipal? principal)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+
+        var primary = TryGet(toolName);
+        if (primary is null)
+        {
+            return new AuthorizationResult(
+                false,
+                "<unknown>",
+                false,
+                default,
+                ImmutableArray<string>.Empty);
+        }
+
+        var primaryDecision = ToolScopeAuthorizationFilter.Authorize(primary.Value, principal);
+        var modifiers = ResolveModifierScopes(toolName, arguments);
+        if (!primaryDecision.IsAllowed)
+        {
+            return new AuthorizationResult(
+                false,
+                primaryDecision.MissingScope,
+                false,
+                primary.Value,
+                modifiers);
+        }
+
+        foreach (var modifier in modifiers)
+        {
+            if (principal?.HasExplicitScope(modifier) != true)
+            {
+                return new AuthorizationResult(
+                    false,
+                    modifier,
+                    true,
+                    primary.Value,
+                    modifiers);
+            }
+        }
+
+        return new AuthorizationResult(
+            true,
+            string.Empty,
+            false,
+            primary.Value,
+            modifiers);
+    }
 
     /// <summary>Scans the supplied tool surface types for <c>[McpServerTool]</c> methods
     /// and reads their scope attributes. Throws when any tool method is missing both
@@ -119,4 +190,33 @@ internal sealed class ToolScopeRegistry
 
         return new ToolScopeRegistry(builder.ToImmutable());
     }
+
+    private static ImmutableArray<string> ResolveModifierScopes(
+        string toolName,
+        IDictionary<string, JsonElement>? arguments)
+    {
+        if (string.Equals(toolName, CollectSampleTool.ToolName, StringComparison.Ordinal) &&
+            HasStringArgument(arguments, "kind", "method-params"))
+        {
+            return ImmutableArray.Create(SensitiveParameterReadScope);
+        }
+
+        if (string.Equals(toolName, GetBytesTool.ToolName, StringComparison.Ordinal) &&
+            HasStringArgument(arguments, "kind", GetBytesTool.KindDelete))
+        {
+            return ImmutableArray.Create(GetBytesTool.DeleteArtifactScope);
+        }
+
+        return ImmutableArray<string>.Empty;
+    }
+
+    private static bool HasStringArgument(
+        IDictionary<string, JsonElement>? arguments,
+        string name,
+        string expected)
+        => arguments is not null &&
+           arguments.TryGetValue(name, out var value) &&
+           value.ValueKind == JsonValueKind.String &&
+           string.Equals(value.GetString()?.Trim(), expected, StringComparison.Ordinal);
+
 }
