@@ -296,7 +296,8 @@ internal static class CliCommandExecution
         else
         {
             var human = executionOptions.BoundTargetPid is { } boundPid
-                ? RemoveBoundPidArgument(result.Human, boundPid)
+                && result.RenderHumanForBoundTarget is { } renderForBoundTarget
+                ? renderForBoundTarget(boundPid)
                 : result.Human;
             if (executionOptions.Context == CliExecutionContext.OneShot && result.Handle is not null)
             {

@@ -12,22 +12,26 @@ public sealed class CliCommandExecutionOutputTests
     public async Task SessionOutput_OmitsBoundPidFromHints_WithoutRewritingPayloadData()
     {
         const string commandLine = "dotnet worker.dll --pid 4321 --mode service";
+        const string applicationLog = "worker observed argument --pid 4321 while processing input";
         var envelope = DiagnosticResult.Ok(
-            new { CommandLine = commandLine },
+            new { CommandLine = commandLine, ApplicationLog = applicationLog },
             "summary",
             new NextActionHint("collect", "Run: collect --kind threadpool --pid 4321 --duration 10"));
-        var result = new CliCommandResult(
-            IsError: false,
-            Cancelled: false,
-            Envelope: envelope,
-            Human: "summary\n  next:\n    - collect: Run: collect --kind threadpool --pid 4321 --duration 10");
+        var result = CliCommands.BuildResult(envelope, static (sb, data) =>
+        {
+            sb.AppendLine($"  command line: {data.CommandLine}");
+            sb.AppendLine($"  application log: {data.ApplicationLog}");
+        });
         var options = CliOptions.Parse(["inspect", "--view", "triage"], out var error)!;
         error.Should().BeNull();
 
         var human = await RenderAsync(result, options, CliExecutionContext.Session, json: false, boundTargetPid: 4321);
         var json = await RenderAsync(result, options, CliExecutionContext.Session, json: true, boundTargetPid: 4321);
 
-        human.Should().Contain("collect --kind threadpool --duration 10").And.NotContain("--pid 4321");
+        human.Should().Contain("collect --kind threadpool --duration 10");
+        human.Should().NotContain("collect --kind threadpool --pid 4321");
+        human.Should().Contain($"command line: {commandLine}");
+        human.Should().Contain($"application log: {applicationLog}");
         using var document = JsonDocument.Parse(json);
         document.RootElement.GetProperty("hints")[0].GetProperty("reason").GetString()
             .Should().Contain("collect --kind threadpool --duration 10").And.NotContain("--pid 4321");
