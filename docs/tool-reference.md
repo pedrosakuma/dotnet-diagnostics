@@ -455,7 +455,7 @@ Views available per `kind`:
 | `gc-events` | `collect_events(kind="gc")` | `summary` (default), `events`, `pauseHistogram`, `timeline`, `longestPauses`, `byGeneration`, `heap-stats` |
 | `gc-datas` | `collect_events(kind="datas")` | `overview` (default), `tuning` (honours `changesOnly`), `samples`, `gen2` |
 | `event-catalog` | `collect_events(kind="catalog")` | `catalog` (default), `byProvider`, `events` |
-| `activities` | `collect_events(kind="activities")` | `summary` (default), `bySource`, `byOperation`, `activities` |
+| `activities` | `collect_events(kind="activities")` | `summary` (default), `bySource`, `byOperation`, `activities`, `gc-overlay` (requires `gcHandle`) |
 | `event-source` | `collect_events(kind="event_source")` | `summary` (default), `byEventName`, `events` |
 | `log-snapshot` | `collect_events(kind="logs")` | `summary` (default), `byCategory`, `byLevel`, `recent`, `errors` |
 | `jit-snapshot` | `collect_events(kind="jit")` | `summary` (default), `topMethods`, `tierDistribution`, `reJIT` |
@@ -592,6 +592,16 @@ cross-reference). `byGeneration` reports `Count` + total/mean/max pause per gene
 raw events retained on the artifact (the collector caps at `maxEvents`) and expose
 `retained`/`dropped`. The summary's `totalCollections`, total/max pause, and `generations[]` counts
 continue aggregating after that cap and remain exact for the full collection window.
+
+The activities `gc-overlay` view correlates activity spans only with the raw GC event rows retained
+behind the supplied `gcHandle`. Its `totalGcCollections` and `totalGcPauseMs` remain the exact
+full-window aggregates. Correlation-derived values (`impactedCount`, `totalGcOverlapMs`, and each
+impacted activity's `gcPauseMs` / `gcPausePercent`) are exact only when
+`correlationScope="full-window"`. If the GC collector exceeded `maxEvents`, the result reports
+`retainedGcEvents`, `droppedGcEvents`, `correlationTruncated=true`,
+`correlationScope="retained-prefix"`, and `correlationValuesAreLowerBounds=true`; each returned row
+also sets `gcPauseIsLowerBound=true`. This prevents prefix-only overlap evidence from being confused
+with the separate exact GC totals.
 
 The `heap-stats` view (issue #384) re-projects the per-collection `GCHeapStats` samples retained
 behind the same `gc-events` handle — no new collection. Each sample carries the per-generation heap

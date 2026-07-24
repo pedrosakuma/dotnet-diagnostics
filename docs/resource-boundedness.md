@@ -44,7 +44,7 @@ implications:
 |---|---|---|
 | `ClrMdDumpInspector.WalkGcHandles` (`Dump/`) | GC handle aggregation is now streamed into `GcHandleAggregation` incrementally instead of materializing every handle into a `List<GcHandleSample>` first | Identical — same buckets/counts, lower peak memory during heap inspection |
 | `ClrMdDumpInspector.WalkStaticFields` (`Dump/`) | Maintains a bounded top-N structure while walking instead of collecting every static reference then `Take(topN)` | Identical — same top-N rows for the same `topN` value |
-| `GcActivityCorrelator.Correlate` (`Collection/`) | Sorted-window interval scan instead of an O(activities × GC events) all-pairs loop, with a bounded top-N heap while scanning | Identical — same `topN` impacted activities, much less CPU/memory for large artifacts |
+| `GcActivityCorrelator.Correlate` (`Collection/`) | Sorted-window interval scan instead of an O(activities × GC events) all-pairs loop, with a bounded top-N heap while scanning | Identical for the GC event rows supplied by the artifact. When `EventPipeGcCollector` dropped raw rows after `maxEvents`, the overlay now reports `retainedGcEvents`, `droppedGcEvents`, `correlationScope="retained-prefix"`, and labels impacted/overlap values as lower bounds; exact full-window GC totals remain separate |
 
 ### Real retention trade-offs — bounded with explicit notes
 

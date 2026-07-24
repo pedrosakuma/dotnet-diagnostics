@@ -51,6 +51,73 @@ public sealed class GcActivityCorrelatorTests
         overlay.ImpactedActivities.Select(static activity => activity.OperationName)
             .Should()
             .Equal("A", "B");
+        overlay.CorrelationTruncated.Should().BeFalse();
+        overlay.CorrelationScope.Should().Be("full-window");
+        overlay.CorrelationValuesAreLowerBounds.Should().BeFalse();
+        overlay.ImpactedActivities.Should().OnlyContain(static activity => !activity.GcPauseIsLowerBound);
+    }
+
+    [Fact]
+    public void Correlate_WhenGcEventsExceededRetentionCap_LabelsPrefixValuesAsLowerBounds()
+    {
+        var at = new DateTimeOffset(2026, 7, 24, 22, 30, 0, TimeSpan.Zero);
+        var activities = new ActivityCapture(
+            ProcessId: 42,
+            SourceFilters: null,
+            StartedAt: at,
+            Duration: TimeSpan.FromSeconds(2),
+            TotalActivities: 2,
+            CompletedActivities: 2,
+            Activities:
+            [
+                new CapturedActivity(
+                    "Svc", "RetainedOverlap", "a", null, null, null, null,
+                    at, at.AddMilliseconds(100), TimeSpan.FromMilliseconds(100),
+                    new Dictionary<string, string>()),
+                new CapturedActivity(
+                    "Svc", "PotentialDroppedOverlap", "b", null, null, null, null,
+                    at.AddSeconds(1), at.AddMilliseconds(1100), TimeSpan.FromMilliseconds(100),
+                    new Dictionary<string, string>()),
+            ],
+            BySource: Array.Empty<ActivitySourceSummary>(),
+            ByOperation: Array.Empty<ActivityOperationSummary>());
+        var retainedEvents = Enumerable.Range(0, 200)
+            .Select(index => new GcEvent(
+                at.AddTicks(index),
+                2,
+                "AllocSmall",
+                "NonConcurrentGC",
+                TimeSpan.FromTicks(1)))
+            .ToList();
+        var gcSummary = new GcSummary(
+            ProcessId: 42,
+            StartedAt: at,
+            Duration: TimeSpan.FromSeconds(2),
+            TotalCollections: 250,
+            TotalPauseTime: TimeSpan.FromTicks(250),
+            MaxPauseTime: TimeSpan.FromTicks(1),
+            Generations: [new GenerationStats(2, 250)],
+            Events: retainedEvents,
+            DroppedEvents: 50);
+
+        var outcome = CollectionQueryDispatcher.Dispatch(
+            CollectionHandleKinds.Activities,
+            "gc-overlay",
+            activities,
+            topN: 10,
+            correlateArtifact: gcSummary);
+        var overlay = outcome.Result!.Payload.Should().BeOfType<GcOverlayResult>().Subject;
+
+        overlay.TotalGcCollections.Should().Be(250);
+        overlay.TotalGcPauseMs.Should().Be(TimeSpan.FromTicks(250).TotalMilliseconds);
+        overlay.RetainedGcEvents.Should().Be(200);
+        overlay.DroppedGcEvents.Should().Be(50);
+        overlay.CorrelationTruncated.Should().BeTrue();
+        overlay.CorrelationScope.Should().Be("retained-prefix");
+        overlay.CorrelationValuesAreLowerBounds.Should().BeTrue();
+        overlay.ImpactedCount.Should().Be(1);
+        overlay.ImpactedActivities.Should().ContainSingle()
+            .Which.GcPauseIsLowerBound.Should().BeTrue();
     }
 
     [Fact]
