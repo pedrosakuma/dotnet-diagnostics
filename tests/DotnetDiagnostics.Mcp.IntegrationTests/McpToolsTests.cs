@@ -729,7 +729,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"InvalidArgument\"");
         text.Should().Contain("method-params");
@@ -753,7 +753,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"InvalidArgument\"");
         text.Should().Contain("duplicate");
@@ -780,7 +780,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"InvalidArgument\"");
         text.Should().Contain("at most 4");
@@ -803,7 +803,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"InvalidArgument\"");
     }
@@ -825,7 +825,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"InvalidArgument\"");
         text.Should().Contain("sweep");
@@ -845,7 +845,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"InvalidArgument\"");
         text.Should().Contain("must not be null");
@@ -1196,8 +1196,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        // The envelope itself does not flip IsError (structured-error contract); the
-        // failure is carried in the typed payload's Error.Kind so the LLM can branch.
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull();
@@ -1244,6 +1243,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull("an unknown handle must surface a structured DiagnosticError");
@@ -1364,6 +1364,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull("an unknown handle must surface a structured DiagnosticError");
@@ -1426,6 +1427,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             new Dictionary<string, object?> { ["processId"] = 99999999 },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull("non-existent PID must surface a structured error, not a partial resolvedProcess");
@@ -1512,6 +1514,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             new Dictionary<string, object?> { ["handle"] = "DEADBEEFDEADBEEFDEAD" },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error!.Kind.Should().Be("HandleExpired");
@@ -1608,6 +1611,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error!.Kind.Should().Be("InvalidArgument");
@@ -1689,6 +1693,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error!.Kind.Should().Be("InvalidArgument");
@@ -1803,6 +1808,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull("invalid arguments must surface a structured DiagnosticError");
@@ -1873,6 +1879,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull("durationSeconds < 2 must surface a structured DiagnosticError");

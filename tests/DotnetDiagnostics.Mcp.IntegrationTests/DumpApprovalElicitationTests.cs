@@ -169,6 +169,7 @@ public sealed class DumpApprovalElicitationTests : IClassFixture<DumpApprovalEli
                 },
                 cancellationToken: CancellationToken.None);
 
+            result.IsError.Should().BeTrue();
             var envelope = DeserializeEnvelope(result);
             envelope.Should().NotBeNull();
             envelope!.Error.Should().NotBeNull("a failed elicitation must surface a structured error");

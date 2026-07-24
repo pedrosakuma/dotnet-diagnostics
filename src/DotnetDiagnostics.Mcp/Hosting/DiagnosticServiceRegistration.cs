@@ -224,22 +224,15 @@ internal static class DiagnosticServiceRegistration
         var builder = services
             .AddMcpServer(options =>
             {
-                options.Filters.Request.CallToolFilters.Add(
-                    ToolErrorSurfaceFilter.Create(
-                        () => loggerFactoryAccessor()?.CreateLogger(typeof(ToolErrorSurfaceFilter).FullName!)));
-
                 options.Filters.Request.ListToolsFilters.Add(
                     BuildScopeListToolsFilter(
                         servicesAccessor,
                         enableOrchestratorTools,
                         enableAzureDiscoveryTools));
 
-                // B5.2 / docs/authorization.md#scopes — per-tool authorization. Sits AFTER ToolErrorSurfaceFilter
-                // in the registration order, which means it runs BEFORE it in the dispatch
-                // pipeline (filters wrap last-in-first-out), so a forbidden envelope short-
-                // circuits before the surface filter and is returned verbatim. The scope index
-                // is built lazily on first call so unit tests that hit Build() without the
-                // full tool surface keep working.
+                // B5.2 / docs/authorization.md#scopes — per-tool authorization. The scope index
+                // is built lazily on first call so unit tests that hit Build() without the full
+                // tool surface keep working.
                 options.Filters.Request.CallToolFilters.Add(
                     BuildScopeAuthorizationFilter(
                         servicesAccessor,
@@ -249,12 +242,15 @@ internal static class DiagnosticServiceRegistration
 
                 if (enableOrchestratorTools && servicesAccessor is not null)
                 {
-                    // Adds after ToolErrorSurfaceFilter so an exception escaping the proxy
-                    // intercept (e.g. SDK protocol violation) is still surfaced as a
-                    // structured error result rather than the SDK's generic terminal mask.
                     options.Filters.Request.CallToolFilters.Add(
                         BuildInvestigationProxyFilter(servicesAccessor, loggerFactoryAccessor));
                 }
+
+                // Filters wrap last-in-first-out. Register the error surface last so it observes
+                // local tools, authorization short-circuits, and orchestrator proxy results alike.
+                options.Filters.Request.CallToolFilters.Add(
+                    ToolErrorSurfaceFilter.Create(
+                        () => loggerFactoryAccessor()?.CreateLogger(typeof(ToolErrorSurfaceFilter).FullName!)));
 
                 // #213 — alias removal wave complete. Every legacy
                 // deprecated surrogate tool has been deleted; no deprecation filter
