@@ -128,7 +128,7 @@ public sealed class EventPipeStartupCollector : IStartupCollector
         var notes = new HashSet<string>(StringComparer.Ordinal);
         if (coldStart)
         {
-            notes.Add("Cold-start capture: EventPipe was armed on the suspended reverse-connect diagnostic port (DOTNET_DiagnosticPorts ...,suspend) before the runtime resumed, so static constructors, DI container build, module-init exceptions and startup timings are included. This is the only mode that recovers pre-attach events.");
+            notes.Add("Cold-start capture: EventPipe was armed on the suspended reverse-connect diagnostic port (DOTNET_DiagnosticPorts ...,suspend) before the runtime resumed, so non-replayed DependencyInjection call-site activity emitted during startup is included. Loader events are also retained when the runtime provider emits them. This is the only mode that recovers those pre-attach events.");
         }
         else
         {

@@ -96,8 +96,8 @@ Options:
       --suspend-startup         Cold-start capture for 'collect --kind startup' (with --launch):
                                 launch the target suspended on a reverse-connect DOTNET_DiagnosticPorts
                                 port, arm EventPipe before any managed code runs, then resume — capturing
-                                static ctors, DI build, module-init exceptions and startup timings the
-                                post-attach path misses. Default OFF.
+                                non-replayed DI call-site activity the post-attach path misses, plus
+                                loader events when emitted. Default OFF.
   -h, --help                    Show this help.
 """;
 

@@ -17,6 +17,10 @@ diagnosis** before you spend a sprint optimising the wrong thing.
 | [`culture-lookup.md`](./culture-lookup.md) | "A trivial lookup pegs the CPU at 95%" | "We're CPU-bound — parallelise the loop / add cores" | Culture-aware `Dictionary` comparer paying ICU string hashing on every lookup |
 | [`lock-storm-correlation.md`](./lock-storm-correlation.md) | "It's slow under load, but CPU/GC look fine" | "Threads look idle (`S` state) — must be I/O or GC elsewhere" | One thread asleep while holding a lock 17+ others queue on — found by joining two thread-snapshot groupings |
 
+See [`smoke-test-audit.md`](./smoke-test-audit.md) for a broader, less-narrated
+sweep that re-measures step counts across these three plus selected untold
+`BadCodeSample` scenarios, run in parallel where safe.
+
 The two are deliberately complementary. **`sync-over-async`** is a *structural*
 smell that an LLM (or reviewer) reading the source catches instantly, and is
 driven via the deterministic **CLI**. **`culture-lookup`** is the opposite: a bug

@@ -137,12 +137,13 @@ public sealed class CollectEventsLaunchSecurityTests
 /// Live end-to-end coverage: spawns CoreClrSample suspended via the full
 /// <c>collect_events(kind="startup", launch=...)</c> entry point (not the bare
 /// <see cref="SuspendedColdStartLauncher"/> primitive) and proves pre-attach DI container build
-/// (ServiceProviderBuilt) is captured — an event the post-attach path always misses.
+/// (CallSiteBuilt / ServiceResolved) is captured through the public MCP launch path.
+/// Core live coverage compares the same events with an ordinary late attach.
 /// </summary>
 public sealed class CollectEventsLaunchLiveTests
 {
     [Fact(Timeout = 60_000)]
-    public async Task CollectEvents_Startup_Launch_CapturesPreAttach_DiServiceProviderBuilt()
+    public async Task CollectEvents_Startup_Launch_CapturesPreAttach_DiCallSiteActivity()
     {
         var sampleDll = SampleLocator.LocateSampleDll("CoreClrSample")
             ?? throw SkipException.ForReason("CoreClrSample.dll not found. Build the sample before running this test.");
@@ -189,7 +190,8 @@ public sealed class CollectEventsLaunchLiveTests
         result.Data.Should().NotBeNull();
         result.Data!.Startup.Should().NotBeNull();
         result.Data.Startup!.TotalDiEvents.Should().BeGreaterThan(0, "cold-start arms EventPipe before DI is built");
-        result.Data.Startup.DiServiceProviderBuiltCount.Should().BeGreaterThanOrEqualTo(1);
+        (result.Data.Startup.DiCallSiteBuiltCount + result.Data.Startup.DiServiceResolvedCount).Should()
+            .BeGreaterThan(0, "cold-start captures non-replayed DI construction activity");
         result.Handle.Should().NotBeNullOrWhiteSpace();
     }
 }

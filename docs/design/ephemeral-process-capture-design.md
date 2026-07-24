@@ -308,17 +308,16 @@ be designed with the same rigor as `docs/design/method-parameter-capture-design.
 
 ### Scope of applicability: stdio/local-dev only, not the K8s sidecar
 
-The existing primitive (`SuspendedColdStartLauncher`,
-`src/DotnetDiagnostics.Core/Launch/SuspendedColdStartLauncher.cs:1-22`) is explicitly documented
-as **CLI-only by design**: *"the MCP server attaches to already-running pids and cannot influence
-the target's launch environment."* That constraint is not incidental — in the K8s sidecar
+The existing primitive (`SuspendedColdStartLauncher`) was originally exposed
+only through the CLI. Part A adds the explicitly gated stdio MCP caller, but
+the deployment constraint remains: in the K8s sidecar
 topology (`deploy/k8s/sample-sidecar.yaml`) the MCP server's container shares only the **PID
 namespace** with the app container, not its filesystem, working directory, or environment. A
 process the sidecar spawns would run with the *sidecar's* filesystem and environment, not the
 app's — almost never what the caller wants, and silently misleading if it "works" by accident
 (e.g. both images happen to share a base layer).
 
-So Part A should be gated to run only when the MCP server is effectively the process owner and
+So Part A is gated to run only when the MCP server is effectively the process owner and
 shares the target's execution environment — concretely: **`--stdio` mode**
 (`docs/authorization.md:8-9` already documents stdio as "the MCP client is the process owner; no
 bearer ever crosses a network"), i.e. local dev, the same shape `session --launch` already serves
