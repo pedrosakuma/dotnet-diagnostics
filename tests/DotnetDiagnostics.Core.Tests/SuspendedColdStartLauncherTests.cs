@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using DotnetDiagnostics.Core.Launch;
 using DotnetDiagnostics.Core.Startup;
@@ -110,6 +111,73 @@ public sealed class SuspendedColdStartLauncherTests
         }
         finally
         {
+            Directory.Delete(testRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LaunchedTarget_Dispose_RemovesArtifactsCreatedDuringTermination(bool useAsyncDispose)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var testRoot = Path.Combine(
+            AppContext.BaseDirectory,
+            "termination-race-temp",
+            Guid.NewGuid().ToString("N"));
+        var longTempPath = Path.Combine(testRoot, new string('x', 48), new string('y', 48));
+        Directory.CreateDirectory(longTempPath);
+
+        LaunchedTarget? target = null;
+        try
+        {
+            var startInfo = new ProcessStartInfo("/bin/sh")
+            {
+                UseShellExecute = false,
+            };
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("sleep 30");
+            var process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("Failed to start disposal race test process.");
+            var unrelatedPid = process.Id == int.MaxValue ? process.Id - 1 : process.Id + 1;
+            var lateArtifact = Path.Combine(longTempPath, $"dotnet-diagnostic-{process.Id}-late-socket");
+            var unrelatedArtifact = Path.Combine(longTempPath, $"dotnet-diagnostic-{unrelatedPid}-late-socket");
+
+            target = new LaunchedTarget(
+                process,
+                [longTempPath],
+                postTerminationObserver: () =>
+                {
+                    process.HasExited.Should().BeTrue("the regression artifact must be created after termination");
+                    File.WriteAllText(lateArtifact, "late");
+                    File.WriteAllText(unrelatedArtifact, "unrelated");
+                });
+
+            if (useAsyncDispose)
+            {
+                await target.DisposeAsync();
+            }
+            else
+            {
+                target.Dispose();
+            }
+
+            File.Exists(lateArtifact).Should().BeFalse(
+                "the post-termination scan must catch artifacts created after the initial scan");
+            File.Exists(unrelatedArtifact).Should().BeTrue(
+                "cleanup must not delete artifacts that are not attributable to the launched pid");
+        }
+        finally
+        {
+            if (target is not null)
+            {
+                await target.DisposeAsync();
+            }
+
             Directory.Delete(testRoot, recursive: true);
         }
     }

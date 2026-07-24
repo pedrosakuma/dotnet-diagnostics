@@ -12,18 +12,31 @@ namespace DotnetDiagnostics.Core.Launch;
 /// </summary>
 public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
 {
+    private static readonly TimeSpan TerminationWaitTimeout = TimeSpan.FromSeconds(5);
     private readonly Process _process;
+    private readonly int _processId;
     private readonly string[] _diagnosticArtifactDirectories;
+    private readonly Action? _postTerminationObserver;
     private bool _disposed;
 
     internal LaunchedTarget(Process process, string[]? diagnosticArtifactDirectories = null)
+        : this(process, diagnosticArtifactDirectories, postTerminationObserver: null)
+    {
+    }
+
+    internal LaunchedTarget(
+        Process process,
+        string[]? diagnosticArtifactDirectories,
+        Action? postTerminationObserver)
     {
         _process = process ?? throw new ArgumentNullException(nameof(process));
+        _processId = process.Id;
         _diagnosticArtifactDirectories = diagnosticArtifactDirectories ?? Array.Empty<string>();
+        _postTerminationObserver = postTerminationObserver;
     }
 
     /// <summary>Operating-system process id of the launched target.</summary>
-    public int ProcessId => _process.Id;
+    public int ProcessId => _processId;
 
     /// <summary>True once the launched target has exited.</summary>
     public bool HasExited
@@ -54,20 +67,38 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
         }
 
         _disposed = true;
-        var diagnosticArtifacts = CaptureDiagnosticArtifacts();
+        var diagnosticArtifacts = new HashSet<string>(StringComparer.Ordinal);
+        CaptureDiagnosticArtifacts(diagnosticArtifacts);
         try
         {
-            TryKill();
+            if (TryKill())
+            {
+                try
+                {
+                    _process.WaitForExit((int)TerminationWaitTimeout.TotalMilliseconds);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Reaped elsewhere; the post-termination scan below is still safe.
+                }
+            }
         }
         finally
         {
             try
             {
-                _process.Dispose();
+                RunPostTerminationArtifactScan(diagnosticArtifacts);
             }
             finally
             {
-                DeleteDiagnosticArtifacts(diagnosticArtifacts);
+                try
+                {
+                    _process.Dispose();
+                }
+                finally
+                {
+                    DeleteDiagnosticArtifacts(diagnosticArtifacts);
+                }
             }
         }
     }
@@ -84,14 +115,15 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
         }
 
         _disposed = true;
-        var diagnosticArtifacts = CaptureDiagnosticArtifacts();
+        var diagnosticArtifacts = new HashSet<string>(StringComparer.Ordinal);
+        CaptureDiagnosticArtifacts(diagnosticArtifacts);
         try
         {
             if (TryKill())
             {
                 try
                 {
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    using var cts = new CancellationTokenSource(TerminationWaitTimeout);
                     await _process.WaitForExitAsync(cts.Token).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException)
@@ -104,30 +136,46 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
         {
             try
             {
-                _process.Dispose();
+                RunPostTerminationArtifactScan(diagnosticArtifacts);
             }
             finally
             {
-                DeleteDiagnosticArtifacts(diagnosticArtifacts);
+                try
+                {
+                    _process.Dispose();
+                }
+                finally
+                {
+                    DeleteDiagnosticArtifacts(diagnosticArtifacts);
+                }
             }
         }
     }
 
-    private string[] CaptureDiagnosticArtifacts()
+    private void RunPostTerminationArtifactScan(HashSet<string> artifacts)
+    {
+        if (HasExited)
+        {
+            _postTerminationObserver?.Invoke();
+        }
+
+        CaptureDiagnosticArtifacts(artifacts);
+    }
+
+    private void CaptureDiagnosticArtifacts(HashSet<string> artifacts)
     {
         if (OperatingSystem.IsWindows() || _diagnosticArtifactDirectories.Length == 0)
         {
-            return Array.Empty<string>();
+            return;
         }
 
-        var pid = ProcessId.ToString(CultureInfo.InvariantCulture);
+        var pid = _processId.ToString(CultureInfo.InvariantCulture);
         string[] patterns =
         [
             $"dotnet-diagnostic-{pid}-*-socket",
             $"clr-debug-pipe-{pid}-*-in",
             $"clr-debug-pipe-{pid}-*-out",
         ];
-        var artifacts = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var directory in _diagnosticArtifactDirectories)
         {
@@ -152,11 +200,9 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
                 // Best-effort only: cleanup must never hide the command's real result.
             }
         }
-
-        return artifacts.ToArray();
     }
 
-    private static void DeleteDiagnosticArtifacts(string[] artifacts)
+    private static void DeleteDiagnosticArtifacts(HashSet<string> artifacts)
     {
         foreach (var path in artifacts)
         {
