@@ -12,29 +12,35 @@ namespace DotnetDiagnostics.Core.Launch;
 /// </summary>
 public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
 {
+    internal enum CleanupStage
+    {
+        AfterInitialScan,
+        AfterPreExitScan,
+    }
+
     private static readonly TimeSpan TerminationWaitTimeout = TimeSpan.FromSeconds(5);
     private readonly Process _process;
     private readonly int _processId;
     private readonly string? _diagnosticArtifactIdentity;
     private readonly string[] _diagnosticArtifactDirectories;
-    private readonly Action<int, string>? _postKillObserver;
+    private readonly Action<CleanupStage, int, string>? _cleanupObserver;
     private bool _disposed;
 
     internal LaunchedTarget(Process process, string[]? diagnosticArtifactDirectories = null)
-        : this(process, diagnosticArtifactDirectories, postKillObserver: null)
+        : this(process, diagnosticArtifactDirectories, cleanupObserver: null)
     {
     }
 
     internal LaunchedTarget(
         Process process,
         string[]? diagnosticArtifactDirectories,
-        Action<int, string>? postKillObserver)
+        Action<CleanupStage, int, string>? cleanupObserver)
     {
         _process = process ?? throw new ArgumentNullException(nameof(process));
         _processId = process.Id;
         _diagnosticArtifactIdentity = TryGetDiagnosticArtifactIdentity(process);
         _diagnosticArtifactDirectories = diagnosticArtifactDirectories ?? Array.Empty<string>();
-        _postKillObserver = postKillObserver;
+        _cleanupObserver = cleanupObserver;
     }
 
     /// <summary>Operating-system process id of the launched target.</summary>
@@ -72,25 +78,22 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
 
         _disposed = true;
         var diagnosticArtifacts = new HashSet<string>(StringComparer.Ordinal);
-        // TryKill probes HasExited and may reap an already-finished child, so remove the initial set
-        // first while the pid still unambiguously belongs to this Process instance.
-        CaptureDiagnosticArtifacts(diagnosticArtifacts);
-        DeleteDiagnosticArtifacts(diagnosticArtifacts);
         try
         {
+            // TryKill probes HasExited and may reap an already-finished child, so remove the initial
+            // set first while the pid still unambiguously belongs to this Process instance.
+            CaptureDiagnosticArtifacts(diagnosticArtifacts);
+            DeleteDiagnosticArtifacts(diagnosticArtifacts);
+            NotifyCleanupObserver(CleanupStage.AfterInitialScan);
+
             var killSignaled = TryKill();
             if (killSignaled)
             {
-                if (_diagnosticArtifactIdentity is not null)
-                {
-                    _postKillObserver?.Invoke(_processId, _diagnosticArtifactIdentity);
-                }
-
                 // Scan again after signaling kill but before WaitForExit can reap and release the pid.
                 CaptureDiagnosticArtifacts(diagnosticArtifacts);
+                DeleteDiagnosticArtifacts(diagnosticArtifacts);
+                NotifyCleanupObserver(CleanupStage.AfterPreExitScan);
             }
-
-            DeleteDiagnosticArtifacts(diagnosticArtifacts);
 
             if (killSignaled)
             {
@@ -106,7 +109,17 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
         }
         finally
         {
-            _process.Dispose();
+            try
+            {
+                // Exact pid + launch identity matching remains safe even if the child was reaped and
+                // the numeric pid has already been reused by another process.
+                CaptureDiagnosticArtifacts(diagnosticArtifacts);
+                DeleteDiagnosticArtifacts(diagnosticArtifacts);
+            }
+            finally
+            {
+                _process.Dispose();
+            }
         }
     }
 
@@ -123,25 +136,22 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
 
         _disposed = true;
         var diagnosticArtifacts = new HashSet<string>(StringComparer.Ordinal);
-        // TryKill probes HasExited and may reap an already-finished child, so remove the initial set
-        // first while the pid still unambiguously belongs to this Process instance.
-        CaptureDiagnosticArtifacts(diagnosticArtifacts);
-        DeleteDiagnosticArtifacts(diagnosticArtifacts);
         try
         {
+            // TryKill probes HasExited and may reap an already-finished child, so remove the initial
+            // set first while the pid still unambiguously belongs to this Process instance.
+            CaptureDiagnosticArtifacts(diagnosticArtifacts);
+            DeleteDiagnosticArtifacts(diagnosticArtifacts);
+            NotifyCleanupObserver(CleanupStage.AfterInitialScan);
+
             var killSignaled = TryKill();
             if (killSignaled)
             {
-                if (_diagnosticArtifactIdentity is not null)
-                {
-                    _postKillObserver?.Invoke(_processId, _diagnosticArtifactIdentity);
-                }
-
                 // Scan again after signaling kill but before WaitForExitAsync can reap and release the pid.
                 CaptureDiagnosticArtifacts(diagnosticArtifacts);
+                DeleteDiagnosticArtifacts(diagnosticArtifacts);
+                NotifyCleanupObserver(CleanupStage.AfterPreExitScan);
             }
-
-            DeleteDiagnosticArtifacts(diagnosticArtifacts);
 
             if (killSignaled)
             {
@@ -158,7 +168,25 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
         }
         finally
         {
-            _process.Dispose();
+            try
+            {
+                // Exact pid + launch identity matching remains safe even if the child was reaped and
+                // the numeric pid has already been reused by another process.
+                CaptureDiagnosticArtifacts(diagnosticArtifacts);
+                DeleteDiagnosticArtifacts(diagnosticArtifacts);
+            }
+            finally
+            {
+                _process.Dispose();
+            }
+        }
+    }
+
+    private void NotifyCleanupObserver(CleanupStage stage)
+    {
+        if (_diagnosticArtifactIdentity is not null)
+        {
+            _cleanupObserver?.Invoke(stage, _processId, _diagnosticArtifactIdentity);
         }
     }
 

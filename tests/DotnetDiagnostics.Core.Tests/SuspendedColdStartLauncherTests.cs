@@ -120,7 +120,7 @@ public sealed class SuspendedColdStartLauncherTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task LaunchedTarget_Dispose_RemovesArtifactsCreatedAfterKillBeforeReaping(bool useAsyncDispose)
+    public async Task LaunchedTarget_Dispose_RemovesArtifactsCreatedAfterPreExitScan(bool useAsyncDispose)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -151,8 +151,13 @@ public sealed class SuspendedColdStartLauncherTests
             target = new LaunchedTarget(
                 process,
                 [longTempPath],
-                postKillObserver: (pid, identity) =>
+                cleanupObserver: (stage, pid, identity) =>
                 {
+                    if (stage != LaunchedTarget.CleanupStage.AfterPreExitScan)
+                    {
+                        return;
+                    }
+
                     lateArtifact = Path.Combine(longTempPath, $"dotnet-diagnostic-{pid}-{identity}-socket");
                     reusedPidArtifact = Path.Combine(longTempPath, $"dotnet-diagnostic-{pid}-{identity}1-socket");
                     File.WriteAllText(lateArtifact, "late");
@@ -171,9 +176,84 @@ public sealed class SuspendedColdStartLauncherTests
             lateArtifact.Should().NotBeNull();
             reusedPidArtifact.Should().NotBeNull();
             File.Exists(lateArtifact!).Should().BeFalse(
-                "the pre-reap scan must catch artifacts created after kill was signaled");
+                "the final exact-identity scan must catch artifacts created after the pre-exit scan");
             File.Exists(reusedPidArtifact!).Should().BeTrue(
                 "cleanup must not delete a same-pid artifact with a different launch identity");
+        }
+        finally
+        {
+            if (target is not null)
+            {
+                await target.DisposeAsync();
+            }
+
+            Directory.Delete(testRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LaunchedTarget_Dispose_NaturalExitRunsFinalIdentityScan(bool useAsyncDispose)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var testRoot = Path.Combine(
+            AppContext.BaseDirectory,
+            "natural-exit-temp",
+            Guid.NewGuid().ToString("N"));
+        var longTempPath = Path.Combine(testRoot, new string('x', 48), new string('y', 48));
+        Directory.CreateDirectory(longTempPath);
+
+        LaunchedTarget? target = null;
+        try
+        {
+            var startInfo = new ProcessStartInfo("/bin/sh")
+            {
+                UseShellExecute = false,
+            };
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("sleep 0.2");
+            var process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("Failed to start natural-exit cleanup test process.");
+            string? lateArtifact = null;
+            string? reusedPidArtifact = null;
+
+            target = new LaunchedTarget(
+                process,
+                [longTempPath],
+                cleanupObserver: (stage, pid, identity) =>
+                {
+                    if (stage != LaunchedTarget.CleanupStage.AfterInitialScan)
+                    {
+                        return;
+                    }
+
+                    lateArtifact = Path.Combine(longTempPath, $"dotnet-diagnostic-{pid}-{identity}-socket");
+                    reusedPidArtifact = Path.Combine(longTempPath, $"dotnet-diagnostic-{pid}-{identity}1-socket");
+                    File.WriteAllText(lateArtifact, "natural-exit");
+                    File.WriteAllText(reusedPidArtifact, "reused-pid");
+                    process.WaitForExit(5_000).Should().BeTrue("the child should exit naturally before TryKill");
+                });
+
+            if (useAsyncDispose)
+            {
+                await target.DisposeAsync();
+            }
+            else
+            {
+                target.Dispose();
+            }
+
+            lateArtifact.Should().NotBeNull();
+            reusedPidArtifact.Should().NotBeNull();
+            File.Exists(lateArtifact!).Should().BeFalse(
+                "the final exact-identity scan must catch artifacts created before natural exit");
+            File.Exists(reusedPidArtifact!).Should().BeTrue(
+                "cleanup must preserve a same-pid artifact with a different launch identity");
         }
         finally
         {
