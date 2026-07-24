@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -37,6 +38,12 @@ internal static class ReplicaCounterFanout
         int AttachedActivePods,
         IReadOnlyList<string> PodErrors);
 
+    private sealed record ProcessResolution(
+        InvestigationHandle Handle,
+        bool Succeeded,
+        int? ProcessId,
+        string Failure);
+
     internal static async Task<FanoutResult> CompareAsync(
         IInvestigationStore store,
         IInvestigationProxyClient proxy,
@@ -53,11 +60,35 @@ internal static class ReplicaCounterFanout
         var handles = ResolveHandles(store, callerBearerName, investigationHandleIds, errors);
         var readings = new List<ReplicaCounterReading>(handles.Length);
         var arguments = BuildCountersArguments(durationSeconds, intervalSeconds);
+        var timeoutSeconds = durationSeconds + 30;
+        var deadline = CreateDeadline(TimeSpan.FromSeconds(timeoutSeconds));
 
-        // Simultaneous fan-out: dispatch all per-Pod collections concurrently so the windows overlap
-        // (replica skew is only meaningful when sampled at the same wall-clock moment).
-        var tasks = handles.Select(handle => CollectAsync(proxy, handle, arguments, durationSeconds, cancellationToken)).ToArray();
-        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+        // Phase 1 resolves every transport-neutral selector concurrently. No collection starts
+        // until every resolution has completed or failed, otherwise slow Pod-local discovery
+        // shifts that replica's EventPipe window later than its peers.
+        var resolutionTasks = handles
+            .Select(handle => ResolveAsync(proxy, handle, deadline, timeoutSeconds, cancellationToken))
+            .ToArray();
+        var resolutions = await Task.WhenAll(resolutionTasks).ConfigureAwait(false);
+
+        var resolved = new List<ProcessResolution>(resolutions.Length);
+        foreach (var resolution in resolutions)
+        {
+            if (!resolution.Succeeded)
+            {
+                errors.Add($"Pod '{resolution.Handle.PodName}' (handle {resolution.Handle.HandleId}): {resolution.Failure}");
+                continue;
+            }
+
+            resolved.Add(resolution);
+        }
+
+        // Phase 2 is the common barrier: only after all selector lookups finish do we create every
+        // collection task. Task.WhenAll preserves the resolved-handle ordering in the output.
+        var collectionTasks = resolved
+            .Select(resolution => CollectAsync(proxy, resolution, arguments, deadline, timeoutSeconds, cancellationToken))
+            .ToArray();
+        var results = await Task.WhenAll(collectionTasks).ConfigureAwait(false);
 
         foreach (var (handle, snapshot, failure) in results)
         {
@@ -79,36 +110,87 @@ internal static class ReplicaCounterFanout
         return new FanoutResult(skew, handles.Length, errors);
     }
 
-    private static async Task<(InvestigationHandle Handle, CounterSnapshot? Snapshot, string Failure)> CollectAsync(
+    private static async Task<ProcessResolution> ResolveAsync(
         IInvestigationProxyClient proxy,
         InvestigationHandle handle,
-        Dictionary<string, JsonElement> arguments,
-        int durationSeconds,
+        long deadline,
+        int timeoutSeconds,
         CancellationToken cancellationToken)
     {
+        if (handle.ProcessSelector is null)
+        {
+            return new ProcessResolution(handle, true, null, string.Empty);
+        }
+
+        var remaining = GetRemaining(deadline);
+        if (remaining <= TimeSpan.Zero)
+        {
+            return new ProcessResolution(
+                handle,
+                false,
+                null,
+                $"process selection timed out after {timeoutSeconds}s");
+        }
+
+        using var perPodCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        perPodCts.CancelAfter(remaining);
+        try
+        {
+            var (processId, failure) = await ResolveProcessIdAsync(
+                proxy,
+                handle,
+                handle.ProcessSelector,
+                perPodCts.Token).ConfigureAwait(false);
+            return processId is null
+                ? new ProcessResolution(handle, false, null, failure)
+                : new ProcessResolution(handle, true, processId, string.Empty);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return new ProcessResolution(
+                handle,
+                false,
+                null,
+                $"process selection timed out after {timeoutSeconds}s");
+        }
+        catch (Exception ex)
+        {
+            return new ProcessResolution(handle, false, null, ex.Message);
+        }
+    }
+
+    private static async Task<(InvestigationHandle Handle, CounterSnapshot? Snapshot, string Failure)> CollectAsync(
+        IInvestigationProxyClient proxy,
+        ProcessResolution resolution,
+        Dictionary<string, JsonElement> arguments,
+        long deadline,
+        int timeoutSeconds,
+        CancellationToken cancellationToken)
+    {
+        var handle = resolution.Handle;
         // The proxy transport sets an infinite HttpClient timeout, so a single stuck port-forward
         // would hang Task.WhenAll forever. Bound each pod to its collection window + slack and turn
         // a hung pod into a per-pod error, never a fan-out-wide hang. Caller cancellation still wins.
+        var remaining = GetRemaining(deadline);
+        if (remaining <= TimeSpan.Zero)
+        {
+            return (handle, null, $"timed out after {timeoutSeconds}s");
+        }
+
         using var perPodCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        perPodCts.CancelAfter(TimeSpan.FromSeconds(durationSeconds + 30));
+        perPodCts.CancelAfter(remaining);
         try
         {
             var countersArguments = arguments;
-            if (handle.ProcessSelector is not null)
+            if (resolution.ProcessId is { } processId)
             {
-                var (processId, selectionFailure) = await ResolveProcessIdAsync(
-                    proxy,
-                    handle,
-                    handle.ProcessSelector,
-                    perPodCts.Token).ConfigureAwait(false);
-                if (processId is null)
-                {
-                    return (handle, null, selectionFailure);
-                }
-
                 countersArguments = new Dictionary<string, JsonElement>(arguments, StringComparer.Ordinal)
                 {
-                    ["processId"] = JsonSerializer.SerializeToElement(processId.Value),
+                    ["processId"] = JsonSerializer.SerializeToElement(processId),
                 };
             }
 
@@ -123,12 +205,23 @@ internal static class ReplicaCounterFanout
         }
         catch (OperationCanceledException)
         {
-            return (handle, null, $"timed out after {durationSeconds + 30}s");
+            return (handle, null, $"timed out after {timeoutSeconds}s");
         }
         catch (Exception ex)
         {
             return (handle, null, ex.Message);
         }
+    }
+
+    private static long CreateDeadline(TimeSpan timeout)
+        => Stopwatch.GetTimestamp() + (long)(timeout.TotalSeconds * Stopwatch.Frequency);
+
+    private static TimeSpan GetRemaining(long deadline)
+    {
+        var remainingTicks = deadline - Stopwatch.GetTimestamp();
+        return remainingTicks <= 0
+            ? TimeSpan.Zero
+            : TimeSpan.FromSeconds((double)remainingTicks / Stopwatch.Frequency);
     }
 
     private static async Task<(int? ProcessId, string Failure)> ResolveProcessIdAsync(
@@ -304,6 +397,7 @@ internal static class ReplicaCounterFanout
         {
             return store.Snapshot()
                 .Where(h => h.State == InvestigationState.Active && IsOwnedByCaller(h, callerBearerName))
+                .OrderBy(h => h.HandleId, StringComparer.Ordinal)
                 .ToArray();
         }
 
