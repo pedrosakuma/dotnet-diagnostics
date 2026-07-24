@@ -5,6 +5,7 @@ using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Text;
 using DotnetDiagnostics.Core.Artifacts;
+using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Memory;
 using Microsoft.Diagnostics.Runtime;
 using Microsoft.Extensions.Logging;
@@ -77,7 +78,7 @@ public sealed class ClrMdJitMethodCapturer : IJitMethodCapturer
         {
             CapturedMethodBytes artifact;
             IReadOnlyList<PendingWrite> writes;
-            using (var target = DataTarget.LoadDump(dumpFilePath))
+            using (var target = ClrMdDumpLoader.Load(dumpFilePath))
             {
                 (artifact, writes) = Capture(target, request, CapturedMethodBytesOrigin.Dump, cancellationToken);
             }

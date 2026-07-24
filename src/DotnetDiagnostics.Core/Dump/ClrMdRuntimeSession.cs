@@ -39,7 +39,7 @@ internal sealed class ClrMdRuntimeSession : IDisposable
 
     public static ClrMdRuntimeSession LoadDump(string dumpFilePath)
     {
-        var target = DataTarget.LoadDump(dumpFilePath);
+        var target = ClrMdDumpLoader.Load(dumpFilePath);
         try
         {
             var clrInfo = target.ClrVersions.FirstOrDefault()

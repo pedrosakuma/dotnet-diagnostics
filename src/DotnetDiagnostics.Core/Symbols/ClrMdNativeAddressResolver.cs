@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.Threads;
 using Microsoft.Diagnostics.Runtime;
@@ -99,7 +100,7 @@ public sealed class ClrMdNativeAddressResolver : INativeAddressResolver
                 throw new InvalidOperationException("Dump-origin thread snapshot has no retained dump path; cannot resolve addresses.");
             }
 
-            return DataTarget.LoadDump(artifact.DumpFilePath);
+            return ClrMdDumpLoader.Load(artifact.DumpFilePath);
         }
 
         if (artifact.ProcessId <= 0)

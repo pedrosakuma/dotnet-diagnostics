@@ -26,6 +26,45 @@
   10. 0.3% `System.Threading.Thread.<PollGC>g__PollGCWorker|67_0()`
 - Interpretation: wall time is real (~1.2s/op) but the profiler mostly catches harness/profiler waiting, not a managed hot loop inside the inspector. The first clearly relevant frames are ClrMD DAC reads, so the dominant cost is still raw heap walking / memory reads, not avoidable LINQ or boxing in the new bounded streaming paths.
 
+### Dump-file path — `UseLockFreeMemoryMapReader` experiment (issue #686)
+
+- Question: does ClrMD 4.0's opt-in lock-free memory-mapped dump reader
+  (`DataTargetOptions.UseLockFreeMemoryMapReader`) speed up our dump-based drilldowns
+  (`inspect_heap(source="dump")`, `query_snapshot` gcroot/object/objsize, `capture_method_bytes`
+  on a dump)? These all call `DataTarget.LoadDump(path)` today.
+- Thread-safety audit (required before enabling — the resulting reader is not thread-safe): every
+  dump-based call site (`ClrMdRuntimeSession.LoadDump`, `ClrMdThreadSnapshotInspector.CaptureDump`,
+  `ClrMdFrameVariableResolver.OpenTarget`, `ClrMdNativeAddressResolver.OpenTarget`,
+  `ClrMdJitMethodCapturer.CaptureFromDumpAsync`) opens its own short-lived `DataTarget` inside a
+  single method call and never shares it across threads or across requests (each MCP tool
+  invocation opens a fresh `DataTarget`). No code in the repo reads `ClrRuntime.IsThreadSafe`. So
+  there is no cross-call-site contention risk from disabling the default reader's internal locking.
+- Spike method: a throwaway console harness (not committed) launched a real `CoreClrSample.dll`
+  child process, called `/leak?mb=32` 40x to retain ~1.28 GiB of heap, wrote a `WithHeap` dump via
+  `DiagnosticsClient.WriteDump(..., logDumpGeneration: false)` (1510 MiB dump file), then repeated a
+  full `heap.EnumerateObjects()` (sum sizes/count) + `heap.EnumerateRoots()` pass 8x against the same
+  dump file with the default reader and 8x with `UseLockFreeMemoryMapReader = true` — the same read
+  pattern `inspect_heap`/gcroot/objsize drilldowns exercise.
+- Result (wall-clock per full pass, 8 iterations each, first default-reader iteration excluded as a
+  cold-cache outlier):
+
+  | Reader | mean | min | max |
+  | --- | --- | --- | --- |
+  | Default (stream + locks) | ~60.6 ms | 48.5 ms | 72.6 ms |
+  | Lock-free mmap | ~45.6 ms | 29.7 ms | 105.9 ms |
+
+  Object count (15,701) and total heap bytes (1,343,662,259) were identical between both readers on
+  every iteration — no correctness difference, only speed. The lock-free reader was **~1.3-1.8x
+  faster** on typical iterations (one outlier iteration at 105.9ms was still faster than the
+  default-reader median).
+- Decision: **enabled unconditionally.** Added `ClrMdDumpLoader.Load(path)` (wraps
+  `DataTarget.LoadDump(path, new DataTargetOptions { UseLockFreeMemoryMapReader = true })`) and
+  routed all 5 dump-file call sites through it. No config knob was added — the thread-safety
+  audit above shows no call site is affected, and the memory cost is the same order of magnitude
+  as the default reader already touching most of the dump for a heap walk (not tested against an
+  extremely large dump far exceeding available address space / RAM; revisit if that ever becomes a
+  real scenario per `docs/resource-boundedness.md`).
+
 ## GcDumpHeapSnapshotCollector
 
 - Setup: real `CollectAsync` gcdump-style EventPipe heap walk against the same primed sample
@@ -167,3 +206,5 @@
 - The only materially expensive managed collectors in this group are the ClrMD-backed ones (`ClrMdDumpInspector`, `ClrMdThreadSnapshotInspector`, `RuntimeConfigInspector`), and their visible cost is still dominated by ClrMD attach / DAC reads rather than avoidable managed hot loops.
 - `RequestsNowCollector`, `ProcessResourcesCollector`, `PreflightInspector`, and `CgroupV2SignalsCollector` look allocation-bounded and CPU-light enough that I would not change them without a different workload showing something more specific.
 - I did **not** apply a code fix in Group C because I did not find a profiler-backed, high-confidence micro-optimization worth taking on its own.
+- One exception: the `UseLockFreeMemoryMapReader` experiment above (issue #686) *did* find a real,
+  low-risk win for the dump-file read path specifically, and was applied — see `ClrMdDumpLoader`.

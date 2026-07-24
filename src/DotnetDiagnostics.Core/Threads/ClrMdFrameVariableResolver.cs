@@ -1,4 +1,5 @@
 using System.Globalization;
+using DotnetDiagnostics.Core.Dump;
 using Microsoft.Diagnostics.Runtime;
 
 namespace DotnetDiagnostics.Core.Threads;
@@ -139,7 +140,7 @@ public sealed class ClrMdFrameVariableResolver : IFrameVariableResolver
             {
                 throw new InvalidOperationException("Dump-origin thread snapshot has no retained dump path; cannot inspect frame locals.");
             }
-            return DataTarget.LoadDump(artifact.DumpFilePath);
+            return ClrMdDumpLoader.Load(artifact.DumpFilePath);
         }
         if (artifact.ProcessId <= 0)
         {
