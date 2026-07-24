@@ -38,7 +38,7 @@ you're using, then reach for the cross-cutting references.
 | [`aot-coverage.md`](./aot-coverage.md) | NativeAOT capability matrix and limitations |
 | [`consumer-install.md`](./consumer-install.md) | Full install walkthrough (global tool, container, self-contained binary, Linux ptrace) |
 | [`client-setup.md`](./client-setup.md) | Connecting to the server from the C# SDK, GUI MCP clients, and `curl` smoke tests |
-| [`local-docker-sidecar.md`](./local-docker-sidecar.md) | Reproducing the K8s sidecar topology locally with plain Docker (`--pid=container:` + shared `/tmp`) |
+| [`local-docker-sidecar.md`](./local-docker-sidecar.md) | Reproducing the K8s sidecar topology locally with an anchored Docker PID namespace + shared `/tmp` |
 
 ### CLI (`dotnet-diagnostics-cli`)
 

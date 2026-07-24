@@ -3,9 +3,18 @@
 Reproduces the Kubernetes sidecar topology with plain Docker, so you can run
 the whole stack locally before deploying to a cluster.
 
-Two images, two containers, one shared `/tmp` volume + a shared PID namespace
-— the exact building blocks Kubernetes provides via `emptyDir` +
-`shareProcessNamespace`.
+Two application images, three containers, one shared `/tmp` volume, and one
+shared PID namespace reproduce the relevant Kubernetes building blocks. The
+third container is an inert PID-namespace anchor.
+
+> **Crash-guard requires the anchor.** The old two-container recipe made the
+> target PID 1 and launched the sidecar with `--pid=container:sample`. Linux
+> kills every remaining process in a PID namespace when its PID 1 exits, so a
+> target crash also killed the MCP server before it could return the structured
+> crash-guard result. Docker cannot make that two-container topology survive.
+> The supported recipe below makes a stable anchor PID 1, then joins both the
+> target and sidecar to it. This mirrors the relevant Kubernetes pod-sandbox
+> ownership without exposing the host PID namespace.
 
 ## Build the images
 
@@ -30,33 +39,69 @@ docker build -t coreclr-sample:dev   -f samples/CoreClrSample/Dockerfile .
 > ```
 >
 
-## Run the topology
+## Run the supported topology
+
+The checked-in Compose file is the canonical and reproducible path:
+
+```bash
+docker compose -f deploy/docker-compose.crash-guard.yml up --build -d --wait
+```
+
+It publishes the target on `127.0.0.1:18180`, the MCP server on
+`127.0.0.1:18887`, uses bearer token `dev-token`, and builds the lean MCP image
+without `perf`. Its target is `BadCodeSample`, which provides the deliberate
+crash endpoint needed by the acceptance test. Run
+`scripts/test-docker-crash-guard.sh` for the full container-backed crash
+assertion. If both `:dev` images already exist and the machine is temporarily
+offline, set `DOCKER_CRASH_GUARD_SKIP_BUILD=1` to test those local images
+without rebuilding.
+
+For the same anchored namespace pattern with `CoreClrSample` instead, use:
 
 ```bash
 docker network create diagmcp-net 2>/dev/null || true
 docker volume  create diagnosticsmcp-tmp >/dev/null
 
-# 1) the target app — owns PID 1 in the shared namespace
+# 1) stable namespace owner — survives target exit
+docker run -d --name diag-pid-anchor --network diagmcp-net \
+  --entrypoint tail coreclr-sample:dev -f /dev/null
+
+# 2) target app — joins the anchor namespace and is not PID 1
 docker run -d --name sample --network diagmcp-net \
+  --pid=container:diag-pid-anchor \
   -v diagnosticsmcp-tmp:/tmp \
   -p 18080:8080 \
   coreclr-sample:dev
 
-# 2) the MCP sidecar — joins sample's PID namespace and /tmp volume
+# 3) MCP sidecar — joins the same stable namespace and /tmp volume
 docker run -d --name mcp --network diagmcp-net \
-  --pid=container:sample \
+  --pid=container:diag-pid-anchor \
   -v diagnosticsmcp-tmp:/tmp \
   --user 0 \
   --cap-add SYS_PTRACE \
   -e MCP_BEARER_TOKEN=dev-token \
-  -p 18787:8080 \
+  -p 18887:8080 \
   dotnet-diagnostics-mcp:dev
 ```
 
 `--user 0` is the easy path for local validation because the sample image runs
-as root and creates `/tmp/dotnet-diagnostic-1` owned by root. In Kubernetes,
+as root and creates its `/tmp/dotnet-diagnostic-<pid>` socket as root. In Kubernetes,
 the recommended setup is to run **both** containers as the same non-root UID
 (the sample manifest pins UID/GID `10001` and sets `fsGroup: 10001`).
+
+The target PID is no longer `1`; discover it with
+`inspect_process(view="list", commandLineContains="CoreClrSample")`. Keeping the
+shared `/tmp` volume mounted preserves the diagnostic IPC filesystem while the
+already-open EventPipe stream drains after target exit.
+
+### Why not `pid: host`?
+
+Host PID mode also survives target exit, but it gives the diagnostics container
+visibility into every host process and materially widens the impact of
+`CAP_SYS_PTRACE`. It is not the supported container-target recipe. Use it only
+for an explicitly trusted developer-machine workflow that must inspect a .NET
+process running directly on the host. For production-like parity, use the
+anchored Compose topology above or the Kubernetes sidecar manifest.
 
 ### Sidecar ops: auto-recycle on image swap
 
@@ -106,10 +151,10 @@ need `CAP_SYS_PTRACE` — they go through the diagnostic IPC socket only.
 
 ```bash
 # Health (no auth)
-curl -fsS http://127.0.0.1:18787/health
+curl -fsS http://127.0.0.1:18887/health
 
 # Initialize the MCP session and grab the session id from the response header
-curl -fsS -X POST http://127.0.0.1:18787/mcp \
+curl -fsS -X POST http://127.0.0.1:18887/mcp \
   -H 'Authorization: Bearer dev-token' \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
@@ -119,7 +164,7 @@ curl -fsS -X POST http://127.0.0.1:18787/mcp \
 SID=$(grep -i '^mcp-session-id:' headers.txt | awk '{print $2}' | tr -d '\r')
 
 # Finish the handshake
-curl -fsS -X POST http://127.0.0.1:18787/mcp \
+curl -fsS -X POST http://127.0.0.1:18887/mcp \
   -H "Authorization: Bearer dev-token" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
@@ -127,31 +172,39 @@ curl -fsS -X POST http://127.0.0.1:18787/mcp \
   -d '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'
 
 # Discover .NET processes the sidecar can see
-curl -fsS -X POST http://127.0.0.1:18787/mcp \
+curl -fsS -X POST http://127.0.0.1:18887/mcp \
   -H "Authorization: Bearer dev-token" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -H "mcp-session-id: $SID" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"inspect_process(view="list")","arguments":{}}}'
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"inspect_process","arguments":{"view":"list"}}}'
 ```
 
-You should see at least PID `1` (the sample) and the sidecar's own PID.
+You should see the sample and sidecar .NET processes; PID `1` is the non-.NET
+namespace anchor.
 
-Collect 5 seconds of `System.Runtime` counters from PID 1:
+Discover the sample PID from the list response, then collect 5 seconds of
+`System.Runtime` counters from it:
 
 ```bash
-curl -fsS -X POST http://127.0.0.1:18787/mcp \
+curl -fsS -X POST http://127.0.0.1:18887/mcp \
   -H "Authorization: Bearer dev-token" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -H "mcp-session-id: $SID" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"collect_events(kind="counters")","arguments":{"processId":1,"durationSeconds":5,"providers":["System.Runtime"]}}}'
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"collect_events","arguments":{"kind":"counters","processId":<sample-pid>,"durationSeconds":5,"providers":["System.Runtime"]}}}'
 ```
 
 ## Tear down
 
 ```bash
-docker rm -f mcp sample
+docker rm -f mcp sample diag-pid-anchor
 docker volume rm diagnosticsmcp-tmp
 docker network rm diagmcp-net
+```
+
+For the Compose path, use:
+
+```bash
+docker compose -f deploy/docker-compose.crash-guard.yml down -v
 ```

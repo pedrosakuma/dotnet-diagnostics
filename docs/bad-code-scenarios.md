@@ -7,28 +7,21 @@ current unified tool surface.
 
 ## Topology used for these scenarios
 
-We run **three** containers in the same Docker network, with the sample +
-sidecar sharing a PID namespace and `/tmp` (mirroring the K8s sidecar):
+We run an inert PID-namespace anchor, the sample, and the sidecar. Both .NET
+containers join the anchor's namespace and share `/tmp`:
 
 ```bash
-docker network create diagmcp-net 2>/dev/null || true
-docker volume  create badcode-tmp >/dev/null
-
-docker run -d --name badcode --network diagmcp-net \
-  -v badcode-tmp:/tmp \
-  -p 18180:8080 \
-  badcode-sample:dev
-
-docker run -d --name badcode-mcp --network diagmcp-net \
-  --pid=container:badcode \
-  -v badcode-tmp:/tmp \
-  --user 0 \
-  --cap-add SYS_PTRACE \
-  -e MCP_BEARER_TOKEN=dev-token \
-  -p 18887:8080 \
-  dotnet-diagnostics-mcp:dev
+docker compose -f deploy/docker-compose.crash-guard.yml up --build -d --wait
 ```
 
+> **Do not replace the anchor with `pid: service:target` or
+> `--pid=container:badcode`.** In that two-container topology the target owns
+> namespace PID 1, so Linux kills the sidecar when the target exits. Scenario 8
+> then ends with a broken MCP transport instead of a crash-guard envelope. The
+> anchor is the supported local Docker topology; `pid: host` is unnecessary and
+> exposes all host processes. See
+> [`local-docker-sidecar.md`](./local-docker-sidecar.md#run-the-supported-topology).
+>
 > `--cap-add SYS_PTRACE` is required for live memory readers
 > (`collect_thread_snapshot`, `inspect_heap(source="live")`, `capture_method_bytes`,
 > `get_bytes(kind="module")`, and
@@ -42,7 +35,8 @@ Trigger a scenario from your shell (the `badcode` container exposes the API on
 `http://127.0.0.1:18180`) **at the same time** as you collect from the MCP
 sidecar (`http://127.0.0.1:18887`).
 
-The sample PID inside the shared namespace is `1` (it owns the container).
+The sample is intentionally **not** PID 1. Discover it with
+`inspect_process(view="list", commandLineContains="BadCodeSample")`.
 
 ## The scenarios
 
