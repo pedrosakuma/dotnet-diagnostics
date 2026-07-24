@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 
 namespace DotnetDiagnostics.Core.Launch;
 
@@ -6,15 +7,20 @@ namespace DotnetDiagnostics.Core.Launch;
 /// Owns the lifetime of a child process spawned by <see cref="ChildProcessLauncher.Launch"/>. The
 /// diagnostics process is the target's ptrace parent for as long as this handle is alive, which is
 /// what unblocks descendant attach under Yama <c>ptrace_scope=1</c>. Disposing terminates the child
-/// (best-effort) so a launched dev target never outlives the CLI invocation / session that owns it.
+/// (best-effort) and removes pid-qualified Unix diagnostic artifacts observed while the child is still
+/// owned, so a launched dev target never outlives the CLI invocation / session that owns it.
 /// </summary>
 public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
 {
     private readonly Process _process;
+    private readonly string[] _diagnosticArtifactDirectories;
     private bool _disposed;
 
-    internal LaunchedTarget(Process process)
-        => _process = process ?? throw new ArgumentNullException(nameof(process));
+    internal LaunchedTarget(Process process, string[]? diagnosticArtifactDirectories = null)
+    {
+        _process = process ?? throw new ArgumentNullException(nameof(process));
+        _diagnosticArtifactDirectories = diagnosticArtifactDirectories ?? Array.Empty<string>();
+    }
 
     /// <summary>Operating-system process id of the launched target.</summary>
     public int ProcessId => _process.Id;
@@ -48,8 +54,22 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
         }
 
         _disposed = true;
-        TryKill();
-        _process.Dispose();
+        var diagnosticArtifacts = CaptureDiagnosticArtifacts();
+        try
+        {
+            TryKill();
+        }
+        finally
+        {
+            try
+            {
+                _process.Dispose();
+            }
+            finally
+            {
+                DeleteDiagnosticArtifacts(diagnosticArtifacts);
+            }
+        }
     }
 
     /// <summary>
@@ -64,20 +84,91 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
         }
 
         _disposed = true;
-        if (TryKill())
+        var diagnosticArtifacts = CaptureDiagnosticArtifacts();
+        try
+        {
+            if (TryKill())
+            {
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await _process.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException)
+                {
+                    // Reaped elsewhere or did not exit within the grace window; nothing more we can do.
+                }
+            }
+        }
+        finally
         {
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                await _process.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+                _process.Dispose();
             }
-            catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException)
+            finally
             {
-                // Reaped elsewhere or did not exit within the grace window; nothing more we can do.
+                DeleteDiagnosticArtifacts(diagnosticArtifacts);
+            }
+        }
+    }
+
+    private string[] CaptureDiagnosticArtifacts()
+    {
+        if (OperatingSystem.IsWindows() || _diagnosticArtifactDirectories.Length == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var pid = ProcessId.ToString(CultureInfo.InvariantCulture);
+        string[] patterns =
+        [
+            $"dotnet-diagnostic-{pid}-*-socket",
+            $"clr-debug-pipe-{pid}-*-in",
+            $"clr-debug-pipe-{pid}-*-out",
+        ];
+        var artifacts = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var directory in _diagnosticArtifactDirectories)
+        {
+            try
+            {
+                var legacySocket = Path.Combine(directory, $"dotnet-diagnostic-{pid}-socket");
+                if (File.Exists(legacySocket))
+                {
+                    artifacts.Add(legacySocket);
+                }
+
+                foreach (var pattern in patterns)
+                {
+                    foreach (var path in Directory.EnumerateFileSystemEntries(directory, pattern, SearchOption.TopDirectoryOnly))
+                    {
+                        artifacts.Add(path);
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Best-effort only: cleanup must never hide the command's real result.
             }
         }
 
-        _process.Dispose();
+        return artifacts.ToArray();
+    }
+
+    private static void DeleteDiagnosticArtifacts(string[] artifacts)
+    {
+        foreach (var path in artifacts)
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Best-effort cleanup of artifacts observed while this launcher still owned the pid.
+            }
+        }
     }
 
     private bool TryKill()

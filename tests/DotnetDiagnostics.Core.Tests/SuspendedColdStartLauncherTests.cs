@@ -1,3 +1,4 @@
+using System.Text;
 using DotnetDiagnostics.Core.Launch;
 using DotnetDiagnostics.Core.Startup;
 using FluentAssertions;
@@ -13,6 +14,106 @@ namespace DotnetDiagnostics.Core.Tests;
 [Collection("LiveProcess")]
 public sealed class SuspendedColdStartLauncherTests
 {
+    [Fact]
+    public void CreatePortPath_ShortUnixTempPath_UsesPreferredDirectory()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        const string preferredDirectory = "/coldstart";
+
+        var portPath = SuspendedColdStartLauncher.CreatePortPath(preferredDirectory, "/fallback");
+
+        portPath.Should().StartWith(preferredDirectory + Path.DirectorySeparatorChar);
+    }
+
+    [Fact]
+    public void CreatePortPath_LongUnixTempPath_UsesShortFallback()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var longTempPath = Path.Combine(
+            Path.GetPathRoot(AppContext.BaseDirectory)!,
+            "deliberately-long-temp-root",
+            new string('x', SuspendedColdStartLauncher.MaxUnixSocketPathBytes));
+        const string shortFallback = "/coldstart";
+
+        var portPath = SuspendedColdStartLauncher.CreatePortPath(longTempPath, shortFallback);
+
+        portPath.Should().StartWith(shortFallback + Path.DirectorySeparatorChar);
+        Encoding.UTF8.GetByteCount(portPath).Should().BeLessThanOrEqualTo(
+            SuspendedColdStartLauncher.MaxUnixSocketPathBytes);
+    }
+
+    [Fact]
+    public void CreatePortPath_WhenNoUnixPathFits_ThrowsActionableError()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var longDirectory = Path.Combine(
+            Path.GetPathRoot(AppContext.BaseDirectory)!,
+            new string('é', SuspendedColdStartLauncher.MaxUnixSocketPathBytes));
+
+        var action = () => SuspendedColdStartLauncher.CreatePortPath(longDirectory, longDirectory);
+
+        action.Should().Throw<InvalidOperationException>()
+            .WithMessage("*Unix-domain socket paths must be at most*Set TMPDIR to a shorter writable directory*");
+    }
+
+    [Fact]
+    public async Task LaunchedTarget_Dispose_RemovesObservedUnixDiagnosticArtifacts()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var testRoot = Path.Combine(
+            AppContext.BaseDirectory,
+            "long-launch-temp",
+            Guid.NewGuid().ToString("N"));
+        var longTempPath = Path.Combine(testRoot, new string('x', 48), new string('y', 48));
+        Directory.CreateDirectory(longTempPath);
+
+        try
+        {
+            await using var target = ChildProcessLauncher.Launch(
+                "/bin/sh",
+                ["-c", "sleep 30"],
+                environment: new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["TMPDIR"] = longTempPath,
+                });
+
+            var artifacts = new[]
+            {
+                Path.Combine(longTempPath, $"dotnet-diagnostic-{target.ProcessId}-123-socket"),
+                Path.Combine(longTempPath, $"clr-debug-pipe-{target.ProcessId}-123-in"),
+                Path.Combine(longTempPath, $"clr-debug-pipe-{target.ProcessId}-123-out"),
+            };
+            foreach (var artifact in artifacts)
+            {
+                await File.WriteAllTextAsync(artifact, "test");
+            }
+
+            await target.DisposeAsync();
+
+            artifacts.Should().OnlyContain(path => !File.Exists(path));
+        }
+        finally
+        {
+            Directory.Delete(testRoot, recursive: true);
+        }
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task ColdStart_CapturesPreAttach_DiServiceProviderBuilt()
     {
@@ -22,22 +123,28 @@ public sealed class SuspendedColdStartLauncherTests
             throw SkipException.ForReason("CoreClrSample.dll not found. Build the sample before running this test.");
         }
 
-        await using var target = await SuspendedColdStartLauncher.LaunchSuspendedAsync(
+        string portPath;
+        await using (var target = await SuspendedColdStartLauncher.LaunchSuspendedAsync(
             "dotnet",
             new[] { sampleDll, "--urls", "http://127.0.0.1:0" },
             consoleSink: null,
-            connectTimeout: TimeSpan.FromSeconds(30));
+            connectTimeout: TimeSpan.FromSeconds(30)))
+        {
+            portPath = target.DiagnosticPortPath;
+            File.Exists(portPath).Should().BeTrue("the launcher owns a live reverse-connect socket");
+            target.HasExited.Should().BeFalse("the launched runtime is suspended waiting on the diagnostic port");
 
-        target.HasExited.Should().BeFalse("the launched runtime is suspended waiting on the diagnostic port");
+            var collector = new EventPipeStartupCollector();
+            var snapshot = await collector.CollectColdStartAsync(target, TimeSpan.FromSeconds(8));
 
-        var collector = new EventPipeStartupCollector();
-        var snapshot = await collector.CollectColdStartAsync(target, TimeSpan.FromSeconds(8));
+            // The single ServiceProvider build happens once at startup; a post-attach collector cannot see
+            // it. Cold start arms the session before resume, so it is captured.
+            snapshot.TotalDiEvents.Should().BeGreaterThan(0, "cold-start arms EventPipe before DI is built");
+            snapshot.DiServiceProviderBuiltCount.Should().BeGreaterThanOrEqualTo(1);
+            snapshot.Notes.Should().Contain(n => n.Contains("Cold-start capture", StringComparison.Ordinal));
+        }
 
-        // The single ServiceProvider build happens once at startup; a post-attach collector cannot see
-        // it. Cold start arms the session before resume, so it is captured.
-        snapshot.TotalDiEvents.Should().BeGreaterThan(0, "cold-start arms EventPipe before DI is built");
-        snapshot.DiServiceProviderBuiltCount.Should().BeGreaterThanOrEqualTo(1);
-        snapshot.Notes.Should().Contain(n => n.Contains("Cold-start capture", StringComparison.Ordinal));
+        File.Exists(portPath).Should().BeFalse("disposing the target removes the launcher-owned socket");
     }
 
     private static string? LocateSampleDll(string sampleName)
