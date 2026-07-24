@@ -278,9 +278,10 @@ internal static class CliCommandExecution
         if (options.Json)
         {
             var envelope = JsonSerializer.SerializeToNode(result.Envelope, result.Envelope.GetType(), JsonOptions);
-            if (envelope is not null && executionOptions.BoundTargetPid is { } boundPid)
+            if (envelope is JsonObject boundEnvelope
+                && executionOptions.BoundTargetPid is { } boundPid)
             {
-                RemoveBoundPidArguments(envelope, boundPid);
+                RemoveBoundPidFromHintReasons(boundEnvelope, boundPid);
             }
             if (envelope is JsonObject objectEnvelope
                 && executionOptions.Context == CliExecutionContext.OneShot
@@ -327,31 +328,19 @@ internal static class CliCommandExecution
             string.Empty,
             StringComparison.Ordinal);
 
-    private static void RemoveBoundPidArguments(JsonNode node, int boundPid)
+    private static void RemoveBoundPidFromHintReasons(JsonObject envelope, int boundPid)
     {
-        if (node is JsonObject obj)
+        if (envelope["hints"] is not JsonArray hints)
         {
-            foreach (var property in obj.ToArray())
-            {
-                if (property.Value is JsonValue value
-                    && value.TryGetValue<string>(out var text))
-                {
-                    obj[property.Key] = RemoveBoundPidArgument(text, boundPid);
-                }
-                else if (property.Value is not null)
-                {
-                    RemoveBoundPidArguments(property.Value, boundPid);
-                }
-            }
+            return;
         }
-        else if (node is JsonArray array)
+
+        foreach (var hint in hints.OfType<JsonObject>())
         {
-            foreach (var item in array)
+            if (hint["reason"] is JsonValue reason
+                && reason.TryGetValue<string>(out var text))
             {
-                if (item is not null)
-                {
-                    RemoveBoundPidArguments(item, boundPid);
-                }
+                hint["reason"] = RemoveBoundPidArgument(text, boundPid);
             }
         }
     }

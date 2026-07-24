@@ -9,10 +9,11 @@ namespace DotnetDiagnostics.Cli.Tests;
 public sealed class CliCommandExecutionOutputTests
 {
     [Fact]
-    public async Task SessionOutput_OmitsPidAlreadySuppliedByBoundTarget()
+    public async Task SessionOutput_OmitsBoundPidFromHints_WithoutRewritingPayloadData()
     {
+        const string commandLine = "dotnet worker.dll --pid 4321 --mode service";
         var envelope = DiagnosticResult.Ok(
-            new object(),
+            new { CommandLine = commandLine },
             "summary",
             new NextActionHint("collect", "Run: collect --kind threadpool --pid 4321 --duration 10"));
         var result = new CliCommandResult(
@@ -27,7 +28,11 @@ public sealed class CliCommandExecutionOutputTests
         var json = await RenderAsync(result, options, CliExecutionContext.Session, json: true, boundTargetPid: 4321);
 
         human.Should().Contain("collect --kind threadpool --duration 10").And.NotContain("--pid 4321");
-        json.Should().Contain("collect --kind threadpool --duration 10").And.NotContain("--pid 4321");
+        using var document = JsonDocument.Parse(json);
+        document.RootElement.GetProperty("hints")[0].GetProperty("reason").GetString()
+            .Should().Contain("collect --kind threadpool --duration 10").And.NotContain("--pid 4321");
+        document.RootElement.GetProperty("data").GetProperty("commandLine").GetString()
+            .Should().Be(commandLine);
     }
 
     [Fact]

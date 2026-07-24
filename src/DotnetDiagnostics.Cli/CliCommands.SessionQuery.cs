@@ -486,7 +486,7 @@ internal static partial class CliCommands
         }
 
         var handle = options.Handle!;
-        var topN = options.Top ?? CpuSampleQueryDispatcher.DefaultTopN;
+        var topN = ResolveQueryTopN(options, CpuSampleQueryDispatcher.DefaultTopN);
 
         switch (normalized)
         {

@@ -447,17 +447,20 @@ public sealed class SessionReplTests
         stdout.Should().Contain("call-tree");
     }
 
-    [Fact]
-    public async Task Query_CpuSampleHandle_TopMethodsView_RanksByExclusive()
+    [Theory]
+    [InlineData("--top")]
+    [InlineData("--top-types")]
+    public async Task Query_CpuSampleHandle_TopMethodsView_HonorsTopOption(string topOption)
     {
         var (services, store) = BuildServices();
         var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
 
         var (exit, stdout, _) = await RunReplAsync(
-            $"query --handle {handle.Id} --view top-methods --top 1\nexit\n", services);
+            $"query --handle {handle.Id} --view top-methods {topOption} 1\nexit\n", services);
 
         exit.Should().Be(0);
         stdout.Should().Contain("LeafB"); // 60 exclusive beats LeafA's 40
+        stdout.Should().NotContain("LeafA");
     }
 
     [Fact]
