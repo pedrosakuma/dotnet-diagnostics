@@ -66,6 +66,9 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
                 Symbol = g.Key,
                 Exclusive = g.Sum(n => n.ExclusiveSamples),
                 Inclusive = g.Max(n => n.InclusiveSamples),
+                Running = g.Sum(n => n.SelfSamples?.RunningSamples ?? 0),
+                Waiting = g.Sum(n => n.SelfSamples?.WaitingSamples ?? 0),
+                HasSelfSampleClassification = g.Any(n => n.SelfSamples is not null),
             })
             .OrderByDescending(g => g.Exclusive)
             .ThenByDescending(g => g.Inclusive)
@@ -81,7 +84,12 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
                     InclusivePercent: Math.Round(100.0 * g.Inclusive / total, 2),
                     ExclusivePercent: Math.Round(100.0 * g.Exclusive / total, 2),
                     Source: src,
-                    Identity: id);
+                    Identity: id)
+                {
+                    SelfSamples = g.HasSelfSampleClassification
+                        ? new SelfSampleBreakdown(g.Running, g.Waiting)
+                        : null,
+                };
             })
             .ToArray();
 
@@ -157,8 +165,8 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
         var f = s.Findings;
         sb.Append("- Samples: `").Append(f.TotalSamples).Append("` over `").Append(f.Duration.TotalSeconds).AppendLine("s`");
         sb.AppendLine();
-        sb.AppendLine("| # | Method | Module | Incl % | Excl % | Source | Handoff (mvid · token) |");
-        sb.AppendLine("|---|---|---|---:|---:|---|---|");
+        sb.AppendLine("| # | Method | Module | Incl % | Excl % | Self run/wait | Source | Handoff (mvid · token) |");
+        sb.AppendLine("|---|---|---|---:|---:|---:|---|---|");
         var i = 1;
         foreach (var h in f.TopHotspots)
         {
@@ -166,6 +174,15 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
               .Append("` | `").Append(h.Symbol.Module).Append("` | ")
               .Append(h.InclusivePercent).Append(" | ")
               .Append(h.ExclusivePercent).Append(" | ");
+            if (h.SelfSamples is { } selfSamples)
+            {
+                sb.Append(selfSamples.RunningSamples).Append('/').Append(selfSamples.WaitingSamples);
+            }
+            else
+            {
+                sb.Append('?');
+            }
+            sb.Append(" | ");
             if (h.Source is { } src)
             {
                 if (!string.IsNullOrEmpty(src.SourceLink))

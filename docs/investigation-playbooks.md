@@ -164,6 +164,13 @@ are identical regardless of which "door" you use; only the transport differs.
    carry the per-metric / per-row deltas. `Notes[]` flags caveats (cross-process, unit
    mismatch, top-N truncation).
 
+For CPU captures with running/waiting self-sample classification, `waitingSelfPercent` is the
+primary symptom and the per-frame matrix preserves `runningExclusiveSamples` separately from
+`waitingExclusiveSamples`. Do not interpret a new running leader as a regression when the old
+blocking leader disappeared and waiting collapsed. Legacy investigation summaries that lack
+comparable symptom metrics or running/waiting classification report hotspot rank turnover as
+`incomparable`; conflicting queue/throughput evidence reports `mixed`.
+
 ### N-way trend recipe (N≥3)
 
 Capture `t0..tn` of the **same kind** (especially `gc-datas`, `counters`, `contention`, or

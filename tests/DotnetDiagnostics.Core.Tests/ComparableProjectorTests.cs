@@ -262,6 +262,40 @@ public sealed class ComparableProjectorTests
     }
 
     [Fact]
+    public void CpuProjector_WaitingCollapseDrivesImprovementDespiteNewRunningLeader()
+    {
+        var projector = new CpuSampleComparableProjector();
+        var baseline = projector.Project(
+            ClassifiedCpuTraceForProjector(
+                "System.Private.CoreLib.dll",
+                "System.Threading.ManualResetEventSlim.Wait",
+                exclusiveSamples: 60,
+                runningSamples: 0,
+                waitingSamples: 60,
+                totalSamples: 100),
+            "before");
+        var current = projector.Project(
+            ClassifiedCpuTraceForProjector(
+                "System.Net.Sockets.dll",
+                "System.Net.Sockets.SocketAsyncEngine.EventLoop",
+                exclusiveSamples: 40,
+                runningSamples: 40,
+                waitingSamples: 0,
+                totalSamples: 100),
+            "after");
+
+        var diff = SnapshotDiffer.Compare(new[] { baseline, current });
+
+        diff.Verdict.Should().Be("improvement");
+        diff.MetricSeries.Single(series => series.Definition.Name == "waitingSelfPercent")
+            .Direction.Should().Be("improved");
+        baseline.Rows.Single().Metrics.Should().Contain(metric =>
+            metric.Definition.Name == "waitingExclusiveSamples" && metric.Value == 60);
+        current.Rows.Single().Metrics.Should().Contain(metric =>
+            metric.Definition.Name == "runningExclusiveSamples" && metric.Value == 40);
+    }
+
+    [Fact]
     public void NativeAllocProjector_UsesExclusivePercentAsLowerBetterPrimary_WithNativeKind()
     {
         var baseline = new NativeAllocSampleComparableProjector().Project(CpuTraceForProjector("libnative.so", "malloc", identity: null, exclusiveSamples: 5, totalSamples: 100), "baseline");
@@ -386,6 +420,37 @@ public sealed class ComparableProjectorTests
                 0,
                 [new CallTreeNode(new SampledFrame(module, method), exclusiveSamples, exclusiveSamples, Array.Empty<CallTreeNode>())]),
             MethodIdentities: identities);
+    }
+
+    private static CpuSampleTraceArtifact ClassifiedCpuTraceForProjector(
+        string module,
+        string method,
+        long exclusiveSamples,
+        long runningSamples,
+        long waitingSamples,
+        long totalSamples)
+    {
+        var child = new CallTreeNode(
+            new SampledFrame(module, method),
+            exclusiveSamples,
+            exclusiveSamples,
+            Array.Empty<CallTreeNode>())
+        {
+            SelfSamples = new SelfSampleBreakdown(runningSamples, waitingSamples),
+        };
+        return new CpuSampleTraceArtifact(
+            123,
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            TimeSpan.FromSeconds(5),
+            totalSamples,
+            new CallTreeNode(
+                new SampledFrame(string.Empty, "<root>"),
+                totalSamples,
+                0,
+                [child]))
+        {
+            SelfSamples = new SelfSampleBreakdown(runningSamples, waitingSamples),
+        };
     }
 
     private static HeapSnapshotArtifact HeapSnapshotForProjector(

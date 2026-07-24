@@ -181,18 +181,33 @@ internal static class DiagnosticToolBaselineComparison
         var diff = comparer.Compare(baseline, current);
         var summaryLine = $"Verdict: {diff.Verdict}. {diff.NewHotspots.Count} new, " +
                           $"{diff.RemovedHotspots.Count} removed, {diff.ChangedHotspots.Count} changed hotspots. " +
+                          $"{diff.KeyMetricDeltas.Count} key metric deltas. " +
                           $"Provenance: {diff.Provenance.Summary}.";
 
         return DiagnosticResult.Ok<object>(diff, summaryLine,
             new NextActionHint("collect_sample",
-                diff.Verdict.StartsWith("regression", StringComparison.Ordinal)
-                    ? "Re-sample the regressing process and drill into the new top frame."
-                    : "Optional: capture a fresh sample to confirm the improvement is stable.",
+                NextActionDescription(diff.Verdict),
                 new Dictionary<string, object?>
                 {
                     ["kind"] = "cpu",
                     ["durationSeconds"] = 20,
                 }));
+    }
+
+    private static string NextActionDescription(string verdict)
+    {
+        if (verdict.StartsWith("regression", StringComparison.Ordinal))
+        {
+            return "Re-sample the regressing process and drill into the new top frame.";
+        }
+
+        if (string.Equals(verdict, "mixed", StringComparison.Ordinal)
+            || string.Equals(verdict, "incomparable", StringComparison.Ordinal))
+        {
+            return "Capture matching queue/throughput and classified CPU evidence before drawing a regression conclusion.";
+        }
+
+        return "Optional: capture a fresh sample to confirm the improvement is stable.";
     }
 
     private static DiagnosticResult<object> CompareComparableSnapshots(

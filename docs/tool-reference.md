@@ -493,7 +493,12 @@ For local calls, larger matrices are retained in memory and the inline payload i
 Proxied pod calls keep full results inline because dynamic pod Resources are not forwarded.
 Pairwise sample diffs remain
 inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap-snapshot` and
-`allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second rates
+`allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second rates.
+
+For classified CPU samples, `waitingSelfPercent` is the primary comparison symptom:
+`runningSelfSamples` and `waitingSelfSamples` remain distinct overall and per frame. A removed
+waiting hotspot plus a different running leader is therefore an improvement when waiting
+collapses; row rank turnover alone does not override that primary symptom.
 
 `heap-snapshot` `view="growth"` is the retention-aware **live heap leak hunt** (issue #463).
 Capture two live heap snapshots N seconds apart — `inspect_heap(source="live", includeRetentionPaths=true)` —
@@ -3138,6 +3143,25 @@ dynamic pod Resources are not forwarded.
 **Scope:** `investigation-export`. Pairs with `export_investigation_summary` for
 "did my fix actually help?" journeys — see
 [investigation-playbooks.md](./investigation-playbooks.md).
+
+Investigation-summary comparison does not treat every newly ranked frame as a regression.
+Comparable `Findings.KeyMetrics` use registered direction semantics for ThreadPool queue/thread
+counts and request completion/throughput/p95 signals. Those symptom deltas are considered before
+hotspot rank turnover. When the original waiting-dominated hotspot disappears, queue pressure
+falls, and completion/throughput improves, a newly hottest **running** frame is reported as part
+of an `improvement`, not `regression_new_hotspot`.
+
+Registered lower-is-better names are `threadpool-queue-length`,
+`threadpool-pending-work-items`, `threadpool-thread-count`, `request-p95-milliseconds`,
+`request-p95-seconds`, and `request-latency-p95`. Registered higher-is-better names are
+`requests-completed`, `request-throughput`, `requests-per-second`, and `throughput`. Matching is
+case-insensitive and ignores punctuation.
+
+`HotspotSummary.SelfSamples` preserves the running/waiting split used by this decision. Legacy
+summaries without that split remain readable, but a simultaneous added+removed hotspot with no
+comparable directional metrics is `incomparable`, not a confident regression. Conflicting
+directional symptoms return `mixed`; unrecognized or one-sided key metrics appear in
+`KeyMetricDeltas`/`Notes` but do not silently drive the verdict.
 
 ---
 

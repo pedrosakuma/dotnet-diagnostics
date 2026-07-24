@@ -1,3 +1,5 @@
+using DotnetDiagnostics.Core.CpuSampling;
+
 namespace DotnetDiagnostics.Core.Memory;
 
 /// <summary>
@@ -15,7 +17,12 @@ public sealed record SummaryDiff(
     ProvenanceDelta Provenance,
     IReadOnlyList<HotspotDelta> NewHotspots,
     IReadOnlyList<HotspotDelta> RemovedHotspots,
-    IReadOnlyList<HotspotDelta> ChangedHotspots);
+    IReadOnlyList<HotspotDelta> ChangedHotspots)
+{
+    public IReadOnlyList<KeyMetricDelta> KeyMetricDeltas { get; init; } = Array.Empty<KeyMetricDelta>();
+
+    public IReadOnlyList<string> Notes { get; init; } = Array.Empty<string>();
+}
 
 public sealed record ProvenanceDelta(
     bool ImageChanged,
@@ -28,11 +35,39 @@ public sealed record HotspotDelta(
     SymbolRef Symbol,
     double? BaselineInclusivePercent,
     double? CurrentInclusivePercent,
-    double? InclusiveDeltaPoints);
+    double? InclusiveDeltaPoints,
+    SelfSampleBreakdown? BaselineSelfSamples = null,
+    SelfSampleBreakdown? CurrentSelfSamples = null);
+
+public sealed record KeyMetricDelta(
+    string Name,
+    double? BaselineValue,
+    double? CurrentValue,
+    string BetterDirection,
+    string Outcome);
 
 public sealed class SummaryComparer : ISummaryComparer
 {
     private const double SignificantChangePoints = 2.0;
+    private const string Improved = "improved";
+    private const string Regressed = "regressed";
+    private const string Unchanged = "unchanged";
+    private const string Incomparable = "incomparable";
+
+    private static readonly Dictionary<string, MetricDirection> MetricDirections =
+        new Dictionary<string, MetricDirection>(StringComparer.Ordinal)
+        {
+            ["threadpoolqueuelength"] = MetricDirection.Lower,
+            ["threadpoolpendingworkitems"] = MetricDirection.Lower,
+            ["threadpoolthreadcount"] = MetricDirection.Lower,
+            ["requestp95milliseconds"] = MetricDirection.Lower,
+            ["requestp95seconds"] = MetricDirection.Lower,
+            ["requestlatencyp95"] = MetricDirection.Lower,
+            ["requestscompleted"] = MetricDirection.Higher,
+            ["requestthroughput"] = MetricDirection.Higher,
+            ["requestspersecond"] = MetricDirection.Higher,
+            ["throughput"] = MetricDirection.Higher,
+        };
 
     public SummaryDiff Compare(InvestigationSummary baseline, InvestigationSummary current)
     {
@@ -46,13 +81,23 @@ public sealed class SummaryComparer : ISummaryComparer
 
         var added = currentMap.Values
             .Where(h => !baselineMap.ContainsKey(h.Symbol))
-            .Select(h => new HotspotDelta(h.Symbol, null, h.InclusivePercent, h.InclusivePercent))
+            .Select(h => new HotspotDelta(
+                h.Symbol,
+                null,
+                h.InclusivePercent,
+                h.InclusivePercent,
+                CurrentSelfSamples: h.SelfSamples))
             .OrderByDescending(d => d.CurrentInclusivePercent ?? 0)
             .ToArray();
 
         var removed = baselineMap.Values
             .Where(h => !currentMap.ContainsKey(h.Symbol))
-            .Select(h => new HotspotDelta(h.Symbol, h.InclusivePercent, null, -h.InclusivePercent))
+            .Select(h => new HotspotDelta(
+                h.Symbol,
+                h.InclusivePercent,
+                null,
+                -h.InclusivePercent,
+                BaselineSelfSamples: h.SelfSamples))
             .OrderByDescending(d => d.BaselineInclusivePercent ?? 0)
             .ToArray();
 
@@ -62,14 +107,26 @@ public sealed class SummaryComparer : ISummaryComparer
             {
                 var b = kv.Value.InclusivePercent;
                 var c = currentMap[kv.Key].InclusivePercent;
-                return new HotspotDelta(kv.Key, b, c, Math.Round(c - b, 2));
+                return new HotspotDelta(
+                    kv.Key,
+                    b,
+                    c,
+                    Math.Round(c - b, 2),
+                    kv.Value.SelfSamples,
+                    currentMap[kv.Key].SelfSamples);
             })
             .Where(d => Math.Abs(d.InclusiveDeltaPoints!.Value) >= SignificantChangePoints)
             .OrderByDescending(d => Math.Abs(d.InclusiveDeltaPoints!.Value))
             .ToArray();
 
-        var verdict = Verdict(provenance, added, removed, changed);
-        return new SummaryDiff(verdict, provenance, added, removed, changed);
+        var notes = new List<string>();
+        var metricDeltas = CompareKeyMetrics(baseline.Findings.KeyMetrics, current.Findings.KeyMetrics, notes);
+        var verdict = Verdict(provenance, added, removed, changed, metricDeltas);
+        return new SummaryDiff(verdict, provenance, added, removed, changed)
+        {
+            KeyMetricDeltas = metricDeltas,
+            Notes = notes,
+        };
     }
 
     private static ProvenanceDelta CompareProvenance(InvestigationProvenance b, InvestigationProvenance c)
@@ -92,18 +149,200 @@ public sealed class SummaryComparer : ISummaryComparer
         ProvenanceDelta provenance,
         HotspotDelta[] added,
         HotspotDelta[] removed,
-        HotspotDelta[] changed)
+        HotspotDelta[] changed,
+        IReadOnlyList<KeyMetricDelta> metricDeltas)
     {
-        if (added.Length == 0 && removed.Length == 0 && changed.Length == 0)
+        var metrics = MetricEvidence(metricDeltas);
+        var removedWaiting = removed.Any(static delta => Activity(delta.BaselineSelfSamples) == SampleActivity.Waiting);
+        var removedRunning = removed.Any(static delta => Activity(delta.BaselineSelfSamples) == SampleActivity.Running);
+        var addedWaiting = added.Any(static delta => Activity(delta.CurrentSelfSamples) == SampleActivity.Waiting);
+        var addedRunning = added.Any(static delta => Activity(delta.CurrentSelfSamples) == SampleActivity.Running);
+        var turnoverHasUnknown = added.Any(static delta => Activity(delta.CurrentSelfSamples) == SampleActivity.Unknown)
+            || removed.Any(static delta => Activity(delta.BaselineSelfSamples) == SampleActivity.Unknown);
+        var hasHotspotChanges = added.Length > 0 || removed.Length > 0 || changed.Length > 0;
+
+        if (!hasHotspotChanges)
         {
+            if (metrics == Evidence.Improved) return "improvement";
+            if (metrics == Evidence.Regressed) return "regression_metrics";
+            if (metrics == Evidence.Mixed) return "mixed";
+            if (metrics == Evidence.Incomparable) return Incomparable;
+
             return provenance.ImageChanged || provenance.GitShaChanged
                 ? "no_regression_after_deploy"
                 : "no_regression";
         }
 
-        // Treat new hotspot symbols as the strongest regression signal — they didn't exist in the baseline at all.
+        if (metrics == Evidence.Mixed)
+        {
+            return "mixed";
+        }
+
+        if (metrics == Evidence.Improved)
+        {
+            if (removedWaiting && !addedWaiting)
+            {
+                return "improvement";
+            }
+
+            var increasedHotspot = changed.Any(static delta => delta.InclusiveDeltaPoints > 0);
+            return added.Length == 0 && !increasedHotspot ? "improvement" : "mixed";
+        }
+
+        if (metrics == Evidence.Regressed)
+        {
+            if (removedWaiting || removed.Length > 0)
+            {
+                return "mixed";
+            }
+
+            if (added.Length > 0) return "regression_new_hotspot";
+            if (changed.Length > 0 && changed[0].InclusiveDeltaPoints > 0) return "regression_increased_hotspot";
+            return "regression_metrics";
+        }
+
+        if (added.Length > 0 && removed.Length > 0)
+        {
+            if (removedWaiting && addedRunning && !addedWaiting)
+            {
+                return "improvement";
+            }
+
+            if (removedRunning && addedWaiting && !addedRunning)
+            {
+                return "regression_new_hotspot";
+            }
+
+            return turnoverHasUnknown || metrics == Evidence.Incomparable
+                ? Incomparable
+                : "mixed";
+        }
+
         if (added.Length > 0) return "regression_new_hotspot";
         if (changed.Length > 0 && changed[0].InclusiveDeltaPoints > 0) return "regression_increased_hotspot";
         return "improvement";
+    }
+
+    private static KeyMetricDelta[] CompareKeyMetrics(
+        IReadOnlyDictionary<string, double>? baseline,
+        IReadOnlyDictionary<string, double>? current,
+        List<string> notes)
+    {
+        if (baseline is null && current is null)
+        {
+            return Array.Empty<KeyMetricDelta>();
+        }
+
+        baseline ??= new Dictionary<string, double>();
+        current ??= new Dictionary<string, double>();
+        var names = baseline.Keys
+            .Concat(current.Keys)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(static name => name, StringComparer.Ordinal)
+            .ToArray();
+        var deltas = new List<KeyMetricDelta>(names.Length);
+
+        foreach (var name in names)
+        {
+            var hasBaseline = baseline.TryGetValue(name, out var baselineValue);
+            var hasCurrent = current.TryGetValue(name, out var currentValue);
+            if (!hasBaseline || !hasCurrent)
+            {
+                deltas.Add(new KeyMetricDelta(
+                    name,
+                    hasBaseline ? baselineValue : null,
+                    hasCurrent ? currentValue : null,
+                    "unknown",
+                    Incomparable));
+                notes.Add($"Key metric '{name}' is absent from one summary; it does not drive the verdict.");
+                continue;
+            }
+
+            if (!MetricDirections.TryGetValue(NormalizeMetricName(name), out var direction))
+            {
+                deltas.Add(new KeyMetricDelta(name, baselineValue, currentValue, "unknown", Incomparable));
+                notes.Add($"Key metric '{name}' has no registered better-direction semantics; its delta is reported but does not drive the verdict.");
+                continue;
+            }
+
+            var delta = currentValue - baselineValue;
+            var outcome = Math.Abs(delta) <= double.Epsilon
+                ? Unchanged
+                : (delta < 0) == (direction == MetricDirection.Lower)
+                    ? Improved
+                    : Regressed;
+            deltas.Add(new KeyMetricDelta(
+                name,
+                baselineValue,
+                currentValue,
+                direction == MetricDirection.Lower ? "lower" : "higher",
+                outcome));
+        }
+
+        return deltas.ToArray();
+    }
+
+    private static Evidence MetricEvidence(IReadOnlyList<KeyMetricDelta> deltas)
+    {
+        if (deltas.Count == 0)
+        {
+            return Evidence.None;
+        }
+
+        var improved = deltas.Any(static delta => delta.Outcome == Improved);
+        var regressed = deltas.Any(static delta => delta.Outcome == Regressed);
+        if (improved && regressed) return Evidence.Mixed;
+        if (improved) return Evidence.Improved;
+        if (regressed) return Evidence.Regressed;
+        return deltas.All(static delta => delta.Outcome == Incomparable)
+            ? Evidence.Incomparable
+            : Evidence.Unchanged;
+    }
+
+    private static SampleActivity Activity(SelfSampleBreakdown? samples)
+    {
+        if (samples is null || samples.RunningSamples + samples.WaitingSamples == 0)
+        {
+            return SampleActivity.Unknown;
+        }
+
+        if (samples.WaitingSamples > samples.RunningSamples)
+        {
+            return SampleActivity.Waiting;
+        }
+
+        if (samples.RunningSamples > samples.WaitingSamples)
+        {
+            return SampleActivity.Running;
+        }
+
+        return SampleActivity.Mixed;
+    }
+
+    private static string NormalizeMetricName(string name)
+        => string.Concat(name.Where(char.IsLetterOrDigit)).ToLowerInvariant();
+
+    private enum MetricDirection
+    {
+        Lower,
+        Higher,
+    }
+
+    private enum SampleActivity
+    {
+        Unknown,
+        Running,
+        Waiting,
+        Mixed,
+    }
+
+    private enum Evidence
+    {
+        None,
+        Unchanged,
+        Improved,
+        Regressed,
+        Mixed,
+        Incomparable,
     }
 }
