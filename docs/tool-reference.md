@@ -1489,19 +1489,23 @@ is deterministic and bounded:
 | `counters` + `gc` where the GC collector observed at least one Gen2 collection | The headline set above plus `System.Runtime/gen-2-size`, `loh-size`, and `gc-fragmentation`. The combined list is capped at 18 counters; the handle retains every captured counter. |
 | Any non-counter entry | Its standalone inline payload is unchanged. |
 
+When `counters` and `gc` are paired, the batch dispatcher automatically adds the narrow
+`System.Runtime\dotnet.gc.collections` Meter filter. It does not subscribe to every runtime Meter:
+only that instrument is requested, and retained Meter time series are capped at 8 (enough for the
+bounded generation-tag variants).
+
 `gen2Evidence` prevents values with different scopes from being mistaken for one another:
 
 - `eventCounterIntervalDelta`: the `gen-2-gc-count` increment from the **last 1-second
   EventCounter reporting interval**;
-- `meterRatePerSecond`: the rate from the `dotnet.gc.collections` Gen2 Meter series, when that
-  Meter was captured;
-- `meterProcessCumulative`: the process-lifetime cumulative value from that Meter series, when
-  captured;
+- `meterRatePerSecond`: the rate from the narrowly subscribed `dotnet.gc.collections` Gen2 Meter
+  series;
+- `meterProcessCumulative`: the process-lifetime cumulative value from that Meter series;
 - `gcCollectorWindowCount`: GC events observed during this batch's
   `gcCollectorWindowSeconds` window.
 
-Null Meter fields mean that the counters capture did not include that Meter; they are never inferred
-from the incompatible EventCounter or GC-window values.
+Null Meter fields mean that the target runtime did not publish the requested series during the
+window; they are never inferred from the incompatible EventCounter or GC-window values.
 
 **Partial-failure semantics.** A `collect_batch` call never fails outright just because one
 entry's target exited mid-window — the top-level result stays successful and `results` is always

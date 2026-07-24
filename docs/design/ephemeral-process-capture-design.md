@@ -227,7 +227,9 @@ public sealed record CollectBatchEntryResult(
    `JsonElement`, everything else copied through). If counters and GC were paired and GC observed
    Gen2 activity, post-process only the counters inline projection: retain the fixed headline set
    plus three LOH/GC counters (`gen-2-size`, `loh-size`, `gc-fragmentation`) under an 18-counter
-   cap, and add scope-labelled Gen2 evidence. The independent full artifacts behind both handles
+   cap, and add scope-labelled Gen2 evidence. To make the rate/process-cumulative fields reachable,
+   that paired request narrowly enables `System.Runtime\dotnet.gc.collections` under an 8-series
+   cap; it does not enable all runtime Meters. The independent full artifacts behind both handles
    remain unchanged.
 
 ### Partial-failure semantics (decided here, since this is a new envelope with no legacy

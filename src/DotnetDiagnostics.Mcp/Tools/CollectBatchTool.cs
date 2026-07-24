@@ -67,7 +67,10 @@ public sealed class CollectBatchTool
     internal const string ToolName = "collect_batch";
     internal const string ToolCollectSample = "collect_sample";
     internal const string ToolCollectEvents = "collect_events";
+    internal const string Gen2MeterSpec = @"System.Runtime\dotnet.gc.collections";
+    internal const int Gen2MeterMaxTimeSeries = 8;
     private const string KindSweep = "sweep";
+    private static readonly string[] Gen2MeterSelection = [Gen2MeterSpec];
 
     /// <summary>
     /// The single primary scope every <c>collect_sample</c> kind eligible for batching requires
@@ -192,6 +195,8 @@ public sealed class CollectBatchTool
             resolver, processId, cancellationToken).ConfigureAwait(false);
         if (resolved.Failure is not null) return resolved.Failure;
         var pid = resolved.ProcessId;
+        var collectGen2Meter = canonicalEntries.Contains((ToolCollectEvents, "counters")) &&
+                               canonicalEntries.Contains((ToolCollectEvents, "gc"));
 
         async Task<CollectBatchEntryResult> RunEntryAsync(string tool, string kind, CancellationToken ct)
         {
@@ -252,6 +257,10 @@ public sealed class CollectBatchTool
                     kind: kind,
                     processId: pid,
                     durationSeconds: durationSeconds,
+                    meters: collectGen2Meter && kind == "counters" ? Gen2MeterSelection : null,
+                    maxInstrumentTimeSeries: collectGen2Meter && kind == "counters"
+                        ? Gen2MeterMaxTimeSeries
+                        : 1000,
                     cancellationToken: ct).ConfigureAwait(false);
                 return Project(tool, kind, eventsResult);
             }
