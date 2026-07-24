@@ -16,6 +16,15 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 /// <c>collect_thread_snapshot</c>, <c>inspect_dump</c>, <c>inspect_live_heap</c>.
 /// (<c>collect_cpu_sample</c> is covered separately in <see cref="CollectCpuSampleSecurityTests"/>.)
 /// </summary>
+/// <remarks>
+/// Fake pids in this class use a dedicated 848100-series range, never reused by any other test
+/// class/file. <c>collect_thread_snapshot</c> and <c>inspect_live_heap</c> serialize live attaches
+/// per pid through the process-wide static <see cref="DotnetDiagnostics.Core.UseCases.AttachConcurrencyLimiter.Shared"/>
+/// gate; reusing a small "obviously fake" pid (e.g. 42) across independent test classes that xunit
+/// may schedule concurrently causes an intermittent spurious "Busy" result instead of the asserted
+/// outcome (see issue #684). Pick a pid from this class's own range for any new gated-attach test
+/// here, and never reuse a pid another test class has claimed for a gated tool.
+/// </remarks>
 public sealed class SymbolPathSecurityTests
 {
     private const string RemotePath = @"srv*c:\sym*https://msdl.microsoft.com/download/symbols";
@@ -31,7 +40,7 @@ public sealed class SymbolPathSecurityTests
             sampler, store, ToolGuardTests.EchoResolver(),
             new SymbolServerAllowlist(null),
             TestPrincipalAccessors.Root,
-            processId: 42,
+            processId: 848101,
             durationSeconds: 1,
             symbolPath: RemotePath);
 
@@ -50,7 +59,7 @@ public sealed class SymbolPathSecurityTests
             sampler, store, ToolGuardTests.EchoResolver(),
             new SymbolServerAllowlist(null),
             TestPrincipalAccessors.Root,
-            processId: 42,
+            processId: 848102,
             durationSeconds: 1,
             symbolPath: LocalPath);
 
@@ -68,7 +77,7 @@ public sealed class SymbolPathSecurityTests
             inspector, store, ToolGuardTests.EchoResolver(),
             new SymbolServerAllowlist(null),
             TestPrincipalAccessors.Root,
-            processId: 42,
+            processId: 848103,
             symbolPath: RemotePath);
 
         result.Error.Should().NotBeNull();
@@ -87,7 +96,7 @@ public sealed class SymbolPathSecurityTests
             inspector, store, ToolGuardTests.EchoResolver(),
             new SymbolServerAllowlist(options),
             TestPrincipalAccessors.Root,
-            processId: 42,
+            processId: 848104,
             symbolPath: RemotePath);
 
         result.Error.Should().BeNull();
@@ -122,7 +131,7 @@ public sealed class SymbolPathSecurityTests
             inspector, store, ToolGuardTests.EchoResolver(),
             new SymbolServerAllowlist(null),
             TestPrincipalAccessors.Root,
-            processId: 42,
+            processId: 848105,
             symbolPath: RemotePath);
 
         result.Error.Should().NotBeNull();
