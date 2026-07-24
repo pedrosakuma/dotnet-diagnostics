@@ -7,16 +7,17 @@ namespace DotnetDiagnostics.Core.Launch;
 /// Owns the lifetime of a child process spawned by <see cref="ChildProcessLauncher.Launch"/>. The
 /// diagnostics process is the target's ptrace parent for as long as this handle is alive, which is
 /// what unblocks descendant attach under Yama <c>ptrace_scope=1</c>. Disposing terminates the child
-/// (best-effort) and removes pid-qualified Unix diagnostic artifacts observed while the child is still
-/// owned, so a launched dev target never outlives the CLI invocation / session that owns it.
+/// (best-effort) and removes Unix diagnostic artifacts matching both its pid and launch-specific
+/// runtime identity, so a launched dev target never outlives the CLI invocation / session that owns it.
 /// </summary>
 public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
 {
     private static readonly TimeSpan TerminationWaitTimeout = TimeSpan.FromSeconds(5);
     private readonly Process _process;
     private readonly int _processId;
+    private readonly string? _diagnosticArtifactIdentity;
     private readonly string[] _diagnosticArtifactDirectories;
-    private readonly Action? _postKillObserver;
+    private readonly Action<int, string>? _postKillObserver;
     private bool _disposed;
 
     internal LaunchedTarget(Process process, string[]? diagnosticArtifactDirectories = null)
@@ -27,16 +28,19 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
     internal LaunchedTarget(
         Process process,
         string[]? diagnosticArtifactDirectories,
-        Action? postKillObserver)
+        Action<int, string>? postKillObserver)
     {
         _process = process ?? throw new ArgumentNullException(nameof(process));
         _processId = process.Id;
+        _diagnosticArtifactIdentity = TryGetDiagnosticArtifactIdentity(process);
         _diagnosticArtifactDirectories = diagnosticArtifactDirectories ?? Array.Empty<string>();
         _postKillObserver = postKillObserver;
     }
 
     /// <summary>Operating-system process id of the launched target.</summary>
     public int ProcessId => _processId;
+
+    internal string? DiagnosticArtifactIdentity => _diagnosticArtifactIdentity;
 
     /// <summary>True once the launched target has exited.</summary>
     public bool HasExited
@@ -77,7 +81,11 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
             var killSignaled = TryKill();
             if (killSignaled)
             {
-                _postKillObserver?.Invoke();
+                if (_diagnosticArtifactIdentity is not null)
+                {
+                    _postKillObserver?.Invoke(_processId, _diagnosticArtifactIdentity);
+                }
+
                 // Scan again after signaling kill but before WaitForExit can reap and release the pid.
                 CaptureDiagnosticArtifacts(diagnosticArtifacts);
             }
@@ -124,7 +132,11 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
             var killSignaled = TryKill();
             if (killSignaled)
             {
-                _postKillObserver?.Invoke();
+                if (_diagnosticArtifactIdentity is not null)
+                {
+                    _postKillObserver?.Invoke(_processId, _diagnosticArtifactIdentity);
+                }
+
                 // Scan again after signaling kill but before WaitForExitAsync can reap and release the pid.
                 CaptureDiagnosticArtifacts(diagnosticArtifacts);
             }
@@ -152,32 +164,28 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
 
     private void CaptureDiagnosticArtifacts(HashSet<string> artifacts)
     {
-        if (OperatingSystem.IsWindows() || _diagnosticArtifactDirectories.Length == 0)
+        if (OperatingSystem.IsWindows()
+            || _diagnosticArtifactIdentity is null
+            || _diagnosticArtifactDirectories.Length == 0)
         {
             return;
         }
 
         var pid = _processId.ToString(CultureInfo.InvariantCulture);
-        string[] patterns =
+        string[] names =
         [
-            $"dotnet-diagnostic-{pid}-*-socket",
-            $"clr-debug-pipe-{pid}-*-in",
-            $"clr-debug-pipe-{pid}-*-out",
+            $"dotnet-diagnostic-{pid}-{_diagnosticArtifactIdentity}-socket",
+            $"clr-debug-pipe-{pid}-{_diagnosticArtifactIdentity}-in",
+            $"clr-debug-pipe-{pid}-{_diagnosticArtifactIdentity}-out",
         ];
 
         foreach (var directory in _diagnosticArtifactDirectories)
         {
             try
             {
-                var legacySocket = Path.Combine(directory, $"dotnet-diagnostic-{pid}-socket");
-                if (File.Exists(legacySocket))
+                foreach (var name in names)
                 {
-                    artifacts.Add(legacySocket);
-                }
-
-                foreach (var pattern in patterns)
-                {
-                    foreach (var path in Directory.EnumerateFileSystemEntries(directory, pattern, SearchOption.TopDirectoryOnly))
+                    foreach (var path in Directory.EnumerateFileSystemEntries(directory, name, SearchOption.TopDirectoryOnly))
                     {
                         artifacts.Add(path);
                     }
@@ -188,6 +196,60 @@ public sealed class LaunchedTarget : IAsyncDisposable, IDisposable
                 // Best-effort only: cleanup must never hide the command's real result.
             }
         }
+    }
+
+    private static string? TryGetDiagnosticArtifactIdentity(Process process)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        try
+        {
+            if (OperatingSystem.IsLinux())
+            {
+                var processId = process.Id.ToString(CultureInfo.InvariantCulture);
+                var stat = File.ReadAllText($"/proc/{processId}/stat");
+                var commandEnd = stat.LastIndexOf(')');
+                if (commandEnd < 0 || commandEnd + 2 >= stat.Length)
+                {
+                    return null;
+                }
+
+                var fields = stat[(commandEnd + 2)..]
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                // CoreCLR's GetProcessIdDisambiguationKey uses field 22 (starttime jiffies since boot).
+                const int StartTimeIndexAfterCommand = 19;
+                if (fields.Length <= StartTimeIndexAfterCommand
+                    || !ulong.TryParse(
+                        fields[StartTimeIndexAfterCommand],
+                        NumberStyles.None,
+                        CultureInfo.InvariantCulture,
+                        out var startTime))
+                {
+                    return null;
+                }
+
+                return startTime.ToString(CultureInfo.InvariantCulture);
+            }
+
+            if (OperatingSystem.IsMacOS() || OperatingSystem.IsFreeBSD())
+            {
+                var startTime = new DateTimeOffset(process.StartTime.ToUniversalTime()).ToUnixTimeSeconds();
+                return startTime.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+        catch (Exception ex) when (ex is IOException
+            or UnauthorizedAccessException
+            or InvalidOperationException
+            or NotSupportedException
+            or System.ComponentModel.Win32Exception)
+        {
+            // Without the runtime's launch-specific key, pid-only cleanup is unsafe.
+        }
+
+        return null;
     }
 
     private static void DeleteDiagnosticArtifacts(HashSet<string> artifacts)

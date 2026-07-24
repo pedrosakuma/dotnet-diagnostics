@@ -93,12 +93,14 @@ public sealed class SuspendedColdStartLauncherTests
                 {
                     ["TMPDIR"] = longTempPath,
                 });
+            target.DiagnosticArtifactIdentity.Should().NotBeNullOrWhiteSpace();
+            var identity = target.DiagnosticArtifactIdentity!;
 
             var artifacts = new[]
             {
-                Path.Combine(longTempPath, $"dotnet-diagnostic-{target.ProcessId}-123-socket"),
-                Path.Combine(longTempPath, $"clr-debug-pipe-{target.ProcessId}-123-in"),
-                Path.Combine(longTempPath, $"clr-debug-pipe-{target.ProcessId}-123-out"),
+                Path.Combine(longTempPath, $"dotnet-diagnostic-{target.ProcessId}-{identity}-socket"),
+                Path.Combine(longTempPath, $"clr-debug-pipe-{target.ProcessId}-{identity}-in"),
+                Path.Combine(longTempPath, $"clr-debug-pipe-{target.ProcessId}-{identity}-out"),
             };
             foreach (var artifact in artifacts)
             {
@@ -143,17 +145,18 @@ public sealed class SuspendedColdStartLauncherTests
             startInfo.ArgumentList.Add("sleep 30");
             var process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("Failed to start disposal race test process.");
-            var unrelatedPid = process.Id == int.MaxValue ? process.Id - 1 : process.Id + 1;
-            var lateArtifact = Path.Combine(longTempPath, $"dotnet-diagnostic-{process.Id}-late-socket");
-            var unrelatedArtifact = Path.Combine(longTempPath, $"dotnet-diagnostic-{unrelatedPid}-late-socket");
+            string? lateArtifact = null;
+            string? reusedPidArtifact = null;
 
             target = new LaunchedTarget(
                 process,
                 [longTempPath],
-                postKillObserver: () =>
+                postKillObserver: (pid, identity) =>
                 {
+                    lateArtifact = Path.Combine(longTempPath, $"dotnet-diagnostic-{pid}-{identity}-socket");
+                    reusedPidArtifact = Path.Combine(longTempPath, $"dotnet-diagnostic-{pid}-{identity}1-socket");
                     File.WriteAllText(lateArtifact, "late");
-                    File.WriteAllText(unrelatedArtifact, "unrelated");
+                    File.WriteAllText(reusedPidArtifact, "reused-pid");
                 });
 
             if (useAsyncDispose)
@@ -165,10 +168,12 @@ public sealed class SuspendedColdStartLauncherTests
                 target.Dispose();
             }
 
-            File.Exists(lateArtifact).Should().BeFalse(
+            lateArtifact.Should().NotBeNull();
+            reusedPidArtifact.Should().NotBeNull();
+            File.Exists(lateArtifact!).Should().BeFalse(
                 "the pre-reap scan must catch artifacts created after kill was signaled");
-            File.Exists(unrelatedArtifact).Should().BeTrue(
-                "cleanup must not delete artifacts that are not attributable to the launched pid");
+            File.Exists(reusedPidArtifact!).Should().BeTrue(
+                "cleanup must not delete a same-pid artifact with a different launch identity");
         }
         finally
         {
