@@ -1739,8 +1739,13 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         snapshot.ThreadPool.Workers.Max.Should().BeGreaterThanOrEqualTo(snapshot.ThreadPool.Workers.Min);
         snapshot.ThreadPool.PendingWorkItems.Should().BeGreaterThanOrEqualTo(0);
         snapshot.ThreadPool.Notes.Should().NotBeNullOrEmpty(
-            "the live fallback should explain when it uses lightweight thread-snapshot + static ThreadPool root inspection instead of a heap walk");
-        snapshot.ThreadPool.Notes.Should().Contain(note => note.Contains("heap-wide walks", StringComparison.OrdinalIgnoreCase));
+            "the live capture should explain when it avoids a heap-wide walk, whether via the lightweight " +
+            "thread-snapshot fallback (runtime.ThreadPool null) or the direct path (runtime.ThreadPool available, " +
+            "local queue owner mapping skipped) — which one ClrMD takes is a runtime/ClrMD-version implementation " +
+            "detail, not part of this test's contract");
+        snapshot.ThreadPool.Notes.Should().Contain(
+            note => note.Contains("heap-wide walks", StringComparison.OrdinalIgnoreCase)
+                || note.Contains("heap-wide scans", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact(Timeout = 60_000)]
