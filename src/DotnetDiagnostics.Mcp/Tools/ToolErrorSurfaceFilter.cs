@@ -45,12 +45,7 @@ internal static class ToolErrorSurfaceFilter
             try
             {
                 var result = await next(request, cancellationToken).ConfigureAwait(false);
-                if (IsStructuredFailure(result))
-                {
-                    result.IsError = true;
-                }
-
-                return result;
+                return MarkStructuredFailure(result);
             }
             catch (Exception ex) when (!IsRethrow(ex, cancellationToken))
             {
@@ -72,6 +67,20 @@ internal static class ToolErrorSurfaceFilter
                 };
             }
         };
+
+    /// <summary>
+    /// Sets the MCP error bit when <paramref name="result"/> carries the repository's
+    /// standard structured failure envelope, and returns the same result instance.
+    /// </summary>
+    internal static CallToolResult MarkStructuredFailure(CallToolResult result)
+    {
+        if (IsStructuredFailure(result))
+        {
+            result.IsError = true;
+        }
+
+        return result;
+    }
 
     /// <summary>
     /// Returns true when a tool produced the repository's standard
@@ -118,5 +127,22 @@ internal static class ToolErrorSurfaceFilter
               .Append(string.IsNullOrWhiteSpace(cur.Message) ? "(no message)" : cur.Message);
         }
         return sb.ToString();
+    }
+}
+
+/// <summary>
+/// Applies structured-failure classification at the tool primitive boundary. MCP task
+/// execution invokes <see cref="McpServerTool.InvokeAsync"/> directly and bypasses request
+/// filters, so this decorator must run before the SDK chooses the task's terminal status.
+/// </summary>
+internal sealed class StructuredErrorMcpServerTool(McpServerTool innerTool)
+    : DelegatingMcpServerTool(innerTool)
+{
+    public override async ValueTask<CallToolResult> InvokeAsync(
+        RequestContext<CallToolRequestParams> request,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await base.InvokeAsync(request, cancellationToken).ConfigureAwait(false);
+        return ToolErrorSurfaceFilter.MarkStructuredFailure(result);
     }
 }

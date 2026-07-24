@@ -308,6 +308,52 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task TaskAugmentedStructuredFailure_SetsIsErrorAndFailsTask()
+    {
+        await using var client = await ConnectAsync();
+
+        var task = await client.CallToolAsTaskAsync(
+            "collect_sample",
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "not-a-real-kind",
+                ["processId"] = Environment.ProcessId,
+            },
+            new ModelContextProtocol.Protocol.McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) },
+            cancellationToken: CancellationToken.None);
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        ModelContextProtocol.Protocol.McpTask terminal = task;
+        while (DateTime.UtcNow < deadline)
+        {
+            terminal = await client.GetTaskAsync(task.TaskId, cancellationToken: CancellationToken.None);
+            if (terminal.Status is ModelContextProtocol.Protocol.McpTaskStatus.Completed
+                or ModelContextProtocol.Protocol.McpTaskStatus.Failed
+                or ModelContextProtocol.Protocol.McpTaskStatus.Cancelled)
+            {
+                break;
+            }
+
+            await Task.Delay(terminal.PollInterval ?? TimeSpan.FromMilliseconds(200));
+        }
+
+        terminal.Status.Should().Be(ModelContextProtocol.Protocol.McpTaskStatus.Failed);
+
+        var rawResult = await client.GetTaskResultAsync(task.TaskId, cancellationToken: CancellationToken.None);
+        var callToolResult = JsonSerializer.Deserialize<ModelContextProtocol.Protocol.CallToolResult>(
+            rawResult.GetRawText(),
+            DeserializeOptions);
+        callToolResult.Should().NotBeNull();
+        callToolResult!.IsError.Should().BeTrue();
+
+        var envelope = DeserializeEnvelope(callToolResult);
+        envelope.Should().NotBeNull();
+        envelope!.Error.Should().NotBeNull();
+        envelope.Error!.Kind.Should().Be("InvalidArgument");
+        envelope.Summary.Should().Contain("not-a-real-kind");
+    }
+
+    [Fact]
     public async Task ListPrompts_ExposesDiagnosticPlaybooks()
     {
         await using var client = await ConnectAsync();

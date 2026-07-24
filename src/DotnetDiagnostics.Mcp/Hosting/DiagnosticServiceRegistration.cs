@@ -308,7 +308,26 @@ internal static class DiagnosticServiceRegistration
             builder.WithTools<DiscoverAzureTool>();
         }
 
+        DecorateToolInvocations(services);
         return builder;
+    }
+
+    private static void DecorateToolInvocations(IServiceCollection services)
+    {
+        for (var i = 0; i < services.Count; i++)
+        {
+            var descriptor = services[i];
+            if (descriptor.ServiceType != typeof(McpServerTool)
+                || descriptor.ImplementationFactory is not { } factory)
+            {
+                continue;
+            }
+
+            services[i] = ServiceDescriptor.Describe(
+                typeof(McpServerTool),
+                serviceProvider => new StructuredErrorMcpServerTool((McpServerTool)factory(serviceProvider)),
+                descriptor.Lifetime);
+        }
     }
 
     private static ModelContextProtocol.Server.McpRequestFilter<ListToolsRequestParams, ListToolsResult> BuildScopeListToolsFilter(
