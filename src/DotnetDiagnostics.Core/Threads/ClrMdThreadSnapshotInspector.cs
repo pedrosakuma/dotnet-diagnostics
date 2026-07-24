@@ -1,5 +1,6 @@
 using System.IO;
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.Symbols;
 using Microsoft.Diagnostics.Runtime;
@@ -100,7 +101,7 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
         var warnings = new List<string>();
         var capturedAt = DateTimeOffset.UtcNow;
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        using var target = DataTarget.LoadDump(dumpFilePath);
+        using var target = ClrMdDumpLoader.Load(dumpFilePath);
         var clrInfo = target.ClrVersions.FirstOrDefault()
             ?? throw new InvalidOperationException("Dump does not contain a CLR runtime.");
         using var runtime = clrInfo.CreateRuntime();
