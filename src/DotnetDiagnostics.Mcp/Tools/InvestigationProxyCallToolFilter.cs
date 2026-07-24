@@ -61,6 +61,7 @@ internal static class InvestigationProxyCallToolFilter
     };
 
     public static McpRequestFilter<CallToolRequestParams, CallToolResult> Create(
+        ToolScopeRegistry scopeRegistry,
         IInvestigationSessionBinder sessionBinder,
         IInvestigationStore investigationStore,
         IInvestigationProxyClient proxyClient,
@@ -70,6 +71,7 @@ internal static class InvestigationProxyCallToolFilter
         Func<ILogger?> loggerAccessor,
         Func<RequestContext<CallToolRequestParams>, string?>? sessionIdResolver = null)
     {
+        ArgumentNullException.ThrowIfNull(scopeRegistry);
         ArgumentNullException.ThrowIfNull(sessionBinder);
         ArgumentNullException.ThrowIfNull(investigationStore);
         ArgumentNullException.ThrowIfNull(proxyClient);
@@ -87,6 +89,7 @@ internal static class InvestigationProxyCallToolFilter
                 request.Params,
                 sessionId,
                 next: (p, ct) => next(request, ct),
+                scopeRegistry,
                 sessionBinder,
                 investigationStore,
                 proxyClient,
@@ -108,6 +111,7 @@ internal static class InvestigationProxyCallToolFilter
         CallToolRequestParams? requestParams,
         string? sessionId,
         Func<CallToolRequestParams?, CancellationToken, ValueTask<CallToolResult>> next,
+        ToolScopeRegistry scopeRegistry,
         IInvestigationSessionBinder sessionBinder,
         IInvestigationStore investigationStore,
         IInvestigationProxyClient proxyClient,
@@ -117,6 +121,7 @@ internal static class InvestigationProxyCallToolFilter
         Func<ILogger?> loggerAccessor,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(scopeRegistry);
         var toolName = requestParams?.Name;
         var sanitizedRequest = InvestigationRoutingArguments.StripRoutingArguments(requestParams);
         if (string.IsNullOrEmpty(toolName) || BypassToolNames.Contains(toolName))
@@ -150,6 +155,37 @@ internal static class InvestigationProxyCallToolFilter
         {
             // Explicit > binding (P2 IProcessContextResolver precedence).
             return await next(sanitizedRequest, cancellationToken).ConfigureAwait(false);
+        }
+
+        using var activity = observability.StartProxyActivity(handleId, toolName);
+
+        if (!InvestigationProxyToolAllowlist.IsAllowed(toolName))
+        {
+            loggerAccessor()?.LogWarning(
+                "Refusing to forward '{ToolName}' via investigation {HandleId}: tool is not on the proxy allowlist.",
+                toolName, handleId);
+            observability.RecordProxyCall(principalAccessor.Current, handleId, MetricToolLabel(toolName), "failure");
+            activity?.SetTag("event.outcome", "failure");
+            activity?.SetTag("error.type", "ToolNotAllowed");
+            return BuildToolNotAllowedResult(toolName, handleId);
+        }
+
+        var authorization = scopeRegistry.Authorize(
+            toolName,
+            sanitizedRequest?.Arguments,
+            principalAccessor.Current);
+        if (!authorization.IsAllowed)
+        {
+            loggerAccessor()?.LogWarning(
+                "Refusing to forward '{ToolName}' via investigation {HandleId}: missing scope {MissingScope}.",
+                toolName, handleId, authorization.MissingScope);
+            observability.RecordProxyCall(principalAccessor.Current, handleId, MetricToolLabel(toolName), "failure");
+            activity?.SetTag("event.outcome", "failure");
+            activity?.SetTag("error.type", "Forbidden");
+            return ToolScopeAuthorizationFilter.BuildForbiddenResult(
+                toolName,
+                authorization,
+                principalAccessor.Current);
         }
 
         var handle = investigationStore.GetById(handleId);
@@ -210,24 +246,6 @@ internal static class InvestigationProxyCallToolFilter
                     },
                 },
             };
-        }
-
-        // H7 (issue #164): enforce the explicit forwarded-tool allowlist BEFORE we
-        // delegate to the proxy client. A tool that is not on the allowlist is NOT
-        // silently demoted to local execution (which would mask "this tool doesn't
-        // make sense in a Pod-attached context" misuse from the LLM); it surfaces
-        // a structured error so the LLM can self-correct.
-        using var activity = observability.StartProxyActivity(handle.HandleId, toolName);
-
-        if (!InvestigationProxyToolAllowlist.IsAllowed(toolName))
-        {
-            loggerAccessor()?.LogWarning(
-                "Refusing to forward '{ToolName}' via investigation {HandleId}: tool is not on the proxy allowlist.",
-                toolName, handle.HandleId);
-            observability.RecordProxyCall(principalAccessor.Current, handle.HandleId, MetricToolLabel(toolName), "failure");
-            activity?.SetTag("event.outcome", "failure");
-            activity?.SetTag("error.type", "ToolNotAllowed");
-            return BuildToolNotAllowedResult(toolName, handle.HandleId);
         }
 
         try

@@ -328,10 +328,9 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
             new Dictionary<string, object?> { ["kind"] = "delete", ["artifactPath"] = "keep.dmp" },
             cancellationToken: CancellationToken.None);
 
-        var envelope = DeserializeEnvelope(result);
-        envelope!.Error.Should().NotBeNull();
-        envelope.Error!.Kind.Should().Be("Forbidden");
-        envelope.Error.Message.Should().Contain("delete-artifact");
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text
+            .Should().Contain("delete-artifact");
         File.Exists(path).Should().BeTrue();
     }
 

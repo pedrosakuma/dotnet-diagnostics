@@ -93,6 +93,7 @@ public sealed class ToolScopeAttributesTests
             typeof(DotnetDiagnostics.Mcp.Tools.InspectProcessTool),
             typeof(DotnetDiagnostics.Mcp.Tools.CollectEventsTool),
             typeof(DotnetDiagnostics.Mcp.Tools.CollectSampleTool),
+            typeof(DotnetDiagnostics.Mcp.Tools.CollectBatchTool),
             typeof(DotnetDiagnostics.Mcp.Tools.QuerySnapshotTool),
             typeof(DotnetDiagnostics.Mcp.Tools.InspectHeapTool),
             typeof(DotnetDiagnostics.Mcp.Tools.GetBytesTool),
@@ -112,6 +113,35 @@ public sealed class ToolScopeAttributesTests
         registry.TryGet("list_orchestrator")!.Value.Any.Should().Equal("orchestrator-list", "orchestrator-attach");
         registry.TryGet("discover_azure")!.Value.All.Should().Equal("azure-discovery");
     }
+
+    [Fact]
+    public void ToolScopeRegistry_Authorize_Requires_Literal_MethodParameter_Modifier()
+    {
+        var registry = ToolScopeRegistry.Build(
+            DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable);
+        var arguments = new Dictionary<string, System.Text.Json.JsonElement>
+        {
+            ["kind"] = System.Text.Json.JsonSerializer.SerializeToElement(" method-params "),
+        };
+
+        var wildcardOnly = new BearerPrincipal(
+            "root",
+            ImmutableHashSet.Create(BearerPrincipal.RootScope));
+        var denied = registry.Authorize("collect_sample", arguments, wildcardOnly);
+
+        denied.IsAllowed.Should().BeFalse();
+        denied.MissingScope.Should().Be("sensitive-parameter-read");
+        denied.MissingExplicitScope.Should().BeTrue();
+
+        var allowed = registry.Authorize(
+            "collect_sample",
+            arguments,
+            new BearerPrincipal(
+                "capture",
+                ImmutableHashSet.Create("eventpipe", "sensitive-parameter-read")));
+        allowed.IsAllowed.Should().BeTrue();
+    }
+
 
     // --- fixtures -----------------------------------------------------------------
 

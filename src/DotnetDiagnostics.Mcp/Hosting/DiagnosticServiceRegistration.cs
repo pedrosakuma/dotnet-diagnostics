@@ -221,6 +221,10 @@ internal static class DiagnosticServiceRegistration
             }
         }
 
+        var scopeRegistry = Security.ToolScopeRegistry.Build(
+            PodLocalToolSurfaces.GetSurfaceTypes(enableOrchestratorTools, enableAzureDiscoveryTools));
+        services.AddSingleton(scopeRegistry);
+
         var builder = services
             .AddMcpServer(options =>
             {
@@ -230,30 +234,25 @@ internal static class DiagnosticServiceRegistration
 
                 options.Filters.Request.ListToolsFilters.Add(
                     BuildScopeListToolsFilter(
-                        servicesAccessor,
-                        enableOrchestratorTools,
-                        enableAzureDiscoveryTools));
+                        scopeRegistry,
+                        servicesAccessor));
 
-                // B5.2 / docs/authorization.md#scopes — per-tool authorization. Sits AFTER ToolErrorSurfaceFilter
-                // in the registration order, which means it runs BEFORE it in the dispatch
-                // pipeline (filters wrap last-in-first-out), so a forbidden envelope short-
-                // circuits before the surface filter and is returned verbatim. The scope index
-                // is built lazily on first call so unit tests that hit Build() without the
-                // full tool surface keep working.
+                // The SDK invokes filters in registration order (the first registered filter
+                // is outermost). Register authorization before proxy routing so every initial
+                // tools/call, including MCP Task requests, is checked before proxy-specific
+                // handle/owner errors can short-circuit dispatch.
                 options.Filters.Request.CallToolFilters.Add(
                     BuildScopeAuthorizationFilter(
+                        scopeRegistry,
                         servicesAccessor,
-                        loggerFactoryAccessor,
-                        enableOrchestratorTools,
-                        enableAzureDiscoveryTools));
+                        loggerFactoryAccessor));
 
                 if (enableOrchestratorTools && servicesAccessor is not null)
                 {
-                    // Adds after ToolErrorSurfaceFilter so an exception escaping the proxy
-                    // intercept (e.g. SDK protocol violation) is still surfaced as a
-                    // structured error result rather than the SDK's generic terminal mask.
+                    // The proxy repeats the same singleton-registry decision immediately
+                    // before forwarding as defense in depth for direct/internal invocation.
                     options.Filters.Request.CallToolFilters.Add(
-                        BuildInvestigationProxyFilter(servicesAccessor, loggerFactoryAccessor));
+                        BuildInvestigationProxyFilter(scopeRegistry, servicesAccessor, loggerFactoryAccessor));
                 }
 
                 // #213 — alias removal wave complete. Every legacy
@@ -316,76 +315,23 @@ internal static class DiagnosticServiceRegistration
     }
 
     private static ModelContextProtocol.Server.McpRequestFilter<ListToolsRequestParams, ListToolsResult> BuildScopeListToolsFilter(
-        Func<IServiceProvider?>? servicesAccessor,
-        bool enableOrchestratorTools,
-        bool enableAzureDiscoveryTools)
-    {
-        Security.ToolScopeRegistry? cachedRegistry = null;
-        ModelContextProtocol.Server.McpRequestFilter<ListToolsRequestParams, ListToolsResult>? cachedFilter = null;
-        var gate = new object();
-
-        return next =>
-        {
-            if (cachedFilter is null)
-            {
-                lock (gate)
-                {
-                    if (cachedFilter is null)
-                    {
-                        var surfaceTypes = PodLocalToolSurfaces.GetSurfaceTypes(
-                            enableOrchestratorTools,
-                            enableAzureDiscoveryTools);
-                        cachedRegistry = Security.ToolScopeRegistry.Build(surfaceTypes);
-                        cachedFilter = Security.ToolScopeListToolsFilter.Create(
-                            cachedRegistry,
-                            () => servicesAccessor?.Invoke()?.GetService<Security.IPrincipalAccessor>());
-                    }
-                }
-            }
-
-            return cachedFilter(next);
-        };
-    }
+        Security.ToolScopeRegistry registry,
+        Func<IServiceProvider?>? servicesAccessor)
+        => Security.ToolScopeListToolsFilter.Create(
+            registry,
+            () => servicesAccessor?.Invoke()?.GetService<Security.IPrincipalAccessor>());
 
     private static ModelContextProtocol.Server.McpRequestFilter<CallToolRequestParams, CallToolResult> BuildScopeAuthorizationFilter(
+        Security.ToolScopeRegistry registry,
         Func<IServiceProvider?>? servicesAccessor,
-        Func<ILoggerFactory?> loggerFactoryAccessor,
-        bool enableOrchestratorTools,
-        bool enableAzureDiscoveryTools)
-    {
-        // Build the tool-scope index on first call. The set of scanned types must match
-        // the WithTools<>() chain below (DiagnosticTools always; OrchestratorTools when
-        // enabled; DiscoverAzureTool when Azure discovery is enabled) so the registry
-        // knows about every tool the SDK will dispatch.
-        Security.ToolScopeRegistry? cachedRegistry = null;
-        ModelContextProtocol.Server.McpRequestFilter<CallToolRequestParams, CallToolResult>? cachedFilter = null;
-        var gate = new object();
-
-        return next =>
-        {
-            if (cachedFilter is null)
-            {
-                lock (gate)
-                {
-                    if (cachedFilter is null)
-                    {
-                        var surfaceTypes = PodLocalToolSurfaces.GetSurfaceTypes(
-                            enableOrchestratorTools,
-                            enableAzureDiscoveryTools);
-                        cachedRegistry = Security.ToolScopeRegistry.Build(surfaceTypes);
-
-                        cachedFilter = Security.ToolScopeAuthorizationFilter.Create(
-                            cachedRegistry,
-                            () => servicesAccessor?.Invoke()?.GetService<Security.IPrincipalAccessor>(),
-                            () => loggerFactoryAccessor()?.CreateLogger(typeof(Security.ToolScopeAuthorizationFilter).FullName!));
-                    }
-                }
-            }
-            return cachedFilter(next);
-        };
-    }
+        Func<ILoggerFactory?> loggerFactoryAccessor)
+        => Security.ToolScopeAuthorizationFilter.Create(
+            registry,
+            () => servicesAccessor?.Invoke()?.GetService<Security.IPrincipalAccessor>(),
+            () => loggerFactoryAccessor()?.CreateLogger(typeof(Security.ToolScopeAuthorizationFilter).FullName!));
 
     private static ModelContextProtocol.Server.McpRequestFilter<CallToolRequestParams, CallToolResult> BuildInvestigationProxyFilter(
+        Security.ToolScopeRegistry scopeRegistry,
         Func<IServiceProvider?> servicesAccessor,
         Func<ILoggerFactory?> loggerFactoryAccessor)
     {
@@ -407,6 +353,7 @@ internal static class DiagnosticServiceRegistration
                             ?? throw new InvalidOperationException(
                                 "InvestigationProxyCallToolFilter requires a service provider; servicesAccessor returned null.");
                         cached = Tools.InvestigationProxyCallToolFilter.Create(
+                            scopeRegistry,
                             sp.GetRequiredService<Orchestrator.Investigations.IInvestigationSessionBinder>(),
                             sp.GetRequiredService<Orchestrator.Investigations.IInvestigationStore>(),
                             sp.GetRequiredService<Orchestrator.Investigations.IInvestigationProxyClient>(),
