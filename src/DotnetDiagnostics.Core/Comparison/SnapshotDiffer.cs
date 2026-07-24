@@ -295,9 +295,30 @@ public static class SnapshotDiffer
 
     private static string Verdict2(
         ComparableSnapshot from, ComparableSnapshot to, bool isKeySet, BetterDirection? keySetDir, double minDeltaPct)
-        => isKeySet
-            ? KeySetVerdict(from, to, keySetDir ?? BetterDirection.Lower, minDeltaPct)
-            : MetricVerdict(from, to, minDeltaPct);
+    {
+        if (!isKeySet)
+        {
+            return MetricVerdict(from, to, minDeltaPct);
+        }
+
+        // Some key-set projectors also expose scalar symptom metrics. Those primaries are the
+        // comparison axis; row turnover remains drilldown evidence and must not independently
+        // turn a healthier capture into a regression merely because a different row is now first.
+        return HasSharedDirectionalPrimaryMetric(from, to)
+            ? MetricVerdict(from, to, minDeltaPct)
+            : KeySetVerdict(from, to, keySetDir ?? BetterDirection.Lower, minDeltaPct);
+    }
+
+    private static bool HasSharedDirectionalPrimaryMetric(ComparableSnapshot from, ComparableSnapshot to)
+    {
+        var fromMetrics = MetricLookup(from);
+        var toMetrics = MetricLookup(to);
+        return fromMetrics.Keys
+            .Intersect(toMetrics.Keys, StringComparer.Ordinal)
+            .Any(name =>
+                fromMetrics[name].Definition.Role == MetricRole.Primary
+                && fromMetrics[name].Definition.BetterDirection != BetterDirection.Neutral);
+    }
 
     private static string MetricVerdict(ComparableSnapshot from, ComparableSnapshot to, double minDeltaPct)
     {

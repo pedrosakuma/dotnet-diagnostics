@@ -64,7 +64,15 @@ public sealed record HotspotSummary(
     double InclusivePercent,
     double ExclusivePercent,
     SourceLocation? Source = null,
-    MethodIdentity? Identity = null);
+    MethodIdentity? Identity = null)
+{
+    /// <summary>
+    /// Optional split of this hotspot's exclusive samples into actively-running versus
+    /// waiting/blocking observations. Null for legacy summaries and sampling backends that do not
+    /// classify self samples.
+    /// </summary>
+    public CpuSampling.SelfSampleBreakdown? SelfSamples { get; init; }
+}
 
 public sealed record SymbolRef(string Module, string MethodFullName);
 
