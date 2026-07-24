@@ -22,24 +22,35 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 /// <see cref="DiagnosticError.Kind"/> instead of bubbling into the MCP SDK envelope as a
 /// generic "An error occurred invoking 'X'." text content.
 /// </summary>
+/// <remarks>
+/// Fake pids for <c>inspect_live_heap</c>/<c>collect_thread_snapshot</c> tests in this class use a
+/// dedicated 848200-series range, never reused by any other test class/file (see
+/// <see cref="SymbolPathSecurityTests"/>'s 848100-series for the companion range). Both tools
+/// serialize live attaches per pid through the process-wide static
+/// <see cref="DotnetDiagnostics.Core.UseCases.AttachConcurrencyLimiter.Shared"/> gate; reusing a
+/// small "obviously fake" pid (e.g. 42) across independent test classes that xunit may schedule
+/// concurrently causes an intermittent spurious "Busy" result instead of the asserted outcome (see
+/// issue #684). Pick a pid from this class's own range for any new gated-attach test here, and
+/// never reuse a pid another test class has claimed for a gated tool.
+/// </remarks>
 public sealed class ToolGuardTests
 {
     [Fact]
     public async Task InspectLiveHeap_PtraceFailure_TranslatesToPermissionDenied()
     {
         var inspector = new ThrowingDumpInspector(
-            new ClrDiagnosticsException("Could not PTRACE_ATTACH to any thread of the process 1234."));
+            new ClrDiagnosticsException("Could not PTRACE_ATTACH to any thread of the process 848201."));
         var handles = new MemoryDiagnosticHandleStore();
 
         var result = await DiagnosticTools.InspectLiveHeap(
             inspector, handles, EchoResolver(), new SymbolServerAllowlist(null),
-            TestPrincipalAccessors.Root, processId: 1234, cancellationToken: default);
+            TestPrincipalAccessors.Root, processId: 848201, cancellationToken: default);
 
         result.IsError.Should().BeTrue();
         result.Error.Should().NotBeNull();
         result.Error!.Kind.Should().Be("PermissionDenied");
         result.Error.Message.Should().Contain("PTRACE_ATTACH");
-        result.Summary.Should().Contain("pid 1234");
+        result.Summary.Should().Contain("pid 848201");
         result.Summary.Should().Contain("ptrace");
     }
 
@@ -51,7 +62,7 @@ public sealed class ToolGuardTests
 
         var result = await DiagnosticTools.InspectLiveHeap(
             inspector, handles, EchoResolver(), new SymbolServerAllowlist(null),
-            TestPrincipalAccessors.Root, processId: 999, cancellationToken: default);
+            TestPrincipalAccessors.Root, processId: 848202, cancellationToken: default);
 
         result.IsError.Should().BeTrue();
         result.Error!.Kind.Should().Be("EndpointUnavailable");
@@ -62,12 +73,12 @@ public sealed class ToolGuardTests
     public async Task CollectThreadSnapshot_PtraceFailure_TranslatesToPermissionDenied()
     {
         var inspector = new ThrowingThreadSnapshotInspector(
-            new ClrDiagnosticsException("Could not PTRACE_ATTACH to any thread of the process 42."));
+            new ClrDiagnosticsException("Could not PTRACE_ATTACH to any thread of the process 848203."));
         var handles = new MemoryDiagnosticHandleStore();
 
         var result = await DiagnosticTools.CollectThreadSnapshot(
             inspector, handles, EchoResolver(), new SymbolServerAllowlist(null),
-            TestPrincipalAccessors.Root, processId: 42, cancellationToken: default);
+            TestPrincipalAccessors.Root, processId: 848203, cancellationToken: default);
 
         result.IsError.Should().BeTrue();
         result.Error!.Kind.Should().Be("PermissionDenied");
@@ -83,7 +94,7 @@ public sealed class ToolGuardTests
 
         var result = await DiagnosticTools.CollectThreadSnapshot(
             inspector, handles, EchoResolver(), new SymbolServerAllowlist(null),
-            TestPrincipalAccessors.Root, processId: 42, cancellationToken: default);
+            TestPrincipalAccessors.Root, processId: 848204, cancellationToken: default);
 
         result.IsError.Should().BeTrue();
         result.Error!.Kind.Should().Be("ToolNotFound");
@@ -124,7 +135,7 @@ public sealed class ToolGuardTests
 
         var result = await DiagnosticTools.InspectLiveHeap(
             inspector, handles, EchoResolver(), new SymbolServerAllowlist(null),
-            TestPrincipalAccessors.Root, processId: 7, cancellationToken: default);
+            TestPrincipalAccessors.Root, processId: 848205, cancellationToken: default);
 
         result.IsError.Should().BeTrue();
         result.Error!.Kind.Should().Be("PermissionDenied");
@@ -143,7 +154,7 @@ public sealed class ToolGuardTests
 
         var result = await DiagnosticTools.InspectLiveHeap(
             inspector, handles, EchoResolver(), new SymbolServerAllowlist(null),
-            TestPrincipalAccessors.Root, processId: 9, cancellationToken: default);
+            TestPrincipalAccessors.Root, processId: 848206, cancellationToken: default);
 
         result.IsError.Should().BeTrue();
         result.Error!.Kind.Should().Be("PermissionDenied");
