@@ -57,13 +57,17 @@
   every iteration — no correctness difference, only speed. The lock-free reader was **~1.3-1.8x
   faster** on typical iterations (one outlier iteration at 105.9ms was still faster than the
   default-reader median).
-- Decision: **enabled unconditionally.** Added `ClrMdDumpLoader.Load(path)` (wraps
-  `DataTarget.LoadDump(path, new DataTargetOptions { UseLockFreeMemoryMapReader = true })`) and
+- Decision: **enabled by default (when the sidecar process is 64-bit).** Added `ClrMdDumpLoader.Load(path)` (wraps
+  `DataTarget.LoadDump(path, new DataTargetOptions { UseLockFreeMemoryMapReader = Environment.Is64BitProcess })`) and
   routed all 5 dump-file call sites through it. No config knob was added — the thread-safety
   audit above shows no call site is affected, and the memory cost is the same order of magnitude
-  as the default reader already touching most of the dump for a heap walk (not tested against an
+  as the default reader already touching most of the dump for a heap walk. The 64-bit gate is a
+  cheap defensive guard (code review finding): memory-mapping a whole dump reserves a matching
+  contiguous address range, which can fail with `OutOfMemoryException` on a 32-bit process for
+  dumps approaching 2 GiB well before physical memory is exhausted — not a real deployment
+  scenario for this sidecar today, but free to guard against. Not tested against an
   extremely large dump far exceeding available address space / RAM; revisit if that ever becomes a
-  real scenario per `docs/resource-boundedness.md`).
+  real scenario per `docs/resource-boundedness.md`.
 
 ## GcDumpHeapSnapshotCollector
 
