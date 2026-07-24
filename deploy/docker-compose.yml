@@ -58,7 +58,7 @@ services:
     # host. Elevates blast radius — only do this on a developer machine.
     # pid: host
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1"]
+      test: ["CMD", "dotnet", "DotnetDiagnostics.Mcp.dll", "--health-check", "--urls", "http://127.0.0.1:8080"]
       interval: 30s
       timeout: 5s
       start_period: 10s
