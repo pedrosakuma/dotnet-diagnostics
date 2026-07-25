@@ -255,6 +255,29 @@ public sealed class InvestigationProxyCallToolFilterTests
         fx.ProxyClient.CallCount.Should().Be(0);
     }
 
+    [Fact]
+    public async Task RejectsMixedCaseRetentionPaths_WhenSensitiveHeapScopeIsMissing()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "heap-read"));
+        fx.Binder.Bind("session-retention", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(
+            Params("query_snapshot", new Dictionary<string, JsonElement>
+            {
+                ["handle"] = JsonSerializer.SerializeToElement("heap-handle"),
+                ["view"] = JsonSerializer.SerializeToElement("RETENTION-PATHS"),
+            }),
+            "session-retention");
+
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text
+            .Should().Contain("sensitive-heap-read");
+        fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
     [Theory]
     [InlineData("collect_sample", "kind", "method-params", "eventpipe", "sensitive-parameter-read")]
     [InlineData("get_bytes", "kind", "delete", "module-bytes-read", "delete-artifact")]
