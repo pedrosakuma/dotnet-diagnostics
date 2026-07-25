@@ -270,10 +270,11 @@ public sealed class ThreadSnapshotQueryDispatcherTests
         const ulong lockAddress = 0x30_000;
         var recoveredWaiterIds = new List<int>();
         var offset = 0;
+        string? cursor = null;
 
         while (true)
         {
-            var page = ThreadSnapshotQueryDispatcher.Dispatch(
+            var page = ThreadSnapshotQueryDispatcher.DispatchCursor(
                 snapshot,
                 Handle,
                 "lock-graph",
@@ -282,19 +283,21 @@ public sealed class ThreadSnapshotQueryDispatcherTests
                 framesToHash: 20,
                 minCount: 1,
                 offset: offset,
-                lockAddress: $"0x{lockAddress:x}");
+                lockAddress: $"0x{lockAddress:x}",
+                cursor: cursor);
 
             page.Error.Should().BeNull();
             var selected = page.Data!.Locks.Should().ContainSingle().Subject;
             selected.ObjectAddress.Should().Be(lockAddress);
             selected.WaitingManagedThreadIds.Should().HaveCountLessThanOrEqualTo(ThreadSnapshotProjection.LockWaiterIdLimit);
             recoveredWaiterIds.AddRange(selected.WaitingManagedThreadIds);
-            if (page.Data.NextWaiterOffset is not { } nextOffset)
+            if (page.Data.NextWaiterCursor is not { } nextCursor)
             {
                 break;
             }
-            nextOffset.Should().BeGreaterThan(offset);
-            offset = nextOffset;
+            page.Data.NextWaiterOffset.Should().BeGreaterThan(offset);
+            offset = 0;
+            cursor = nextCursor;
         }
 
         recoveredWaiterIds.Should().Equal(Enumerable.Range(1, 1_000));
@@ -312,7 +315,7 @@ public sealed class ThreadSnapshotQueryDispatcherTests
     }
 
     [Fact]
-    public void Dispatch_ExhaustedOffsets_AreDistinctFromEmptyCaptures()
+    public void Dispatch_PathologicalOffsets_AreRejectedWithoutConfusingEmptyCaptures()
     {
         var snapshot = PagingSnapshot();
 
@@ -333,19 +336,14 @@ public sealed class ThreadSnapshotQueryDispatcherTests
             offset: int.MaxValue,
             lockAddress: "0x30000");
 
-        threads.Data!.Threads.Should().BeEmpty();
-        threads.Data.NextThreadOffset.Should().BeNull();
-        threads.Summary.Should().Contain("offset 2147483647 is exhausted");
-        blocked.Data!.Threads.Should().BeEmpty();
-        blocked.Data.NextThreadOffset.Should().BeNull();
-        blocked.Summary.Should().Contain("offset 2147483647 is exhausted");
-        locks.Data!.Locks.Should().BeEmpty();
-        locks.Data.NextLockOffset.Should().BeNull();
-        locks.Summary.Should().Contain("offset 2147483647 is exhausted");
-        waiters.Data!.Locks.Should().ContainSingle()
-            .Which.WaitingManagedThreadIds.Should().BeEmpty();
-        waiters.Data.NextWaiterOffset.Should().BeNull();
-        waiters.Summary.Should().Contain("offset 2147483647 is exhausted");
+        foreach (var outcome in new[] { threads, blocked, locks, waiters })
+        {
+            outcome.Data.Should().BeNull();
+            outcome.Error!.Kind.Should().Be("InvalidArgument");
+            outcome.Error.Message.Should().Contain("use the returned next cursor");
+            outcome.Hints.Should().ContainSingle()
+                .Which.NextTool.Should().Be("query_snapshot");
+        }
 
         var empty = snapshot with
         {
@@ -356,6 +354,48 @@ public sealed class ThreadSnapshotQueryDispatcherTests
             .Summary.Should().Contain("contains no captured threads").And.NotContain("exhausted");
         ThreadSnapshotQueryDispatcher.Dispatch(empty, Handle, "lock-graph", null, 50, 20, 1)
             .Summary.Should().Contain("contains no held or contended SyncBlocks").And.NotContain("exhausted");
+    }
+
+    [Fact]
+    public void Dispatch_CursorRejectsMalformedCrossHandleAndCrossViewValues()
+    {
+        var snapshot = PagingSnapshot();
+        var first = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "threads-summary", null, 50, 20, 1);
+        var cursor = first.Data!.NextThreadCursor;
+        cursor.Should().NotBeNull();
+        var padded = cursor!.Replace('-', '+').Replace('_', '/');
+        padded = padded.PadRight((padded.Length + 3) / 4 * 4, '=');
+        var versionBytes = Convert.FromBase64String(padded);
+        versionBytes[0] = 99;
+        var unsupportedVersion = Convert.ToBase64String(versionBytes)
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+        var malformedLength = Convert.ToBase64String([1, 1, 128, 128, 128, 128, 16])
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+
+        var malformed = ThreadSnapshotQueryDispatcher.DispatchCursor(
+            snapshot, Handle, "threads-summary", null, 50, 20, 1, cursor: "not-base64!");
+        var malformedString = ThreadSnapshotQueryDispatcher.DispatchCursor(
+            snapshot, Handle, "threads-summary", null, 50, 20, 1, cursor: malformedLength);
+        var versioned = ThreadSnapshotQueryDispatcher.DispatchCursor(
+            snapshot, Handle, "threads-summary", null, 50, 20, 1, cursor: unsupportedVersion);
+        var crossHandle = ThreadSnapshotQueryDispatcher.DispatchCursor(
+            snapshot, "other-handle", "threads-summary", null, 50, 20, 1, cursor: cursor!);
+        var crossView = ThreadSnapshotQueryDispatcher.DispatchCursor(
+            snapshot, Handle, "top-blocked", null, 50, 20, 1, cursor: cursor!);
+        var mixedPaging = ThreadSnapshotQueryDispatcher.DispatchCursor(
+            snapshot, Handle, "threads-summary", null, 50, 20, 1, offset: 1, cursor: cursor!);
+
+        malformed.Error!.Message.Should().Contain("valid base64url");
+        malformedString.Error!.Message.Should().Contain("truncated");
+        versioned.Error!.Message.Should().Contain("version is unsupported");
+        crossHandle.Error!.Message.Should().Contain("different snapshot handle");
+        crossView.Error!.Message.Should().Contain("different thread view");
+        mixedPaging.Error!.Message.Should().Contain("non-zero offset cannot be combined");
     }
 
     [Fact]

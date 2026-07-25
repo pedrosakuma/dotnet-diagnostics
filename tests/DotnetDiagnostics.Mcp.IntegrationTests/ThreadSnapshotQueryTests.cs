@@ -138,14 +138,37 @@ public sealed class ThreadSnapshotQueryTests
         var handle = store.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10), evictWhenProcessExits: false);
 
         var first = DiagnosticTools.QueryThreadSnapshot(store, handle.Id, view: "threads-summary", offset: 0);
-        var second = DiagnosticTools.QueryThreadSnapshot(store, handle.Id, view: "threads-summary", offset: 8);
+        var second = DiagnosticTools.QueryThreadSnapshot(
+            store,
+            handle.Id,
+            view: "threads-summary",
+            offset: 8);
 
         first.Data!.NextThreadOffset.Should().Be(8);
+        first.Data.NextThreadCursor.Should().NotBeNullOrWhiteSpace();
         second.Data!.NextThreadOffset.Should().BeNull();
         first.Data.Threads!
             .Concat(second.Data.Threads!)
             .Select(thread => thread.ManagedThreadId)
             .Should().BeEquivalentTo(Enumerable.Range(1, 13));
+    }
+
+    [Fact]
+    public void QueryThreadSnapshot_RejectsDeepRandomOffsetWithCursorGuidance()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = CreateSnapshot();
+        var handle = store.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10), evictWhenProcessExits: false);
+
+        var result = DiagnosticTools.QueryThreadSnapshot(
+            store,
+            handle.Id,
+            view: "threads-summary",
+            offset: int.MaxValue);
+
+        result.Data.Should().BeNull();
+        result.Error!.Kind.Should().Be("InvalidArgument");
+        result.Error.Message.Should().Contain("returned next cursor");
     }
 
     private static ThreadSnapshotArtifact CreateSnapshot()

@@ -237,12 +237,12 @@ public sealed class QuerySnapshotFrameVarsToolTests
             store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null),
             new SecurityOptions(), TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
             handle: handle.Id, view: "threads-summary", offset: 0);
-        var second = await QuerySnapshotTool.QuerySnapshotPaged(
+        var firstPage = first.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
+        var second = await QuerySnapshotTool.QuerySnapshotCursorPaged(
             store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null),
             new SecurityOptions(), TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
-            handle: handle.Id, view: "threads-summary", offset: 8);
+            handle: handle.Id, view: "threads-summary", cursor: firstPage.NextThreadCursor);
 
-        var firstPage = first.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
         var secondPage = second.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
         firstPage.TotalThreads.Should().Be(13);
         firstPage.CandidateThreads.Should().Be(13);
@@ -253,10 +253,15 @@ public sealed class QuerySnapshotFrameVarsToolTests
             .Select(thread => thread.ManagedThreadId)
             .Should().BeEquivalentTo(Enumerable.Range(1, 13));
 
-        var lockPage = await QuerySnapshotTool.QuerySnapshotPaged(
+        var firstLockPage = await QuerySnapshotTool.QuerySnapshotPaged(
             store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null),
             new SecurityOptions(), TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
-            handle: handle.Id, view: "lock-graph", offset: 8, address: "0x30000");
+            handle: handle.Id, view: "lock-graph", address: "0x30000");
+        var firstSelectedLock = firstLockPage.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
+        var lockPage = await QuerySnapshotTool.QuerySnapshotCursorPaged(
+            store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null),
+            new SecurityOptions(), TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
+            handle: handle.Id, view: "lock-graph", address: "0x30000", cursor: firstSelectedLock.NextWaiterCursor);
         var selectedLock = lockPage.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
         selectedLock.Locks.Should().ContainSingle()
             .Which.WaitingManagedThreadIds.Should().Equal(Enumerable.Range(9, 8));

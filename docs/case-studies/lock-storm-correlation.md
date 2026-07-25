@@ -86,7 +86,7 @@ only the first eight ranked candidates and a continuation:
   "totalThreads": 26,
   "candidateThreads": 22,
   "threadOffset": 0,
-  "nextThreadOffset": 8,
+  "nextThreadCursor": "<opaque>",
   "threads": [
     { "managedThreadId": 21, "waitReason": "Monitor.Enter (contended)" }
     // ... seven more bounded rows, each with at most eight frames
@@ -95,7 +95,7 @@ only the first eight ranked candidates and a continuation:
 ```
 
 The handle retains every captured thread and frame, but the response remains
-bounded. Continue with `nextThreadOffset`, or move directly to the ranked lock
+bounded. Continue with `nextThreadCursor`, or move directly to the ranked lock
 graph when the collection hint reports contended locks.
 
 ## 2. The reveal — stable lock identity leads to the exact owner stack
@@ -108,7 +108,7 @@ page without losing its stable owner identity:
 {
   "view": "lock-graph",
   "waiterOffset": 0,
-  "nextWaiterOffset": 8,
+  "nextWaiterCursor": "<opaque>",
   "locks": [{
     "objectAddress": "0x7ad4684588a8",
     "ownerManagedThreadId": 14,
@@ -167,7 +167,7 @@ thread currently owns it, is the entire critical path."
 - Bounded pages can look unremarkable independently — "some threads wait,"
   "one lock has more waiters than others" — while the stable owner id makes
   their **intersection** explicit without capture-sized response payloads.
-- `nextThreadOffset`, `nextLockOffset`, and `nextWaiterOffset` make omitted
+- `nextThreadCursor`, `nextLockCursor`, and `nextWaiterCursor` make omitted
   evidence discoverable. Exact `address` and `threadId` selectors avoid
   replaying earlier pages when the decisive identity is already known.
 - See [`docs/tool-reference.md`](../tool-reference.md) for the bounded

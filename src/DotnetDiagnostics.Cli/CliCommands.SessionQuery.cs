@@ -611,7 +611,7 @@ internal static partial class CliCommands
         var topN = ResolveQueryTopN(options, 50);
         var framesToHash = options.FramesToHash ?? 20;
         var minCount = options.MinCount ?? 1;
-        var result = ThreadSnapshotQueryDispatcher.Dispatch(
+        var result = ThreadSnapshotQueryDispatcher.DispatchCursor(
             snapshot,
             options.Handle!,
             view,
@@ -620,7 +620,8 @@ internal static partial class CliCommands
             framesToHash,
             minCount,
             offset: options.Offset ?? 0,
-            lockAddress: options.Address);
+            lockAddress: options.Address,
+            cursor: options.Cursor);
 
         return BuildResult<ThreadSnapshotQueryResult>(result, static (sb, qr) =>
         {

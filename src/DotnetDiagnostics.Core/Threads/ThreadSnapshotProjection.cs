@@ -14,6 +14,7 @@ public static class ThreadSnapshotProjection
     public const int QueryFrameLimit = 8;
     public const int DetailLockLimit = 12;
     public const int LockWaiterIdLimit = 8;
+    public const int MaxDirectOffset = 256;
 
     public static BoundedProjectionPage<ManagedThread> ProjectThreads(
         ThreadSnapshotArtifact snapshot,
@@ -22,8 +23,20 @@ public static class ThreadSnapshotProjection
         int frameLimit,
         bool blockedOnly = false,
         int offset = 0)
+        => ProjectThreads(snapshot, requestedCount, hardThreadLimit, frameLimit, blockedOnly, offset, null, null);
+
+    public static BoundedProjectionPage<ManagedThread> ProjectThreads(
+        ThreadSnapshotArtifact snapshot,
+        int requestedCount,
+        int hardThreadLimit,
+        int frameLimit,
+        bool blockedOnly,
+        int offset,
+        string? handle,
+        string? cursor)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+        ValidatePagingArguments(offset, handle, cursor);
 
         var blockedCandidateCount = blockedOnly
             ? snapshot.Threads.Count(static thread => thread.IsLikelyBlocked || thread.IsLockWaiter)
@@ -32,28 +45,77 @@ public static class ThreadSnapshotProjection
         var totalItems = usedFallback || !blockedOnly
             ? snapshot.Threads.Count
             : blockedCandidateCount;
-        if (offset >= totalItems)
+        var actualBlockedOnly = blockedOnly && !usedFallback;
+        RankedThread? after = null;
+        var pageOffset = offset;
+        if (cursor is not null)
+        {
+            if (!ThreadSnapshotCursorCodec.TryDecodeThread(
+                    cursor,
+                    handle!,
+                    blockedOnly,
+                    usedFallback,
+                    out var decoded,
+                    out var error))
+            {
+                throw new ThreadSnapshotCursorException(error);
+            }
+            after = new RankedThread(
+                Thread: null!,
+                decoded.Rank,
+                decoded.LockCount,
+                decoded.FrameCount,
+                decoded.ManagedThreadId,
+                decoded.OriginalIndex);
+            if (!ValidateThreadCursor(snapshot.Threads, actualBlockedOnly, after.Value, decoded.Position))
+            {
+                throw new ThreadSnapshotCursorException("cursor no longer matches the retained thread snapshot");
+            }
+            pageOffset = decoded.Position;
+        }
+
+        if (pageOffset >= totalItems)
         {
             return new BoundedProjectionPage<ManagedThread>(
                 Array.Empty<ManagedThread>(),
                 totalItems,
-                offset,
-                NextOffset: null)
+                pageOffset,
+                NextOffset: null,
+                NextCursor: null)
             {
                 UsedFallback = usedFallback,
             };
         }
         var limit = Math.Min(requestedCount, hardThreadLimit);
-        var items = SelectThreadWindow(
+        var selection = SelectThreadWindow(
             snapshot.Threads,
-            blockedOnly && !usedFallback,
-            offset,
+            actualBlockedOnly,
+            cursor is null ? offset : 0,
             limit,
-            frameLimit);
-        int? nextOffset = offset + items.Length < totalItems
-            ? offset + items.Length
+            frameLimit,
+            after);
+        int? nextOffset = pageOffset + selection.Items.Length < totalItems
+            ? pageOffset + selection.Items.Length
             : null;
-        return new BoundedProjectionPage<ManagedThread>(items, totalItems, offset, nextOffset)
+        var nextCursor = nextOffset is not null && handle is not null && selection.Last is { } last
+            ? ThreadSnapshotCursorCodec.EncodeThread(
+                handle,
+                new ThreadSnapshotCursorCodec.ThreadCursor(
+                    blockedOnly,
+                    usedFallback,
+                    nextOffset.Value,
+                    last.Rank,
+                    last.LockCount,
+                    last.FrameCount,
+                    last.ManagedThreadId,
+                    last.OriginalIndex))
+            : null;
+        return new BoundedProjectionPage<ManagedThread>(
+            selection.Items,
+            totalItems,
+            pageOffset,
+            nextOffset,
+            nextCursor)
         {
             UsedFallback = usedFallback,
         };
@@ -64,29 +126,108 @@ public static class ThreadSnapshotProjection
         int requestedCount,
         int hardLimit,
         int offset = 0)
+        => ProjectLocks(snapshot, requestedCount, hardLimit, offset, null, null);
+
+    public static BoundedProjectionPage<MonitorLockState> ProjectLocks(
+        ThreadSnapshotArtifact snapshot,
+        int requestedCount,
+        int hardLimit,
+        int offset,
+        string? handle,
+        string? cursor)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        if (offset >= snapshot.Locks.Count)
+        ValidatePagingArguments(offset, handle, cursor);
+        RankedLock? after = null;
+        var pageOffset = offset;
+        if (cursor is not null)
+        {
+            if (!ThreadSnapshotCursorCodec.TryDecodeLock(cursor, handle!, out var decoded, out var error))
+            {
+                throw new ThreadSnapshotCursorException(error);
+            }
+            after = new RankedLock(
+                Lock: null!,
+                decoded.IsContended,
+                decoded.WaitingThreadCount,
+                decoded.RecursionCount,
+                decoded.ObjectAddress,
+                decoded.OriginalIndex);
+            if (!ValidateLockCursor(snapshot.Locks, after.Value, decoded.Position))
+            {
+                throw new ThreadSnapshotCursorException("cursor no longer matches the retained lock snapshot");
+            }
+            pageOffset = decoded.Position;
+        }
+
+        if (pageOffset >= snapshot.Locks.Count)
         {
             return new BoundedProjectionPage<MonitorLockState>(
                 Array.Empty<MonitorLockState>(),
                 snapshot.Locks.Count,
-                offset,
-                NextOffset: null);
+                pageOffset,
+                NextOffset: null,
+                NextCursor: null);
         }
         var limit = Math.Min(requestedCount, hardLimit);
-        var items = SelectLockWindow(snapshot.Locks, offset, limit);
-        int? nextOffset = offset + items.Length < snapshot.Locks.Count
-            ? offset + items.Length
+        var selection = SelectLockWindow(snapshot.Locks, cursor is null ? offset : 0, limit, after);
+        int? nextOffset = pageOffset + selection.Items.Length < snapshot.Locks.Count
+            ? pageOffset + selection.Items.Length
             : null;
-        return new BoundedProjectionPage<MonitorLockState>(items, snapshot.Locks.Count, offset, nextOffset);
+        var nextCursor = nextOffset is not null && handle is not null && selection.Last is { } last
+            ? ThreadSnapshotCursorCodec.EncodeLock(
+                handle,
+                new ThreadSnapshotCursorCodec.LockCursor(
+                    nextOffset.Value,
+                    last.IsContended,
+                    last.WaitingThreadCount,
+                    last.RecursionCount,
+                    last.ObjectAddress,
+                    last.OriginalIndex))
+            : null;
+        return new BoundedProjectionPage<MonitorLockState>(
+            selection.Items,
+            snapshot.Locks.Count,
+            pageOffset,
+            nextOffset,
+            nextCursor);
     }
 
-    public static ProjectedLockWaiterPage ProjectLock(MonitorLockState lockState, int waiterOffset)
+    public static ProjectedLockWaiterPage ProjectLock(
+        MonitorLockState lockState,
+        int waiterOffset)
+        => ProjectLock(lockState, waiterOffset, null, null);
+
+    public static ProjectedLockWaiterPage ProjectLock(
+        MonitorLockState lockState,
+        int waiterOffset,
+        string? handle,
+        string? cursor)
     {
         ArgumentNullException.ThrowIfNull(lockState);
         ArgumentOutOfRangeException.ThrowIfNegative(waiterOffset);
-        if (waiterOffset >= lockState.WaitingManagedThreadIds.Count)
+        ValidatePagingArguments(waiterOffset, handle, cursor);
+        var pageOffset = waiterOffset;
+        if (cursor is not null)
+        {
+            if (!ThreadSnapshotCursorCodec.TryDecodeWaiter(
+                    cursor,
+                    handle!,
+                    lockState.ObjectAddress,
+                    out var decoded,
+                    out var error))
+            {
+                throw new ThreadSnapshotCursorException(error);
+            }
+            if (decoded.Position > lockState.WaitingManagedThreadIds.Count ||
+                lockState.WaitingManagedThreadIds[decoded.Position - 1] != decoded.PreviousWaiterId)
+            {
+                throw new ThreadSnapshotCursorException("cursor no longer matches the retained lock waiter list");
+            }
+            pageOffset = decoded.Position;
+        }
+
+        if (pageOffset >= lockState.WaitingManagedThreadIds.Count)
         {
             return new ProjectedLockWaiterPage(
                 lockState with
@@ -95,19 +236,28 @@ public static class ThreadSnapshotProjection
                     TotalWaitingManagedThreadIds = lockState.WaitingManagedThreadIds.Count,
                     OmittedWaitingManagedThreadIds = lockState.WaitingManagedThreadIds.Count,
                 },
-                waiterOffset,
-                NextWaiterOffset: null);
+                pageOffset,
+                NextWaiterOffset: null,
+                NextWaiterCursor: null);
         }
         var count = Math.Min(
             LockWaiterIdLimit,
-            Math.Max(0, lockState.WaitingManagedThreadIds.Count - waiterOffset));
+            Math.Max(0, lockState.WaitingManagedThreadIds.Count - pageOffset));
         var waiterIds = new int[count];
         for (var i = 0; i < count; i++)
         {
-            waiterIds[i] = lockState.WaitingManagedThreadIds[waiterOffset + i];
+            waiterIds[i] = lockState.WaitingManagedThreadIds[pageOffset + i];
         }
-        int? nextOffset = waiterOffset + waiterIds.Length < lockState.WaitingManagedThreadIds.Count
-            ? waiterOffset + waiterIds.Length
+        int? nextOffset = pageOffset + waiterIds.Length < lockState.WaitingManagedThreadIds.Count
+            ? pageOffset + waiterIds.Length
+            : null;
+        var nextCursor = nextOffset is not null && handle is not null
+            ? ThreadSnapshotCursorCodec.EncodeWaiter(
+                handle,
+                new ThreadSnapshotCursorCodec.WaiterCursor(
+                    nextOffset.Value,
+                    lockState.ObjectAddress,
+                    waiterIds[^1]))
             : null;
         var projected = lockState with
         {
@@ -115,7 +265,7 @@ public static class ThreadSnapshotProjection
             TotalWaitingManagedThreadIds = lockState.WaitingManagedThreadIds.Count,
             OmittedWaitingManagedThreadIds = lockState.WaitingManagedThreadIds.Count - waiterIds.Length,
         };
-        return new ProjectedLockWaiterPage(projected, waiterOffset, nextOffset);
+        return new ProjectedLockWaiterPage(projected, pageOffset, nextOffset, nextCursor);
     }
 
     public static MonitorLockState? FindLock(ThreadSnapshotArtifact snapshot, ulong objectAddress)
@@ -152,19 +302,33 @@ public static class ThreadSnapshotProjection
     private static MonitorLockState Compact(MonitorLockState lockState)
         => ProjectLock(lockState, waiterOffset: 0).Lock;
 
-    private readonly record struct RankedThread(ManagedThread Thread, int Rank, int OriginalIndex);
+    private readonly record struct RankedThread(
+        ManagedThread Thread,
+        int Rank,
+        uint LockCount,
+        int FrameCount,
+        int ManagedThreadId,
+        int OriginalIndex);
 
-    private readonly record struct RankedLock(MonitorLockState Lock, int OriginalIndex);
+    private readonly record struct RankedLock(
+        MonitorLockState Lock,
+        bool IsContended,
+        int WaitingThreadCount,
+        int RecursionCount,
+        ulong ObjectAddress,
+        int OriginalIndex);
 
-    private static ManagedThread[] SelectThreadWindow(
+    private static ThreadSelection SelectThreadWindow(
         IReadOnlyList<ManagedThread> threads,
         bool blockedOnly,
         int offset,
         int limit,
-        int frameLimit)
+        int frameLimit,
+        RankedThread? initialCursor)
     {
         var result = new List<ManagedThread>(limit);
-        RankedThread? cursor = null;
+        var cursor = initialCursor;
+        RankedThread? last = null;
         var end = (long)offset + limit;
         for (long position = 0; position < end; position++)
         {
@@ -177,7 +341,7 @@ public static class ThreadSnapshotProjection
                     continue;
                 }
 
-                var candidate = new RankedThread(thread, Rank(thread), originalIndex);
+                var candidate = CreateRankedThread(thread, originalIndex);
                 if (cursor is { } previous && Compare(candidate, previous) <= 0)
                 {
                     continue;
@@ -193,29 +357,32 @@ public static class ThreadSnapshotProjection
                 break;
             }
             cursor = selected;
+            last = selected;
             if (position >= offset)
             {
                 result.Add(Compact(selected.Thread, frameLimit));
             }
         }
 
-        return result.ToArray();
+        return new ThreadSelection(result.ToArray(), last);
     }
 
-    private static MonitorLockState[] SelectLockWindow(
+    private static LockSelection SelectLockWindow(
         IReadOnlyList<MonitorLockState> locks,
         int offset,
-        int limit)
+        int limit,
+        RankedLock? initialCursor)
     {
         var result = new List<MonitorLockState>(limit);
-        RankedLock? cursor = null;
+        var cursor = initialCursor;
+        RankedLock? last = null;
         var end = (long)offset + limit;
         for (long position = 0; position < end; position++)
         {
             RankedLock? best = null;
             for (var originalIndex = 0; originalIndex < locks.Count; originalIndex++)
             {
-                var candidate = new RankedLock(locks[originalIndex], originalIndex);
+                var candidate = CreateRankedLock(locks[originalIndex], originalIndex);
                 if (cursor is { } previous && Compare(candidate, previous) <= 0)
                 {
                     continue;
@@ -231,50 +398,203 @@ public static class ThreadSnapshotProjection
                 break;
             }
             cursor = selected;
+            last = selected;
             if (position >= offset)
             {
                 result.Add(Compact(selected.Lock));
             }
         }
 
-        return result.ToArray();
+        return new LockSelection(result.ToArray(), last);
     }
 
     private static int Compare(RankedThread left, RankedThread right)
     {
         var result = left.Rank.CompareTo(right.Rank);
         if (result != 0) return result;
-        result = right.Thread.LockCount.CompareTo(left.Thread.LockCount);
+        result = right.LockCount.CompareTo(left.LockCount);
         if (result != 0) return result;
-        result = right.Thread.Frames.Count.CompareTo(left.Thread.Frames.Count);
+        result = right.FrameCount.CompareTo(left.FrameCount);
         if (result != 0) return result;
-        result = left.Thread.ManagedThreadId.CompareTo(right.Thread.ManagedThreadId);
+        result = left.ManagedThreadId.CompareTo(right.ManagedThreadId);
         return result != 0 ? result : left.OriginalIndex.CompareTo(right.OriginalIndex);
     }
 
     private static int Compare(RankedLock left, RankedLock right)
     {
-        var result = right.Lock.IsContended.CompareTo(left.Lock.IsContended);
+        var result = right.IsContended.CompareTo(left.IsContended);
         if (result != 0) return result;
-        result = right.Lock.WaitingThreadCount.CompareTo(left.Lock.WaitingThreadCount);
+        result = right.WaitingThreadCount.CompareTo(left.WaitingThreadCount);
         if (result != 0) return result;
-        result = right.Lock.RecursionCount.CompareTo(left.Lock.RecursionCount);
+        result = right.RecursionCount.CompareTo(left.RecursionCount);
         if (result != 0) return result;
-        result = left.Lock.ObjectAddress.CompareTo(right.Lock.ObjectAddress);
+        result = left.ObjectAddress.CompareTo(right.ObjectAddress);
         return result != 0 ? result : left.OriginalIndex.CompareTo(right.OriginalIndex);
     }
+
+    private static RankedThread CreateRankedThread(ManagedThread thread, int originalIndex)
+        => new(
+            thread,
+            Rank(thread),
+            thread.LockCount,
+            thread.Frames.Count,
+            thread.ManagedThreadId,
+            originalIndex);
+
+    private static RankedLock CreateRankedLock(MonitorLockState lockState, int originalIndex)
+        => new(
+            lockState,
+            lockState.IsContended,
+            lockState.WaitingThreadCount,
+            lockState.RecursionCount,
+            lockState.ObjectAddress,
+            originalIndex);
+
+    private static bool ValidateThreadCursor(
+        IReadOnlyList<ManagedThread> threads,
+        bool blockedOnly,
+        RankedThread cursor,
+        int expectedPosition)
+    {
+        if (cursor.OriginalIndex >= threads.Count)
+        {
+            return false;
+        }
+
+        var actual = CreateRankedThread(threads[cursor.OriginalIndex], cursor.OriginalIndex);
+        if (Compare(actual, cursor) != 0)
+        {
+            return false;
+        }
+
+        var position = 0;
+        for (var index = 0; index < threads.Count; index++)
+        {
+            var thread = threads[index];
+            if (blockedOnly && !thread.IsLikelyBlocked && !thread.IsLockWaiter)
+            {
+                continue;
+            }
+            if (Compare(CreateRankedThread(thread, index), cursor) <= 0)
+            {
+                position++;
+            }
+        }
+        return position == expectedPosition;
+    }
+
+    private static bool ValidateLockCursor(
+        IReadOnlyList<MonitorLockState> locks,
+        RankedLock cursor,
+        int expectedPosition)
+    {
+        if (cursor.OriginalIndex >= locks.Count)
+        {
+            return false;
+        }
+
+        var actual = CreateRankedLock(locks[cursor.OriginalIndex], cursor.OriginalIndex);
+        if (Compare(actual, cursor) != 0)
+        {
+            return false;
+        }
+
+        var position = 0;
+        for (var index = 0; index < locks.Count; index++)
+        {
+            if (Compare(CreateRankedLock(locks[index], index), cursor) <= 0)
+            {
+                position++;
+            }
+        }
+        return position == expectedPosition;
+    }
+
+    private static void ValidatePagingArguments(int offset, string? handle, string? cursor)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        if (cursor is not null)
+        {
+            if (offset != 0)
+            {
+                throw new ThreadSnapshotCursorException("cursor and a non-zero offset cannot be combined");
+            }
+            if (string.IsNullOrWhiteSpace(handle))
+            {
+                throw new ThreadSnapshotCursorException("cursor pagination requires the snapshot handle");
+            }
+        }
+        else if (offset > MaxDirectOffset)
+        {
+            throw new ThreadSnapshotDeepOffsetException(offset);
+        }
+    }
+
+    private sealed record ThreadSelection(ManagedThread[] Items, RankedThread? Last);
+
+    private sealed record LockSelection(MonitorLockState[] Items, RankedLock? Last);
 }
 
 public sealed record BoundedProjectionPage<T>(
     IReadOnlyList<T> Items,
     int TotalItems,
     int Offset,
-    int? NextOffset)
+    int? NextOffset,
+    string? NextCursor = null)
 {
+    public BoundedProjectionPage(
+        IReadOnlyList<T> items,
+        int totalItems,
+        int offset,
+        int? nextOffset)
+        : this(items, totalItems, offset, nextOffset, null)
+    {
+    }
+
+    public void Deconstruct(
+        out IReadOnlyList<T> items,
+        out int totalItems,
+        out int offset,
+        out int? nextOffset)
+    {
+        items = Items;
+        totalItems = TotalItems;
+        offset = Offset;
+        nextOffset = NextOffset;
+    }
+
     public bool UsedFallback { get; init; }
 }
 
 public sealed record ProjectedLockWaiterPage(
     MonitorLockState Lock,
     int WaiterOffset,
-    int? NextWaiterOffset);
+    int? NextWaiterOffset,
+    string? NextWaiterCursor = null)
+{
+    public ProjectedLockWaiterPage(
+        MonitorLockState @lock,
+        int waiterOffset,
+        int? nextWaiterOffset)
+        : this(@lock, waiterOffset, nextWaiterOffset, null)
+    {
+    }
+
+    public void Deconstruct(
+        out MonitorLockState @lock,
+        out int waiterOffset,
+        out int? nextWaiterOffset)
+    {
+        @lock = Lock;
+        waiterOffset = WaiterOffset;
+        nextWaiterOffset = NextWaiterOffset;
+    }
+}
+
+public sealed class ThreadSnapshotCursorException(string message) : ArgumentException(message);
+
+public sealed class ThreadSnapshotDeepOffsetException(int offset)
+    : ArgumentOutOfRangeException(
+        nameof(offset),
+        offset,
+        $"Direct offsets above {ThreadSnapshotProjection.MaxDirectOffset} are rejected because ranked random access is quadratic. Start at offset=0 and continue with the returned cursor.");

@@ -78,19 +78,22 @@ behind its existing handle, so narrowing a follow-up query does not re-collect o
 |---|---:|---|
 | `collect_thread_snapshot(depth="summary")` | 6 threads × 6 frames; no locks | Deadlocks, contended-lock owners, exceptions, and running frames before generic waits |
 | `collect_thread_snapshot(depth="detail"|"raw")` | 8 threads × 7 frames + 12 locks × 8 waiter IDs | Same thread ranking; most-contended locks first; each lock reports total/omitted waiter-ID counts |
-| `query_snapshot` thread summaries / lock graph | 8 threads × 8 frames / 12 locks × 8 waiter IDs per page | Deterministic continuation selection scans the retained capture with page-sized workspace; no capture-sized ranking cache is built or retained. Thread pages expose whole-snapshot `totalThreads` separately from the paged `candidateThreads`; `offset` + next-offset metadata pages through every retained thread/lock, `stack(threadId=...)` selects an exact full captured stack, and `lock-graph(address=...)` pages every retained waiter ID for one stable lock address |
+| `query_snapshot` thread summaries / lock graph | 8 threads × 8 frames / 12 locks × 8 waiter IDs per page | Versioned opaque cursors encode the final deterministic sort key and scan the retained capture with page-sized workspace; no capture-sized ranking cache is built or retained. Thread pages expose whole-snapshot `totalThreads` separately from the paged `candidateThreads`; `stack(threadId=...)` selects an exact full captured stack, and `lock-graph(address=...)` cursor-pages every retained waiter ID for one stable lock address |
 | CPU `call-tree` | 64 nodes, depth 8 | Every direct child participates in decision-first ranking; selected direct-child slots are reserved before descendants consume the remaining budget, and branches containing running self-samples precede waiting-only branches; use `rootMethodFilter` to narrow |
 | Heap `retention-paths` | 10 paths × 12 frames | Target and terminal root (`RootKind`) are always preserved, with typed/addressed intermediates filling the remaining budget; projection truncation sets `Truncated=true` |
 | Heap `growth` rows | 1 path × 12 frames per grower | Carries total/omitted path counts; the current heap handle retains every path |
 
-Thread and lock continuation may scan the complete retained capture, but projection workspace
-and derived retained state remain O(page size). Stable total-order keys, including original
-capture position as the final tie-breaker, make repeated `offset` pages deterministic without
-materializing full candidate arrays, waiter sets, dictionaries, or sorts.
+Thread and lock continuation scans the complete retained capture at most once per selected page
+slot, so work is O(capture size × page size) independent of page depth and workspace/derived retained
+state remain O(page size). Versioned cursors carry stable total-order keys, including original capture
+position as the final tie-breaker, without materializing full candidate arrays, waiter sets,
+dictionaries, or sorts. Cursors validate their handle/view/key (and exact lock address for waiter
+pages); malformed, stale, and cross-handle values fail safely.
 The default collection response also defers thread-wait signal grouping and deadlock-graph
 construction; exact lock/deadlock evidence remains available through explicit handle queries.
-Offsets at or beyond the applicable total short-circuit before ranking selection, including
-`int.MaxValue`, and return an exhausted-page message distinct from a genuinely empty capture.
+Direct offsets above `MaxDirectOffset = 256`, including `int.MaxValue`, are rejected before capture
+selection with guidance to restart at zero and follow the returned cursor. Small offsets remain for
+compatibility.
 
 Hints also avoid suggesting evidence already present in the current payload: an untruncated call
 tree has no redundant call-tree hint, and heap-growth output with inline retention paths does not

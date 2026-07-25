@@ -11,6 +11,26 @@ namespace DotnetDiagnostics.Core.Tests;
 
 public sealed class DiagnosticProjectionShapeTests
 {
+    [Fact]
+    public void ThreadProjection_LegacyPageConstructorsAndDeconstructionRemainAvailable()
+    {
+        var thread = LargePagingSnapshot(threadCount: 1, lockCount: 1).Threads[0];
+        var lockState = LargePagingSnapshot(threadCount: 1, lockCount: 1).Locks[0];
+        var page = new BoundedProjectionPage<ManagedThread>([thread], 1, 0, null);
+        var waiterPage = new ProjectedLockWaiterPage(lockState, 0, null);
+
+        var (items, total, offset, nextOffset) = page;
+        var (selectedLock, waiterOffset, nextWaiterOffset) = waiterPage;
+
+        items.Should().ContainSingle().Which.Should().BeSameAs(thread);
+        total.Should().Be(1);
+        offset.Should().Be(0);
+        nextOffset.Should().BeNull();
+        selectedLock.Should().BeSameAs(lockState);
+        waiterOffset.Should().Be(0);
+        nextWaiterOffset.Should().BeNull();
+    }
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -92,7 +112,7 @@ public sealed class DiagnosticProjectionShapeTests
     }
 
     [Fact]
-    public void ThreadSnapshot_ExhaustedOffsetsShortCircuitSelectionWork()
+    public void ThreadSnapshot_PathologicalOffsetsRejectBeforeSelectionWork()
     {
         var source = LargePagingSnapshot(threadCount: 20_000, lockCount: 10_000);
         var threads = new CountingReadOnlyList<ManagedThread>(source.Threads);
@@ -107,39 +127,142 @@ public sealed class DiagnosticProjectionShapeTests
         var blockedSnapshot = source with { Threads = blockedThreads, Locks = locks };
 
         var before = GC.GetAllocatedBytesForCurrentThread();
-        var threadPage = ThreadSnapshotProjection.ProjectThreads(
-            snapshot,
-            requestedCount: 50,
-            hardThreadLimit: ThreadSnapshotProjection.QueryThreadLimit,
-            frameLimit: ThreadSnapshotProjection.QueryFrameLimit,
-            offset: int.MaxValue);
-        var lockPage = ThreadSnapshotProjection.ProjectLocks(
-            snapshot,
-            requestedCount: 50,
-            hardLimit: ThreadSnapshotProjection.DetailLockLimit,
-            offset: int.MaxValue);
-        var blockedPage = ThreadSnapshotProjection.ProjectThreads(
-            blockedSnapshot,
-            requestedCount: 50,
-            hardThreadLimit: ThreadSnapshotProjection.QueryThreadLimit,
-            frameLimit: ThreadSnapshotProjection.QueryFrameLimit,
-            blockedOnly: true,
-            offset: int.MaxValue);
-        var waiterPage = ThreadSnapshotProjection.ProjectLock(firstLock, int.MaxValue);
+        var rejected = 0;
+        try
+        {
+            ThreadSnapshotProjection.ProjectThreads(
+                snapshot, 50, ThreadSnapshotProjection.QueryThreadLimit, ThreadSnapshotProjection.QueryFrameLimit,
+                offset: int.MaxValue);
+        }
+        catch (ThreadSnapshotDeepOffsetException)
+        {
+            rejected++;
+        }
+        try
+        {
+            ThreadSnapshotProjection.ProjectLocks(
+                snapshot, 50, ThreadSnapshotProjection.DetailLockLimit, offset: int.MaxValue);
+        }
+        catch (ThreadSnapshotDeepOffsetException)
+        {
+            rejected++;
+        }
+        try
+        {
+            ThreadSnapshotProjection.ProjectThreads(
+                blockedSnapshot, 50, ThreadSnapshotProjection.QueryThreadLimit, ThreadSnapshotProjection.QueryFrameLimit,
+                blockedOnly: true, offset: int.MaxValue);
+        }
+        catch (ThreadSnapshotDeepOffsetException)
+        {
+            rejected++;
+        }
+        try
+        {
+            ThreadSnapshotProjection.ProjectLock(firstLock, int.MaxValue);
+        }
+        catch (ThreadSnapshotDeepOffsetException)
+        {
+            rejected++;
+        }
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
-        threadPage.Items.Should().BeEmpty();
-        blockedPage.Items.Should().BeEmpty();
-        lockPage.Items.Should().BeEmpty();
-        waiterPage.Lock.WaitingManagedThreadIds.Should().BeEmpty();
+        rejected.Should().Be(4);
         threads.IndexReadCount.Should().Be(0);
         threads.EnumerationMoveCount.Should().Be(0);
         blockedThreads.IndexReadCount.Should().Be(0);
-        blockedThreads.EnumerationMoveCount.Should().Be(source.Threads.Count);
+        blockedThreads.EnumerationMoveCount.Should().Be(0);
         locks.IndexReadCount.Should().Be(0);
         locks.EnumerationMoveCount.Should().Be(0);
         waiters.IndexReadCount.Should().Be(0);
         allocated.Should().BeLessThan(64_000);
+    }
+
+    [Fact]
+    public void ThreadSnapshot_NearTerminalCursorsHaveDepthIndependentSelectionWork()
+    {
+        const int itemCount = 20_000;
+        const string handle = "thread-large";
+        var frame = new ManagedStackFrame("ManagedMethod", "App.Work", "App.Worker", "App.dll", 1, 2);
+        var threadItems = Enumerable.Range(1, itemCount)
+            .Select(id => new ManagedThread(id, (uint)id, (ulong)id, "Running", true, false, false, false, true, 0, null, frame.DisplayName, [frame]))
+            .ToArray();
+        var lockItems = Enumerable.Range(0, itemCount)
+            .Select(index => new MonitorLockState(
+                (ulong)(0x100_000 + index), "App.Lock", 1, 1, 1, 0, 1, true, "test"))
+            .ToArray();
+        var threads = new CountingReadOnlyList<ManagedThread>(threadItems);
+        var locks = new CountingReadOnlyList<MonitorLockState>(lockItems);
+        var snapshot = new ThreadSnapshotArtifact(
+            ThreadSnapshotOrigin.Live, 42, DateTimeOffset.UnixEpoch, TimeSpan.Zero,
+            "CoreClr", "10.0", threads, locks);
+
+        var threadCursor = ThreadSnapshotCursorCodec.EncodeThread(
+            handle,
+            new ThreadSnapshotCursorCodec.ThreadCursor(
+                BlockedOnly: false,
+                UsedFallback: false,
+                Position: itemCount - ThreadSnapshotProjection.QueryThreadLimit,
+                Rank: 3,
+                LockCount: 0,
+                FrameCount: 1,
+                ManagedThreadId: itemCount - ThreadSnapshotProjection.QueryThreadLimit,
+                OriginalIndex: itemCount - ThreadSnapshotProjection.QueryThreadLimit - 1));
+        var lockPosition = itemCount - ThreadSnapshotProjection.DetailLockLimit;
+        var lockCursor = ThreadSnapshotCursorCodec.EncodeLock(
+            handle,
+            new ThreadSnapshotCursorCodec.LockCursor(
+                lockPosition,
+                IsContended: true,
+                WaitingThreadCount: 1,
+                RecursionCount: 0,
+                ObjectAddress: lockItems[lockPosition - 1].ObjectAddress,
+                OriginalIndex: lockPosition - 1));
+
+        var threadPage = ThreadSnapshotQueryDispatcher.DispatchCursor(
+            snapshot, handle, "threads-summary", null, 50, 20, 1, cursor: threadCursor);
+        var lockPage = ThreadSnapshotQueryDispatcher.DispatchCursor(
+            snapshot, handle, "lock-graph", null, 50, 20, 1, cursor: lockCursor);
+
+        threadPage.Error.Should().BeNull();
+        threadPage.Data!.Threads!.Select(thread => thread.ManagedThreadId)
+            .Should().Equal(Enumerable.Range(itemCount - 7, 8));
+        threadPage.Data.NextThreadCursor.Should().BeNull();
+        lockPage.Error.Should().BeNull();
+        lockPage.Data!.Locks.Should().HaveCount(ThreadSnapshotProjection.DetailLockLimit);
+        lockPage.Data.NextLockCursor.Should().BeNull();
+        threads.IndexReadCount.Should().BeLessThanOrEqualTo(itemCount * 10);
+        locks.IndexReadCount.Should().BeLessThanOrEqualTo(itemCount * 14);
+    }
+
+    [Fact]
+    public void ClrMdLockRoleStampingReusesCapturedThreadsWithoutCaptureSizedAllocations()
+    {
+        var snapshot = LargePagingSnapshot(threadCount: 20_000, lockCount: 10_000);
+        var threads = snapshot.Threads
+            .Select(thread => thread with
+            {
+                IsContendedLockOwner = false,
+                IsLockWaiter = false,
+                IsDeadlockCandidate = false,
+            })
+            .ToDictionary(thread => thread.ManagedThreadId);
+        var originalReferences = threads.Values.ToArray();
+        var warmThreads = LargePagingSnapshot(threadCount: 20, lockCount: 10)
+            .Threads.ToDictionary(thread => thread.ManagedThreadId);
+        var warmLocks = LargePagingSnapshot(threadCount: 20, lockCount: 10).Locks;
+        ClrMdThreadSnapshotInspector.StampLockRoles(warmThreads, warmLocks);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        ClrMdThreadSnapshotInspector.StampLockRoles(threads, snapshot.Locks);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        threads.Values.Zip(originalReferences)
+            .Should().OnlyContain(pair => ReferenceEquals(pair.First, pair.Second));
+        threads[1].IsContendedLockOwner.Should().BeTrue();
+        threads.Values.Should().Contain(thread => thread.IsLockWaiter);
+        allocated.Should().BeLessThan(4_096,
+            "the production role helper must reuse the required thread dictionary rather than clone threads or build owner/waiter sets");
     }
 
     [Fact]

@@ -181,8 +181,11 @@ internal sealed record CliOptions
     /// <summary>Managed object address (decimal or <c>0x</c>-hex) for heap object/root views or thread-snapshot <c>lock-graph</c> waiter selection (<c>--address</c>).</summary>
     public string? Address { get; init; }
 
-    /// <summary>Zero-based continuation offset for bounded thread or lock query pages (<c>--offset</c>).</summary>
+    /// <summary>Zero-based compatibility offset for bounded thread or lock query pages (<c>--offset</c>).</summary>
     public int? Offset { get; init; }
+
+    /// <summary>Opaque stable continuation for bounded thread or lock query pages (<c>--cursor</c>).</summary>
+    public string? Cursor { get; init; }
 
     /// <summary>Case-insensitive method substring to re-root the CPU <c>call-tree</c> view (<c>--root-method-filter</c>). Event-catalog query reuses it as an event-name filter. Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public string? RootMethodFilter { get; init; }
@@ -457,6 +460,7 @@ internal sealed record CliOptions
             new StringOptionDescriptor((state, value) => state.TypeFilter = value, "--type-filter"),
             new StringOptionDescriptor((state, value) => state.Address = value, "--address"),
             new IntOptionDescriptor((state, value) => state.Offset = value, "--offset"),
+            new StringOptionDescriptor((state, value) => state.Cursor = value, "--cursor"),
             new StringOptionDescriptor((state, value) => state.RootMethodFilter = value, "--root-method-filter"),
             new StringOptionDescriptor((state, value) => state.ProviderFilter = value, "--provider-filter"),
             new IntOptionDescriptor((state, value) => state.MaxDepth = value, "--max-depth"),
@@ -581,6 +585,8 @@ internal sealed record CliOptions
 
         public int? Offset { get; set; }
 
+        public string? Cursor { get; set; }
+
         public string? RootMethodFilter { get; set; }
 
         public string? ProviderFilter { get; set; }
@@ -677,6 +683,7 @@ internal sealed record CliOptions
                 TypeFilter = TypeFilter,
                 Address = Address,
                 Offset = Offset,
+                Cursor = Cursor,
                 RootMethodFilter = RootMethodFilter,
                 ProviderFilter = ProviderFilter,
                 ChangesOnly = ChangesOnly,

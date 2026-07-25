@@ -61,7 +61,7 @@ public sealed class ThreadByWaitTargetProvider : ISignalProvider<ThreadWaitSigna
             Buckets: buckets,
             NextAction: new NextActionHint(
                 "query_snapshot",
-                "Inspect this lock's owner and first bounded waiter page; continue with nextWaiterOffset when present.",
+                "Inspect this lock's owner and first bounded waiter page; continue with nextWaiterCursor when present.",
                 new Dictionary<string, object?>
                 {
                     ["handle"] = context.HandleId,

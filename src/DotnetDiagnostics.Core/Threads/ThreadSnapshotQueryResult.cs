@@ -53,14 +53,20 @@ public sealed record ThreadSnapshotQueryResult(
     public int? ThreadOffset { get; init; }
     /// <summary>Offset for the next ranked-thread page, or null when this page is terminal.</summary>
     public int? NextThreadOffset { get; init; }
+    /// <summary>Opaque stable continuation for the next ranked-thread page, or null when terminal.</summary>
+    public string? NextThreadCursor { get; init; }
     /// <summary>Zero-based ranked-lock offset used for this page.</summary>
     public int? LockOffset { get; init; }
     /// <summary>Offset for the next ranked-lock page, or null when this page is terminal.</summary>
     public int? NextLockOffset { get; init; }
+    /// <summary>Opaque stable continuation for the next ranked-lock page, or null when terminal.</summary>
+    public string? NextLockCursor { get; init; }
     /// <summary>Zero-based waiter-id offset used when selecting one lock by address.</summary>
     public int? WaiterOffset { get; init; }
     /// <summary>Offset for the next waiter-id page on the selected lock, or null when terminal.</summary>
     public int? NextWaiterOffset { get; init; }
+    /// <summary>Opaque stable continuation for the next waiter-id page on the selected lock, or null when terminal.</summary>
+    public string? NextWaiterCursor { get; init; }
 }
 
 /// <summary>

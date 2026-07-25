@@ -562,6 +562,32 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_ThreadSnapshotHandle_ForwardsStableContinuationCursor()
+    {
+        var (services, store) = BuildServices();
+        var snapshot = ThreadPagingSnapshot();
+        var handle = store.Register(
+            Environment.ProcessId,
+            "thread-snapshot",
+            snapshot,
+            TimeSpan.FromMinutes(10));
+        var first = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, handle.Id, "threads-summary", null, 50, 20, 1);
+        var cursor = first.Data!.NextThreadCursor;
+        cursor.Should().NotBeNull();
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view threads-summary --cursor {cursor!}\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("\"threadOffset\": 8");
+        stdout.Should().Contain("\"managedThreadId\": 9");
+        stdout.Should().NotContain("\"managedThreadId\": 1,");
+    }
+
+    [Fact]
     public async Task Query_ThreadSnapshotHandle_ForwardsLockAddressAndWaiterOffset()
     {
         var (services, store) = BuildServices();
@@ -579,6 +605,40 @@ public sealed class SessionReplTests
         stderr.Should().BeEmpty();
         stdout.Should().Contain("\"waiterOffset\": 8");
         stdout.Should().Contain("\"nextWaiterOffset\": 16");
+        stdout.Should().Contain("\"waitingManagedThreadIds\"");
+        stdout.Should().Contain("9,");
+        stdout.Should().Contain("16");
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotHandle_ForwardsExactLockWaiterCursor()
+    {
+        var (services, store) = BuildServices();
+        var snapshot = ThreadPagingSnapshot();
+        var handle = store.Register(
+            Environment.ProcessId,
+            "thread-snapshot",
+            snapshot,
+            TimeSpan.FromMinutes(10));
+        var first = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot,
+            handle.Id,
+            "lock-graph",
+            threadId: null,
+            topN: 50,
+            framesToHash: 20,
+            minCount: 1,
+            lockAddress: "0x30000");
+        var cursor = first.Data!.NextWaiterCursor;
+        cursor.Should().NotBeNull();
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view lock-graph --address 0x30000 --cursor {cursor!}\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("\"waiterOffset\": 8");
         stdout.Should().Contain("\"waitingManagedThreadIds\"");
         stdout.Should().Contain("9,");
         stdout.Should().Contain("16");

@@ -683,9 +683,9 @@ inside a `session`) expose the call-stack / blocking views (`threads-summary`, `
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
-| `threads-summary` | decisive thread summaries, eight per bounded page with up to eight frames each | `--offset <n>` to continue at `nextThreadOffset` |
-| `top-blocked` (default) | blocked threads and real lock waiters, eight per bounded page with up to eight frames each | `--offset <n>` to continue at `nextThreadOffset` |
-| `lock-graph` | contended locks, twelve per bounded page; or one lock's waiter IDs | `--offset <n>` to continue at `nextLockOffset`; add `--address <decimal\|0x-hex>` and use `nextWaiterOffset` to page one lock's waiters |
+| `threads-summary` | decisive thread summaries, eight per bounded page with up to eight frames each | `--cursor <opaque>` from `nextThreadCursor` |
+| `top-blocked` (default) | blocked threads and real lock waiters, eight per bounded page with up to eight frames each | `--cursor <opaque>` from `nextThreadCursor` |
+| `lock-graph` | contended locks, twelve per bounded page; or one lock's waiter IDs | `--cursor <opaque>` from `nextLockCursor`; add `--address <decimal\|0x-hex>` and use `nextWaiterCursor` to page one lock's waiters |
 | `wait-chains` | who-waits-on-whom chains toward the blocking root | — |
 | `async-stalls` | stalled `async` state machines and their await points | — |
 | `unique-stacks` | threads folded into shared stack signatures, ranked by group size | `--frames-to-hash` (top frames in the signature hash, default `20`), `--min-count` (drop groups smaller than N, default `1`) |
@@ -693,10 +693,11 @@ inside a `session`) expose the call-stack / blocking views (`threads-summary`, `
 
 `frame-vars` requires `--thread-id` to pick the thread whose frame variables to resolve; the thread must
 be present in the captured snapshot.
-MCP and CLI session queries use the same stable ordering and offsets, so a continuation value can be
-passed unchanged to the next `query` command. An offset at or beyond the applicable total returns an
-empty exhausted page with no continuation; it is reported differently from a snapshot with no threads
-or locks.
+MCP and CLI session queries share the same versioned opaque cursors. Pass a returned cursor unchanged
+to the next `query` command; it is bound to the snapshot handle, view, deterministic final sort key,
+and (for waiter pages) lock address. Malformed and cross-handle cursors fail with `InvalidArgument`.
+`--offset` remains a compatibility option for positions `0..256`; deeper random offsets are rejected
+with guidance to restart at zero and follow cursors, avoiding quadratic rescans.
 
 For every ranked/list query view, `--top N` is the common row/group cap. `--top-types N` remains a
 backward-compatible query alias; when both are supplied, `--top` wins. Views whose shape is controlled

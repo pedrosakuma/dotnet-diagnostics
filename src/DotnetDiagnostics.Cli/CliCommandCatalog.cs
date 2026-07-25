@@ -27,7 +27,7 @@ internal static class CliCommandCatalog
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--dump-type", "--out", "--mvid",
         "--asset", "--handle", "--view", "--provider-filter", "--root-method-filter", "--rank-by",
-        "--type-filter", "--address", "--offset", "--max-depth", "--max-nodes", "--thread-id",
+        "--type-filter", "--address", "--offset", "--cursor", "--max-depth", "--max-nodes", "--thread-id",
         "--native-alloc-sample-period", "--max-frames-per-thread", "--watch",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
         "--symptom", "--hypothesis", "--max-tool-calls", "--top-hotspots",
@@ -322,7 +322,8 @@ query options:
       --changes-only            Session query: DATAS 'tuning' view; show only heap-count changes.
       --root-method-filter <t>  Session query: CPU method filter; event-catalog event-name filter.
       --thread-id <int>         Session query: ManagedThreadId; required for thread-snapshot 'frame-vars' view.
-      --offset <int>            Session query: zero-based continuation offset for bounded thread/lock pages.
+      --offset <int>            Session query: compatibility offset 0..256 for bounded thread/lock pages.
+      --cursor <opaque>         Session query: stable continuation returned by the prior thread/lock page.
       --address <decimal|0xhex> Session query: heap object/root address or exact thread-snapshot lock address.
       --stack-rank <int>        Session query: 1-based rank for the off-CPU 'stack' view.
   Note: handles are process-local. A one-shot command's handle disappears when that command exits,
@@ -340,8 +341,8 @@ query options:
     wait-chains      Thread wait-chain analysis.
     threadpool       Thread-pool queue/worker statistics.
     frame-vars       Object-typed locals/parameters on each frame via ClrMD re-open; requires --thread-id.
-  Continue bounded pages with --offset using nextThreadOffset, nextLockOffset, or nextWaiterOffset
-  from the prior response.
+  Continue bounded pages with --cursor using nextThreadCursor, nextLockCursor, or
+  nextWaiterCursor from the prior response. --offset is compatibility-only and rejects values > 256.
 """,
             string.Empty,
             [
@@ -354,6 +355,7 @@ query options:
                 "--type-filter",
                 "--address",
                 "--offset",
+                "--cursor",
                 "--max-depth",
                 "--max-nodes",
                 "--thread-id",

@@ -178,7 +178,10 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         var querySnapshot = tools.Single(tool => tool.Name == "query_snapshot");
         var queryOffset = querySnapshot.JsonSchema.GetProperty("properties").GetProperty("offset");
         queryOffset.GetProperty("default").GetInt32().Should().Be(0);
-        queryOffset.GetProperty("description").GetString().Should().Contain("nextThreadOffset");
+        queryOffset.GetProperty("description").GetString().Should().Contain("above 256");
+        var queryCursor = querySnapshot.JsonSchema.GetProperty("properties").GetProperty("cursor");
+        queryCursor.GetProperty("description").GetString().Should().Contain("nextThreadCursor");
+        queryCursor.GetProperty("description").GetString().Should().Contain("cross-handle");
     }
 
     [Fact]

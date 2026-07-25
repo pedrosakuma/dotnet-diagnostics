@@ -209,7 +209,7 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
             .Where(thread => thread.ManagedThreadId > 0)
             .ToDictionary(thread => thread.ManagedThreadId);
         var locks = WalkSyncBlocks(runtime, clrThreads, threadByAddress, managedThreadsById, warnings, ct);
-        StampLockRoles(threads, locks);
+        StampLockRoles(managedThreadsById, locks);
         var threadPool = CaptureThreadPool(
             runtime,
             threads,
@@ -222,28 +222,28 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
         return (threads, locks, threadPool);
     }
 
-    private static void StampLockRoles(List<ManagedThread> threads, IReadOnlyList<MonitorLockState> locks)
+    internal static void StampLockRoles(
+        IReadOnlyDictionary<int, ManagedThread> managedThreadsById,
+        IReadOnlyList<MonitorLockState> locks)
     {
-        var contendedOwners = locks
-            .Where(static lockState => lockState.IsContended && lockState.OwnerManagedThreadId > 0)
-            .Select(static lockState => lockState.OwnerManagedThreadId)
-            .ToHashSet();
-        var waiters = locks
-            .SelectMany(static lockState => lockState.WaitingManagedThreadIds)
-            .Where(static threadId => threadId > 0)
-            .ToHashSet();
-
-        for (var index = 0; index < threads.Count; index++)
+        for (var lockIndex = 0; lockIndex < locks.Count; lockIndex++)
         {
-            var thread = threads[index];
-            var isOwner = contendedOwners.Contains(thread.ManagedThreadId);
-            var isWaiter = waiters.Contains(thread.ManagedThreadId);
-            threads[index] = thread with
+            var lockState = locks[lockIndex];
+            if (lockState.IsContended &&
+                lockState.OwnerManagedThreadId > 0 &&
+                managedThreadsById.TryGetValue(lockState.OwnerManagedThreadId, out var owner))
             {
-                IsContendedLockOwner = isOwner,
-                IsLockWaiter = isWaiter,
-                IsDeadlockCandidate = isOwner && isWaiter,
-            };
+                owner.AddLockRoles(isContendedOwner: true, isWaiter: false);
+            }
+
+            for (var waiterIndex = 0; waiterIndex < lockState.WaitingManagedThreadIds.Count; waiterIndex++)
+            {
+                var waiterId = lockState.WaitingManagedThreadIds[waiterIndex];
+                if (waiterId > 0 && managedThreadsById.TryGetValue(waiterId, out var waiter))
+                {
+                    waiter.AddLockRoles(isContendedOwner: false, isWaiter: true);
+                }
+            }
         }
     }
 

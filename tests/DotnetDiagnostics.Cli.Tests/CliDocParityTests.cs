@@ -97,9 +97,10 @@ public sealed class CliDocParityTests
         help.Should().Contain("Up to 8 decisive threads per page");
         help.Should().Contain("Up to 12 monitor locks per page");
         help.Should().Contain("--offset");
-        help.Should().Contain("nextThreadOffset");
-        help.Should().Contain("nextLockOffset");
-        help.Should().Contain("nextWaiterOffset");
+        help.Should().Contain("--cursor");
+        help.Should().Contain("nextThreadCursor");
+        help.Should().Contain("nextLockCursor");
+        help.Should().Contain("nextWaiterCursor");
         help.Should().NotContain("List all threads");
     }
 }

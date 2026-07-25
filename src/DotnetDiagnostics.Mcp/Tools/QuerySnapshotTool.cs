@@ -123,7 +123,7 @@ public sealed partial class QuerySnapshotTool
     [Description(
         "Drill into a prior collector's snapshot/sample by handle. The available views depend on the " +
         "handle's kind — choose one via the 'view' parameter.")]
-    public static async Task<DiagnosticResult<object>> QuerySnapshotPaged(
+    public static async Task<DiagnosticResult<object>> QuerySnapshotCursorPaged(
         IDiagnosticHandleStore handles,
         IDumpInspector inspector,
         SensitiveDataRedactor redactor,
@@ -157,7 +157,8 @@ public sealed partial class QuerySnapshotTool
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
-        [Description("Zero-based offset for paged thread-list and lock-graph views. Use nextThreadOffset/nextLockOffset from the previous response. With thread lock-graph plus address, pages that lock's waiter IDs via nextWaiterOffset. Ignored by other views. Defaults to 0.")] int offset = 0,
+        [Description("Zero-based compatibility offset for paged thread-list and lock-graph views. Values above 256 are rejected because ranked random access is quadratic. Prefer cursor continuation. Defaults to 0.")] int offset = 0,
+        [Description("Opaque continuation returned by a thread page as nextThreadCursor, nextLockCursor, or nextWaiterCursor. Bound to the handle/view (and lock address for waiter pages); malformed or cross-handle cursors are rejected. Do not combine with a non-zero offset.")] string? cursor = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(handle))
@@ -210,6 +211,7 @@ public sealed partial class QuerySnapshotTool
             View = view,
             TopN = topN,
             Offset = offset,
+            Cursor = cursor,
             RankBy = rankBy,
             TypeFullName = typeFullName,
             Address = address,
@@ -236,6 +238,78 @@ public sealed partial class QuerySnapshotTool
 
         return await handler(context).ConfigureAwait(false);
     }
+
+    public static Task<DiagnosticResult<object>> QuerySnapshotPaged(
+        IDiagnosticHandleStore handles,
+        IDumpInspector inspector,
+        SensitiveDataRedactor redactor,
+        SensitiveValueGate sensitiveGate,
+        SecurityOptions securityOptions,
+        IPrincipalAccessor principalAccessor,
+        INativeAddressResolver addressResolver,
+        IFrameVariableResolver frameVariableResolver,
+        string handle,
+        string? view = null,
+        int? topN = null,
+        string rankBy = "bytes",
+        string? typeFullName = null,
+        string? address = null,
+        bool includeSensitiveValues = false,
+        int? threadId = null,
+        int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
+        int minCount = 1,
+        int? stackRank = null,
+        string? rootMethodFilter = null,
+        string? providerFilter = null,
+        bool changesOnly = false,
+        int maxDepth = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth,
+        int maxNodes = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes,
+        string? baselineHandle = null,
+        string[]? comparisonHandles = null,
+        double minDeltaPct = 5.0,
+        string depth = "full",
+        string? mode = null,
+        double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
+        string? investigationHandleId = null,
+        LegacyDiagnosticsFlagDeprecation? deprecation = null,
+        int offset = 0,
+        CancellationToken cancellationToken = default)
+        => QuerySnapshotCursorPaged(
+            handles,
+            inspector,
+            redactor,
+            sensitiveGate,
+            securityOptions,
+            principalAccessor,
+            addressResolver,
+            frameVariableResolver,
+            handle,
+            view,
+            topN,
+            rankBy,
+            typeFullName,
+            address,
+            includeSensitiveValues,
+            threadId,
+            framesToHash,
+            minCount,
+            stackRank,
+            rootMethodFilter,
+            providerFilter,
+            changesOnly,
+            maxDepth,
+            maxNodes,
+            baselineHandle,
+            comparisonHandles,
+            minDeltaPct,
+            depth,
+            mode,
+            hotPathThresholdPercent,
+            investigationHandleId,
+            deprecation,
+            offset,
+            cursor: null,
+            cancellationToken: cancellationToken);
 
     public static Task<DiagnosticResult<object>> QuerySnapshot(
         IDiagnosticHandleStore handles,
@@ -271,7 +345,7 @@ public sealed partial class QuerySnapshotTool
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         CancellationToken cancellationToken = default)
-        => QuerySnapshotPaged(
+        => QuerySnapshotCursorPaged(
             handles,
             inspector,
             redactor,
@@ -305,6 +379,7 @@ public sealed partial class QuerySnapshotTool
             investigationHandleId,
             deprecation,
             offset: 0,
+            cursor: null,
             cancellationToken: cancellationToken);
 
 
@@ -1123,7 +1198,7 @@ public sealed partial class QuerySnapshotTool
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         CancellationToken cancellationToken = default)
-        => QuerySnapshotPaged(
+        => QuerySnapshotCursorPaged(
             handles,
             inspector,
             redactor,

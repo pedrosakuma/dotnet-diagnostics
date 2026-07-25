@@ -26,6 +26,7 @@ public sealed class ThreadSnapshotToolTests
         result.Signals.Should().BeNull("capture-sized signal analysis is deferred to explicit drilldown");
         result.Data!.Threads.Should().HaveCount(ThreadSnapshotProjection.SummaryThreadLimit);
         result.Data.Locks.Should().BeEmpty();
+        result.Data.NextThreadCursor.Should().NotBeNullOrWhiteSpace();
 
         var nextPage = DiagnosticTools.QueryThreadSnapshot(
             handles,

@@ -63,6 +63,7 @@ public sealed partial class QuerySnapshotTool
         public required string? View { get; init; }
         public required int? TopN { get; init; }
         public required int Offset { get; init; }
+        public required string? Cursor { get; init; }
         public required string RankBy { get; init; }
         public required string? TypeFullName { get; init; }
         public required string? Address { get; init; }
@@ -194,7 +195,7 @@ public sealed partial class QuerySnapshotTool
                 context.CancellationToken);
         }
 
-        var thread = ThreadSnapshotQueryDispatcher.Dispatch(
+        var thread = ThreadSnapshotQueryDispatcher.DispatchCursor(
             snapshot,
             context.Handle,
             context.ResolveView(DefaultThreadView),
@@ -203,7 +204,8 @@ public sealed partial class QuerySnapshotTool
             context.FramesToHash,
             context.MinCount,
             context.Offset,
-            context.Address);
+            context.Address,
+            context.Cursor);
         return Task.FromResult(AsObjectEnvelope(thread));
     }
 

@@ -1163,7 +1163,7 @@ public sealed class DiagnosticTools
         [Description("Include runtime frames (PInvoke trampolines, etc.) without an associated managed method. Off by default.")] bool includeRuntimeFrames = false,
         [Description("Include pure native frames where ClrMD cannot resolve a method. Off by default.")] bool includeNativeFrames = false,
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' returns at most 6 decisive threads with 6 frames each and no locks. 'detail'/'raw' return at most 8 decisive threads with 7 frames each plus 12 locks with at most 8 waiter ids per lock. Continue through the retained capture with query_snapshot thread/lock offsets or exact lock-address waiter paging.")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' returns at most 6 decisive threads with 6 frames each and no locks. 'detail'/'raw' return at most 8 decisive threads with 7 frames each plus 12 locks with at most 8 waiter ids per lock. Continue through the retained capture with query_snapshot thread/lock cursors or exact lock-address waiter paging.")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
@@ -1239,9 +1239,9 @@ public sealed class DiagnosticTools
     [RequireScope("ptrace")]
     [Description(
         "Returns a slice of a thread snapshot previously captured by collect_thread_snapshot, addressed by its handle. Views: " +
-        "`threads-summary` (stable pages of up to 8 managed threads with state and up to 8 frames; continue with `offset`/`nextThreadOffset`), " +
+        "`threads-summary` (stable pages of up to 8 managed threads with state and up to 8 frames; use unified query_snapshot with `cursor`/`nextThreadCursor` for deep continuation), " +
         "`stack` (full captured frames of one thread — requires `threadId`; for `linux-native-stack` snapshots this is the OS thread id / TID), " +
-        "`lock-graph` (stable pages of up to 12 held/contended SyncBlocks sorted by waiter count then recursion; continue with `offset`/`nextLockOffset`, or page one lock's waiter ids by `lockAddress`), " +
+        "`lock-graph` (stable pages of up to 12 held/contended SyncBlocks sorted by waiter count then recursion; use unified query_snapshot with `cursor`/`nextLockCursor`, or page one lock's waiter ids by `lockAddress` and `nextWaiterCursor`), " +
         "`deadlocks` (wait-for cycle detection over the captured lock graph, with lock chains and suggested SOS follow-up commands), " +
         "`top-blocked` (stable pages of up to 8 blocked/waiting candidates), " +
         "`unique-stacks` (group by identical top-of-stack prefixes to spot a stuck herd), " +
@@ -1257,9 +1257,18 @@ public sealed class DiagnosticTools
         [Description("Requested entries for ranked views. Thread list projections are hard-capped at 8 rows × 8 frames and lock-graph at 12 rows; deadlocks/unique-stacks retain their existing topN behavior. Defaults to 50.")] int topN = 50,
         [Description("For view='unique-stacks': number of top frames folded into the signature hash. Defaults to 20. Ignored by other views.")] int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
         [Description("For view='unique-stacks': drop groups with fewer than this many threads. Defaults to 1. Ignored by other views.")] int minCount = 1,
-        [Description("For view='lock-graph': exact lock object address whose retained waiter IDs should be paged using offset. Decimal or 0x-prefixed hex.")] string? lockAddress = null,
-        [Description("Zero-based offset for paged thread-list and lock-graph views. Ignored by other views. Defaults to 0.")] int offset = 0)
-        => DiagnosticToolThreadingAndJit.QueryThreadSnapshot(handles, handle, view, threadId, topN, framesToHash, minCount, lockAddress, offset);
+        [Description("For view='lock-graph': exact lock object address whose retained waiter IDs should be selected. Decimal or 0x-prefixed hex.")] string? lockAddress = null,
+        [Description("Zero-based compatibility offset for paged thread-list and lock-graph views. Values above 256 are rejected; use unified query_snapshot cursor continuation for deep pages. Defaults to 0.")] int offset = 0)
+        => DiagnosticToolThreadingAndJit.QueryThreadSnapshot(
+            handles,
+            handle,
+            view,
+            threadId,
+            topN,
+            framesToHash,
+            minCount,
+            lockAddress,
+            offset);
 
     [Description(
         "Streams a PE or PDB for a loaded managed module in repeated CallTool chunks so sibling MCPs can materialise pod-local binaries through the orchestrator proxy. " +

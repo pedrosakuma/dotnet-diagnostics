@@ -29,7 +29,7 @@ internal static class DiagnosticToolThreadingAndJit
         [Description("Include runtime frames (PInvoke trampolines, etc.) without an associated managed method. Off by default.")] bool includeRuntimeFrames = false,
         [Description("Include pure native frames where ClrMD cannot resolve a method. Off by default.")] bool includeNativeFrames = false,
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' returns at most 6 decisive threads with 6 frames each and no lock graph. 'detail'/'raw' return at most 8 decisive threads with 7 frames each plus 12 locks with at most 8 waiter ids per lock. Running/owner/deadlock evidence ranks before generic waits. Continue through the retained capture with query_snapshot offsets and exact lock-address waiter paging.")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' returns at most 6 decisive threads with 6 frames each and no lock graph. 'detail'/'raw' return at most 8 decisive threads with 7 frames each plus 12 locks with at most 8 waiter ids per lock. Running/owner/deadlock evidence ranks before generic waits. Continue through the retained capture with query_snapshot cursors and exact lock-address waiter paging.")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
@@ -89,7 +89,11 @@ internal static class DiagnosticToolThreadingAndJit
                     snapshot,
                     ThreadSnapshotProjection.SummaryThreadLimit,
                     ThreadSnapshotProjection.SummaryThreadLimit,
-                    ThreadSnapshotProjection.SummaryFrameLimit);
+                    ThreadSnapshotProjection.SummaryFrameLimit,
+                    blockedOnly: false,
+                    offset: 0,
+                    handle: handle.Id,
+                    cursor: null);
                 summaryView = new ThreadSnapshotQueryResult(handle.Id, "threads-summary", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
                 {
                     Threads = projectedThreads.Items,
@@ -102,6 +106,7 @@ internal static class DiagnosticToolThreadingAndJit
                     OmittedLocks = snapshot.Locks.Count,
                     ThreadOffset = projectedThreads.Offset,
                     NextThreadOffset = projectedThreads.NextOffset,
+                    NextThreadCursor = projectedThreads.NextCursor,
                 };
                 summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Showing {projectedThreads.Items.Count} decisive thread(s), capped at {ThreadSnapshotProjection.SummaryFrameLimit} frames each; running/owner/deadlock evidence ranks before generic waits. Omitted {projectedThreads.TotalItems - projectedThreads.Items.Count} thread(s) and all {snapshot.Locks.Count} lock(s) inline; handle `{handle.Id}` retains all for ~10 min. Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms.";
             }
@@ -111,11 +116,18 @@ internal static class DiagnosticToolThreadingAndJit
                     snapshot,
                     ThreadSnapshotProjection.DetailThreadLimit,
                     ThreadSnapshotProjection.DetailThreadLimit,
-                    ThreadSnapshotProjection.DetailFrameLimit);
+                    ThreadSnapshotProjection.DetailFrameLimit,
+                    blockedOnly: false,
+                    offset: 0,
+                    handle: handle.Id,
+                    cursor: null);
                 var projectedLocks = ThreadSnapshotProjection.ProjectLocks(
                     snapshot,
                     ThreadSnapshotProjection.DetailLockLimit,
-                    ThreadSnapshotProjection.DetailLockLimit);
+                    ThreadSnapshotProjection.DetailLockLimit,
+                    offset: 0,
+                    handle: handle.Id,
+                    cursor: null);
                 summaryView = new ThreadSnapshotQueryResult(handle.Id, "threads-summary", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
                 {
                     Threads = projectedThreads.Items,
@@ -128,8 +140,10 @@ internal static class DiagnosticToolThreadingAndJit
                     OmittedLocks = projectedLocks.TotalItems - projectedLocks.Items.Count,
                     ThreadOffset = projectedThreads.Offset,
                     NextThreadOffset = projectedThreads.NextOffset,
+                    NextThreadCursor = projectedThreads.NextCursor,
                     LockOffset = projectedLocks.Offset,
                     NextLockOffset = projectedLocks.NextOffset,
+                    NextLockCursor = projectedLocks.NextCursor,
                 };
                 summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Detail shows {projectedThreads.Items.Count} decisive thread(s) at up to {ThreadSnapshotProjection.DetailFrameLimit} frames each and {projectedLocks.Items.Count} most-contended lock(s); handle `{handle.Id}` retains all for ~10 min. Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms.";
             }
@@ -258,14 +272,37 @@ internal static class DiagnosticToolThreadingAndJit
 
     public static DiagnosticResult<ThreadSnapshotQueryResult> QueryThreadSnapshot(
         IDiagnosticHandleStore handles,
+        string handle,
+        string view = "top-blocked",
+        int? threadId = null,
+        int topN = 50,
+        int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
+        int minCount = 1,
+        string? lockAddress = null,
+        int offset = 0)
+        => QueryThreadSnapshotCursor(
+            handles,
+            handle,
+            view,
+            threadId,
+            topN,
+            framesToHash,
+            minCount,
+            lockAddress,
+            offset,
+            cursor: null);
+
+    public static DiagnosticResult<ThreadSnapshotQueryResult> QueryThreadSnapshotCursor(
+        IDiagnosticHandleStore handles,
         [Description("Snapshot handle returned by collect_thread_snapshot.")] string handle,
         [Description("Which slice to return: 'threads-summary', 'stack', 'lock-graph', 'deadlocks', 'top-blocked', 'unique-stacks', 'async-stalls', 'wait-chains' or 'threadpool'.")] string view = "top-blocked",
         [Description("For view='stack': thread id key to return frames for. CoreCLR snapshots use ManagedThreadId; linux-native-stack snapshots use OSThreadId (TID). Ignored by other views.")] int? threadId = null,
         [Description("Requested entries for ranked views. Thread list projections are hard-capped at 8 rows × 8 frames and lock-graph at 12 rows; deadlocks/unique-stacks retain their existing topN behavior. Defaults to 50.")] int topN = 50,
         [Description("For view='unique-stacks': number of top frames folded into the signature hash. Defaults to 20. Ignored by other views.")] int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
         [Description("For view='unique-stacks': drop groups with fewer than this many threads. Defaults to 1. Ignored by other views.")] int minCount = 1,
-        [Description("For view='lock-graph': exact lock object address whose retained waiter IDs should be paged using offset. Decimal or 0x-prefixed hex.")] string? lockAddress = null,
-        [Description("Zero-based offset for paged thread-list and lock-graph views. Ignored by other views. Defaults to 0.")] int offset = 0)
+        [Description("For view='lock-graph': exact lock object address whose retained waiter IDs should be paged using cursor. Decimal or 0x-prefixed hex.")] string? lockAddress = null,
+        [Description("Zero-based compatibility offset for paged thread-list and lock-graph views. Values above 256 are rejected; use cursor continuation for deep pages. Defaults to 0.")] int offset = 0,
+        [Description("Opaque continuation returned as nextThreadCursor, nextLockCursor, or nextWaiterCursor. Do not combine with a non-zero offset.")] string? cursor = null)
     {
         if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<ThreadSnapshotQueryResult>(nameof(handle), "is required");
         if (topN < 1) return InvalidArg<ThreadSnapshotQueryResult>(nameof(topN), "must be >= 1");
@@ -279,7 +316,7 @@ internal static class DiagnosticToolThreadingAndJit
                 new NextActionHint("collect_thread_snapshot", "Re-capture to issue a fresh handle."));
         }
 
-        return ThreadSnapshotQueryDispatcher.Dispatch(snapshot, handle, view, threadId, topN, framesToHash, minCount, offset, lockAddress);
+        return ThreadSnapshotQueryDispatcher.DispatchCursor(snapshot, handle, view, threadId, topN, framesToHash, minCount, offset, lockAddress, cursor);
     }
 
     private static string BuildCaptureSummary(CapturedMethodBytes captured)

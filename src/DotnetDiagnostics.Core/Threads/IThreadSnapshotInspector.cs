@@ -190,19 +190,42 @@ public sealed record ManagedThread(
     string? TopFrameMethod,
     IReadOnlyList<ManagedStackFrame> Frames)
 {
+    private bool _isContendedLockOwner;
+    private bool _isLockWaiter;
+    private bool _isDeadlockCandidate;
+
     /// <summary>True when the top frame indicates this thread is parked/waiting/sleeping — useful for ranking.</summary>
     public bool IsLikelyBlocked { get; init; }
     /// <summary>True when this thread owns a monitor with waiters in this snapshot.</summary>
     [JsonIgnore]
-    public bool IsContendedLockOwner { get; init; }
+    public bool IsContendedLockOwner
+    {
+        get => _isContendedLockOwner;
+        init => _isContendedLockOwner = value;
+    }
     /// <summary>True when this thread is waiting to acquire a monitor in this snapshot.</summary>
     [JsonIgnore]
-    public bool IsLockWaiter { get; init; }
+    public bool IsLockWaiter
+    {
+        get => _isLockWaiter;
+        init => _isLockWaiter = value;
+    }
     /// <summary>True when this thread both owns a contended monitor and waits on another monitor.</summary>
     [JsonIgnore]
-    public bool IsDeadlockCandidate { get; init; }
+    public bool IsDeadlockCandidate
+    {
+        get => _isDeadlockCandidate;
+        init => _isDeadlockCandidate = value;
+    }
     /// <summary>Coarse wait reason inferred from the top frame (Monitor.Wait/Sleep/Park/Join/Socket/etc.) when detectable.</summary>
     public string? InferredWaitReason { get; init; }
+
+    internal void AddLockRoles(bool isContendedOwner, bool isWaiter)
+    {
+        _isContendedLockOwner |= isContendedOwner;
+        _isLockWaiter |= isWaiter;
+        _isDeadlockCandidate = _isContendedLockOwner && _isLockWaiter;
+    }
 }
 
 /// <summary>Single managed stack frame. Carries the handoff identity for <c>dotnet-assembly-mcp</c>.</summary>

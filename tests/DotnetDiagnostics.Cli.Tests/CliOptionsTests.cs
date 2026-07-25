@@ -51,6 +51,17 @@ public sealed class CliOptionsTests
         options!.Offset.Should().Be(8);
     }
 
+    [Fact]
+    public void Parse_QueryCursor_IsCaptured()
+    {
+        var options = CliOptions.Parse(
+            new[] { "query", "--handle", "h1", "--view", "threads-summary", "--cursor", "opaque-cursor" },
+            out var error);
+
+        error.Should().BeNull();
+        options!.Cursor.Should().Be("opaque-cursor");
+    }
+
     [Theory]
     [InlineData("-p")]
     [InlineData("--pid")]

@@ -2582,7 +2582,7 @@ wait/park noise.
 | `includeRuntimeFrames` | `bool` | `false` | Include PInvoke trampolines / runtime frames with no managed method |
 | `includeNativeFrames` | `bool` | `false` | Include pure native frames ClrMD cannot resolve |
 | `symbolPath` | `string?` | — | NT_SYMBOL_PATH-style path (same remote-server allowlist rule as `inspect_heap`) |
-| `depth` | `string` | `summary` | `summary` (≤6 threads × 6 frames, no locks) \| `detail`/`raw` (≤8 threads × 7 frames + 12 locks, each with ≤8 waiter ids). Continue through the retained capture with `query_snapshot` offsets or exact lock-address waiter paging |
+| `depth` | `string` | `summary` | `summary` (≤6 threads × 6 frames, no locks) \| `detail`/`raw` (≤8 threads × 7 frames + 12 locks, each with ≤8 waiter ids). Continue through the retained capture with `query_snapshot` cursors or exact lock-address waiter paging |
 
 **Returns:** `ThreadSnapshotQueryResult` + `thread-snapshot` handle. Drill via
 [`query_snapshot`](#query_snapshot) thread views: `threads-summary`, `stack`,
@@ -2613,7 +2613,8 @@ contract.
 | `handle` | `string` | — | Drilldown handle from a prior collector |
 | `view` | `string?` | per-kind default | Kind-specific view (catalog below). Omit for the kind's default |
 | `topN` | `int?` | 50 heap/thread/collection, 25 off-CPU | Requested entries in a ranked-list view. Thread lists (8), lock graph (12), and retention paths (10) have lower hard wire caps; handles retain the complete artifact |
-| `offset` | `int` | 0 | Zero-based page offset for thread `top-blocked` / `threads-summary` and `lock-graph`. Responses expose `nextThreadOffset` or `nextLockOffset`; with `lock-graph` plus `address`, it pages that lock's retained waiter IDs via `nextWaiterOffset` |
+| `offset` | `int` | 0 | Compatibility page offset (`0..256`) for thread `top-blocked` / `threads-summary` and `lock-graph`. Deeper random offsets are rejected because ranked offset selection is quadratic |
+| `cursor` | `string?` | null | Opaque versioned continuation from `nextThreadCursor`, `nextLockCursor`, or `nextWaiterCursor`. Bound to the handle/view and exact lock address where applicable; do not combine with non-zero `offset` |
 
 **View catalog (by handle kind):**
 
@@ -2643,7 +2644,7 @@ contract.
   includes at most eight waiter IDs plus
   `totalWaitingManagedThreadIds` / `omittedWaitingManagedThreadIds`; paging
   preserves access to every retained lock. Select one stable lock object with
-  `address` and follow `nextWaiterOffset` to recover every waiter ID retained
+  `address` and follow `nextWaiterCursor` to recover every waiter ID retained
   behind the handle without producing an unbounded response.
 - **off-CPU** (`collect_sample(kind="off_cpu")`): `topStacks` (default),
   `byThread`, `stack`.
