@@ -686,7 +686,7 @@ inside a `session`) expose the call-stack / blocking views (`threads-summary`, `
 | `threads-summary` | decisive thread summaries, eight per bounded page with up to eight frames each | `--cursor <opaque>` from `nextThreadCursor` |
 | `top-blocked` (default) | blocked threads and real lock waiters, eight per bounded page with up to eight frames each | `--cursor <opaque>` from `nextThreadCursor` |
 | `lock-graph` | contended locks, twelve per bounded page; or one lock's waiter IDs | `--cursor <opaque>` from `nextLockCursor`; add `--address <decimal\|0x-hex>` and use `nextWaiterCursor` to page one lock's waiters |
-| `wait-chains` | who-waits-on-whom chains toward the blocking root | — |
+| `wait-chains` | ranked CoreCLR monitor waiter→owner and async-continuation chains, including ThreadPool-starvation sinks and explicit deadlock cycles | — |
 | `async-stalls` | stalled `async` state machines and their await points | — |
 | `unique-stacks` | threads folded into shared stack signatures, ranked by group size | `--frames-to-hash` (top frames in the signature hash, default `20`), `--min-count` (drop groups smaller than N, default `1`) |
 | `frame-vars` | one thread's local variables and parameters for a chosen stack frame (re-opens the origin via ClrMD) | `--thread-id <id>` (required) |

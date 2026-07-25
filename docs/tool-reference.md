@@ -96,7 +96,8 @@ returning a small decisive-thread projection plus a handle, rather than eagerly
 materializing capture-wide signal indexes. Follow its `nextAction` with
 `query_snapshot(view="wait-chains")` or page `view="top-blocked"` and
 `view="lock-graph"`; select one lock by `address` and page its waiter IDs with
-`offset`. Exact stacks remain available through `view="stack"` and `threadId`.
+the returned `nextWaiterCursor`. Exact stacks remain available through
+`view="stack"` and `threadId`.
 
 **Counters.** `collect_events(kind="counters")` surfaces `counters.trend`: which
 counter moved the most between the first and last observed value in the collection

@@ -1236,8 +1236,7 @@ public sealed class DiagnosticTools
             investigationHandleId,
             cancellationToken);
 
-    [RequireScope("ptrace")]
-    [Description(
+    private const string QueryThreadSnapshotDescription =
         "Returns a slice of a thread snapshot previously captured by collect_thread_snapshot, addressed by its handle. Views: " +
         "`threads-summary` (stable pages of up to 8 managed threads with state and up to 8 frames; use unified query_snapshot with `cursor`/`nextThreadCursor` for deep continuation), " +
         "`stack` (full captured frames of one thread — requires `threadId`; for `linux-native-stack` snapshots this is the OS thread id / TID), " +
@@ -1246,10 +1245,32 @@ public sealed class DiagnosticTools
         "`top-blocked` (stable pages of up to 8 blocked/waiting candidates), " +
         "`unique-stacks` (group by identical top-of-stack prefixes to spot a stuck herd), " +
         "`async-stalls` (best-effort grouping of async state-machine waits; useful when no SyncBlocks are contended), " +
-        "`wait-chains` (Linux-native-stack only: groups off-CPU kernel wait stacks into representative chains; empty on exact CoreCLR snapshots), and " +
+        "`wait-chains` (ranked CoreCLR monitor waiter→owner, async-continuation, and ThreadPool-starvation chains; deadlock cycles are flagged explicitly), and " +
         "`threadpool` (SOS !threadpool-style snapshot of worker/IOCP counts plus global/local queue depths and pending work items when the backend captured them). " +
-        "Handles expire ~10 minutes after capture and survive target-process exit; only live-origin `resolve-address` and `frame-vars` re-attach via ClrMD and therefore require the original process to still be running.")]
+        "Handles expire ~10 minutes after capture and survive target-process exit; only live-origin `resolve-address` and `frame-vars` re-attach via ClrMD and therefore require the original process to still be running.";
+
+    [RequireScope("ptrace")]
+    [Description(QueryThreadSnapshotDescription)]
     public static DiagnosticResult<ThreadSnapshotQueryResult> QueryThreadSnapshot(
+        IDiagnosticHandleStore handles,
+        [Description("Snapshot handle returned by collect_thread_snapshot.")] string handle,
+        [Description("Which slice to return: 'threads-summary', 'stack', 'lock-graph', 'deadlocks', 'top-blocked', 'unique-stacks', 'async-stalls', 'wait-chains' or 'threadpool'.")] string view = "top-blocked",
+        [Description("For view='stack': thread id key to return frames for. CoreCLR snapshots use ManagedThreadId; linux-native-stack snapshots use OSThreadId (TID). Ignored by other views.")] int? threadId = null,
+        [Description("Requested entries for ranked views. Thread list projections are hard-capped at 8 rows × 8 frames and lock-graph at 12 rows; deadlocks/unique-stacks retain their existing topN behavior. Defaults to 50.")] int topN = 50,
+        [Description("For view='unique-stacks': number of top frames folded into the signature hash. Defaults to 20. Ignored by other views.")] int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
+        [Description("For view='unique-stacks': drop groups with fewer than this many threads. Defaults to 1. Ignored by other views.")] int minCount = 1)
+        => DiagnosticToolThreadingAndJit.QueryThreadSnapshot(
+            handles,
+            handle,
+            view,
+            threadId,
+            topN,
+            framesToHash,
+            minCount);
+
+    [RequireScope("ptrace")]
+    [Description(QueryThreadSnapshotDescription)]
+    public static DiagnosticResult<ThreadSnapshotQueryResult> QueryThreadSnapshotPaged(
         IDiagnosticHandleStore handles,
         [Description("Snapshot handle returned by collect_thread_snapshot.")] string handle,
         [Description("Which slice to return: 'threads-summary', 'stack', 'lock-graph', 'deadlocks', 'top-blocked', 'unique-stacks', 'async-stalls', 'wait-chains' or 'threadpool'.")] string view = "top-blocked",
@@ -1259,7 +1280,7 @@ public sealed class DiagnosticTools
         [Description("For view='unique-stacks': drop groups with fewer than this many threads. Defaults to 1. Ignored by other views.")] int minCount = 1,
         [Description("For view='lock-graph': exact lock object address whose retained waiter IDs should be selected. Decimal or 0x-prefixed hex.")] string? lockAddress = null,
         [Description("Zero-based compatibility offset for paged thread-list and lock-graph views. Values above 256 are rejected; use unified query_snapshot cursor continuation for deep pages. Defaults to 0.")] int offset = 0)
-        => DiagnosticToolThreadingAndJit.QueryThreadSnapshot(
+        => DiagnosticToolThreadingAndJit.QueryThreadSnapshotPaged(
             handles,
             handle,
             view,

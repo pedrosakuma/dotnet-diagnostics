@@ -182,6 +182,16 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         var queryCursor = querySnapshot.JsonSchema.GetProperty("properties").GetProperty("cursor");
         queryCursor.GetProperty("description").GetString().Should().Contain("nextThreadCursor");
         queryCursor.GetProperty("description").GetString().Should().Contain("cross-handle");
+        var queryViewDescription = querySnapshot.JsonSchema
+            .GetProperty("properties")
+            .GetProperty("view")
+            .GetProperty("description")
+            .GetString();
+        queryViewDescription.Should().Contain("CoreCLR monitor waiter");
+        queryViewDescription.Should().Contain("async continuations");
+        queryViewDescription.Should().Contain("ThreadPool starvation");
+        queryViewDescription.Should().Contain("deadlock cycles");
+        queryViewDescription.Should().NotContain("Linux-native-stack only");
     }
 
     [Fact]

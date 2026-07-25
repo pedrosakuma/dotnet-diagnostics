@@ -571,7 +571,7 @@ public sealed class SessionReplTests
             "thread-snapshot",
             snapshot,
             TimeSpan.FromMinutes(10));
-        var first = ThreadSnapshotQueryDispatcher.Dispatch(
+        var first = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot, handle.Id, "threads-summary", null, 50, 20, 1);
         var cursor = first.Data!.NextThreadCursor;
         cursor.Should().NotBeNull();
@@ -620,7 +620,7 @@ public sealed class SessionReplTests
             "thread-snapshot",
             snapshot,
             TimeSpan.FromMinutes(10));
-        var first = ThreadSnapshotQueryDispatcher.Dispatch(
+        var first = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot,
             handle.Id,
             "lock-graph",

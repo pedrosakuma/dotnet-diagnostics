@@ -9,6 +9,28 @@ public sealed class ThreadSnapshotQueryDispatcherTests
     private const string Handle = "thread-handle-1";
 
     [Fact]
+    public void Dispatch_OriginalSevenParameterClrSignatureRemainsAvailable()
+    {
+        var method = typeof(ThreadSnapshotQueryDispatcher).GetMethod(
+            nameof(ThreadSnapshotQueryDispatcher.Dispatch),
+            [
+                typeof(ThreadSnapshotArtifact),
+                typeof(string),
+                typeof(string),
+                typeof(int?),
+                typeof(int),
+                typeof(int),
+                typeof(int),
+            ]);
+
+        method.Should().NotBeNull();
+
+        var outcome = ThreadSnapshotQueryDispatcher.Dispatch(
+            Snapshot(), Handle, "threads-summary", null, 50, 20, 1);
+        outcome.Error.Should().BeNull();
+    }
+
+    [Fact]
     public void Dispatch_TopBlocked_ReturnsRankedThreads()
     {
         var outcome = ThreadSnapshotQueryDispatcher.Dispatch(
@@ -146,11 +168,11 @@ public sealed class ThreadSnapshotQueryDispatcherTests
     {
         var snapshot = PagingSnapshot();
 
-        var first = ThreadSnapshotQueryDispatcher.Dispatch(
+        var first = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot, Handle, "threads-summary", null, 50, 20, 1, offset: 0);
-        var second = ThreadSnapshotQueryDispatcher.Dispatch(
+        var second = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot, Handle, "threads-summary", null, 50, 20, 1, offset: 8);
-        var third = ThreadSnapshotQueryDispatcher.Dispatch(
+        var third = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot, Handle, "threads-summary", null, 50, 20, 1, offset: 16);
 
         first.Data!.NextThreadOffset.Should().Be(8);
@@ -187,9 +209,9 @@ public sealed class ThreadSnapshotQueryDispatcherTests
                 .ToArray(),
             Locks = Array.Empty<MonitorLockState>(),
         };
-        var first = ThreadSnapshotQueryDispatcher.Dispatch(
+        var first = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot, Handle, "top-blocked", null, 50, 20, 1, offset: 0);
-        var second = ThreadSnapshotQueryDispatcher.Dispatch(
+        var second = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot, Handle, "top-blocked", null, 50, 20, 1, offset: 8);
 
         first.Data!.TotalThreads.Should().Be(20);
@@ -244,11 +266,11 @@ public sealed class ThreadSnapshotQueryDispatcherTests
     {
         var snapshot = PagingSnapshot();
 
-        var first = ThreadSnapshotQueryDispatcher.Dispatch(
+        var first = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot, Handle, "lock-graph", null, 50, 20, 1, offset: 0);
-        var second = ThreadSnapshotQueryDispatcher.Dispatch(
+        var second = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot, Handle, "lock-graph", null, 50, 20, 1, offset: 12);
-        var third = ThreadSnapshotQueryDispatcher.Dispatch(
+        var third = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot, Handle, "lock-graph", null, 50, 20, 1, offset: 24);
 
         first.Data!.NextLockOffset.Should().Be(12);
@@ -308,7 +330,7 @@ public sealed class ThreadSnapshotQueryDispatcherTests
     [Fact]
     public void Dispatch_NegativeOffset_ReturnsInvalidArgument()
     {
-        var outcome = ThreadSnapshotQueryDispatcher.Dispatch(
+        var outcome = ThreadSnapshotQueryDispatcher.DispatchPaged(
             Snapshot(), Handle, "threads-summary", null, 50, 20, 1, offset: -1);
 
         outcome.Error!.Kind.Should().Be("InvalidArgument");
@@ -319,13 +341,13 @@ public sealed class ThreadSnapshotQueryDispatcherTests
     {
         var snapshot = PagingSnapshot();
 
-        var threads = ThreadSnapshotQueryDispatcher.Dispatch(
+        var threads = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot, Handle, "threads-summary", null, 50, 20, 1, offset: int.MaxValue);
-        var blocked = ThreadSnapshotQueryDispatcher.Dispatch(
+        var blocked = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot, Handle, "top-blocked", null, 50, 20, 1, offset: int.MaxValue);
-        var locks = ThreadSnapshotQueryDispatcher.Dispatch(
+        var locks = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot, Handle, "lock-graph", null, 50, 20, 1, offset: int.MaxValue);
-        var waiters = ThreadSnapshotQueryDispatcher.Dispatch(
+        var waiters = ThreadSnapshotQueryDispatcher.DispatchPaged(
             snapshot,
             Handle,
             "lock-graph",

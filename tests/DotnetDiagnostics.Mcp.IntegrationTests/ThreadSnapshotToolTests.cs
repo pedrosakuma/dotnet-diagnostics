@@ -28,13 +28,13 @@ public sealed class ThreadSnapshotToolTests
         result.Data.Locks.Should().BeEmpty();
         result.Data.NextThreadCursor.Should().NotBeNullOrWhiteSpace();
 
-        var nextPage = DiagnosticTools.QueryThreadSnapshot(
+        var nextPage = DiagnosticTools.QueryThreadSnapshotPaged(
             handles,
             result.Data.Handle,
             view: "threads-summary",
             offset: ThreadSnapshotProjection.QueryThreadLimit);
         nextPage.Data!.Threads.Should().HaveCount(ThreadSnapshotProjection.QueryThreadLimit);
-        var exactLock = DiagnosticTools.QueryThreadSnapshot(
+        var exactLock = DiagnosticTools.QueryThreadSnapshotPaged(
             handles,
             result.Data.Handle,
             view: "lock-graph",

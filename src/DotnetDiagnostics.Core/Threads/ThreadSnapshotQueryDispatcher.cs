@@ -33,6 +33,26 @@ public static class ThreadSnapshotQueryDispatcher
         int? threadId,
         int topN,
         int framesToHash,
+        int minCount)
+        => DispatchCursor(
+            snapshot,
+            handle,
+            view,
+            threadId,
+            topN,
+            framesToHash,
+            minCount,
+            offset: 0,
+            lockAddress: null,
+            cursor: null);
+
+    public static DiagnosticResult<ThreadSnapshotQueryResult> DispatchPaged(
+        ThreadSnapshotArtifact snapshot,
+        string handle,
+        string view,
+        int? threadId,
+        int topN,
+        int framesToHash,
         int minCount,
         int offset = 0,
         string? lockAddress = null)

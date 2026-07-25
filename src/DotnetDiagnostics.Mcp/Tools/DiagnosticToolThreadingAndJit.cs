@@ -277,6 +277,26 @@ internal static class DiagnosticToolThreadingAndJit
         int? threadId = null,
         int topN = 50,
         int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
+        int minCount = 1)
+        => QueryThreadSnapshotCursor(
+            handles,
+            handle,
+            view,
+            threadId,
+            topN,
+            framesToHash,
+            minCount,
+            lockAddress: null,
+            offset: 0,
+            cursor: null);
+
+    public static DiagnosticResult<ThreadSnapshotQueryResult> QueryThreadSnapshotPaged(
+        IDiagnosticHandleStore handles,
+        string handle,
+        string view = "top-blocked",
+        int? threadId = null,
+        int topN = 50,
+        int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
         int minCount = 1,
         string? lockAddress = null,
         int offset = 0)
