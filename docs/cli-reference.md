@@ -590,7 +590,7 @@ exposes drilldown views computed from the merged call tree without re-sampling:
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
-| `call-tree` (default) | the merged inclusive/exclusive call tree; CPU handles can also carry `selfSamples` on the view and per node | `--max-depth` (tree depth, default `8`), `--max-nodes`, `--min-count`, `--root-method-filter`, `--rank-by` |
+| `call-tree` (default) | the merged inclusive/exclusive call tree; CPU handles can also carry `selfSamples` on the view and per node | `--max-depth` (tree depth, default `8`), `--max-nodes` (default `64`; larger requests are clamped to the `64`-node wire cap), `--min-count`, `--root-method-filter`, `--rank-by` |
 | `top-methods` | methods ranked by sample cost; CPU handles include per-method `selfSamples.runningSamples` vs `selfSamples.waitingSamples` | `--top` (default `20`), `--rank-by exclusive\|inclusive` |
 | `by-module` | samples grouped by owning module | `--top`, `--rank-by` |
 | `by-namespace` | samples grouped by namespace | `--top`, `--rank-by` |

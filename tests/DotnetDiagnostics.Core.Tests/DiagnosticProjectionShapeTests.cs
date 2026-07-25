@@ -83,6 +83,29 @@ public sealed class DiagnosticProjectionShapeTests
     }
 
     [Fact]
+    public void CpuCallTree_ReservesSelectedSiblingSlotsBeforeWalkingWideFirstBranch()
+    {
+        var artifact = FairSiblingCpuTrace();
+
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(
+            artifact,
+            "cpu-fair-siblings",
+            rootMethodFilter: null,
+            maxDepth: CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth,
+            maxNodes: 8);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.NodeCount.Should().Be(8);
+        outcome.Data.Root.Children.Select(child => child.Frame.Method).Should().Contain(
+            "MyCompany.DecisiveLate397",
+            "MyCompany.DecisiveLate398",
+            "MyCompany.DecisiveLate399");
+        outcome.Data.Root.Children.Should().OnlyContain(child => child.Children.Count == 0,
+            "all remaining slots are reserved for globally selected direct children before descendants");
+        outcome.Data.Truncated.Should().BeTrue();
+    }
+
+    [Fact]
     public void RetentionPaths_AreBoundedAndKeepTypedAddressIdentity()
     {
         var snapshot = HeapSnapshot();
@@ -149,6 +172,7 @@ public sealed class DiagnosticProjectionShapeTests
             Threads = threads.Items,
             Locks = locks?.Items ?? Array.Empty<MonitorLockState>(),
             TotalThreads = snapshot.Threads.Count,
+            CandidateThreads = threads.TotalItems,
             OmittedThreads = threads.TotalItems - threads.Items.Count,
             FramesPerThreadLimit = frameLimit,
             TotalLocks = snapshot.Locks.Count,
@@ -264,6 +288,62 @@ public sealed class DiagnosticProjectionShapeTests
             SelfSamples = new SelfSampleBreakdown(10, 99_990),
             MethodIdentities = identities,
         };
+    }
+
+    private static CpuSampleTraceArtifact FairSiblingCpuTrace()
+    {
+        static CallTreeNode RunningLeaf(string method, long runningSamples)
+            => new(new SampledFrame("App.dll", method), runningSamples, runningSamples, Array.Empty<CallTreeNode>())
+            {
+                SelfSamples = new SelfSampleBreakdown(runningSamples, 0),
+            };
+
+        var children = Enumerable.Range(0, 400)
+            .Select(index =>
+            {
+                if (index == 397)
+                {
+                    var wideChildren = Enumerable.Range(0, 100)
+                        .Select(childIndex => childIndex == 99
+                            ? RunningLeaf("MyCompany.DecisiveLate397.RunningLeaf", 30)
+                            : new CallTreeNode(
+                                new SampledFrame("App.dll", $"MyCompany.DecisiveLate397.DeepNoise{childIndex:D3}"),
+                                1,
+                                1,
+                                Array.Empty<CallTreeNode>())
+                            {
+                                SelfSamples = new SelfSampleBreakdown(0, 1),
+                            })
+                        .ToArray();
+                    return new CallTreeNode(
+                        new SampledFrame("App.dll", "MyCompany.DecisiveLate397"),
+                        129,
+                        0,
+                        wideChildren);
+                }
+
+                if (index is 398 or 399)
+                {
+                    var running = index == 398 ? 20 : 10;
+                    return new CallTreeNode(
+                        new SampledFrame("App.dll", $"MyCompany.DecisiveLate{index}"),
+                        running,
+                        0,
+                        [RunningLeaf($"MyCompany.DecisiveLate{index}.RunningLeaf", running)]);
+                }
+
+                return new CallTreeNode(
+                    new SampledFrame("System.Threading.dll", $"System.Threading.WaitNoise{index:D3}"),
+                    10_000 - index,
+                    10_000 - index,
+                    Array.Empty<CallTreeNode>())
+                {
+                    SelfSamples = new SelfSampleBreakdown(0, 10_000 - index),
+                };
+            })
+            .ToArray();
+        var root = new CallTreeNode(new SampledFrame(string.Empty, "<root>"), 4_000_000, 0, children);
+        return new CpuSampleTraceArtifact(4242, DateTimeOffset.UnixEpoch, TimeSpan.FromSeconds(8), 4_000_000, root);
     }
 
     private static MethodIdentity Identity(int token)

@@ -210,7 +210,7 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
             new NextActionHint(
                 "query_snapshot",
                 "Walk the merged caller\u2192callee tree built from the same samples.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = 8, ["maxNodes"] = 200 }));
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes }));
     }
 
     /// <summary>
@@ -336,7 +336,7 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
             new NextActionHint(
                 "query_snapshot",
                 "Walk the merged allocation call-site tree to find which code paths allocate the most.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = 8, ["maxNodes"] = 200 }));
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes }));
     }
 
     /// <summary>

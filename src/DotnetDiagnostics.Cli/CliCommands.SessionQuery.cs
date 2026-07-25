@@ -507,8 +507,8 @@ internal static partial class CliCommands
                     $"Valid views: {string.Join(", ", CpuSampleQueryDispatcher.SessionViews)}.");
         }
 
-        var maxDepth = options.MaxDepth ?? 8;
-        var maxNodes = options.MaxNodes ?? 200;
+        var maxDepth = options.MaxDepth ?? CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth;
+        var maxNodes = options.MaxNodes ?? CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes;
         var result = CpuSampleQueryDispatcher.RenderCallTree(trace, handle, options.RootMethodFilter, maxDepth, maxNodes);
 
         return BuildResult<CallTreeView>(result, SerializeQuery);

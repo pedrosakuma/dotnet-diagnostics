@@ -127,7 +127,7 @@ internal static class DiagnosticToolSampling
             new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "top-methods", ["rankBy"] = "exclusive" })
         { Priority = NextActionHintPriority.High });
         hints.Add(new NextActionHint("query_snapshot", "Walk the merged caller→callee tree built from the same samples.",
-            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = 8, ["maxNodes"] = 200 })
+            new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes })
         { Priority = NextActionHintPriority.High });
         hints.Add(new NextActionHint("collect_events", "Confirm hot path isn't driven by exception-heavy control flow.",
             new Dictionary<string, object?> { ["kind"] = "exceptions", ["processId"] = pid, ["durationSeconds"] = 10 }));
@@ -210,7 +210,7 @@ internal static class DiagnosticToolSampling
             handle.Id,
             handle.ExpiresAt,
             new NextActionHint("query_snapshot", "Walk the merged allocation call-site tree to find which code paths are allocating the most.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes })
             { Priority = NextActionHintPriority.High },
             new NextActionHint("collect_sample", "Cross-reference: identify hot CPU paths that correlate with the top allocating types.",
                 new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
@@ -225,8 +225,8 @@ internal static class DiagnosticToolSampling
         IDiagnosticHandleStore handles,
         [Description("Handle returned by a prior collect_sample(kind='cpu') call.")] string handle,
         [Description("Optional case-insensitive substring; the tree is re-rooted at the highest-ranked frame whose method name contains this text.")] string? rootMethodFilter = null,
-        [Description("Maximum tree depth from the root. Must be >= 1. Defaults to 8.")] int maxDepth = 8,
-        [Description("Approximate cap on the number of nodes returned (top children at each level). Must be >= 1. Defaults to 200.")] int maxNodes = 200)
+        [Description("Maximum tree depth from the root. Must be >= 1. Defaults to 8.")] int maxDepth = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth,
+        [Description("Requested node cap. Must be >= 1. Defaults to 64; larger values are clamped to the shared 64-node wire cap, and the complete tree remains behind the handle.")] int maxNodes = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes)
     {
         if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<CallTreeView>(nameof(handle), "is required");
         if (maxDepth < 1) return InvalidArg<CallTreeView>(nameof(maxDepth), "must be >= 1");
@@ -434,7 +434,7 @@ internal static class DiagnosticToolSampling
             handle.Id,
             handle.ExpiresAt,
             new NextActionHint("query_snapshot", "Walk the native allocation call tree to find which code paths allocate the most.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = 8, ["maxNodes"] = 200 }),
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes }),
             new NextActionHint("inspect_process", "Correlate with the memory trend (RSS / anonymous pages) to confirm native growth.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["view"] = "memory_trend" }));
         return WithContext(ok, resolved.Context);

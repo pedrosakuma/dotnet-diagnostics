@@ -76,6 +76,7 @@ public static class ThreadSnapshotQueryDispatcher
             {
                 Threads = page.Items,
                 TotalThreads = snapshot.Threads.Count,
+                CandidateThreads = page.TotalItems,
                 OmittedThreads = page.TotalItems - page.Items.Count,
                 FramesPerThreadLimit = ThreadSnapshotProjection.QueryFrameLimit,
                 ThreadOffset = page.Offset,
@@ -208,6 +209,7 @@ public static class ThreadSnapshotQueryDispatcher
             {
                 Threads = page.Items,
                 TotalThreads = snapshot.Threads.Count,
+                CandidateThreads = page.TotalItems,
                 OmittedThreads = page.TotalItems - page.Items.Count,
                 FramesPerThreadLimit = ThreadSnapshotProjection.QueryFrameLimit,
                 ThreadOffset = page.Offset,

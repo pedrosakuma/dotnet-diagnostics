@@ -375,6 +375,7 @@ public sealed class SessionReplTests
         stderr.Should().BeEmpty();
         stdout.Should().Contain("Root");
         stdout.Should().Contain("LeafA");
+        stdout.Should().Contain($"\"nodeLimit\": {CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes}");
     }
 
     [Fact]

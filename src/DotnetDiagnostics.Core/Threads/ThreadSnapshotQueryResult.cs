@@ -39,7 +39,9 @@ public sealed record ThreadSnapshotQueryResult(
     public FrameVariablesResult? FrameVariables { get; init; }
     /// <summary>Total threads in the full artifact before inline projection.</summary>
     public int? TotalThreads { get; init; }
-    /// <summary>Threads omitted from this bounded inline projection.</summary>
+    /// <summary>Threads in the ranked candidate set paged by this view.</summary>
+    public int? CandidateThreads { get; init; }
+    /// <summary>Candidate threads omitted from this bounded inline projection.</summary>
     public int? OmittedThreads { get; init; }
     /// <summary>Maximum frames retained per projected thread. The handle keeps every captured frame.</summary>
     public int? FramesPerThreadLimit { get; init; }

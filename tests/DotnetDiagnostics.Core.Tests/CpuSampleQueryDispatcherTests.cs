@@ -16,7 +16,7 @@ public class CpuSampleQueryDispatcherTests
     [Fact]
     public void RenderCallTree_ReturnsView_FromTrace()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: null, maxDepth: 8, maxNodes: 200);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: null, maxDepth: 8, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
 
         outcome.Error.Should().BeNull();
         outcome.Data.Should().NotBeNull();
@@ -30,7 +30,7 @@ public class CpuSampleQueryDispatcherTests
     [Fact]
     public void RenderCallTree_MaxDepthBelowOne_ReturnsInvalidArgument()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, null, maxDepth: 0, maxNodes: 200);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, null, maxDepth: 0, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
 
         outcome.Error!.Kind.Should().Be("InvalidArgument");
     }
@@ -46,7 +46,7 @@ public class CpuSampleQueryDispatcherTests
     [Fact]
     public void RenderCallTree_DepthOne_TruncatesChildren()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, null, maxDepth: 1, maxNodes: 200);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, null, maxDepth: 1, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
 
         outcome.Error.Should().BeNull();
         outcome.Data!.Root.Children.Should().BeEmpty();
@@ -56,7 +56,7 @@ public class CpuSampleQueryDispatcherTests
     [Fact]
     public void RenderCallTree_RootMethodFilter_ReRootsAtMatch()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: "leafa", maxDepth: 8, maxNodes: 200);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: "leafa", maxDepth: 8, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
 
         outcome.Error.Should().BeNull();
         outcome.Data!.Root.Frame.Method.Should().Be("LeafA");
@@ -65,7 +65,7 @@ public class CpuSampleQueryDispatcherTests
     [Fact]
     public void RenderCallTree_RootMethodFilter_NoMatch_ReturnsNotFound()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: "does-not-exist", maxDepth: 8, maxNodes: 200);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: "does-not-exist", maxDepth: 8, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
 
         outcome.Error!.Kind.Should().Be("NotFound");
     }
@@ -248,7 +248,7 @@ public class CpuSampleQueryDispatcherTests
     [Fact]
     public void RenderCallTree_PropagatesSelfSampleSplit()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(ClassifiedTrace(), Handle, rootMethodFilter: null, maxDepth: 8, maxNodes: 200);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(ClassifiedTrace(), Handle, rootMethodFilter: null, maxDepth: 8, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
 
         outcome.Error.Should().BeNull();
         outcome.Data!.SelfSamples.Should().Be(new SelfSampleBreakdown(40, 60));
@@ -261,7 +261,7 @@ public class CpuSampleQueryDispatcherTests
     [Fact]
     public void RenderCallTree_UntruncatedResponse_DoesNotRecommendAlreadySatisfiedCallTree()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: null, maxDepth: 8, maxNodes: 200);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: null, maxDepth: 8, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
 
         outcome.Data!.Truncated.Should().BeFalse();
         outcome.Hints.Should().BeEmpty();

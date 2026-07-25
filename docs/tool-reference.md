@@ -2638,7 +2638,10 @@ contract.
   views; `resolve-address` and `frame-vars` instead return a structured
   `ProcessExited` error once the original live process is gone. Thread and lock
   list views are bounded pages selected with `offset` and report their next
-  offsets. Each projected lock includes at most eight waiter IDs plus
+  offsets. Thread pages report `totalThreads` for the complete snapshot and
+  `candidateThreads` for the ranked set paged by the current view, so
+  `omittedThreads` is always relative to `candidateThreads`. Each projected
+  lock includes at most eight waiter IDs plus
   `totalWaitingManagedThreadIds` / `omittedWaitingManagedThreadIds`; paging
   preserves access to every retained lock. Select one stable lock object with
   `address` and follow `nextWaiterOffset` to recover every waiter ID retained
@@ -2652,9 +2655,11 @@ contract.
 - **cpu-sample / allocation-sample / native-alloc-sample**: `call-tree`
   (default), `top-methods`, `by-module`, `by-namespace`, `hot-path`,
   `caller-callee`, `diff`. The broad `call-tree` projection is capped at 64
-  nodes / depth 8. It ranks all direct children before bounded selection, so a
-  late low-volume branch with running self-samples outranks generic waiting
-  branches; narrow with `rootMethodFilter` for deeper evidence.
+  nodes / depth 8. It ranks all direct children before bounded selection and
+  reserves their node slots before traversing descendants, so a wide first
+  branch cannot hide other selected siblings. A late low-volume branch with
+  running self-samples outranks generic waiting branches; narrow with
+  `rootMethodFilter` for deeper evidence.
 
 **Common view-specific parameters** (each ignored outside its view):
 `rankBy` (`bytes`/`instances`), `typeFullName`, `address`,

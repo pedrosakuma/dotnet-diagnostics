@@ -193,7 +193,7 @@ internal sealed record CliOptions
     /// <summary>Maximum call-tree depth for the CPU <c>call-tree</c> view (<c>--max-depth</c>, default 8). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public int? MaxDepth { get; init; }
 
-    /// <summary>Approximate cap on call-tree nodes for the CPU <c>call-tree</c> view (<c>--max-nodes</c>, default 200). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    /// <summary>Requested call-tree node cap for the CPU <c>call-tree</c> view (<c>--max-nodes</c>, default 64; larger values are clamped to 64). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public int? MaxNodes { get; init; }
 
     /// <summary>Thread id for the thread-snapshot <c>stack</c> view (<c>--thread-id</c>): ManagedThreadId for CoreCLR snapshots, OS TID for linux-native-stack. Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>

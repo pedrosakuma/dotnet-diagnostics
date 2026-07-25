@@ -307,18 +307,12 @@ public static class CpuSampleQueryDispatcher
     {
         var nodeBudget = maxNodes;
         var truncated = false;
-        var pruned = Walk(root, maxDepth);
+        nodeBudget--;
+        var pruned = WalkReserved(root, maxDepth);
         return (pruned, maxNodes - nodeBudget, truncated);
 
-        CallTreeNode Walk(CallTreeNode n, int depthRemaining)
+        CallTreeNode WalkReserved(CallTreeNode n, int depthRemaining)
         {
-            if (nodeBudget <= 0)
-            {
-                truncated = true;
-                return n with { Children = Array.Empty<CallTreeNode>() };
-            }
-            nodeBudget--;
-
             if (depthRemaining <= 1 || n.Children.Count == 0)
             {
                 if (n.Children.Count > 0) truncated = true;
@@ -332,14 +326,13 @@ public static class CpuSampleQueryDispatcher
                 truncated = true;
             }
 
+            // Reserve one slot for every selected direct child before any descendant walk.
+            // This prevents the highest-ranked child's subtree from consuming the budget and
+            // hiding decisive sibling branches that already won global child selection.
+            nodeBudget -= candidates.Length;
             foreach (var child in candidates)
             {
-                if (nodeBudget <= 0)
-                {
-                    truncated = true;
-                    break;
-                }
-                kept.Add(Walk(child, depthRemaining - 1));
+                kept.Add(WalkReserved(child, depthRemaining - 1));
             }
 
             return n with { Children = kept };

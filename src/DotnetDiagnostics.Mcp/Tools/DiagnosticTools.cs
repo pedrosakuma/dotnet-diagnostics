@@ -311,8 +311,8 @@ public sealed class DiagnosticTools
         IDiagnosticHandleStore handles,
         [Description("Handle returned by a prior collect_sample(kind='cpu') call.")] string handle,
         [Description("Optional case-insensitive substring; the tree is re-rooted at the highest-ranked frame whose method name contains this text.")] string? rootMethodFilter = null,
-        [Description("Maximum tree depth from the root. Must be >= 1. Defaults to 8.")] int maxDepth = 8,
-        [Description("Approximate cap on the number of nodes returned (top children at each level). Must be >= 1. Defaults to 200.")] int maxNodes = 200)
+        [Description("Maximum tree depth from the root. Must be >= 1. Defaults to 8.")] int maxDepth = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth,
+        [Description("Requested node cap. Must be >= 1. Defaults to 64; larger values are clamped to the shared 64-node wire cap, and the complete tree remains behind the handle.")] int maxNodes = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes)
         => DiagnosticToolSampling.GetCallTree(handles, handle, rootMethodFilter, maxDepth, maxNodes);
 
     [RequireScope("eventpipe")]

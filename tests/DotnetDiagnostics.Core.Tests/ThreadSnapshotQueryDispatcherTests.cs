@@ -170,6 +170,41 @@ public sealed class ThreadSnapshotQueryDispatcherTests
     }
 
     [Fact]
+    public void Dispatch_TopBlocked_SeparatesSnapshotTotalFromPagedCandidateTotal()
+    {
+        var source = PagingSnapshot();
+        var snapshot = source with
+        {
+            Threads = source.Threads
+                .Select((thread, index) => thread with
+                {
+                    IsLikelyBlocked = index < 10,
+                    InferredWaitReason = index < 10 ? "Monitor.Enter" : null,
+                })
+                .ToArray(),
+            Locks = Array.Empty<MonitorLockState>(),
+        };
+
+        var first = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "top-blocked", null, 50, 20, 1, offset: 0);
+        var second = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "top-blocked", null, 50, 20, 1, offset: 8);
+
+        first.Data!.TotalThreads.Should().Be(20);
+        first.Data.CandidateThreads.Should().Be(10);
+        first.Data.OmittedThreads.Should().Be(2);
+        first.Data.NextThreadOffset.Should().Be(8);
+        second.Data!.TotalThreads.Should().Be(20);
+        second.Data.CandidateThreads.Should().Be(10);
+        second.Data.OmittedThreads.Should().Be(8);
+        second.Data.NextThreadOffset.Should().BeNull();
+        first.Data.Threads!
+            .Concat(second.Data.Threads!)
+            .Should().HaveCount(10)
+            .And.OnlyContain(thread => thread.IsLikelyBlocked);
+    }
+
+    [Fact]
     public void Dispatch_LockPages_ExposeEveryLockWithBoundedWaiterIds()
     {
         var snapshot = PagingSnapshot();

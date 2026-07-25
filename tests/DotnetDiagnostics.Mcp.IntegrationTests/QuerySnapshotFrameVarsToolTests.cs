@@ -244,6 +244,8 @@ public sealed class QuerySnapshotFrameVarsToolTests
 
         var firstPage = first.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
         var secondPage = second.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
+        firstPage.TotalThreads.Should().Be(13);
+        firstPage.CandidateThreads.Should().Be(13);
         firstPage.NextThreadOffset.Should().Be(8);
         secondPage.NextThreadOffset.Should().BeNull();
         firstPage.Threads!
