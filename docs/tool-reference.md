@@ -46,9 +46,8 @@ Each `SignalGroup` carries:
 - `signal`: stable id of the **grouping dimension** — not a diagnosis (e.g.
   `cpu.self-time.concentration`, `cpu.self-time.by-namespace`, `exceptions.by-type`,
   `exceptions.by-throw-site`, `allocations.by-type`, `allocations.by-site`,
-  `gc.pause-time-share`, `gc.gen2-share`, `gc.loh-growth`, `threads.by-wait-state`,
-  `threads.by-wait-target`, `counters.trend`, `correlation.co-occurrence`,
-  `correlation.thread-overlap`).
+  `gc.pause-time-share`, `gc.gen2-share`, `gc.loh-growth`, `counters.trend`,
+  `correlation.co-occurrence`).
 - `summary`: one-line description of what stands out.
 - `salience`: `0`–`1`, how far the grouping stands out (magnitude / concentration).
 - `buckets[]`: the top members of the grouping, each `{ key, magnitude, unit,
@@ -92,14 +91,12 @@ were gen2, elevated vs. the gen0-dominated norm) and `gc.loh-growth` (LOH size g
 across the window, from the `GCHeapStats` time series) — each a magnitude the consumer
 interprets, never a verdict.
 
-**Threads.** `collect_thread_snapshot` surfaces two thread-concentration groupings:
-`threads.by-wait-state` (do many threads share the same inferred wait state — e.g.
-`Monitor.Enter (contended)`, `Thread.Sleep`, `Socket I/O` — from each thread's top
-frame) and `threads.by-wait-target` (the finer, resolvable-only complement: does one
-SyncBlock/monitor account for most of the lock-waiting threads). Neither names lock
-contention or sync-over-async as a cause — that conclusion is left to the consumer,
-who can drill via the referenced handle (`view=top-blocked` / `view=lock-graph`).
-`threads.by-wait-target` simply produces nothing when no lock has waiters.
+**Threads.** `collect_thread_snapshot` keeps collection and registration bounded by
+returning a small decisive-thread projection plus a handle, rather than eagerly
+materializing capture-wide signal indexes. Follow its `nextAction` with
+`query_snapshot(view="wait-chains")` or page `view="top-blocked"` and
+`view="lock-graph"`; select one lock by `address` and page its waiter IDs with
+`offset`. Exact stacks remain available through `view="stack"` and `threadId`.
 
 **Counters.** `collect_events(kind="counters")` surfaces `counters.trend`: which
 counter moved the most between the first and last observed value in the collection
@@ -120,12 +117,8 @@ of them stand out at once (e.g. a counter trend and an elevated `gc.gen2-share` 
 same sweep), leading the envelope with buckets referencing each contributing collector's
 handle. Salience is the *minimum* of the contributing groupings, so the correlation is
 never rated above its weakest ingredient, and it produces nothing when only one collector
-stands out — the common, uncorrelated case. `collect_thread_snapshot` additionally
-surfaces `correlation.thread-overlap`: does a thread that owns a contended lock (the
-`threads.by-wait-target` domain) also appear among the blocked threads
-(`threads.by-wait-state` domain)? A pure thread-identity intersection over the same
-snapshot, not a new capture — it produces nothing when no contended lock's owner is
-itself blocked. Neither correlation infers a cause; both stay drill-in pointers.
+stands out — the common, uncorrelated case. It does not infer a cause; it remains a
+drill-in pointer.
 
 ### Implicit bootstrap (`processId` is optional)
 
@@ -2589,12 +2582,14 @@ wait/park noise.
 | `includeRuntimeFrames` | `bool` | `false` | Include PInvoke trampolines / runtime frames with no managed method |
 | `includeNativeFrames` | `bool` | `false` | Include pure native frames ClrMD cannot resolve |
 | `symbolPath` | `string?` | — | NT_SYMBOL_PATH-style path (same remote-server allowlist rule as `inspect_heap`) |
-| `depth` | `string` | `summary` | `summary` (≤6 threads × 6 frames, no lock graph) \| `detail`/`raw` (≤8 threads × 7 frames + 12 most-contended locks). The full snapshot is always retained behind the handle |
+| `depth` | `string` | `summary` | `summary` (≤6 threads × 6 frames, no locks) \| `detail`/`raw` (≤8 threads × 7 frames + 12 locks, each with ≤8 waiter ids). Continue through the retained capture with `query_snapshot` offsets or exact lock-address waiter paging |
 
 **Returns:** `ThreadSnapshotQueryResult` + `thread-snapshot` handle. Drill via
 [`query_snapshot`](#query_snapshot) thread views: `threads-summary`, `stack`,
 `lock-graph`, `deadlocks`, `top-blocked`, `unique-stacks`, `async-stalls`,
 `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`.
+Collection does not eagerly build capture-sized signal buckets or a deadlock graph; those
+analyses run only when their explicit drilldown view is requested.
 
 **Scope:** `ptrace`. **Requires:** live attach needs `CAP_SYS_PTRACE` on Linux.
 

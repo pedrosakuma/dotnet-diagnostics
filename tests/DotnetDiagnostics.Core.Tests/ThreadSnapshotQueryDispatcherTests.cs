@@ -312,6 +312,53 @@ public sealed class ThreadSnapshotQueryDispatcherTests
     }
 
     [Fact]
+    public void Dispatch_ExhaustedOffsets_AreDistinctFromEmptyCaptures()
+    {
+        var snapshot = PagingSnapshot();
+
+        var threads = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "threads-summary", null, 50, 20, 1, offset: int.MaxValue);
+        var blocked = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "top-blocked", null, 50, 20, 1, offset: int.MaxValue);
+        var locks = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "lock-graph", null, 50, 20, 1, offset: int.MaxValue);
+        var waiters = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot,
+            Handle,
+            "lock-graph",
+            threadId: null,
+            topN: 50,
+            framesToHash: 20,
+            minCount: 1,
+            offset: int.MaxValue,
+            lockAddress: "0x30000");
+
+        threads.Data!.Threads.Should().BeEmpty();
+        threads.Data.NextThreadOffset.Should().BeNull();
+        threads.Summary.Should().Contain("offset 2147483647 is exhausted");
+        blocked.Data!.Threads.Should().BeEmpty();
+        blocked.Data.NextThreadOffset.Should().BeNull();
+        blocked.Summary.Should().Contain("offset 2147483647 is exhausted");
+        locks.Data!.Locks.Should().BeEmpty();
+        locks.Data.NextLockOffset.Should().BeNull();
+        locks.Summary.Should().Contain("offset 2147483647 is exhausted");
+        waiters.Data!.Locks.Should().ContainSingle()
+            .Which.WaitingManagedThreadIds.Should().BeEmpty();
+        waiters.Data.NextWaiterOffset.Should().BeNull();
+        waiters.Summary.Should().Contain("offset 2147483647 is exhausted");
+
+        var empty = snapshot with
+        {
+            Threads = Array.Empty<ManagedThread>(),
+            Locks = Array.Empty<MonitorLockState>(),
+        };
+        ThreadSnapshotQueryDispatcher.Dispatch(empty, Handle, "threads-summary", null, 50, 20, 1)
+            .Summary.Should().Contain("contains no captured threads").And.NotContain("exhausted");
+        ThreadSnapshotQueryDispatcher.Dispatch(empty, Handle, "lock-graph", null, 50, 20, 1)
+            .Summary.Should().Contain("contains no held or contended SyncBlocks").And.NotContain("exhausted");
+    }
+
+    [Fact]
     public void SessionViews_ListsNineViews()
     {
         ThreadSnapshotQueryDispatcher.SessionViews.Should().Equal(

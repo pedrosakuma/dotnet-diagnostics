@@ -49,6 +49,59 @@ public sealed class ThreadSnapshotQueryTests
     }
 
     [Fact]
+    public void QueryThreadSnapshot_PositionalUniqueStackArgumentsRemainCompatible()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = CreateSnapshot();
+        var handle = store.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10), evictWhenProcessExits: false);
+
+        var result = DiagnosticTools.QueryThreadSnapshot(
+            store,
+            handle.Id,
+            "unique-stacks",
+            null,
+            2,
+            2,
+            3);
+
+        result.Error.Should().BeNull();
+        result.Data!.UniqueStacks.Should().HaveCount(2);
+        result.Summary.Should().Contain("top 2 frame(s)");
+    }
+
+    [Fact]
+    public async Task QuerySnapshot_PositionalArgumentsRemainCompatibleWhenOffsetIsAppendOnly()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = CreateSnapshot();
+        var handle = store.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10), evictWhenProcessExits: false);
+
+        var result = await QuerySnapshotTool.QuerySnapshot(
+            store,
+            null!,
+            null!,
+            null!,
+            TestPrincipalAccessors.Root,
+            null!,
+            null!,
+            handle.Id,
+            "unique-stacks",
+            2,
+            "bytes",
+            null,
+            null,
+            false,
+            null,
+            2,
+            3);
+
+        result.Error.Should().BeNull();
+        var data = result.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
+        data.UniqueStacks.Should().HaveCount(2);
+        result.Summary.Should().Contain("top 2 frame(s)");
+    }
+
+    [Fact]
     public void QueryThreadSnapshot_Stack_IgnoresUniqueStackParameters()
     {
         var store = new MemoryDiagnosticHandleStore();

@@ -70,7 +70,11 @@ public static class ThreadSnapshotQueryDispatcher
             ThreadSnapshotProjection.QueryThreadLimit,
             ThreadSnapshotProjection.QueryFrameLimit,
             offset: offset);
-        var summary = $"Returning {page.Items.Count}/{page.TotalItems} decisive thread(s) at offset {offset} from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}); running/owner/deadlock evidence is ranked before generic waits and frames are capped at {ThreadSnapshotProjection.QueryFrameLimit} per thread. The handle retains all evidence.";
+        var summary = page.TotalItems == 0
+            ? $"Snapshot '{handle}' contains no captured threads."
+            : offset >= page.TotalItems
+                ? $"Thread page offset {offset} is exhausted for snapshot '{handle}'; the decisive thread set contains {page.TotalItems} item(s) and has no continuation."
+                : $"Returning {page.Items.Count}/{page.TotalItems} decisive thread(s) at offset {offset} from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}); running/owner/deadlock evidence is ranked before generic waits and frames are capped at {ThreadSnapshotProjection.QueryFrameLimit} per thread. The handle retains all evidence.";
         return DiagnosticResult.Ok(
             new ThreadSnapshotQueryResult(handle, "threads-summary", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
             {
@@ -143,8 +147,11 @@ public static class ThreadSnapshotQueryDispatcher
             }
 
             var selectedPage = ThreadSnapshotProjection.ProjectLock(selected, offset);
-            var selectedSummary =
-                $"Returning lock object 0x{selected.ObjectAddress:x} from snapshot '{handle}' with {selectedPage.Lock.WaitingManagedThreadIds.Count}/{selected.WaitingManagedThreadIds.Count} retained waiter id(s) at offset {offset}.";
+            var selectedSummary = selected.WaitingManagedThreadIds.Count == 0
+                ? $"Lock object 0x{selected.ObjectAddress:x} in snapshot '{handle}' has no retained waiter ids."
+                : offset >= selected.WaitingManagedThreadIds.Count
+                    ? $"Waiter page offset {offset} is exhausted for lock object 0x{selected.ObjectAddress:x} in snapshot '{handle}'; the lock has {selected.WaitingManagedThreadIds.Count} retained waiter id(s) and no continuation."
+                    : $"Returning lock object 0x{selected.ObjectAddress:x} from snapshot '{handle}' with {selectedPage.Lock.WaitingManagedThreadIds.Count}/{selected.WaitingManagedThreadIds.Count} retained waiter id(s) at offset {offset}.";
             return DiagnosticResult.Ok(
                 new ThreadSnapshotQueryResult(handle, "lock-graph", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
                 {
@@ -162,9 +169,11 @@ public static class ThreadSnapshotQueryDispatcher
             topN,
             ThreadSnapshotProjection.DetailLockLimit,
             offset);
-        var summary = page.Items.Count == 0
+        var summary = page.TotalItems == 0
             ? $"Snapshot '{handle}' contains no held or contended SyncBlocks."
-            : $"Returning {page.Items.Count}/{page.TotalItems} SyncBlock(s) at offset {offset} from snapshot '{handle}', bounded to the most contended first. Most contended on this page: object 0x{page.Items[0].ObjectAddress:x} ({page.Items[0].ObjectTypeFullName ?? "<unknown>"}) — {page.Items[0].WaitingThreadCount} waiter(s).";
+            : offset >= page.TotalItems
+                ? $"Lock page offset {offset} is exhausted for snapshot '{handle}'; the lock graph contains {page.TotalItems} SyncBlock(s) and has no continuation."
+                : $"Returning {page.Items.Count}/{page.TotalItems} SyncBlock(s) at offset {offset} from snapshot '{handle}', bounded to the most contended first. Most contended on this page: object 0x{page.Items[0].ObjectAddress:x} ({page.Items[0].ObjectTypeFullName ?? "<unknown>"}) — {page.Items[0].WaitingThreadCount} waiter(s).";
         return DiagnosticResult.Ok(
             new ThreadSnapshotQueryResult(handle, "lock-graph", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
             {
@@ -200,9 +209,13 @@ public static class ThreadSnapshotQueryDispatcher
             ThreadSnapshotProjection.QueryFrameLimit,
             blockedOnly: true,
             offset: offset);
-        var summary = page.UsedFallback
-            ? $"No blocked or lock-waiting candidates were captured in snapshot '{handle}'; returning {page.Items.Count} decisive/running thread(s) at offset {offset} instead, capped at {ThreadSnapshotProjection.QueryFrameLimit} frames each."
-            : $"Returning {page.Items.Count}/{page.TotalItems} blocked/waiting thread(s) at offset {offset} from snapshot '{handle}', prioritizing deadlock and lock-wait evidence; frames are capped at {ThreadSnapshotProjection.QueryFrameLimit} per thread.";
+        var summary = page.TotalItems == 0
+            ? $"Snapshot '{handle}' contains no captured threads, so no blocked/waiting candidates or fallback threads are available."
+            : offset >= page.TotalItems
+                ? $"Thread page offset {offset} is exhausted for snapshot '{handle}'; the {(page.UsedFallback ? "fallback decisive/running" : "blocked/waiting")} candidate set contains {page.TotalItems} item(s) and has no continuation."
+                : page.UsedFallback
+                    ? $"No blocked or lock-waiting candidates were captured in snapshot '{handle}'; returning {page.Items.Count} decisive/running thread(s) at offset {offset} instead, capped at {ThreadSnapshotProjection.QueryFrameLimit} frames each."
+                    : $"Returning {page.Items.Count}/{page.TotalItems} blocked/waiting thread(s) at offset {offset} from snapshot '{handle}', prioritizing deadlock and lock-wait evidence; frames are capped at {ThreadSnapshotProjection.QueryFrameLimit} per thread.";
         return DiagnosticResult.Ok(
             new ThreadSnapshotQueryResult(handle, "top-blocked", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
             {

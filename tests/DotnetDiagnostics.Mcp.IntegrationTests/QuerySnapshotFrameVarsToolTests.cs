@@ -233,13 +233,13 @@ public sealed class QuerySnapshotFrameVarsToolTests
         };
         var handle = store.Register(artifact.ProcessId, DiagnosticTools.ThreadSnapshotKind, artifact, TimeSpan.FromMinutes(10));
 
-        var first = await QuerySnapshotTool.QuerySnapshot(
+        var first = await QuerySnapshotTool.QuerySnapshotPaged(
             store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null),
-            TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
+            new SecurityOptions(), TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
             handle: handle.Id, view: "threads-summary", offset: 0);
-        var second = await QuerySnapshotTool.QuerySnapshot(
+        var second = await QuerySnapshotTool.QuerySnapshotPaged(
             store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null),
-            TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
+            new SecurityOptions(), TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
             handle: handle.Id, view: "threads-summary", offset: 8);
 
         var firstPage = first.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
@@ -253,9 +253,9 @@ public sealed class QuerySnapshotFrameVarsToolTests
             .Select(thread => thread.ManagedThreadId)
             .Should().BeEquivalentTo(Enumerable.Range(1, 13));
 
-        var lockPage = await QuerySnapshotTool.QuerySnapshot(
+        var lockPage = await QuerySnapshotTool.QuerySnapshotPaged(
             store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null),
-            TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
+            new SecurityOptions(), TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
             handle: handle.Id, view: "lock-graph", offset: 8, address: "0x30000");
         var selectedLock = lockPage.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
         selectedLock.Locks.Should().ContainSingle()

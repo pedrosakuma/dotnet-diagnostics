@@ -123,7 +123,7 @@ public sealed partial class QuerySnapshotTool
     [Description(
         "Drill into a prior collector's snapshot/sample by handle. The available views depend on the " +
         "handle's kind — choose one via the 'view' parameter.")]
-    public static async Task<DiagnosticResult<object>> QuerySnapshot(
+    public static async Task<DiagnosticResult<object>> QuerySnapshotPaged(
         IDiagnosticHandleStore handles,
         IDumpInspector inspector,
         SensitiveDataRedactor redactor,
@@ -135,7 +135,6 @@ public sealed partial class QuerySnapshotTool
         [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_sample(kind=\"cpu\"|\"off_cpu\"|\"allocation\"|\"native-alloc\"|\"method-params\"), or collect_events(kind=\"counters\"|\"exceptions\"|\"crash-guard\"|\"gc\"|\"datas\"|\"catalog\"|\"event_source\"|\"activities\"|\"logs\"|\"jit\"|\"threadpool\"|\"contention\"|\"db\"|\"kestrel\"|\"networking\"|\"requests\"|\"startup\")).")] string handle,
         [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff|growth. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|wait-chains|threadpool|resolve-address|frame-vars. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|exceptions|stack|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns|requests|longRunning. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
         [Description("Requested entries for ranked-list views. Omit for per-kind defaults (50 heap/thread/collection, 25 off-CPU). LLM projections remain hard-bounded: thread lists 8 rows, lock graph 12, retention paths 10; full evidence stays behind the handle. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
-        [Description("Zero-based offset for paged thread-list and lock-graph views. Use nextThreadOffset/nextLockOffset from the previous response. With thread lock-graph plus address, pages that lock's waiter IDs via nextWaiterOffset. Ignored by other views. Defaults to 0.")] int offset = 0,
         [Description("Ranking for ranked views. Heap view='top-types'/'growth': 'bytes' (default) or 'instances'. CPU-sample view='top-methods': 'exclusive' (self-time, default) or 'inclusive'.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
         [Description("Heap view='object'/'gcroot'/'objsize': managed object address. Thread view='lock-graph': exact lock object address whose retained waiter IDs should be paged; thread view='resolve-address': one or more native/instruction addresses (comma-separated) to classify into (module, rva, build-id) or an unmapped verdict. Decimal or 0x-prefixed hex.")] string? address = null,
@@ -158,6 +157,7 @@ public sealed partial class QuerySnapshotTool
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
+        [Description("Zero-based offset for paged thread-list and lock-graph views. Use nextThreadOffset/nextLockOffset from the previous response. With thread lock-graph plus address, pages that lock's waiter IDs via nextWaiterOffset. Ignored by other views. Defaults to 0.")] int offset = 0,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(handle))
@@ -236,6 +236,76 @@ public sealed partial class QuerySnapshotTool
 
         return await handler(context).ConfigureAwait(false);
     }
+
+    public static Task<DiagnosticResult<object>> QuerySnapshot(
+        IDiagnosticHandleStore handles,
+        IDumpInspector inspector,
+        SensitiveDataRedactor redactor,
+        SensitiveValueGate sensitiveGate,
+        SecurityOptions securityOptions,
+        IPrincipalAccessor principalAccessor,
+        INativeAddressResolver addressResolver,
+        IFrameVariableResolver frameVariableResolver,
+        string handle,
+        string? view = null,
+        int? topN = null,
+        string rankBy = "bytes",
+        string? typeFullName = null,
+        string? address = null,
+        bool includeSensitiveValues = false,
+        int? threadId = null,
+        int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
+        int minCount = 1,
+        int? stackRank = null,
+        string? rootMethodFilter = null,
+        string? providerFilter = null,
+        bool changesOnly = false,
+        int maxDepth = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth,
+        int maxNodes = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes,
+        string? baselineHandle = null,
+        string[]? comparisonHandles = null,
+        double minDeltaPct = 5.0,
+        string depth = "full",
+        string? mode = null,
+        double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
+        string? investigationHandleId = null,
+        LegacyDiagnosticsFlagDeprecation? deprecation = null,
+        CancellationToken cancellationToken = default)
+        => QuerySnapshotPaged(
+            handles,
+            inspector,
+            redactor,
+            sensitiveGate,
+            securityOptions,
+            principalAccessor,
+            addressResolver,
+            frameVariableResolver,
+            handle,
+            view,
+            topN,
+            rankBy,
+            typeFullName,
+            address,
+            includeSensitiveValues,
+            threadId,
+            framesToHash,
+            minCount,
+            stackRank,
+            rootMethodFilter,
+            providerFilter,
+            changesOnly,
+            maxDepth,
+            maxNodes,
+            baselineHandle,
+            comparisonHandles,
+            minDeltaPct,
+            depth,
+            mode,
+            hotPathThresholdPercent,
+            investigationHandleId,
+            deprecation,
+            offset: 0,
+            cancellationToken: cancellationToken);
 
 
     private static bool IsDiffView(string? view)
@@ -1031,7 +1101,6 @@ public sealed partial class QuerySnapshotTool
         string handle,
         string? view = null,
         int? topN = null,
-        int offset = 0,
         string rankBy = "bytes",
         string? typeFullName = null,
         string? address = null,
@@ -1054,7 +1123,7 @@ public sealed partial class QuerySnapshotTool
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         CancellationToken cancellationToken = default)
-        => QuerySnapshot(
+        => QuerySnapshotPaged(
             handles,
             inspector,
             redactor,
@@ -1066,7 +1135,6 @@ public sealed partial class QuerySnapshotTool
             handle,
             view,
             topN,
-            offset,
             rankBy,
             typeFullName,
             address,
@@ -1088,7 +1156,8 @@ public sealed partial class QuerySnapshotTool
             hotPathThresholdPercent,
             investigationHandleId,
             deprecation,
-            cancellationToken);
+            offset: 0,
+            cancellationToken: cancellationToken);
 
     // Derived from KindHandlers (QuerySnapshotTool.Dispatch.cs) so the two lists can never drift —
     // a kind registered for dispatch is automatically reflected in the "supported kinds" error text

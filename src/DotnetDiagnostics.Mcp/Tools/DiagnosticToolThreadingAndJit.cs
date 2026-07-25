@@ -5,7 +5,6 @@ using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.JitCapture;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
-using DotnetDiagnostics.Core.Signals;
 using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Mcp.Security;
@@ -30,7 +29,7 @@ internal static class DiagnosticToolThreadingAndJit
         [Description("Include runtime frames (PInvoke trampolines, etc.) without an associated managed method. Off by default.")] bool includeRuntimeFrames = false,
         [Description("Include pure native frames where ClrMD cannot resolve a method. Off by default.")] bool includeNativeFrames = false,
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' returns at most 6 decisive threads with 6 frames each and no lock graph. 'detail'/'raw' return at most 8 decisive threads with 7 frames each plus the 12 most-contended locks. Running/owner/deadlock evidence ranks before generic waits. The full snapshot is always retained behind the issued handle.")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' returns at most 6 decisive threads with 6 frames each and no lock graph. 'detail'/'raw' return at most 8 decisive threads with 7 frames each plus 12 locks with at most 8 waiter ids per lock. Running/owner/deadlock evidence ranks before generic waits. Continue through the retained capture with query_snapshot offsets and exact lock-address waiter paging.")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
@@ -82,8 +81,6 @@ internal static class DiagnosticToolThreadingAndJit
             var origin = snapshot.Origin.ToString().ToLowerInvariant();
             var blocked = snapshot.Threads.Count(t => t.IsLikelyBlocked);
             var contended = snapshot.Locks.Count(l => l.IsContended);
-            var signals = ThreadWaitSignals.Detect(snapshot, handle.Id);
-
             ThreadSnapshotQueryResult summaryView;
             string summary;
             if (depth == SamplingDepth.Summary)
@@ -151,25 +148,20 @@ internal static class DiagnosticToolThreadingAndJit
                 summary += $" Caveats: {string.Join(" ", snapshot.Warnings.Take(3))}";
             }
 
-            var deadlocks = ThreadDeadlockDetector.Detect(snapshot, handle.Id, 1);
-            var hint = deadlocks.Count > 0
+            var hint = contended > 0
                 ? new NextActionHint("query_snapshot",
-                    "Confirm the detected wait-for cycle and its lock chain.",
-                    new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "deadlocks" })
-                : contended > 0
-                    ? new NextActionHint("query_snapshot",
-                        "Correlate the contended locks into ranked waiter-to-owner chains.",
-                        new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "wait-chains" })
+                "Correlate the contended locks into ranked waiter-to-owner chains.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "wait-chains" })
                 : blocked > 0
-                    ? new NextActionHint("query_snapshot",
-                        "Classify whether the blocked-looking stacks are async stalls or ordinary parked workers.",
-                        new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "async-stalls" })
-                    : null;
+                ? new NextActionHint("query_snapshot",
+                    "Classify whether the blocked-looking stacks are async stalls or ordinary parked workers.",
+                    new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "async-stalls" })
+                : null;
 
             var result = hint is null
                 ? DiagnosticResult.Ok(summaryView, summary)
                 : DiagnosticResult.Ok(summaryView, summary, hint);
-            return WithContext(result with { Signals = signals.Count > 0 ? signals : null }, liveCtx);
+            return WithContext(result, liveCtx);
         }, cancellationToken, hasDump
             ? null
             : new Dictionary<string, object?>
@@ -270,10 +262,10 @@ internal static class DiagnosticToolThreadingAndJit
         [Description("Which slice to return: 'threads-summary', 'stack', 'lock-graph', 'deadlocks', 'top-blocked', 'unique-stacks', 'async-stalls', 'wait-chains' or 'threadpool'.")] string view = "top-blocked",
         [Description("For view='stack': thread id key to return frames for. CoreCLR snapshots use ManagedThreadId; linux-native-stack snapshots use OSThreadId (TID). Ignored by other views.")] int? threadId = null,
         [Description("Requested entries for ranked views. Thread list projections are hard-capped at 8 rows × 8 frames and lock-graph at 12 rows; deadlocks/unique-stacks retain their existing topN behavior. Defaults to 50.")] int topN = 50,
-        [Description("Zero-based offset for paged thread-list and lock-graph views. Ignored by other views. Defaults to 0.")] int offset = 0,
         [Description("For view='unique-stacks': number of top frames folded into the signature hash. Defaults to 20. Ignored by other views.")] int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
         [Description("For view='unique-stacks': drop groups with fewer than this many threads. Defaults to 1. Ignored by other views.")] int minCount = 1,
-        [Description("For view='lock-graph': exact lock object address whose retained waiter IDs should be paged using offset. Decimal or 0x-prefixed hex.")] string? lockAddress = null)
+        [Description("For view='lock-graph': exact lock object address whose retained waiter IDs should be paged using offset. Decimal or 0x-prefixed hex.")] string? lockAddress = null,
+        [Description("Zero-based offset for paged thread-list and lock-graph views. Ignored by other views. Defaults to 0.")] int offset = 0)
     {
         if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<ThreadSnapshotQueryResult>(nameof(handle), "is required");
         if (topN < 1) return InvalidArg<ThreadSnapshotQueryResult>(nameof(topN), "must be >= 1");

@@ -72,7 +72,13 @@ public sealed class ThreadOwnerOverlapProvider : ISignalProvider<ThreadWaitSigna
             Buckets: buckets,
             NextAction: new NextActionHint(
                 "query_snapshot",
-                "Inspect the lock graph for the overlapping owner thread's full waiter list.",
-                new Dictionary<string, object?> { ["handle"] = context.HandleId, ["view"] = "lock-graph" }));
+                "Inspect the overlapping owner's lock and first bounded waiter page; continue with nextWaiterOffset when present.",
+                new Dictionary<string, object?>
+                {
+                    ["handle"] = context.HandleId,
+                    ["view"] = "lock-graph",
+                    ["address"] = $"0x{top1.ObjectAddress:x}",
+                    ["offset"] = 0,
+                }));
     }
 }

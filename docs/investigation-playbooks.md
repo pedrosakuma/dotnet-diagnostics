@@ -443,7 +443,7 @@ client-induced.
    - app code near the top → you already have the first suspect method
    - `Task.Delay`, timers, waits, or `Monitor.Enter` → likely async hang / lock contention
    - framework I/O (`Socket`, `SslStream`, `HttpClient`) → pivot to `collect_events(kind="event_source", providerName="System.Net.Http")`
-4. If the single-thread view is not enough, escalate to `collect_thread_snapshot` for the full thread + lock graph while the same request is still hanging.
+4. If the single-thread view is not enough, escalate to `collect_thread_snapshot`, then page its retained thread + lock evidence while the same request is still hanging.
 5. Reproduce locally with `samples/BadCodeSample`'s `/slow-hang?seconds=N` fixture.
 
 ## 4c. "This looks like a parked async continuation"

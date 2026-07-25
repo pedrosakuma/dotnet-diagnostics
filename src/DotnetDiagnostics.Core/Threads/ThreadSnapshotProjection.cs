@@ -32,6 +32,17 @@ public static class ThreadSnapshotProjection
         var totalItems = usedFallback || !blockedOnly
             ? snapshot.Threads.Count
             : blockedCandidateCount;
+        if (offset >= totalItems)
+        {
+            return new BoundedProjectionPage<ManagedThread>(
+                Array.Empty<ManagedThread>(),
+                totalItems,
+                offset,
+                NextOffset: null)
+            {
+                UsedFallback = usedFallback,
+            };
+        }
         var limit = Math.Min(requestedCount, hardThreadLimit);
         var items = SelectThreadWindow(
             snapshot.Threads,
@@ -55,6 +66,14 @@ public static class ThreadSnapshotProjection
         int offset = 0)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+        if (offset >= snapshot.Locks.Count)
+        {
+            return new BoundedProjectionPage<MonitorLockState>(
+                Array.Empty<MonitorLockState>(),
+                snapshot.Locks.Count,
+                offset,
+                NextOffset: null);
+        }
         var limit = Math.Min(requestedCount, hardLimit);
         var items = SelectLockWindow(snapshot.Locks, offset, limit);
         int? nextOffset = offset + items.Length < snapshot.Locks.Count
@@ -67,6 +86,18 @@ public static class ThreadSnapshotProjection
     {
         ArgumentNullException.ThrowIfNull(lockState);
         ArgumentOutOfRangeException.ThrowIfNegative(waiterOffset);
+        if (waiterOffset >= lockState.WaitingManagedThreadIds.Count)
+        {
+            return new ProjectedLockWaiterPage(
+                lockState with
+                {
+                    WaitingManagedThreadIds = Array.Empty<int>(),
+                    TotalWaitingManagedThreadIds = lockState.WaitingManagedThreadIds.Count,
+                    OmittedWaitingManagedThreadIds = lockState.WaitingManagedThreadIds.Count,
+                },
+                waiterOffset,
+                NextWaiterOffset: null);
+        }
         var count = Math.Min(
             LockWaiterIdLimit,
             Math.Max(0, lockState.WaitingManagedThreadIds.Count - waiterOffset));

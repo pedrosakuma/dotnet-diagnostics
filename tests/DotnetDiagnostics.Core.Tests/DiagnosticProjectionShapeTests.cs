@@ -92,6 +92,57 @@ public sealed class DiagnosticProjectionShapeTests
     }
 
     [Fact]
+    public void ThreadSnapshot_ExhaustedOffsetsShortCircuitSelectionWork()
+    {
+        var source = LargePagingSnapshot(threadCount: 20_000, lockCount: 10_000);
+        var threads = new CountingReadOnlyList<ManagedThread>(source.Threads);
+        var blockedThreads = new CountingReadOnlyList<ManagedThread>(source.Threads);
+        var locks = new CountingReadOnlyList<MonitorLockState>(source.Locks);
+        var waiters = new CountingReadOnlyList<int>(source.Locks[0].WaitingManagedThreadIds);
+        var firstLock = source.Locks[0] with { WaitingManagedThreadIds = waiters };
+        var lockItems = source.Locks.ToArray();
+        lockItems[0] = firstLock;
+        locks = new CountingReadOnlyList<MonitorLockState>(lockItems);
+        var snapshot = source with { Threads = threads, Locks = locks };
+        var blockedSnapshot = source with { Threads = blockedThreads, Locks = locks };
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var threadPage = ThreadSnapshotProjection.ProjectThreads(
+            snapshot,
+            requestedCount: 50,
+            hardThreadLimit: ThreadSnapshotProjection.QueryThreadLimit,
+            frameLimit: ThreadSnapshotProjection.QueryFrameLimit,
+            offset: int.MaxValue);
+        var lockPage = ThreadSnapshotProjection.ProjectLocks(
+            snapshot,
+            requestedCount: 50,
+            hardLimit: ThreadSnapshotProjection.DetailLockLimit,
+            offset: int.MaxValue);
+        var blockedPage = ThreadSnapshotProjection.ProjectThreads(
+            blockedSnapshot,
+            requestedCount: 50,
+            hardThreadLimit: ThreadSnapshotProjection.QueryThreadLimit,
+            frameLimit: ThreadSnapshotProjection.QueryFrameLimit,
+            blockedOnly: true,
+            offset: int.MaxValue);
+        var waiterPage = ThreadSnapshotProjection.ProjectLock(firstLock, int.MaxValue);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        threadPage.Items.Should().BeEmpty();
+        blockedPage.Items.Should().BeEmpty();
+        lockPage.Items.Should().BeEmpty();
+        waiterPage.Lock.WaitingManagedThreadIds.Should().BeEmpty();
+        threads.IndexReadCount.Should().Be(0);
+        threads.EnumerationMoveCount.Should().Be(0);
+        blockedThreads.IndexReadCount.Should().Be(0);
+        blockedThreads.EnumerationMoveCount.Should().Be(source.Threads.Count);
+        locks.IndexReadCount.Should().Be(0);
+        locks.EnumerationMoveCount.Should().Be(0);
+        waiters.IndexReadCount.Should().Be(0);
+        allocated.Should().BeLessThan(64_000);
+    }
+
+    [Fact]
     public void CpuCallTree_BroadRequest_IsBoundedAndRanksRunningBranchFirst()
     {
         var artifact = BroadCpuTrace();
@@ -508,5 +559,34 @@ public sealed class DiagnosticProjectionShapeTests
         {
             RetentionPaths = paths,
         };
+    }
+
+    private sealed class CountingReadOnlyList<T>(IReadOnlyList<T> items) : IReadOnlyList<T>
+    {
+        public int Count => items.Count;
+
+        public int IndexReadCount { get; private set; }
+
+        public int EnumerationMoveCount { get; private set; }
+
+        public T this[int index]
+        {
+            get
+            {
+                IndexReadCount++;
+                return items[index];
+            }
+        }
+
+        public IEnumerator<T> GetEnumerator()
+        {
+            foreach (var item in items)
+            {
+                EnumerationMoveCount++;
+                yield return item;
+            }
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 }

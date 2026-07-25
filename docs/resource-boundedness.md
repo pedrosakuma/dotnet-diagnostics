@@ -87,6 +87,10 @@ Thread and lock continuation may scan the complete retained capture, but project
 and derived retained state remain O(page size). Stable total-order keys, including original
 capture position as the final tie-breaker, make repeated `offset` pages deterministic without
 materializing full candidate arrays, waiter sets, dictionaries, or sorts.
+The default collection response also defers thread-wait signal grouping and deadlock-graph
+construction; exact lock/deadlock evidence remains available through explicit handle queries.
+Offsets at or beyond the applicable total short-circuit before ranking selection, including
+`int.MaxValue`, and return an exhausted-page message distinct from a genuinely empty capture.
 
 Hints also avoid suggesting evidence already present in the current payload: an untruncated call
 tree has no redundant call-tree hint, and heap-growth output with inline retention paths does not

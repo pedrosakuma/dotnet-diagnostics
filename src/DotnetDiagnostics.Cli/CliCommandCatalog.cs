@@ -330,16 +330,18 @@ query options:
   for inline evidence, or run both the originating command and query inside one 'session' REPL.
 
   Thread-snapshot views (session only):
-    threads-summary  List all threads with state and top frame.
+    threads-summary  Up to 8 decisive threads per page, with state and up to 8 frames.
     stack            Full managed stack for --thread-id <ManagedThreadId>.
-    lock-graph       Monitor lock ownership graph.
+    lock-graph       Up to 12 monitor locks per page, or 8 waiter ids for --address.
     deadlocks        Deadlock cycles.
-    top-blocked      Threads most likely blocked (default).
+    top-blocked      Up to 8 blocked/waiting candidates per page (default).
     unique-stacks    Deduplicated stacks by hash.
     async-stalls     Async continuation stalls.
     wait-chains      Thread wait-chain analysis.
     threadpool       Thread-pool queue/worker statistics.
     frame-vars       Object-typed locals/parameters on each frame via ClrMD re-open; requires --thread-id.
+  Continue bounded pages with --offset using nextThreadOffset, nextLockOffset, or nextWaiterOffset
+  from the prior response.
 """,
             string.Empty,
             [

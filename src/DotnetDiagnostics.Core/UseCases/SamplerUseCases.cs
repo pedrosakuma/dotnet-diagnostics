@@ -473,16 +473,14 @@ public static class SamplerUseCases
             var origin = snapshot.Origin.ToString().ToLowerInvariant();
             var blocked = snapshot.Threads.Count(t => t.IsLikelyBlocked);
             var contended = snapshot.Locks.Count(l => l.IsContended);
-            var signals = ThreadWaitSignals.Detect(snapshot, handle.Id);
-
             ThreadSnapshotQueryResult summaryView;
             string summary;
             if (depth == SamplingDepth.Summary)
             {
                 var topBlocked = ThreadSnapshotProjection.ProjectThreads(
                     snapshot,
-                    requestedCount: 3,
-                    hardThreadLimit: 3,
+                    requestedCount: ThreadSnapshotProjection.SummaryThreadLimit,
+                    hardThreadLimit: ThreadSnapshotProjection.SummaryThreadLimit,
                     frameLimit: ThreadSnapshotProjection.SummaryFrameLimit,
                     blockedOnly: true);
                 summaryView = new ThreadSnapshotQueryResult(handle.Id, "top-blocked", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
@@ -560,7 +558,7 @@ public static class SamplerUseCases
             var result = hint is null
                 ? DiagnosticResult.Ok(summaryView, summary)
                 : DiagnosticResult.Ok(summaryView, summary, hint);
-            return WithContext(result with { Signals = signals.Count > 0 ? signals : null }, liveCtx);
+            return WithContext(result, liveCtx);
         }, cancellationToken, retryArguments: hasDump
             ? null
             : new Dictionary<string, object?>

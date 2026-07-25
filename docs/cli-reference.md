@@ -249,7 +249,7 @@ The standalone CLI now exposes the same **Core-only** sampler families the MCP s
 | `allocation` | Managed allocation samples (`GCAllocationTick`) with top types by bytes/count and call-tree drilldown. | `--top` | top types by bytes/count, plus `signals[]` such as `allocations.by-type` / `allocations.by-site` |
 | `off_cpu` / `off-cpu` | Off-CPU stacks (where threads wait / block) via perf or ETW backend. | `--top`, `--symbol-path` | top blocking stacks ranked by off-CPU time |
 | `native-alloc` | Native allocator-call hotspots (`malloc` / `calloc` / `realloc`) via perf/ETW backend. Counts are sampled **calls**, not bytes. | `--top`, `--native-alloc-sample-period` | top allocator stacks + shared call-tree handle |
-| `thread-snapshot` | Point-in-time managed threads + lock graph from a live pid or dump. | `--dump-file`, `--max-frames-per-thread`, `--include-runtime-frames`, `--include-native-frames`, `--symbol-path` | top blocked threads inline (`summary`) or a wider thread/lock slice (`detail`/`raw`), plus `signals[]` such as `threads.by-wait-state` |
+| `thread-snapshot` | Point-in-time managed threads + lock graph from a live pid or dump. | `--dump-file`, `--max-frames-per-thread`, `--include-runtime-frames`, `--include-native-frames`, `--symbol-path` | decisive threads inline (`summary`) or bounded thread/lock pages (`detail`/`raw`); continue through the session `query` command |
 
 Examples:
 
@@ -441,12 +441,12 @@ export-summary --handle h-abc123 --out ./cpu-summary.json
 
 ### Signal-grouping layer
 
-`collect --kind counters`, `exceptions`, `gc`, `sweep`, `cpu`, `allocation` and `thread-snapshot` embed a top-level `signals[]` array in
+`collect --kind counters`, `exceptions`, `gc`, `sweep`, `cpu`, and `allocation` embed a top-level `signals[]` array in
 the JSON envelope (`--json` or `--depth detail`/`raw`) whenever something is salient — the same
 diagnosis-agnostic "vector" the MCP server documents in
 [tool-reference.md](./tool-reference.md#signal-grouping-layer): a stable `signal` id (e.g.
-`exceptions.by-type`, `gc.gen2-share`, `counters.trend`, `cpu.self-time.method`, `allocations.by-type`,
-`threads.by-wait-state`, `correlation.co-occurrence`), a one-line
+`exceptions.by-type`, `gc.gen2-share`, `counters.trend`, `cpu.self-time.method`,
+`allocations.by-type`, `correlation.co-occurrence`), a one-line
 `summary`, a `salience` in `[0,1]`, and `buckets[]` referencing a handle. It groups and correlates;
 it never names a root cause or a fix. Omitted from the wire when nothing stands out.
 
@@ -683,8 +683,8 @@ inside a `session`) expose the call-stack / blocking views (`threads-summary`, `
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
-| `threads-summary` | decisive thread summaries, eight per bounded page | `--offset <n>` to continue at `nextThreadOffset` |
-| `top-blocked` (default) | blocked threads and real lock waiters, eight per bounded page | `--offset <n>` to continue at `nextThreadOffset` |
+| `threads-summary` | decisive thread summaries, eight per bounded page with up to eight frames each | `--offset <n>` to continue at `nextThreadOffset` |
+| `top-blocked` (default) | blocked threads and real lock waiters, eight per bounded page with up to eight frames each | `--offset <n>` to continue at `nextThreadOffset` |
 | `lock-graph` | contended locks, twelve per bounded page; or one lock's waiter IDs | `--offset <n>` to continue at `nextLockOffset`; add `--address <decimal\|0x-hex>` and use `nextWaiterOffset` to page one lock's waiters |
 | `wait-chains` | who-waits-on-whom chains toward the blocking root | — |
 | `async-stalls` | stalled `async` state machines and their await points | — |
@@ -694,7 +694,9 @@ inside a `session`) expose the call-stack / blocking views (`threads-summary`, `
 `frame-vars` requires `--thread-id` to pick the thread whose frame variables to resolve; the thread must
 be present in the captured snapshot.
 MCP and CLI session queries use the same stable ordering and offsets, so a continuation value can be
-passed unchanged to the next `query` command.
+passed unchanged to the next `query` command. An offset at or beyond the applicable total returns an
+empty exhausted page with no continuation; it is reported differently from a snapshot with no threads
+or locks.
 
 For every ranked/list query view, `--top N` is the common row/group cap. `--top-types N` remains a
 backward-compatible query alias; when both are supplied, `--top` wins. Views whose shape is controlled
