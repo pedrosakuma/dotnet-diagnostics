@@ -45,7 +45,6 @@ public sealed partial class CollectEventsTool
 
     private sealed class CollectEventsKindHandler
     {
-        public required string RequiredScope { get; init; }
         public required Func<CollectEventsDispatchContext, int> DefaultDurationSeconds { get; init; }
         public required CollectEventsKindExecutor ExecuteAsync { get; init; }
     }
@@ -123,26 +122,26 @@ public sealed partial class CollectEventsTool
     private static readonly Dictionary<string, CollectEventsKindHandler> KindHandlers =
         new Dictionary<string, CollectEventsKindHandler>(StringComparer.Ordinal)
         {
-            ["counters"] = CreateHandler("read-counters", _ => 5, RunCountersAsync),
-            ["exceptions"] = CreateHandler("eventpipe", _ => 10, RunExceptionsAsync),
-            ["crash-guard"] = CreateHandler("eventpipe", _ => 10, RunCrashGuardAsync),
-            ["gc"] = CreateHandler("eventpipe", _ => 10, RunGcAsync),
-            ["datas"] = CreateHandler("eventpipe", _ => 15, RunGcDatasAsync),
-            ["catalog"] = CreateHandler("eventpipe", _ => 10, RunEventCatalogAsync),
-            ["event_source"] = CreateHandler("eventpipe", _ => 10, RunEventSourceAsync),
-            ["activities"] = CreateHandler("eventpipe", _ => 10, RunActivitiesAsync),
-            ["logs"] = CreateHandler("eventpipe", _ => 10, RunLogsAsync),
-            ["jit"] = CreateHandler("eventpipe", _ => 10, RunJitAsync),
-            ["threadpool"] = CreateHandler("eventpipe", _ => 10, RunThreadPoolAsync),
-            ["contention"] = CreateHandler("eventpipe", _ => 10, RunContentionAsync),
-            ["db"] = CreateHandler("eventpipe", _ => 10, RunDbAsync),
-            ["kestrel"] = CreateHandler("eventpipe", _ => 10, RunKestrelAsync),
-            ["networking"] = CreateHandler("eventpipe", _ => 10, RunNetworkingAsync),
-            ["requests"] = CreateHandler("eventpipe", _ => 10, RunRequestsAsync),
-            ["startup"] = CreateHandler("eventpipe", _ => 10, RunStartupAsync),
-            ["sweep"] = CreateHandler("eventpipe", _ => SweepUseCase.MinimumDurationSeconds, RunSweepAsync),
-            ["distributed_trace"] = CreateHandler("eventpipe", _ => 10, RunDistributedTraceKindAsync),
-            ["replica_counters"] = CreateHandler("read-counters", _ => 5, RunReplicaCountersKindAsync),
+            ["counters"] = CreateHandler(_ => 5, RunCountersAsync),
+            ["exceptions"] = CreateHandler(_ => 10, RunExceptionsAsync),
+            ["crash-guard"] = CreateHandler(_ => 10, RunCrashGuardAsync),
+            ["gc"] = CreateHandler(_ => 10, RunGcAsync),
+            ["datas"] = CreateHandler(_ => 15, RunGcDatasAsync),
+            ["catalog"] = CreateHandler(_ => 10, RunEventCatalogAsync),
+            ["event_source"] = CreateHandler(_ => 10, RunEventSourceAsync),
+            ["activities"] = CreateHandler(_ => 10, RunActivitiesAsync),
+            ["logs"] = CreateHandler(_ => 10, RunLogsAsync),
+            ["jit"] = CreateHandler(_ => 10, RunJitAsync),
+            ["threadpool"] = CreateHandler(_ => 10, RunThreadPoolAsync),
+            ["contention"] = CreateHandler(_ => 10, RunContentionAsync),
+            ["db"] = CreateHandler(_ => 10, RunDbAsync),
+            ["kestrel"] = CreateHandler(_ => 10, RunKestrelAsync),
+            ["networking"] = CreateHandler(_ => 10, RunNetworkingAsync),
+            ["requests"] = CreateHandler(_ => 10, RunRequestsAsync),
+            ["startup"] = CreateHandler(_ => 10, RunStartupAsync),
+            ["sweep"] = CreateHandler(_ => SweepUseCase.MinimumDurationSeconds, RunSweepAsync),
+            ["distributed_trace"] = CreateHandler(_ => 10, RunDistributedTraceKindAsync),
+            ["replica_counters"] = CreateHandler(_ => 5, RunReplicaCountersKindAsync),
         };
 
     /// <summary>
@@ -151,15 +150,13 @@ public sealed partial class CollectEventsTool
     /// kind→scope table and risking drift. Returns <c>null</c> for an unknown kind.
     /// </summary>
     internal static string? GetRequiredScope(string kind)
-        => KindHandlers.TryGetValue(kind, out var handler) ? handler.RequiredScope : null;
+        => ToolInvocationScopeResolver.GetCollectEventsKindScope(kind);
 
     private static CollectEventsKindHandler CreateHandler(
-        string requiredScope,
         Func<CollectEventsDispatchContext, int> defaultDuration,
         CollectEventsKindExecutor executeAsync)
         => new()
         {
-            RequiredScope = requiredScope,
             DefaultDurationSeconds = defaultDuration,
             ExecuteAsync = executeAsync,
         };

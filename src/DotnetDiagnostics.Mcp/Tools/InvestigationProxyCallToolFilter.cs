@@ -173,7 +173,8 @@ internal static class InvestigationProxyCallToolFilter
         var authorization = scopeRegistry.Authorize(
             toolName,
             sanitizedRequest?.Arguments,
-            principalAccessor.Current);
+            principalAccessor.Current,
+            proxyInvocation: true);
         if (!authorization.IsAllowed)
         {
             loggerAccessor()?.LogWarning(

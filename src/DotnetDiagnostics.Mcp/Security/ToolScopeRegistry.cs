@@ -1,7 +1,6 @@
 using System.Collections.Immutable;
 using System.Reflection;
 using System.Text.Json;
-using DotnetDiagnostics.Mcp.Tools;
 using ModelContextProtocol.Server;
 
 namespace DotnetDiagnostics.Mcp.Security;
@@ -24,8 +23,6 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// </remarks>
 internal sealed class ToolScopeRegistry
 {
-    private const string SensitiveParameterReadScope = "sensitive-parameter-read";
-
     /// <summary>Resolved requirement for a tool. Exactly one of <see cref="All"/> /
     /// <see cref="Any"/> is non-empty.</summary>
     /// <param name="All">Scopes the principal must hold every one of (AND semantics).</param>
@@ -43,10 +40,11 @@ internal sealed class ToolScopeRegistry
         string MissingScope,
         bool MissingExplicitScope,
         Requirement Primary,
+        ImmutableArray<string> AdditionalScopes,
         ImmutableArray<string> ModifierScopes)
     {
         public ImmutableArray<string> RequiredScopes =>
-            Primary.Scopes.AddRange(ModifierScopes);
+            Primary.Scopes.AddRange(AdditionalScopes).AddRange(ModifierScopes).Distinct().ToImmutableArray();
     }
 
     private readonly ImmutableDictionary<string, Requirement> _byToolName;
@@ -67,14 +65,16 @@ internal sealed class ToolScopeRegistry
     public IReadOnlyCollection<string> KnownToolNames => _byToolName.Keys.ToArray();
 
     /// <summary>
-    /// Authorizes one concrete invocation. Primary scopes come from the tool attributes;
-    /// unconditional argument-dependent literal modifiers are resolved here so local dispatch
-    /// and both orchestrator proxy paths share one decision point.
+    /// Authorizes one concrete invocation. Static primary scopes come from the tool attributes;
+    /// argument-dependent primary and literal modifier scopes come from
+    /// <see cref="ToolInvocationScopeResolver"/> so local dispatch and both orchestrator proxy
+    /// paths share one decision point.
     /// </summary>
     public AuthorizationResult Authorize(
         string toolName,
         IDictionary<string, JsonElement>? arguments,
-        BearerPrincipal? principal)
+        BearerPrincipal? principal,
+        bool proxyInvocation = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
 
@@ -86,11 +86,12 @@ internal sealed class ToolScopeRegistry
                 "<unknown>",
                 false,
                 default,
+                ImmutableArray<string>.Empty,
                 ImmutableArray<string>.Empty);
         }
 
         var primaryDecision = ToolScopeAuthorizationFilter.Authorize(primary.Value, principal);
-        var modifiers = ResolveModifierScopes(toolName, arguments);
+        var invocation = ToolInvocationScopeResolver.Resolve(toolName, arguments, proxyInvocation);
         if (!primaryDecision.IsAllowed)
         {
             return new AuthorizationResult(
@@ -98,10 +99,25 @@ internal sealed class ToolScopeRegistry
                 primaryDecision.MissingScope,
                 false,
                 primary.Value,
-                modifiers);
+                invocation.AdditionalScopes,
+                invocation.ExplicitModifierScopes);
         }
 
-        foreach (var modifier in modifiers)
+        foreach (var scope in invocation.AdditionalScopes)
+        {
+            if (principal?.HasScope(scope) != true)
+            {
+                return new AuthorizationResult(
+                    false,
+                    scope,
+                    false,
+                    primary.Value,
+                    invocation.AdditionalScopes,
+                    invocation.ExplicitModifierScopes);
+            }
+        }
+
+        foreach (var modifier in invocation.ExplicitModifierScopes)
         {
             if (principal?.HasExplicitScope(modifier) != true)
             {
@@ -110,7 +126,8 @@ internal sealed class ToolScopeRegistry
                     modifier,
                     true,
                     primary.Value,
-                    modifiers);
+                    invocation.AdditionalScopes,
+                    invocation.ExplicitModifierScopes);
             }
         }
 
@@ -119,7 +136,8 @@ internal sealed class ToolScopeRegistry
             string.Empty,
             false,
             primary.Value,
-            modifiers);
+            invocation.AdditionalScopes,
+            invocation.ExplicitModifierScopes);
     }
 
     /// <summary>Scans the supplied tool surface types for <c>[McpServerTool]</c> methods
@@ -190,33 +208,5 @@ internal sealed class ToolScopeRegistry
 
         return new ToolScopeRegistry(builder.ToImmutable());
     }
-
-    private static ImmutableArray<string> ResolveModifierScopes(
-        string toolName,
-        IDictionary<string, JsonElement>? arguments)
-    {
-        if (string.Equals(toolName, CollectSampleTool.ToolName, StringComparison.Ordinal) &&
-            HasStringArgument(arguments, "kind", "method-params"))
-        {
-            return ImmutableArray.Create(SensitiveParameterReadScope);
-        }
-
-        if (string.Equals(toolName, GetBytesTool.ToolName, StringComparison.Ordinal) &&
-            HasStringArgument(arguments, "kind", GetBytesTool.KindDelete))
-        {
-            return ImmutableArray.Create(GetBytesTool.DeleteArtifactScope);
-        }
-
-        return ImmutableArray<string>.Empty;
-    }
-
-    private static bool HasStringArgument(
-        IDictionary<string, JsonElement>? arguments,
-        string name,
-        string expected)
-        => arguments is not null &&
-           arguments.TryGetValue(name, out var value) &&
-           value.ValueKind == JsonValueKind.String &&
-           string.Equals(value.GetString()?.Trim(), expected, StringComparison.Ordinal);
 
 }

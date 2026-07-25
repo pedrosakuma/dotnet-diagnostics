@@ -131,14 +131,10 @@ public sealed class ToolScopeIntegrationTests
     }
 
     [Fact]
-    public async Task CollectBatch_Entry_Missing_Scope_Is_Rejected_By_Internal_PreAuth_Before_Any_Session_Opens()
+    public async Task CollectBatch_Entry_Missing_Scope_Is_Rejected_By_Authoritative_Filter_Before_Any_Session_Opens()
     {
-        // collect_batch's own outer gate is RequireAnyScope("read-counters", "eventpipe"), so a
-        // read-counters-only token passes that union gate and reaches the method body. But a
-        // collect_sample(kind="cpu") entry needs 'eventpipe', which this token doesn't have — the
-        // per-entry pre-authorization loop (issue #665 Part C) must reject the whole call with a
-        // structured InsufficientScope error before any session opens, mirroring how
-        // CollectEventsTool re-checks scope per kind internally.
+        // collect_batch's static gate is a union, but the authoritative argument resolver expands
+        // every nested entry before the tool body runs.
         await using var factory = CreateFactory(
             ("counters-only", "counters-secret-batch", new[] { "read-counters" }));
         await using var client = await ConnectWithTokenAsync(factory, "counters-secret-batch");
@@ -155,10 +151,36 @@ public sealed class ToolScopeIntegrationTests
             },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().BeTrue();
-        var text = result.Content.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
-        text.Should().Contain("\"kind\":\"InsufficientScope\"");
-        text.Should().Contain("eventpipe");
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("argument_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("eventpipe");
+    }
+
+    [Fact]
+    public async Task CollectEvents_GatedDump_IsDeniedLocally_WithoutDumpWrite()
+    {
+        await using var factory = CreateFactory(
+            ("counters-attach", "counters-secret-gated-dump",
+                new[] { "orchestrator-attach", "read-counters" }));
+        await using var client = await ConnectWithTokenAsync(factory, "counters-secret-gated-dump");
+
+        var result = await client.CallToolAsync(
+            "collect_events",
+            arguments: new Dictionary<string, object?>
+            {
+                ["kind"] = "counters",
+                ["triggerWhen"] = "always-trigger",
+                ["captureKind"] = "dump",
+                ["confirmDump"] = true,
+            },
+            cancellationToken: CancellationToken.None);
+
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("tool").GetString().Should().Be("collect_events");
+        envelope.GetProperty("argument_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("dump-write");
+        envelope.GetProperty("principal_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().NotContain("dump-write");
     }
 
     [Fact]
@@ -193,10 +215,9 @@ public sealed class ToolScopeIntegrationTests
             arguments: new Dictionary<string, object?> { ["view"] = "requests-now", ["processId"] = -1 },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().BeTrue();
-        var text = result.Content.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
-        text.Should().Contain("\"kind\":\"Forbidden\"");
-        text.Should().Contain("ptrace");
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("argument_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("ptrace");
     }
 
     [Fact]

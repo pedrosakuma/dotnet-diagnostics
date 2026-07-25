@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.Json;
 using DotnetDiagnostics.Mcp.Security;
 using FluentAssertions;
 using ModelContextProtocol.Server;
@@ -141,6 +142,176 @@ public sealed class ToolScopeAttributesTests
                 ImmutableHashSet.Create("eventpipe", "sensitive-parameter-read")));
         allowed.IsAllowed.Should().BeTrue();
     }
+
+    [Theory]
+    [MemberData(nameof(ArgumentAwareScopeCases))]
+    public void ToolScopeRegistry_Authorize_Uses_One_ArgumentAware_Resolver(
+        string toolName,
+        IDictionary<string, JsonElement> arguments,
+        string[] heldScopes,
+        string missingScope,
+        bool explicitModifier)
+    {
+        var registry = ToolScopeRegistry.Build(
+            DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable);
+        var denied = registry.Authorize(
+            toolName,
+            arguments,
+            new BearerPrincipal("limited", ImmutableHashSet.Create(heldScopes)));
+
+        denied.IsAllowed.Should().BeFalse();
+        denied.MissingScope.Should().Be(missingScope);
+        denied.MissingExplicitScope.Should().Be(explicitModifier);
+
+        var allowed = registry.Authorize(
+            toolName,
+            arguments,
+            new BearerPrincipal("allowed", ImmutableHashSet.Create(heldScopes.Append(missingScope).ToArray())));
+        allowed.IsAllowed.Should().BeTrue();
+    }
+
+    public static TheoryData<string, IDictionary<string, JsonElement>, string[], string, bool>
+        ArgumentAwareScopeCases => new()
+        {
+            {
+                "inspect_process",
+                Arguments(new { view = "requests-now" }),
+                new[] { "read-counters" },
+                "ptrace",
+                false
+            },
+            {
+                "collect_events",
+                Arguments(new { kind = "exceptions" }),
+                new[] { "read-counters" },
+                "eventpipe",
+                false
+            },
+            {
+                "collect_events",
+                Arguments(new
+                {
+                    kind = "counters",
+                    triggerWhen = "always-trigger",
+                    captureKind = "Dump",
+                    confirmDump = true,
+                }),
+                new[] { "read-counters", "ptrace" },
+                "dump-write",
+                false
+            },
+            {
+                "collect_events",
+                Arguments(new { kind = "event_source", unsafeProvider = true }),
+                new[] { "eventpipe" },
+                "eventsource-any",
+                true
+            },
+            {
+                "collect_sample",
+                Arguments(new { kind = "cpu", resolveMethodInstantiations = true }),
+                new[] { "eventpipe" },
+                "ptrace",
+                false
+            },
+            {
+                "collect_sample",
+                Arguments(new
+                {
+                    kind = "cpu",
+                    symbolPath = "srv*/symbols*https://symbols.example.test",
+                }),
+                new[] { "eventpipe" },
+                "symbols-remote",
+                true
+            },
+            {
+                "collect_sample",
+                Arguments(new { kind = "method-params" }),
+                new[] { "eventpipe" },
+                "sensitive-parameter-read",
+                true
+            },
+            {
+                "collect_batch",
+                Arguments(new
+                {
+                    requests = new[]
+                    {
+                        new { tool = "collect_events", kind = "counters" },
+                        new { tool = "collect_events", kind = "exceptions" },
+                    },
+                }),
+                new[] { "read-counters" },
+                "eventpipe",
+                false
+            },
+            {
+                "inspect_heap",
+                Arguments(new { source = "live" }),
+                new[] { "heap-read" },
+                "ptrace",
+                false
+            },
+            {
+                "inspect_heap",
+                Arguments(new { source = "dump", includeRetentionPaths = true }),
+                new[] { "heap-read" },
+                "sensitive-heap-read",
+                true
+            },
+            {
+                "query_snapshot",
+                Arguments(new { handle = "heap-1", view = "retention-paths" }),
+                new[] { "heap-read" },
+                "sensitive-heap-read",
+                true
+            },
+            {
+                "query_snapshot",
+                Arguments(new
+                {
+                    handle = "params-1",
+                    view = "events",
+                    includeSensitiveValues = true,
+                }),
+                new[] { "eventpipe" },
+                "sensitive-parameter-read",
+                true
+            },
+            {
+                "query_snapshot",
+                Arguments(new { handle = "threads-1", view = "frame-vars" }),
+                new[] { "ptrace" },
+                "heap-read",
+                false
+            },
+            {
+                "get_bytes",
+                Arguments(new { kind = "dump", dumpFilePath = "capture.dmp" }),
+                new[] { BearerPrincipal.RootScope },
+                "module-bytes-read",
+                true
+            },
+            {
+                "get_bytes",
+                Arguments(new { kind = "delete", artifactPath = "capture.dmp" }),
+                new[] { "module-bytes-read" },
+                "delete-artifact",
+                true
+            },
+            {
+                "collect_thread_snapshot",
+                Arguments(new { symbolPath = "srv*/symbols*https://symbols.example.test" }),
+                new[] { "ptrace" },
+                "symbols-remote",
+                true
+            },
+        };
+
+    private static IDictionary<string, JsonElement> Arguments<T>(T value)
+        => JsonSerializer.SerializeToElement(value).EnumerateObject()
+            .ToDictionary(static property => property.Name, static property => property.Value, StringComparer.Ordinal);
 
 
     // --- fixtures -----------------------------------------------------------------

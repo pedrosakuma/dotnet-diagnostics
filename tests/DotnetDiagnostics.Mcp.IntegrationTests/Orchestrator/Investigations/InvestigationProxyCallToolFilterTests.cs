@@ -245,6 +245,68 @@ public sealed class InvestigationProxyCallToolFilterTests
     }
 
     [Fact]
+    public async Task RejectsGatedDumpExploit_WithExplicitInvestigationHandleId()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "read-counters"));
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(
+            Params("collect_events", new Dictionary<string, JsonElement>
+            {
+                ["kind"] = JsonSerializer.SerializeToElement("counters"),
+                ["triggerWhen"] = JsonSerializer.SerializeToElement("always-trigger"),
+                ["captureKind"] = JsonSerializer.SerializeToElement("Dump"),
+                ["confirmDump"] = JsonSerializer.SerializeToElement(true),
+                [InvestigationRoutingArguments.InvestigationHandleIdArgument] =
+                    JsonSerializer.SerializeToElement(ActiveHandle.HandleId),
+            }),
+            sessionId: null);
+
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("dump-write");
+        fx.ProxyClient.CallCount.Should().Be(0);
+        fx.LocalInvocations.Should().Be(0);
+    }
+
+    [Theory]
+    [MemberData(
+        nameof(ToolScopeAttributesTests.ArgumentAwareScopeCases),
+        MemberType = typeof(ToolScopeAttributesTests))]
+    public async Task ArgumentAwareDenial_MatchesLocalAuthorization(
+        string toolName,
+        IDictionary<string, JsonElement> arguments,
+        string[] heldScopes,
+        string missingScope,
+        bool _)
+    {
+        var scopes = heldScopes.Append("orchestrator-attach").ToArray();
+        var principalAccessor = TestPrincipalAccessors.WithScopes(scopes);
+        var fx = new Fixture(principalAccessor);
+        fx.Binder.Bind("session-parity", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var localDecision = fx.ScopeRegistry.Authorize(
+            toolName,
+            arguments,
+            principalAccessor.Current);
+        var proxyDecision = fx.ScopeRegistry.Authorize(
+            toolName,
+            arguments,
+            principalAccessor.Current,
+            proxyInvocation: true);
+        var result = await fx.Invoke(Params(toolName, arguments), "session-parity");
+
+        localDecision.IsAllowed.Should().BeFalse();
+        localDecision.MissingScope.Should().Be(missingScope);
+        proxyDecision.IsAllowed.Should().BeFalse();
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain(proxyDecision.MissingScope);
+        fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
+    [Fact]
     public async Task ForwardsAllowedCall_WhenAttachAndDiagnosticScopeArePresent()
     {
         var fx = new Fixture(TestPrincipalAccessors.WithScopes("orchestrator-attach", "read-counters"));
