@@ -496,7 +496,7 @@ public sealed class InvestigationProxyCallToolFilterTests
 
         var p = Params("collect_events", new Dictionary<string, JsonElement>
         {
-            ["kind"] = JsonSerializer.SerializeToElement("distributed_trace"),
+            ["kind"] = JsonSerializer.SerializeToElement(" DISTRIBUTED_TRACE "),
             ["traceId"] = JsonSerializer.SerializeToElement("0af7651916cd43dd8448eb211c80319c"),
         });
         var result = await fx.Invoke(p, sessionId: "session-trace");
@@ -528,6 +528,8 @@ public sealed class InvestigationProxyCallToolFilterTests
     [Theory]
     [InlineData("collect_events", "distributed_trace", true)]
     [InlineData("collect_events", "replica_counters", true)]
+    [InlineData("collect_events", " DISTRIBUTED_TRACE ", true)]
+    [InlineData("collect_events", "REPLICA_COUNTERS", true)]
     [InlineData("collect_events", "activities", false)]
     [InlineData("collect_events", "counters", false)]
     [InlineData("inspect_process", "distributed_trace", false)]

@@ -334,10 +334,6 @@ internal static class InvestigationProxyCallToolFilter
     }
 
     /// <summary>
-    /// True for <c>collect_events(kind="distributed_trace")</c> — the orchestrator-side fan-out that
-    /// must execute locally rather than being proxied into a single attached Pod (#437).
-    /// </summary>
-    /// <summary>
     /// True for the orchestrator-side <c>collect_events</c> fan-out kinds (<c>distributed_trace</c>,
     /// <c>replica_counters</c>) that must execute locally rather than being proxied into a single
     /// attached Pod (#437 / #448).
@@ -347,9 +343,9 @@ internal static class InvestigationProxyCallToolFilter
         if (!string.Equals(toolName, "collect_events", StringComparison.Ordinal)) return false;
         if (arguments is null || !arguments.TryGetValue("kind", out var kind)) return false;
         if (kind.ValueKind != JsonValueKind.String) return false;
-        var value = kind.GetString();
-        return string.Equals(value, "distributed_trace", StringComparison.Ordinal)
-            || string.Equals(value, "replica_counters", StringComparison.Ordinal);
+        var value = kind.GetString()?.Trim();
+        return string.Equals(value, "distributed_trace", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "replica_counters", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Exposed for tests — formats the error block surfaced on forwarding failure.</summary>
