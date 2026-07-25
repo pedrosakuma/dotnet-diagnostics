@@ -59,11 +59,20 @@ internal static class ToolScopeListToolsFilter
         }
 
         var decision = ToolScopeAuthorizationFilter.Authorize(requirement, principal);
+        var unconditionalModifiers = ToolInvocationScopeResolver.Resolve(
+            tool.Name,
+            arguments: null,
+            proxyInvocation: false,
+            policies: null).ExplicitModifierScopes;
+        var modifiersAllowed = principal is not null &&
+            unconditionalModifiers.All(principal.HasExplicitScope);
         dotnetDiagnostics[AuthMetaKey] = new JsonObject
         {
             ["requiredScopes"] = new JsonArray(requirement.Scopes.Select(s => (JsonNode?)s).ToArray()),
+            ["requiredExplicitScopes"] = new JsonArray(
+                unconditionalModifiers.Select(scope => (JsonNode?)scope).ToArray()),
             ["semantics"] = requirement.IsAny ? "any" : "all",
-            ["authorized"] = decision.IsAllowed,
+            ["authorized"] = decision.IsAllowed && modifiersAllowed,
         };
 
         return new Tool

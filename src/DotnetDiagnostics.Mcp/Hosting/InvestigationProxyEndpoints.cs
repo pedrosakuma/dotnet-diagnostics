@@ -669,10 +669,17 @@ internal static class InvestigationProxyEndpoints
                 null,
                 false);
         }
-        if (!envelope.TryGetProperty("method", out var method) ||
-            method.ValueKind != JsonValueKind.String)
+        if (!envelope.TryGetProperty("method", out var method))
         {
             return null;
+        }
+        if (method.ValueKind != JsonValueKind.String)
+        {
+            return new ProxyToolRejection(
+                ProxyToolRejectionKind.Malformed,
+                "<malformed-json-rpc-method>",
+                null,
+                false);
         }
 
         if (string.Equals(method.GetString(), "resources/read", StringComparison.Ordinal))
