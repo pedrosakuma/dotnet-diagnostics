@@ -32,10 +32,12 @@ internal static class ToolScopeAuthorizationFilter
     public static McpRequestFilter<CallToolRequestParams, CallToolResult> Create(
         ToolScopeRegistry registry,
         Func<IPrincipalAccessor?> principalAccessor,
+        Func<IServiceProvider?> servicesAccessor,
         Func<ILogger?> loggerAccessor)
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(principalAccessor);
+        ArgumentNullException.ThrowIfNull(servicesAccessor);
         ArgumentNullException.ThrowIfNull(loggerAccessor);
 
         return next => async (request, cancellationToken) =>
@@ -57,8 +59,39 @@ internal static class ToolScopeAuthorizationFilter
             // Stdio (no IPrincipalAccessor registered) is treated identically to root.
             var accessor = principalAccessor();
             var principal = accessor?.Current ?? StdioRootPrincipalAccessor.Instance.Current;
+            var services = servicesAccessor();
+            var policies = ToolScopeResolutionPolicies.FromServices(services);
+            var delegationFailure = string.Empty;
+            BearerPrincipal? delegatedPrincipal = null;
+            if (request.Params?.Arguments?.ContainsKey(ToolScopeDelegation.ArgumentName) == true)
+            {
+                ToolScopeDelegation.TryConsume(
+                    toolName,
+                    request.Params.Arguments,
+                    registry,
+                    policies,
+                    (services?.GetService(typeof(ToolScopeDelegationKeyProvider))
+                        as ToolScopeDelegationKeyProvider)?.Key,
+                    services?.GetService(typeof(TimeProvider)) as TimeProvider,
+                    out delegatedPrincipal,
+                    out delegationFailure);
+                if (delegatedPrincipal is null)
+                {
+                    loggerAccessor()?.LogWarning(
+                        "Tool {Tool} denied because internal scope delegation validation failed: {Reason}.",
+                        toolName,
+                        delegationFailure);
+                    return BuildDelegationForbiddenResult(toolName, delegationFailure);
+                }
+                principal = delegatedPrincipal;
+            }
 
-            var decision = registry.Authorize(toolName, request.Params?.Arguments, principal);
+            var decision = registry.Authorize(
+                toolName,
+                request.Params?.Arguments,
+                principal,
+                proxyInvocation: delegatedPrincipal is not null,
+                policies: policies);
             var logger = loggerAccessor();
             if (decision.IsAllowed)
             {
@@ -67,6 +100,19 @@ internal static class ToolScopeAuthorizationFilter
                     toolName,
                     principal?.Name ?? "(none)",
                     FormatScopes(decision));
+                if (delegatedPrincipal is null)
+                {
+                    return await next(request, cancellationToken).ConfigureAwait(false);
+                }
+
+                if (accessor is not HttpContextPrincipalAccessor httpAccessor)
+                {
+                    return BuildDelegationForbiddenResult(
+                        toolName,
+                        "internal scope delegation requires an HTTP request context");
+                }
+
+                using var delegationLease = httpAccessor.PushDelegation(delegatedPrincipal);
                 return await next(request, cancellationToken).ConfigureAwait(false);
             }
 
@@ -80,6 +126,28 @@ internal static class ToolScopeAuthorizationFilter
             return BuildForbiddenResult(toolName, decision, principal);
         };
     }
+
+    private static CallToolResult BuildDelegationForbiddenResult(string toolName, string reason)
+        => new()
+        {
+            IsError = true,
+            Content =
+            [
+                new TextContentBlock
+                {
+                    Text = $"forbidden: tool '{toolName}' received an invalid internal scope delegation.\n" +
+                        new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["error"] = new System.Text.Json.Nodes.JsonObject
+                            {
+                                ["kind"] = "forbidden",
+                                ["message"] = reason,
+                                ["tool"] = toolName,
+                            },
+                        }.ToJsonString(),
+                },
+            ],
+        };
 
     internal readonly record struct AuthorizationDecision(bool IsAllowed, string MissingScope)
     {

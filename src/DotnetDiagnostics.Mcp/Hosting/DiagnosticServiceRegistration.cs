@@ -328,6 +328,7 @@ internal static class DiagnosticServiceRegistration
         => Security.ToolScopeAuthorizationFilter.Create(
             registry,
             () => servicesAccessor?.Invoke()?.GetService<Security.IPrincipalAccessor>(),
+            () => servicesAccessor?.Invoke(),
             () => loggerFactoryAccessor()?.CreateLogger(typeof(Security.ToolScopeAuthorizationFilter).FullName!));
 
     private static ModelContextProtocol.Server.McpRequestFilter<CallToolRequestParams, CallToolResult> BuildInvestigationProxyFilter(
@@ -358,6 +359,7 @@ internal static class DiagnosticServiceRegistration
                             sp.GetRequiredService<Orchestrator.Investigations.IInvestigationStore>(),
                             sp.GetRequiredService<Orchestrator.Investigations.IInvestigationProxyClient>(),
                             sp.GetRequiredService<OrchestratorOptions>(),
+                            Security.ToolScopeResolutionPolicies.FromServices(sp),
                             sp.GetRequiredService<Security.IPrincipalAccessor>(),
                             sp.GetRequiredService<Observability.OrchestratorObservability>(),
                             () => loggerFactoryAccessor()?.CreateLogger(typeof(Tools.InvestigationProxyCallToolFilter).FullName!));

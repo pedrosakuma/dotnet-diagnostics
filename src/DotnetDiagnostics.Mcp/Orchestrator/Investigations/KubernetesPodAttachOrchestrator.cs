@@ -36,6 +36,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
     private readonly InvestigationCloser _closer;
     private readonly OrchestratorObservability _observability;
     private readonly OrchestratorOptions _options;
+    private readonly DotnetDiagnostics.Core.Security.SecurityOptions _securityOptions;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<KubernetesPodAttachOrchestrator> _logger;
     private readonly TimeSpan _pollInterval;
@@ -46,8 +47,18 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         InvestigationCloser closer,
         OrchestratorObservability observability,
         OrchestratorOptions options,
+        DotnetDiagnostics.Core.Security.SecurityOptions securityOptions,
         ILogger<KubernetesPodAttachOrchestrator> logger)
-        : this(podsApi, store, closer, observability, options, TimeProvider.System, DefaultPollInterval, logger)
+        : this(
+            podsApi,
+            store,
+            closer,
+            observability,
+            options,
+            securityOptions,
+            TimeProvider.System,
+            DefaultPollInterval,
+            logger)
     {
     }
 
@@ -60,12 +71,36 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         TimeProvider timeProvider,
         TimeSpan pollInterval,
         ILogger<KubernetesPodAttachOrchestrator> logger)
+        : this(
+            podsApi,
+            store,
+            closer,
+            observability,
+            options,
+            new DotnetDiagnostics.Core.Security.SecurityOptions(),
+            timeProvider,
+            pollInterval,
+            logger)
+    {
+    }
+
+    internal KubernetesPodAttachOrchestrator(
+        IKubernetesPodsApi podsApi,
+        IInvestigationStore store,
+        InvestigationCloser closer,
+        OrchestratorObservability observability,
+        OrchestratorOptions options,
+        DotnetDiagnostics.Core.Security.SecurityOptions securityOptions,
+        TimeProvider timeProvider,
+        TimeSpan pollInterval,
+        ILogger<KubernetesPodAttachOrchestrator> logger)
     {
         _podsApi = podsApi;
         _store = store;
         _closer = closer;
         _observability = observability;
         _options = options;
+        _securityOptions = securityOptions;
         _timeProvider = timeProvider;
         _pollInterval = pollInterval;
         _logger = logger;
@@ -89,6 +124,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         var now = _timeProvider.GetUtcNow();
         var ttl = TimeSpan.FromSeconds(request.TtlSeconds ?? _options.DefaultInvestigationTtlSeconds);
         var token = GenerateBearerToken();
+        var delegationKey = GenerateBearerToken();
         var ephemeralName = BuildEphemeralContainerName();
         var handleId = "inv_" + RandomHex(16);
 
@@ -102,7 +138,8 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             State: InvestigationState.Attaching,
             AttachedAt: now,
             ExpiresAt: now + ttl,
-            OwnerBearerName: request.OwnerBearerName);
+            OwnerBearerName: request.OwnerBearerName,
+            InternalScopeDelegationKey: delegationKey);
 
         // Atomic check-and-reserve: when reuse is allowed and a target tuple already has an
         // Active/Attaching handle, return it instead of patching a second ephemeral container.
@@ -136,7 +173,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
 
         try
         {
-            var spec = BuildEphemeralContainerSpec(ephemeralName, container, token);
+            var spec = BuildEphemeralContainerSpec(ephemeralName, container, token, delegationKey);
             await PatchEphemeralContainerAsync(ns, request.PodName, spec, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -272,7 +309,11 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         return _options.EphemeralContainerNamePrefix + RandomHex(4);
     }
 
-    private V1EphemeralContainer BuildEphemeralContainerSpec(string ephemeralName, V1Container target, string token)
+    private V1EphemeralContainer BuildEphemeralContainerSpec(
+        string ephemeralName,
+        V1Container target,
+        string token,
+        string delegationKey)
     {
         // Inherit the target container's volumeMounts so any prepared shared /tmp
         // emptyDir (or equivalent) shows up under the same path in the ephemeral
@@ -298,11 +339,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             // Required: join the target container's PID namespace so the diagnostic IPC
             // socket at /tmp/dotnet-diagnostic-<pid> is visible.
             TargetContainerName = target.Name,
-            Env = new List<V1EnvVar>
-            {
-                new() { Name = "MCP_BEARER_TOKEN", Value = token },
-                new() { Name = "ASPNETCORE_URLS", Value = $"http://0.0.0.0:{_options.ProxyPodPort}" },
-            },
+            Env = BuildEphemeralEnvironment(token, delegationKey),
             // The shipped image's appsettings.json pins "Urls" to 127.0.0.1:8787, which
             // outranks ASPNETCORE_URLS in WebApplication.CreateBuilder's configuration
             // precedence. Pass --urls explicitly so the kestrel binding follows the
@@ -312,6 +349,49 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             SecurityContext = securityContext,
             TerminationMessagePolicy = "File",
         };
+    }
+
+    private List<V1EnvVar> BuildEphemeralEnvironment(string token, string delegationKey)
+    {
+        var environment = new List<V1EnvVar>
+        {
+            new() { Name = "MCP_BEARER_TOKEN", Value = token },
+            new()
+            {
+                Name = DotnetDiagnostics.Mcp.Security.ToolScopeDelegation.EnvironmentVariableName,
+                Value = delegationKey,
+            },
+            new() { Name = "ASPNETCORE_URLS", Value = $"http://0.0.0.0:{_options.ProxyPodPort}" },
+            new()
+            {
+                Name = "Diagnostics__AllowSensitiveHeapValues",
+                Value = _securityOptions.AllowSensitiveHeapValues.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            },
+            new()
+            {
+                Name = "Diagnostics__AllowMethodParameterCapture",
+                Value = _securityOptions.AllowMethodParameterCapture.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            },
+        };
+        AddArrayEnvironment(environment, "Diagnostics__SymbolServerAllowlist", _securityOptions.SymbolServerAllowlist);
+        AddArrayEnvironment(environment, "Diagnostics__EventSourceAllowlist", _securityOptions.EventSourceAllowlist);
+        AddArrayEnvironment(environment, "Diagnostics__RedactionPatterns", _securityOptions.RedactionPatterns);
+        return environment;
+    }
+
+    private static void AddArrayEnvironment(
+        List<V1EnvVar> environment,
+        string prefix,
+        List<string> values)
+    {
+        for (var i = 0; i < values.Count; i++)
+        {
+            environment.Add(new V1EnvVar
+            {
+                Name = $"{prefix}__{i}",
+                Value = values[i],
+            });
+        }
     }
 
     private static V1VolumeMount CloneVolumeMount(V1VolumeMount mount)

@@ -66,6 +66,8 @@ internal static class InvestigationRoutingArguments
         {
             Name = requestParams.Name,
             Arguments = cleaned,
+            Meta = requestParams.Meta,
+            Task = requestParams.Task,
         };
     }
 }

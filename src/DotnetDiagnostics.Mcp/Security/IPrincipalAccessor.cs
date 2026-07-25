@@ -17,17 +17,67 @@ public interface IPrincipalAccessor
 }
 
 /// <summary>HTTP-transport implementation: reads the principal stamped by
-/// <c>BearerTokenMiddleware</c> off <see cref="HttpContext.Items"/>.</summary>
+/// <c>BearerTokenMiddleware</c> off <see cref="HttpContext.Items"/>, with an
+/// async-flow-local override for a verified pod-internal scope delegation.</summary>
 internal sealed class HttpContextPrincipalAccessor : IPrincipalAccessor
 {
     private readonly IHttpContextAccessor _accessor;
+    private readonly AsyncLocal<DelegationFrame?> _delegation = new();
 
     public HttpContextPrincipalAccessor(IHttpContextAccessor accessor)
     {
         _accessor = accessor;
     }
 
-    public BearerPrincipal? Current => _accessor.HttpContext?.GetBearerPrincipal();
+    public BearerPrincipal? Current
+    {
+        get
+        {
+            for (var frame = _delegation.Value; frame is not null; frame = frame.Previous)
+            {
+                if (frame.Principal is not null)
+                {
+                    return frame.Principal;
+                }
+            }
+
+            return _accessor.HttpContext?.GetBearerPrincipal();
+        }
+    }
+
+    public IDisposable PushDelegation(BearerPrincipal principal)
+    {
+        ArgumentNullException.ThrowIfNull(principal);
+        var previous = _delegation.Value;
+        var frame = new DelegationFrame(principal, previous);
+        _delegation.Value = frame;
+        return new DelegationLease(this, frame, previous);
+    }
+
+    private sealed class DelegationLease(
+        HttpContextPrincipalAccessor accessor,
+        DelegationFrame frame,
+        DelegationFrame? previous) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                frame.Principal = null;
+                accessor._delegation.Value = previous;
+            }
+        }
+    }
+
+    private sealed class DelegationFrame(
+        BearerPrincipal principal,
+        DelegationFrame? previous)
+    {
+        public BearerPrincipal? Principal { get; set; } = principal;
+        public DelegationFrame? Previous { get; } = previous;
+    }
 }
 
 /// <summary>Stdio-transport implementation: returns a synthetic root principal so every

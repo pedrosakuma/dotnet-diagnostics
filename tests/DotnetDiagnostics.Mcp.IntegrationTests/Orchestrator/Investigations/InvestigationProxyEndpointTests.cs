@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Mcp.Hosting;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
@@ -293,7 +294,8 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     private async Task InitializeWithPrincipalAsync(
         BearerPrincipal? principal,
         bool allowCrossSessionAdmin,
-        CapturingLoggerProvider? capture = null)
+        CapturingLoggerProvider? capture = null,
+        SecurityOptions? securityOptions = null)
     {
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
@@ -312,6 +314,10 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                     AllowCrossSessionAdmin = allowCrossSessionAdmin,
                 };
                 services.AddSingleton(opts);
+                securityOptions ??= new SecurityOptions();
+                services.AddSingleton(new SymbolServerAllowlist(securityOptions));
+                services.AddSingleton(new EventSourceAllowlist(securityOptions));
+                services.AddSingleton(new SensitiveValueGate(securityOptions));
                 services.AddSingleton<IInvestigationStore>(_store);
                 services.AddSingleton<IPortForwardManager>(_manager);
                 services.AddSingleton(ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable));
@@ -559,11 +565,16 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _store.Add(NewHandle("inv_jrpc_ok", InvestigationState.Active, "pod-token"));
         _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
 
-        var payload = ToolCallPayload("collect_events", "{\"kind\":\"counters\"}");
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{" +
+            "\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\"}," +
+            "\"task\":{\"ttl\":60000}}}";
         var response = await _client.PostAsync("/proxy/inv_jrpc_ok/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         _upstream.LastRequest.Should().NotBeNull();
+        _upstream.LastRequestBody.Should().Contain("\"task\"");
+        _upstream.LastRequestBody.Should().Contain(ToolScopeDelegation.ArgumentName);
     }
 
     [Fact]
@@ -629,6 +640,94 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await response.Content.ReadAsStringAsync()).Should().Contain("sensitive-parameter-read");
         _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("collect_sample", "{\"kind\":\"method-params\"}", "eventpipe", "sensitive-parameter-read")]
+    [InlineData("get_bytes", "{\"kind\":\"delete\",\"artifactPath\":\"artifact\"}", "module-bytes-read", "delete-artifact")]
+    public async Task Proxy_Delegates_Exact_Modifier_Scopes(
+        string toolName,
+        string argumentsJson,
+        string primaryScope,
+        string modifierScope)
+    {
+        await DisposeAsync();
+        var principal = new BearerPrincipal(
+            "modifier-caller",
+            System.Collections.Immutable.ImmutableHashSet.Create(
+                "orchestrator-attach",
+                primaryScope,
+                modifierScope));
+        await InitializeWithPrincipalAsync(principal, allowCrossSessionAdmin: false);
+        var handle = NewHandle("inv_modifier_allowed", InvestigationState.Active, "pod-token");
+        _store.Add(handle);
+        _upstream.NextResponse = _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_modifier_allowed/mcp",
+            new StringContent(
+                ToolCallPayload(toolName, argumentsJson),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(_upstream.LastRequestBody!);
+        var arguments = document.RootElement
+            .GetProperty("params")
+            .GetProperty("arguments")
+            .EnumerateObject()
+            .ToDictionary(static property => property.Name, static property => property.Value, StringComparer.Ordinal);
+        ToolScopeDelegation.TryConsume(
+            toolName,
+            arguments,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            handle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo(primaryScope, modifierScope);
+    }
+
+    [Theory]
+    [InlineData(
+        "collect_sample",
+        "{\"kind\":\"cpu\",\"symbolPath\":\"srv*/symbols*https://symbols.example.test\"}")]
+    [InlineData(
+        "collect_events",
+        "{\"kind\":\"event_source\",\"providerName\":\"Custom.Provider\",\"unsafeProvider\":true}")]
+    public async Task Proxy_Honors_Configured_Policy_Alternatives(
+        string toolName,
+        string argumentsJson)
+    {
+        await DisposeAsync();
+        var security = new SecurityOptions
+        {
+            SymbolServerAllowlist = ["symbols.example.test"],
+            EventSourceAllowlist = ["Custom.Provider"],
+        };
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "policy-caller",
+                System.Collections.Immutable.ImmutableHashSet.Create(
+                    "orchestrator-attach",
+                    "eventpipe")),
+            allowCrossSessionAdmin: false,
+            securityOptions: security);
+        _store.Add(NewHandle("inv_policy_allowed", InvestigationState.Active, "pod-token"));
+        _upstream.NextResponse = _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_policy_allowed/mcp",
+            new StringContent(
+                ToolCallPayload(toolName, argumentsJson),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        _upstream.LastRequestBody.Should().Contain(ToolScopeDelegation.ArgumentName);
     }
 
     [Fact]
@@ -784,7 +883,8 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         PodLocalBearerToken: podToken,
         State: state,
         AttachedAt: DateTimeOffset.UtcNow,
-        ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5));
+        ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5),
+        InternalScopeDelegationKey: "test-delegation-key");
 
     private static string ToolCallPayload(string toolName, string arguments = "{}")
         => "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"" +
@@ -800,7 +900,8 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5),
-        OwnerBearerName: ownerBearerName);
+        OwnerBearerName: ownerBearerName,
+        InternalScopeDelegationKey: "test-delegation-key");
 
     private sealed class StubInvestigationStore : IInvestigationStore
     {

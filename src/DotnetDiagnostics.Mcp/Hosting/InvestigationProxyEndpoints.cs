@@ -155,13 +155,17 @@ internal static class InvestigationProxyEndpoints
             }
         }
         using var bufferedBodyLease = bufferedBody;
+        var scopeRegistry = context.RequestServices.GetRequiredService<ToolScopeRegistry>();
+        var callerPrincipal = context.GetBearerPrincipal();
+        var scopePolicies = ToolScopeResolutionPolicies.FromServices(context.RequestServices);
 
         if (bufferedBody is not null)
         {
             var rejection = FindRejectedToolCall(
                 bufferedBody.WrittenMemory,
-                context.RequestServices.GetRequiredService<ToolScopeRegistry>(),
-                context.GetBearerPrincipal());
+                scopeRegistry,
+                callerPrincipal,
+                scopePolicies);
             if (rejection is not null)
             {
                 if (rejection.Kind == ProxyToolRejectionKind.NotAllowed)
@@ -238,6 +242,27 @@ internal static class InvestigationProxyEndpoints
             }
         }
 
+        byte[]? delegatedBody = null;
+        if (bufferedBody is not null && ContainsToolCall(bufferedBody.WrittenMemory))
+        {
+            if (callerPrincipal is null || string.IsNullOrWhiteSpace(handle.InternalScopeDelegationKey))
+            {
+                await WriteProblemAsync(context, StatusCodes.Status502BadGateway,
+                    "ProxyDelegationUnavailable",
+                    "The pod-local internal authorization channel is unavailable. Re-attach to the pod.")
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            delegatedBody = ToolScopeDelegation.AddToJsonRpcBody(
+                bufferedBody.WrittenMemory,
+                scopeRegistry,
+                scopePolicies,
+                callerPrincipal,
+                handle.InternalScopeDelegationKey,
+                context.RequestServices.GetService<TimeProvider>());
+        }
+
         // H7: hard-cap path to the Mcp segment plus optional sub-paths the SDK may
         // emit (the SDK currently uses just "/mcp"). The route pattern already
         // restricts inbound paths but recompute the upstream path defensively to
@@ -284,7 +309,9 @@ internal static class InvestigationProxyEndpoints
         {
             if (bufferedBody is not null)
             {
-                upstream.Content = new ByteArrayContent(bufferedBody.Buffer, 0, bufferedBody.Length);
+                upstream.Content = delegatedBody is null
+                    ? new ByteArrayContent(bufferedBody.Buffer, 0, bufferedBody.Length)
+                    : new ByteArrayContent(delegatedBody);
                 foreach (var h in context.Request.Headers)
                 {
                     if (!h.Key.StartsWith("Content-", StringComparison.OrdinalIgnoreCase)) continue;
@@ -501,7 +528,8 @@ internal static class InvestigationProxyEndpoints
     private static ProxyToolRejection? FindRejectedToolCall(
         ReadOnlyMemory<byte> body,
         ToolScopeRegistry scopeRegistry,
-        BearerPrincipal? principal)
+        BearerPrincipal? principal,
+        ToolScopeResolutionPolicies policies)
     {
         if (body.IsEmpty) return null;
         try
@@ -515,6 +543,7 @@ internal static class InvestigationProxyEndpoints
                         item,
                         scopeRegistry,
                         principal,
+                        policies,
                         authorizeScopes: false);
                     if (rejection is not null)
                     {
@@ -528,6 +557,7 @@ internal static class InvestigationProxyEndpoints
                         item,
                         scopeRegistry,
                         principal,
+                        policies,
                         authorizeScopes: true);
                     if (rejection is not null)
                     {
@@ -542,6 +572,7 @@ internal static class InvestigationProxyEndpoints
                 document.RootElement,
                 scopeRegistry,
                 principal,
+                policies,
                 authorizeScopes: true);
         }
         catch (JsonException)
@@ -556,6 +587,7 @@ internal static class InvestigationProxyEndpoints
         JsonElement envelope,
         ToolScopeRegistry scopeRegistry,
         BearerPrincipal? principal,
+        ToolScopeResolutionPolicies policies,
         bool authorizeScopes)
     {
         if (envelope.ValueKind != JsonValueKind.Object ||
@@ -605,7 +637,8 @@ internal static class InvestigationProxyEndpoints
             toolName,
             arguments,
             principal,
-            proxyInvocation: true);
+            proxyInvocation: true,
+            policies: policies);
         return authorization.IsAllowed
             ? null
             : new ProxyToolRejection(
@@ -613,6 +646,34 @@ internal static class InvestigationProxyEndpoints
                 toolName,
                 authorization.MissingScope,
                 authorization.MissingExplicitScope);
+    }
+
+    private static bool ContainsToolCall(ReadOnlyMemory<byte> body)
+    {
+        if (body.IsEmpty)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                return document.RootElement.EnumerateArray().Any(IsToolCall);
+            }
+            return IsToolCall(document.RootElement);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        static bool IsToolCall(JsonElement envelope)
+            => envelope.ValueKind == JsonValueKind.Object &&
+               envelope.TryGetProperty("method", out var method) &&
+               method.ValueKind == JsonValueKind.String &&
+               string.Equals(method.GetString(), "tools/call", StringComparison.Ordinal);
     }
 
     private static Task WriteProblemAsync(HttpContext context, int status, string detail)
