@@ -252,21 +252,12 @@ internal static class ToolInvocationScopeResolver
         ImmutableArray<string>.Builder additional,
         ImmutableArray<string>.Builder modifiers)
     {
-        // A pod-local diagnostic handle is opaque to the orchestrator. Local dispatch resolves its
-        // exact kind from IDiagnosticHandleStore, but neither proxy path can safely infer whether an
-        // arbitrary handle is counters, EventPipe, heap, thread, or an exported sample. Require the
-        // complete primary union before forwarding rather than letting the pod's root bearer widen
-        // the original caller. View-specific tightening below still applies.
-        if (proxyInvocation)
-        {
-            Add(additional, ReadCountersScope);
-            Add(additional, EventPipeScope);
-            Add(additional, HeapReadScope);
-            Add(additional, PtraceScope);
-            Add(additional, InvestigationExportScope);
-        }
+        // Pod-local handles are opaque to the orchestrator. The delegation layer therefore forwards
+        // every concrete primary scope the caller actually holds; the pod resolves the handle kind
+        // and applies the existing kind-specific guard. Never require or synthesize the complete union.
+        _ = proxyInvocation;
 
-        var view = GetString(arguments, "view");
+        var view = GetString(arguments, "view")?.ToLowerInvariant();
         if (string.Equals(view, "frame-vars", StringComparison.Ordinal))
         {
             Add(additional, PtraceScope);

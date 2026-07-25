@@ -58,9 +58,9 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
     }
 
     [Theory]
-    [InlineData("collect_sample", "sensitive-parameter-read")]
-    [InlineData("get_bytes", "delete-artifact")]
-    public async Task PodRoot_Without_Delegation_Cannot_Use_Modifier(string toolName, string modifier)
+    [InlineData("collect_sample")]
+    [InlineData("get_bytes")]
+    public async Task PodRoot_Without_Delegation_Cannot_Call_Tools(string toolName)
     {
         await using var factory = CreatePodFactory();
         await using var client = await ConnectAsync(factory);
@@ -72,8 +72,7 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
             cancellationToken: CancellationToken.None);
 
         result.IsError.Should().BeTrue();
-        ResultText(result).Should().Contain(modifier);
-        ResultText(result).Should().Contain("literal modifier scope");
+        ResultText(result).Should().Contain("require an internal scope delegation");
     }
 
     private static WebApplicationFactory<Program> CreatePodFactory()

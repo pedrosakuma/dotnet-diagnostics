@@ -21,6 +21,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Protocol;
 using Xunit;
 
 namespace DotnetDiagnostics.Mcp.IntegrationTests.Orchestrator.Investigations;
@@ -537,6 +538,32 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.LastRequest.Should().BeNull();
     }
 
+    [Theory]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\"}}}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\",\"kind\":\"exceptions\"}}}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\"},\"task\":1}}")]
+    public async Task Proxy_RejectsMalformedOrDuplicateJson_WithoutForwarding(string payload)
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "caller",
+                System.Collections.Immutable.ImmutableHashSet.Create(
+                    "orchestrator-attach",
+                    "read-counters",
+                    "read-events")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_jrpc_duplicate", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_jrpc_duplicate/mcp",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ProxyToolRequestMalformed");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
     [Fact]
     public async Task Proxy_AllowsJsonRpcInitialize_Passthrough()
     {
@@ -567,7 +594,8 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
 
         var payload =
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{" +
-            "\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\"}," +
+            "\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\",\"" +
+            ToolScopeDelegation.ArgumentName + "\":\"client-forged\"}," +
             "\"task\":{\"ttl\":60000}}}";
         var response = await _client.PostAsync("/proxy/inv_jrpc_ok/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
 
@@ -575,6 +603,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.LastRequest.Should().NotBeNull();
         _upstream.LastRequestBody.Should().Contain("\"task\"");
         _upstream.LastRequestBody.Should().Contain(ToolScopeDelegation.ArgumentName);
+        _upstream.LastRequestBody.Should().NotContain("client-forged");
     }
 
     [Fact]
@@ -645,6 +674,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     [Theory]
     [InlineData("collect_sample", "{\"kind\":\"method-params\"}", "eventpipe", "sensitive-parameter-read")]
     [InlineData("get_bytes", "{\"kind\":\"delete\",\"artifactPath\":\"artifact\"}", "module-bytes-read", "delete-artifact")]
+    [InlineData("query_snapshot", "{\"handle\":\"opaque\",\"view\":\"summary\"}", "eventpipe", "sensitive-parameter-read")]
     public async Task Proxy_Delegates_Exact_Modifier_Scopes(
         string toolName,
         string argumentsJson,
@@ -673,14 +703,11 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         using var document = JsonDocument.Parse(_upstream.LastRequestBody!);
-        var arguments = document.RootElement
+        var delegatedRequest = document.RootElement
             .GetProperty("params")
-            .GetProperty("arguments")
-            .EnumerateObject()
-            .ToDictionary(static property => property.Name, static property => property.Value, StringComparer.Ordinal);
+            .Deserialize<CallToolRequestParams>()!;
         ToolScopeDelegation.TryConsume(
-            toolName,
-            arguments,
+            delegatedRequest,
             ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
             new ToolScopeResolutionPolicies(null, null, null, null),
             handle.InternalScopeDelegationKey,

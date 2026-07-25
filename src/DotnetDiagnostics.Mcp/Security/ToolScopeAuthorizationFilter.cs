@@ -63,15 +63,25 @@ internal static class ToolScopeAuthorizationFilter
             var policies = ToolScopeResolutionPolicies.FromServices(services);
             var delegationFailure = string.Empty;
             BearerPrincipal? delegatedPrincipal = null;
-            if (request.Params?.Arguments?.ContainsKey(ToolScopeDelegation.ArgumentName) == true)
+            var delegationKey = (services?.GetService(typeof(ToolScopeDelegationKeyProvider))
+                as ToolScopeDelegationKeyProvider)?.Key;
+            var hasDelegation = request.Params?.Arguments?.ContainsKey(ToolScopeDelegation.ArgumentName) == true;
+            if (!string.IsNullOrWhiteSpace(delegationKey) && !hasDelegation)
+            {
+                loggerAccessor()?.LogWarning(
+                    "Tool {Tool} denied because the pod-local request had no internal scope delegation.",
+                    toolName);
+                return BuildDelegationForbiddenResult(
+                    toolName,
+                    "pod-local tool calls require an internal scope delegation");
+            }
+            if (hasDelegation)
             {
                 ToolScopeDelegation.TryConsume(
-                    toolName,
-                    request.Params.Arguments,
+                    request.Params!,
                     registry,
                     policies,
-                    (services?.GetService(typeof(ToolScopeDelegationKeyProvider))
-                        as ToolScopeDelegationKeyProvider)?.Key,
+                    delegationKey,
                     services?.GetService(typeof(TimeProvider)) as TimeProvider,
                     out delegatedPrincipal,
                     out delegationFailure);
