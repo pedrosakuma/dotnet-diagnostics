@@ -75,6 +75,23 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
         ResultText(result).Should().Contain("require an internal scope delegation");
     }
 
+    [Fact]
+    public async Task PodCatalog_MarksToolsUnauthorized_WhenDelegationIsRequired()
+    {
+        await using var factory = CreatePodFactory();
+        await using var client = await ConnectAsync(factory);
+
+        var tools = await client.ListToolsAsync(cancellationToken: CancellationToken.None);
+
+        tools.Should().NotBeEmpty();
+        foreach (var tool in tools)
+        {
+            var auth = tool.ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
+            auth["delegationRequired"]!.GetValue<bool>().Should().BeTrue();
+            auth["authorized"]!.GetValue<bool>().Should().BeFalse();
+        }
+    }
+
     private static WebApplicationFactory<Program> CreatePodFactory()
     {
         Environment.SetEnvironmentVariable("MCP_BEARER_TOKEN", null);

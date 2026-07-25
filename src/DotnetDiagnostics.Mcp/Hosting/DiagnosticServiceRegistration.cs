@@ -321,7 +321,9 @@ internal static class DiagnosticServiceRegistration
         Func<IServiceProvider?>? servicesAccessor)
         => Security.ToolScopeListToolsFilter.Create(
             registry,
-            () => servicesAccessor?.Invoke()?.GetService<Security.IPrincipalAccessor>());
+            () => servicesAccessor?.Invoke()?.GetService<Security.IPrincipalAccessor>(),
+            () => !string.IsNullOrWhiteSpace(
+                servicesAccessor?.Invoke()?.GetService<Security.ToolScopeDelegationKeyProvider>()?.Key));
 
     private static ModelContextProtocol.Server.McpRequestFilter<CallToolRequestParams, CallToolResult> BuildScopeAuthorizationFilter(
         Security.ToolScopeRegistry registry,

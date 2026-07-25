@@ -591,8 +591,24 @@ internal static class InvestigationProxyEndpoints
             }
             if (document.RootElement.ValueKind == JsonValueKind.Array)
             {
+                if (document.RootElement.GetArrayLength() == 0)
+                {
+                    return new ProxyToolRejection(
+                        ProxyToolRejectionKind.Malformed,
+                        "<empty-json-rpc-batch>",
+                        null,
+                        false);
+                }
                 foreach (var item in document.RootElement.EnumerateArray())
                 {
+                    if (item.ValueKind != JsonValueKind.Object)
+                    {
+                        return new ProxyToolRejection(
+                            ProxyToolRejectionKind.Malformed,
+                            "<malformed-json-rpc-batch-item>",
+                            null,
+                            false);
+                    }
                     var rejection = FindRejectedToolCall(
                         item,
                         scopeRegistry,

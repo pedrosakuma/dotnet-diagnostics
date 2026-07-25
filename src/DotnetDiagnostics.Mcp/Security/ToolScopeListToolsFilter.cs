@@ -15,10 +15,12 @@ internal static class ToolScopeListToolsFilter
 
     public static McpRequestFilter<ListToolsRequestParams, ListToolsResult> Create(
         ToolScopeRegistry registry,
-        Func<IPrincipalAccessor?> principalAccessor)
+        Func<IPrincipalAccessor?> principalAccessor,
+        Func<bool>? delegationRequired = null)
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(principalAccessor);
+        delegationRequired ??= static () => false;
 
         return next => async (request, cancellationToken) =>
         {
@@ -37,7 +39,11 @@ internal static class ToolScopeListToolsFilter
                     continue;
                 }
 
-                annotatedTools.Add(CloneWithScopeMetadata(tool, requirement.Value, principal));
+                annotatedTools.Add(CloneWithScopeMetadata(
+                    tool,
+                    requirement.Value,
+                    principal,
+                    delegationRequired()));
             }
 
             result.Tools = annotatedTools;
@@ -48,7 +54,8 @@ internal static class ToolScopeListToolsFilter
     private static Tool CloneWithScopeMetadata(
         Tool tool,
         ToolScopeRegistry.Requirement requirement,
-        BearerPrincipal? principal)
+        BearerPrincipal? principal,
+        bool delegationRequired)
     {
         var meta = tool.Meta?.DeepClone() as JsonObject ?? new JsonObject();
         var dotnetDiagnostics = meta[DotnetDiagnosticsMetaKey] as JsonObject;
@@ -72,7 +79,8 @@ internal static class ToolScopeListToolsFilter
             ["requiredExplicitScopes"] = new JsonArray(
                 unconditionalModifiers.Select(scope => (JsonNode?)scope).ToArray()),
             ["semantics"] = requirement.IsAny ? "any" : "all",
-            ["authorized"] = decision.IsAllowed && modifiersAllowed,
+            ["delegationRequired"] = delegationRequired,
+            ["authorized"] = !delegationRequired && decision.IsAllowed && modifiersAllowed,
         };
 
         return new Tool
