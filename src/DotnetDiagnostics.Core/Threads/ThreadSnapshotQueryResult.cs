@@ -37,6 +37,16 @@ public sealed record ThreadSnapshotQueryResult(
     public IReadOnlyList<ResolvedAddressEntry>? ResolvedAddresses { get; init; }
     /// <summary>Populated for <c>frame-vars</c> (issue #449).</summary>
     public FrameVariablesResult? FrameVariables { get; init; }
+    /// <summary>Total threads in the full artifact before inline projection.</summary>
+    public int? TotalThreads { get; init; }
+    /// <summary>Threads omitted from this bounded inline projection.</summary>
+    public int? OmittedThreads { get; init; }
+    /// <summary>Maximum frames retained per projected thread. The handle keeps every captured frame.</summary>
+    public int? FramesPerThreadLimit { get; init; }
+    /// <summary>Total locks in the full artifact before inline projection.</summary>
+    public int? TotalLocks { get; init; }
+    /// <summary>Locks omitted from this bounded inline projection.</summary>
+    public int? OmittedLocks { get; init; }
 }
 
 /// <summary>

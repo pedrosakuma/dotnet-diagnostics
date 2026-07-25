@@ -252,10 +252,19 @@ public class CpuSampleQueryDispatcherTests
 
         outcome.Error.Should().BeNull();
         outcome.Data!.SelfSamples.Should().Be(new SelfSampleBreakdown(40, 60));
-        outcome.Data.Root.Children[0].Frame.Method.Should().Be("System.Threading.LowLevelLifoSemaphore.WaitForSignal");
-        outcome.Data.Root.Children[0].SelfSamples.Should().Be(new SelfSampleBreakdown(0, 60));
-        outcome.Data.Root.Children[1].Frame.Method.Should().Be("MyApp.Worker.BurnCpu");
-        outcome.Data.Root.Children[1].SelfSamples.Should().Be(new SelfSampleBreakdown(40, 0));
+        outcome.Data.Root.Children[0].Frame.Method.Should().Be("MyApp.Worker.BurnCpu");
+        outcome.Data.Root.Children[0].SelfSamples.Should().Be(new SelfSampleBreakdown(40, 0));
+        outcome.Data.Root.Children[1].Frame.Method.Should().Be("System.Threading.LowLevelLifoSemaphore.WaitForSignal");
+        outcome.Data.Root.Children[1].SelfSamples.Should().Be(new SelfSampleBreakdown(0, 60));
+    }
+
+    [Fact]
+    public void RenderCallTree_UntruncatedResponse_DoesNotRecommendAlreadySatisfiedCallTree()
+    {
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: null, maxDepth: 8, maxNodes: 200);
+
+        outcome.Data!.Truncated.Should().BeFalse();
+        outcome.Hints.Should().BeEmpty();
     }
 
     [Fact]

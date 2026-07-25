@@ -21,6 +21,12 @@ namespace DotnetDiagnostics.Core.Dump;
 /// </remarks>
 public static class HeapSnapshotQueryDispatcher
 {
+    /// <summary>Maximum retention paths returned inline; the handle retains every captured path.</summary>
+    public const int MaxProjectedRetentionPaths = 10;
+
+    /// <summary>Maximum frames returned inline per retention path.</summary>
+    public const int MaxProjectedRetentionFrames = 12;
+
     // Views renderable purely from a HeapSnapshotArtifact (no attach / redactor / auth).
     private static readonly string[] Projection =
     {
@@ -142,17 +148,35 @@ public static class HeapSnapshotQueryDispatcher
             filtered = filtered.Where(p => p.TargetTypeFullName.Contains(typeFullName, StringComparison.OrdinalIgnoreCase));
         }
 
-        var slice = filtered.Take(topN).ToArray();
+        var matching = filtered.ToArray();
+        var limit = Math.Min(topN, MaxProjectedRetentionPaths);
+        var slice = matching
+            .Take(limit)
+            .Select(ProjectRetentionPath)
+            .ToArray();
         var summary = slice.Length == 0
             ? $"No retention paths in snapshot '{handle}' match filter '{typeFullName ?? "<none>"}'."
-            : $"Returning {slice.Length} retention path(s) from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}). Top target: `{slice[0].TargetTypeFullName}` (chain depth {slice[0].Chain.Count}).";
+            : $"Returning a bounded {slice.Length}/{matching.Length} retention-path projection from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}), capped at {MaxProjectedRetentionFrames} typed address-stable frame(s) per chain. Top target: `{slice[0].TargetTypeFullName}` @ 0x{slice[0].TargetObjectAddress:x} (chain depth {slice[0].Chain.Count}). The handle retains complete paths.";
 
         var result = new HeapSnapshotQueryResult(handle, "retention-paths", origin, snapshot.ProcessId, snapshot.CapturedAt)
         {
             RetentionPaths = slice,
             FilterTypeFullName = typeFullName,
+            TotalRetentionPaths = matching.Length,
+            OmittedRetentionPaths = matching.Length - slice.Length,
+            RetentionFrameLimit = MaxProjectedRetentionFrames,
         };
         return DiagnosticResult.Ok(result, summary);
+    }
+
+    internal static RetentionPath ProjectRetentionPath(RetentionPath path)
+    {
+        var chain = path.Chain.Take(MaxProjectedRetentionFrames).ToArray();
+        return path with
+        {
+            Chain = chain,
+            Truncated = path.Truncated || path.Chain.Count > chain.Length,
+        };
     }
 
     private static DiagnosticResult<HeapSnapshotQueryResult> QueryRootsByKind(

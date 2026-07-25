@@ -50,4 +50,8 @@ public sealed record HeapTypeGrowth(
 
     /// <summary>Retention chains from the current snapshot whose target type matches this grower.</summary>
     public IReadOnlyList<RetentionPath>? RetentionPaths { get; init; }
+    /// <summary>Total matching paths in the full current-snapshot artifact.</summary>
+    public int? TotalRetentionPaths { get; init; }
+    /// <summary>Matching paths omitted from the bounded inline growth row.</summary>
+    public int? OmittedRetentionPaths { get; init; }
 }

@@ -169,8 +169,8 @@ adds a uniform `depth` parameter to every windowed collector. Values:
 
 - `Summary` returns a small, decision-grade payload inline (the smallest piece
   of evidence the LLM needs to choose the next tool). This is the default.
-- `Detail` returns the historical pre-#41 payload (top-N hotspots, full
-  `Events[]` lists, full `Notes`, etc.).
+- `Detail` returns a larger bounded projection (top-N hotspots, retained
+  `Events[]` lists, full `Notes`, etc.). It does not imply an unbounded wire payload.
 - `Raw` is reserved for parity with the artifact handle; today equivalent to
   `Detail` for every tool.
 
@@ -204,7 +204,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="requests")` | The full in-flight request list. Summary keeps the headline counts + the oldest requests inline; drill in with `query_snapshot(handle, view=requests|longRunning)`. |
 | `collect_events(kind="startup")` | The loader/DI event lists and full timeline. Summary keeps headline counts, top assembly/module aggregates, and notes. |
 | `collect_events(kind="sweep")` | The five sub-snapshots' bulky lists (counters, gc, exceptions, threadpool, resource). Summary keeps observed signals + hypotheses + per-collector handles. Each sub-collector's full payload stays behind its handle (`data.sweep.handles`). |
-| `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph\|deadlocks\|unique-stacks\|async-stalls\|wait-chains)`. |
+| `collect_thread_snapshot` | The lock graph plus threads beyond the top 6 decisive rows; each row is capped at 6 frames. Deadlock members, contended-lock owners, exceptions, and running application frames rank before generic parked workers. `detail` remains bounded at 8 threads × 7 frames + 12 locks. |
 
 Explicit `topN` always wins over the depth default — if you pass
 `topN=10, depth=Summary` you get up to 10 hotspots inline (the LLM knows what
@@ -2570,11 +2570,14 @@ is refused, not crashed).
 ## `collect_thread_snapshot`
 
 Captures managed thread states plus the SyncBlock lock graph (holder address,
-owning thread, waiter count) from a live process or a dump. Returns the top-3
-blocked threads inline plus a `thread-snapshot` `handle` (~10 min TTL) for
+owning thread, waiter count) from a live process or a dump. Returns a bounded,
+decision-oriented thread projection inline plus a `thread-snapshot` `handle`
+(~10 min TTL) for
 deadlock / unique-stack / wait-chain drilldown. Handles now survive producer-PID
 exit until TTL; only `resolve-address` and `frame-vars` still require the original
-live process.
+live process. The inline ranking places deadlock members, contended-lock owners,
+threads with active exceptions, and running application frames before generic
+wait/park noise.
 
 **Parameters:**
 
@@ -2586,7 +2589,7 @@ live process.
 | `includeRuntimeFrames` | `bool` | `false` | Include PInvoke trampolines / runtime frames with no managed method |
 | `includeNativeFrames` | `bool` | `false` | Include pure native frames ClrMD cannot resolve |
 | `symbolPath` | `string?` | — | NT_SYMBOL_PATH-style path (same remote-server allowlist rule as `inspect_heap`) |
-| `depth` | `string` | `summary` | `summary` (top-3 blocked, no lock graph) \| `detail` (top-25 threads + top-25 locks) \| `raw` (= detail). The full snapshot is always retained behind the handle |
+| `depth` | `string` | `summary` | `summary` (≤6 threads × 6 frames, no lock graph) \| `detail`/`raw` (≤8 threads × 7 frames + 12 most-contended locks). The full snapshot is always retained behind the handle |
 
 **Returns:** `ThreadSnapshotQueryResult` + `thread-snapshot` handle. Drill via
 [`query_snapshot`](#query_snapshot) thread views: `threads-summary`, `stack`,
@@ -2614,7 +2617,7 @@ contract.
 |---|---|---|---|
 | `handle` | `string` | — | Drilldown handle from a prior collector |
 | `view` | `string?` | per-kind default | Kind-specific view (catalog below). Omit for the kind's default |
-| `topN` | `int?` | 50 heap/thread/collection, 25 off-CPU | Max entries in a ranked-list view |
+| `topN` | `int?` | 50 heap/thread/collection, 25 off-CPU | Requested entries in a ranked-list view. Thread lists (8), lock graph (12), and retention paths (10) have lower hard wire caps; handles retain the complete artifact |
 
 **View catalog (by handle kind):**
 
@@ -2622,6 +2625,9 @@ contract.
   `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`,
   `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`,
   `object`, `gcroot`, `objsize`, `async`, `diff`, `growth`.
+  `retention-paths` returns at most 10 paths and 12 frames per path inline.
+  Every intermediate carries its resolved type plus stable object address; the
+  complete captured chains remain behind the handle.
 - **thread** (`collect_thread_snapshot`): `top-blocked` (default),
   `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`,
   `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`.
@@ -2636,7 +2642,9 @@ contract.
   `config`, `timeline`, `hillClimbing`, `requests`, `longRunning`, …
 - **cpu-sample / allocation-sample / native-alloc-sample**: `call-tree`
   (default), `top-methods`, `by-module`, `by-namespace`, `hot-path`,
-  `caller-callee`, `diff`.
+  `caller-callee`, `diff`. The broad `call-tree` projection is capped at 64
+  nodes / depth 8 and ranks branches containing running self-samples before
+  generic waiting branches; narrow with `rootMethodFilter` for deeper evidence.
 
 **Common view-specific parameters** (each ignored outside its view):
 `rankBy` (`bytes`/`instances`), `typeFullName`, `address`,

@@ -69,6 +69,24 @@ implications:
 | Perf/ETW off-CPU & CPU samplers (`OffCpu/`, `CpuSampling/`) | `perf record --max-size` (already capped pre-fix) + the parser/aggregator now streams `perf script`/ETW output instead of buffering the full text/span list before aggregating | Same final aggregate (call tree / stack rollups) as before | Nothing — this was a pure streaming refactor (same category as the Dump/Collection rows above), listed here because it shares the "buffer full output" root cause with the other perf-tooling fixes | N/A |
 | Perf native-allocation sampler (`NativeAlloc/PerfNativeAllocSampler.cs`) | Same streaming parser as CPU/off-CPU, **plus** a hard `PerfScriptSampleBudget = 250,000` samples | The first 250,000 parsed perf-script samples | Parsing stops once the budget is hit; hotspots reflect only the processed prefix, not the full allocator-hot run | `aggregate.Truncated` → note: *"Stopped parsing perf script after 250,000 samples to keep allocator-hot captures bounded; hotspots reflect the processed prefix only."* — **this is a real trade-off, not a pure refactor**, since a single very allocation-heavy run can exceed the budget and silently-in-spirit (though not silently-in-notes) miss later hotspots |
 
+## Bounded LLM response projections
+
+These caps bound the **wire projection**, not collector retention. The full artifact remains
+behind its existing handle, so narrowing a follow-up query does not re-collect or discard evidence.
+
+| Projection | Inline cap | Selection |
+|---|---:|---|
+| `collect_thread_snapshot(depth="summary")` | 6 threads × 6 frames; no locks | Deadlocks, contended-lock owners, exceptions, and running frames before generic waits |
+| `collect_thread_snapshot(depth="detail"|"raw")` | 8 threads × 7 frames + 12 locks | Same thread ranking; most-contended locks first |
+| `query_snapshot` thread summaries | 8 threads × 8 frames | Same decisive ranking; `stack` still returns the explicitly selected captured stack |
+| CPU `call-tree` | 64 nodes, depth 8 | Branches containing running self-samples before waiting-only branches; use `rootMethodFilter` to narrow |
+| Heap `retention-paths` | 10 paths × 12 frames | Typed intermediate retainers with stable object addresses; projection truncation sets `Truncated=true` |
+| Heap `growth` rows | 1 path × 12 frames per grower | Carries total/omitted path counts; the current heap handle retains every path |
+
+Hints also avoid suggesting evidence already present in the current payload: an untruncated call
+tree has no redundant call-tree hint, and heap-growth output with inline retention paths does not
+recommend fetching those same paths again.
+
 ## Measured impact (synthetic 300k-event load)
 
 A throwaway benchmark (not committed — reproducible by feeding N synthetic

@@ -32,18 +32,28 @@ public sealed class QuerySnapshotGrowthToolTests
     {
         var store = new MemoryDiagnosticHandleStore();
         var baseline = store.Register(123, "heap-snapshot", HeapSnapshot(("Leaky.Cache", 1_000, 10)), TimeSpan.FromMinutes(10));
-        var path = new RetentionPath(
-            "Leaky.Cache",
-            0xDEAD,
-            new[] { new RetentionFrame("Root.Holder", 0xBEEF) { RootKind = "StaticVar" } },
-            Truncated: false);
-        var current = store.Register(123, "heap-snapshot", HeapSnapshot(new[] { path }, ("Leaky.Cache", 5_000, 50)), TimeSpan.FromMinutes(10));
+        var paths = Enumerable.Range(0, 3)
+            .Select(pathIndex => new RetentionPath(
+                "Leaky.Cache",
+                (ulong)(0xDEAD + pathIndex),
+                Enumerable.Range(0, 20)
+                    .Select(frameIndex => new RetentionFrame($"Root.Holder{frameIndex}", (ulong)(0xBEEF + frameIndex)))
+                    .ToArray(),
+                Truncated: false))
+            .ToArray();
+        var current = store.Register(123, "heap-snapshot", HeapSnapshot(paths, ("Leaky.Cache", 5_000, 50)), TimeSpan.FromMinutes(10));
 
         var result = await Growth(store, current.Id, baseline.Id);
 
         result.Error.Should().BeNull();
         var growth = result.Data.Should().BeOfType<HeapGrowthResult>().Subject;
-        growth.Growers.Should().ContainSingle().Which.RetentionPaths.Should().ContainSingle();
+        var grower = growth.Growers.Should().ContainSingle().Which;
+        grower.RetentionPaths.Should().ContainSingle();
+        grower.RetentionPaths![0].Chain.Should().HaveCount(HeapSnapshotQueryDispatcher.MaxProjectedRetentionFrames);
+        grower.RetentionPaths[0].Truncated.Should().BeTrue();
+        grower.TotalRetentionPaths.Should().Be(3);
+        grower.OmittedRetentionPaths.Should().Be(2);
+        result.Hints.Should().BeEmpty("the growth response already contains the requested retention evidence");
     }
 
     [Fact]

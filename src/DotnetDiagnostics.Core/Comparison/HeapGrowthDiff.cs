@@ -105,6 +105,10 @@ public static class HeapGrowthDiff
             }
 
             retentionByType.TryGetValue(identity.TypeFullName, out var paths);
+            var projectedPaths = paths?
+                .Take(1)
+                .Select(HeapSnapshotQueryDispatcher.ProjectRetentionPath)
+                .ToArray();
             growers.Add(new HeapTypeGrowth(
                 identity.TypeFullName,
                 identity.ModuleName,
@@ -119,7 +123,9 @@ public static class HeapGrowthDiff
                 IsNew: baselineMetric is null)
             {
                 Identity = identity,
-                RetentionPaths = paths,
+                RetentionPaths = projectedPaths,
+                TotalRetentionPaths = paths?.Count,
+                OmittedRetentionPaths = paths is null ? null : paths.Count - (projectedPaths?.Length ?? 0),
             });
         }
 

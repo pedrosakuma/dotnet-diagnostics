@@ -30,7 +30,7 @@ internal static class DiagnosticToolThreadingAndJit
         [Description("Include runtime frames (PInvoke trampolines, etc.) without an associated managed method. Off by default.")] bool includeRuntimeFrames = false,
         [Description("Include pure native frames where ClrMD cannot resolve a method. Off by default.")] bool includeNativeFrames = false,
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' returns only the top-3 blocked threads inline and drops the SyncBlock lock-graph (use query_snapshot(view='lock-graph') for the full graph). 'detail' returns the historical top-25 threads + top-25 locks. 'raw' is equivalent to detail. The full snapshot is always retained behind the issued handle.")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' returns at most 6 decisive threads with 6 frames each and no lock graph. 'detail'/'raw' return at most 8 decisive threads with 7 frames each plus the 12 most-contended locks. Running/owner/deadlock evidence ranks before generic waits. The full snapshot is always retained behind the issued handle.")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
@@ -88,27 +88,45 @@ internal static class DiagnosticToolThreadingAndJit
             string summary;
             if (depth == SamplingDepth.Summary)
             {
-                var topBlocked = snapshot.Threads
-                    .OrderByDescending(t => t.IsLikelyBlocked)
-                    .ThenByDescending(t => t.LockCount)
-                    .Take(3)
-                    .ToArray();
-                summaryView = new ThreadSnapshotQueryResult(handle.Id, "top-blocked", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
+                var projectedThreads = ThreadSnapshotProjection.SelectThreads(
+                    snapshot,
+                    ThreadSnapshotProjection.SummaryThreadLimit,
+                    ThreadSnapshotProjection.SummaryThreadLimit,
+                    ThreadSnapshotProjection.SummaryFrameLimit);
+                summaryView = new ThreadSnapshotQueryResult(handle.Id, "threads-summary", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
                 {
-                    Threads = topBlocked,
+                    Threads = projectedThreads,
                     Locks = Array.Empty<MonitorLockState>(),
+                    TotalThreads = snapshot.Threads.Count,
+                    OmittedThreads = snapshot.Threads.Count - projectedThreads.Count,
+                    FramesPerThreadLimit = ThreadSnapshotProjection.SummaryFrameLimit,
+                    TotalLocks = snapshot.Locks.Count,
+                    OmittedLocks = snapshot.Locks.Count,
                 };
-                var droppedThreads = snapshot.Threads.Count - topBlocked.Length;
-                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Showing top {topBlocked.Length} blocked inline (dropped {droppedThreads} thread(s) and {snapshot.Locks.Count} lock(s); handle has all). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Use query_snapshot(handle=\"{handle.Id}\", view=top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool).";
+                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Showing {projectedThreads.Count} decisive thread(s), capped at {ThreadSnapshotProjection.SummaryFrameLimit} frames each; running/owner/deadlock evidence ranks before generic waits. Omitted {snapshot.Threads.Count - projectedThreads.Count} thread(s) and all {snapshot.Locks.Count} lock(s) inline; handle `{handle.Id}` retains all for ~10 min. Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms.";
             }
             else
             {
+                var projectedThreads = ThreadSnapshotProjection.SelectThreads(
+                    snapshot,
+                    ThreadSnapshotProjection.DetailThreadLimit,
+                    ThreadSnapshotProjection.DetailThreadLimit,
+                    ThreadSnapshotProjection.DetailFrameLimit);
+                var projectedLocks = ThreadSnapshotProjection.SelectLocks(
+                    snapshot,
+                    ThreadSnapshotProjection.DetailLockLimit,
+                    ThreadSnapshotProjection.DetailLockLimit);
                 summaryView = new ThreadSnapshotQueryResult(handle.Id, "threads-summary", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
                 {
-                    Threads = snapshot.Threads.Take(25).ToArray(),
-                    Locks = snapshot.Locks.Take(25).ToArray(),
+                    Threads = projectedThreads,
+                    Locks = projectedLocks,
+                    TotalThreads = snapshot.Threads.Count,
+                    OmittedThreads = snapshot.Threads.Count - projectedThreads.Count,
+                    FramesPerThreadLimit = ThreadSnapshotProjection.DetailFrameLimit,
+                    TotalLocks = snapshot.Locks.Count,
+                    OmittedLocks = snapshot.Locks.Count - projectedLocks.Count,
                 };
-                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Use query_snapshot(handle=\"{handle.Id}\", view=top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool).";
+                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Detail shows {projectedThreads.Count} decisive thread(s) at up to {ThreadSnapshotProjection.DetailFrameLimit} frames each and {projectedLocks.Count} most-contended lock(s); handle `{handle.Id}` retains all for ~10 min. Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms.";
             }
 
             if (snapshot.SnapshotKind is not "exact")
@@ -125,14 +143,19 @@ internal static class DiagnosticToolThreadingAndJit
                 summary += $" Caveats: {string.Join(" ", snapshot.Warnings.Take(3))}";
             }
 
-            var hint = contended > 0
+            var deadlocks = ThreadDeadlockDetector.Detect(snapshot, handle.Id, 1);
+            var hint = deadlocks.Count > 0
                 ? new NextActionHint("query_snapshot",
-                    "Check the captured lock graph for wait-for cycles before drilling into individual stacks.",
+                    "Confirm the detected wait-for cycle and its lock chain.",
                     new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "deadlocks" })
+                : contended > 0
+                    ? new NextActionHint("query_snapshot",
+                        "Correlate the contended locks into ranked waiter-to-owner chains.",
+                        new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "wait-chains" })
                 : blocked > 0
                     ? new NextActionHint("query_snapshot",
-                        "Drill into the top blocked threads.",
-                        new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "top-blocked" })
+                        "Classify whether the blocked-looking stacks are async stalls or ordinary parked workers.",
+                        new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "async-stalls" })
                     : null;
 
             var result = hint is null
@@ -238,7 +261,7 @@ internal static class DiagnosticToolThreadingAndJit
         [Description("Snapshot handle returned by collect_thread_snapshot.")] string handle,
         [Description("Which slice to return: 'threads-summary', 'stack', 'lock-graph', 'deadlocks', 'top-blocked', 'unique-stacks', 'async-stalls', 'wait-chains' or 'threadpool'.")] string view = "top-blocked",
         [Description("For view='stack': thread id key to return frames for. CoreCLR snapshots use ManagedThreadId; linux-native-stack snapshots use OSThreadId (TID). Ignored by other views.")] int? threadId = null,
-        [Description("Maximum entries returned by ranked-list views ('threads-summary', 'top-blocked', 'lock-graph', 'unique-stacks') or the number of deadlock cycles returned by 'deadlocks'. Defaults to 50.")] int topN = 50,
+        [Description("Requested entries for ranked views. Thread list projections are hard-capped at 8 rows × 8 frames and lock-graph at 12 rows; deadlocks/unique-stacks retain their existing topN behavior. Defaults to 50.")] int topN = 50,
         [Description("For view='unique-stacks': number of top frames folded into the signature hash. Defaults to 20. Ignored by other views.")] int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
         [Description("For view='unique-stacks': drop groups with fewer than this many threads. Defaults to 1. Ignored by other views.")] int minCount = 1)
     {

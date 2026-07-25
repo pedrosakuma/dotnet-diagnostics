@@ -605,12 +605,14 @@ public sealed class DepthContractTests : IClassFixture<McpToolsTests.AuthedFacto
         var detail = detailEnvelope!.Data;
         summary.Should().NotBeNull();
         detail.Should().NotBeNull();
-        summary!.View.Should().Be("top-blocked", "Summary returns the top-blocked view inline");
+        summary!.View.Should().Be("threads-summary", "Summary returns a ranked decision-oriented thread projection inline");
         summary.Threads.Should().NotBeNull();
-        summary.Threads!.Count.Should().BeLessThanOrEqualTo(3, "Summary caps inline threads at 3");
+        summary.Threads!.Count.Should().BeLessThanOrEqualTo(ThreadSnapshotProjection.SummaryThreadLimit);
+        summary.Threads.Should().OnlyContain(thread => thread.Frames.Count <= ThreadSnapshotProjection.SummaryFrameLimit);
         summary.Locks.Should().BeNullOrEmpty("Summary drops the inline lock graph (use query_thread_snapshot(view=lock-graph))");
         detail!.View.Should().Be("threads-summary");
         detail.Threads!.Count.Should().BeGreaterThanOrEqualTo(summary.Threads.Count);
+        detail.Threads.Should().OnlyContain(thread => thread.Frames.Count <= ThreadSnapshotProjection.DetailFrameLimit);
     }
 
     private async Task<McpClient> ConnectAsync(WebApplicationFactory<DotnetDiagnostics.Mcp.Program>? factory = null)

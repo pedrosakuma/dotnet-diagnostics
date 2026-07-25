@@ -182,13 +182,28 @@ internal static class ClrMdRetentionAnalyzer
         Dictionary<ulong, (ulong From, string? RootKind)> retainerMap,
         int depthLimit,
         out bool truncated)
+        => BuildRetentionChain(
+            instance.Type?.Name ?? "<unknown>",
+            instance.Address,
+            retainerMap,
+            depthLimit,
+            address => ResolveTypeName(instance.Type?.Heap, address),
+            out truncated);
+
+    internal static List<RetentionFrame> BuildRetentionChain(
+        string targetTypeFullName,
+        ulong targetAddress,
+        IReadOnlyDictionary<ulong, (ulong From, string? RootKind)> retainerMap,
+        int depthLimit,
+        Func<ulong, string?> resolveTypeName,
+        out bool truncated)
     {
         var chain = new List<RetentionFrame>(depthLimit + 1);
-        var current = instance.Address;
+        var current = targetAddress;
         var visited = new HashSet<ulong> { current };
         truncated = false;
 
-        chain.Add(new RetentionFrame(instance.Type?.Name ?? "<unknown>", current));
+        chain.Add(new RetentionFrame(targetTypeFullName, current));
 
         for (var i = 0; i < depthLimit; i++)
         {
@@ -200,14 +215,24 @@ internal static class ClrMdRetentionAnalyzer
             }
 
             if (!visited.Add(step.From)) break;
-            // We don't have the ClrObject in hand here; just record the address. Resolving
-            // the type name requires another GetObject which we skip for cost — agent can
-            // call back into the dump for the specific address if needed.
-            chain.Add(new RetentionFrame("<retainer>", step.From));
+            chain.Add(new RetentionFrame(resolveTypeName(step.From) ?? "<unknown>", step.From));
             current = step.From;
         }
 
-        truncated = chain.Count > depthLimit;
+        truncated = retainerMap.ContainsKey(current);
         return chain;
+    }
+
+    private static string? ResolveTypeName(ClrHeap? heap, ulong address)
+    {
+        if (heap is null) return null;
+        try
+        {
+            return heap.GetObject(address).Type?.Name;
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

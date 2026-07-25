@@ -40,6 +40,12 @@ public static class CpuSampleQueryDispatcher
     /// <summary>Default number of rows returned by the ranked CPU views.</summary>
     public const int DefaultTopN = 20;
 
+    /// <summary>Hard cap for the inline call-tree projection. The handle retains the complete tree.</summary>
+    public const int MaxProjectedCallTreeNodes = 64;
+
+    /// <summary>Hard cap for the inline call-tree depth. Narrow with rootMethodFilter for deeper evidence.</summary>
+    public const int MaxProjectedCallTreeDepth = 8;
+
     /// <summary>Default hot-path threshold: a child must carry at least this % of its parent to extend the chain.</summary>
     public const double DefaultHotPathThresholdPercent = 50d;
 
@@ -80,7 +86,7 @@ public static class CpuSampleQueryDispatcher
         if (maxDepth < 1) return InvalidArg<CallTreeView>(nameof(maxDepth), "must be >= 1");
         if (maxNodes < 1) return InvalidArg<CallTreeView>(nameof(maxNodes), "must be >= 1");
 
-        var root = CallTreeIdentityProjector.Stamp(artifact.Root, artifact.MethodIdentities);
+        var root = artifact.Root;
         if (!string.IsNullOrWhiteSpace(rootMethodFilter))
         {
             var match = FindHighestRankedDescendant(root, rootMethodFilter);
@@ -95,27 +101,31 @@ public static class CpuSampleQueryDispatcher
             root = match;
         }
 
-        var (pruned, nodeCount, truncated) = PruneTree(root, maxDepth, maxNodes);
-        var view = new CallTreeView(artifact.ProcessId, artifact.TotalSamples, nodeCount, truncated, pruned)
+        var effectiveDepth = Math.Min(maxDepth, MaxProjectedCallTreeDepth);
+        var effectiveNodes = Math.Min(maxNodes, MaxProjectedCallTreeNodes);
+        var (pruned, nodeCount, truncated) = PruneTree(root, effectiveDepth, effectiveNodes);
+        var stamped = CallTreeIdentityProjector.Stamp(pruned, artifact.MethodIdentities);
+        var view = new CallTreeView(artifact.ProcessId, artifact.TotalSamples, nodeCount, truncated, stamped)
         {
             SelfSamples = artifact.SelfSamples ?? CpuSampleAnalytics.TotalSelfSamples(root),
+            NodeLimit = effectiveNodes,
+            DepthLimit = effectiveDepth,
         };
         var summary = truncated
-            ? $"Showing {nodeCount} nodes (truncated; raise maxNodes or maxDepth, or narrow with rootMethodFilter). Root: {root.Frame.Method} — {root.InclusiveSamples} inclusive samples."
+            ? $"Showing a bounded {nodeCount}-node call-tree projection (limit {effectiveNodes} nodes / depth {effectiveDepth}); narrow with rootMethodFilter or use top-methods for decisive self-time. Root: {root.Frame.Method} — {root.InclusiveSamples} inclusive samples. The handle retains the full tree."
             : $"Showing the full sub-tree rooted at {root.Frame.Method} ({nodeCount} nodes, {root.InclusiveSamples} inclusive samples).";
         if (view.SelfSamples is { } self)
         {
             summary += $" Self split: {self.RunningSamples} running / {self.WaitingSamples} waiting.";
         }
 
-        var drilldownMethod = pruned.Children.Count > 0 ? pruned.Children[0].Frame.Method : null;
-        return drilldownMethod is null
+        return !truncated
             ? DiagnosticResult.Ok(view, summary)
             : DiagnosticResult.Ok(
                 view,
                 summary,
-                new NextActionHint("query_snapshot", "Drill deeper by anchoring at the hottest child method.",
-                    new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallTreeView, ["rootMethodFilter"] = drilldownMethod, ["maxDepth"] = 6 }));
+                new NextActionHint("query_snapshot", "Rank methods by exclusive self-time instead of requesting another broad tree.",
+                    new Dictionary<string, object?> { ["handle"] = handle, ["view"] = TopMethodsView, ["rankBy"] = "exclusive" }));
     }
 
     /// <summary>Renders the <c>top-methods</c> view: per-method exclusive/inclusive aggregation, ranked and capped.</summary>
@@ -297,8 +307,32 @@ public static class CpuSampleQueryDispatcher
     {
         var nodeBudget = maxNodes;
         var truncated = false;
+        var runningSamples = new Dictionary<CallTreeNode, long>(ReferenceEqualityComparer.Instance);
+        var runningScanBudget = MaxProjectedCallTreeNodes * 64;
         var pruned = Walk(root, maxDepth);
         return (pruned, maxNodes - nodeBudget, truncated);
+
+        long CountRunningBounded(CallTreeNode node)
+        {
+            if (runningSamples.TryGetValue(node, out var cached)) return cached;
+
+            var total = node.SelfSamples?.RunningSamples ?? 0;
+            if (runningScanBudget <= 0)
+            {
+                runningSamples[node] = total;
+                return total;
+            }
+
+            runningScanBudget--;
+            foreach (var child in node.Children)
+            {
+                if (runningScanBudget <= 0) break;
+                total += CountRunningBounded(child);
+            }
+
+            runningSamples[node] = total;
+            return total;
+        }
 
         CallTreeNode Walk(CallTreeNode n, int depthRemaining)
         {
@@ -316,7 +350,19 @@ public static class CpuSampleQueryDispatcher
             }
 
             var kept = new List<CallTreeNode>();
-            foreach (var child in n.Children)
+            var candidateLimit = MaxProjectedCallTreeNodes * 4;
+            var candidates = n.Children.Take(candidateLimit).ToArray();
+            if (candidates.Length < n.Children.Count)
+            {
+                truncated = true;
+            }
+
+            foreach (var child in candidates
+                .OrderByDescending(child => CountRunningBounded(child) > 0)
+                .ThenByDescending(CountRunningBounded)
+                .ThenByDescending(static child => child.ExclusiveSamples)
+                .ThenByDescending(static child => child.InclusiveSamples)
+                .ThenBy(static child => child.Frame.Method, StringComparer.Ordinal))
             {
                 if (nodeBudget <= 0)
                 {
