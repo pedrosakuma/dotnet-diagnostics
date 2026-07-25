@@ -128,6 +128,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             authMeta!["authorized"]!.GetValue<bool>().Should().Be(
                 tool.Name != "get_bytes",
                 "wildcard root satisfies primary scopes but must not imply literal modifier scopes");
+            authMeta["delegationRequired"]!.GetValue<bool>().Should().BeFalse();
             authMeta["requiredScopes"]!.AsArray().Should().NotBeEmpty($"tool {tool.Name} must list required scopes");
             authMeta["semantics"]!.GetValue<string>().Should().BeOneOf("all", "any");
 
