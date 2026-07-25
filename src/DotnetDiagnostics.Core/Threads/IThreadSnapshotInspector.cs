@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core.Memory;
 
 namespace DotnetDiagnostics.Core.Threads;
@@ -191,6 +192,15 @@ public sealed record ManagedThread(
 {
     /// <summary>True when the top frame indicates this thread is parked/waiting/sleeping — useful for ranking.</summary>
     public bool IsLikelyBlocked { get; init; }
+    /// <summary>True when this thread owns a monitor with waiters in this snapshot.</summary>
+    [JsonIgnore]
+    public bool IsContendedLockOwner { get; init; }
+    /// <summary>True when this thread is waiting to acquire a monitor in this snapshot.</summary>
+    [JsonIgnore]
+    public bool IsLockWaiter { get; init; }
+    /// <summary>True when this thread both owns a contended monitor and waits on another monitor.</summary>
+    [JsonIgnore]
+    public bool IsDeadlockCandidate { get; init; }
     /// <summary>Coarse wait reason inferred from the top frame (Monitor.Wait/Sleep/Park/Join/Socket/etc.) when detectable.</summary>
     public string? InferredWaitReason { get; init; }
 }

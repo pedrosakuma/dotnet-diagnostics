@@ -2641,9 +2641,9 @@ contract.
   offsets. Thread pages report `totalThreads` for the complete snapshot and
   `candidateThreads` for the ranked set paged by the current view, so
   `omittedThreads` is always relative to `candidateThreads`. Each projected
-  page is sliced from a stable ranking index prepared once when the capture is
-  registered; continuation does not rebuild full waiter sets or re-sort the
-  capture. `top-blocked` treats captured lock waiters as blocked candidates
+  page is selected by deterministic scans with page-sized workspace; no
+  capture-sized ranking index, waiter set, address dictionary, or sorted copy
+  is retained with the handle. `top-blocked` treats captured lock waiters as blocked candidates
   even when a backend did not set `isLikelyBlocked`. Each projected lock
   includes at most eight waiter IDs plus
   `totalWaitingManagedThreadIds` / `omittedWaitingManagedThreadIds`; paging

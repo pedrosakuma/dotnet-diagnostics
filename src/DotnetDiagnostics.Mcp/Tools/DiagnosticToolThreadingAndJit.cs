@@ -72,7 +72,6 @@ internal static class DiagnosticToolThreadingAndJit
                 snapshot = await inspector.InspectLiveAsync(livePid, opts, cancellationToken).ConfigureAwait(false);
             }
 
-            ThreadSnapshotProjection.Prepare(snapshot);
             var handle = handles.Register(
                 snapshot.ProcessId,
                 ThreadSnapshotKind,

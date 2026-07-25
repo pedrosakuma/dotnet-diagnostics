@@ -540,6 +540,51 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_ThreadSnapshotHandle_ForwardsContinuationOffset()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(
+            Environment.ProcessId,
+            "thread-snapshot",
+            ThreadPagingSnapshot(),
+            TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view threads-summary --offset 8\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("\"threadOffset\": 8");
+        stdout.Should().Contain("\"nextThreadOffset\": 16");
+        stdout.Should().Contain("\"managedThreadId\": 9");
+        stdout.Should().NotContain("\"managedThreadId\": 1,");
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotHandle_ForwardsLockAddressAndWaiterOffset()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(
+            Environment.ProcessId,
+            "thread-snapshot",
+            ThreadPagingSnapshot(),
+            TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view lock-graph --address 0x30000 --offset 8\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("\"waiterOffset\": 8");
+        stdout.Should().Contain("\"nextWaiterOffset\": 16");
+        stdout.Should().Contain("\"waitingManagedThreadIds\"");
+        stdout.Should().Contain("9,");
+        stdout.Should().Contain("16");
+    }
+
+    [Fact]
     public async Task Query_ThreadSnapshotHandle_StackView_RequiresThreadId()
     {
         var (services, store) = BuildServices();
@@ -1541,6 +1586,59 @@ public sealed class SessionReplTests
             "10.0.0",
             threads,
             []);
+    }
+
+    private static ThreadSnapshotArtifact ThreadPagingSnapshot()
+    {
+        var frame = new ManagedStackFrame(
+            "ManagedMethod",
+            "App.Worker.Run",
+            "App.Worker",
+            "App.dll",
+            0x1000,
+            0x2000);
+        var threads = Enumerable.Range(1, 20)
+            .Select(id => new ManagedThread(
+                id,
+                (uint)(10_000 + id),
+                (ulong)id,
+                "Running",
+                true,
+                false,
+                false,
+                false,
+                true,
+                0,
+                null,
+                frame.DisplayName,
+                [frame])
+            {
+                IsLockWaiter = true,
+            })
+            .ToArray();
+        var lockState = new MonitorLockState(
+            0x30_000,
+            "App.Lock",
+            20,
+            10_020,
+            20,
+            0,
+            20,
+            true,
+            "test")
+        {
+            WaitingManagedThreadIds = Enumerable.Range(1, 20).ToArray(),
+        };
+
+        return new ThreadSnapshotArtifact(
+            ThreadSnapshotOrigin.Live,
+            Environment.ProcessId,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMilliseconds(25),
+            "CoreClr",
+            "10.0.0",
+            threads,
+            [lockState]);
     }
 
     private static OffCpuSnapshotArtifact OffCpuSnapshot()

@@ -612,7 +612,15 @@ internal static partial class CliCommands
         var framesToHash = options.FramesToHash ?? 20;
         var minCount = options.MinCount ?? 1;
         var result = ThreadSnapshotQueryDispatcher.Dispatch(
-            snapshot, options.Handle!, view, options.ThreadId, topN, framesToHash, minCount);
+            snapshot,
+            options.Handle!,
+            view,
+            options.ThreadId,
+            topN,
+            framesToHash,
+            minCount,
+            offset: options.Offset ?? 0,
+            lockAddress: options.Address);
 
         return BuildResult<ThreadSnapshotQueryResult>(result, static (sb, qr) =>
         {

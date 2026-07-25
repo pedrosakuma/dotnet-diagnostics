@@ -179,13 +179,14 @@ public sealed class ThreadSnapshotQueryDispatcherTests
                 .Select((thread, index) => thread with
                 {
                     IsLikelyBlocked = index < 10,
+                    IsContendedLockOwner = false,
+                    IsLockWaiter = false,
+                    IsDeadlockCandidate = false,
                     InferredWaitReason = index < 10 ? "Monitor.Enter" : null,
                 })
                 .ToArray(),
             Locks = Array.Empty<MonitorLockState>(),
         };
-        ThreadSnapshotProjection.Prepare(snapshot);
-
         var first = ThreadSnapshotQueryDispatcher.Dispatch(
             snapshot, Handle, "top-blocked", null, 50, 20, 1, offset: 0);
         var second = ThreadSnapshotQueryDispatcher.Dispatch(
@@ -212,7 +213,12 @@ public sealed class ThreadSnapshotQueryDispatcherTests
         var snapshot = source with
         {
             Threads = source.Threads
-                .Select(thread => thread with { IsLikelyBlocked = false, InferredWaitReason = null })
+                .Select(thread => thread with
+                {
+                    IsLikelyBlocked = false,
+                    IsLockWaiter = thread.ManagedThreadId == 1,
+                    InferredWaitReason = null,
+                })
                 .ToArray(),
             Locks =
             [
@@ -222,8 +228,6 @@ public sealed class ThreadSnapshotQueryDispatcherTests
                 },
             ],
         };
-        ThreadSnapshotProjection.Prepare(snapshot);
-
         var outcome = ThreadSnapshotQueryDispatcher.Dispatch(
             snapshot, Handle, "top-blocked", null, 50, 20, 1);
 
@@ -333,7 +337,6 @@ public sealed class ThreadSnapshotQueryDispatcherTests
         {
             Source = "clrmd-thread-walk",
         };
-        ThreadSnapshotProjection.Prepare(snapshot);
         return snapshot;
     }
 
@@ -364,7 +367,12 @@ public sealed class ThreadSnapshotQueryDispatcherTests
                     0,
                     null,
                     frames[0].DisplayName,
-                    frames);
+                    frames)
+                {
+                    IsContendedLockOwner = id == 1,
+                    IsLockWaiter = true,
+                    IsDeadlockCandidate = id == 1,
+                };
             })
             .ToArray();
         var locks = Enumerable.Range(0, 30)
@@ -394,7 +402,6 @@ public sealed class ThreadSnapshotQueryDispatcherTests
         {
             Source = "clrmd-thread-walk",
         };
-        ThreadSnapshotProjection.Prepare(snapshot);
         return snapshot;
     }
 

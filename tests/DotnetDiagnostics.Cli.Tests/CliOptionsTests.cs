@@ -40,6 +40,17 @@ public sealed class CliOptionsTests
         options.Address.Should().Be("0x1f2a3b40");
     }
 
+    [Fact]
+    public void Parse_QueryOffset_IsCaptured()
+    {
+        var options = CliOptions.Parse(
+            new[] { "query", "--handle", "h1", "--view", "threads-summary", "--offset", "8" },
+            out var error);
+
+        error.Should().BeNull();
+        options!.Offset.Should().Be(8);
+    }
+
     [Theory]
     [InlineData("-p")]
     [InlineData("--pid")]

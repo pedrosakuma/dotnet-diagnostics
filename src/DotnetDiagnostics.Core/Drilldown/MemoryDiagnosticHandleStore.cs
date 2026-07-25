@@ -1,6 +1,5 @@
 using System.Diagnostics.Metrics;
 using System.Security.Cryptography;
-using DotnetDiagnostics.Core.Threads;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -75,11 +74,6 @@ public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
         {
             throw new ArgumentOutOfRangeException(nameof(ttl), "TTL must be positive.");
         }
-        if (artifact is ThreadSnapshotArtifact threadSnapshot)
-        {
-            ThreadSnapshotProjection.Prepare(threadSnapshot);
-        }
-
         List<Removal> removals;
         DiagnosticHandle handle;
         int entryCount;

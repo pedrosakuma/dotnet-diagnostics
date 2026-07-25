@@ -60,22 +60,17 @@ public sealed class DiagnosticProjectionShapeTests
     }
 
     [Fact]
-    public void ThreadSnapshot_PreparedPagesAllocateIndependentlyOfCaptureVolume()
+    public void ThreadSnapshot_RegistrationAndFirstPageAllocateIndependentlyOfCaptureVolume()
     {
         var small = LargePagingSnapshot(threadCount: 1_000, lockCount: 500);
         var large = LargePagingSnapshot(threadCount: 20_000, lockCount: 10_000);
-        var handles = new MemoryDiagnosticHandleStore();
-        _ = handles.Register(small.ProcessId, "thread-snapshot", small, TimeSpan.FromMinutes(10));
-        _ = handles.Register(large.ProcessId, "thread-snapshot", large, TimeSpan.FromMinutes(10));
-
-        _ = MeasureProjectionAllocations(small, iterations: 2);
-        _ = MeasureProjectionAllocations(large, iterations: 2);
-        var smallAllocated = MeasureProjectionAllocations(small, iterations: 100);
-        var largeAllocated = MeasureProjectionAllocations(large, iterations: 100);
+        _ = MeasureRegistrationAndFirstPageAllocations(small);
+        var smallAllocated = MeasureRegistrationAndFirstPageAllocations(small);
+        var largeAllocated = MeasureRegistrationAndFirstPageAllocations(large);
 
         largeAllocated.Should().BeLessThanOrEqualTo(
             smallAllocated + 256_000,
-            "prepared pages should allocate for only the bounded rows, not the 20x larger capture");
+            "registration and projection must retain and allocate only bounded page-sized state, not a capture-sized ranking index");
 
         var threadPage = ThreadSnapshotProjection.ProjectThreads(
             large,
@@ -251,7 +246,6 @@ public sealed class DiagnosticProjectionShapeTests
                     WaitingManagedThreadIds = Enumerable.Range(1, 10_000).ToArray(),
                 })
                 .ToArray());
-        ThreadSnapshotProjection.Prepare(snapshot);
         return snapshot;
     }
 
@@ -283,6 +277,9 @@ public sealed class DiagnosticProjectionShapeTests
             frames)
         {
             IsLikelyBlocked = blocked,
+            IsContendedLockOwner = id == 1,
+            IsLockWaiter = true,
+            IsDeadlockCandidate = id == 1,
             InferredWaitReason = blocked ? "ThreadPool park" : null,
         };
     }
@@ -330,27 +327,21 @@ public sealed class DiagnosticProjectionShapeTests
         };
     }
 
-    private static long MeasureProjectionAllocations(ThreadSnapshotArtifact snapshot, int iterations)
+    private static long MeasureRegistrationAndFirstPageAllocations(ThreadSnapshotArtifact snapshot)
     {
+        var handles = new MemoryDiagnosticHandleStore();
         var before = GC.GetAllocatedBytesForCurrentThread();
-        var checksum = 0;
-        for (var i = 0; i < iterations; i++)
-        {
-            var threadPage = ThreadSnapshotProjection.ProjectThreads(
-                snapshot,
-                requestedCount: 50,
-                hardThreadLimit: ThreadSnapshotProjection.QueryThreadLimit,
-                frameLimit: ThreadSnapshotProjection.QueryFrameLimit,
-                offset: i % 20 * ThreadSnapshotProjection.QueryThreadLimit);
-            var lockPage = ThreadSnapshotProjection.ProjectLocks(
-                snapshot,
-                requestedCount: 50,
-                hardLimit: ThreadSnapshotProjection.DetailLockLimit,
-                offset: i % 20 * ThreadSnapshotProjection.DetailLockLimit);
-            checksum += threadPage.Items.Count + lockPage.Items.Count;
-        }
-
-        GC.KeepAlive(checksum);
+        var handle = handles.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10));
+        var threadPage = ThreadSnapshotProjection.ProjectThreads(
+            snapshot,
+            requestedCount: 50,
+            hardThreadLimit: ThreadSnapshotProjection.QueryThreadLimit,
+            frameLimit: ThreadSnapshotProjection.QueryFrameLimit);
+        var lockPage = ThreadSnapshotProjection.ProjectLocks(
+            snapshot,
+            requestedCount: 50,
+            hardLimit: ThreadSnapshotProjection.DetailLockLimit);
+        GC.KeepAlive((handle, threadPage, lockPage));
         return GC.GetAllocatedBytesForCurrentThread() - before;
     }
 
@@ -382,6 +373,9 @@ public sealed class DiagnosticProjectionShapeTests
                 frames)
             {
                 IsLikelyBlocked = id % 3 == 0,
+                IsContendedLockOwner = id <= lockCount,
+                IsLockWaiter = lockCount > 0,
+                IsDeadlockCandidate = id <= lockCount,
                 InferredWaitReason = id % 3 == 0 ? "Monitor.Enter" : null,
             })
             .ToArray();

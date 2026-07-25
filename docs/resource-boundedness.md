@@ -78,14 +78,15 @@ behind its existing handle, so narrowing a follow-up query does not re-collect o
 |---|---:|---|
 | `collect_thread_snapshot(depth="summary")` | 6 threads × 6 frames; no locks | Deadlocks, contended-lock owners, exceptions, and running frames before generic waits |
 | `collect_thread_snapshot(depth="detail"|"raw")` | 8 threads × 7 frames + 12 locks × 8 waiter IDs | Same thread ranking; most-contended locks first; each lock reports total/omitted waiter-ID counts |
-| `query_snapshot` thread summaries / lock graph | 8 threads × 8 frames / 12 locks × 8 waiter IDs per page | A stable thread/lock ranking index is prepared once at capture registration; each page then allocates only its bounded rows instead of rebuilding full waiter sets or sorting the capture. Thread pages expose whole-snapshot `totalThreads` separately from the paged `candidateThreads`; `offset` + next-offset metadata pages through every retained thread/lock, `stack(threadId=...)` selects an exact full captured stack, and `lock-graph(address=...)` pages every retained waiter ID for one stable lock address |
+| `query_snapshot` thread summaries / lock graph | 8 threads × 8 frames / 12 locks × 8 waiter IDs per page | Deterministic continuation selection scans the retained capture with page-sized workspace; no capture-sized ranking cache is built or retained. Thread pages expose whole-snapshot `totalThreads` separately from the paged `candidateThreads`; `offset` + next-offset metadata pages through every retained thread/lock, `stack(threadId=...)` selects an exact full captured stack, and `lock-graph(address=...)` pages every retained waiter ID for one stable lock address |
 | CPU `call-tree` | 64 nodes, depth 8 | Every direct child participates in decision-first ranking; selected direct-child slots are reserved before descendants consume the remaining budget, and branches containing running self-samples precede waiting-only branches; use `rootMethodFilter` to narrow |
 | Heap `retention-paths` | 10 paths × 12 frames | Target and terminal root (`RootKind`) are always preserved, with typed/addressed intermediates filling the remaining budget; projection truncation sets `Truncated=true` |
 | Heap `growth` rows | 1 path × 12 frames per grower | Carries total/omitted path counts; the current heap handle retains every path |
 
-The thread ranking index retains one ordering entry per already-captured thread/lock
-for the handle lifetime. That one-time O(capture rows) cost replaces repeated waiter-set
-materialization and full sorts; every response page allocates only its fixed row/frame limits.
+Thread and lock continuation may scan the complete retained capture, but projection workspace
+and derived retained state remain O(page size). Stable total-order keys, including original
+capture position as the final tie-breaker, make repeated `offset` pages deterministic without
+materializing full candidate arrays, waiter sets, dictionaries, or sorts.
 
 Hints also avoid suggesting evidence already present in the current payload: an untruncated call
 tree has no redundant call-tree hint, and heap-growth output with inline retention paths does not

@@ -27,7 +27,7 @@ internal static class CliCommandCatalog
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--dump-type", "--out", "--mvid",
         "--asset", "--handle", "--view", "--provider-filter", "--root-method-filter", "--rank-by",
-        "--type-filter", "--address", "--max-depth", "--max-nodes", "--thread-id",
+        "--type-filter", "--address", "--offset", "--max-depth", "--max-nodes", "--thread-id",
         "--native-alloc-sample-period", "--max-frames-per-thread", "--watch",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
         "--symptom", "--hypothesis", "--max-tool-calls", "--top-hotspots",
@@ -322,6 +322,8 @@ query options:
       --changes-only            Session query: DATAS 'tuning' view; show only heap-count changes.
       --root-method-filter <t>  Session query: CPU method filter; event-catalog event-name filter.
       --thread-id <int>         Session query: ManagedThreadId; required for thread-snapshot 'frame-vars' view.
+      --offset <int>            Session query: zero-based continuation offset for bounded thread/lock pages.
+      --address <decimal|0xhex> Session query: heap object/root address or exact thread-snapshot lock address.
       --stack-rank <int>        Session query: 1-based rank for the off-CPU 'stack' view.
   Note: handles are process-local. A one-shot command's handle disappears when that command exits,
   so one-shot 'query' always returns a NotSupported envelope (exit 1). Use --depth detail / --json
@@ -349,6 +351,7 @@ query options:
                 "--rank-by",
                 "--type-filter",
                 "--address",
+                "--offset",
                 "--max-depth",
                 "--max-nodes",
                 "--thread-id",

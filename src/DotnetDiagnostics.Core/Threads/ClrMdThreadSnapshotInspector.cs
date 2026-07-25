@@ -209,6 +209,7 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
             .Where(thread => thread.ManagedThreadId > 0)
             .ToDictionary(thread => thread.ManagedThreadId);
         var locks = WalkSyncBlocks(runtime, clrThreads, threadByAddress, managedThreadsById, warnings, ct);
+        StampLockRoles(threads, locks);
         var threadPool = CaptureThreadPool(
             runtime,
             threads,
@@ -219,6 +220,31 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
             isLiveCapture,
             ct);
         return (threads, locks, threadPool);
+    }
+
+    private static void StampLockRoles(List<ManagedThread> threads, IReadOnlyList<MonitorLockState> locks)
+    {
+        var contendedOwners = locks
+            .Where(static lockState => lockState.IsContended && lockState.OwnerManagedThreadId > 0)
+            .Select(static lockState => lockState.OwnerManagedThreadId)
+            .ToHashSet();
+        var waiters = locks
+            .SelectMany(static lockState => lockState.WaitingManagedThreadIds)
+            .Where(static threadId => threadId > 0)
+            .ToHashSet();
+
+        for (var index = 0; index < threads.Count; index++)
+        {
+            var thread = threads[index];
+            var isOwner = contendedOwners.Contains(thread.ManagedThreadId);
+            var isWaiter = waiters.Contains(thread.ManagedThreadId);
+            threads[index] = thread with
+            {
+                IsContendedLockOwner = isOwner,
+                IsLockWaiter = isWaiter,
+                IsDeadlockCandidate = isOwner && isWaiter,
+            };
+        }
     }
 
     private List<ManagedStackFrame> WalkStack(ClrThread t, ThreadSnapshotOptions opts, NativeModuleMap moduleMap, IDataReader? reader)
