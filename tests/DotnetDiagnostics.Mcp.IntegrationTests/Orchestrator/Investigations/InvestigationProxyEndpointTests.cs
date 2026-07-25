@@ -486,6 +486,8 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     [Theory]
     [InlineData("/proxy/inv_dot/mcp/../health")]
     [InlineData("/proxy/inv_dot/mcp/%2e%2e/health")]
+    [InlineData("/proxy/inv_dot/mcp/%2e%2e%5cmetrics")]
+    [InlineData("/proxy/inv_dot/mcp/%255c..%255cmetrics")]
     public async Task Proxy_RejectsDotSegmentPath_WithStructured404(string url)
     {
         // B3 review (issue #164 High 3): dot-segments must be rejected before
