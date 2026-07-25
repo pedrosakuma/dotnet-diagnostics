@@ -227,6 +227,20 @@ internal static class ToolScopeDelegation
             // the caller explicitly presented it and bind it to this exact invocation.
             scopes.Add(ToolInvocationScopeResolver.SensitiveParameterReadScope);
         }
+        else if (string.Equals(toolName, "export_investigation_summary", StringComparison.Ordinal))
+        {
+            // The orchestrator cannot inspect pod-local evidence handles. Forward only the
+            // relevant evidence scopes the caller actually presented; the pod resolves every
+            // handle kind and enforces its exact scope before exporting.
+            foreach (var scope in ToolInvocationScopeResolver.GetInvestigationExportDelegationScopeCandidates())
+            {
+                if (principal.HasExplicitScope(scope))
+                {
+                    scopes.Add(scope);
+                }
+            }
+        }
+
         return scopes.ToImmutable();
     }
 

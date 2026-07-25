@@ -132,6 +132,9 @@ internal static class ToolInvocationScopeResolver
             ? OrchestratorAttachScope
             : OrchestratorListScope;
 
+    internal static ImmutableArray<string> GetInvestigationExportDelegationScopeCandidates()
+        => [ReadCountersScope, EventPipeScope, PtraceScope];
+
     private static void ResolveCollectEvents(
         IDictionary<string, JsonElement>? arguments,
         ToolScopeResolutionPolicies? policies,

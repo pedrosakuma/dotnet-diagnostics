@@ -76,6 +76,45 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
     }
 
     [Fact]
+    public async Task PodRoot_ExecutesExport_WithRequestBoundCallerEvidenceScope()
+    {
+        await using var factory = CreatePodFactory();
+        await using var client = await ConnectAsync(factory);
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var policies = CreatePolicies();
+        var arguments = Arguments(new { handle = "opaque-counter-handle" });
+        var caller = new BearerPrincipal(
+            "central-export-caller",
+            new[] { "investigation-export", "read-counters" }
+                .ToImmutableHashSet(StringComparer.Ordinal));
+        var authorization = registry.Authorize(
+            "export_investigation_summary",
+            arguments,
+            caller,
+            proxyInvocation: true,
+            policies: policies);
+        authorization.IsAllowed.Should().BeTrue();
+        var delegated = ToolScopeDelegation.Add(
+            new CallToolRequestParams
+            {
+                Name = "export_investigation_summary",
+                Arguments = arguments,
+            },
+            authorization,
+            caller,
+            DelegationKey);
+
+        var result = await client.CallToolAsync(
+            "export_investigation_summary",
+            ToClientArguments(delegated.Arguments),
+            cancellationToken: CancellationToken.None);
+
+        ResultText(result).Should().NotContain("internal scope delegation");
+        ResultText(result).Should().NotContain("Forbidden");
+        ResultText(result).Should().Contain("opaque-counter-handle");
+    }
+
+    [Fact]
     public async Task PodCatalog_MarksToolsUnauthorized_WhenDelegationIsRequired()
     {
         await using var factory = CreatePodFactory();
