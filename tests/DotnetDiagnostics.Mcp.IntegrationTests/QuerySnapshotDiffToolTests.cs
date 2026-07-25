@@ -10,6 +10,7 @@ using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Mcp.Resources;
+using DotnetDiagnostics.Mcp.Security;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
 
@@ -286,6 +287,27 @@ public sealed class QuerySnapshotDiffToolTests
     }
 
     [Fact]
+    public async Task Diff_ProxiedLargeResult_IsReturnedInlineWithoutUnreadableResourceLink()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var baseline = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshotMany(0, 700), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, CollectionHandleKinds.Counters, CounterSnapshotMany(10, 700), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(
+            store,
+            current.Id,
+            baseline.Id,
+            topN: 3,
+            principalAccessor: TestPrincipalAccessors.WithName(
+                ToolScopeDelegation.DelegatedPrincipalName,
+                "read-counters"));
+
+        result.Error.Should().BeNull();
+        result.Handle.Should().BeNull();
+        result.Data.Should().BeOfType<SnapshotJourneyDiff>();
+    }
+
+    [Fact]
     public async Task Diff_GcEventsBaselineHandle_ReturnsJourneyDiff()
     {
         var store = new MemoryDiagnosticHandleStore();
@@ -423,13 +445,14 @@ public sealed class QuerySnapshotDiffToolTests
         string[]? comparisonHandles = null,
         int? topN = null,
         string depth = "full",
-        string? mode = null)
+        string? mode = null,
+        IPrincipalAccessor? principalAccessor = null)
         => await QuerySnapshotTool.QuerySnapshot(
             store,
             new StubDumpInspector(),
             new SensitiveDataRedactor(null),
             new SensitiveValueGate(null),
-            TestPrincipalAccessors.Root,
+            principalAccessor ?? TestPrincipalAccessors.Root,
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
             new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             handle: currentHandle,

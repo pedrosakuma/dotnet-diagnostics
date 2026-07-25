@@ -92,6 +92,65 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task TaskPromotedModifierCall_RetainsDelegation_WithoutLeakingToFollowUp()
+    {
+        await using var factory = CreatePodFactory();
+        await using var client = await ConnectAsync(factory);
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var policies = CreatePolicies();
+        var (arguments, callerScopes) = Invocation("collect_sample");
+        var caller = new BearerPrincipal(
+            "central-task-caller",
+            callerScopes.ToImmutableHashSet(StringComparer.Ordinal));
+        var taskMetadata = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        var authorization = registry.Authorize(
+            "collect_sample",
+            arguments,
+            caller,
+            proxyInvocation: true,
+            policies: policies);
+        var delegated = ToolScopeDelegation.Add(
+            new CallToolRequestParams
+            {
+                Name = "collect_sample",
+                Arguments = arguments,
+                Task = taskMetadata,
+            },
+            authorization,
+            caller,
+            DelegationKey);
+
+        var task = await client.CallToolAsTaskAsync(
+            "collect_sample",
+            ToClientArguments(delegated.Arguments),
+            taskMetadata,
+            cancellationToken: CancellationToken.None);
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        while (task.Status is McpTaskStatus.Working && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(task.PollInterval ?? TimeSpan.FromMilliseconds(100));
+            task = await client.GetTaskAsync(task.TaskId, cancellationToken: CancellationToken.None);
+        }
+
+        task.Status.Should().Be(McpTaskStatus.Completed);
+        var rawResult = await client.GetTaskResultAsync(
+            task.TaskId,
+            cancellationToken: CancellationToken.None);
+        var taskResult = JsonSerializer.Deserialize<CallToolResult>(
+            rawResult.GetRawText(),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        ResultText(taskResult).Should().NotContain("internal scope delegation");
+        ResultText(taskResult).Should().NotContain("literal modifier scope");
+
+        var followUp = await client.CallToolAsync(
+            "collect_sample",
+            ToClientArguments(arguments),
+            cancellationToken: CancellationToken.None);
+        followUp.IsError.Should().BeTrue();
+        ResultText(followUp).Should().Contain("require an internal scope delegation");
+    }
+
     private static WebApplicationFactory<Program> CreatePodFactory()
     {
         Environment.SetEnvironmentVariable("MCP_BEARER_TOKEN", null);

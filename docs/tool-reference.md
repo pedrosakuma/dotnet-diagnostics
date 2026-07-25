@@ -486,9 +486,11 @@ and is rejected for the legacy pairwise `baselineHandle` sample diffs.
 For comparable journey diffs (`gc-datas`, `counters`, `gc-events`, `contention-snapshot`,
 `threadpool-snapshot`), `depth="compact"` returns verdict + headline + counts + notes +
 top-N metric/key deltas. `depth="full"`
-returns the full `SnapshotJourneyDiff` only while it stays below the 32 KiB inline threshold;
-larger matrices are retained in memory and the inline payload includes `journey://diff/{handle}`
-so the assistant can pull the full matrix as an MCP Resource. Pairwise sample diffs remain
+returns the full `SnapshotJourneyDiff` only while it stays below the 32 KiB inline threshold.
+For local calls, larger matrices are retained in memory and the inline payload includes
+`journey://diff/{handle}` so the assistant can pull the full matrix as an MCP Resource.
+Proxied pod calls keep full results inline because dynamic pod Resources are not forwarded.
+Pairwise sample diffs remain
 inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap-snapshot` and
 `allocation-sample × allocation-sample`. Allocation diffs normalize totals to per-second rates.
 
@@ -509,7 +511,8 @@ caps the ranked rows while `totalGrowers` reports the full count. The verdict is
 type grew, else `stable`. Unlike `view="diff"` — which ranks by percentage and can bury a large
 absolute-but-modest-% leak — `growth` ranks strictly by absolute growth, the signal that matters for a
 steady-state leak. Both handles must be `heap-snapshot` kind; a missing/expired `baselineHandle` returns
-the standard `InvalidArgument` / `HandleExpired` envelope. Requires the `heap-read` scope.
+the standard `InvalidArgument` / `HandleExpired` envelope. Requires `heap-read` plus the
+literal `sensitive-heap-read` modifier because retention paths expose heap topology and addresses.
 
 `heap-snapshot` `view="timers"` projects the already-walked heap into a task/timer leak
 drilldown: total live `System.Threading.Timer` / `TimerQueueTimer` objects, total live
@@ -3236,8 +3239,9 @@ portable, versioned investigation summary the LLM can persist externally
 
 Diffs a current investigation summary against a baseline (or compares an ordered
 journey of `ComparableSnapshot` bodies) and returns a verdict + headline + ranked
-deltas. Large matrices return a compact inline payload plus a
-`journey://diff/{handle}` Resource link.
+deltas. Large local matrices return a compact inline payload plus a
+`journey://diff/{handle}` Resource link; proxied pod calls keep full results inline because
+dynamic pod Resources are not forwarded.
 
 **Parameters:**
 

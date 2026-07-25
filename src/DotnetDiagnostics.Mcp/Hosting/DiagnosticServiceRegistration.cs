@@ -72,6 +72,7 @@ internal static class DiagnosticServiceRegistration
         services.AddSingleton<ModelContextProtocol.IMcpTaskStore>(_ =>
             new ModelContextProtocol.InMemoryMcpTaskStore(
                 defaultTtl: System.TimeSpan.FromMinutes(10),
+                maxTtl: System.TimeSpan.FromHours(1),
                 pollInterval: System.TimeSpan.FromSeconds(1),
                 maxTasks: 32,
                 maxTasksPerSession: 32));

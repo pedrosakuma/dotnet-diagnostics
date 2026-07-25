@@ -36,6 +36,9 @@ internal sealed class HttpContextPrincipalAccessor : IPrincipalAccessor
     {
         ArgumentNullException.ThrowIfNull(principal);
         var previous = _delegatedPrincipal.Value;
+        // Store the immutable principal directly in AsyncLocal. MCP task promotion captures
+        // this ExecutionContext while the handler runs; restoring the parent slot below does
+        // not mutate the value captured by that background task.
         _delegatedPrincipal.Value = principal;
         return new DelegationLease(this, previous);
     }
@@ -50,6 +53,8 @@ internal sealed class HttpContextPrincipalAccessor : IPrincipalAccessor
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
+                // Replace only the disposing flow's slot. Never clear a shared mutable holder:
+                // promoted task flows must retain their verified principal until completion.
                 accessor._delegatedPrincipal.Value = previous;
             }
         }

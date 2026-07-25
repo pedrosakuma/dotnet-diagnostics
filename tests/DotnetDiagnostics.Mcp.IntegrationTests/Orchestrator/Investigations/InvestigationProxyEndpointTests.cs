@@ -119,6 +119,81 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Proxy_ReturnsGone_WhenHandleClosesDuringTransportLookup()
+    {
+        var handle = NewHandle("inv_closing_race", InvestigationState.Active);
+        _store.Add(handle);
+        _manager.OnGet = _ =>
+            _store.Update(handle with { State = InvestigationState.Closed });
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_closing_race/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Gone);
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_ReturnsGone_WhenClosedTransportLookupThrows()
+    {
+        var handle = NewHandle("inv_closed_lookup", InvestigationState.Active);
+        _store.Add(handle);
+        _manager.OnGet = _ =>
+        {
+            _store.Update(handle with { State = InvestigationState.Closed });
+            throw new OrchestratorException(
+                OrchestratorErrorKinds.PortForwardFailed,
+                "closed transport");
+        };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_closed_lookup/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Gone);
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_ReturnsGone_WhenDetachDisposesTransportDuringSend()
+    {
+        var handle = NewHandle("inv_send_close_race", InvestigationState.Active);
+        _store.Add(handle);
+        _upstream.NextResponse = _ =>
+        {
+            _store.Update(handle with { State = InvestigationState.Closed });
+            throw new ObjectDisposedException("port-forward");
+        };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_send_close_race/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Gone);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("became inactive");
+    }
+
+    [Fact]
+    public async Task Proxy_ReturnsGone_WhenDetachInterruptsConnectionEstablishment()
+    {
+        var handle = NewHandle("inv_connect_close_race", InvestigationState.Active);
+        _store.Add(handle);
+        _upstream.NextResponse = _ =>
+        {
+            _store.Update(handle with { State = InvestigationState.Closed });
+            throw new HttpRequestException("port-forward closed");
+        };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_connect_close_race/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Gone);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("became inactive");
+    }
+
+    [Fact]
     public async Task Proxy_StripsExternalAuthorization_AndInjectsPodLocalBearer()
     {
         const string pod = "pod-local-token-xyz";
@@ -803,8 +878,10 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.LastRequest.Should().BeNull();
     }
 
-    [Fact]
-    public async Task Proxy_RejectsMixedCaseRetentionPaths_WithoutSensitiveHeapScope()
+    [Theory]
+    [InlineData("RETENTION-PATHS")]
+    [InlineData("GROWTH")]
+    public async Task Proxy_RejectsMixedCaseSensitiveHeapView_WithoutSensitiveHeapScope(string view)
     {
         await DisposeAsync();
         await InitializeWithPrincipalAsync(
@@ -821,7 +898,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             new StringContent(
                 ToolCallPayload(
                     "query_snapshot",
-                    "{\"handle\":\"heap-handle\",\"view\":\"RETENTION-PATHS\"}"),
+                    $"{{\"handle\":\"heap-handle\",\"view\":\"{view}\"}}"),
                 Encoding.UTF8,
                 "application/json"));
 
@@ -834,6 +911,8 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     [InlineData("collect_sample", "{\"kind\":\"method-params\"}", "eventpipe", "sensitive-parameter-read")]
     [InlineData("get_bytes", "{\"kind\":\"delete\",\"artifactPath\":\"artifact\"}", "module-bytes-read", "delete-artifact")]
     [InlineData("query_snapshot", "{\"handle\":\"opaque\",\"view\":\"summary\"}", "eventpipe", "sensitive-parameter-read")]
+    [InlineData("query_snapshot", "{\"handle\":\"opaque\",\"view\":\"RETENTION-PATHS\"}", "heap-read", "sensitive-heap-read")]
+    [InlineData("query_snapshot", "{\"handle\":\"opaque\",\"view\":\"GROWTH\"}", "heap-read", "sensitive-heap-read")]
     public async Task Proxy_Delegates_Exact_Modifier_Scopes(
         string toolName,
         string argumentsJson,
@@ -874,6 +953,46 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             out var delegatedPrincipal,
             out var failure).Should().BeTrue(failure);
         delegatedPrincipal!.Scopes.Should().BeEquivalentTo(primaryScope, modifierScope);
+    }
+
+    [Fact]
+    public async Task Proxy_Delegates_OpaqueEventPipeQuery_WithoutUnrelatedPrimaryScopes()
+    {
+        await DisposeAsync();
+        var principal = new BearerPrincipal(
+            "eventpipe-query-caller",
+            System.Collections.Immutable.ImmutableHashSet.Create(
+                "orchestrator-attach",
+                "eventpipe"));
+        await InitializeWithPrincipalAsync(principal, allowCrossSessionAdmin: false);
+        var handle = NewHandle("inv_eventpipe_query", InvestigationState.Active, "pod-token");
+        _store.Add(handle);
+        _upstream.NextResponse = _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_eventpipe_query/mcp",
+            new StringContent(
+                ToolCallPayload(
+                    "query_snapshot",
+                    "{\"handle\":\"opaque\",\"view\":\"summary\"}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(_upstream.LastRequestBody!);
+        var delegatedRequest = document.RootElement
+            .GetProperty("params")
+            .Deserialize<CallToolRequestParams>()!;
+        ToolScopeDelegation.TryConsume(
+            delegatedRequest,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            handle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo("eventpipe");
     }
 
     [Theory]
@@ -1096,6 +1215,19 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         public bool TryReserveTarget(InvestigationHandle newHandle, bool allowReuse, out InvestigationHandle? existing)
         { existing = null; _byId[newHandle.HandleId] = newHandle; return true; }
         public void Update(InvestigationHandle handle) => _byId[handle.HandleId] = handle;
+        public bool TryTransitionToActive(string handleId, out InvestigationHandle? active)
+        {
+            if (!_byId.TryGetValue(handleId, out var current) ||
+                current.State != InvestigationState.Attaching)
+            {
+                active = null;
+                return false;
+            }
+
+            active = current with { State = InvestigationState.Active };
+            _byId[handleId] = active;
+            return true;
+        }
         public InvestigationHandle? GetById(string id) => _byId.TryGetValue(id, out var h) ? h : null;
         public InvestigationTerminalTransition TryTransitionToTerminal(string handleId, InvestigationState targetState, string? failureReason, out InvestigationState? previousState)
         {
@@ -1113,11 +1245,19 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     private sealed class StubPortForwardManager : IPortForwardManager
     {
         private readonly HttpClient _client;
+        public Action<InvestigationHandle>? OnGet { get; set; }
+
         public StubPortForwardManager(CapturingUpstream upstream)
         {
             _client = new HttpClient(upstream) { BaseAddress = new Uri("http://pod-local") };
         }
-        public Task<HttpClient> GetOrCreateClientAsync(InvestigationHandle handle, CancellationToken ct) => Task.FromResult(_client);
+
+        public Task<HttpClient> GetOrCreateClientAsync(InvestigationHandle handle, CancellationToken ct)
+        {
+            OnGet?.Invoke(handle);
+            return Task.FromResult(_client);
+        }
+
         public Task CloseAsync(string handleId) => Task.CompletedTask;
     }
 

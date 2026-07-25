@@ -72,6 +72,23 @@ internal sealed class MemoryInvestigationStore : IInvestigationStore
         }
     }
 
+    public bool TryTransitionToActive(string handleId, out InvestigationHandle? active)
+    {
+        lock (_gate)
+        {
+            if (!_byId.TryGetValue(handleId, out var current) ||
+                current.State != InvestigationState.Attaching)
+            {
+                active = null;
+                return false;
+            }
+
+            active = current with { State = InvestigationState.Active };
+            _byId[handleId] = active;
+            return true;
+        }
+    }
+
     public InvestigationHandle? GetById(string handleId)
     {
         lock (_gate)

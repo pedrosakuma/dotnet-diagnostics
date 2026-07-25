@@ -56,6 +56,16 @@ internal static class ToolScopeAuthorizationFilter
                 return await next(request, cancellationToken).ConfigureAwait(false);
             }
 
+            if (HasCaseInsensitiveDuplicateKeys(request.Params?.Arguments))
+            {
+                loggerAccessor()?.LogWarning(
+                    "Tool {Tool} denied because its arguments contain case-insensitive duplicate keys.",
+                    toolName);
+                return BuildInvalidArgumentsResult(
+                    toolName,
+                    "argument names must be unique ignoring case");
+            }
+
             // Stdio (no IPrincipalAccessor registered) is treated identically to root.
             var accessor = principalAccessor();
             var principal = accessor?.Current ?? StdioRootPrincipalAccessor.Instance.Current;
@@ -110,19 +120,22 @@ internal static class ToolScopeAuthorizationFilter
                     toolName,
                     principal?.Name ?? "(none)",
                     FormatScopes(decision));
-                if (delegatedPrincipal is null)
+                var taskNeedsPrincipalSnapshot = request.Params?.Task is not null;
+                if (delegatedPrincipal is null && !taskNeedsPrincipalSnapshot)
                 {
                     return await next(request, cancellationToken).ConfigureAwait(false);
                 }
 
                 if (accessor is not HttpContextPrincipalAccessor httpAccessor)
                 {
-                    return BuildDelegationForbiddenResult(
-                        toolName,
-                        "internal scope delegation requires an HTTP request context");
+                    return delegatedPrincipal is not null
+                        ? BuildDelegationForbiddenResult(
+                            toolName,
+                            "internal scope delegation requires an HTTP request context")
+                        : await next(request, cancellationToken).ConfigureAwait(false);
                 }
 
-                using var delegationLease = httpAccessor.PushDelegation(delegatedPrincipal);
+                using var delegationLease = httpAccessor.PushDelegation(principal!);
                 return await next(request, cancellationToken).ConfigureAwait(false);
             }
 
@@ -136,6 +149,66 @@ internal static class ToolScopeAuthorizationFilter
             return BuildForbiddenResult(toolName, decision, principal);
         };
     }
+
+    private static bool HasCaseInsensitiveDuplicateKeys(
+        IDictionary<string, System.Text.Json.JsonElement>? arguments)
+    {
+        if (arguments is null)
+        {
+            return false;
+        }
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var argument in arguments)
+        {
+            if (!names.Add(argument.Key) || HasCaseInsensitiveDuplicateKeys(argument.Value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasCaseInsensitiveDuplicateKeys(System.Text.Json.JsonElement value)
+    {
+        if (value.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in value.EnumerateObject())
+            {
+                if (!names.Add(property.Name) || HasCaseInsensitiveDuplicateKeys(property.Value))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (value.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var item in value.EnumerateArray())
+            {
+                if (HasCaseInsensitiveDuplicateKeys(item))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static CallToolResult BuildInvalidArgumentsResult(string toolName, string reason)
+        => new()
+        {
+            IsError = true,
+            Content =
+            [
+                new TextContentBlock
+                {
+                    Text = $"invalid arguments: tool '{toolName}' {reason}.",
+                },
+            ],
+        };
 
     private static CallToolResult BuildDelegationForbiddenResult(string toolName, string reason)
         => new()

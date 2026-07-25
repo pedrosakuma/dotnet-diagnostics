@@ -26,6 +26,11 @@ internal static class TestPrincipalAccessors
             name: "test-principal",
             scopes: scopes.Length == 0 ? ImmutableHashSet<string>.Empty : ImmutableHashSet.Create(scopes)));
 
+    public static IPrincipalAccessor WithName(string name, params string[] scopes) =>
+        new StubAccessor(new BearerPrincipal(
+            name,
+            scopes.Length == 0 ? ImmutableHashSet<string>.Empty : ImmutableHashSet.Create(scopes)));
+
     /// <summary>Accessor that yields no principal — exercises the "missing principal"
     /// branch the authorization filter rejects.</summary>
     public static readonly IPrincipalAccessor Anonymous = new StubAccessor(null);

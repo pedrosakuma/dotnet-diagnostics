@@ -151,6 +151,41 @@ public sealed class ToolScopeDelegationTests
     }
 
     [Fact]
+    public void Delegation_Remains_One_Time_During_Accepted_Clock_Skew()
+    {
+        var start = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        var time = new MutableTimeProvider(start);
+        var (registry, delegated) = CreateMethodParameterDelegation(time);
+        var replay = new CallToolRequestParams
+        {
+            Name = delegated.Name,
+            Arguments = new Dictionary<string, JsonElement>(delegated.Arguments!, StringComparer.Ordinal),
+            Meta = delegated.Meta,
+            Task = delegated.Task,
+        };
+        time.UtcNow = start.AddSeconds(31);
+
+        ToolScopeDelegation.TryConsume(
+            delegated,
+            registry,
+            StrictPolicies,
+            Secret,
+            time,
+            out _,
+            out var firstFailure).Should().BeTrue(firstFailure);
+        time.UtcNow = start.AddSeconds(32);
+        ToolScopeDelegation.TryConsume(
+            replay,
+            registry,
+            StrictPolicies,
+            Secret,
+            time,
+            out _,
+            out var replayFailure).Should().BeFalse();
+        replayFailure.Should().Contain("already been used");
+    }
+
+    [Fact]
     public async Task Delegated_Principal_Flows_Into_Task_But_Not_The_Caller_Context()
     {
         var original = Principal("read-counters");
@@ -212,6 +247,41 @@ public sealed class ToolScopeDelegationTests
     }
 
     [Fact]
+    public void Delegation_Preserves_Inherited_Request_Metadata()
+    {
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var arguments = Arguments(new { kind = "counters" });
+        var caller = Principal("read-counters");
+        var meta = new JsonObject
+        {
+            ["progressToken"] = "progress-707",
+            ["extension"] = new JsonObject { ["trace"] = "abc" },
+        };
+        var request = new CallToolRequestParams
+        {
+            Name = "collect_events",
+            Arguments = arguments,
+            Meta = meta,
+        };
+        var authorization = registry.Authorize(
+            request.Name,
+            arguments,
+            caller,
+            proxyInvocation: true,
+            policies: StrictPolicies);
+
+        var delegated = ToolScopeDelegation.Add(
+            request,
+            authorization,
+            caller,
+            Secret);
+
+        delegated.Meta.Should().BeSameAs(meta);
+        delegated.Meta!["progressToken"]!.GetValue<string>().Should().Be("progress-707");
+        delegated.Meta["extension"]!["trace"]!.GetValue<string>().Should().Be("abc");
+    }
+
+    [Fact]
     public void Delegation_Is_Bound_To_Handle_Key()
     {
         var (registry, delegated) = CreateMethodParameterDelegation();
@@ -261,6 +331,42 @@ public sealed class ToolScopeDelegationTests
         authorization.IsAllowed.Should().BeTrue();
         ToolScopeDelegation.GetDelegatedScopes("query_snapshot", authorization, caller)
             .Should().BeEquivalentTo("eventpipe", "sensitive-parameter-read");
+    }
+
+    [Fact]
+    public void QuerySnapshot_EventPipeCaller_DelegatesOnlyEventPipeAlternative()
+    {
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var arguments = Arguments(new { handle = "opaque", view = "summary" });
+        var caller = Principal("eventpipe");
+        var authorization = registry.Authorize(
+            "query_snapshot",
+            arguments,
+            caller,
+            proxyInvocation: true,
+            policies: StrictPolicies);
+
+        authorization.IsAllowed.Should().BeTrue();
+        ToolScopeDelegation.GetDelegatedScopes("query_snapshot", authorization, caller)
+            .Should().BeEquivalentTo("eventpipe");
+    }
+
+    [Fact]
+    public void QuerySnapshot_RetentionCaller_DelegatesOnlyHeapAndSensitiveScopes()
+    {
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var arguments = Arguments(new { handle = "opaque", view = "RETENTION-PATHS" });
+        var caller = Principal("heap-read", "sensitive-heap-read");
+        var authorization = registry.Authorize(
+            "query_snapshot",
+            arguments,
+            caller,
+            proxyInvocation: true,
+            policies: StrictPolicies);
+
+        authorization.IsAllowed.Should().BeTrue();
+        ToolScopeDelegation.GetDelegatedScopes("query_snapshot", authorization, caller)
+            .Should().BeEquivalentTo("heap-read", "sensitive-heap-read");
     }
 
     private static (ToolScopeRegistry Registry, CallToolRequestParams Delegated)

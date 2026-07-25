@@ -324,8 +324,28 @@ internal static class InvestigationProxyEndpoints
         }
         catch (OrchestratorException ex)
         {
+            var latestHandle = store.GetById(handleId);
+            if (latestHandle is null || latestHandle.State != InvestigationState.Active)
+            {
+                await WriteProblemAsync(context, StatusCodes.Status410Gone,
+                    "ProxyHandleNotActive",
+                    $"Investigation '{handleId}' became inactive while opening the proxy transport.")
+                    .ConfigureAwait(false);
+                return;
+            }
+
             logger.LogWarning(ex, "Port-forward setup failed for {HandleId}.", handleId);
             await WriteProblemAsync(context, StatusCodes.Status502BadGateway, "ProxyUpstreamUnavailable", ex.Message).ConfigureAwait(false);
+            return;
+        }
+
+        var currentHandle = store.GetById(handleId);
+        if (currentHandle is null || currentHandle.State != InvestigationState.Active)
+        {
+            await WriteProblemAsync(context, StatusCodes.Status410Gone,
+                "ProxyHandleNotActive",
+                $"Investigation '{handleId}' became inactive before the proxied request started.")
+                .ConfigureAwait(false);
             return;
         }
 
@@ -372,8 +392,42 @@ internal static class InvestigationProxyEndpoints
             {
                 return;
             }
+            catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
+            {
+                var latestHandle = store.GetById(handleId);
+                if (latestHandle is null || latestHandle.State != InvestigationState.Active)
+                {
+                    logger.LogDebug(
+                        ex,
+                        "Proxy send stopped because investigation {HandleId} closed concurrently.",
+                        handleId);
+                    await WriteProblemAsync(context, StatusCodes.Status410Gone,
+                        "ProxyHandleNotActive",
+                        $"Investigation '{handleId}' became inactive before the proxied request completed.")
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    logger.LogWarning(ex, "Upstream request was interrupted for active investigation {HandleId}.", handleId);
+                    await WriteProblemAsync(context, StatusCodes.Status502BadGateway,
+                        "ProxyUpstreamFailed",
+                        "Pod-local diagnostics MCP transport was interrupted before it responded.")
+                        .ConfigureAwait(false);
+                }
+                return;
+            }
             catch (HttpRequestException ex)
             {
+                var latestHandle = store.GetById(handleId);
+                if (latestHandle is null || latestHandle.State != InvestigationState.Active)
+                {
+                    await WriteProblemAsync(context, StatusCodes.Status410Gone,
+                        "ProxyHandleNotActive",
+                        $"Investigation '{handleId}' became inactive before the proxied request completed.")
+                        .ConfigureAwait(false);
+                    return;
+                }
+
                 logger.LogWarning(ex, "Upstream request failed for {HandleId} → {Path}.", handleId, targetPath);
                 await WriteProblemAsync(context, StatusCodes.Status502BadGateway,
                     "ProxyUpstreamFailed",

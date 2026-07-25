@@ -2,6 +2,7 @@ using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Mcp.Security;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
 
@@ -54,6 +55,23 @@ public sealed class QuerySnapshotGrowthToolTests
         grower.TotalRetentionPaths.Should().Be(3);
         grower.OmittedRetentionPaths.Should().Be(2);
         result.Hints.Should().BeEmpty("the growth response already contains the requested retention evidence");
+    }
+
+    [Fact]
+    public async Task Growth_RequiresExplicitSensitiveHeapRead()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var baseline = store.Register(123, "heap-snapshot", HeapSnapshot(("Leaky.Cache", 1_000, 10)), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, "heap-snapshot", HeapSnapshot(("Leaky.Cache", 5_000, 50)), TimeSpan.FromMinutes(10));
+
+        var result = await Growth(
+            store,
+            current.Id,
+            baseline.Id,
+            principalAccessor: TestPrincipalAccessors.Root);
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Message.Should().Contain("sensitive-heap-read");
     }
 
     [Fact]
@@ -144,13 +162,21 @@ public sealed class QuerySnapshotGrowthToolTests
         string currentHandle,
         string? baselineHandle,
         string rankBy = "bytes",
-        int? topN = null)
+        int? topN = null,
+        IPrincipalAccessor? principalAccessor = null)
         => await QuerySnapshotTool.QuerySnapshot(
             store,
             new StubDumpInspector(),
             new SensitiveDataRedactor(null),
             new SensitiveValueGate(null),
-            TestPrincipalAccessors.Root,
+            principalAccessor ?? TestPrincipalAccessors.WithScopes(
+                "read-counters",
+                "eventpipe",
+                "heap-read",
+                "ptrace",
+                "investigation-export",
+                "sensitive-heap-read",
+                "sensitive-parameter-read"),
             new DotnetDiagnostics.Core.Symbols.ClrMdNativeAddressResolver(),
             new DotnetDiagnostics.Core.Threads.ClrMdFrameVariableResolver(),
             handle: currentHandle,

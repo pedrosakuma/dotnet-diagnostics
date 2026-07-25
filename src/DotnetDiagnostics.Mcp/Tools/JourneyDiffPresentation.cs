@@ -49,8 +49,9 @@ internal static class JourneyDiffPresentation
     public const string HandleKind = "journey-diff";
 
     /// <summary>
-    /// Full journey diffs above 32 KiB are replaced inline with a compact summary and a
-    /// <c>journey://diff/{handle}</c> Resource link, keeping large matrices out of model context.
+    /// Local full journey diffs above 32 KiB are replaced inline with a compact summary and a
+    /// <c>journey://diff/{handle}</c> Resource link. Proxied calls disable the link and retain
+    /// the full result inline because dynamic pod Resources are intentionally not forwarded.
     /// </summary>
     public const int InlineThresholdBytes = 32 * 1024;
 
@@ -89,6 +90,7 @@ internal static class JourneyDiffPresentation
         string summaryLine,
         bool evictWhenProcessExits,
         HandleOrigin origin,
+        bool allowResourceLink = true,
         params NextActionHint[] hints)
     {
         ArgumentNullException.ThrowIfNull(diff);
@@ -96,7 +98,7 @@ internal static class JourneyDiffPresentation
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(topN);
 
         var serialized = JsonSerializer.SerializeToUtf8Bytes(diff, JourneyDiffResourceJsonContext.Default.SnapshotJourneyDiff);
-        var shouldStore = serialized.Length > InlineThresholdBytes;
+        var shouldStore = allowResourceLink && serialized.Length > InlineThresholdBytes;
         DiagnosticHandle? handle = null;
         if (shouldStore)
         {

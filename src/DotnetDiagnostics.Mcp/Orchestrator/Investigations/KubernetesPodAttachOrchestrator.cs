@@ -224,8 +224,12 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             throw;
         }
 
-        var active = handle with { State = InvestigationState.Active };
-        _store.Update(active);
+        if (!_store.TryTransitionToActive(handle.HandleId, out var active) || active is null)
+        {
+            throw new OrchestratorException(
+                OrchestratorErrorKinds.AttachFailed,
+                $"Investigation {handle.HandleId} became inactive while the diagnostics container was starting.");
+        }
         _logger.LogInformation(
             "Attached investigation {HandleId} to {Namespace}/{Pod}/{Container} as ephemeral '{EphemeralName}'.",
             active.HandleId, ns, request.PodName, container.Name, ephemeralName);

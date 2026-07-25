@@ -32,6 +32,13 @@ public interface IInvestigationStore
     void Update(InvestigationHandle handle);
 
     /// <summary>
+    /// Atomically transitions an attaching handle to active. Returns false when the handle
+    /// is missing or no longer attaching, so readiness completion cannot revive a handle
+    /// concurrently closed, expired, or failed.
+    /// </summary>
+    bool TryTransitionToActive(string handleId, out InvestigationHandle? active);
+
+    /// <summary>
     /// Atomically transitions a handle to a terminal state (Closed / Expired / Failed),
     /// under the store lock. Returns the outcome so the caller can distinguish
     /// "transitioned now", "already terminal" (lost the race or prior close), and

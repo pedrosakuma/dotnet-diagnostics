@@ -223,9 +223,9 @@ Large journeys must not flood the LLM context:
 - Keep `depth="compact"` (the helpful default for triage): you get verdict + headline + counts
   + `Notes[]` + the **top-N** metric/key deltas inline. Raise `topN` to widen the inline slice.
 - `depth="full"` inlines the entire `SnapshotJourneyDiff` **only** while it stays under the
-  32 KiB inline threshold. Past that, the server retains the full matrix in memory and the
-  inline payload carries a `journey://diff/{handle}` **Resource** link — pull it only when you
-  need the whole matrix.
+  32 KiB inline threshold. Past that, local calls retain the full matrix in memory and return
+  a `journey://diff/{handle}` **Resource** link. Proxied pod calls keep the full result inline
+  because dynamic pod Resources are intentionally not forwarded.
 - The CLI mirror of that lever is `--save <file>` (writes the full matrix to disk) while the
   terminal keeps the compact verdict + headline.
 

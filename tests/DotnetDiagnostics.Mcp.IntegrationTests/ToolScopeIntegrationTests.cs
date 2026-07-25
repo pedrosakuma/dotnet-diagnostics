@@ -157,6 +157,80 @@ public sealed class ToolScopeIntegrationTests
     }
 
     [Fact]
+    public async Task CollectBatch_PascalCaseNestedFields_UseTheSameArgumentScopes()
+    {
+        await using var factory = CreateFactory(
+            ("counters-only", "counters-secret-pascal-batch", new[] { "read-counters" }));
+        await using var client = await ConnectWithTokenAsync(factory, "counters-secret-pascal-batch");
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            arguments: new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["Tool"] = "collect_sample", ["Kind"] = "cpu" },
+                },
+                ["durationSeconds"] = 1,
+            },
+            cancellationToken: CancellationToken.None);
+
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("argument_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("eventpipe");
+    }
+
+    [Fact]
+    public async Task CaseInsensitiveDuplicateArgumentKeys_AreRejectedBeforeToolBinding()
+    {
+        await using var factory = CreateFactory(
+            ("heap-reader", "heap-duplicate-secret", new[] { "heap-read", "ptrace" }));
+        await using var client = await ConnectWithTokenAsync(factory, "heap-duplicate-secret");
+
+        var result = await client.CallToolAsync(
+            "inspect_heap",
+            arguments: new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["source"] = "live",
+                ["includeRetentionPaths"] = true,
+                ["IncludeRetentionPaths"] = false,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        string.Join("\n", result.Content.OfType<TextContentBlock>().Select(static block => block.Text))
+            .Should().Contain("unique ignoring case");
+    }
+
+    [Fact]
+    public async Task CaseInsensitiveDuplicateNestedBatchKeys_AreRejected()
+    {
+        await using var factory = CreateFactory(
+            ("batch-reader", "batch-duplicate-secret", new[] { "read-counters", "eventpipe" }));
+        await using var client = await ConnectWithTokenAsync(factory, "batch-duplicate-secret");
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            arguments: new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?>(StringComparer.Ordinal)
+                    {
+                        ["tool"] = "collect_events",
+                        ["Tool"] = "collect_sample",
+                        ["kind"] = "counters",
+                    },
+                },
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        string.Join("\n", result.Content.OfType<TextContentBlock>().Select(static block => block.Text))
+            .Should().Contain("unique ignoring case");
+    }
+
+    [Fact]
     public async Task CollectEvents_GatedDump_IsDeniedLocally_WithoutDumpWrite()
     {
         await using var factory = CreateFactory(

@@ -1463,22 +1463,25 @@ public sealed class DiagnosticTools
         "Diffs either two InvestigationSummary JSON documents (produced by export_investigation_summary) " +
         "or 2..N persisted ComparableSnapshot JSON documents. Legacy summaries return the same " +
         "SummaryDiff as before; comparable snapshots return either the full SnapshotJourneyDiff when small " +
-        "or a compact verdict/headline/top-deltas summary with a journey://diff/{handle} Resource link for large matrices. " +
+        "or a compact verdict/headline/top-deltas summary with a journey://diff/{handle} Resource link for large local matrices; " +
+        "proxied full results stay inline because dynamic pod Resources are not forwarded. " +
         "Pass JSON bodies only; the stateless sidecar never reads comparison inputs from file paths.")]
     public static DiagnosticResult<object> CompareToBaseline(
         ISummaryComparer comparer,
         IDiagnosticHandleStore handles,
+        IPrincipalAccessor principalAccessor,
         [Description("Baseline summary JSON (from a prior export_investigation_summary). Optional when snapshotsJson is supplied.")] string? baselineSummaryJson = null,
         [Description("Current summary JSON (from export_investigation_summary on the new investigation). Optional when snapshotsJson is supplied.")] string? currentSummaryJson = null,
         [Description("Ordered ComparableSnapshot JSON bodies to compare as a journey. JSON bodies only; do not pass file paths.")] string[]? snapshotsJson = null,
         [Description("ComparableSnapshot journey only: maximum metric series / key rows returned in compact inline payloads and used to bound key-matrix construction. Must be >= 1. Defaults to 25.")] int topN = 25,
-        [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix when it is below the inline threshold; `compact` returns verdict/headline/counts/notes plus top-N metric and key deltas. Large full diffs always return compact inline data plus a journey://diff/{handle} Resource link. Defaults to `full`.")] string depth = "full",
+        [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix; local large results may use a journey://diff/{handle} Resource link, while proxied results stay inline because dynamic pod Resources are not forwarded. `compact` returns verdict/headline/counts/notes plus top-N deltas. Defaults to `full`.")] string depth = "full",
         [Description("ComparableSnapshot journey only: `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers.")] string? mode = null,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null)
         => DiagnosticToolBaselineComparison.CompareToBaseline(
             comparer,
             handles,
+            principalAccessor,
             baselineSummaryJson,
             currentSummaryJson,
             snapshotsJson,
