@@ -177,14 +177,14 @@ public sealed class ToolScopeAttributesTests
         {
             {
                 "inspect_process",
-                Arguments(new { view = "requests-now" }),
+                Arguments(new { view = "REQUESTS-NOW" }),
                 new[] { "read-counters" },
                 "ptrace",
                 false
             },
             {
                 "collect_events",
-                Arguments(new { kind = "exceptions" }),
+                Arguments(new { kind = "EXCEPTIONS" }),
                 new[] { "read-counters" },
                 "eventpipe",
                 false
@@ -193,7 +193,7 @@ public sealed class ToolScopeAttributesTests
                 "collect_events",
                 Arguments(new
                 {
-                    kind = "counters",
+                    kind = "COUNTERS",
                     triggerWhen = "always-trigger",
                     captureKind = "Dump",
                     confirmDump = true,
@@ -204,14 +204,14 @@ public sealed class ToolScopeAttributesTests
             },
             {
                 "collect_events",
-                Arguments(new { kind = "event_source", unsafeProvider = true }),
+                Arguments(new { kind = "EVENT_SOURCE", unsafeProvider = true }),
                 new[] { "eventpipe" },
                 "eventsource-any",
                 true
             },
             {
                 "collect_sample",
-                Arguments(new { kind = "cpu", resolveMethodInstantiations = true }),
+                Arguments(new { kind = "CPU", resolveMethodInstantiations = true }),
                 new[] { "eventpipe" },
                 "ptrace",
                 false
@@ -220,7 +220,7 @@ public sealed class ToolScopeAttributesTests
                 "collect_sample",
                 Arguments(new
                 {
-                    kind = "cpu",
+                    kind = "CPU",
                     symbolPath = "srv*/symbols*https://symbols.example.test",
                 }),
                 new[] { "eventpipe" },
@@ -229,7 +229,7 @@ public sealed class ToolScopeAttributesTests
             },
             {
                 "collect_sample",
-                Arguments(new { kind = "method-params" }),
+                Arguments(new { kind = "METHOD-PARAMS" }),
                 new[] { "eventpipe" },
                 "sensitive-parameter-read",
                 true
@@ -240,8 +240,8 @@ public sealed class ToolScopeAttributesTests
                 {
                     requests = new[]
                     {
-                        new { tool = "collect_events", kind = "counters" },
-                        new { tool = "collect_events", kind = "exceptions" },
+                        new { tool = "COLLECT_EVENTS", kind = "COUNTERS" },
+                        new { tool = "COLLECT_EVENTS", kind = "EXCEPTIONS" },
                     },
                 }),
                 new[] { "read-counters" },
@@ -250,14 +250,14 @@ public sealed class ToolScopeAttributesTests
             },
             {
                 "inspect_heap",
-                Arguments(new { source = "live" }),
+                Arguments(new { source = "LIVE" }),
                 new[] { "heap-read" },
                 "ptrace",
                 false
             },
             {
                 "inspect_heap",
-                Arguments(new { source = "dump", includeRetentionPaths = true }),
+                Arguments(new { source = "DUMP", includeRetentionPaths = true }),
                 new[] { "heap-read" },
                 "sensitive-heap-read",
                 true
@@ -290,14 +290,14 @@ public sealed class ToolScopeAttributesTests
             },
             {
                 "get_bytes",
-                Arguments(new { kind = "dump", dumpFilePath = "capture.dmp" }),
+                Arguments(new { kind = "DUMP", dumpFilePath = "capture.dmp" }),
                 new[] { BearerPrincipal.RootScope },
                 "module-bytes-read",
                 true
             },
             {
                 "get_bytes",
-                Arguments(new { kind = "delete", artifactPath = "capture.dmp" }),
+                Arguments(new { kind = "DELETE", artifactPath = "capture.dmp" }),
                 new[] { "module-bytes-read" },
                 "delete-artifact",
                 true

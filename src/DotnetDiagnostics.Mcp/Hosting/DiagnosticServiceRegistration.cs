@@ -250,6 +250,8 @@ internal static class DiagnosticServiceRegistration
                     // forwarding as defense in depth for direct/internal invocation.
                     options.Filters.Request.CallToolFilters.Add(
                         BuildInvestigationProxyFilter(scopeRegistry, servicesAccessor, loggerFactoryAccessor));
+                    options.Filters.Request.ReadResourceFilters.Add(
+                        BuildInvestigationResourceFilter(servicesAccessor, loggerFactoryAccessor));
                 }
 
                 // Filters wrap last-in-first-out. Register the error surface last so it observes
@@ -386,6 +388,30 @@ internal static class DiagnosticServiceRegistration
                             sp.GetRequiredService<Observability.OrchestratorObservability>(),
                             () => loggerFactoryAccessor()?.CreateLogger(typeof(Tools.InvestigationProxyCallToolFilter).FullName!));
                     }
+                }
+            }
+            return cached(next);
+        };
+    }
+
+    private static ModelContextProtocol.Server.McpRequestFilter<ReadResourceRequestParams, ReadResourceResult> BuildInvestigationResourceFilter(
+        Func<IServiceProvider?> servicesAccessor,
+        Func<ILoggerFactory?> loggerFactoryAccessor)
+    {
+        ModelContextProtocol.Server.McpRequestFilter<ReadResourceRequestParams, ReadResourceResult>? cached = null;
+        var gate = new object();
+
+        return next =>
+        {
+            if (cached is null)
+            {
+                lock (gate)
+                {
+                    cached ??= Tools.InvestigationProxyReadResourceFilter.Create(
+                        (servicesAccessor() ?? throw new InvalidOperationException(
+                            "InvestigationProxyReadResourceFilter requires a service provider; servicesAccessor returned null."))
+                        .GetRequiredService<Orchestrator.Investigations.IInvestigationSessionBinder>(),
+                        () => loggerFactoryAccessor()?.CreateLogger(typeof(Tools.InvestigationProxyReadResourceFilter).FullName!));
                 }
             }
             return cached(next);

@@ -646,8 +646,20 @@ internal static class InvestigationProxyEndpoints
         ToolScopeResolutionPolicies policies,
         bool authorizeScopes)
     {
-        if (envelope.ValueKind != JsonValueKind.Object ||
-            !envelope.TryGetProperty("method", out var method) ||
+        if (envelope.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+        if (HasNonCanonicalProperty(envelope, "method") ||
+            HasNonCanonicalProperty(envelope, "params"))
+        {
+            return new ProxyToolRejection(
+                ProxyToolRejectionKind.Malformed,
+                "<noncanonical-json-rpc>",
+                null,
+                false);
+        }
+        if (!envelope.TryGetProperty("method", out var method) ||
             method.ValueKind != JsonValueKind.String)
         {
             return null;
@@ -657,6 +669,7 @@ internal static class InvestigationProxyEndpoints
         {
             if (!envelope.TryGetProperty("params", out var resourceParams) ||
                 resourceParams.ValueKind != JsonValueKind.Object ||
+                HasNonCanonicalProperty(resourceParams, "uri") ||
                 !resourceParams.TryGetProperty("uri", out var uri) ||
                 uri.ValueKind != JsonValueKind.String ||
                 string.IsNullOrWhiteSpace(uri.GetString()))
@@ -669,7 +682,7 @@ internal static class InvestigationProxyEndpoints
             }
 
             var resourceUri = uri.GetString()!;
-            return string.Equals(resourceUri, "diag://guides/investigation", StringComparison.Ordinal)
+            return InvestigationProxyResourcePolicy.CanTraverseProxy(resourceUri)
                 ? null
                 : new ProxyToolRejection(
                     ProxyToolRejectionKind.ResourceNotAllowed,
@@ -685,6 +698,10 @@ internal static class InvestigationProxyEndpoints
 
         if (!envelope.TryGetProperty("params", out var requestParams) ||
             requestParams.ValueKind != JsonValueKind.Object ||
+            HasNonCanonicalProperty(requestParams, "name") ||
+            HasNonCanonicalProperty(requestParams, "arguments") ||
+            HasNonCanonicalProperty(requestParams, "task") ||
+            HasNonCanonicalProperty(requestParams, "_meta") ||
             !requestParams.TryGetProperty("name", out var name) ||
             name.ValueKind != JsonValueKind.String)
         {
@@ -858,6 +875,12 @@ internal static class InvestigationProxyEndpoints
 
         return false;
     }
+
+    private static bool HasNonCanonicalProperty(JsonElement value, string canonicalName)
+        => value.ValueKind == JsonValueKind.Object &&
+           !value.TryGetProperty(canonicalName, out _) &&
+           value.EnumerateObject().Any(property =>
+               string.Equals(property.Name, canonicalName, StringComparison.OrdinalIgnoreCase));
 
     private static Task WriteProblemAsync(HttpContext context, int status, string detail)
         => WriteProblemAsync(context, status, kind: null, detail);

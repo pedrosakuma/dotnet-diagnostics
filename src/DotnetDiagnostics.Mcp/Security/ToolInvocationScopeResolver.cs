@@ -95,7 +95,7 @@ internal static class ToolInvocationScopeResolver
     }
 
     internal static string? GetCollectEventsKindScope(string? kind)
-        => kind?.Trim() switch
+        => NormalizeDiscriminator(kind) switch
         {
             "counters" or "replica_counters" => ReadCountersScope,
             "exceptions" or "crash-guard" or "gc" or "datas" or "catalog" or
@@ -123,12 +123,12 @@ internal static class ToolInvocationScopeResolver
     }
 
     internal static string GetInspectProcessViewScope(string? view)
-        => string.Equals(view?.Trim(), "requests-now", StringComparison.Ordinal)
+        => IsDiscriminator(view, "requests-now")
             ? PtraceScope
             : ReadCountersScope;
 
     internal static string GetListOrchestratorKindScope(string? kind)
-        => string.Equals(kind?.Trim(), "investigations", StringComparison.Ordinal)
+        => IsDiscriminator(kind, "investigations")
             ? OrchestratorAttachScope
             : OrchestratorListScope;
 
@@ -138,7 +138,7 @@ internal static class ToolInvocationScopeResolver
         ImmutableArray<string>.Builder additional,
         ImmutableArray<string>.Builder modifiers)
     {
-        var kind = GetString(arguments, "kind") ?? "counters";
+        var kind = NormalizeDiscriminator(GetString(arguments, "kind")) ?? "counters";
         Add(additional, GetCollectEventsKindScope(kind));
 
         if (kind is "distributed_trace" or "replica_counters")
@@ -146,7 +146,7 @@ internal static class ToolInvocationScopeResolver
             Add(additional, OrchestratorAttachScope);
         }
 
-        if (string.Equals(kind, "counters", StringComparison.Ordinal) &&
+        if (IsDiscriminator(kind, "counters") &&
             (!string.IsNullOrWhiteSpace(GetString(arguments, "triggerWhen")) ||
              !string.IsNullOrWhiteSpace(GetString(arguments, "captureKind"))))
         {
@@ -156,7 +156,7 @@ internal static class ToolInvocationScopeResolver
             }
         }
 
-        if (string.Equals(kind, "event_source", StringComparison.Ordinal) &&
+        if (IsDiscriminator(kind, "event_source") &&
             GetBoolean(arguments, "unsafeProvider") &&
             RequiresEventSourceAnyScope(arguments, policies))
         {
@@ -170,20 +170,20 @@ internal static class ToolInvocationScopeResolver
         ImmutableArray<string>.Builder additional,
         ImmutableArray<string>.Builder modifiers)
     {
-        var kind = GetString(arguments, "kind") ?? "cpu";
-        if (string.Equals(kind, "method-params", StringComparison.Ordinal))
+        var kind = NormalizeDiscriminator(GetString(arguments, "kind")) ?? "cpu";
+        if (IsDiscriminator(kind, "method-params"))
         {
             Add(modifiers, SensitiveParameterReadScope);
         }
 
-        if (string.Equals(kind, "cpu", StringComparison.Ordinal) &&
+        if (IsDiscriminator(kind, "cpu") &&
             GetBoolean(arguments, "resolveMethodInstantiations"))
         {
             Add(additional, PtraceScope);
         }
 
-        var usesSymbols = string.Equals(kind, "off_cpu", StringComparison.Ordinal) ||
-            (string.Equals(kind, "cpu", StringComparison.Ordinal) &&
+        var usesSymbols = IsDiscriminator(kind, "off_cpu") ||
+            (IsDiscriminator(kind, "cpu") &&
              GetBoolean(arguments, "resolveSourceLines", defaultValue: true));
         if (usesSymbols && RequiresRemoteSymbolsScope(arguments, policies))
         {
@@ -208,13 +208,13 @@ internal static class ToolInvocationScopeResolver
                 continue;
             }
 
-            var tool = GetString(request, "tool");
-            var kind = GetString(request, "kind");
-            if (string.Equals(tool, "collect_sample", StringComparison.Ordinal))
+            var tool = NormalizeDiscriminator(GetString(request, "tool"));
+            var kind = NormalizeDiscriminator(GetString(request, "kind"));
+            if (IsDiscriminator(tool, "collect_sample"))
             {
                 Add(additional, EventPipeScope);
             }
-            else if (string.Equals(tool, "collect_events", StringComparison.Ordinal))
+            else if (IsDiscriminator(tool, "collect_events"))
             {
                 Add(additional, GetCollectEventsKindScope(kind));
             }
@@ -227,8 +227,8 @@ internal static class ToolInvocationScopeResolver
         ImmutableArray<string>.Builder additional,
         ImmutableArray<string>.Builder modifiers)
     {
-        var source = GetString(arguments, "source");
-        if (string.Equals(source, "live", StringComparison.Ordinal))
+        var source = NormalizeDiscriminator(GetString(arguments, "source"));
+        if (IsDiscriminator(source, "live"))
         {
             Add(additional, PtraceScope);
         }
@@ -238,7 +238,7 @@ internal static class ToolInvocationScopeResolver
             Add(modifiers, SensitiveHeapReadScope);
         }
 
-        if (!string.Equals(source, "gcdump", StringComparison.Ordinal) &&
+        if (!IsDiscriminator(source, "gcdump") &&
             RequiresRemoteSymbolsScope(arguments, policies))
         {
             Add(modifiers, SymbolsRemoteScope);
@@ -257,13 +257,13 @@ internal static class ToolInvocationScopeResolver
         // and applies the existing kind-specific guard. Never require or synthesize the complete union.
         _ = proxyInvocation;
 
-        var view = GetString(arguments, "view")?.ToLowerInvariant();
-        if (string.Equals(view, "frame-vars", StringComparison.Ordinal))
+        var view = NormalizeDiscriminator(GetString(arguments, "view"));
+        if (IsDiscriminator(view, "frame-vars"))
         {
             Add(additional, PtraceScope);
             Add(additional, HeapReadScope);
         }
-        else if (string.Equals(view, "retention-paths", StringComparison.Ordinal))
+        else if (IsDiscriminator(view, "retention-paths"))
         {
             Add(additional, HeapReadScope);
             Add(modifiers, SensitiveHeapReadScope);
@@ -274,7 +274,7 @@ internal static class ToolInvocationScopeResolver
             return;
         }
 
-        if (string.Equals(view, "events", StringComparison.Ordinal))
+        if (IsDiscriminator(view, "events"))
         {
             Add(modifiers, SensitiveParameterReadScope);
         }
@@ -312,7 +312,13 @@ internal static class ToolInvocationScopeResolver
         IDictionary<string, JsonElement>? arguments,
         string name,
         string expected)
-        => string.Equals(GetString(arguments, name), expected, StringComparison.Ordinal);
+        => IsDiscriminator(GetString(arguments, name), expected);
+
+    private static string? NormalizeDiscriminator(string? value)
+        => value?.Trim().ToLowerInvariant();
+
+    private static bool IsDiscriminator(string? value, string expected)
+        => string.Equals(value?.Trim(), expected, StringComparison.OrdinalIgnoreCase);
 
     private static string? GetString(IDictionary<string, JsonElement>? arguments, string name)
         => TryGet(arguments, name, out var value) && value.ValueKind == JsonValueKind.String
