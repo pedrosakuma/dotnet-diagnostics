@@ -70,6 +70,11 @@ public class KubernetesPortForwardManagerTests
         Func<Task> act = async () => await client.GetAsync("/health");
         await act.Should().ThrowAsync<ObjectDisposedException>();
 
+        Func<Task> recreate = async () =>
+            await manager.GetOrCreateClientAsync(handle, CancellationToken.None);
+        await recreate.Should().ThrowAsync<OrchestratorException>()
+            .WithMessage("*closed*cannot be recreated*");
+
         await manager.DisposeAsync();
     }
 

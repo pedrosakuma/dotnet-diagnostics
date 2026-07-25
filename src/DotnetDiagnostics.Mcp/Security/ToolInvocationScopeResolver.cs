@@ -263,7 +263,8 @@ internal static class ToolInvocationScopeResolver
             Add(additional, PtraceScope);
             Add(additional, HeapReadScope);
         }
-        else if (IsDiscriminator(view, "retention-paths"))
+        else if (IsDiscriminator(view, "retention-paths") ||
+                 IsDiscriminator(view, "growth"))
         {
             Add(additional, HeapReadScope);
             Add(modifiers, SensitiveHeapReadScope);
@@ -326,9 +327,26 @@ internal static class ToolInvocationScopeResolver
             : null;
 
     private static string? GetString(JsonElement value, string name)
-        => value.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
-            ? property.GetString()?.Trim()
-            : null;
+    {
+        if (value.TryGetProperty(name, out var exact))
+        {
+            return exact.ValueKind == JsonValueKind.String
+                ? exact.GetString()?.Trim()
+                : null;
+        }
+
+        foreach (var candidate in value.EnumerateObject())
+        {
+            if (string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return candidate.Value.ValueKind == JsonValueKind.String
+                    ? candidate.Value.GetString()?.Trim()
+                    : null;
+            }
+        }
+
+        return null;
+    }
 
     private static bool GetBoolean(
         IDictionary<string, JsonElement>? arguments,
@@ -343,9 +361,24 @@ internal static class ToolInvocationScopeResolver
         string name,
         out JsonElement value)
     {
-        if (arguments is not null && arguments.TryGetValue(name, out value))
+        if (arguments is null)
+        {
+            value = default;
+            return false;
+        }
+
+        if (arguments.TryGetValue(name, out value))
         {
             return true;
+        }
+
+        foreach (var candidate in arguments)
+        {
+            if (string.Equals(candidate.Key, name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = candidate.Value;
+                return true;
+            }
         }
 
         value = default;

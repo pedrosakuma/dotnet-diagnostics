@@ -16,6 +16,7 @@ internal static class ToolScopeDelegation
 {
     internal const string ArgumentName = "__dotnetDiagnosticsScopeDelegation";
     internal const string EnvironmentVariableName = "MCP_INTERNAL_SCOPE_DELEGATION_KEY";
+    internal const string DelegatedPrincipalName = "internal-proxy-delegation";
     private static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan MaximumClockSkew = TimeSpan.FromSeconds(5);
     private static readonly byte[] SignatureDomain =
@@ -129,7 +130,7 @@ internal static class ToolScopeDelegation
             return false;
         }
 
-        var principal = new BearerPrincipal("internal-proxy-delegation", scopes);
+        var principal = new BearerPrincipal(DelegatedPrincipalName, scopes);
         var authorization = registry.Authorize(
             request.Name,
             arguments,
@@ -144,7 +145,9 @@ internal static class ToolScopeDelegation
         }
 
         PruneReplayCache(now.ToUnixTimeSeconds());
-        if (!UsedNonces.TryAdd(payload.Nonce, payload.ExpiresAtUnixSeconds))
+        var replayProtectionExpiresAt =
+            payload.ExpiresAtUnixSeconds + (long)MaximumClockSkew.TotalSeconds;
+        if (!UsedNonces.TryAdd(payload.Nonce, replayProtectionExpiresAt))
         {
             failure = "internal scope delegation has already been used";
             return false;

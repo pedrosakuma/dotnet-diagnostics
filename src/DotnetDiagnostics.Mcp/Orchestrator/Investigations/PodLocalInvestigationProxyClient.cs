@@ -41,6 +41,7 @@ internal sealed class PodLocalInvestigationProxyClient : IInvestigationProxyClie
     private readonly ToolScopeResolutionPolicies _scopePolicies;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ConcurrentDictionary<string, Lazy<Task<McpClient>>> _clients = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _closedHandles = new(StringComparer.Ordinal);
     private int _disposed;
 
     public PodLocalInvestigationProxyClient(
@@ -69,6 +70,12 @@ internal sealed class PodLocalInvestigationProxyClient : IInvestigationProxyClie
         ArgumentNullException.ThrowIfNull(handle);
         ArgumentNullException.ThrowIfNull(request);
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (_closedHandles.ContainsKey(handle.HandleId))
+        {
+            throw new InvalidOperationException(
+                $"Refusing to forward tool '{request.Name}' to investigation {handle.HandleId}: " +
+                "the investigation has been closed.");
+        }
 
         // H7 (issue #164): defense-in-depth allowlist check. The CallTool filter
         // is the primary gate, but enforcing again here guarantees that any
@@ -110,6 +117,13 @@ internal sealed class PodLocalInvestigationProxyClient : IInvestigationProxyClie
             handle.InternalScopeDelegationKey);
 
         var client = await GetOrCreateClientAsync(handle, cancellationToken).ConfigureAwait(false);
+        if (_closedHandles.ContainsKey(handle.HandleId))
+        {
+            await DisposeForHandleAsync(handle.HandleId).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"Refusing to forward tool '{request.Name}' to investigation {handle.HandleId}: " +
+                "the investigation was closed before the pod call started.");
+        }
         return await client.CallToolAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
@@ -122,6 +136,7 @@ internal sealed class PodLocalInvestigationProxyClient : IInvestigationProxyClie
     public async Task DisposeForHandleAsync(string handleId)
     {
         if (string.IsNullOrEmpty(handleId)) return;
+        _closedHandles.TryAdd(handleId, 0);
         if (!_clients.TryRemove(handleId, out var slot)) return;
 
         try

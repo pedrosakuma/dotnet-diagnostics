@@ -100,7 +100,18 @@ internal static class InvestigationProxyCallToolFilter
                 observability,
                 loggerAccessor,
                 cancellationToken,
-                policies);
+                policies,
+                taskPromoter: (forward, ct) =>
+                {
+                    if (request.MatchedPrimitive is not McpServerTool matchedTool)
+                    {
+                        throw new InvalidOperationException(
+                            "Cannot promote an investigation-bound call to an MCP task because the matched tool is unavailable.");
+                    }
+
+                    request.MatchedPrimitive = new InvestigationProxyTaskTool(matchedTool, forward);
+                    return next(request, ct);
+                });
         };
     }
 
@@ -123,7 +134,8 @@ internal static class InvestigationProxyCallToolFilter
         OrchestratorObservability observability,
         Func<ILogger?> loggerAccessor,
         CancellationToken cancellationToken,
-        ToolScopeResolutionPolicies? policies = null)
+        ToolScopeResolutionPolicies? policies = null,
+        Func<Func<CancellationToken, ValueTask<CallToolResult>>, CancellationToken, ValueTask<CallToolResult>>? taskPromoter = null)
     {
         ArgumentNullException.ThrowIfNull(scopeRegistry);
         var toolName = requestParams?.Name;
@@ -161,7 +173,9 @@ internal static class InvestigationProxyCallToolFilter
             return await next(sanitizedRequest, cancellationToken).ConfigureAwait(false);
         }
 
-        using var activity = observability.StartProxyActivity(handleId, toolName);
+        using var activity = requestParams?.Task is null
+            ? observability.StartProxyActivity(handleId, toolName)
+            : null;
 
         if (!InvestigationProxyToolAllowlist.IsAllowed(toolName))
         {
@@ -254,50 +268,113 @@ internal static class InvestigationProxyCallToolFilter
             };
         }
 
-        try
+        async ValueTask<CallToolResult> ForwardAsync(CancellationToken forwardCancellationToken)
         {
-            if (principalAccessor.Current is not { } caller ||
-                string.IsNullOrWhiteSpace(handle.InternalScopeDelegationKey))
+            using var taskActivity = requestParams?.Task is not null
+                ? observability.StartProxyActivity(handle.HandleId, toolName)
+                : null;
+            var forwardingActivity = taskActivity ?? activity;
+            try
             {
-                loggerAccessor()?.LogError(
-                    "Refusing to forward '{ToolName}' via investigation {HandleId}: internal scope delegation is unavailable.",
-                    toolName,
-                    handle.HandleId);
-                return BuildDelegationUnavailableResult(toolName, handle.HandleId);
+                var currentHandle = investigationStore.GetById(handle.HandleId);
+                if (currentHandle is null || currentHandle.State != InvestigationState.Active)
+                {
+                    forwardingActivity?.SetTag("event.outcome", "failure");
+                    forwardingActivity?.SetTag("error.type", "ProxyHandleNotActive");
+                    loggerAccessor()?.LogWarning(
+                        "Refusing to execute queued '{ToolName}' via investigation {HandleId}: the route became {State} before execution.",
+                        toolName,
+                        handle.HandleId,
+                        currentHandle?.State.ToString() ?? "missing");
+                    return new CallToolResult
+                    {
+                        IsError = true,
+                        Content =
+                        [
+                            new TextContentBlock
+                            {
+                                Text = $"Cannot forward '{toolName}' via investigation {handle.HandleId}: " +
+                                    "the handle became inactive before the queued call started.",
+                            },
+                        ],
+                    };
+                }
+
+                if (principalAccessor.Current is not { } caller ||
+                    string.IsNullOrWhiteSpace(currentHandle.InternalScopeDelegationKey))
+                {
+                    forwardingActivity?.SetTag("event.outcome", "failure");
+                    forwardingActivity?.SetTag("error.type", "ProxyDelegationUnavailable");
+                    loggerAccessor()?.LogError(
+                        "Refusing to forward '{ToolName}' via investigation {HandleId}: internal scope delegation is unavailable.",
+                        toolName,
+                        currentHandle.HandleId);
+                    return BuildDelegationUnavailableResult(toolName, currentHandle.HandleId);
+                }
+
+                // The orchestrator owns the externally visible MCP task. Sending Task upstream
+                // would create a second task in the cached pod MCP session, orphaning its id,
+                // result, cancellation, and progress lifecycle from the caller's session.
+                var upstreamRequest = requestParams?.Task is not null && taskPromoter is not null
+                    ? InvestigationRoutingArguments.WithoutTask(sanitizedRequest!)
+                    : sanitizedRequest!;
+                var delegatedRequest = ToolScopeDelegation.Add(
+                    upstreamRequest,
+                    authorization,
+                    caller,
+                    currentHandle.InternalScopeDelegationKey);
+                loggerAccessor()?.LogDebug(
+                    "Forwarding '{ToolName}' via investigation {HandleId} ({Namespace}/{Pod}).",
+                    toolName, currentHandle.HandleId, currentHandle.Namespace, currentHandle.PodName);
+                var result = await proxyClient.CallToolAsync(
+                    currentHandle,
+                    delegatedRequest,
+                    forwardCancellationToken).ConfigureAwait(false);
+                observability.RecordProxyCall(principalAccessor.Current, currentHandle.HandleId, toolName, result.IsError == true ? "failure" : "success");
+                forwardingActivity?.SetTag("event.outcome", result.IsError == true ? "failure" : "success");
+                return result;
             }
 
-            var delegatedRequest = ToolScopeDelegation.Add(
-                sanitizedRequest!,
-                authorization,
-                caller,
-                handle.InternalScopeDelegationKey);
-            loggerAccessor()?.LogDebug(
-                "Forwarding '{ToolName}' via investigation {HandleId} ({Namespace}/{Pod}).",
-                toolName, handle.HandleId, handle.Namespace, handle.PodName);
-            var result = await proxyClient.CallToolAsync(handle, delegatedRequest, cancellationToken).ConfigureAwait(false);
-            observability.RecordProxyCall(principalAccessor.Current, handle.HandleId, toolName, result.IsError == true ? "failure" : "success");
-            activity?.SetTag("event.outcome", result.IsError == true ? "failure" : "success");
-            return result;
+            catch (Exception ex) when (!IsRethrowable(ex, forwardCancellationToken))
+            {
+                loggerAccessor()?.LogWarning(
+                    ex,
+                    "Forwarding '{ToolName}' via investigation {HandleId} failed; returning structured error.",
+                    toolName, handle.HandleId);
+                observability.RecordProxyCall(principalAccessor.Current, handle.HandleId, toolName, "failure");
+                forwardingActivity?.SetTag("event.outcome", "failure");
+                forwardingActivity?.SetTag("error.type", ex.GetType().Name);
+                return new CallToolResult
+                {
+                    IsError = true,
+                    Content = new List<ContentBlock>
+                    {
+                        new TextContentBlock { Text = BuildErrorText(toolName, handle.HandleId, ex) },
+                    },
+                };
+            }
         }
 
-        catch (Exception ex) when (!IsRethrowable(ex, cancellationToken))
+        if (requestParams?.Task is not null && taskPromoter is not null)
         {
-            loggerAccessor()?.LogWarning(
-                ex,
-                "Forwarding '{ToolName}' via investigation {HandleId} failed; returning structured error.",
-                toolName, handle.HandleId);
-            observability.RecordProxyCall(principalAccessor.Current, handle.HandleId, toolName, "failure");
-            activity?.SetTag("event.outcome", "failure");
-            activity?.SetTag("error.type", ex.GetType().Name);
-            return new CallToolResult
-            {
-                IsError = true,
-                Content = new List<ContentBlock>
-                {
-                    new TextContentBlock { Text = BuildErrorText(toolName, handle.HandleId, ex) },
-                },
-            };
+            return await taskPromoter(ForwardAsync, cancellationToken).ConfigureAwait(false);
         }
+
+        return await ForwardAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private sealed class InvestigationProxyTaskTool(
+        McpServerTool matchedTool,
+        Func<CancellationToken, ValueTask<CallToolResult>> forward) : McpServerTool
+    {
+        public override Tool ProtocolTool => matchedTool.ProtocolTool;
+
+        public override IReadOnlyList<object> Metadata => matchedTool.Metadata;
+
+        public override ValueTask<CallToolResult> InvokeAsync(
+            RequestContext<CallToolRequestParams> request,
+            CancellationToken cancellationToken)
+            => forward(cancellationToken);
     }
 
     private static CallToolResult BuildDelegationUnavailableResult(string toolName, string handleId)

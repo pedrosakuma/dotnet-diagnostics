@@ -106,6 +106,7 @@ public sealed partial class QuerySnapshotTool
     private const string ScopeReadCounters = "read-counters";
     private const string ScopeInvestigationExport = "investigation-export";
     private const string ScopeSensitiveParameterRead = "sensitive-parameter-read";
+    private const string ScopeSensitiveHeapRead = "sensitive-heap-read";
 
     [RequireAnyScope(
         ScopeReadCounters,
@@ -151,7 +152,7 @@ public sealed partial class QuerySnapshotTool
         [Description("Diff view: baseline handle to compare against the current `handle`. Required for legacy pairwise diff unless `comparisonHandles` is supplied. Heap view='growth': required — the EARLIER live heap snapshot handle to diff the current (later) one against.")] string? baselineHandle = null,
         [Description("Diff view only: ordered handles to compare before the current `handle` for N-way journey diffs. Do not combine with `baselineHandle`; the current handle is appended as the final capture.")] string[]? comparisonHandles = null,
         [Description("Diff/growth views: minimum absolute delta percentage required for a row to surface. Defaults to 5.0.")] double minDeltaPct = 5.0,
-        [Description("Diff view only: inline verbosity for comparable journey diffs. `full` returns the full matrix when it is below the inline threshold; `compact` returns verdict/headline/counts/notes plus top-N metric and key deltas. Large full diffs always return compact inline data plus a journey://diff/{handle} Resource link. Defaults to `full`.")] string depth = "full",
+        [Description("Diff view only: inline verbosity for comparable journey diffs. `full` returns the full matrix; local large results may use a journey://diff/{handle} Resource link, while proxied results stay inline because dynamic pod Resources are not forwarded. `compact` returns verdict/headline/counts/notes plus top-N deltas. Defaults to `full`.")] string depth = "full",
         [Description("Diff view only: journey interpretation mode. `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers and requires N-way comparable captures via comparisonHandles.")] string? mode = null,
         [Description("cpu-sample/allocation-sample 'hot-path' view only: a child must carry at least this percent of its parent's inclusive samples to extend the chain. Defaults to 50.")] double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
@@ -800,7 +801,11 @@ public sealed partial class QuerySnapshotTool
             depth,
             BuildJourneyDiffSummary(diff, currentHandle, comparisonHandles),
             currentLookup.Handle.Origin == HandleOrigin.Live,
-            currentLookup.Handle.Origin);
+            currentLookup.Handle.Origin,
+            allowResourceLink: !string.Equals(
+                principal?.Name,
+                ToolScopeDelegation.DelegatedPrincipalName,
+                StringComparison.Ordinal));
     }
 
     private static DiagnosticResult<object> UnsupportedDiffKind(string kind)
@@ -852,7 +857,18 @@ public sealed partial class QuerySnapshotTool
     {
         if (kind == DiagnosticTools.HeapSnapshotKind)
         {
-            return RequireScope(principal, ScopeHeapRead, out failure);
+            if (!RequireScope(principal, ScopeHeapRead, out failure))
+            {
+                return false;
+            }
+
+            if (string.Equals(view?.Trim(), "retention-paths", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(view?.Trim(), GrowthView, StringComparison.OrdinalIgnoreCase))
+            {
+                return RequireExplicitScope(principal, ScopeSensitiveHeapRead, out failure);
+            }
+
+            return true;
         }
 
         if (kind == DiagnosticTools.ThreadSnapshotKind)

@@ -346,6 +346,28 @@ public class KubernetesPodAttachOrchestratorTests
     }
 
     [Fact]
+    public async Task AttachAsync_DoesNotReviveHandleClosedDuringReadiness()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, store, _) = NewOrchestrator(api);
+        api.OnRunningObserved = () =>
+        {
+            var attaching = store.Snapshot().Single();
+            store.TryTransitionToTerminal(
+                attaching.HandleId,
+                InvestigationState.Closed,
+                failureReason: null,
+                out _).Should().Be(InvestigationTerminalTransition.Transitioned);
+        };
+
+        var act = () => orch.AttachAsync(NewRequest(), CancellationToken.None);
+
+        var error = await act.Should().ThrowAsync<OrchestratorException>();
+        error.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.AttachFailed);
+        store.Snapshot().Should().ContainSingle(handle => handle.State == InvestigationState.Closed);
+    }
+
+    [Fact]
     public void InvestigationHandle_SerializedShape_ExcludesBearerToken()
     {
         // Defence in depth: even if a future caller serializes the internal handle directly,
@@ -488,6 +510,7 @@ public class KubernetesPodAttachOrchestratorTests
         public bool PatchInvoked { get; private set; }
         public int PatchInvocationCount { get; private set; }
         public V1EphemeralContainer? PatchedSpec { get; private set; }
+        public Action? OnRunningObserved { get; set; }
 
         public Task<V1PodList> ListPodsAsync(string? namespaceName, string? labelSelector, string? fieldSelector, int? limit, string? continueToken, CancellationToken cancellationToken)
             => throw new NotSupportedException();
@@ -505,6 +528,11 @@ public class KubernetesPodAttachOrchestratorTests
                 var state = _readCount >= _ephemeralRunningAfter
                     ? new V1ContainerState { Running = new V1ContainerStateRunning() }
                     : new V1ContainerState { Waiting = new V1ContainerStateWaiting { Reason = "ContainerCreating" } };
+                if (state.Running is not null)
+                {
+                    OnRunningObserved?.Invoke();
+                    OnRunningObserved = null;
+                }
                 if (existing is null)
                 {
                     statuses.Add(new V1ContainerStatus

@@ -165,6 +165,70 @@ public sealed class InvestigationProxyCallToolFilterTests
     }
 
     [Fact]
+    public async Task TaskAugmentedForwarding_IsOwnedByOuterSession_AndRunsPodCallWithoutNestedTask()
+    {
+        var fx = new Fixture();
+        fx.Binder.Bind("session-task", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+        var metadata = new JsonObject
+        {
+            ["progressToken"] = "progress-task-707",
+            ["extension"] = "preserved",
+        };
+        var request = Params("collect_events", new Dictionary<string, JsonElement>
+        {
+            ["kind"] = JsonSerializer.SerializeToElement("counters"),
+        });
+        request.Meta = metadata;
+        request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        var promoterCalls = 0;
+
+        var result = await fx.Invoke(
+            request,
+            "session-task",
+            taskPromoter: async (forward, ct) =>
+            {
+                Interlocked.Increment(ref promoterCalls);
+                fx.ProxyClient.CallCount.Should().Be(0, "pod execution must start inside the outer task");
+                return await forward(ct);
+            });
+
+        result.IsError.Should().NotBe(true);
+        promoterCalls.Should().Be(1);
+        fx.ProxyClient.CallCount.Should().Be(1);
+        fx.ProxyClient.LastRequest!.Task.Should().BeNull(
+            "the pod must not create an orphan task in its private MCP session");
+        fx.ProxyClient.LastRequest.Meta.Should().BeSameAs(metadata);
+        fx.ProxyClient.LastRequest.ProgressToken!.Value.Token.Should().Be("progress-task-707");
+    }
+
+    [Fact]
+    public async Task TaskAugmentedForwarding_RefusesExecution_WhenHandleClosesBeforeTaskStarts()
+    {
+        var fx = new Fixture();
+        fx.Binder.Bind("session-task-close", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+        var request = Params("collect_events", new Dictionary<string, JsonElement>
+        {
+            ["kind"] = JsonSerializer.SerializeToElement("counters"),
+        });
+        request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+
+        var result = await fx.Invoke(
+            request,
+            "session-task-close",
+            taskPromoter: async (forward, ct) =>
+            {
+                fx.Store.Update(ActiveHandle with { State = InvestigationState.Closed });
+                return await forward(ct);
+            });
+
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("became inactive");
+        fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Forwards_WhenExplicitInvestigationHandleIdIsSupplied()
     {
         var fx = new Fixture();
@@ -255,8 +319,10 @@ public sealed class InvestigationProxyCallToolFilterTests
         fx.ProxyClient.CallCount.Should().Be(0);
     }
 
-    [Fact]
-    public async Task RejectsMixedCaseRetentionPaths_WhenSensitiveHeapScopeIsMissing()
+    [Theory]
+    [InlineData("RETENTION-PATHS")]
+    [InlineData("GROWTH")]
+    public async Task RejectsMixedCaseSensitiveHeapView_WhenSensitiveHeapScopeIsMissing(string view)
     {
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(
             "orchestrator-attach",
@@ -268,7 +334,7 @@ public sealed class InvestigationProxyCallToolFilterTests
             Params("query_snapshot", new Dictionary<string, JsonElement>
             {
                 ["handle"] = JsonSerializer.SerializeToElement("heap-handle"),
-                ["view"] = JsonSerializer.SerializeToElement("RETENTION-PATHS"),
+                ["view"] = JsonSerializer.SerializeToElement(view),
             }),
             "session-retention");
 
@@ -282,6 +348,8 @@ public sealed class InvestigationProxyCallToolFilterTests
     [InlineData("collect_sample", "kind", "method-params", "eventpipe", "sensitive-parameter-read")]
     [InlineData("get_bytes", "kind", "delete", "module-bytes-read", "delete-artifact")]
     [InlineData("query_snapshot", "handle", "opaque", "eventpipe", "sensitive-parameter-read")]
+    [InlineData("query_snapshot", "view", "RETENTION-PATHS", "heap-read", "sensitive-heap-read")]
+    [InlineData("query_snapshot", "view", "GROWTH", "heap-read", "sensitive-heap-read")]
     public async Task Forwards_ModifierGatedCall_With_RequestBound_Exact_Delegation(
         string toolName,
         string argumentName,
@@ -316,6 +384,36 @@ public sealed class InvestigationProxyCallToolFilterTests
             out var delegatedPrincipal,
             out var failure).Should().BeTrue(failure);
         delegatedPrincipal!.Scopes.Should().BeEquivalentTo(primaryScope, modifierScope);
+    }
+
+    [Fact]
+    public async Task Forwards_OpaqueEventPipeQuery_WithoutUnrelatedPrimaryScopes()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "eventpipe"));
+        fx.Binder.Bind("session-eventpipe-query", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(
+            Params("query_snapshot", new Dictionary<string, JsonElement>
+            {
+                ["handle"] = JsonSerializer.SerializeToElement("opaque"),
+                ["view"] = JsonSerializer.SerializeToElement("summary"),
+            }),
+            "session-eventpipe-query");
+
+        result.IsError.Should().BeNull();
+        var delegatedRequest = fx.ProxyClient.LastRequest!;
+        ToolScopeDelegation.TryConsume(
+            delegatedRequest,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            ActiveHandle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo("eventpipe");
     }
 
     [Theory]
@@ -694,7 +792,10 @@ public sealed class InvestigationProxyCallToolFilterTests
         }
 
         public ValueTask<CallToolResult> Invoke(
-            CallToolRequestParams? request, string? sessionId, CancellationToken token = default)
+            CallToolRequestParams? request,
+            string? sessionId,
+            CancellationToken token = default,
+            Func<Func<CancellationToken, ValueTask<CallToolResult>>, CancellationToken, ValueTask<CallToolResult>>? taskPromoter = null)
         {
             return InvestigationProxyCallToolFilter.InvokeAsync(
                 request,
@@ -714,7 +815,8 @@ public sealed class InvestigationProxyCallToolFilterTests
                 Observability,
                 loggerAccessor: () => null,
                 cancellationToken: token,
-                policies: Policies);
+                policies: Policies,
+                taskPromoter: taskPromoter);
         }
     }
 
@@ -758,6 +860,19 @@ public sealed class InvestigationProxyCallToolFilterTests
         }
 
         public void Update(InvestigationHandle handle) => _byId[handle.HandleId] = handle;
+        public bool TryTransitionToActive(string handleId, out InvestigationHandle? active)
+        {
+            if (!_byId.TryGetValue(handleId, out var current) ||
+                current.State != InvestigationState.Attaching)
+            {
+                active = null;
+                return false;
+            }
+
+            active = current with { State = InvestigationState.Active };
+            _byId[handleId] = active;
+            return true;
+        }
         public InvestigationHandle? GetById(string handleId) => _byId.TryGetValue(handleId, out var h) ? h : null;
         public InvestigationTerminalTransition TryTransitionToTerminal(
             string handleId,
