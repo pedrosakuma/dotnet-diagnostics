@@ -8,6 +8,7 @@ using DotnetDiagnostics.Core.Investigation;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Threads;
+using DotnetDiagnostics.Mcp.Security;
 using static DotnetDiagnostics.Core.UseCases.ProcessResolutionHelpers;
 
 namespace DotnetDiagnostics.Mcp.Tools;
@@ -61,6 +62,7 @@ internal static class DiagnosticToolInvestigationPlanning
         IInvestigationSummaryExporter exporter,
         IDiagnosticHandleStore handles,
         DotnetDiagnostics.Mcp.Observability.IInvestigationTelemetryEmitter telemetry,
+        IPrincipalAccessor principalAccessor,
         [Description("Primary evidence handle from collect_sample(kind='cpu'), collect_events(kind='counters'|'gc'|'datas'), or collect_thread_snapshot.")] string handle,
         [Description("Optional additional supported evidence handles from the same process. Up to 7; duplicates are ignored.")] string[]? additionalHandles = null,
         [Description("Output format: 'json' (default — portable, machine-readable) or 'markdown' (human-readable for PRs).") ] SummaryFormat format = SummaryFormat.Json,
@@ -100,13 +102,23 @@ internal static class DiagnosticToolInvestigationPlanning
                         new Dictionary<string, object?> { ["kind"] = "counters", ["durationSeconds"] = 5 }));
             }
 
-            if (!IsSupportedEvidence(lookup.Value.Artifact))
+            if (!QuerySnapshotTool.AuthorizeHandleKind(
+                    principalAccessor.Current,
+                    lookup.Value.Kind,
+                    view: null,
+                    toolName: "export_investigation_summary",
+                    failure: out var authorizationFailure))
+            {
+                return ConvertFailure<ExportedInvestigationSummary>(authorizationFailure!);
+            }
+
+            if (!IsSupportedEvidencePair(lookup.Value.Kind, lookup.Value.Artifact))
             {
                 return DiagnosticResult.Fail<ExportedInvestigationSummary>(
-                    $"Handle '{requestedHandle}' has unsupported kind '{lookup.Value.Kind}'.",
+                    $"Handle '{requestedHandle}' has unsupported or mismatched kind '{lookup.Value.Kind}'.",
                     new DiagnosticError(
                         "HandleKindMismatch",
-                        "Supported summary evidence is CPU samples, counters, GC/GC DATAS, and thread snapshots.",
+                        "Supported canonical summary evidence pairs are cpu-sample/CpuSampleTraceArtifact, counters/CounterSnapshot, gc-events/GcSummary, gc-datas/GcDatasSnapshot, and thread-snapshot/ThreadSnapshotArtifact.",
                         requestedHandle),
                     new NextActionHint("collect_events", "Collect a supported counters or GC artifact.",
                         new Dictionary<string, object?> { ["kind"] = "counters", ["durationSeconds"] = 5 }));
@@ -128,7 +140,7 @@ internal static class DiagnosticToolInvestigationPlanning
                 lookup.Value.Handle.Origin.ToString().ToLowerInvariant()));
         }
 
-        if (evidence.Count(static item => item.Artifact is CpuSampleTraceArtifact) > 1)
+        if (evidence.Count(static item => item.Kind == "cpu-sample") > 1)
         {
             return DiagnosticResult.Fail<ExportedInvestigationSummary>(
                 "An investigation summary can include at most one CPU sample handle.",
@@ -142,14 +154,27 @@ internal static class DiagnosticToolInvestigationPlanning
             ? null
             : new InvestigationFixTarget(fixCommitSha, fixPullRequestUrl, fixDescription);
 
-        var exported = exporter.Export(new ExportRequest(
-            Evidence: evidence,
-            TopHotspots: topHotspots,
-            BuildAssemblyName: buildAssemblyName,
-            PreviousInvestigationId: previousInvestigationId,
-            TargetsFix: fix,
-            Notes: notes,
-            Format: format));
+        ExportedInvestigationSummary exported;
+        try
+        {
+            exported = exporter.Export(new ExportRequest(
+                Evidence: evidence,
+                TopHotspots: topHotspots,
+                BuildAssemblyName: buildAssemblyName,
+                PreviousInvestigationId: previousInvestigationId,
+                TargetsFix: fix,
+                Notes: notes,
+                Format: format));
+        }
+        catch (EvidenceMetricConflictException ex)
+        {
+            return DiagnosticResult.Fail<ExportedInvestigationSummary>(
+                ex.Message,
+                new DiagnosticError("EvidenceMetricConflict", ex.Message, ex.MetricName),
+                new NextActionHint(
+                    "export_investigation_summary",
+                    "Remove one handle that reports the conflicting metric, or export the captures separately."));
+        }
 
         telemetry.Emit(exported.Summary, string.Join(",", requestedHandles));
 
@@ -159,12 +184,24 @@ internal static class DiagnosticToolInvestigationPlanning
             $"Exported investigation {exported.Summary.InvestigationId} from {evidence.Count} evidence handle(s) ({exported.Summary.Findings.TopHotspots.Count} CPU hotspots, {bytes} chars {format}). Paste `rendered` into your PR/ADR; re-supply this JSON via compare_to_baseline on the next investigation.");
     }
 
-    private static bool IsSupportedEvidence(object artifact)
-        => artifact is CpuSampleTraceArtifact
-            or CounterSnapshot
-            or GcSummary
-            or GcDatasSnapshot
-            or ThreadSnapshotArtifact;
+    private static bool IsSupportedEvidencePair(string kind, object artifact)
+        => (kind, artifact) switch
+        {
+            ("cpu-sample", CpuSampleTraceArtifact) => true,
+            (DotnetDiagnostics.Core.Collection.CollectionHandleKinds.Counters, CounterSnapshot) => true,
+            (DotnetDiagnostics.Core.Collection.CollectionHandleKinds.GcEvents, GcSummary) => true,
+            (DotnetDiagnostics.Core.Collection.CollectionHandleKinds.GcDatas, GcDatasSnapshot) => true,
+            (DotnetDiagnostics.Core.UseCases.SamplerUseCases.ThreadSnapshotKind, ThreadSnapshotArtifact) => true,
+            _ => false,
+        };
+
+    private static DiagnosticResult<T> ConvertFailure<T>(DiagnosticResult<object> failure)
+        => new(failure.Summary, failure.Hints, failure.Error)
+        {
+            Handle = failure.Handle,
+            HandleExpiresAt = failure.HandleExpiresAt,
+            ResolvedProcess = failure.ResolvedProcess,
+        };
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)
         => DiagnosticResult.Fail<T>(

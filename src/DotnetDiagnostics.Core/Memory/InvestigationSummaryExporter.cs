@@ -60,6 +60,41 @@ public sealed record ExportedInvestigationSummary(
     SummaryFormat Format,
     string Rendered);
 
+public sealed class EvidenceMetricConflictException : InvalidOperationException
+{
+    public EvidenceMetricConflictException(
+        string metricName,
+        string firstHandle,
+        double firstValue,
+        string secondHandle,
+        double secondValue)
+        : base(BuildMessage(metricName, firstHandle, firstValue, secondHandle, secondValue))
+    {
+        MetricName = metricName;
+    }
+
+    public string MetricName { get; }
+
+    private static string BuildMessage(
+        string metricName,
+        string firstHandle,
+        double firstValue,
+        string secondHandle,
+        double secondValue)
+    {
+        var first = (Handle: firstHandle, Value: firstValue);
+        var second = (Handle: secondHandle, Value: secondValue);
+        if (string.Compare(first.Handle, second.Handle, StringComparison.Ordinal) > 0)
+        {
+            (first, second) = (second, first);
+        }
+
+        return string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"Metric '{metricName}' has conflicting values: handle '{first.Handle}'={first.Value:R}, handle '{second.Handle}'={second.Value:R}. Remove one conflicting handle or export separately.");
+    }
+}
+
 public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
 {
     private const int MaxEvidenceMetrics = 64;
@@ -93,7 +128,10 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
             throw new ArgumentOutOfRangeException(nameof(request), "TopHotspots must be >= 1.");
         }
 
-        var projections = request.Evidence.Select(ProjectEvidence).ToArray();
+        var projections = request.Evidence
+            .Select(ProjectEvidence)
+            .OrderBy(static projection => projection.Evidence.Handle, StringComparer.Ordinal)
+            .ToArray();
         var processId = projections[0].ProcessId;
         if (projections.Any(projection => projection.ProcessId != processId))
         {
@@ -101,7 +139,8 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
         }
 
         var cpuArtifacts = request.Evidence
-            .Where(static evidence => evidence.Artifact is CpuSampleTraceArtifact)
+            .Where(static evidence => evidence.Kind == "cpu-sample"
+                && evidence.Artifact is CpuSampleTraceArtifact)
             .Select(static evidence => (CpuSampleTraceArtifact)evidence.Artifact)
             .ToArray();
         if (cpuArtifacts.Length > 1)
@@ -191,15 +230,15 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
     }
 
     private static EvidenceProjection ProjectEvidence(InvestigationEvidenceInput input)
-        => input.Artifact switch
+        => (input.Kind, input.Artifact) switch
         {
-            CpuSampleTraceArtifact cpu => ProjectCpu(input, cpu),
-            CounterSnapshot counters => ProjectCounters(input, counters),
-            GcSummary gc => ProjectGc(input, gc),
-            GcDatasSnapshot datas => ProjectGcDatas(input, datas),
-            ThreadSnapshotArtifact threads => ProjectThreads(input, threads),
+            ("cpu-sample", CpuSampleTraceArtifact cpu) => ProjectCpu(input, cpu),
+            ("counters", CounterSnapshot counters) => ProjectCounters(input, counters),
+            ("gc-events", GcSummary gc) => ProjectGc(input, gc),
+            ("gc-datas", GcDatasSnapshot datas) => ProjectGcDatas(input, datas),
+            ("thread-snapshot", ThreadSnapshotArtifact threads) => ProjectThreads(input, threads),
             _ => throw new ArgumentException(
-                $"Handle '{input.Handle}' has unsupported evidence type '{input.Artifact.GetType().Name}'.",
+                $"Handle '{input.Handle}' has unsupported or mismatched evidence pair kind='{input.Kind}', artifact='{input.Artifact.GetType().Name}'.",
                 nameof(input)),
         };
 
@@ -441,11 +480,28 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
         IReadOnlyList<EvidenceProjection> projections)
     {
         var merged = new Dictionary<string, double>(StringComparer.Ordinal);
+        var sources = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var projection in projections)
         {
             foreach (var metric in projection.Evidence.Metrics)
             {
-                merged.TryAdd(metric.Key, metric.Value);
+                if (merged.TryAdd(metric.Key, metric.Value))
+                {
+                    sources.Add(metric.Key, projection.Evidence.Handle);
+                    continue;
+                }
+
+                if (merged[metric.Key].Equals(metric.Value))
+                {
+                    continue;
+                }
+
+                throw new EvidenceMetricConflictException(
+                    metric.Key,
+                    sources[metric.Key],
+                    merged[metric.Key],
+                    projection.Evidence.Handle,
+                    metric.Value);
             }
         }
         return merged;
@@ -464,7 +520,9 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
     }
 
     private static bool IsLegacyCpuOnly(IReadOnlyList<InvestigationEvidenceInput> evidence)
-        => evidence.Count == 1 && evidence[0].Artifact is CpuSampleTraceArtifact;
+        => evidence.Count == 1
+            && evidence[0].Kind == "cpu-sample"
+            && evidence[0].Artifact is CpuSampleTraceArtifact;
 
     private static string RenderMarkdown(InvestigationSummary s)
     {

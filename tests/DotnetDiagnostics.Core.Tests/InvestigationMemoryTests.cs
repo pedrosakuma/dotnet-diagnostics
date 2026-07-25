@@ -208,6 +208,55 @@ public class InvestigationMemoryTests
     }
 
     [Fact]
+    public void Export_IdenticalDuplicateMetrics_DedupesDeterministicallyAcrossHandleOrder()
+    {
+        var first = new InvestigationEvidenceInput(
+            "z-handle",
+            "counters",
+            CounterArtifact(queueLength: 4, throughput: 25));
+        var second = new InvestigationEvidenceInput(
+            "a-handle",
+            "counters",
+            CounterArtifact(queueLength: 4, throughput: 25));
+
+        var forward = NewExporter().Export(new ExportRequest(Evidence: [first, second]));
+        var reversed = NewExporter().Export(new ExportRequest(Evidence: [second, first]));
+
+        forward.Rendered.Should().Be(reversed.Rendered);
+        forward.Summary.Findings.KeyMetrics.Should().Contain(new Dictionary<string, double>
+        {
+            ["threadpool-queue-length"] = 4,
+            ["requests-per-second"] = 25,
+        });
+        forward.Summary.Evidence!.Select(static evidence => evidence.Handle)
+            .Should().ContainInOrder("a-handle", "z-handle");
+    }
+
+    [Fact]
+    public void Export_ConflictingDuplicateMetrics_RejectsDeterministicallyAcrossHandleOrder()
+    {
+        var first = new InvestigationEvidenceInput(
+            "z-handle",
+            "counters",
+            CounterArtifact(queueLength: 8, throughput: 25));
+        var second = new InvestigationEvidenceInput(
+            "a-handle",
+            "counters",
+            CounterArtifact(queueLength: 4, throughput: 25));
+
+        var forward = () => NewExporter().Export(new ExportRequest(Evidence: [first, second]));
+        var reversed = () => NewExporter().Export(new ExportRequest(Evidence: [second, first]));
+
+        var forwardError = forward.Should().Throw<EvidenceMetricConflictException>().Which;
+        var reversedError = reversed.Should().Throw<EvidenceMetricConflictException>().Which;
+        forwardError.MetricName.Should().Be("threadpool-queue-length");
+        reversedError.Message.Should().Be(forwardError.Message);
+        forwardError.Message.Should().Contain("a-handle")
+            .And.Contain("z-handle")
+            .And.Contain("export separately");
+    }
+
+    [Fact]
     public void Compare_NoChange_ReturnsNoRegressionVerdict()
     {
         var artifact = ArtifactFor(("M.dll", "M.A", 100, 80));

@@ -3117,6 +3117,14 @@ stacks and managed method identities for the assembly-MCP handoff. All handles
 must belong to the same process, and at most one may be a CPU sample (compare
 two CPU windows with `query_snapshot(view="diff")`). A CPU-only call retains the original v1 JSON
 shape (`Findings.TotalSamples` + `TopHotspots`) and omits `Evidence`.
+The registered handle kind must match its canonical artifact type; similarly
+shaped artifacts such as `native-alloc-sample` are rejected rather than
+mislabelled as CPU evidence.
+
+When two evidence handles project the same metric with the same value, the
+summary deduplicates it deterministically. Conflicting values return
+`EvidenceMetricConflict`; remove one source or export the captures separately
+instead of relying on handle order.
 
 **Parameters:**
 
@@ -3133,8 +3141,10 @@ shape (`Findings.TotalSamples` + `TopHotspots`) and omits `Evidence`.
 
 **Returns:** `ExportedInvestigationSummary`. An expired/unknown handle returns a
 `HandleExpired` envelope with a hint to re-run the relevant collector; an
-unsupported handle returns `HandleKindMismatch`. **Scope:**
-`investigation-export`.
+unsupported or kind/type-mismatched handle returns `HandleKindMismatch`.
+**Scope:** `investigation-export` plus each handle's originating scope:
+`read-counters` for counters, `eventpipe` for GC/DATAS, and `ptrace` for thread
+snapshots.
 
 ---
 

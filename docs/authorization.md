@@ -51,7 +51,7 @@ per-handle checks at runtime.
 | `heap-read` | Read-only heap walks (type graphs, retention chains, addresses). | `inspect_heap(source="dump")`; **`inspect_heap(source="live")` additionally requires `ptrace`** |
 | `ptrace` | Authorization for sensitive live-memory/attach operations. Live ClrMD readers additionally need `CAP_SYS_PTRACE` (Linux) / debug privilege (Windows). `collect_process_dump` carries this bearer scope as defense in depth but writes through diagnostic IPC and does not itself require Linux `CAP_SYS_PTRACE`. | `collect_thread_snapshot`, `capture_method_bytes`, `inspect_heap(source="live")` (+`heap-read`), `collect_process_dump` (+`dump-write`) |
 | `dump-write` | Writes a full process dump (entire address space, zero redaction) to disk. **The single most dangerous scope.** Requires the separate `ptrace` bearer authorization scope as defense in depth; this does not imply a Linux kernel ptrace requirement for dump capture. | `collect_process_dump` (also needs `confirm=true` — see [below](#per-call-confirmation)) |
-| `investigation-export` | Read-only meta/planning tools + drilldown over already-collected handles. CPU `export_investigation_summary` additionally requires an explicitly granted `eventpipe` scope because it reads a CPU sample artifact. | `start_investigation`, `export_investigation_summary`, `compare_to_baseline`, `query_snapshot(view="call-tree")` |
+| `investigation-export` | Read-only meta/planning tools + drilldown over already-collected handles. `export_investigation_summary` additionally requires each evidence handle's originating scope. | `start_investigation`, `export_investigation_summary`, `compare_to_baseline`, `query_snapshot(view="call-tree")` |
 | `orchestrator-list` | Enumerate pods the orchestrator may see. Pure discovery. | `list_orchestrator(kind="pods")` |
 | `orchestrator-attach` | Mutating Kubernetes calls that create ephemeral debug containers. | `attach_to_pod`, `detach_from_pod` |
 | `azure-discovery` | Enumerate .NET workload candidates in an Azure subscription. | `discover_azure` |
@@ -225,10 +225,15 @@ callers to set it reflexively and destroy its signal.
 
 ## Drilldown over handles
 
-`query_snapshot` reads from handles minted by a collector. The tool itself accepts
-`read-counters` **or** `eventpipe`, then **re-applies the exact scope the originating
+`query_snapshot` and `export_investigation_summary` read from handles minted by a collector.
+`query_snapshot` accepts `read-counters` **or** `eventpipe` at entry, while the export
+tool requires `investigation-export`. Both then **re-apply the exact scope the originating
 collector required** at runtime, keyed on the handle kind — so a handle minted under
 `eventpipe` still demands `eventpipe` at query time even though the tool entry is broader.
+`export_investigation_summary` always also requires `investigation-export`; therefore
+counters require `investigation-export` + `read-counters`, GC/DATAS require
+`investigation-export` + `eventpipe`, and thread snapshots require
+`investigation-export` + `ptrace`.
 
 On top of that, specific `(handle origin, view)` pairs require a **modifier** scope: e.g.
 the `retention-paths` view on either a live or a dump heap snapshot requires
