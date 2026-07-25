@@ -77,10 +77,10 @@ behind its existing handle, so narrowing a follow-up query does not re-collect o
 | Projection | Inline cap | Selection |
 |---|---:|---|
 | `collect_thread_snapshot(depth="summary")` | 6 threads × 6 frames; no locks | Deadlocks, contended-lock owners, exceptions, and running frames before generic waits |
-| `collect_thread_snapshot(depth="detail"|"raw")` | 8 threads × 7 frames + 12 locks | Same thread ranking; most-contended locks first |
-| `query_snapshot` thread summaries | 8 threads × 8 frames | Same decisive ranking; `stack` still returns the explicitly selected captured stack |
-| CPU `call-tree` | 64 nodes, depth 8 | Branches containing running self-samples before waiting-only branches; use `rootMethodFilter` to narrow |
-| Heap `retention-paths` | 10 paths × 12 frames | Typed intermediate retainers with stable object addresses; projection truncation sets `Truncated=true` |
+| `collect_thread_snapshot(depth="detail"|"raw")` | 8 threads × 7 frames + 12 locks × 8 waiter IDs | Same thread ranking; most-contended locks first; each lock reports total/omitted waiter-ID counts |
+| `query_snapshot` thread summaries / lock graph | 8 threads × 8 frames / 12 locks × 8 waiter IDs per page | Same decisive ranking; `offset` + next-offset metadata pages through every retained thread/lock, `stack(threadId=...)` selects an exact full captured stack, and `lock-graph(address=...)` pages every retained waiter ID for one stable lock address |
+| CPU `call-tree` | 64 nodes, depth 8 | Every direct child participates in decision-first ranking; branches containing running self-samples precede waiting-only branches; use `rootMethodFilter` to narrow |
+| Heap `retention-paths` | 10 paths × 12 frames | Target and terminal root (`RootKind`) are always preserved, with typed/addressed intermediates filling the remaining budget; projection truncation sets `Truncated=true` |
 | Heap `growth` rows | 1 path × 12 frames per grower | Carries total/omitted path counts; the current heap handle retains every path |
 
 Hints also avoid suggesting evidence already present in the current payload: an untruncated call

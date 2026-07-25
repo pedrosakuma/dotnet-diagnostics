@@ -77,6 +77,24 @@ public sealed class ThreadSnapshotQueryTests
         result.Data.AsyncStalls!.ClassifiedThreads.Should().BeGreaterThan(0);
     }
 
+    [Fact]
+    public void QueryThreadSnapshot_ThreadsSummary_PagesWithoutLosingThreadIds()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = CreateSnapshot();
+        var handle = store.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10), evictWhenProcessExits: false);
+
+        var first = DiagnosticTools.QueryThreadSnapshot(store, handle.Id, view: "threads-summary", offset: 0);
+        var second = DiagnosticTools.QueryThreadSnapshot(store, handle.Id, view: "threads-summary", offset: 8);
+
+        first.Data!.NextThreadOffset.Should().Be(8);
+        second.Data!.NextThreadOffset.Should().BeNull();
+        first.Data.Threads!
+            .Concat(second.Data.Threads!)
+            .Select(thread => thread.ManagedThreadId)
+            .Should().BeEquivalentTo(Enumerable.Range(1, 13));
+    }
+
     private static ThreadSnapshotArtifact CreateSnapshot()
     {
         var threads = new List<ManagedThread>();

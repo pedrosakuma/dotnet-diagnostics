@@ -27,23 +27,32 @@ public static class ThreadSnapshotQueryDispatcher
     /// the eight valid views.
     /// </summary>
     public static DiagnosticResult<ThreadSnapshotQueryResult> Dispatch(
-        ThreadSnapshotArtifact snapshot, string handle, string view, int? threadId, int topN, int framesToHash, int minCount)
+        ThreadSnapshotArtifact snapshot,
+        string handle,
+        string view,
+        int? threadId,
+        int topN,
+        int framesToHash,
+        int minCount,
+        int offset = 0,
+        string? lockAddress = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
 
         // Defensive guard for non-server callers (the MCP server validates topN before delegating, so
         // this is unreachable on the server path and keeps its behavior byte-identical).
         if (topN < 1) return InvalidArg<ThreadSnapshotQueryResult>(nameof(topN), "must be >= 1");
+        if (offset < 0) return InvalidArg<ThreadSnapshotQueryResult>(nameof(offset), "must be >= 0");
 
         var origin = snapshot.Origin.ToString().ToLowerInvariant();
         var normalized = view.Trim().ToLowerInvariant();
         return normalized switch
         {
-            "threads-summary" => QueryThreadsSummary(snapshot, handle, origin, topN),
+            "threads-summary" => QueryThreadsSummary(snapshot, handle, origin, topN, offset),
             "stack" => QueryThreadStack(snapshot, handle, origin, threadId),
-            "lock-graph" => QueryLockGraph(snapshot, handle, origin, topN),
+            "lock-graph" => QueryLockGraph(snapshot, handle, origin, topN, offset, lockAddress),
             "deadlocks" => QueryDeadlocks(snapshot, handle, origin, topN),
-            "top-blocked" => QueryTopBlocked(snapshot, handle, origin, topN),
+            "top-blocked" => QueryTopBlocked(snapshot, handle, origin, topN, offset),
             "unique-stacks" => QueryUniqueStacks(snapshot, handle, origin, topN, framesToHash, minCount),
             "async-stalls" => QueryAsyncStalls(snapshot, handle, origin, topN),
             "wait-chains" => QueryWaitChains(snapshot, handle, origin, topN),
@@ -53,21 +62,24 @@ public static class ThreadSnapshotQueryDispatcher
     }
 
     private static DiagnosticResult<ThreadSnapshotQueryResult> QueryThreadsSummary(
-        ThreadSnapshotArtifact snapshot, string handle, string origin, int topN)
+        ThreadSnapshotArtifact snapshot, string handle, string origin, int topN, int offset)
     {
-        var ordered = ThreadSnapshotProjection.SelectThreads(
+        var page = ThreadSnapshotProjection.ProjectThreads(
             snapshot,
             topN,
             ThreadSnapshotProjection.QueryThreadLimit,
-            ThreadSnapshotProjection.QueryFrameLimit);
-        var summary = $"Returning {ordered.Count}/{snapshot.Threads.Count} decisive thread(s) from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}); running/owner/deadlock evidence is ranked before generic waits and frames are capped at {ThreadSnapshotProjection.QueryFrameLimit} per thread. The handle retains all evidence.";
+            ThreadSnapshotProjection.QueryFrameLimit,
+            offset: offset);
+        var summary = $"Returning {page.Items.Count}/{page.TotalItems} decisive thread(s) at offset {offset} from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}); running/owner/deadlock evidence is ranked before generic waits and frames are capped at {ThreadSnapshotProjection.QueryFrameLimit} per thread. The handle retains all evidence.";
         return DiagnosticResult.Ok(
             new ThreadSnapshotQueryResult(handle, "threads-summary", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
             {
-                Threads = ordered,
+                Threads = page.Items,
                 TotalThreads = snapshot.Threads.Count,
-                OmittedThreads = snapshot.Threads.Count - ordered.Count,
+                OmittedThreads = page.TotalItems - page.Items.Count,
                 FramesPerThreadLimit = ThreadSnapshotProjection.QueryFrameLimit,
+                ThreadOffset = page.Offset,
+                NextThreadOffset = page.NextOffset,
             },
             summary);
     }
@@ -108,21 +120,58 @@ public static class ThreadSnapshotQueryDispatcher
     }
 
     private static DiagnosticResult<ThreadSnapshotQueryResult> QueryLockGraph(
-        ThreadSnapshotArtifact snapshot, string handle, string origin, int topN)
+        ThreadSnapshotArtifact snapshot, string handle, string origin, int topN, int offset, string? lockAddress)
     {
-        var ordered = ThreadSnapshotProjection.SelectLocks(
+        if (!string.IsNullOrWhiteSpace(lockAddress))
+        {
+            if (!DotnetDiagnostics.Core.Symbols.NativeAddressClassifier.TryParseAddress(lockAddress, out var parsedAddress))
+            {
+                return InvalidArg<ThreadSnapshotQueryResult>(nameof(lockAddress), "must be a decimal or 0x-prefixed hexadecimal lock object address");
+            }
+
+            var selected = snapshot.Locks.FirstOrDefault(lockState => lockState.ObjectAddress == parsedAddress);
+            if (selected is null)
+            {
+                return DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
+                    $"Lock object {lockAddress} is not present in snapshot '{handle}'.",
+                    new DiagnosticError("LockNotFound", "The captured snapshot does not contain this lock object address.", lockAddress),
+                    new NextActionHint(
+                        "query_snapshot",
+                        "List retained locks and their stable object addresses.",
+                        new Dictionary<string, object?> { ["handle"] = handle, ["view"] = "lock-graph" }));
+            }
+
+            var selectedPage = ThreadSnapshotProjection.ProjectLock(selected, offset);
+            var selectedSummary =
+                $"Returning lock object 0x{selected.ObjectAddress:x} from snapshot '{handle}' with {selectedPage.Lock.WaitingManagedThreadIds.Count}/{selected.WaitingManagedThreadIds.Count} retained waiter id(s) at offset {offset}.";
+            return DiagnosticResult.Ok(
+                new ThreadSnapshotQueryResult(handle, "lock-graph", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
+                {
+                    Locks = [selectedPage.Lock],
+                    TotalLocks = snapshot.Locks.Count,
+                    OmittedLocks = snapshot.Locks.Count - 1,
+                    WaiterOffset = selectedPage.WaiterOffset,
+                    NextWaiterOffset = selectedPage.NextWaiterOffset,
+                },
+                selectedSummary);
+        }
+
+        var page = ThreadSnapshotProjection.ProjectLocks(
             snapshot,
             topN,
-            ThreadSnapshotProjection.DetailLockLimit);
-        var summary = ordered.Count == 0
+            ThreadSnapshotProjection.DetailLockLimit,
+            offset);
+        var summary = page.Items.Count == 0
             ? $"Snapshot '{handle}' contains no held or contended SyncBlocks."
-            : $"Returning {ordered.Count}/{snapshot.Locks.Count} SyncBlock(s) from snapshot '{handle}', bounded to the most contended first. Most contended: object 0x{ordered[0].ObjectAddress:x} ({ordered[0].ObjectTypeFullName ?? "<unknown>"}) — {ordered[0].WaitingThreadCount} waiter(s).";
+            : $"Returning {page.Items.Count}/{page.TotalItems} SyncBlock(s) at offset {offset} from snapshot '{handle}', bounded to the most contended first. Most contended on this page: object 0x{page.Items[0].ObjectAddress:x} ({page.Items[0].ObjectTypeFullName ?? "<unknown>"}) — {page.Items[0].WaitingThreadCount} waiter(s).";
         return DiagnosticResult.Ok(
             new ThreadSnapshotQueryResult(handle, "lock-graph", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
             {
-                Locks = ordered,
+                Locks = page.Items,
                 TotalLocks = snapshot.Locks.Count,
-                OmittedLocks = snapshot.Locks.Count - ordered.Count,
+                OmittedLocks = page.TotalItems - page.Items.Count,
+                LockOffset = page.Offset,
+                NextLockOffset = page.NextOffset,
             },
             summary);
     }
@@ -141,28 +190,28 @@ public static class ThreadSnapshotQueryDispatcher
     }
 
     private static DiagnosticResult<ThreadSnapshotQueryResult> QueryTopBlocked(
-        ThreadSnapshotArtifact snapshot, string handle, string origin, int topN)
+        ThreadSnapshotArtifact snapshot, string handle, string origin, int topN, int offset)
     {
-        var ordered = ThreadSnapshotProjection.SelectThreads(
+        var page = ThreadSnapshotProjection.ProjectThreads(
             snapshot,
             topN,
             ThreadSnapshotProjection.QueryThreadLimit,
             ThreadSnapshotProjection.QueryFrameLimit,
-            blockedOnly: true);
-        var blocked = ordered.Count(t => t.IsLikelyBlocked);
+            blockedOnly: true,
+            offset: offset);
         var totalBlocked = snapshot.Threads.Count(static thread => thread.IsLikelyBlocked);
         var summary = totalBlocked == 0
-            ? $"No threads were flagged likely blocked in snapshot '{handle}'; returning {ordered.Count} decisive/running thread(s) instead, capped at {ThreadSnapshotProjection.QueryFrameLimit} frames each."
-            : $"Returning {ordered.Count}/{totalBlocked} blocked/waiting thread(s) from snapshot '{handle}', prioritizing deadlock and lock-wait evidence; frames are capped at {ThreadSnapshotProjection.QueryFrameLimit} per thread.";
+            ? $"No threads were flagged likely blocked in snapshot '{handle}'; returning {page.Items.Count} decisive/running thread(s) at offset {offset} instead, capped at {ThreadSnapshotProjection.QueryFrameLimit} frames each."
+            : $"Returning {page.Items.Count}/{page.TotalItems} blocked/waiting thread(s) at offset {offset} from snapshot '{handle}', prioritizing deadlock and lock-wait evidence; frames are capped at {ThreadSnapshotProjection.QueryFrameLimit} per thread.";
         return DiagnosticResult.Ok(
             new ThreadSnapshotQueryResult(handle, "top-blocked", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
             {
-                Threads = ordered,
+                Threads = page.Items,
                 TotalThreads = snapshot.Threads.Count,
-                OmittedThreads = totalBlocked == 0
-                    ? snapshot.Threads.Count - ordered.Count
-                    : Math.Max(0, totalBlocked - ordered.Count),
+                OmittedThreads = page.TotalItems - page.Items.Count,
                 FramesPerThreadLimit = ThreadSnapshotProjection.QueryFrameLimit,
+                ThreadOffset = page.Offset,
+                NextThreadOffset = page.NextOffset,
             },
             summary);
     }

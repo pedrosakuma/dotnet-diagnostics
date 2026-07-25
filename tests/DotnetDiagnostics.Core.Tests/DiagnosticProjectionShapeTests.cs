@@ -20,32 +20,39 @@ public sealed class DiagnosticProjectionShapeTests
     {
         var snapshot = ThreadSnapshot();
 
-        var summaryThreads = ThreadSnapshotProjection.SelectThreads(
+        var summaryThreads = ThreadSnapshotProjection.ProjectThreads(
             snapshot,
             ThreadSnapshotProjection.SummaryThreadLimit,
             ThreadSnapshotProjection.SummaryThreadLimit,
             ThreadSnapshotProjection.SummaryFrameLimit);
-        var detailThreads = ThreadSnapshotProjection.SelectThreads(
+        var detailThreads = ThreadSnapshotProjection.ProjectThreads(
             snapshot,
             ThreadSnapshotProjection.DetailThreadLimit,
             ThreadSnapshotProjection.DetailThreadLimit,
             ThreadSnapshotProjection.DetailFrameLimit);
-        var detailLocks = ThreadSnapshotProjection.SelectLocks(
+        var detailLocks = ThreadSnapshotProjection.ProjectLocks(
             snapshot,
             ThreadSnapshotProjection.DetailLockLimit,
             ThreadSnapshotProjection.DetailLockLimit);
 
-        summaryThreads.Should().HaveCount(ThreadSnapshotProjection.SummaryThreadLimit);
-        summaryThreads.Should().OnlyContain(thread => thread.Frames.Count <= ThreadSnapshotProjection.SummaryFrameLimit);
-        detailThreads.Should().HaveCount(ThreadSnapshotProjection.DetailThreadLimit);
-        detailThreads.Should().OnlyContain(thread => thread.Frames.Count <= ThreadSnapshotProjection.DetailFrameLimit);
-        var orderedThreadIds = summaryThreads.Select(thread => thread.ManagedThreadId).ToList();
+        summaryThreads.Items.Should().HaveCount(ThreadSnapshotProjection.SummaryThreadLimit);
+        summaryThreads.Items.Should().OnlyContain(thread => thread.Frames.Count <= ThreadSnapshotProjection.SummaryFrameLimit);
+        detailThreads.Items.Should().HaveCount(ThreadSnapshotProjection.DetailThreadLimit);
+        detailThreads.Items.Should().OnlyContain(thread => thread.Frames.Count <= ThreadSnapshotProjection.DetailFrameLimit);
+        detailLocks.Items.Should().OnlyContain(lockState =>
+            lockState.WaitingManagedThreadIds.Count <= ThreadSnapshotProjection.LockWaiterIdLimit &&
+            lockState.TotalWaitingManagedThreadIds == 10_000 &&
+            lockState.OmittedWaitingManagedThreadIds == 10_000 - ThreadSnapshotProjection.LockWaiterIdLimit);
+        var orderedThreadIds = summaryThreads.Items.Select(thread => thread.ManagedThreadId).ToList();
         orderedThreadIds.IndexOf(90)
             .Should().BeLessThan(orderedThreadIds.IndexOf(5),
                 "the running application frame must precede generic parked workers");
         snapshot.Threads.Should().OnlyContain(thread => thread.Frames.Count == 64, "projection must not mutate full handle evidence");
 
-        var summary = BuildThreadResult(snapshot, summaryThreads, Array.Empty<MonitorLockState>(), ThreadSnapshotProjection.SummaryFrameLimit);
+        snapshot.Locks.Should().OnlyContain(lockState => lockState.WaitingManagedThreadIds.Count == 10_000,
+            "projection must not mutate full lock waiter evidence");
+
+        var summary = BuildThreadResult(snapshot, summaryThreads, null, ThreadSnapshotProjection.SummaryFrameLimit);
         var detail = BuildThreadResult(snapshot, detailThreads, detailLocks, ThreadSnapshotProjection.DetailFrameLimit);
         JsonSerializer.SerializeToUtf8Bytes(summary, JsonOptions).Length.Should().BeLessThan(32_000);
         JsonSerializer.SerializeToUtf8Bytes(detail, JsonOptions).Length.Should().BeLessThan(64_000);
@@ -71,7 +78,7 @@ public sealed class DiagnosticProjectionShapeTests
         outcome.Data.Root.Children[0].Identity.Should().NotBeNull();
         outcome.Hints.Should().ContainSingle();
         outcome.Hints[0].SuggestedArguments!["view"].Should().Be(CpuSampleQueryDispatcher.TopMethodsView);
-        artifact.Root.Children.Should().HaveCount(160, "projection must not mutate the full call tree");
+        artifact.Root.Children.Should().HaveCount(400, "projection must not mutate the full call tree");
         JsonSerializer.SerializeToUtf8Bytes(outcome, JsonOptions).Length.Should().BeLessThan(64_000);
     }
 
@@ -99,6 +106,10 @@ public sealed class DiagnosticProjectionShapeTests
                 (frame.TypeFullName != "<retainer>" && frame.ObjectAddress != 0) || frame.RootKind != null);
         result.Data.TotalRetentionPaths.Should().Be(30);
         result.Data.OmittedRetentionPaths.Should().Be(20);
+        result.Data.RetentionPaths.Should().OnlyContain(path =>
+            path.Chain[0].ObjectAddress == path.TargetObjectAddress &&
+            path.Chain[path.Chain.Count - 1].RootKind == "StaticVar" &&
+            path.Chain[path.Chain.Count - 1].ObjectAddress == 0);
         snapshot.RetentionPaths![0].Chain.Should().HaveCount(30, "projection must not mutate full handle evidence");
         JsonSerializer.SerializeToUtf8Bytes(result, JsonOptions).Length.Should().BeLessThan(48_000);
     }
@@ -130,18 +141,22 @@ public sealed class DiagnosticProjectionShapeTests
 
     private static ThreadSnapshotQueryResult BuildThreadResult(
         ThreadSnapshotArtifact snapshot,
-        IReadOnlyList<ManagedThread> threads,
-        IReadOnlyList<MonitorLockState> locks,
+        BoundedProjectionPage<ManagedThread> threads,
+        BoundedProjectionPage<MonitorLockState>? locks,
         int frameLimit)
         => new("thread-shape", "threads-summary", "live", snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
         {
-            Threads = threads,
-            Locks = locks,
+            Threads = threads.Items,
+            Locks = locks?.Items ?? Array.Empty<MonitorLockState>(),
             TotalThreads = snapshot.Threads.Count,
-            OmittedThreads = snapshot.Threads.Count - threads.Count,
+            OmittedThreads = threads.TotalItems - threads.Items.Count,
             FramesPerThreadLimit = frameLimit,
             TotalLocks = snapshot.Locks.Count,
-            OmittedLocks = snapshot.Locks.Count - locks.Count,
+            OmittedLocks = snapshot.Locks.Count - (locks?.Items.Count ?? 0),
+            ThreadOffset = threads.Offset,
+            NextThreadOffset = threads.NextOffset,
+            LockOffset = locks?.Offset,
+            NextLockOffset = locks?.NextOffset,
         };
 
     private static ThreadSnapshotArtifact ThreadSnapshot()
@@ -167,11 +182,11 @@ public sealed class DiagnosticProjectionShapeTests
                     10_001,
                     0x40_000,
                     index % 3,
-                    30 - index,
+                    10_000,
                     true,
                     "deterministic")
                 {
-                    WaitingManagedThreadIds = [2, 3, 4],
+                    WaitingManagedThreadIds = Enumerable.Range(1, 10_000).ToArray(),
                 })
                 .ToArray());
     }
@@ -210,22 +225,32 @@ public sealed class DiagnosticProjectionShapeTests
 
     private static CpuSampleTraceArtifact BroadCpuTrace()
     {
-        var children = Enumerable.Range(0, 160)
+        var children = Enumerable.Range(0, 400)
             .Select(index =>
             {
-                var running = index == 159;
+                var running = index == 399;
+                var runningLeaf = new CallTreeNode(
+                    new SampledFrame(
+                        "MyCompany.Application.Component.dll",
+                        "MyCompany.Orders.PriceCalculator.RunningHotPath.Leaf"),
+                    10,
+                    10,
+                    Array.Empty<CallTreeNode>())
+                {
+                    SelfSamples = new SelfSampleBreakdown(10, 0),
+                };
                 return new CallTreeNode(
                     new SampledFrame(
                         "MyCompany.Application.Component.dll",
                         running
-                            ? "MyCompany.Orders.PriceCalculator.RunningHotPath"
+                            ? "MyCompany.Orders.PriceCalculator.RunningHotPath.Entry"
                             : $"System.Threading.GenericWaitNoise{index:D3}.WaitForSignal"),
                     running ? 10 : 1_000 - index,
-                    running ? 10 : 1_000 - index,
-                    Array.Empty<CallTreeNode>())
+                    running ? 0 : 1_000 - index,
+                    running ? [runningLeaf] : Array.Empty<CallTreeNode>())
                 {
                     SelfSamples = running
-                        ? new SelfSampleBreakdown(10, 0)
+                        ? null
                         : new SelfSampleBreakdown(0, 1_000 - index),
                 };
             })
@@ -254,15 +279,24 @@ public sealed class DiagnosticProjectionShapeTests
     private static HeapSnapshotArtifact HeapSnapshot()
     {
         var paths = Enumerable.Range(0, 30)
-            .Select(pathIndex => new RetentionPath(
-                $"MyCompany.Leaks.Payload{pathIndex:D2}",
-                (ulong)(0x1000 + pathIndex),
-                Enumerable.Range(0, 30)
+            .Select(pathIndex =>
+            {
+                var targetAddress = (ulong)(0x1000 + pathIndex);
+                var chain = new List<RetentionFrame>
+                {
+                    new($"MyCompany.Leaks.Payload{pathIndex:D2}", targetAddress),
+                };
+                chain.AddRange(Enumerable.Range(1, 28)
                     .Select(frameIndex => new RetentionFrame(
                         $"MyCompany.Retention.StableHolder{frameIndex:D2}",
-                        (ulong)(0x10_000 + pathIndex * 100 + frameIndex)))
-                    .ToArray(),
-                Truncated: false))
+                        (ulong)(0x10_000 + pathIndex * 100 + frameIndex))));
+                chain.Add(new RetentionFrame("<root>", 0) { RootKind = "StaticVar" });
+                return new RetentionPath(
+                    $"MyCompany.Leaks.Payload{pathIndex:D2}",
+                    targetAddress,
+                    chain,
+                    Truncated: false);
+            })
             .ToArray();
 
         return new HeapSnapshotArtifact(

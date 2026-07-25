@@ -247,6 +247,12 @@ public sealed record MonitorLockState(
     /// </summary>
     public IReadOnlyList<int> WaitingManagedThreadIds { get; init; } = Array.Empty<int>();
 
+    /// <summary>Total waiter ids retained in the full snapshot before inline projection.</summary>
+    public int? TotalWaitingManagedThreadIds { get; init; }
+
+    /// <summary>Waiter ids omitted from this bounded inline lock projection.</summary>
+    public int? OmittedWaitingManagedThreadIds { get; init; }
+
     /// <summary>Lock kind when recoverable. SyncBlock-backed locks are monitors.</summary>
     public string LockKind { get; init; } = "Monitor";
 }

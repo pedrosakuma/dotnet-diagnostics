@@ -142,6 +142,106 @@ public sealed class ThreadSnapshotQueryDispatcherTests
     }
 
     [Fact]
+    public void Dispatch_ThreadPages_ExposeEveryThreadAndExactStackRemainsAvailable()
+    {
+        var snapshot = PagingSnapshot();
+
+        var first = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "threads-summary", null, 50, 20, 1, offset: 0);
+        var second = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "threads-summary", null, 50, 20, 1, offset: 8);
+        var third = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "threads-summary", null, 50, 20, 1, offset: 16);
+
+        first.Data!.NextThreadOffset.Should().Be(8);
+        second.Data!.NextThreadOffset.Should().Be(16);
+        third.Data!.NextThreadOffset.Should().BeNull();
+        first.Data.Threads!
+            .Concat(second.Data.Threads!)
+            .Concat(third.Data.Threads!)
+            .Select(thread => thread.ManagedThreadId)
+            .Should().BeEquivalentTo(Enumerable.Range(1, 20));
+        first.Data.Threads.Should().OnlyContain(thread => thread.Frames.Count <= ThreadSnapshotProjection.QueryFrameLimit);
+
+        var exact = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "stack", threadId: 20, topN: 50, framesToHash: 20, minCount: 1);
+        exact.Data!.Thread!.ManagedThreadId.Should().Be(20);
+        exact.Data.Thread.Frames.Should().HaveCount(12);
+    }
+
+    [Fact]
+    public void Dispatch_LockPages_ExposeEveryLockWithBoundedWaiterIds()
+    {
+        var snapshot = PagingSnapshot();
+
+        var first = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "lock-graph", null, 50, 20, 1, offset: 0);
+        var second = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "lock-graph", null, 50, 20, 1, offset: 12);
+        var third = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "lock-graph", null, 50, 20, 1, offset: 24);
+
+        first.Data!.NextLockOffset.Should().Be(12);
+        second.Data!.NextLockOffset.Should().Be(24);
+        third.Data!.NextLockOffset.Should().BeNull();
+        var locks = first.Data.Locks!.Concat(second.Data.Locks!).Concat(third.Data.Locks!).ToArray();
+        locks.Select(lockState => lockState.ObjectAddress).Should().OnlyHaveUniqueItems().And.HaveCount(30);
+        locks.Should().OnlyContain(lockState =>
+            lockState.WaitingManagedThreadIds.Count == ThreadSnapshotProjection.LockWaiterIdLimit &&
+            lockState.TotalWaitingManagedThreadIds == 1_000 &&
+            lockState.OmittedWaitingManagedThreadIds == 1_000 - ThreadSnapshotProjection.LockWaiterIdLimit);
+        snapshot.Locks.Should().OnlyContain(lockState => lockState.WaitingManagedThreadIds.Count == 1_000);
+    }
+
+    [Fact]
+    public void Dispatch_ExactLockPagesExposeEveryRetainedWaiterId()
+    {
+        var snapshot = PagingSnapshot();
+        const ulong lockAddress = 0x30_000;
+        var recoveredWaiterIds = new List<int>();
+        var offset = 0;
+
+        while (true)
+        {
+            var page = ThreadSnapshotQueryDispatcher.Dispatch(
+                snapshot,
+                Handle,
+                "lock-graph",
+                threadId: null,
+                topN: 50,
+                framesToHash: 20,
+                minCount: 1,
+                offset: offset,
+                lockAddress: $"0x{lockAddress:x}");
+
+            page.Error.Should().BeNull();
+            var selected = page.Data!.Locks.Should().ContainSingle().Subject;
+            selected.ObjectAddress.Should().Be(lockAddress);
+            selected.WaitingManagedThreadIds.Should().HaveCountLessThanOrEqualTo(ThreadSnapshotProjection.LockWaiterIdLimit);
+            recoveredWaiterIds.AddRange(selected.WaitingManagedThreadIds);
+            if (page.Data.NextWaiterOffset is not { } nextOffset)
+            {
+                break;
+            }
+            nextOffset.Should().BeGreaterThan(offset);
+            offset = nextOffset;
+        }
+
+        recoveredWaiterIds.Should().Equal(Enumerable.Range(1, 1_000));
+        snapshot.Locks.Single(lockState => lockState.ObjectAddress == lockAddress)
+            .WaitingManagedThreadIds.Should().HaveCount(1_000);
+    }
+
+    [Fact]
+    public void Dispatch_NegativeOffset_ReturnsInvalidArgument()
+    {
+        var outcome = ThreadSnapshotQueryDispatcher.Dispatch(
+            Snapshot(), Handle, "threads-summary", null, 50, 20, 1, offset: -1);
+
+        outcome.Error!.Kind.Should().Be("InvalidArgument");
+    }
+
+    [Fact]
     public void SessionViews_ListsNineViews()
     {
         ThreadSnapshotQueryDispatcher.SessionViews.Should().Equal(
@@ -164,6 +264,65 @@ public sealed class ThreadSnapshotQueryDispatcherTests
             RuntimeVersion: "10.0.0",
             Threads: threads,
             Locks: Array.Empty<MonitorLockState>())
+        {
+            Source = "clrmd-thread-walk",
+        };
+    }
+
+    private static ThreadSnapshotArtifact PagingSnapshot()
+    {
+        var threads = Enumerable.Range(1, 20)
+            .Select(id =>
+            {
+                var frames = Enumerable.Range(0, 12)
+                    .Select(index => new ManagedStackFrame(
+                        "ManagedMethod",
+                        $"Group{id}.Frame{index}",
+                        $"Group{id}.Type",
+                        "App.dll",
+                        (ulong)(0x1000 + index),
+                        (ulong)(0x2000 + index)))
+                    .ToArray();
+                return new ManagedThread(
+                    id,
+                    (uint)(10_000 + id),
+                    (ulong)id,
+                    "Running",
+                    true,
+                    false,
+                    false,
+                    false,
+                    true,
+                    0,
+                    null,
+                    frames[0].DisplayName,
+                    frames);
+            })
+            .ToArray();
+        var locks = Enumerable.Range(0, 30)
+            .Select(index => new MonitorLockState(
+                (ulong)(0x30_000 + index),
+                $"Lock.Type{index}",
+                1,
+                10_001,
+                0x40_000,
+                0,
+                1_000 - index,
+                true,
+                "test")
+            {
+                WaitingManagedThreadIds = Enumerable.Range(1, 1_000).ToArray(),
+            })
+            .ToArray();
+        return new ThreadSnapshotArtifact(
+            ThreadSnapshotOrigin.Live,
+            4242,
+            DateTimeOffset.UnixEpoch,
+            TimeSpan.FromMilliseconds(25),
+            "CoreClr",
+            "10.0.0",
+            threads,
+            locks)
         {
             Source = "clrmd-thread-walk",
         };

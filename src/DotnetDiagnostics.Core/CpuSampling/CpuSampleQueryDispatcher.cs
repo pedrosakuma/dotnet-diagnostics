@@ -307,32 +307,8 @@ public static class CpuSampleQueryDispatcher
     {
         var nodeBudget = maxNodes;
         var truncated = false;
-        var runningSamples = new Dictionary<CallTreeNode, long>(ReferenceEqualityComparer.Instance);
-        var runningScanBudget = MaxProjectedCallTreeNodes * 64;
         var pruned = Walk(root, maxDepth);
         return (pruned, maxNodes - nodeBudget, truncated);
-
-        long CountRunningBounded(CallTreeNode node)
-        {
-            if (runningSamples.TryGetValue(node, out var cached)) return cached;
-
-            var total = node.SelfSamples?.RunningSamples ?? 0;
-            if (runningScanBudget <= 0)
-            {
-                runningSamples[node] = total;
-                return total;
-            }
-
-            runningScanBudget--;
-            foreach (var child in node.Children)
-            {
-                if (runningScanBudget <= 0) break;
-                total += CountRunningBounded(child);
-            }
-
-            runningSamples[node] = total;
-            return total;
-        }
 
         CallTreeNode Walk(CallTreeNode n, int depthRemaining)
         {
@@ -350,19 +326,13 @@ public static class CpuSampleQueryDispatcher
             }
 
             var kept = new List<CallTreeNode>();
-            var candidateLimit = MaxProjectedCallTreeNodes * 4;
-            var candidates = n.Children.Take(candidateLimit).ToArray();
+            var candidates = SelectDecisiveChildren(n.Children, nodeBudget);
             if (candidates.Length < n.Children.Count)
             {
                 truncated = true;
             }
 
-            foreach (var child in candidates
-                .OrderByDescending(child => CountRunningBounded(child) > 0)
-                .ThenByDescending(CountRunningBounded)
-                .ThenByDescending(static child => child.ExclusiveSamples)
-                .ThenByDescending(static child => child.InclusiveSamples)
-                .ThenBy(static child => child.Frame.Method, StringComparer.Ordinal))
+            foreach (var child in candidates)
             {
                 if (nodeBudget <= 0)
                 {
@@ -373,6 +343,69 @@ public static class CpuSampleQueryDispatcher
             }
 
             return n with { Children = kept };
+        }
+    }
+
+    private static CallTreeNode[] SelectDecisiveChildren(
+        IReadOnlyList<CallTreeNode> children,
+        int limit)
+    {
+        if (limit <= 0 || children.Count == 0) return Array.Empty<CallTreeNode>();
+
+        var selected = new List<DecisiveChildCandidate>(Math.Min(limit, children.Count));
+        foreach (var child in children)
+        {
+            var candidate = new DecisiveChildCandidate(child, CountRunningSamples(child));
+            var index = selected.BinarySearch(candidate, DecisiveChildComparer.Instance);
+            if (index < 0) index = ~index;
+            if (index >= limit) continue;
+
+            selected.Insert(index, candidate);
+            if (selected.Count > limit)
+            {
+                selected.RemoveAt(selected.Count - 1);
+            }
+        }
+
+        return selected.Select(static candidate => candidate.Node).ToArray();
+    }
+
+    private static long CountRunningSamples(CallTreeNode node)
+    {
+        var total = node.SelfSamples?.RunningSamples ?? 0;
+        foreach (var child in node.Children)
+        {
+            total += CountRunningSamples(child);
+        }
+        return total;
+    }
+
+    private sealed record DecisiveChildCandidate(CallTreeNode Node, long RunningSamples);
+
+    private sealed class DecisiveChildComparer : IComparer<DecisiveChildCandidate>
+    {
+        public static DecisiveChildComparer Instance { get; } = new();
+
+        public int Compare(DecisiveChildCandidate? x, DecisiveChildCandidate? y)
+        {
+            if (ReferenceEquals(x, y)) return 0;
+            if (x is null) return 1;
+            if (y is null) return -1;
+
+            var xRunning = x.RunningSamples;
+            var yRunning = y.RunningSamples;
+            var result = (yRunning > 0).CompareTo(xRunning > 0);
+            if (result != 0) return result;
+            result = yRunning.CompareTo(xRunning);
+            if (result != 0) return result;
+            result = y.Node.ExclusiveSamples.CompareTo(x.Node.ExclusiveSamples);
+            if (result != 0) return result;
+            result = y.Node.InclusiveSamples.CompareTo(x.Node.InclusiveSamples);
+            if (result != 0) return result;
+            result = string.Compare(x.Node.Frame.Method, y.Node.Frame.Method, StringComparison.Ordinal);
+            return result != 0
+                ? result
+                : string.Compare(x.Node.Frame.Module, y.Node.Frame.Module, StringComparison.Ordinal);
         }
     }
 

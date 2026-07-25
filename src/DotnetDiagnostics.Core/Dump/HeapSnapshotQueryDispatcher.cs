@@ -171,12 +171,62 @@ public static class HeapSnapshotQueryDispatcher
 
     internal static RetentionPath ProjectRetentionPath(RetentionPath path)
     {
-        var chain = path.Chain.Take(MaxProjectedRetentionFrames).ToArray();
+        if (path.Chain.Count <= MaxProjectedRetentionFrames)
+        {
+            return path;
+        }
+
+        var targetIndex = FindTargetIndex(path);
+        var rootIndex = FindTerminalRootIndex(path.Chain);
+        var selectedIndices = new HashSet<int> { targetIndex };
+        if (rootIndex >= 0)
+        {
+            selectedIndices.Add(rootIndex);
+        }
+
+        for (var i = 0; i < path.Chain.Count && selectedIndices.Count < MaxProjectedRetentionFrames; i++)
+        {
+            selectedIndices.Add(i);
+        }
+
+        var chain = selectedIndices
+            .Order()
+            .Select(index => path.Chain[index])
+            .ToArray();
         return path with
         {
             Chain = chain,
-            Truncated = path.Truncated || path.Chain.Count > chain.Length,
+            Truncated = true,
         };
+    }
+
+    private static int FindTargetIndex(RetentionPath path)
+    {
+        for (var i = 0; i < path.Chain.Count; i++)
+        {
+            if (path.Chain[i].ObjectAddress == path.TargetObjectAddress)
+            {
+                return i;
+            }
+        }
+
+        return 0;
+    }
+
+    private static int FindTerminalRootIndex(IReadOnlyList<RetentionFrame> chain)
+    {
+        for (var i = chain.Count - 1; i >= 0; i--)
+        {
+            var frame = chain[i];
+            if (frame.RootKind is not null ||
+                frame.ObjectAddress == 0 ||
+                string.Equals(frame.TypeFullName, "<root>", StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     private static DiagnosticResult<HeapSnapshotQueryResult> QueryRootsByKind(

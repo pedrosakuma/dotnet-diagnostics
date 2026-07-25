@@ -2618,6 +2618,7 @@ contract.
 | `handle` | `string` | — | Drilldown handle from a prior collector |
 | `view` | `string?` | per-kind default | Kind-specific view (catalog below). Omit for the kind's default |
 | `topN` | `int?` | 50 heap/thread/collection, 25 off-CPU | Requested entries in a ranked-list view. Thread lists (8), lock graph (12), and retention paths (10) have lower hard wire caps; handles retain the complete artifact |
+| `offset` | `int` | 0 | Zero-based page offset for thread `top-blocked` / `threads-summary` and `lock-graph`. Responses expose `nextThreadOffset` or `nextLockOffset`; with `lock-graph` plus `address`, it pages that lock's retained waiter IDs via `nextWaiterOffset` |
 
 **View catalog (by handle kind):**
 
@@ -2626,6 +2627,8 @@ contract.
   `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`,
   `object`, `gcroot`, `objsize`, `async`, `diff`, `growth`.
   `retention-paths` returns at most 10 paths and 12 frames per path inline.
+  Compaction always preserves the target and terminal root (including
+  `rootKind`), then fills the remaining budget with ordered intermediates.
   Every intermediate carries its resolved type plus stable object address; the
   complete captured chains remain behind the handle.
 - **thread** (`collect_thread_snapshot`): `top-blocked` (default),
@@ -2633,7 +2636,13 @@ contract.
   `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`.
   Live-origin handles remain queryable after process exit for the artifact-only
   views; `resolve-address` and `frame-vars` instead return a structured
-  `ProcessExited` error once the original live process is gone.
+  `ProcessExited` error once the original live process is gone. Thread and lock
+  list views are bounded pages selected with `offset` and report their next
+  offsets. Each projected lock includes at most eight waiter IDs plus
+  `totalWaitingManagedThreadIds` / `omittedWaitingManagedThreadIds`; paging
+  preserves access to every retained lock. Select one stable lock object with
+  `address` and follow `nextWaiterOffset` to recover every waiter ID retained
+  behind the handle without producing an unbounded response.
 - **off-CPU** (`collect_sample(kind="off_cpu")`): `topStacks` (default),
   `byThread`, `stack`.
 - **collection** (`collect_events(kind=…)`): `summary` (default), plus
@@ -2643,12 +2652,13 @@ contract.
 - **cpu-sample / allocation-sample / native-alloc-sample**: `call-tree`
   (default), `top-methods`, `by-module`, `by-namespace`, `hot-path`,
   `caller-callee`, `diff`. The broad `call-tree` projection is capped at 64
-  nodes / depth 8 and ranks branches containing running self-samples before
-  generic waiting branches; narrow with `rootMethodFilter` for deeper evidence.
+  nodes / depth 8. It ranks all direct children before bounded selection, so a
+  late low-volume branch with running self-samples outranks generic waiting
+  branches; narrow with `rootMethodFilter` for deeper evidence.
 
 **Common view-specific parameters** (each ignored outside its view):
 `rankBy` (`bytes`/`instances`), `typeFullName`, `address`,
-`includeSensitiveValues`, `threadId`, `framesToHash`, `minCount`, `stackRank`,
+`includeSensitiveValues`, `threadId`, `offset`, `framesToHash`, `minCount`, `stackRank`,
 `rootMethodFilter`, `providerFilter`, `changesOnly`, `maxDepth`, `maxNodes`,
 `baselineHandle`, `comparisonHandles`, `minDeltaPct`, `depth`, `mode`,
 `hotPathThresholdPercent`. See the tool's parameter descriptions for the exact

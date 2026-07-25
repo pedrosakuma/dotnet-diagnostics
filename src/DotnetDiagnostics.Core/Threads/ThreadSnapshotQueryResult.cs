@@ -47,6 +47,18 @@ public sealed record ThreadSnapshotQueryResult(
     public int? TotalLocks { get; init; }
     /// <summary>Locks omitted from this bounded inline projection.</summary>
     public int? OmittedLocks { get; init; }
+    /// <summary>Zero-based ranked-thread offset used for this page.</summary>
+    public int? ThreadOffset { get; init; }
+    /// <summary>Offset for the next ranked-thread page, or null when this page is terminal.</summary>
+    public int? NextThreadOffset { get; init; }
+    /// <summary>Zero-based ranked-lock offset used for this page.</summary>
+    public int? LockOffset { get; init; }
+    /// <summary>Offset for the next ranked-lock page, or null when this page is terminal.</summary>
+    public int? NextLockOffset { get; init; }
+    /// <summary>Zero-based waiter-id offset used when selecting one lock by address.</summary>
+    public int? WaiterOffset { get; init; }
+    /// <summary>Offset for the next waiter-id page on the selected lock, or null when terminal.</summary>
+    public int? NextWaiterOffset { get; init; }
 }
 
 /// <summary>
