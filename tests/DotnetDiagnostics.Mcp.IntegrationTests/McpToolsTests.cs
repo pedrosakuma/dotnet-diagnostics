@@ -10,6 +10,7 @@ using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Container;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Exceptions;
@@ -21,6 +22,7 @@ using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
 
 namespace DotnetDiagnostics.Mcp.IntegrationTests;
@@ -104,7 +106,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             "dumpType", "outputDirectory", "rootMethodFilter", "maxDepth", "maxNodes",
             "intervalSeconds", "sampleEverySeconds", "sources", "symptom", "hypothesis", "baseline", "maxToolCalls",
             "dumpRequiresApproval", "format", "topHotspots", "buildAssemblyName",
-            "previousInvestigationId", "fixCommitSha", "fixPullRequestUrl", "fixDescription", "notes",
+            "additionalHandles", "previousInvestigationId", "fixCommitSha", "fixPullRequestUrl", "fixDescription", "notes",
             "resolveSourceLines", "symbolPath", "maxResolvedSources",
             "resolveMethodInstantiations", "maxResolvedMethodInstantiations",
             "topTypes", "includeRetentionPaths", "retentionPathLimit",
@@ -1538,6 +1540,55 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().Single().Text;
         text.Should().Contain("\"kind\":\"forbidden\"");
         text.Should().Contain("eventpipe");
+    }
+
+    [Fact]
+    public async Task ExportInvestigationSummary_AcceptsCounterEvidenceWithoutCpuCapture()
+    {
+        var store = _factory.Services.GetRequiredService<IDiagnosticHandleStore>();
+        var snapshot = new CounterSnapshot(
+            ProcessId: Environment.ProcessId,
+            StartedAt: DateTimeOffset.UnixEpoch,
+            Duration: TimeSpan.FromSeconds(5),
+            Counters:
+            [
+                new CounterValue(
+                    "System.Runtime",
+                    "threadpool-queue-length",
+                    "ThreadPool Queue Length",
+                    0,
+                    CounterKind.Mean),
+                new CounterValue(
+                    "Microsoft.AspNetCore.Hosting",
+                    "requests-per-second",
+                    "Requests / sec",
+                    50,
+                    CounterKind.Mean),
+            ],
+            Meters: [],
+            Notes: []);
+        var handle = store.Register(
+            Environment.ProcessId,
+            CollectionHandleKinds.Counters,
+            snapshot,
+            TimeSpan.FromMinutes(1),
+            evictWhenProcessExits: false);
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "export_investigation_summary",
+            new Dictionary<string, object?> { ["handle"] = handle.Id },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var exported = DeserializeStructured<ExportedInvestigationSummary>(result);
+        exported.Should().NotBeNull();
+        exported!.Summary.Findings.TotalSamples.Should().Be(0);
+        exported.Summary.Findings.TopHotspots.Should().BeEmpty();
+        exported.Summary.Findings.KeyMetrics.Should().ContainKey("threadpool-queue-length")
+            .WhoseValue.Should().Be(0);
+        exported.Summary.Evidence.Should().ContainSingle()
+            .Which.Handle.Should().Be(handle.Id);
     }
 
     [Fact]

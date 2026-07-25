@@ -3100,15 +3100,30 @@ warm / hypothesis journeys.
 
 ## `export_investigation_summary`
 
-Reads a prior `collect_sample(kind="cpu")` drilldown handle and produces a
-portable, versioned investigation summary the LLM can persist externally
-(server stays stateless) and later diff with `compare_to_baseline`.
+Reads one or more supported drilldown handles and produces a portable,
+versioned investigation summary the LLM can persist externally (server stays
+stateless) and later diff with `compare_to_baseline`.
+
+Supported evidence is:
+
+- `collect_sample(kind="cpu")`
+- `collect_events(kind="counters"|"gc"|"datas")`
+- `collect_thread_snapshot`
+
+Non-CPU and multi-handle summaries include an `Evidence[]` array with the
+source handle, handle kind/origin, producing tool/kind, observation window, projected
+metrics, and bounded findings. Thread findings retain representative blocking
+stacks and managed method identities for the assembly-MCP handoff. All handles
+must belong to the same process, and at most one may be a CPU sample (compare
+two CPU windows with `query_snapshot(view="diff")`). A CPU-only call retains the original v1 JSON
+shape (`Findings.TotalSamples` + `TopHotspots`) and omits `Evidence`.
 
 **Parameters:**
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `handle` | `string` | — | Handle from a prior `collect_sample(kind="cpu")` call. **Required** |
+| `handle` | `string` | — | Primary supported evidence handle. **Required** |
+| `additionalHandles` | `string[]?` | — | Up to 7 additional supported handles from the same process; duplicates are ignored |
 | `format` | `SummaryFormat` | `json` | `json` (portable) or `markdown` (human-readable for PRs) |
 | `topHotspots` | `int` | `10` | Max hotspots included |
 | `buildAssemblyName` | `string?` | — | Managed assembly name of the target |
@@ -3117,7 +3132,8 @@ portable, versioned investigation summary the LLM can persist externally
 | `notes` | `string?` | — | Free-form notes appended to the summary |
 
 **Returns:** `ExportedInvestigationSummary`. An expired/unknown handle returns a
-`HandleExpired` envelope with a hint to re-run the sampler. **Scope:**
+`HandleExpired` envelope with a hint to re-run the relevant collector; an
+unsupported handle returns `HandleKindMismatch`. **Scope:**
 `investigation-export`.
 
 ---

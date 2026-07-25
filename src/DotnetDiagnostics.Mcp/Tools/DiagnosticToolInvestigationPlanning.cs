@@ -1,16 +1,21 @@
 using System.ComponentModel;
 using DotnetDiagnostics.Core;
+using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Investigation;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Threads;
 using static DotnetDiagnostics.Core.UseCases.ProcessResolutionHelpers;
 
 namespace DotnetDiagnostics.Mcp.Tools;
 
 internal static class DiagnosticToolInvestigationPlanning
 {
+    private const int MaxEvidenceHandles = 8;
+
     public static async Task<DiagnosticResult<InvestigationPlan>> StartInvestigation(
         IInvestigationPlanner planner,
         IProcessContextResolver resolver,
@@ -56,7 +61,8 @@ internal static class DiagnosticToolInvestigationPlanning
         IInvestigationSummaryExporter exporter,
         IDiagnosticHandleStore handles,
         DotnetDiagnostics.Mcp.Observability.IInvestigationTelemetryEmitter telemetry,
-        [Description("Handle returned by a prior collect_sample(kind='cpu') call.")] string handle,
+        [Description("Primary evidence handle from collect_sample(kind='cpu'), collect_events(kind='counters'|'gc'|'datas'), or collect_thread_snapshot.")] string handle,
+        [Description("Optional additional supported evidence handles from the same process. Up to 7; duplicates are ignored.")] string[]? additionalHandles = null,
         [Description("Output format: 'json' (default — portable, machine-readable) or 'markdown' (human-readable for PRs).") ] SummaryFormat format = SummaryFormat.Json,
         [Description("Max hotspots to include in the summary. Defaults to 10.")] int topHotspots = 10,
         [Description("Optional managed assembly name for the target (from inspect_process(view='list')).") ] string? buildAssemblyName = null,
@@ -69,16 +75,67 @@ internal static class DiagnosticToolInvestigationPlanning
         string? investigationHandleId = null)
     {
         if (string.IsNullOrWhiteSpace(handle)) return InvalidArg<ExportedInvestigationSummary>(nameof(handle), "is required");
+        if (additionalHandles is { Length: > MaxEvidenceHandles - 1 })
+        {
+            return InvalidArg<ExportedInvestigationSummary>(nameof(additionalHandles), $"must contain at most {MaxEvidenceHandles - 1} handles");
+        }
         if (topHotspots < 1) return InvalidArg<ExportedInvestigationSummary>(nameof(topHotspots), "must be >= 1");
 
-        var artifact = handles.TryGet<CpuSampleTraceArtifact>(handle);
-        if (artifact is null)
+        var requestedHandles = new[] { handle }
+            .Concat(additionalHandles ?? [])
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var evidence = new List<InvestigationEvidenceInput>(requestedHandles.Length);
+        int? processId = null;
+        foreach (var requestedHandle in requestedHandles)
+        {
+            var lookup = handles.TryGetWithKind(requestedHandle);
+            if (lookup is null)
+            {
+                return DiagnosticResult.Fail<ExportedInvestigationSummary>(
+                    $"Handle '{requestedHandle}' is unknown or expired.",
+                    new DiagnosticError("HandleExpired", "Drill-down handles live ~10min and may be invalidated when the target process exits.", requestedHandle),
+                    new NextActionHint("collect_events", "Re-run the evidence collector on the same pid to issue a fresh handle.",
+                        new Dictionary<string, object?> { ["kind"] = "counters", ["durationSeconds"] = 5 }));
+            }
+
+            if (!IsSupportedEvidence(lookup.Value.Artifact))
+            {
+                return DiagnosticResult.Fail<ExportedInvestigationSummary>(
+                    $"Handle '{requestedHandle}' has unsupported kind '{lookup.Value.Kind}'.",
+                    new DiagnosticError(
+                        "HandleKindMismatch",
+                        "Supported summary evidence is CPU samples, counters, GC/GC DATAS, and thread snapshots.",
+                        requestedHandle),
+                    new NextActionHint("collect_events", "Collect a supported counters or GC artifact.",
+                        new Dictionary<string, object?> { ["kind"] = "counters", ["durationSeconds"] = 5 }));
+            }
+
+            processId ??= lookup.Value.Handle.ProcessId;
+            if (lookup.Value.Handle.ProcessId != processId)
+            {
+                return DiagnosticResult.Fail<ExportedInvestigationSummary>(
+                    "All evidence handles must belong to the same process.",
+                    new DiagnosticError("EvidenceProcessMismatch", $"Handle '{requestedHandle}' belongs to PID {lookup.Value.Handle.ProcessId}; expected PID {processId}.", requestedHandle),
+                    new NextActionHint("export_investigation_summary", "Re-issue with handles collected from one process."));
+            }
+
+            evidence.Add(new InvestigationEvidenceInput(
+                requestedHandle,
+                lookup.Value.Kind,
+                lookup.Value.Artifact,
+                lookup.Value.Handle.Origin.ToString().ToLowerInvariant()));
+        }
+
+        if (evidence.Count(static item => item.Artifact is CpuSampleTraceArtifact) > 1)
         {
             return DiagnosticResult.Fail<ExportedInvestigationSummary>(
-                $"Handle '{handle}' is unknown or expired.",
-                new DiagnosticError("HandleExpired", "Drill-down handles live ~10min and are invalidated when the target process exits.", handle),
-                new NextActionHint("collect_sample", "Re-run the sampler on the same pid to issue a fresh handle.",
-                    new Dictionary<string, object?> { ["kind"] = "cpu", ["durationSeconds"] = 10 }));
+                "An investigation summary can include at most one CPU sample handle.",
+                new DiagnosticError(
+                    "HandleCombinationUnsupported",
+                    "Use one CPU sample plus complementary counters, GC, or thread evidence; compare separate CPU windows with query_snapshot(view='diff')."),
+                new NextActionHint("query_snapshot", "Compare the two CPU handles directly with the snapshot diff view."));
         }
 
         var fix = (fixCommitSha is null && fixPullRequestUrl is null && fixDescription is null)
@@ -86,8 +143,7 @@ internal static class DiagnosticToolInvestigationPlanning
             : new InvestigationFixTarget(fixCommitSha, fixPullRequestUrl, fixDescription);
 
         var exported = exporter.Export(new ExportRequest(
-            Handle: handle,
-            Artifact: artifact,
+            Evidence: evidence,
             TopHotspots: topHotspots,
             BuildAssemblyName: buildAssemblyName,
             PreviousInvestigationId: previousInvestigationId,
@@ -95,13 +151,20 @@ internal static class DiagnosticToolInvestigationPlanning
             Notes: notes,
             Format: format));
 
-        telemetry.Emit(exported.Summary, handle);
+        telemetry.Emit(exported.Summary, string.Join(",", requestedHandles));
 
         var bytes = exported.Rendered.Length;
         return DiagnosticResult.Ok(
             exported,
-            $"Exported investigation {exported.Summary.InvestigationId} ({exported.Summary.Findings.TopHotspots.Count} hotspots, {bytes} chars {format}). Paste `rendered` into your PR/ADR; re-supply this JSON via compare_to_baseline on the next investigation.");
+            $"Exported investigation {exported.Summary.InvestigationId} from {evidence.Count} evidence handle(s) ({exported.Summary.Findings.TopHotspots.Count} CPU hotspots, {bytes} chars {format}). Paste `rendered` into your PR/ADR; re-supply this JSON via compare_to_baseline on the next investigation.");
     }
+
+    private static bool IsSupportedEvidence(object artifact)
+        => artifact is CpuSampleTraceArtifact
+            or CounterSnapshot
+            or GcSummary
+            or GcDatasSnapshot
+            or ThreadSnapshotArtifact;
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)
         => DiagnosticResult.Fail<T>(

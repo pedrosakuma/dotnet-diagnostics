@@ -1,6 +1,9 @@
 using System.Text.Json;
+using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Memory;
+using DotnetDiagnostics.Core.Threads;
 using FluentAssertions;
 using Xunit;
 
@@ -78,6 +81,9 @@ public class InvestigationMemoryTests
         back.Should().NotBeNull();
         back!.InvestigationId.Should().Be(exported.Summary.InvestigationId);
         back.Findings.TopHotspots[0].Symbol.MethodFullName.Should().Be("M.A");
+        back.Findings.KeyMetrics.Should().BeNull();
+        exported.Rendered.Should().NotContain("\"Evidence\"",
+            "CPU-only summaries retain the original v1 JSON shape");
     }
 
     [Fact]
@@ -112,6 +118,93 @@ public class InvestigationMemoryTests
             .And.Contain("App.Service.Process")
             .And.Contain("ghcr.io/me/app:v2")
             .And.Contain("https://github.com/x/y/pull/42");
+    }
+
+    [Fact]
+    public void Export_SyncOverAsyncBeforeAfter_UsesQueueBlockingStacksAndThroughputWithoutFixedCpu()
+    {
+        var exporter = NewExporter();
+        var beforeCounters = CounterArtifact(queueLength: 236, throughput: 0);
+        var beforeThreads = BlockingThreadArtifact(queueLength: 236, blockedThreadCount: 4);
+
+        var before = exporter.Export(new ExportRequest(
+            Evidence:
+            [
+                new InvestigationEvidenceInput("counters-before", "counters", beforeCounters),
+                new InvestigationEvidenceInput("threads-before", "thread-snapshot", beforeThreads),
+            ],
+            Notes: "Sync-over-async suspected from queue growth plus blocking stacks."));
+
+        var after = exporter.Export(new ExportRequest(
+            Evidence:
+            [
+                new InvestigationEvidenceInput(
+                    "counters-after",
+                    "counters",
+                    CounterArtifact(queueLength: 0, throughput: 50)),
+            ],
+            PreviousInvestigationId: before.Summary.InvestigationId,
+            Notes: "Queue drained and request throughput recovered after the fix."));
+
+        before.Summary.Findings.TopHotspots.Should().BeEmpty();
+        before.Summary.Findings.KeyMetrics.Should().Contain(new Dictionary<string, double>
+        {
+            ["threadpool-queue-length"] = 236,
+            ["requests-per-second"] = 0,
+        });
+        before.Summary.Evidence.Should().HaveCount(2);
+        before.Summary.Evidence![0].SourceTool.Should().Be("collect_events");
+        before.Summary.Evidence[0].Origin.Should().Be("live");
+        before.Summary.Evidence[1].SourceTool.Should().Be("collect_thread_snapshot");
+        before.Summary.Evidence[1].Findings.Should().ContainSingle(finding =>
+            finding.Category == "blocking-stack"
+            && finding.Count == 4
+            && finding.Summary.Contains("TaskAwaiter.GetResult", StringComparison.Ordinal)
+            && finding.Summary.Contains("ManualResetEventSlim.Wait", StringComparison.Ordinal));
+
+        after.Summary.Findings.TotalSamples.Should().Be(0);
+        after.Summary.Findings.TopHotspots.Should().BeEmpty();
+        after.Summary.Findings.KeyMetrics.Should().Contain(new Dictionary<string, double>
+        {
+            ["threadpool-queue-length"] = 0,
+            ["requests-per-second"] = 50,
+        });
+        after.Summary.PreviousInvestigationId.Should().Be(before.Summary.InvestigationId);
+        after.Summary.Evidence.Should().ContainSingle()
+            .Which.Handle.Should().Be("counters-after");
+
+        var diff = new SummaryComparer().Compare(before.Summary, after.Summary);
+        diff.Verdict.Should().Be("improvement");
+        diff.KeyMetricDeltas.Should().Contain(delta =>
+            delta.Name == "threadpool-queue-length" && delta.Outcome == "improved");
+        diff.KeyMetricDeltas.Should().Contain(delta =>
+            delta.Name == "requests-per-second" && delta.Outcome == "improved");
+    }
+
+    [Fact]
+    public void Export_GcEvidence_ProjectsPauseMetricsAndProvenance()
+    {
+        var gc = new GcSummary(
+            ProcessId: 1234,
+            StartedAt: T0,
+            Duration: TimeSpan.FromSeconds(5),
+            TotalCollections: 3,
+            TotalPauseTime: TimeSpan.FromMilliseconds(12),
+            MaxPauseTime: TimeSpan.FromMilliseconds(7),
+            Generations: [new GenerationStats(0, 2), new GenerationStats(2, 1)],
+            Events: []);
+
+        var exported = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("gc-before", "gc-events", gc)]));
+
+        exported.Summary.Findings.KeyMetrics.Should().Contain(new Dictionary<string, double>
+        {
+            ["gc-total-collections"] = 3,
+            ["gc-total-pause-ms"] = 12,
+            ["gc-max-pause-ms"] = 7,
+        });
+        exported.Summary.Evidence.Should().ContainSingle()
+            .Which.SourceKind.Should().Be("gc");
     }
 
     [Fact]
@@ -398,6 +491,97 @@ public class InvestigationMemoryTests
         private readonly DateTimeOffset _now;
         public FixedClock(DateTimeOffset now) { _now = now; }
         public override DateTimeOffset GetUtcNow() => _now;
+    }
+
+    private static CounterSnapshot CounterArtifact(int queueLength, double throughput)
+        => new(
+            ProcessId: 1234,
+            StartedAt: T0,
+            Duration: TimeSpan.FromSeconds(5),
+            Counters:
+            [
+                new CounterValue(
+                    "System.Runtime",
+                    "threadpool-queue-length",
+                    "ThreadPool Queue Length",
+                    queueLength,
+                    CounterKind.Mean),
+                new CounterValue(
+                    "Microsoft.AspNetCore.Hosting",
+                    "requests-per-second",
+                    "Requests / sec",
+                    throughput,
+                    CounterKind.Mean),
+            ],
+            Meters: [],
+            Notes: []);
+
+    private static ThreadSnapshotArtifact BlockingThreadArtifact(int queueLength, int blockedThreadCount)
+    {
+        var frames = new[]
+        {
+            new ManagedStackFrame(
+                "Managed",
+                "System.Runtime.CompilerServices.TaskAwaiter.GetResult",
+                "System.Runtime.CompilerServices.TaskAwaiter",
+                "System.Private.CoreLib.dll",
+                0,
+                0),
+            new ManagedStackFrame(
+                "Managed",
+                "System.Threading.ManualResetEventSlim.Wait",
+                "System.Threading.ManualResetEventSlim",
+                "System.Private.CoreLib.dll",
+                0,
+                0),
+            new ManagedStackFrame(
+                "Managed",
+                "Sample.SyncOverAsyncController.Get",
+                "Sample.SyncOverAsyncController",
+                "Sample.dll",
+                0,
+                0),
+        };
+        var threads = Enumerable.Range(1, blockedThreadCount)
+            .Select(index => new ManagedThread(
+                ManagedThreadId: index,
+                OSThreadId: (uint)index,
+                Address: (ulong)index,
+                State: "Waiting",
+                IsAlive: true,
+                IsBackground: true,
+                IsFinalizer: false,
+                IsGc: false,
+                IsThreadpoolWorker: true,
+                LockCount: 0,
+                CurrentExceptionType: null,
+                TopFrameMethod: frames[0].DisplayName,
+                Frames: frames)
+            {
+                IsLikelyBlocked = true,
+                InferredWaitReason = "Task",
+            })
+            .ToArray();
+
+        return new ThreadSnapshotArtifact(
+            ThreadSnapshotOrigin.Live,
+            ProcessId: 1234,
+            CapturedAt: T0.AddSeconds(1),
+            WalkDuration: TimeSpan.FromMilliseconds(25),
+            RuntimeName: ".NET",
+            RuntimeVersion: "10.0.0",
+            Threads: threads,
+            Locks: [])
+        {
+            ThreadPool = new ThreadPoolSnapshot(
+                Initialized: true,
+                UsingPortableThreadPool: true,
+                UsingWindowsThreadPool: false,
+                Workers: new ThreadPoolWorkerState(141, 141, 0, 0, 1, 32767),
+                Iocp: new ThreadPoolIocpState(1, 1, 1, 1000),
+                Queues: new ThreadPoolQueueState(queueLength, [], []),
+                PendingWorkItems: queueLength),
+        };
     }
 
     private sealed class FixedProvenance : IProvenanceCollector

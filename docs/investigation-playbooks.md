@@ -74,6 +74,36 @@ legacy EventCounters. Look at:
    - `view="workItemOrigins"` → hottest enqueue origins when EventPipe call stacks are available.
 5. If the pool keeps growing but the app stays slow, pair the result with `collect_sample(kind="cpu")` or `collect_thread_snapshot(view="threadpool")` to identify the blocking code.
 
+### Minimum persisted sync-over-async before/after flow (7 tool calls)
+
+Use this when queue growth plus blocking stacks already establishes the cause;
+the fixed side does **not** need a CPU capture merely to satisfy the summary
+contract.
+
+1. `start_investigation(hypothesis="sync-over-async is starving the ThreadPool")`
+2. Broken build: `collect_events(kind="counters")` — retain the queue and
+   request-throughput handle.
+3. Broken build: `collect_thread_snapshot` — confirm representative stacks
+   contain blocking bridges such as `TaskAwaiter.GetResult`,
+   `Task.Wait`, or `ManualResetEventSlim.Wait`.
+4. `export_investigation_summary(handle="<before-counters>",
+   additionalHandles=["<before-threads>"])`; persist the complete `rendered`
+   JSON and its `InvestigationId`.
+5. Fixed build under the same workload: `collect_events(kind="counters")`.
+6. `export_investigation_summary(handle="<after-counters>",
+   previousInvestigationId="<before-investigation-id>")`.
+7. `compare_to_baseline(baselineSummaryJson=<before-rendered>,
+   currentSummaryJson=<after-rendered>)`.
+
+This is **7 diagnostic calls**, down from the prior 10-call workflow that
+planned both sides and collected a CPU sample on each side. Treat queue drain
+and recovered throughput as the verification evidence. A different hottest
+running frame after the blocking stack disappears is not, by itself, a
+regression (see the waiting-versus-running comparison semantics in §1d).
+The server retains no investigation history: the client must keep both full
+JSON documents, their investigation ids, and any short-lived handles it still
+needs for drilldown.
+
 ## 1a.1. "Lock contention / monitor storm"
 
 1. Start `collect_events(kind="contention", durationSeconds=6)` **before** driving the workload.
