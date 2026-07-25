@@ -66,45 +66,6 @@ public sealed class InvestigationProxyTaskIntegrationTests
     }
 
     [Fact]
-    public async Task ExplicitHandleExportTask_UsesOuterTaskAndExactDelegation()
-    {
-        await using var factory = new TaskProxyFactory();
-        await using var client = await ConnectAsync(factory, TaskProxyFactory.ExportToken);
-        var task = await client.CallToolAsTaskAsync(
-            "export_investigation_summary",
-            ExportArguments(),
-            new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) },
-            cancellationToken: CancellationToken.None);
-
-        task = await WaitForTerminalAsync(client, task);
-        task.Status.Should().Be(McpTaskStatus.Completed);
-        var rawResult = await client.GetTaskResultAsync(
-            task.TaskId,
-            cancellationToken: CancellationToken.None);
-        var result = JsonSerializer.Deserialize<CallToolResult>(
-            rawResult.GetRawText(),
-            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
-        ResultText(result).Should().Be("pod-call-completed");
-
-        factory.Proxy.CallCount.Should().Be(1);
-        factory.Proxy.LastRequest!.Task.Should().BeNull();
-        factory.Proxy.LastDelegatedScopes.Should().BeEquivalentTo(
-            "investigation-export",
-            "read-counters");
-
-        await using var underScopedClient = await ConnectAsync(factory, TaskProxyFactory.UnderScopedToken);
-        var denied = await underScopedClient.CallToolAsync(
-            "export_investigation_summary",
-            ExportArguments(),
-            cancellationToken: CancellationToken.None);
-
-        denied.IsError.Should().BeTrue();
-        ResultText(denied).Should().Contain("investigation-export");
-        factory.Proxy.CallCount.Should().Be(1,
-            "local authorization must deny before proxy routing and must not inherit the task delegation");
-    }
-
-    [Fact]
     public async Task BoundTask_CancelTargetsOuterTask_AndCancelsPodInvocation()
     {
         await using var factory = new TaskProxyFactory();
@@ -209,13 +170,6 @@ public sealed class InvestigationProxyTaskIntegrationTests
             [InvestigationRoutingArguments.InvestigationHandleIdArgument] = TaskProxyFactory.HandleId,
         };
 
-    private static Dictionary<string, object?> ExportArguments()
-        => new(StringComparer.Ordinal)
-        {
-            ["handle"] = "opaque-counter-handle",
-            [InvestigationRoutingArguments.InvestigationHandleIdArgument] = TaskProxyFactory.ExportHandleId,
-        };
-
     private static async Task<McpClient> ConnectAsync(TaskProxyFactory factory, string token)
     {
         var httpClient = factory.CreateClient();
@@ -240,11 +194,8 @@ public sealed class InvestigationProxyTaskIntegrationTests
     private sealed class TaskProxyFactory : WebApplicationFactory<Program>
     {
         internal const string HandleId = "inv-task-707";
-        internal const string ExportHandleId = "inv-export-task-707";
         internal const string AuthorizedName = "task-caller";
-        internal const string ExportName = "export-task-caller";
         internal const string AuthorizedToken = "task-caller-token";
-        internal const string ExportToken = "export-task-caller-token";
         internal const string UnderScopedToken = "under-scoped-token";
 
         internal ProbeProxyClient Proxy { get; } = new();
@@ -262,10 +213,6 @@ public sealed class InvestigationProxyTaskIntegrationTests
             builder.UseSetting("Auth:BearerTokens:1:Name", "under-scoped");
             builder.UseSetting("Auth:BearerTokens:1:Token", UnderScopedToken);
             builder.UseSetting("Auth:BearerTokens:1:Scopes:0", "eventpipe");
-            builder.UseSetting("Auth:BearerTokens:2:Name", ExportName);
-            builder.UseSetting("Auth:BearerTokens:2:Token", ExportToken);
-            builder.UseSetting("Auth:BearerTokens:2:Scopes:0", "investigation-export");
-            builder.UseSetting("Auth:BearerTokens:2:Scopes:1", "read-counters");
             builder.ConfigureTestServices(services =>
             {
                 Store.Add(new InvestigationHandle(
@@ -280,18 +227,6 @@ public sealed class InvestigationProxyTaskIntegrationTests
                     DateTimeOffset.UtcNow.AddMinutes(10),
                     OwnerBearerName: AuthorizedName,
                     InternalScopeDelegationKey: "task-proxy-delegation-key"));
-                Store.Add(new InvestigationHandle(
-                    ExportHandleId,
-                    "ns",
-                    "pod",
-                    "app",
-                    "diag-export",
-                    "pod-token",
-                    InvestigationState.Active,
-                    DateTimeOffset.UtcNow,
-                    DateTimeOffset.UtcNow.AddMinutes(10),
-                    OwnerBearerName: ExportName,
-                    InternalScopeDelegationKey: "export-task-proxy-delegation-key"));
                 services.RemoveAll<IInvestigationStore>();
                 services.AddSingleton<IInvestigationStore>(Store);
                 services.RemoveAll<IInvestigationProxyClient>();
@@ -311,7 +246,6 @@ public sealed class InvestigationProxyTaskIntegrationTests
         internal int CallCount;
         internal string? LastPrincipalName;
         internal CallToolRequestParams? LastRequest;
-        internal IReadOnlyCollection<string>? LastDelegatedScopes;
         internal bool BlockNextCall;
         internal TaskCompletionSource CallStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -325,22 +259,9 @@ public sealed class InvestigationProxyTaskIntegrationTests
         {
             var principal = PrincipalAccessor?.Current
                 ?? throw new InvalidOperationException("The promoted task lost its authorized caller principal.");
-            if (string.Equals(request.Name, "collect_sample", StringComparison.Ordinal) &&
-                !principal.HasExplicitScope("sensitive-parameter-read"))
+            if (!principal.HasExplicitScope("sensitive-parameter-read"))
             {
                 throw new InvalidOperationException("The promoted task lost its modifier scope.");
-            }
-            if (string.Equals(request.Name, "export_investigation_summary", StringComparison.Ordinal))
-            {
-                ToolScopeDelegation.TryConsume(
-                    request,
-                    ToolScopeRegistry.Build(DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable),
-                    new ToolScopeResolutionPolicies(null, null, null, null),
-                    handle.InternalScopeDelegationKey,
-                    TimeProvider.System,
-                    out var delegatedPrincipal,
-                    out var failure).Should().BeTrue(failure);
-                LastDelegatedScopes = delegatedPrincipal!.Scopes;
             }
 
             Interlocked.Increment(ref CallCount);

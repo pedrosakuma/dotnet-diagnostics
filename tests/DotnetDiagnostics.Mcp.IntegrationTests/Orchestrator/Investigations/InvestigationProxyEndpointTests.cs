@@ -861,10 +861,10 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         await DisposeAsync();
         await InitializeWithPrincipalAsync(
             new BearerPrincipal(
-                "counters-only",
+                "cpu-only",
                 System.Collections.Immutable.ImmutableHashSet.Create(
                     "orchestrator-attach",
-                    "read-counters")),
+                    "eventpipe")),
             allowCrossSessionAdmin: false);
 
         _store.Add(NewHandle("inv_export_denied", InvestigationState.Active, "pod-token"));
@@ -873,7 +873,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             new StringContent(
                 ToolCallPayload(
                     "export_investigation_summary",
-                    "{\"handle\":\"opaque-counter-handle\"}"),
+                    "{\"handle\":\"opaque-cpu-handle\"}"),
                 Encoding.UTF8,
                 "application/json"));
 
@@ -927,53 +927,6 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
             "investigation-export",
             evidenceScope);
-    }
-
-    [Fact]
-    public async Task Proxy_DelegatesAllCallerEvidenceScopes_ForMixedExportHandles()
-    {
-        await DisposeAsync();
-        var principal = new BearerPrincipal(
-            "mixed-export-caller",
-            System.Collections.Immutable.ImmutableHashSet.Create(
-                "orchestrator-attach",
-                "investigation-export",
-                "read-counters",
-                "eventpipe",
-                "ptrace"));
-        await InitializeWithPrincipalAsync(principal, allowCrossSessionAdmin: false);
-        var handle = NewHandle("inv_export_mixed", InvestigationState.Active, "pod-token");
-        _store.Add(handle);
-        _upstream.NextResponse = _ =>
-            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
-
-        var response = await _client.PostAsync(
-            "/proxy/inv_export_mixed/mcp",
-            new StringContent(
-                ToolCallPayload(
-                    "export_investigation_summary",
-                    "{\"handle\":\"counter-handle\",\"additionalHandles\":[\"cpu-handle\",\"thread-handle\"]}"),
-                Encoding.UTF8,
-                "application/json"));
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-        using var document = JsonDocument.Parse(_upstream.LastRequestBody!);
-        var delegatedRequest = document.RootElement
-            .GetProperty("params")
-            .Deserialize<CallToolRequestParams>()!;
-        ToolScopeDelegation.TryConsume(
-            delegatedRequest,
-            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
-            new ToolScopeResolutionPolicies(null, null, null, null),
-            handle.InternalScopeDelegationKey,
-            TimeProvider.System,
-            out var delegatedPrincipal,
-            out var failure).Should().BeTrue(failure);
-        delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
-            "investigation-export",
-            "read-counters",
-            "eventpipe",
-            "ptrace");
     }
 
     [Fact]

@@ -3094,17 +3094,15 @@ warm / hypothesis journeys.
 
 ## `export_investigation_summary`
 
-Reads one or more CPU, counters, GC/DATAS, or thread-snapshot evidence handles
-from the same process and produces a portable, versioned investigation summary
-the LLM can persist externally (server stays stateless) and later diff with
-`compare_to_baseline`. Up to eight distinct handles may be combined.
+Reads a prior `collect_sample(kind="cpu")` drilldown handle and produces a
+portable, versioned investigation summary the LLM can persist externally
+(server stays stateless) and later diff with `compare_to_baseline`.
 
 **Parameters:**
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `handle` | `string` | — | Primary CPU, counters, GC/DATAS, or thread-snapshot evidence handle. **Required** |
-| `additionalHandles` | `string[]?` | — | Up to seven additional supported handles from the same process; duplicates are ignored |
+| `handle` | `string` | — | Handle from a prior `collect_sample(kind="cpu")` call. **Required** |
 | `format` | `SummaryFormat` | `json` | `json` (portable) or `markdown` (human-readable for PRs) |
 | `topHotspots` | `int` | `10` | Max hotspots included |
 | `buildAssemblyName` | `string?` | — | Managed assembly name of the target |
@@ -3112,14 +3110,9 @@ the LLM can persist externally (server stays stateless) and later diff with
 | `fixCommitSha` / `fixPullRequestUrl` / `fixDescription` | `string?` | — | Optional proposed-fix metadata |
 | `notes` | `string?` | — | Free-form notes appended to the summary |
 
-**Returns:** `ExportedInvestigationSummary`. Non-CPU and mixed exports include
-bounded per-handle provenance, metrics, and findings. An expired/unknown handle
-returns a `HandleExpired` envelope.
-
-**Scopes:** `investigation-export` plus the exact originating scope for every
-handle: `eventpipe` for CPU/GC/DATAS, `read-counters` for counters, and `ptrace`
-for thread snapshots. Proxied calls enforce these scopes at the pod from a
-request-bound delegation; the pod's wildcard bearer is never used as fallback.
+**Returns:** `ExportedInvestigationSummary`. An expired/unknown handle returns a
+`HandleExpired` envelope with a hint to re-run the sampler. **Scope:**
+`investigation-export`.
 
 ---
 

@@ -17,13 +17,6 @@ public sealed record InvestigationSummary(
     string? Notes = null)
 {
     public const string SchemaV1 = "dotnet-diagnostics-mcp/investigation-summary/v1";
-
-    /// <summary>
-    /// Explicit source-handle provenance for non-CPU or multi-artifact summaries. Null for the
-    /// legacy CPU-only export shape so existing JSON consumers keep receiving the v1 document
-    /// byte-for-byte apart from naturally varying values.
-    /// </summary>
-    public IReadOnlyList<InvestigationEvidence>? Evidence { get; init; }
 }
 
 /// <summary>Where the observation was made — build + container provenance survive re-deploys.</summary>
@@ -58,31 +51,6 @@ public sealed record InvestigationFindings(
     TimeSpan Duration,
     IReadOnlyList<HotspotSummary> TopHotspots,
     IReadOnlyDictionary<string, double>? KeyMetrics = null);
-
-/// <summary>Portable provenance and projected findings from one diagnostic handle.</summary>
-public sealed record InvestigationEvidence(
-    string Handle,
-    string Kind,
-    string Origin,
-    string SourceTool,
-    string SourceKind,
-    DateTimeOffset ObservedAt,
-    TimeSpan Duration,
-    IReadOnlyDictionary<string, double> Metrics,
-    IReadOnlyList<InvestigationEvidenceFinding> Findings);
-
-/// <summary>A bounded human-readable finding derived from one evidence artifact.</summary>
-public sealed record InvestigationEvidenceFinding(
-    string Category,
-    string Summary,
-    int Count,
-    IReadOnlyList<InvestigationEvidenceFrame>? Frames = null);
-
-/// <summary>A stack frame retained with a thread-snapshot finding, including handoff identity.</summary>
-public sealed record InvestigationEvidenceFrame(
-    string DisplayName,
-    string? ModuleName = null,
-    MethodIdentity? Identity = null);
 
 /// <summary>
 /// Stable, comparable reference to a method observed in a sample. <c>methodFullName</c>

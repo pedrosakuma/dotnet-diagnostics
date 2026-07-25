@@ -44,7 +44,7 @@ per-handle checks at runtime.
 | `heap-read` | Read-only heap walks (type graphs, retention chains, addresses). | `inspect_heap(source="dump")`; **`inspect_heap(source="live")` additionally requires `ptrace`** |
 | `ptrace` | Authorization for sensitive live-memory/attach operations. Live ClrMD readers additionally need `CAP_SYS_PTRACE` (Linux) / debug privilege (Windows). `collect_process_dump` carries this bearer scope as defense in depth but writes through diagnostic IPC and does not itself require Linux `CAP_SYS_PTRACE`. | `collect_thread_snapshot`, `capture_method_bytes`, `inspect_heap(source="live")` (+`heap-read`), `collect_process_dump` (+`dump-write`) |
 | `dump-write` | Writes a full process dump (entire address space, zero redaction) to disk. **The single most dangerous scope.** Requires the separate `ptrace` bearer authorization scope as defense in depth; this does not imply a Linux kernel ptrace requirement for dump capture. | `collect_process_dump` (also needs `confirm=true` — see [below](#per-call-confirmation)) |
-| `investigation-export` | Read-only meta/planning tools + drilldown over already-collected handles. Exporting evidence additionally requires each handle's originating scope. | `start_investigation`, `export_investigation_summary` (+ `eventpipe`, `read-counters`, or `ptrace` per handle), `compare_to_baseline`, `query_snapshot(view="call-tree")` |
+| `investigation-export` | Read-only meta/planning tools + drilldown over already-collected handles. | `start_investigation`, `export_investigation_summary`, `compare_to_baseline`, `query_snapshot(view="call-tree")` |
 | `orchestrator-list` | Enumerate pods the orchestrator may see. Pure discovery. | `list_orchestrator(kind="pods")` |
 | `orchestrator-attach` | Mutating Kubernetes calls that create ephemeral debug containers. | `attach_to_pod`, `detach_from_pod` |
 | `azure-discovery` | Enumerate .NET workload candidates in an Azure subscription. | `discover_azure` |
@@ -54,14 +54,6 @@ The unified dispatcher tools span two scopes and authorize with **any** of them:
 `list_orchestrator` accepts `orchestrator-list` **or** `orchestrator-attach`. The
 per-kind / per-view branch then tightens to the exact scope the requested operation
 needs.
-
-`export_investigation_summary` always requires `investigation-export`, then checks
-every requested handle at execution time: CPU/GC/DATAS evidence requires
-`eventpipe`, counters require `read-counters`, and thread snapshots require
-`ptrace`. For Kubernetes proxy calls the orchestrator cannot inspect pod-local
-handles, so its request-bound delegation carries only the relevant scopes the
-caller explicitly presented. The pod resolves each handle kind and enforces the
-exact scope; its wildcard bearer never acts as an authorization fallback.
 
 ### Modifier scopes
 

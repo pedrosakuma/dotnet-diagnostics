@@ -1,8 +1,6 @@
 using System.Text.Json;
-using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Memory;
-using DotnetDiagnostics.Core.Threads;
 using FluentAssertions;
 using Xunit;
 
@@ -51,25 +49,6 @@ public class InvestigationMemoryTests
     }
 
     [Fact]
-    public void ExportRequest_LegacyRecordMembersAndWithExpressionRemainCompatible()
-    {
-        var first = ArtifactFor(("M.dll", "M.First", 10, 10));
-        var second = ArtifactFor(("M.dll", "M.Second", 20, 20));
-        var request = new ExportRequest("h-1", first) with
-        {
-            Handle = "h-2",
-            Artifact = second,
-        };
-
-        var (handle, artifact, _, _, _, _, _, _) = request;
-
-        handle.Should().Be("h-2");
-        artifact.Should().BeSameAs(second);
-        request.Evidence.Should().ContainSingle()
-            .Which.Should().Be(new InvestigationEvidenceInput("h-2", "cpu-sample", second));
-    }
-
-    [Fact]
     public void Export_JsonRoundtripsIntoSameSummary()
     {
         var artifact = ArtifactFor(("M.dll", "M.A", 10, 10));
@@ -81,76 +60,6 @@ public class InvestigationMemoryTests
         back.Should().NotBeNull();
         back!.InvestigationId.Should().Be(exported.Summary.InvestigationId);
         back.Findings.TopHotspots[0].Symbol.MethodFullName.Should().Be("M.A");
-    }
-
-    [Fact]
-    public void Export_CountersOmitsNonFiniteMetrics()
-    {
-        var snapshot = new CounterSnapshot(
-            1234,
-            T0,
-            TimeSpan.FromSeconds(5),
-            [
-                new CounterValue("System.Runtime", "finite", "Finite", 42, CounterKind.Mean, null),
-                new CounterValue("System.Runtime", "nan", "NaN", double.NaN, CounterKind.Mean, null),
-            ],
-            [
-                new MeterInstrumentValue(
-                    "MyApp",
-                    "requests",
-                    "count",
-                    "Counter",
-                    new Dictionary<string, string?>(),
-                    double.PositiveInfinity,
-                    double.NegativeInfinity,
-                    null),
-            ],
-            []);
-
-        var request = new ExportRequest(
-            [new InvestigationEvidenceInput("h-counters", "counters", snapshot)],
-            Format: SummaryFormat.Json);
-        var exported = NewExporter().Export(request);
-
-        exported.Summary.Evidence.Should().ContainSingle()
-            .Which.Metrics.Should().ContainSingle("finite", 42);
-        JsonSerializer.Deserialize<InvestigationSummary>(exported.Rendered).Should().NotBeNull();
-    }
-
-    [Fact]
-    public void Export_ThreadSnapshotOmitsNonFiniteMetrics()
-    {
-        var snapshot = new ThreadSnapshotArtifact(
-            ThreadSnapshotOrigin.Live,
-            1234,
-            T0,
-            TimeSpan.FromMilliseconds(1),
-            ".NET",
-            "10.0.0",
-            [],
-            [])
-        {
-            ThreadPool = new ThreadPoolSnapshot(
-                true,
-                true,
-                false,
-                new ThreadPoolWorkerState(4, 2, 2, 0, 1, 32),
-                new ThreadPoolIocpState(0, 0, 0, 0),
-                new ThreadPoolQueueState(0, [], []),
-                0)
-            {
-                HillClimbing = new ThreadPoolHillClimbingState(1, 1, 4, float.NaN, "Stable"),
-            },
-        };
-
-        var request = new ExportRequest(
-            [new InvestigationEvidenceInput("h-threads", "thread-snapshot", snapshot)],
-            Format: SummaryFormat.Json);
-        var exported = NewExporter().Export(request);
-
-        exported.Summary.Evidence.Should().ContainSingle()
-            .Which.Metrics.Should().NotContainKey("threadpool-throughput");
-        JsonSerializer.Deserialize<InvestigationSummary>(exported.Rendered).Should().NotBeNull();
     }
 
     [Fact]
@@ -167,18 +76,6 @@ public class InvestigationMemoryTests
             .And.Contain("App.Service.Process")
             .And.Contain("ghcr.io/me/app:v2")
             .And.Contain("https://github.com/x/y/pull/42");
-    }
-
-    [Fact]
-    public void Export_LegacyCpuMarkdownWithoutHotspots_RetainsSamplesSection()
-    {
-        var exported = NewExporter().Export(new ExportRequest(
-            "h-empty",
-            ArtifactFor(totalSamples: 0),
-            Format: SummaryFormat.Markdown));
-
-        exported.Rendered.Should().Contain("- Samples: `0`")
-            .And.Contain("| # | Method | Module | Incl % | Excl % |");
     }
 
     [Fact]

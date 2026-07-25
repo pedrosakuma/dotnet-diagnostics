@@ -1378,22 +1378,20 @@ public sealed class DiagnosticTools
         Idempotent = true,
         UseStructuredContent = true)]
     [Description(
-        "Reads one or more supported evidence handles (CPU, counters, GC, or thread snapshot) and produces a portable, versioned " +
+        "Reads a prior collect_sample(kind=\"cpu\") drill-down handle and produces a portable, versioned " +
         "InvestigationSummary (~5-20 KB JSON) ready to paste into a PR, ADR, or ticket. " +
-        "Includes explicit source-tool/kind/handle provenance, build + container provenance harvested from the sidecar environment, stable " +
+        "Includes build + container provenance harvested from the sidecar environment, stable " +
         "module+methodFullName symbol refs (survive rebuilds where line numbers shift), and " +
         "optional lineage to a previous investigation. Set `format=markdown` for a human-readable " +
         "version. The server is stateless: the LLM owns persistence — paste the JSON into a doc " +
         "and feed it back via `compare_to_baseline` on the next deploy. When the operator opts in " +
         "(MCP_INVESTIGATION_OTEL=1) the summary is also emitted as an OpenTelemetry span for " +
         "durable, queryable investigation history; off by default.")]
-    public static Task<DiagnosticResult<ExportedInvestigationSummary>> ExportInvestigationSummary(
+    public static DiagnosticResult<ExportedInvestigationSummary> ExportInvestigationSummary(
         IInvestigationSummaryExporter exporter,
         IDiagnosticHandleStore handles,
         DotnetDiagnostics.Mcp.Observability.IInvestigationTelemetryEmitter telemetry,
-        IPrincipalAccessor principalAccessor,
-        [Description("Primary evidence handle from collect_sample(kind=\"cpu\"), collect_events(kind=\"counters\"|\"gc\"|\"datas\"), or collect_thread_snapshot.")] string handle,
-        [Description("Optional additional supported evidence handles from the same process. Up to 7; duplicates are ignored.")] string[]? additionalHandles = null,
+        [Description("Handle returned by a prior collect_sample(kind=\"cpu\") call.")] string handle,
         [Description("Output format: 'json' (default — portable, machine-readable) or 'markdown' (human-readable for PRs).")] SummaryFormat format = SummaryFormat.Json,
         [Description("Max hotspots to include in the summary. Defaults to 10.")] int topHotspots = 10,
         [Description("Optional managed assembly name for the target (from inspect_process(view='list')).")] string? buildAssemblyName = null,
@@ -1403,17 +1401,12 @@ public sealed class DiagnosticTools
         [Description("Optional short description of the proposed fix.")] string? fixDescription = null,
         [Description("Optional free-form notes appended to the summary.")] string? notes = null,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
-        string? investigationHandleId = null,
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(DiagnosticToolInvestigationPlanning.ExportInvestigationSummary(
+        string? investigationHandleId = null)
+        => DiagnosticToolInvestigationPlanning.ExportInvestigationSummary(
             exporter,
             handles,
             telemetry,
-            principalAccessor,
             handle,
-            additionalHandles,
             format,
             topHotspots,
             buildAssemblyName,
@@ -1422,8 +1415,7 @@ public sealed class DiagnosticTools
             fixPullRequestUrl,
             fixDescription,
             notes,
-            investigationHandleId));
-    }
+            investigationHandleId);
 
     [RequireScope("investigation-export")]
     [McpServerTool(

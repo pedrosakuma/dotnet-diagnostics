@@ -1,9 +1,7 @@
 using System.Collections.Immutable;
 using System.Text.Json;
-using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.GatedCapture;
 using DotnetDiagnostics.Core.Security;
-using DotnetDiagnostics.Core.UseCases;
 
 namespace DotnetDiagnostics.Mcp.Security;
 
@@ -13,23 +11,6 @@ namespace DotnetDiagnostics.Mcp.Security;
 /// </summary>
 internal static class ToolInvocationScopeResolver
 {
-    private const string CpuSampleHandleKind = "cpu-sample";
-
-    private static readonly ImmutableDictionary<string, string> InvestigationExportHandleScopes =
-        ImmutableDictionary.CreateRange(
-        [
-            KeyValuePair.Create(CpuSampleHandleKind, EventPipeScope),
-            KeyValuePair.Create(CollectionHandleKinds.Counters, ReadCountersScope),
-            KeyValuePair.Create(CollectionHandleKinds.GcEvents, EventPipeScope),
-            KeyValuePair.Create(CollectionHandleKinds.GcDatas, EventPipeScope),
-            KeyValuePair.Create(SamplerUseCases.ThreadSnapshotKind, PtraceScope),
-        ]);
-
-    private static readonly ImmutableArray<string> InvestigationExportDelegationScopeCandidates =
-        InvestigationExportHandleScopes.Values
-            .Distinct(StringComparer.Ordinal)
-            .ToImmutableArray();
-
     internal const string DeleteArtifactScope = "delete-artifact";
     internal const string EventPipeScope = "eventpipe";
     internal const string EventSourceAnyScope = "eventsource-any";
@@ -151,13 +132,8 @@ internal static class ToolInvocationScopeResolver
             ? OrchestratorAttachScope
             : OrchestratorListScope;
 
-    internal static string? GetInvestigationExportHandleScope(string? kind)
-        => kind is not null && InvestigationExportHandleScopes.TryGetValue(kind, out var scope)
-            ? scope
-            : null;
-
     internal static ImmutableArray<string> GetInvestigationExportDelegationScopeCandidates()
-        => InvestigationExportDelegationScopeCandidates;
+        => [ReadCountersScope, EventPipeScope, PtraceScope];
 
     private static void ResolveCollectEvents(
         IDictionary<string, JsonElement>? arguments,

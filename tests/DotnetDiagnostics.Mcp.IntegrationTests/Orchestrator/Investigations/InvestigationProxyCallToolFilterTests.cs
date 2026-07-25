@@ -208,12 +208,12 @@ public sealed class InvestigationProxyCallToolFilterTests
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(
             "orchestrator-attach",
             "investigation-export",
-            "read-counters"));
+            "eventpipe"));
         fx.Binder.Bind("session-export-task", ActiveHandle.HandleId);
         fx.Store.Add(ActiveHandle);
         var request = Params("export_investigation_summary", new Dictionary<string, JsonElement>
         {
-            ["handle"] = JsonSerializer.SerializeToElement("opaque-counter-handle"),
+            ["handle"] = JsonSerializer.SerializeToElement("opaque-cpu-handle"),
         });
         request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
         var promoterCalls = 0;
@@ -242,7 +242,7 @@ public sealed class InvestigationProxyCallToolFilterTests
             out var failure).Should().BeTrue(failure);
         delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
             "investigation-export",
-            "read-counters");
+            "eventpipe");
     }
 
     [Fact]
@@ -348,14 +348,14 @@ public sealed class InvestigationProxyCallToolFilterTests
     {
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(
             "orchestrator-attach",
-            "read-counters"));
+            "eventpipe"));
         fx.Binder.Bind("session-export-denied", ActiveHandle.HandleId);
         fx.Store.Add(ActiveHandle);
 
         var result = await fx.Invoke(
             Params("export_investigation_summary", new Dictionary<string, JsonElement>
             {
-                ["handle"] = JsonSerializer.SerializeToElement("opaque-counter-handle"),
+                ["handle"] = JsonSerializer.SerializeToElement("opaque-cpu-handle"),
             }),
             "session-export-denied");
 
@@ -407,13 +407,13 @@ public sealed class InvestigationProxyCallToolFilterTests
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(
             "orchestrator-attach",
             "investigation-export",
-            "read-counters"));
+            "eventpipe"));
         fx.Store.Add(ActiveHandle);
 
         var result = await fx.Invoke(
             Params("export_investigation_summary", new Dictionary<string, JsonElement>
             {
-                ["handle"] = JsonSerializer.SerializeToElement("opaque-counter-handle"),
+                ["handle"] = JsonSerializer.SerializeToElement("opaque-cpu-handle"),
                 [InvestigationRoutingArguments.InvestigationHandleIdArgument] =
                     JsonSerializer.SerializeToElement(ActiveHandle.HandleId),
             }),
@@ -434,70 +434,7 @@ public sealed class InvestigationProxyCallToolFilterTests
             out var failure).Should().BeTrue(failure);
         delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
             "investigation-export",
-            "read-counters");
-    }
-
-    [Fact]
-    public async Task RejectsExportMissingScope_BeforeExplicitHandleLookup()
-    {
-        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
-            "orchestrator-attach",
-            "read-counters"));
-
-        var result = await fx.Invoke(
-            Params("export_investigation_summary", new Dictionary<string, JsonElement>
-            {
-                ["handle"] = JsonSerializer.SerializeToElement("opaque-counter-handle"),
-                [InvestigationRoutingArguments.InvestigationHandleIdArgument] =
-                    JsonSerializer.SerializeToElement("unknown-investigation"),
-            }),
-            sessionId: null);
-
-        result.IsError.Should().BeTrue();
-        var text = result.Content.OfType<TextContentBlock>().Single().Text;
-        text.Should().Contain("investigation-export");
-        text.Should().NotContain("unknown or no longer active");
-        fx.ProxyClient.CallCount.Should().Be(0);
-        fx.LocalInvocations.Should().Be(0);
-    }
-
-    [Fact]
-    public async Task ForwardsMixedExport_WithAllCallerEvidenceScopes()
-    {
-        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
-            "orchestrator-attach",
-            "investigation-export",
-            "read-counters",
-            "eventpipe",
-            "ptrace"));
-        fx.Binder.Bind("session-export-mixed", ActiveHandle.HandleId);
-        fx.Store.Add(ActiveHandle);
-
-        var result = await fx.Invoke(
-            Params("export_investigation_summary", new Dictionary<string, JsonElement>
-            {
-                ["handle"] = JsonSerializer.SerializeToElement("counter-handle"),
-                ["additionalHandles"] = JsonSerializer.SerializeToElement(
-                    new[] { "cpu-handle", "thread-handle" }),
-            }),
-            "session-export-mixed");
-
-        result.IsError.Should().BeNull();
-        fx.ProxyClient.CallCount.Should().Be(1);
-        fx.LocalInvocations.Should().Be(0);
-        ToolScopeDelegation.TryConsume(
-            fx.ProxyClient.LastRequest!,
-            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
-            new ToolScopeResolutionPolicies(null, null, null, null),
-            ActiveHandle.InternalScopeDelegationKey,
-            TimeProvider.System,
-            out var delegatedPrincipal,
-            out var failure).Should().BeTrue(failure);
-        delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
-            "investigation-export",
-            "read-counters",
-            "eventpipe",
-            "ptrace");
+            "eventpipe");
     }
 
     [Fact]
