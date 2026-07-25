@@ -193,7 +193,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         queryViewDescription.Should().Contain("CoreCLR monitor waiter");
         queryViewDescription.Should().Contain("async continuations");
         queryViewDescription.Should().Contain("ThreadPool starvation");
-        queryViewDescription.Should().Contain("inferred deadlock cycle candidates");
+        queryViewDescription.Should().Contain("inferred cycle candidates");
         queryViewDescription.Should().Contain("source/confidence");
         queryViewDescription.Should().NotContain("Linux-native-stack only");
     }

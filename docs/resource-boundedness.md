@@ -89,8 +89,10 @@ state remain O(page size). Versioned cursors carry stable total-order keys, incl
 position as the final tie-breaker, without materializing full candidate arrays, waiter sets,
 dictionaries, or sorts. Cursors validate their handle/view/key (and exact lock address for waiter
 pages); malformed, stale, and cross-handle values fail safely.
-The default collection response also defers thread-wait signal grouping and deadlock-graph
-construction; the exact lock graph and deadlock-cycle analysis remain available through explicit handle queries.
+The default collection response may emit up to three bounded thread-wait signal groups, each with
+at most five buckets; its aggregation workspace is fixed-size and retains no capture-sized derived
+index. Deadlock/wait-chain graph construction remains deferred, with exact lock and inferred-cycle
+analysis available through explicit handle queries.
 Direct offsets above `MaxDirectOffset = 256`, including `int.MaxValue`, are rejected before capture
 selection with guidance to restart at zero and follow the returned cursor. Small offsets remain for
 compatibility.

@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core.Comparison;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using FluentAssertions;
 
@@ -208,6 +209,12 @@ public sealed class HeapGrowthDiffTests
             .RetentionPaths.Should().ContainSingle().Which.TargetObjectAddress.Should().Be(0xA001);
         growth.Growers.Single(g => g.Identity!.ModulePath == identityB.ModulePath)
             .RetentionPaths.Should().ContainSingle().Which.TargetObjectAddress.Should().Be(0xB001);
+
+        var comparable = new HeapSnapshotComparableProjector().Project(current, "current");
+        comparable.Rows.Should().HaveCount(2);
+        comparable.Rows
+            .Select(row => row.Key.ExactId ?? row.Key.StableId)
+            .Should().OnlyHaveUniqueItems();
     }
 
     [Fact]
@@ -261,6 +268,111 @@ public sealed class HeapGrowthDiffTests
         row.BytesDelta.Should().Be(100);
         row.BaselineInstances.Should().Be(30);
         row.CurrentInstances.Should().Be(40);
+    }
+
+    [Fact]
+    public void ComparableProjections_SumLoadedCopiesAndDeduplicateRankingLists()
+    {
+        var identity = new TypeIdentity("Shared.ProjectedCopy")
+        {
+            ModuleName = "Shared.dll",
+            ModulePath = "/first/Shared.dll",
+            ModuleVersionId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            MetadataToken = 0x02000001,
+        };
+        var copyA = Stat(identity, 100, 10, moduleImageBase: 0x1000);
+        var copyB = Stat(identity with { ModulePath = "/second/Shared.dll" }, 200, 20, moduleImageBase: 0x2000);
+        var snapshot = HeapSnapshotWithLists([copyA, copyB], [copyB, copyA]);
+
+        var typed = HeapSnapshotComparableProjector.ProjectTyped(snapshot);
+        typed.Should().ContainSingle();
+        typed.Values.Single().Should().Be(new HeapDiffMetric(300, 30));
+
+        var generic = new HeapSnapshotComparableProjector().Project(snapshot, "sample");
+        generic.Rows.Should().ContainSingle();
+        generic.Rows[0].Metrics.Single(metric => metric.Definition.Name == "totalBytes").Value.Should().Be(300);
+        generic.Rows[0].Metrics.Single(metric => metric.Definition.Name == "instanceCount").Value.Should().Be(30);
+    }
+
+    [Fact]
+    public void PairwiseDiff_MatchesStrongIdentityAcrossDifferentCopyPaths()
+    {
+        var mvid = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var baselineIdentity = new TypeIdentity("Shared.PairwiseCopy")
+        {
+            ModuleName = "Shared.dll",
+            ModulePath = "/baseline/Shared.dll",
+            ModuleVersionId = mvid,
+            MetadataToken = 0x02000001,
+        };
+        var currentIdentity = baselineIdentity with { ModulePath = "/current/Shared.dll" };
+        var baseline = HeapSnapshotWithLists(
+            [Stat(baselineIdentity, 100, 10, 0x1000), Stat(baselineIdentity, 200, 20, 0x2000)],
+            [Stat(baselineIdentity, 200, 20, 0x2000), Stat(baselineIdentity, 100, 10, 0x1000)]);
+        var current = HeapSnapshotWithLists(
+            [Stat(currentIdentity, 150, 15, 0x3000), Stat(currentIdentity, 250, 25, 0x4000)],
+            [Stat(currentIdentity, 250, 25, 0x4000), Stat(currentIdentity, 150, 15, 0x3000)]);
+
+        var diff = ComparablePairwiseSampleDiff.Compare(baseline, "b", current, "c", minDeltaPct: 0, topN: 10);
+
+        var changed = diff.Changed.Should().ContainSingle().Subject;
+        changed.Baseline!.TotalBytes.Should().Be(300);
+        changed.Current!.TotalBytes.Should().Be(400);
+        diff.Added.Should().BeEmpty();
+        diff.Removed.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void PairwiseDiff_DoesNotAssignOneNameOnlyBaselineToAmbiguousCurrentModules()
+    {
+        const string typeName = "Shared.AmbiguousPairwise";
+        var baseline = HeapSnapshotWithIdentity(
+            null,
+            (new TypeIdentity(typeName), 100, 1));
+        var current = HeapSnapshotWithIdentity(
+            null,
+            (new TypeIdentity(typeName) { ModuleName = "A.dll", ModulePath = "/app/A.dll" }, 200, 2),
+            (new TypeIdentity(typeName) { ModuleName = "B.dll", ModulePath = "/app/B.dll" }, 300, 3));
+
+        var diff = ComparablePairwiseSampleDiff.Compare(
+            baseline,
+            "b",
+            current,
+            "c",
+            minDeltaPct: 0,
+            topN: 10);
+
+        diff.Changed.Should().BeEmpty();
+        diff.Added.Should().HaveCount(2);
+        diff.Removed.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void RetentionTargets_DeduplicateCanonicalLoadedCopiesBeforeBudget()
+    {
+        var shared = new TypeIdentity("Shared.RetentionCopy")
+        {
+            ModuleName = "Shared.dll",
+            ModuleVersionId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            MetadataToken = 0x02000001,
+        };
+        var other = new TypeIdentity("Other.RetentionTarget")
+        {
+            ModuleName = "Other.dll",
+            ModuleVersionId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            MetadataToken = 0x02000001,
+        };
+        var ranked = new[]
+        {
+            Stat(shared with { ModulePath = "/first/Shared.dll" }, 500, 5, 0x1000),
+            Stat(shared with { ModulePath = "/second/Shared.dll" }, 400, 4, 0x2000),
+            Stat(other, 300, 3, 0x3000),
+        };
+
+        var targets = ClrMdRetentionAnalyzer.SelectTargets(ranked, targetCount: 2);
+
+        targets.Select(static target => target.TypeFullName)
+            .Should().Equal("Shared.RetentionCopy", "Other.RetentionTarget");
     }
 
     [Fact]

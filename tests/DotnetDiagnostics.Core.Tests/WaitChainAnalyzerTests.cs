@@ -47,7 +47,7 @@ public sealed class WaitChainAnalyzerTests
     }
 
     [Fact]
-    public void Analyze_TrueCycle_IsFlaggedAsDeadlock()
+    public void Analyze_InferredCycleCandidate_ExposesEvidenceSourceAndConfidence()
     {
         // A (1) waits on a lock held by B (2); B (2) waits on a lock held by A (1) -> deadlock.
         var snapshot = SnapshotWith(
@@ -62,12 +62,18 @@ public sealed class WaitChainAnalyzerTests
         var view = WaitChainAnalyzer.Analyze(snapshot, "h", maxChains: 10);
 
         view.CycleCount.Should().Be(1);
+        view.InferredCycleCandidateCount.Should().Be(1);
         view.Chains.Should().ContainSingle();
         var chain = view.Chains[0];
         chain.IsCycle.Should().BeTrue();
-        chain.TerminalKind.Should().Be("cycle");
+        chain.IsInferredCycleCandidate.Should().BeTrue();
+        chain.InferenceConfidence.Should().Be("medium");
+        chain.TerminalKind.Should().Be("inferred-cycle-candidate");
         chain.Links.Select(l => l.WaitingThreadId).Should().Equal(1, 2);
         chain.Links.Should().OnlyContain(l => l.EdgeKind == "monitor-lock");
+        chain.Links.Should().OnlyContain(l =>
+            l.EdgeSource == "sync-block-owner + stack-root waiter inference"
+            && l.Confidence == "medium");
     }
 
     [Fact]
@@ -92,6 +98,8 @@ public sealed class WaitChainAnalyzerTests
         chain.TerminalKind.Should().Be("async-construct");
         chain.Links[0].EdgeKind.Should().Be("monitor-lock");
         chain.Links[1].EdgeKind.Should().Be("async-continuation");
+        chain.Links[1].EdgeSource.Should().Be("stack-classification");
+        chain.Links[1].Confidence.Should().Be("low");
         chain.Links[1].TargetLabel.Should().Be("SemaphoreSlim");
         // Indeterminate async-ownership note is emitted, never a guessed owner.
         chain.Links[1].OwnerThreadId.Should().BeNull();

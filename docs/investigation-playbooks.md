@@ -468,8 +468,10 @@ async op or starved by the ThreadPool — neither `view="deadlocks"` (monitor cy
 1. Capture `collect_thread_snapshot` while the hang is happening.
 2. Run `query_snapshot(handle, view="wait-chains")`.
 3. Read `chains[]` top-down — it is ranked longest / most-blocked first:
-   - `isCycle=true` (`terminalKind="cycle"`) → a **true deadlock**; the `links[]` enumerate the
-     waiter→owner monitor cycle (same data as `view="deadlocks"`, but in chain form).
+   - `isInferredCycleCandidate=true` (`terminalKind="inferred-cycle-candidate"`) → inferred
+     waiter→owner edges close into a cycle candidate. Inspect each link's `edgeSource` and
+     `confidence`, then verify with stacks/SOS before calling it a deadlock. Compatibility field
+     `isCycle` remains populated.
    - `terminalKind="threadpool-starvation"` → the chain ends in **ThreadPool starvation**: a
      sync-over-async hop is waiting for a worker that the pool cannot supply (pending work, no idle
      workers, at max). Cross-check `query_snapshot(handle, view="threadpool")`.
@@ -478,7 +480,8 @@ async op or starved by the ThreadPool — neither `view="deadlocks"` (monitor cy
    - `terminalKind="owner-running"` → the chain ends at a lock owner that is actively running — the
      bottleneck is that owner's work, not a deadlock.
 4. For each hop, `edgeKind` tells you the wait kind (`monitor-lock` / `async-continuation` /
-   `threadpool-starvation`) and `waitReason` is human-readable. **Note on ownership:** monitor hops
+   `threadpool-starvation`), `waitReason` is human-readable, and `edgeSource` / `confidence` disclose
+   how strongly the edge was inferred. **Note on ownership:** monitor hops
    carry a concrete `ownerThreadId`; async hops set `ownerThreadId=null` and attach a `note` because
    the thread/task that will complete an await is **not** recoverable from a point-in-time snapshot —
    the view never guesses an async owner.

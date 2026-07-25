@@ -63,16 +63,57 @@ public static class ComparablePairwiseSampleDiff
             notes.Add($"Comparison spans different runs/processes: baseline pid {baseline.ProcessId}, current pid {current.ProcessId}.");
         }
 
+        var (baselineMetrics, currentMetrics) = CorrelateHeapMetrics(baseline, current);
         return BuildDiff(
             kind: "heap-snapshot",
             baselineHandle,
             currentHandle,
             minDeltaPct,
             topN,
-            baseline: HeapSnapshotComparableProjector.ProjectTyped(baseline),
-            current: HeapSnapshotComparableProjector.ProjectTyped(current),
+            baseline: baselineMetrics,
+            current: currentMetrics,
             primaryMetric: static metric => metric.TotalBytes,
             notes);
+    }
+
+    private static (Dictionary<TypeIdentity, HeapDiffMetric> Baseline, Dictionary<TypeIdentity, HeapDiffMetric> Current)
+        CorrelateHeapMetrics(HeapSnapshotArtifact baseline, HeapSnapshotArtifact current)
+    {
+        var baselineRows = HeapSnapshotComparableProjector.ProjectTypedByAvailableIdentity(baseline);
+        var currentRows = HeapSnapshotComparableProjector.ProjectTypedByAvailableIdentity(current);
+        var unmatchedBaseline = baselineRows.ToList();
+        var baselineMetrics = new Dictionary<TypeIdentity, HeapDiffMetric>();
+        var currentMetrics = new Dictionary<TypeIdentity, HeapDiffMetric>();
+
+        foreach (var currentRow in currentRows)
+        {
+            var selection = HeapSnapshotComparableProjector.FindUniqueBestMatch(currentRow.Identity, unmatchedBaseline);
+            if (selection.Match is not { } match)
+            {
+                currentMetrics[currentRow.Identity] = currentRow.Metric;
+                continue;
+            }
+
+            var reverse = HeapSnapshotComparableProjector.FindUniqueBestMatch(match.Identity, currentRows);
+            if (reverse.Ambiguous
+                || reverse.Match is null
+                || !Equals(reverse.Match.Identity, currentRow.Identity))
+            {
+                currentMetrics[currentRow.Identity] = currentRow.Metric;
+                continue;
+            }
+
+            unmatchedBaseline.Remove(match);
+            baselineMetrics[currentRow.Identity] = match.Metric;
+            currentMetrics[currentRow.Identity] = currentRow.Metric;
+        }
+
+        foreach (var baselineRow in unmatchedBaseline)
+        {
+            baselineMetrics[baselineRow.Identity] = baselineRow.Metric;
+        }
+
+        return (baselineMetrics, currentMetrics);
     }
 
     public static SampleDiff<TypeIdentity, AllocationDiffMetric> Compare(

@@ -170,8 +170,8 @@ public sealed record AsyncStalledThread(
 /// <summary>
 /// Aggregate returned by <c>query_snapshot(view="wait-chains")</c>. Unifies three wait-edge kinds
 /// (sync monitor locks, async continuations, ThreadPool starvation) into ranked directed wait-chains.
-/// <see cref="Chains"/> is ordered longest / most-blocked first; cycles (true deadlocks) are flagged
-/// distinctly from open chains via <see cref="WaitChain.IsCycle"/>.
+/// <see cref="Chains"/> is ordered longest / most-blocked first; inferred cycle candidates are flagged
+/// distinctly from open chains.
 /// </summary>
 public sealed record WaitChainsView(
     string View,
@@ -182,13 +182,16 @@ public sealed record WaitChainsView(
     bool ThreadPoolStarved,
     IReadOnlyList<WaitChain> Chains)
 {
+    /// <summary>Number of chains whose inferred wait-owner edges form a cycle candidate.</summary>
+    public int InferredCycleCandidateCount { get; init; }
+
     /// <summary>Analyzer-wide honest caveats (e.g. async-ownership indeterminacy from a snapshot).</summary>
     public IReadOnlyList<string> Notes { get; init; } = Array.Empty<string>();
 }
 
 /// <summary>
 /// One ranked wait-chain: a directed walk <c>root → wait-reason → next node → …</c> terminating in a
-/// cycle, a ThreadPool-starvation sink, an async construct, or a running lock owner.
+/// inferred cycle candidate, a ThreadPool-starvation sink, an async construct, or a running lock owner.
 /// </summary>
 public sealed record WaitChain(
     int Rank,
@@ -199,6 +202,12 @@ public sealed record WaitChain(
     string TerminalKind,
     IReadOnlyList<WaitChainLink> Links)
 {
+    /// <summary>Whether inferred wait-owner edges form a cycle candidate.</summary>
+    public bool IsInferredCycleCandidate { get; init; }
+
+    /// <summary>Confidence of the inferred cycle candidate, or <c>none</c>.</summary>
+    public string InferenceConfidence { get; init; } = "none";
+
     /// <summary>Per-chain caveats (e.g. indeterminate async-resumption ownership) — never guesses.</summary>
     public IReadOnlyList<string> Notes { get; init; } = Array.Empty<string>();
 }
@@ -224,4 +233,8 @@ public sealed record WaitChainLink(
     public string? LockObjectTypeFullName { get; init; }
     /// <summary>Honest caveat attached to this hop (e.g. async-ownership not recoverable from a snapshot).</summary>
     public string? Note { get; init; }
+    /// <summary>Evidence used to infer this edge.</summary>
+    public string EdgeSource { get; init; } = "unknown";
+    /// <summary>Confidence in the inferred edge: high, medium, or low.</summary>
+    public string Confidence { get; init; } = "low";
 }

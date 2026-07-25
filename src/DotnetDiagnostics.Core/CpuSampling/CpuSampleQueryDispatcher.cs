@@ -338,7 +338,7 @@ public static class CpuSampleQueryDispatcher
                 n.Children,
                 nodeBudget,
                 traversal.ClassificationAvailable,
-                traversal.SelfSamplesByNode);
+                traversal.MetricsByNode);
             if (candidates.Length < n.Children.Count)
             {
                 truncated = true;
@@ -361,19 +361,24 @@ public static class CpuSampleQueryDispatcher
         IReadOnlyList<CallTreeNode> children,
         int limit,
         bool classificationAvailable,
-        IReadOnlyDictionary<CallTreeNode, SelfSampleBreakdown> selfSamplesByNode)
+        IReadOnlyDictionary<CallTreeNode, SubtreeNodeMetric> metricsByNode)
     {
         if (limit <= 0 || children.Count == 0) return Array.Empty<CallTreeNode>();
 
         var selected = new List<DecisiveChildCandidate>(Math.Min(limit, children.Count));
+        var useClassification = classificationAvailable
+            && children.All(child =>
+                metricsByNode.TryGetValue(child, out var metric)
+                && metric.Complete);
+        var comparer = useClassification
+            ? DecisiveChildComparer.Classified
+            : DecisiveChildComparer.Unclassified;
         foreach (var child in children)
         {
-            selfSamplesByNode.TryGetValue(child, out var selfSamples);
-            var runningSamples = selfSamples?.RunningSamples ?? 0;
-            var candidate = new DecisiveChildCandidate(child, runningSamples);
-            var comparer = classificationAvailable
-                ? DecisiveChildComparer.Classified
-                : DecisiveChildComparer.Unclassified;
+            metricsByNode.TryGetValue(child, out var metric);
+            var candidate = new DecisiveChildCandidate(
+                child,
+                metric?.Samples.RunningSamples ?? 0);
             var index = selected.BinarySearch(candidate, comparer);
             if (index < 0) index = ~index;
             if (index >= limit) continue;
@@ -390,7 +395,7 @@ public static class CpuSampleQueryDispatcher
 
     private static SubtreeMetricIndex BuildSubtreeMetrics(CallTreeNode root, int visitLimit)
     {
-        var metrics = new Dictionary<CallTreeNode, SelfSampleBreakdown>(ReferenceEqualityComparer.Instance);
+        var metrics = new Dictionary<CallTreeNode, SubtreeNodeMetric>(ReferenceEqualityComparer.Instance);
         var stack = new Stack<MetricFrame>();
         stack.Push(new MetricFrame(root));
         var nodesVisited = 1;
@@ -412,22 +417,26 @@ public static class CpuSampleQueryDispatcher
             if (frame.NextChildIndex < frame.Node.Children.Count)
             {
                 limitReached = true;
+                frame.Complete = false;
             }
 
             var runningSamples = frame.RunningDescendantSamples + (frame.Node.SelfSamples?.RunningSamples ?? 0);
             var waitingSamples = frame.WaitingDescendantSamples + (frame.Node.SelfSamples?.WaitingSamples ?? 0);
             var total = new SelfSampleBreakdown(runningSamples, waitingSamples);
-            metrics[frame.Node] = total;
+            metrics[frame.Node] = new SubtreeNodeMetric(total, frame.Complete);
             stack.Pop();
             if (stack.Count > 0)
             {
                 stack.Peek().RunningDescendantSamples += runningSamples;
                 stack.Peek().WaitingDescendantSamples += waitingSamples;
+                stack.Peek().Complete &= frame.Complete;
             }
         }
 
-        var totalSelfSamples = classificationAvailable && metrics.TryGetValue(root, out var rootSamples)
-            ? rootSamples
+        var totalSelfSamples = classificationAvailable
+            && metrics.TryGetValue(root, out var rootMetric)
+            && rootMetric.Complete
+            ? rootMetric.Samples
             : null;
         return new SubtreeMetricIndex(metrics, nodesVisited, classificationAvailable, limitReached, totalSelfSamples);
     }
@@ -475,10 +484,13 @@ public static class CpuSampleQueryDispatcher
         public int NextChildIndex { get; set; }
         public long RunningDescendantSamples { get; set; }
         public long WaitingDescendantSamples { get; set; }
+        public bool Complete { get; set; } = true;
     }
 
+    private sealed record SubtreeNodeMetric(SelfSampleBreakdown Samples, bool Complete);
+
     private sealed record SubtreeMetricIndex(
-        IReadOnlyDictionary<CallTreeNode, SelfSampleBreakdown> SelfSamplesByNode,
+        IReadOnlyDictionary<CallTreeNode, SubtreeNodeMetric> MetricsByNode,
         int NodesVisited,
         bool ClassificationAvailable,
         bool LimitReached,

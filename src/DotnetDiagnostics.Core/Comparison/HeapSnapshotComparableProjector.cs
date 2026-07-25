@@ -32,17 +32,10 @@ public sealed class HeapSnapshotComparableProjector : IComparableProjector
     public static Dictionary<TypeIdentity, HeapDiffMetric> ProjectTyped(HeapSnapshotArtifact snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        var aggregates = BuildAggregates(snapshot, "heap-snapshot");
-        var result = new Dictionary<TypeIdentity, HeapDiffMetric>(ComparablePairwiseSampleDiff.TypeIdentityComparer.Instance);
-        foreach (var row in aggregates.Values)
+        var result = new Dictionary<TypeIdentity, HeapDiffMetric>();
+        foreach (var row in ProjectTypedByAvailableIdentity(snapshot))
         {
-            result[row.Identity] = result.TryGetValue(row.Identity, out var existing)
-                ? new HeapDiffMetric(
-                    TotalBytes: Math.Max(existing.TotalBytes, row.TotalBytes),
-                    InstanceCount: Math.Max(existing.InstanceCount, row.InstanceCount))
-                : new HeapDiffMetric(
-                    TotalBytes: row.TotalBytes,
-                    InstanceCount: row.InstanceCount);
+            result[row.Identity] = row.Metric;
         }
 
         return result;
@@ -59,12 +52,13 @@ public sealed class HeapSnapshotComparableProjector : IComparableProjector
         MergeRanking(copies, byInstances);
 
         return copies.Values
-            .GroupBy(static copy => StableIdentityKey.Create(copy.Identity))
+            .GroupBy(static copy => GetCanonicalIdentityKey(copy.Identity))
             .Select(static group =>
             {
                 var rows = group.ToArray();
+                var identity = SelectRepresentativeIdentity(rows.Select(static row => row.Identity));
                 return new HeapComparableType(
-                    rows[0].Identity,
+                    identity,
                     new HeapDiffMetric(
                         TotalBytes: rows.Sum(static row => row.Metric.TotalBytes),
                         InstanceCount: rows.Sum(static row => row.Metric.InstanceCount)));
@@ -77,43 +71,18 @@ public sealed class HeapSnapshotComparableProjector : IComparableProjector
 
     private static ComparableRow[] ProjectRows(HeapSnapshotArtifact snapshot, string kind)
     {
-        var aggregates = BuildAggregates(snapshot, kind);
-        return aggregates.Values
-            .OrderByDescending(static row => row.TotalBytes)
-            .ThenBy(static row => row.DisplayName, StringComparer.Ordinal)
-            .Select(static row => new ComparableRow(
-                row.Key,
-                row.DisplayName,
+        return ProjectTypedByAvailableIdentity(snapshot)
+            .OrderByDescending(static row => row.Metric.TotalBytes)
+            .ThenBy(static row => row.Identity.TypeFullName, StringComparer.Ordinal)
+            .Select(row => new ComparableRow(
+                ComparableKeyFactory.ForType(kind, row.Identity, row.Identity.TypeFullName, row.Identity.ModuleName),
+                row.Identity.TypeFullName,
                 new[]
                 {
-                    Metric("totalBytes", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "bytes", row.TotalBytes),
-                    Metric("instanceCount", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "count", row.InstanceCount),
+                    Metric("totalBytes", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "bytes", row.Metric.TotalBytes),
+                    Metric("instanceCount", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "count", row.Metric.InstanceCount),
                 }))
             .ToArray();
-    }
-
-    private static Dictionary<string, HeapAggregate> BuildAggregates(HeapSnapshotArtifact snapshot, string kind)
-    {
-        var aggregates = new Dictionary<string, HeapAggregate>(StringComparer.Ordinal);
-        foreach (var stat in snapshot.TopTypesByBytes.Concat(snapshot.TopTypesByInstances))
-        {
-            var identity = stat.Identity ?? new TypeIdentity(stat.TypeFullName) { ModuleName = stat.ModuleName };
-            var key = ComparableKeyFactory.ForType(kind, identity, stat.TypeFullName, stat.ModuleName);
-            var matchId = key.ExactId ?? key.StableId;
-            if (aggregates.TryGetValue(matchId, out var existing))
-            {
-                aggregates[matchId] = existing with
-                {
-                    TotalBytes = Math.Max(existing.TotalBytes, stat.TotalBytes),
-                    InstanceCount = Math.Max(existing.InstanceCount, stat.InstanceCount),
-                };
-                continue;
-            }
-
-            aggregates[matchId] = new HeapAggregate(key, stat.TypeFullName, identity, stat.TotalBytes, stat.InstanceCount);
-        }
-
-        return aggregates;
     }
 
     private static MetricValue Metric(
@@ -296,33 +265,66 @@ public sealed class HeapSnapshotComparableProjector : IComparableProjector
     private static string NormalizePath(string? value)
         => OperatingSystem.IsWindows() ? value?.ToUpperInvariant() ?? string.Empty : value ?? string.Empty;
 
-    private sealed record HeapAggregate(
-        ComparableKey Key,
-        string DisplayName,
-        TypeIdentity Identity,
-        long TotalBytes,
-        long InstanceCount);
+    internal static HeapCanonicalIdentityKey GetCanonicalIdentityKey(TypeIdentity identity)
+    {
+        if (identity.ModuleVersionId is { } moduleVersionId)
+        {
+            return new HeapCanonicalIdentityKey(
+                Kind: 3,
+                identity.TypeFullName,
+                moduleVersionId,
+                identity.MetadataToken,
+                Module: string.Empty);
+        }
 
-    private readonly record struct StableIdentityKey(
+        if (!string.IsNullOrWhiteSpace(identity.ModulePath))
+        {
+            return new HeapCanonicalIdentityKey(
+                Kind: 2,
+                identity.TypeFullName,
+                ModuleVersionId: null,
+                identity.MetadataToken,
+                NormalizePath(identity.ModulePath));
+        }
+
+        if (!string.IsNullOrWhiteSpace(identity.ModuleName))
+        {
+            return new HeapCanonicalIdentityKey(
+                Kind: 1,
+                identity.TypeFullName,
+                ModuleVersionId: null,
+                identity.MetadataToken,
+                NormalizePath(identity.ModuleName));
+        }
+
+        return new HeapCanonicalIdentityKey(
+            Kind: 0,
+            identity.TypeFullName,
+            ModuleVersionId: null,
+            identity.MetadataToken,
+            Module: string.Empty);
+    }
+
+    private static TypeIdentity SelectRepresentativeIdentity(IEnumerable<TypeIdentity> identities)
+        => identities
+            .OrderByDescending(static identity => identity.ModuleVersionId is not null)
+            .ThenByDescending(static identity => identity.MetadataToken is not null)
+            .ThenByDescending(static identity => !string.IsNullOrWhiteSpace(identity.ModulePath))
+            .ThenBy(static identity => identity.ModulePath, PathComparer)
+            .ThenBy(static identity => identity.ModuleName, PathComparer)
+            .First();
+
+    internal readonly record struct HeapCanonicalIdentityKey(
+        int Kind,
         string TypeFullName,
         Guid? ModuleVersionId,
         int? MetadataToken,
-        string ModulePath,
-        string ModuleName)
-    {
-        public static StableIdentityKey Create(TypeIdentity identity)
-            => new(
-                identity.TypeFullName,
-                identity.ModuleVersionId,
-                identity.MetadataToken,
-                NormalizePath(identity.ModulePath),
-                NormalizePath(identity.ModuleName));
-    }
+        string Module);
 
-    private readonly record struct CopyIdentityKey(StableIdentityKey Stable, ulong? ModuleImageBase)
+    private readonly record struct CopyIdentityKey(HeapCanonicalIdentityKey Stable, ulong? ModuleImageBase)
     {
         public static CopyIdentityKey Create(TypeIdentity identity, ulong? moduleImageBase)
-            => new(StableIdentityKey.Create(identity), moduleImageBase);
+            => new(GetCanonicalIdentityKey(identity), moduleImageBase);
     }
 
     private sealed record CopyMetric(TypeIdentity Identity, HeapDiffMetric Metric);

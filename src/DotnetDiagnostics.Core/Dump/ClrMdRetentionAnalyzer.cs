@@ -1,3 +1,4 @@
+using DotnetDiagnostics.Core.Comparison;
 using Microsoft.Diagnostics.Runtime;
 
 namespace DotnetDiagnostics.Core.Dump;
@@ -19,10 +20,7 @@ internal static class ClrMdRetentionAnalyzer
         // For each target type we then pick the largest instance and walk back to a root.
         // This is approximate (a real !gcroot does a full search) but cheap and "good enough"
         // to point the LLM at where to dig deeper.
-        var targets = topByBytes
-            .Take(targetCount)
-            .Select(stat => stat.Identity ?? new TypeIdentity(stat.TypeFullName) { ModuleName = stat.ModuleName })
-            .ToArray();
+        var targets = SelectTargets(topByBytes, targetCount);
         if (targets.Length == 0) return Array.Empty<RetentionPath>();
         var sameNameCounts = targets
             .Select(target => targets.Count(candidate =>
@@ -119,6 +117,31 @@ internal static class ClrMdRetentionAnalyzer
         }
 
         return results;
+    }
+
+    internal static TypeIdentity[] SelectTargets(IReadOnlyList<TypeStat> topByBytes, int targetCount)
+    {
+        ArgumentNullException.ThrowIfNull(topByBytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(targetCount);
+
+        var seen = new HashSet<HeapSnapshotComparableProjector.HeapCanonicalIdentityKey>();
+        var targets = new List<TypeIdentity>(Math.Min(targetCount, topByBytes.Count));
+        foreach (var stat in topByBytes)
+        {
+            var identity = stat.Identity ?? new TypeIdentity(stat.TypeFullName) { ModuleName = stat.ModuleName };
+            if (!seen.Add(HeapSnapshotComparableProjector.GetCanonicalIdentityKey(identity)))
+            {
+                continue;
+            }
+
+            targets.Add(identity);
+            if (targets.Count == targetCount)
+            {
+                break;
+            }
+        }
+
+        return targets.ToArray();
     }
 
     internal static bool MatchesTarget(TypeIdentity target, TypeIdentity observed, int sameNameCount)

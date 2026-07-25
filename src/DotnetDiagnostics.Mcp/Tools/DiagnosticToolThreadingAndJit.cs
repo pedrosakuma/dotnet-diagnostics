@@ -5,6 +5,7 @@ using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.JitCapture;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Signals;
 using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Mcp.Security;
@@ -78,6 +79,7 @@ internal static class DiagnosticToolThreadingAndJit
                 ThreadSnapshotHandleTtl,
                 evictWhenProcessExits: false,
                 origin: snapshot.Origin == ThreadSnapshotOrigin.Live ? HandleOrigin.Live : HandleOrigin.Dump);
+            var signals = ThreadWaitSignals.Detect(snapshot, handle.Id);
             var origin = snapshot.Origin.ToString().ToLowerInvariant();
             var blocked = snapshot.Threads.Count(t => t.IsLikelyBlocked);
             var contended = snapshot.Locks.Count(l => l.IsContended);
@@ -175,6 +177,7 @@ internal static class DiagnosticToolThreadingAndJit
             var result = hint is null
                 ? DiagnosticResult.Ok(summaryView, summary)
                 : DiagnosticResult.Ok(summaryView, summary, hint);
+            result = result with { Signals = signals.Count > 0 ? signals : null };
             return WithContext(result, liveCtx);
         }, cancellationToken, hasDump
             ? null

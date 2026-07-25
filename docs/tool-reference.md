@@ -530,9 +530,12 @@ sync-over-async (`Task.Wait`/`.Result`/`GetResult`) or awaiting an incomplete co
 construct it is blocked on (classified by the same recognizer as `async-stalls`); (3) **ThreadPool
 starvation** — a sync-over-async chain that terminates in "waiting for a ThreadPool worker that isn't
 available", detected when the snapshot's ThreadPool has pending work, no idle workers, and is at its
-maximum. Chains are ranked longest / most-blocked first; true **cycles** are flagged distinctly
-(`isCycle=true`, `terminalKind="cycle"`) from open chains that sink in starvation, an async construct,
-or a running lock owner. Each hop reports `edgeKind`, a human `waitReason`, and the target node.
+maximum. Chains are ranked longest / most-blocked first; inferred **cycle candidates** are flagged
+distinctly (`isInferredCycleCandidate=true`, `terminalKind="inferred-cycle-candidate"`) from open
+chains that sink in starvation, an async construct, or a running lock owner. The compatibility
+fields `isCycle` and `cycleCount` remain populated, while `inferredCycleCandidateCount` states the
+semantics explicitly. Each hop reports `edgeKind`, a human `waitReason`, the target node,
+`edgeSource`, and `confidence`; treat a candidate as evidence to verify, not a confirmed deadlock.
 **Honesty about async ownership:** monitor hops carry a concrete `ownerThreadId` (recorded in the
 snapshot), but async-continuation resumption ownership is generally **not** recoverable from a
 point-in-time snapshot — nothing in thread state records which thread/task will complete an
@@ -2590,8 +2593,10 @@ evaluate inferred wait-for cycle candidates with `query_snapshot(view="deadlocks
 [`query_snapshot`](#query_snapshot) thread views: `threads-summary`, `stack`,
 `lock-graph`, `deadlocks`, `top-blocked`, `unique-stacks`, `async-stalls`,
 `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`.
-Collection does not eagerly build capture-sized signal buckets or a deadlock graph; those
-analyses run only when their explicit drilldown view is requested.
+Collection may emit up to three bounded `signals[]` groups for concentrated wait states, lock
+targets, and blocked lock-owner overlap (up to five buckets each). It does not eagerly build a
+capture-sized derived index or deadlock/wait-chain graph; complete evidence remains behind the
+handle and graph analysis runs only when its explicit drilldown view is requested.
 
 **Scope:** `ptrace`. **Requires:** live attach needs `CAP_SYS_PTRACE` on Linux.
 

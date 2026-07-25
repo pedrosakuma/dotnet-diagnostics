@@ -338,7 +338,7 @@ query options:
     top-blocked      Up to 8 blocked/waiting candidates per page (default).
     unique-stacks    Deduplicated stacks by hash.
     async-stalls     Async continuation stalls.
-    wait-chains      Thread wait-chain analysis.
+    wait-chains      Inferred wait chains with per-edge source/confidence.
     threadpool       Thread-pool queue/worker statistics.
     frame-vars       Object-typed locals/parameters on each frame via ClrMD re-open; requires --thread-id.
   Continue bounded pages with --cursor using nextThreadCursor, nextLockCursor, or

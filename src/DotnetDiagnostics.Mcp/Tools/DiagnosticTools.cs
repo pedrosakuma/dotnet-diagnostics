@@ -1245,7 +1245,7 @@ public sealed class DiagnosticTools
         "`top-blocked` (stable pages of up to 8 blocked/waiting candidates), " +
         "`unique-stacks` (group by identical top-of-stack prefixes to spot a stuck herd), " +
         "`async-stalls` (best-effort grouping of async state-machine waits; useful when no SyncBlocks are contended), " +
-        "`wait-chains` (ranked CoreCLR monitor waiter→owner, async-continuation, and ThreadPool-starvation chains; inferred deadlock cycle candidates are flagged explicitly), and " +
+        "`wait-chains` (ranked CoreCLR monitor waiter→owner, async-continuation, and ThreadPool-starvation chains; inferred cycle candidates and each edge's source/confidence are explicit), and " +
         "`threadpool` (SOS !threadpool-style snapshot of worker/IOCP counts plus global/local queue depths and pending work items when the backend captured them). " +
         "Handles expire ~10 minutes after capture and survive target-process exit; only live-origin `resolve-address` and `frame-vars` re-attach via ClrMD and therefore require the original process to still be running.";
 

@@ -196,16 +196,25 @@ public static class ThreadSnapshotProjection
     public static ProjectedLockWaiterPage ProjectLock(
         MonitorLockState lockState,
         int waiterOffset)
-        => ProjectLock(lockState, waiterOffset, null, null);
+        => ProjectLock(lockState, waiterOffset, LockWaiterIdLimit, null, null);
 
     public static ProjectedLockWaiterPage ProjectLock(
         MonitorLockState lockState,
         int waiterOffset,
         string? handle,
         string? cursor)
+        => ProjectLock(lockState, waiterOffset, LockWaiterIdLimit, handle, cursor);
+
+    public static ProjectedLockWaiterPage ProjectLock(
+        MonitorLockState lockState,
+        int waiterOffset,
+        int requestedCount,
+        string? handle,
+        string? cursor)
     {
         ArgumentNullException.ThrowIfNull(lockState);
         ArgumentOutOfRangeException.ThrowIfNegative(waiterOffset);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(requestedCount);
         ValidatePagingArguments(waiterOffset, handle, cursor);
         var pageOffset = waiterOffset;
         if (cursor is not null)
@@ -241,7 +250,7 @@ public static class ThreadSnapshotProjection
                 NextWaiterCursor: null);
         }
         var count = Math.Min(
-            LockWaiterIdLimit,
+            Math.Min(requestedCount, LockWaiterIdLimit),
             Math.Max(0, lockState.WaitingManagedThreadIds.Count - pageOffset));
         var waiterIds = new int[count];
         for (var i = 0; i < count; i++)

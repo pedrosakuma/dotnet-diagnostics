@@ -63,7 +63,19 @@ public sealed class ThreadSnapshotToolTests
             smallAllocated + 256_000,
             "the actual collect/register/first-response path must not eagerly index every thread, lock, waiter, signal, or deadlock edge");
         result.Error.Should().BeNull();
-        result.Signals.Should().BeNull("capture-sized signal analysis is deferred to explicit drilldown");
+        var compatibleSignalIds = new[]
+        {
+            "threads.by-wait-state",
+            "threads.by-wait-target",
+            "correlation.thread-overlap",
+        };
+        if (result.Signals is { } signals)
+        {
+            signals.Should().HaveCountLessThanOrEqualTo(3);
+            signals.Should().OnlyContain(signal => signal.Buckets.Count <= 5);
+            signals.Select(signal => signal.Signal)
+                .Should().OnlyContain(signal => compatibleSignalIds.Contains(signal));
+        }
         result.Data!.Threads.Should().HaveCount(ThreadSnapshotProjection.SummaryThreadLimit);
         result.Data.Locks.Should().BeEmpty();
         result.Data.NextThreadCursor.Should().NotBeNullOrWhiteSpace();
@@ -81,6 +93,49 @@ public sealed class ThreadSnapshotToolTests
             offset: 0,
             lockAddress: "0x100000");
         exactLock.Data!.Locks.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task CollectThreadSnapshot_RestoresBoundedCompatibleSignals()
+    {
+        var threads = Enumerable.Range(1, 10)
+            .Select(id => Thread(id, "Wait", "System.Threading.Monitor.Enter", isLikelyBlocked: true) with
+            {
+                InferredWaitReason = "Monitor.Enter (contended)",
+                IsLockWaiter = id > 1,
+            })
+            .ToArray();
+        var monitor = new MonitorLockState(
+            0xCAFE,
+            "App.SharedLock",
+            OwnerManagedThreadId: 1,
+            OwnerOSThreadId: 10_001,
+            OwnerThreadAddress: 1,
+            RecursionCount: 1,
+            WaitingThreadCount: 9,
+            IsContended: true,
+            Source: "test")
+        {
+            WaitingManagedThreadIds = Enumerable.Range(2, 9).ToArray(),
+        };
+        var snapshot = new ThreadSnapshotArtifact(
+            ThreadSnapshotOrigin.Live,
+            Environment.ProcessId,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMilliseconds(25),
+            "CoreClr",
+            "10.0.0",
+            threads,
+            [monitor]);
+
+        var (_, result, _) = await MeasureCollectionAllocations(snapshot);
+
+        result.Signals.Should().NotBeNull();
+        result.Signals!.Select(signal => signal.Signal).Should().BeEquivalentTo(
+            "threads.by-wait-state",
+            "threads.by-wait-target",
+            "correlation.thread-overlap");
+        result.Signals.Should().OnlyContain(signal => signal.Buckets.Count <= 5);
     }
 
     [Fact]

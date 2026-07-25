@@ -470,6 +470,7 @@ public static class SamplerUseCases
                 ThreadSnapshotHandleTtl,
                 evictWhenProcessExits: false,
                 origin: snapshot.Origin == ThreadSnapshotOrigin.Live ? HandleOrigin.Live : HandleOrigin.Dump);
+            var signals = ThreadWaitSignals.Detect(snapshot, handle.Id);
             var origin = snapshot.Origin.ToString().ToLowerInvariant();
             var blocked = snapshot.Threads.Count(t => t.IsLikelyBlocked);
             var contended = snapshot.Locks.Count(l => l.IsContended);
@@ -568,6 +569,7 @@ public static class SamplerUseCases
             var result = hint is null
                 ? DiagnosticResult.Ok(summaryView, summary)
                 : DiagnosticResult.Ok(summaryView, summary, hint);
+            result = result with { Signals = signals.Count > 0 ? signals : null };
             return WithContext(result, liveCtx);
         }, cancellationToken, retryArguments: hasDump
             ? null

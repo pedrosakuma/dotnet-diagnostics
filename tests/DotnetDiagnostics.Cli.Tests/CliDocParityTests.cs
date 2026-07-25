@@ -99,10 +99,13 @@ public sealed class CliDocParityTests
         help.Should().Contain("--offset");
         help.Should().Contain("--cursor");
         help.Should().Contain("--top <int>");
+        help.Should().Contain("--top-types <int>");
+        help.Should().Contain("wins when --top-types");
         help.Should().Contain("nextThreadCursor");
         help.Should().Contain("nextLockCursor");
         help.Should().Contain("nextWaiterCursor");
         help.Should().Contain("Inferred deadlock cycle candidates");
+        help.Should().Contain("per-edge source/confidence");
         help.Should().NotContain("List all threads");
     }
 }

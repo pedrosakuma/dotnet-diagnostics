@@ -214,7 +214,7 @@ public static class ThreadSnapshotQueryDispatcher
                         new Dictionary<string, object?> { ["handle"] = handle, ["view"] = "lock-graph" }));
             }
 
-            var selectedPage = ThreadSnapshotProjection.ProjectLock(selected, offset, handle, cursor);
+            var selectedPage = ThreadSnapshotProjection.ProjectLock(selected, offset, topN, handle, cursor);
             var selectedSummary = selected.WaitingManagedThreadIds.Count == 0
                 ? $"Lock object 0x{selected.ObjectAddress:x} in snapshot '{handle}' has no retained waiter ids."
                 : selectedPage.WaiterOffset >= selected.WaitingManagedThreadIds.Count
@@ -351,7 +351,7 @@ public static class ThreadSnapshotQueryDispatcher
         else
         {
             var top = view.Chains[0];
-            summary = $"Built {view.Chains.Count} wait-chain(s) ({view.CycleCount} cycle/deadlock, {view.OpenChainCount} open) in snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) across {view.EdgeCount} wait edge(s). Top chain: {top.Length} hop(s) rooted at managed thread {top.RootThreadId}, terminating in {top.TerminalKind}.";
+            summary = $"Built {view.Chains.Count} wait-chain(s) ({view.InferredCycleCandidateCount} inferred cycle candidate(s), {view.OpenChainCount} open) in snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}) across {view.EdgeCount} inferred wait edge(s). Top chain: {top.Length} hop(s) rooted at managed thread {top.RootThreadId}, terminating in {top.TerminalKind}.";
         }
 
         return DiagnosticResult.Ok(
