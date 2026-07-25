@@ -716,30 +716,46 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     public async Task CollectBatch_CountersAndGc_PopulatesNarrowBoundedGen2MeterEvidence()
     {
         await using var client = await ConnectAsync();
+        using var driverCts = new CancellationTokenSource();
         var driver = Task.Run(async () =>
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(1500));
-            for (var i = 0; i < 260; i++)
+            try
             {
-                _ = new byte[128 * 1024];
-                GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
-                await Task.Delay(TimeSpan.FromMilliseconds(20));
+                await Task.Delay(TimeSpan.FromMilliseconds(1500), driverCts.Token);
+                while (!driverCts.IsCancellationRequested)
+                {
+                    _ = new byte[128 * 1024];
+                    GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
+                    await Task.Delay(TimeSpan.FromMilliseconds(10), driverCts.Token);
+                }
+            }
+            catch (OperationCanceledException) when (driverCts.IsCancellationRequested)
+            {
             }
         });
 
-        var result = await client.CallToolAsync(
-            "collect_batch",
-            new Dictionary<string, object?>
-            {
-                ["requests"] = new object[]
+        ModelContextProtocol.Protocol.CallToolResult result;
+        try
+        {
+            result = await client.CallToolAsync(
+                "collect_batch",
+                new Dictionary<string, object?>
                 {
-                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
-                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "gc" },
+                    ["requests"] = new object[]
+                    {
+                        new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
+                        new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "gc" },
+                    },
+                    ["processId"] = Environment.ProcessId,
+                    ["durationSeconds"] = 10,
                 },
-                ["processId"] = Environment.ProcessId,
-                ["durationSeconds"] = 10,
-            },
-            cancellationToken: CancellationToken.None);
+                cancellationToken: CancellationToken.None);
+        }
+        finally
+        {
+            driverCts.Cancel();
+        }
+
         await driver;
 
         result.IsError.Should().NotBe(true);
