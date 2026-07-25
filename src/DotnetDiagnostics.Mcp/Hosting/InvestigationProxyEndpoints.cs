@@ -3,6 +3,8 @@ using System.Buffers;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -162,11 +164,22 @@ internal static class InvestigationProxyEndpoints
 
         if (bufferedBody is not null)
         {
+            var jsonContent = IsJsonContentType(context.Request.ContentType);
+            if (!UsesUtf8Charset(context.Request.ContentType))
+            {
+                await WriteProblemAsync(context, StatusCodes.Status400BadRequest,
+                    "ProxyJsonCharsetUnsupported",
+                    "The investigation proxy accepts request bodies only as UTF-8.")
+                    .ConfigureAwait(false);
+                return;
+            }
+
             var rejection = FindRejectedToolCall(
                 bufferedBody.WrittenMemory,
                 scopeRegistry,
                 callerPrincipal,
-                scopePolicies);
+                scopePolicies,
+                failClosedOnInvalidJson: jsonContent);
             if (rejection is not null)
             {
                 if (rejection.Kind == ProxyToolRejectionKind.Malformed)
@@ -176,7 +189,18 @@ internal static class InvestigationProxyEndpoints
                         handleId);
                     await WriteProblemAsync(context, StatusCodes.Status400BadRequest,
                         "ProxyToolRequestMalformed",
-                        "The JSON-RPC tools/call request is malformed or contains duplicate object keys.")
+                        "The JSON-RPC request is malformed or contains duplicate object keys.")
+                        .ConfigureAwait(false);
+                }
+                else if (rejection.Kind == ProxyToolRejectionKind.ResourceNotAllowed)
+                {
+                    logger.LogWarning(
+                        "Proxy rejected pod-local diagnostic Resource URI '{ResourceUri}' for handle {HandleId}.",
+                        rejection.ToolName, handleId);
+                    await WriteProblemAsync(context, StatusCodes.Status403Forbidden,
+                        "ProxyResourceNotAllowed",
+                        $"Resource '{rejection.ToolName}' cannot traverse the investigation proxy. " +
+                        "Use query_snapshot with the scopes required by the underlying diagnostic handle.")
                         .ConfigureAwait(false);
                 }
                 else if (rejection.Kind == ProxyToolRejectionKind.NotAllowed)
@@ -540,7 +564,8 @@ internal static class InvestigationProxyEndpoints
         ReadOnlyMemory<byte> body,
         ToolScopeRegistry scopeRegistry,
         BearerPrincipal? principal,
-        ToolScopeResolutionPolicies policies)
+        ToolScopeResolutionPolicies policies,
+        bool failClosedOnInvalidJson)
     {
         if (body.IsEmpty) return null;
         try
@@ -596,8 +621,13 @@ internal static class InvestigationProxyEndpoints
         }
         catch (JsonException)
         {
-            // Non-JSON bodies cannot execute a tool locally and remain an upstream protocol concern.
-            return null;
+            return failClosedOnInvalidJson
+                ? new ProxyToolRejection(
+                    ProxyToolRejectionKind.Malformed,
+                    "<malformed>",
+                    null,
+                    false)
+                : null;
         }
         catch (ArgumentException)
         {
@@ -618,8 +648,37 @@ internal static class InvestigationProxyEndpoints
     {
         if (envelope.ValueKind != JsonValueKind.Object ||
             !envelope.TryGetProperty("method", out var method) ||
-            method.ValueKind != JsonValueKind.String ||
-            !string.Equals(method.GetString(), "tools/call", StringComparison.Ordinal))
+            method.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        if (string.Equals(method.GetString(), "resources/read", StringComparison.Ordinal))
+        {
+            if (!envelope.TryGetProperty("params", out var resourceParams) ||
+                resourceParams.ValueKind != JsonValueKind.Object ||
+                !resourceParams.TryGetProperty("uri", out var uri) ||
+                uri.ValueKind != JsonValueKind.String ||
+                string.IsNullOrWhiteSpace(uri.GetString()))
+            {
+                return new ProxyToolRejection(
+                    ProxyToolRejectionKind.Malformed,
+                    "<malformed-resource-uri>",
+                    null,
+                    false);
+            }
+
+            var resourceUri = uri.GetString()!;
+            return string.Equals(resourceUri, "diag://guides/investigation", StringComparison.Ordinal)
+                ? null
+                : new ProxyToolRejection(
+                    ProxyToolRejectionKind.ResourceNotAllowed,
+                    resourceUri,
+                    null,
+                    false);
+        }
+
+        if (!string.Equals(method.GetString(), "tools/call", StringComparison.Ordinal))
         {
             return null;
         }
@@ -732,11 +791,52 @@ internal static class InvestigationProxyEndpoints
                string.Equals(method.GetString(), "tools/call", StringComparison.Ordinal);
     }
 
+    private static bool IsJsonContentType(string? contentType)
+    {
+        if (!MediaTypeHeaderValue.TryParse(contentType, out var parsed) ||
+            string.IsNullOrWhiteSpace(parsed.MediaType))
+        {
+            return false;
+        }
+
+        return string.Equals(parsed.MediaType, "application/json", StringComparison.OrdinalIgnoreCase) ||
+            parsed.MediaType.EndsWith("+json", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool UsesUtf8Charset(string? contentType)
+    {
+        if (string.IsNullOrWhiteSpace(contentType))
+        {
+            return true;
+        }
+        if (!MediaTypeHeaderValue.TryParse(contentType, out var parsed))
+        {
+            return false;
+        }
+        var parameterNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var parameter in parsed.Parameters)
+        {
+            if (!parameterNames.Add(parameter.Name))
+            {
+                return false;
+            }
+        }
+        if (string.IsNullOrWhiteSpace(parsed.CharSet))
+        {
+            return true;
+        }
+
+        return string.Equals(
+            parsed.CharSet.Trim('"'),
+            Encoding.UTF8.WebName,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool HasDuplicateObjectKeys(JsonElement value)
     {
         if (value.ValueKind == JsonValueKind.Object)
         {
-            var names = new HashSet<string>(StringComparer.Ordinal);
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var property in value.EnumerateObject())
             {
                 if (!names.Add(property.Name) || HasDuplicateObjectKeys(property.Value))
@@ -802,6 +902,7 @@ internal static class InvestigationProxyEndpoints
     private enum ProxyToolRejectionKind
     {
         Malformed,
+        ResourceNotAllowed,
         NotAllowed,
         ScopeDenied,
     }

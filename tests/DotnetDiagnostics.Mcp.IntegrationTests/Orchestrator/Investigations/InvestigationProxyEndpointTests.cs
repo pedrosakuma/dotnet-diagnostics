@@ -542,6 +542,8 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\"}}}")]
     [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\",\"kind\":\"exceptions\"}}}")]
     [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\"},\"task\":1}}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\",\"params\":{\"uri\":\"diag://guides/investigation\",\"URI\":\"heap://snapshot/heap-handle\"}}")]
+    [InlineData("not-json")]
     public async Task Proxy_RejectsMalformedOrDuplicateJson_WithoutForwarding(string payload)
     {
         await DisposeAsync();
@@ -574,6 +576,129 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
 
         var payload = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}";
         var response = await _client.PostAsync("/proxy/inv_jrpc_init/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        _upstream.LastRequest.Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData("heap://snapshot/heap-handle")]
+    [InlineData("thread://snapshot/thread-handle")]
+    [InlineData("trace://session/trace-handle")]
+    [InlineData("journey://diff/diff-handle")]
+    [InlineData("signals://cpu-sample/cpu-handle")]
+    public async Task Proxy_RejectsPodLocalDiagnosticResourceRead(string resourceUri)
+    {
+        _store.Add(NewHandle("inv_resource_blocked", InvestigationState.Active, "pod-token"));
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\",\"params\":{\"uri\":" +
+            JsonSerializer.Serialize(resourceUri) + "}}";
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_resource_blocked/mcp",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ProxyResourceNotAllowed");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsPodLocalDiagnosticResourceRead_InBatch()
+    {
+        _store.Add(NewHandle("inv_resource_batch", InvestigationState.Active, "pod-token"));
+        var payload =
+            "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}," +
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"resources/read\"," +
+            "\"params\":{\"uri\":\"heap://snapshot/heap-handle\"}}]";
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_resource_batch/mcp",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ProxyResourceNotAllowed");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsUtf16DiagnosticResourceRead_WithoutForwarding()
+    {
+        _store.Add(NewHandle("inv_resource_utf16", InvestigationState.Active, "pod-token"));
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\"," +
+            "\"params\":{\"uri\":\"heap://snapshot/heap-handle\"}}";
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_resource_utf16/mcp",
+            new StringContent(payload, Encoding.Unicode, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ProxyJsonCharsetUnsupported");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsMalformedUtf16ContentType_WithoutForwarding()
+    {
+        _store.Add(NewHandle("inv_resource_utf16_malformed", InvestigationState.Active, "pod-token"));
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\"," +
+            "\"params\":{\"uri\":\"heap://snapshot/heap-handle\"}}";
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/proxy/inv_resource_utf16_malformed/mcp")
+        {
+            Content = new ByteArrayContent(Encoding.Unicode.GetBytes(payload)),
+        };
+        request.Content.Headers.TryAddWithoutValidation(
+            "Content-Type",
+            "application/json;charset=utf-16;");
+
+        var response = await _client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ProxyJsonCharsetUnsupported");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsDuplicateCharsetParameters_WithoutForwarding()
+    {
+        _store.Add(NewHandle("inv_resource_duplicate_charset", InvestigationState.Active, "pod-token"));
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\"," +
+            "\"params\":{\"uri\":\"heap://snapshot/heap-handle\"}}";
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/proxy/inv_resource_duplicate_charset/mcp")
+        {
+            Content = new ByteArrayContent(Encoding.Unicode.GetBytes(payload)),
+        };
+        request.Content.Headers.TryAddWithoutValidation(
+            "Content-Type",
+            "application/json;charset=utf-8;charset=utf-16");
+
+        var response = await _client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ProxyJsonCharsetUnsupported");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_AllowsStaticInvestigationGuideResourceRead()
+    {
+        _store.Add(NewHandle("inv_resource_guide", InvestigationState.Active, "pod-token"));
+        _upstream.NextResponse = _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("guide") };
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\"," +
+            "\"params\":{\"uri\":\"diag://guides/investigation\"}}";
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_resource_guide/mcp",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         _upstream.LastRequest.Should().NotBeNull();
@@ -668,6 +793,33 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await response.Content.ReadAsStringAsync()).Should().Contain("sensitive-parameter-read");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsMixedCaseRetentionPaths_WithoutSensitiveHeapScope()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "heap-only",
+                System.Collections.Immutable.ImmutableHashSet.Create(
+                    "orchestrator-attach",
+                    "heap-read")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_retention_scope", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_retention_scope/mcp",
+            new StringContent(
+                ToolCallPayload(
+                    "query_snapshot",
+                    "{\"handle\":\"heap-handle\",\"view\":\"RETENTION-PATHS\"}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("sensitive-heap-read");
         _upstream.LastRequest.Should().BeNull();
     }
 
@@ -877,7 +1029,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
 
         var payload = new string('x', 1025);
-        var response = await _client.PostAsync("/proxy/inv_exact_limit/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
+        var response = await _client.PostAsync("/proxy/inv_exact_limit/mcp", new StringContent(payload, Encoding.UTF8, "application/octet-stream"));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         (await response.Content.ReadAsStringAsync()).Should().Be("ok");
@@ -894,7 +1046,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
 
         var payload = new string('x', 1024);
-        var response = await _client.PostAsync("/proxy/inv_exact_aligned_limit/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
+        var response = await _client.PostAsync("/proxy/inv_exact_aligned_limit/mcp", new StringContent(payload, Encoding.UTF8, "application/octet-stream"));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         (await response.Content.ReadAsStringAsync()).Should().Be("ok");
