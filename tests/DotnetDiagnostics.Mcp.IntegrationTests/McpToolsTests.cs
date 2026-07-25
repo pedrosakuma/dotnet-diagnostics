@@ -1511,7 +1511,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
-    public async Task ExportInvestigationSummary_ReturnsHandleExpiredErrorForUnknownHandle()
+    public async Task ExportInvestigationSummary_LegacyRootWithoutExplicitEventpipe_ReturnsForbidden()
     {
         await using var client = await ConnectAsync();
 
@@ -1520,9 +1520,10 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             new Dictionary<string, object?> { ["handle"] = "DEADBEEFDEADBEEFDEAD" },
             cancellationToken: CancellationToken.None);
 
-        var envelope = DeserializeEnvelope(result);
-        envelope.Should().NotBeNull();
-        envelope!.Error!.Kind.Should().Be("HandleExpired");
+        result.IsError.Should().BeTrue();
+        var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().Single().Text;
+        text.Should().Contain("\"kind\":\"forbidden\"");
+        text.Should().Contain("eventpipe");
     }
 
     [Fact]

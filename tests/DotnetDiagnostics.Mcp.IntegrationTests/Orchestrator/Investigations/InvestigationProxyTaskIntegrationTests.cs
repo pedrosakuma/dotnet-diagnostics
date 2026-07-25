@@ -226,6 +226,7 @@ public sealed class InvestigationProxyTaskIntegrationTests
                     DateTimeOffset.UtcNow,
                     DateTimeOffset.UtcNow.AddMinutes(10),
                     OwnerBearerName: AuthorizedName,
+                    OwnerPrincipalKey: PrincipalOwnershipKey.ForOpaqueEntry("Auth:BearerTokens:0"),
                     InternalScopeDelegationKey: "task-proxy-delegation-key"));
                 services.RemoveAll<IInvestigationStore>();
                 services.AddSingleton<IInvestigationStore>(Store);

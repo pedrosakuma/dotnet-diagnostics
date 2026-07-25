@@ -245,6 +245,40 @@ public sealed class InvestigationProxyCallToolFilterTests
             "eventpipe");
     }
 
+    [Theory]
+    [InlineData("investigation-export", "eventpipe")]
+    [InlineData("eventpipe", "investigation-export")]
+    public async Task TaskAugmentedExport_MissingEitherScope_IsRejectedBeforePromotion(
+        string heldScope,
+        string missingScope)
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            heldScope));
+        fx.Binder.Bind("session-export-task-denied", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+        var request = Params("export_investigation_summary", new Dictionary<string, JsonElement>
+        {
+            ["handle"] = JsonSerializer.SerializeToElement("opaque-cpu-handle"),
+        });
+        request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        var promoterCalls = 0;
+
+        var result = await fx.Invoke(
+            request,
+            "session-export-task-denied",
+            taskPromoter: (_, _) =>
+            {
+                promoterCalls++;
+                throw new InvalidOperationException("Unauthorized exports must not be promoted.");
+            });
+
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain(missingScope);
+        promoterCalls.Should().Be(0);
+        fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
     [Fact]
     public async Task TaskAugmentedForwarding_RefusesExecution_WhenHandleClosesBeforeTaskStarts()
     {
@@ -343,12 +377,16 @@ public sealed class InvestigationProxyCallToolFilterTests
         fx.ProxyClient.CallCount.Should().Be(0);
     }
 
-    [Fact]
-    public async Task RejectsExport_BeforeForwarding_WhenInvestigationExportScopeIsMissing()
+    [Theory]
+    [InlineData("investigation-export", "eventpipe")]
+    [InlineData("eventpipe", "investigation-export")]
+    public async Task RejectsExport_BeforeForwarding_WhenEitherRequiredScopeIsMissing(
+        string heldScope,
+        string missingScope)
     {
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(
             "orchestrator-attach",
-            "eventpipe"));
+            heldScope));
         fx.Binder.Bind("session-export-denied", ActiveHandle.HandleId);
         fx.Store.Add(ActiveHandle);
 
@@ -360,21 +398,18 @@ public sealed class InvestigationProxyCallToolFilterTests
             "session-export-denied");
 
         result.IsError.Should().BeTrue();
-        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("investigation-export");
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain(missingScope);
         fx.ProxyClient.CallCount.Should().Be(0);
         fx.LocalInvocations.Should().Be(0);
     }
 
-    [Theory]
-    [InlineData("read-counters")]
-    [InlineData("eventpipe")]
-    [InlineData("ptrace")]
-    public async Task ForwardsExport_WithRequestBoundCallerEvidenceScope(string evidenceScope)
+    [Fact]
+    public async Task ForwardsExport_WithRequestBoundCallerEventPipeScope()
     {
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(
             "orchestrator-attach",
             "investigation-export",
-            evidenceScope));
+            "eventpipe"));
         fx.Binder.Bind("session-export-allowed", ActiveHandle.HandleId);
         fx.Store.Add(ActiveHandle);
 
@@ -398,7 +433,7 @@ public sealed class InvestigationProxyCallToolFilterTests
             out var failure).Should().BeTrue(failure);
         delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
             "investigation-export",
-            evidenceScope);
+            "eventpipe");
     }
 
     [Fact]
@@ -672,6 +707,44 @@ public sealed class InvestigationProxyCallToolFilterTests
 
         result.IsError.Should().NotBeTrue();
         fx.ProxyClient.CallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RejectsSameDisplayName_WhenOwnershipKeysDiffer()
+    {
+        const string displayName = "shared-display";
+        var fx = new Fixture(TestPrincipalAccessors.WithIdentity(
+            displayName,
+            PrincipalOwnershipKey.ForJwt(
+                "oidc",
+                "https://issuer-b.example.test",
+                "audience",
+                "client",
+                "subject"),
+            "orchestrator-attach",
+            "read-counters"));
+        fx.Binder.Bind("session-owner-collision", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle with
+        {
+            OwnerBearerName = displayName,
+            OwnerPrincipalKey = PrincipalOwnershipKey.ForJwt(
+                "oidc",
+                "https://issuer-a.example.test",
+                "audience",
+                "client",
+                "subject"),
+        });
+
+        var result = await fx.Invoke(
+            Params("collect_events", new Dictionary<string, JsonElement>
+            {
+                ["kind"] = JsonSerializer.SerializeToElement("counters"),
+            }),
+            "session-owner-collision");
+
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("different bearer identity");
+        fx.ProxyClient.CallCount.Should().Be(0);
     }
 
     [Fact]

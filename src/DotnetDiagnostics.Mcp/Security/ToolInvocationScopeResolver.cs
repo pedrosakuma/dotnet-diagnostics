@@ -29,6 +29,7 @@ internal static class ToolInvocationScopeResolver
 
     internal readonly record struct Requirements(
         ImmutableArray<string> AdditionalScopes,
+        ImmutableArray<string> ExplicitAdditionalScopes,
         ImmutableArray<string> ExplicitModifierScopes);
 
     internal static Requirements Resolve(
@@ -38,6 +39,7 @@ internal static class ToolInvocationScopeResolver
         ToolScopeResolutionPolicies? policies)
     {
         var additional = ImmutableArray.CreateBuilder<string>();
+        var explicitAdditional = ImmutableArray.CreateBuilder<string>();
         var modifiers = ImmutableArray.CreateBuilder<string>();
 
         switch (toolName)
@@ -89,9 +91,19 @@ internal static class ToolInvocationScopeResolver
                     Add(modifiers, SymbolsRemoteScope);
                 }
                 break;
+
+            case "export_investigation_summary":
+                // The currently supported canonical evidence is a CPU EventPipe
+                // sample. #693 extends this mapping when additional evidence
+                // families become part of the export contract.
+                Add(explicitAdditional, EventPipeScope);
+                break;
         }
 
-        return new Requirements(additional.ToImmutable(), modifiers.ToImmutable());
+        return new Requirements(
+            additional.ToImmutable(),
+            explicitAdditional.ToImmutable(),
+            modifiers.ToImmutable());
     }
 
     internal static string? GetCollectEventsKindScope(string? kind)
@@ -133,7 +145,7 @@ internal static class ToolInvocationScopeResolver
             : OrchestratorListScope;
 
     internal static ImmutableArray<string> GetInvestigationExportDelegationScopeCandidates()
-        => [ReadCountersScope, EventPipeScope, PtraceScope];
+        => [EventPipeScope];
 
     private static void ResolveCollectEvents(
         IDictionary<string, JsonElement>? arguments,

@@ -89,7 +89,17 @@ internal sealed class OidcJwtProvider
             return false;
         }
 
-        bearerPrincipal = new BearerPrincipal(ResolvePrincipalName(principal), scopes.ToImmutable());
+        var client = ResolveIdentityClaim(principal, "azp", "client_id", "appid") ?? "no-client";
+        var subject = ResolveIdentityClaim(
+                principal,
+                "sub",
+                ClaimTypes.NameIdentifier,
+                "oid")
+            ?? client;
+        bearerPrincipal = new BearerPrincipal(
+            ResolvePrincipalName(principal),
+            scopes.ToImmutable(),
+            PrincipalOwnershipKey.ForJwt(SchemeName, Issuer, Audience, client, subject));
         failureMessage = null;
         return true;
     }
@@ -154,6 +164,22 @@ internal sealed class OidcJwtProvider
         }
 
         return "oidc-jwt";
+    }
+
+    private static string? ResolveIdentityClaim(
+        ClaimsPrincipal principal,
+        params string[] claimTypes)
+    {
+        foreach (var claimType in claimTypes)
+        {
+            var claim = principal.FindFirst(claimType);
+            if (claim is not null && !string.IsNullOrWhiteSpace(claim.Value))
+            {
+                return claim.Value.Trim();
+            }
+        }
+
+        return null;
     }
 
     internal sealed record RequiredClaimRule(string ClaimType, ImmutableHashSet<string> AllowedValues);

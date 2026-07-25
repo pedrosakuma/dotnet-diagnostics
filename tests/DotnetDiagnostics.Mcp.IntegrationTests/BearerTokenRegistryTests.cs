@@ -40,6 +40,7 @@ public sealed class BearerTokenRegistryTests
         var viewer = registry.TryResolve("tok-aaa");
         viewer.Should().NotBeNull();
         viewer!.Name.Should().Be("ops-viewer");
+        viewer.OwnershipKey.Should().Be(PrincipalOwnershipKey.ForOpaqueEntry("Auth:BearerTokens:0"));
         viewer.Scopes.Should().BeEquivalentTo(new[] { "read-counters", "eventpipe" });
         viewer.HasScope("read-counters").Should().BeTrue();
         viewer.HasScope("dump-write").Should().BeFalse();
@@ -47,6 +48,29 @@ public sealed class BearerTokenRegistryTests
         var admin = registry.TryResolve("tok-bbb");
         admin.Should().NotBeNull();
         admin!.HasScope("anything").Should().BeTrue("root is a wildcard scope");
+    }
+
+    [Fact]
+    public void Build_OpaqueAndJwtPrincipalsWithSameDisplayName_HaveDifferentOwnershipKeys()
+    {
+        using var env = EnvScope.Clear("MCP_BEARER_TOKEN");
+        var config = ConfigFrom(new()
+        {
+            ["Auth:BearerTokens:0:Name"] = "shared-display",
+            ["Auth:BearerTokens:0:Token"] = "opaque-token",
+            ["Auth:BearerTokens:0:Scopes:0"] = "orchestrator-attach",
+        });
+        var opaque = BearerTokenRegistry.Build(config, NullLogger.Instance, true)
+            .TryResolve("opaque-token")!;
+        var jwtKey = PrincipalOwnershipKey.ForJwt(
+            "oidc",
+            "https://issuer.example.test",
+            "dotnet-diagnostics",
+            "client",
+            "subject");
+
+        opaque.Name.Should().Be("shared-display");
+        opaque.OwnershipKey.Should().NotBe(jwtKey);
     }
 
     [Fact]

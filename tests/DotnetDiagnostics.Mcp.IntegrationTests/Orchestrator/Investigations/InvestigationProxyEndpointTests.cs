@@ -524,6 +524,122 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Proxy_RejectsCrossIssuerCaller_WithSameDisplayNameAndSubject()
+    {
+        const string displayName = "shared-name";
+        var ownerKey = PrincipalOwnershipKey.ForJwt(
+            "oidc",
+            "https://issuer-a.example.test",
+            "dotnet-diagnostics",
+            "client",
+            "subject");
+        var caller = new BearerPrincipal(
+            displayName,
+            System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach"),
+            PrincipalOwnershipKey.ForJwt(
+                "oidc",
+                "https://issuer-b.example.test",
+                "dotnet-diagnostics",
+                "client",
+                "subject"));
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(caller, allowCrossSessionAdmin: false);
+        _store.Add(NewHandleOwned("inv_cross_issuer", displayName, "pod-token", ownerKey));
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_cross_issuer/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsJwtCaller_WhenOpaqueOwnerHasSameDisplayName()
+    {
+        const string displayName = "shared-name";
+        var caller = new BearerPrincipal(
+            displayName,
+            System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach"),
+            PrincipalOwnershipKey.ForJwt(
+                "oidc",
+                "https://issuer.example.test",
+                "dotnet-diagnostics",
+                "client",
+                "subject"));
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(caller, allowCrossSessionAdmin: false);
+        _store.Add(NewHandleOwned(
+            "inv_opaque_jwt",
+            displayName,
+            "pod-token",
+            PrincipalOwnershipKey.ForOpaqueEntry(displayName)));
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_opaque_jwt/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_AllowsSameStableJwtIdentity()
+    {
+        const string displayName = "renamable-display";
+        var ownershipKey = PrincipalOwnershipKey.ForJwt(
+            "oidc",
+            "https://issuer.example.test/",
+            "dotnet-diagnostics",
+            "client",
+            "subject");
+        var caller = new BearerPrincipal(
+            "different-current-display",
+            System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach"),
+            PrincipalOwnershipKey.ForJwt(
+                "oidc",
+                "https://issuer.example.test",
+                "dotnet-diagnostics",
+                "client",
+                "subject"));
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(caller, allowCrossSessionAdmin: false);
+        _store.Add(NewHandleOwned("inv_same_identity", displayName, "pod-token", ownershipKey));
+        _upstream.NextResponse = _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_same_identity/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        _upstream.LastRequest.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_LegacyDisplayOwner_DoesNotMatchByName()
+    {
+        const string displayName = "legacy-owner";
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                displayName,
+                System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach")),
+            allowCrossSessionAdmin: false);
+        _store.Add(NewHandle("inv_legacy_owner", InvestigationState.Active, "pod-token") with
+        {
+            OwnerBearerName = displayName,
+        });
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_legacy_owner/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Proxy_RejectsDisallowedPath_WithStructured404()
     {
         // H7: any path under /proxy/{handleId}/ that isn't /mcp[...] is rejected
@@ -855,8 +971,12 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.LastRequest.Should().BeNull();
     }
 
-    [Fact]
-    public async Task Proxy_RejectsExport_WhenInvestigationExportScopeIsMissing()
+    [Theory]
+    [InlineData("investigation-export", "eventpipe")]
+    [InlineData("eventpipe", "investigation-export")]
+    public async Task Proxy_RejectsExport_WhenEitherRequiredScopeIsMissing(
+        string heldScope,
+        string missingScope)
     {
         await DisposeAsync();
         await InitializeWithPrincipalAsync(
@@ -864,7 +984,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                 "cpu-only",
                 System.Collections.Immutable.ImmutableHashSet.Create(
                     "orchestrator-attach",
-                    "eventpipe")),
+                    heldScope)),
             allowCrossSessionAdmin: false);
 
         _store.Add(NewHandle("inv_export_denied", InvestigationState.Active, "pod-token"));
@@ -878,16 +998,12 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                 "application/json"));
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        (await response.Content.ReadAsStringAsync()).Should().Contain("investigation-export");
+        (await response.Content.ReadAsStringAsync()).Should().Contain(missingScope);
         _upstream.LastRequest.Should().BeNull();
     }
 
-    [Theory]
-    [InlineData("read-counters")]
-    [InlineData("eventpipe")]
-    [InlineData("ptrace")]
-    public async Task Proxy_DelegatesCallerEvidenceScope_ForOpaqueExportHandle(
-        string evidenceScope)
+    [Fact]
+    public async Task Proxy_DelegatesCallerEventPipeScope_ForCpuExportHandle()
     {
         await DisposeAsync();
         var principal = new BearerPrincipal(
@@ -895,7 +1011,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             System.Collections.Immutable.ImmutableHashSet.Create(
                 "orchestrator-attach",
                 "investigation-export",
-                evidenceScope));
+                "eventpipe"));
         await InitializeWithPrincipalAsync(principal, allowCrossSessionAdmin: false);
         var handle = NewHandle("inv_export_allowed", InvestigationState.Active, "pod-token");
         _store.Add(handle);
@@ -926,7 +1042,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             out var failure).Should().BeTrue(failure);
         delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
             "investigation-export",
-            evidenceScope);
+            "eventpipe");
     }
 
     [Fact]
@@ -1269,7 +1385,11 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         => "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"" +
            toolName + "\",\"arguments\":" + arguments + "}}";
 
-    private static InvestigationHandle NewHandleOwned(string id, string ownerBearerName, string podToken) => new(
+    private static InvestigationHandle NewHandleOwned(
+        string id,
+        string ownerBearerName,
+        string podToken,
+        string? ownerPrincipalKey = null) => new(
         HandleId: id,
         Namespace: "ns",
         PodName: "pod",
@@ -1280,6 +1400,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5),
         OwnerBearerName: ownerBearerName,
+        OwnerPrincipalKey: ownerPrincipalKey ?? PrincipalOwnershipKey.ForSynthetic(ownerBearerName),
         InternalScopeDelegationKey: "test-delegation-key");
 
     private sealed class StubInvestigationStore : IInvestigationStore

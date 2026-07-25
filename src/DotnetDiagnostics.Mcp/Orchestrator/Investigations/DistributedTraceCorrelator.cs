@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Core.DistributedTrace;
+using DotnetDiagnostics.Mcp.Security;
 using DotnetDiagnostics.Mcp.Tools;
 using ModelContextProtocol.Protocol;
 
@@ -37,7 +38,7 @@ internal static class DistributedTraceCorrelator
     internal static async Task<FanoutResult> CorrelateAsync(
         IInvestigationStore store,
         IInvestigationProxyClient proxy,
-        string? callerBearerName,
+        BearerPrincipal? callerPrincipal,
         IReadOnlyList<string>? investigationHandleIds,
         string traceId,
         int durationSeconds,
@@ -49,7 +50,7 @@ internal static class DistributedTraceCorrelator
         ArgumentNullException.ThrowIfNull(proxy);
 
         var errors = new List<string>();
-        var handles = ResolveHandles(store, callerBearerName, investigationHandleIds, errors);
+        var handles = ResolveHandles(store, callerPrincipal, investigationHandleIds, errors);
         var captures = new List<(string PodName, ActivityCapture Capture)>(handles.Length);
 
         var arguments = BuildActivitiesArguments(durationSeconds, maxActivities, sources);
@@ -178,28 +179,16 @@ internal static class DistributedTraceCorrelator
         return capture;
     }
 
-    private static bool IsOwnedByCaller(InvestigationHandle handle, string? callerBearerName)
-    {
-        // Mirrors OrchestratorTools.IsOwnedByCaller: un-owned handles (stdio / framework attaches)
-        // are reachable by every caller; bearer-authenticated attaches are isolated per bearer.
-        if (handle.OwnerBearerName is null)
-        {
-            return true;
-        }
-
-        return string.Equals(handle.OwnerBearerName, callerBearerName, StringComparison.Ordinal);
-    }
-
     private static InvestigationHandle[] ResolveHandles(
         IInvestigationStore store,
-        string? callerBearerName,
+        BearerPrincipal? callerPrincipal,
         IReadOnlyList<string>? investigationHandleIds,
         List<string> errors)
     {
         if (investigationHandleIds is null)
         {
             return store.Snapshot()
-                .Where(h => h.State == InvestigationState.Active && IsOwnedByCaller(h, callerBearerName))
+                .Where(h => h.State == InvestigationState.Active && InvestigationOwnership.IsOwnedBy(h, callerPrincipal))
                 .ToArray();
         }
 
@@ -224,7 +213,7 @@ internal static class DistributedTraceCorrelator
                 continue;
             }
 
-            if (!IsOwnedByCaller(handle, callerBearerName))
+            if (!InvestigationOwnership.IsOwnedBy(handle, callerPrincipal))
             {
                 errors.Add($"Handle '{handleId}' is owned by a different bearer identity.");
                 continue;

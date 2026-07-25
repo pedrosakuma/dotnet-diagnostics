@@ -196,7 +196,8 @@ public sealed class OrchestratorTools
             TtlSeconds: ttlSeconds,
             RequirePreparedTarget: requirePreparedTarget,
             AllowReuseExistingSession: allowReuseExistingSession,
-            OwnerBearerName: principalAccessor.Current?.Name);
+            OwnerBearerName: principalAccessor.Current?.Name,
+            OwnerPrincipalKey: principalAccessor.Current?.OwnershipKey);
 
         InvestigationHandle handle;
         try
@@ -352,7 +353,6 @@ public sealed class OrchestratorTools
         _ = cancellationToken; // Close pipeline is best-effort and must finish even if the caller bailed.
 
         var sessionId = TryGetServerSessionId(server);
-        var callerBearerName = principalAccessor.Current?.Name;
         var resolvedHandleId = handleId;
         if (string.IsNullOrWhiteSpace(resolvedHandleId))
         {
@@ -388,8 +388,7 @@ public sealed class OrchestratorTools
         var adminBypass = OrchestratorAdminBypassPolicy.IsBypassAllowed(principalAccessor.Current, options, bypassLogger);
         var existing = store.GetById(resolvedHandleId);
         if (existing is not null &&
-            existing.OwnerBearerName is not null &&
-            !string.Equals(existing.OwnerBearerName, callerBearerName, StringComparison.Ordinal) &&
+            !InvestigationOwnership.IsOwnedBy(existing, principalAccessor.Current) &&
             !adminBypass)
         {
             observability.RecordDetach(principalAccessor.Current, resolvedHandleId, "manual", "failure");
@@ -463,14 +462,13 @@ public sealed class OrchestratorTools
 
         var snapshot = store.Snapshot();
 
-        // Determine the caller's bearer identity once. Handles
+        // Determine the caller's stable bearer identity once. Handles
         // owned by other bearers are filtered out below unless the admin
-        // escape hatch is active. A null bearer name (stdio / unit test) is
-        // treated as "system caller" and matches only handles that were minted
-        // without an owner (OwnerBearerName == null) — those are exactly the
+        // escape hatch is active. A null principal (stdio / unit test) matches
+        // only handles that were minted without either owner field — those are
         // handles created on the same un-scoped transport, so the secure
         // behavior degrades sensibly.
-        var callerBearerName = principalAccessor.Current?.Name;
+        var callerPrincipal = principalAccessor.Current;
         // B5.2 (docs/authorization.md#scopes) + B5.3 (issue #184): admin listing requires EITHER the legacy
         // AllowCrossSessionAdmin deployment flag OR the per-bearer 'orchestrator-admin'
         // modifier scope. Both are operator-grade. The shared policy helper logs a one-shot
@@ -488,7 +486,7 @@ public sealed class OrchestratorTools
         int visibleTotal = 0;
         foreach (var h in snapshot)
         {
-            if (!adminListing && !IsOwnedByCaller(h, callerBearerName)) continue;
+            if (!adminListing && !InvestigationOwnership.IsOwnedBy(h, callerPrincipal)) continue;
             visibleTotal++;
             switch (h.State)
             {
@@ -506,7 +504,7 @@ public sealed class OrchestratorTools
         foreach (var h in snapshot)
         {
             if (!includeTerminal && IsTerminalState(h.State)) continue;
-            if (!adminListing && !IsOwnedByCaller(h, callerBearerName))
+            if (!adminListing && !InvestigationOwnership.IsOwnedBy(h, callerPrincipal))
             {
                 redactedCount++;
                 continue;
@@ -557,18 +555,6 @@ public sealed class OrchestratorTools
                 items.Count == 0
                     ? "Call attach_to_pod to open a new investigation."
                     : "Pass an item's handleId to detach_from_pod to close it explicitly, or wait for the TTL reaper.")));
-    }
-
-    private static bool IsOwnedByCaller(InvestigationHandle handle, string? callerBearerName)
-    {
-        // Handles minted without an owner (stdio attach, framework calls that had
-        // no session id) are reachable by every authenticated caller — this is
-        // intentional to preserve dev-time stdio ergonomics, where there is only
-        // ever one human driving the orchestrator. In HTTP deployments every
-        // attach happens through a bearer-authenticated transport, so the owner is
-        // always populated and per-bearer isolation applies.
-        if (handle.OwnerBearerName is null) return true;
-        return string.Equals(handle.OwnerBearerName, callerBearerName, StringComparison.Ordinal);
     }
 
     private static bool IsTerminalState(InvestigationState state)

@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.ReplicaCounters;
+using DotnetDiagnostics.Mcp.Security;
 using DotnetDiagnostics.Mcp.Tools;
 using ModelContextProtocol.Protocol;
 
@@ -39,7 +40,7 @@ internal static class ReplicaCounterFanout
     internal static async Task<FanoutResult> CompareAsync(
         IInvestigationStore store,
         IInvestigationProxyClient proxy,
-        string? callerBearerName,
+        BearerPrincipal? callerPrincipal,
         IReadOnlyList<string>? investigationHandleIds,
         int durationSeconds,
         int intervalSeconds,
@@ -49,7 +50,7 @@ internal static class ReplicaCounterFanout
         ArgumentNullException.ThrowIfNull(proxy);
 
         var errors = new List<string>();
-        var handles = ResolveHandles(store, callerBearerName, investigationHandleIds, errors);
+        var handles = ResolveHandles(store, callerPrincipal, investigationHandleIds, errors);
         var readings = new List<ReplicaCounterReading>(handles.Length);
         var arguments = BuildCountersArguments(durationSeconds, intervalSeconds);
 
@@ -172,26 +173,16 @@ internal static class ReplicaCounterFanout
         return snapshot;
     }
 
-    private static bool IsOwnedByCaller(InvestigationHandle handle, string? callerBearerName)
-    {
-        if (handle.OwnerBearerName is null)
-        {
-            return true;
-        }
-
-        return string.Equals(handle.OwnerBearerName, callerBearerName, StringComparison.Ordinal);
-    }
-
     private static InvestigationHandle[] ResolveHandles(
         IInvestigationStore store,
-        string? callerBearerName,
+        BearerPrincipal? callerPrincipal,
         IReadOnlyList<string>? investigationHandleIds,
         List<string> errors)
     {
         if (investigationHandleIds is null)
         {
             return store.Snapshot()
-                .Where(h => h.State == InvestigationState.Active && IsOwnedByCaller(h, callerBearerName))
+                .Where(h => h.State == InvestigationState.Active && InvestigationOwnership.IsOwnedBy(h, callerPrincipal))
                 .ToArray();
         }
 
@@ -216,7 +207,7 @@ internal static class ReplicaCounterFanout
                 continue;
             }
 
-            if (!IsOwnedByCaller(handle, callerBearerName))
+            if (!InvestigationOwnership.IsOwnedBy(handle, callerPrincipal))
             {
                 errors.Add($"Handle '{handleId}' is owned by a different bearer identity.");
                 continue;

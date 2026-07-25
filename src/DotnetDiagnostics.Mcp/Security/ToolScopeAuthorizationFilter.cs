@@ -278,6 +278,7 @@ internal static class ToolScopeAuthorizationFilter
         var presentedList = FormatPrincipalScopes(principal);
         var semantics = authorization.Primary.IsAny &&
             authorization.AdditionalScopes.IsDefaultOrEmpty &&
+            authorization.ExplicitAdditionalScopes.IsDefaultOrEmpty &&
             authorization.ModifierScopes.IsDefaultOrEmpty
             ? "any"
             : "all";
@@ -309,7 +310,10 @@ internal static class ToolScopeAuthorizationFilter
                 ["required_scopes"] = new System.Text.Json.Nodes.JsonArray(
                     authorization.RequiredScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
                 ["argument_scopes"] = new System.Text.Json.Nodes.JsonArray(
-                    authorization.AdditionalScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
+                    authorization.AdditionalScopes
+                        .AddRange(authorization.ExplicitAdditionalScopes)
+                        .Select(s => (System.Text.Json.Nodes.JsonNode?)s)
+                        .ToArray()),
                 ["modifier_scopes"] = new System.Text.Json.Nodes.JsonArray(
                     authorization.ModifierScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
                 ["principal_scopes"] = new System.Text.Json.Nodes.JsonArray(
