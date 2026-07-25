@@ -369,6 +369,75 @@ public sealed class ToolScopeDelegationTests
             .Should().BeEquivalentTo("heap-read", "sensitive-heap-read");
     }
 
+    [Fact]
+    public void ExportSummary_Delegates_Only_CallerPresentedEvidenceScopes()
+    {
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var arguments = Arguments(new { handle = "opaque" });
+        var caller = Principal(
+            "investigation-export",
+            "eventpipe",
+            "ptrace",
+            "symbols-remote");
+        var authorization = registry.Authorize(
+            "export_investigation_summary",
+            arguments,
+            caller,
+            proxyInvocation: true,
+            policies: StrictPolicies);
+        authorization.IsAllowed.Should().BeTrue();
+
+        ToolScopeDelegation.GetDelegatedScopes(
+                "export_investigation_summary",
+                authorization,
+                caller)
+            .Should().BeEquivalentTo("investigation-export", "eventpipe", "ptrace");
+    }
+
+    [Fact]
+    public void ExportSummary_DoesNotSynthesizeMissingEvidenceScopes()
+    {
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var arguments = Arguments(new { handle = "opaque" });
+        var caller = Principal("investigation-export");
+        var authorization = registry.Authorize(
+            "export_investigation_summary",
+            arguments,
+            caller,
+            proxyInvocation: true,
+            policies: StrictPolicies);
+        authorization.IsAllowed.Should().BeTrue();
+
+        ToolScopeDelegation.GetDelegatedScopes(
+                "export_investigation_summary",
+                authorization,
+                caller)
+            .Should().BeEquivalentTo("investigation-export");
+    }
+
+    [Theory]
+    [InlineData(BearerPrincipal.RootScope)]
+    [InlineData(BearerPrincipal.RootScopeAlt)]
+    public void ExportSummary_WildcardCaller_DoesNotSynthesizeEvidenceScopes(string wildcard)
+    {
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var arguments = Arguments(new { handle = "opaque" });
+        var caller = Principal(wildcard);
+        var authorization = registry.Authorize(
+            "export_investigation_summary",
+            arguments,
+            caller,
+            proxyInvocation: true,
+            policies: StrictPolicies);
+        authorization.IsAllowed.Should().BeTrue();
+
+        ToolScopeDelegation.GetDelegatedScopes(
+                "export_investigation_summary",
+                authorization,
+                caller)
+            .Should().BeEquivalentTo("investigation-export");
+    }
+
     private static (ToolScopeRegistry Registry, CallToolRequestParams Delegated)
         CreateMethodParameterDelegation(TimeProvider? timeProvider = null)
     {

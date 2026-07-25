@@ -203,6 +203,49 @@ public sealed class InvestigationProxyCallToolFilterTests
     }
 
     [Fact]
+    public async Task TaskAugmentedExportForwarding_DelegatesCallerEvidenceScopes()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "investigation-export",
+            "read-counters"));
+        fx.Binder.Bind("session-export-task", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+        var request = Params("export_investigation_summary", new Dictionary<string, JsonElement>
+        {
+            ["handle"] = JsonSerializer.SerializeToElement("opaque-counter-handle"),
+        });
+        request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        var promoterCalls = 0;
+
+        var result = await fx.Invoke(
+            request,
+            "session-export-task",
+            taskPromoter: async (forward, ct) =>
+            {
+                Interlocked.Increment(ref promoterCalls);
+                return await forward(ct);
+            });
+
+        result.IsError.Should().NotBe(true);
+        promoterCalls.Should().Be(1);
+        fx.ProxyClient.CallCount.Should().Be(1);
+        fx.ProxyClient.LastRequest!.Task.Should().BeNull();
+        fx.LocalInvocations.Should().Be(0);
+        ToolScopeDelegation.TryConsume(
+            fx.ProxyClient.LastRequest,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            ActiveHandle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
+            "investigation-export",
+            "read-counters");
+    }
+
+    [Fact]
     public async Task TaskAugmentedForwarding_RefusesExecution_WhenHandleClosesBeforeTaskStarts()
     {
         var fx = new Fixture();
@@ -298,6 +341,100 @@ public sealed class InvestigationProxyCallToolFilterTests
         result.IsError.Should().BeTrue();
         result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("ptrace");
         fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RejectsExport_BeforeForwarding_WhenInvestigationExportScopeIsMissing()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "read-counters"));
+        fx.Binder.Bind("session-export-denied", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(
+            Params("export_investigation_summary", new Dictionary<string, JsonElement>
+            {
+                ["handle"] = JsonSerializer.SerializeToElement("opaque-counter-handle"),
+            }),
+            "session-export-denied");
+
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("investigation-export");
+        fx.ProxyClient.CallCount.Should().Be(0);
+        fx.LocalInvocations.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("read-counters")]
+    [InlineData("eventpipe")]
+    [InlineData("ptrace")]
+    public async Task ForwardsExport_WithRequestBoundCallerEvidenceScope(string evidenceScope)
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "investigation-export",
+            evidenceScope));
+        fx.Binder.Bind("session-export-allowed", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(
+            Params("export_investigation_summary", new Dictionary<string, JsonElement>
+            {
+                ["handle"] = JsonSerializer.SerializeToElement("opaque-evidence-handle"),
+            }),
+            "session-export-allowed");
+
+        result.IsError.Should().BeNull();
+        fx.ProxyClient.CallCount.Should().Be(1);
+        fx.LocalInvocations.Should().Be(0);
+        ToolScopeDelegation.TryConsume(
+            fx.ProxyClient.LastRequest!,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            ActiveHandle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
+            "investigation-export",
+            evidenceScope);
+    }
+
+    [Fact]
+    public async Task ForwardsExport_WithExplicitInvestigationHandleId_WithoutLocalExecution()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "investigation-export",
+            "read-counters"));
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(
+            Params("export_investigation_summary", new Dictionary<string, JsonElement>
+            {
+                ["handle"] = JsonSerializer.SerializeToElement("opaque-counter-handle"),
+                [InvestigationRoutingArguments.InvestigationHandleIdArgument] =
+                    JsonSerializer.SerializeToElement(ActiveHandle.HandleId),
+            }),
+            sessionId: null);
+
+        result.IsError.Should().BeNull();
+        fx.ProxyClient.CallCount.Should().Be(1);
+        fx.LocalInvocations.Should().Be(0);
+        fx.ProxyClient.LastRequest!.Arguments.Should()
+            .NotContainKey(InvestigationRoutingArguments.InvestigationHandleIdArgument);
+        ToolScopeDelegation.TryConsume(
+            fx.ProxyClient.LastRequest,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            ActiveHandle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
+            "investigation-export",
+            "read-counters");
     }
 
     [Fact]
