@@ -544,6 +544,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\"},\"task\":1}}")]
     [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\",\"params\":{\"uri\":\"diag://guides/investigation\",\"URI\":\"heap://snapshot/heap-handle\"}}")]
     [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"Method\":\"resources/read\",\"Params\":{\"Uri\":\"heap://snapshot/heap-handle\"}}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"Arguments\":{\"kind\":\"counters\"}}}")]
     [InlineData("not-json")]
     public async Task Proxy_RejectsMalformedOrDuplicateJson_WithoutForwarding(string payload)
     {
