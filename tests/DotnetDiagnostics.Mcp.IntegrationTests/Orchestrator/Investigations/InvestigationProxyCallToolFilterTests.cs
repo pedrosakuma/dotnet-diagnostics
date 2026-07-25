@@ -3,8 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Mcp.Hosting;
 using DotnetDiagnostics.Mcp.IntegrationTests;
 using DotnetDiagnostics.Mcp.Observability;
 using DotnetDiagnostics.Mcp.Orchestrator;
@@ -36,7 +39,8 @@ public sealed class InvestigationProxyCallToolFilterTests
         PodLocalBearerToken: "pod-bearer",
         State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
-        ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30));
+        ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
+        InternalScopeDelegationKey: "test-delegation-key");
 
     private static readonly InvestigationHandle FailedHandle = ActiveHandle with { HandleId = "inv-failed", State = InvestigationState.Failed };
 
@@ -144,12 +148,19 @@ public sealed class InvestigationProxyCallToolFilterTests
         {
             ["kind"] = JsonSerializer.SerializeToElement("counters"),
         });
+        p.Meta = new JsonObject { ["progressToken"] = "progress-707" };
+        p.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromSeconds(30) };
         var result = await fx.Invoke(p, sessionId: "session-ok");
 
         result.Should().BeSameAs(upstream);
         fx.ProxyClient.CallCount.Should().Be(1);
         fx.ProxyClient.LastHandle.Should().BeSameAs(ActiveHandle);
-        fx.ProxyClient.LastRequest.Should().BeSameAs(p);
+        fx.ProxyClient.LastRequest.Should().NotBeSameAs(p);
+        fx.ProxyClient.LastRequest!.Meta.Should().BeSameAs(p.Meta);
+        fx.ProxyClient.LastRequest.ProgressToken!.Value.Token.Should().Be("progress-707");
+        fx.ProxyClient.LastRequest!.Task.Should().BeSameAs(p.Task);
+        fx.ProxyClient.LastRequest!.Arguments.Should().ContainKey(ToolScopeDelegation.ArgumentName);
+        p.Arguments.Should().NotContainKey(ToolScopeDelegation.ArgumentName);
         fx.LocalInvocations.Should().Be(0);
     }
 
@@ -242,6 +253,87 @@ public sealed class InvestigationProxyCallToolFilterTests
         result.IsError.Should().BeTrue();
         result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("sensitive-parameter-read");
         fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("collect_sample", "kind", "method-params", "eventpipe", "sensitive-parameter-read")]
+    [InlineData("get_bytes", "kind", "delete", "module-bytes-read", "delete-artifact")]
+    public async Task Forwards_ModifierGatedCall_With_RequestBound_Exact_Delegation(
+        string toolName,
+        string argumentName,
+        string argumentValue,
+        string primaryScope,
+        string modifierScope)
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            primaryScope,
+            modifierScope));
+        fx.Binder.Bind("session-modifier", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(
+            Params(toolName, new Dictionary<string, JsonElement>
+            {
+                [argumentName] = JsonSerializer.SerializeToElement(argumentValue),
+            }),
+            "session-modifier");
+
+        result.IsError.Should().BeNull();
+        fx.ProxyClient.CallCount.Should().Be(1);
+        var delegatedArguments = fx.ProxyClient.LastRequest!.Arguments!;
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        ToolScopeDelegation.TryConsume(
+            toolName,
+            delegatedArguments,
+            registry,
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            ActiveHandle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo(primaryScope, modifierScope);
+    }
+
+    [Theory]
+    [InlineData(
+        "collect_sample",
+        "eventpipe",
+        "{\"kind\":\"cpu\",\"symbolPath\":\"srv*/symbols*https://symbols.example.test\"}")]
+    [InlineData(
+        "collect_events",
+        "eventpipe",
+        "{\"kind\":\"event_source\",\"providerName\":\"Custom.Provider\",\"unsafeProvider\":true}")]
+    public async Task Policy_Alternative_Allows_Investigation_Proxy(
+        string toolName,
+        string primaryScope,
+        string argumentsJson)
+    {
+        var security = new SecurityOptions
+        {
+            SymbolServerAllowlist = ["symbols.example.test"],
+            EventSourceAllowlist = ["Custom.Provider"],
+        };
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes("orchestrator-attach", primaryScope))
+        {
+            Policies = new ToolScopeResolutionPolicies(
+                new SymbolServerAllowlist(security),
+                new EventSourceAllowlist(security),
+                new SensitiveValueGate(security),
+                new OrchestratorOptions()),
+        };
+        fx.Binder.Bind("session-policy", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(
+            Params(
+                toolName,
+                JsonDocument.Parse(argumentsJson).RootElement.EnumerateObject()
+                    .ToDictionary(static property => property.Name, static property => property.Value, StringComparer.Ordinal)),
+            "session-policy");
+
+        result.IsError.Should().BeNull();
+        fx.ProxyClient.CallCount.Should().Be(1);
     }
 
     [Fact]
@@ -559,6 +651,7 @@ public sealed class InvestigationProxyCallToolFilterTests
         public FakeProxyClient ProxyClient { get; } = new();
         public IPrincipalAccessor PrincipalAccessor { get; }
         public OrchestratorOptions Options { get; } = new();
+        public ToolScopeResolutionPolicies? Policies { get; set; }
         public OrchestratorObservability Observability { get; }
         public int LocalInvocations;
         public CallToolRequestParams? LastLocalRequest;
@@ -595,7 +688,8 @@ public sealed class InvestigationProxyCallToolFilterTests
                 PrincipalAccessor,
                 Observability,
                 loggerAccessor: () => null,
-                cancellationToken: token);
+                cancellationToken: token,
+                policies: Policies);
         }
     }
 

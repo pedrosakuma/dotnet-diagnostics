@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 using System.Text.Json;
+using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Security;
 using FluentAssertions;
 using ModelContextProtocol.Server;
@@ -309,9 +311,88 @@ public sealed class ToolScopeAttributesTests
             },
         };
 
+    [Fact]
+    public void Allowlisted_Symbol_Host_Is_A_Policy_Alternative_On_Local_And_Proxy_Paths()
+    {
+        var registry = ToolScopeRegistry.Build(
+            DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable);
+        var options = new SecurityOptions
+        {
+            SymbolServerAllowlist = ["symbols.example.test"],
+        };
+        var policies = Policies(options);
+        var arguments = Arguments(new
+        {
+            kind = "cpu",
+            symbolPath = "srv*/symbols*https://symbols.example.test",
+        });
+        var principal = new BearerPrincipal("caller", ImmutableHashSet.Create("eventpipe"));
+
+        registry.Authorize("collect_sample", arguments, principal, policies: policies)
+            .IsAllowed.Should().BeTrue();
+        registry.Authorize("collect_sample", arguments, principal, proxyInvocation: true, policies: policies)
+            .IsAllowed.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("System.Runtime", false)]
+    [InlineData("Configured.Custom.Provider", false)]
+    [InlineData("Unlisted.Custom.Provider", true)]
+    public void EventSource_Policy_Alternatives_Are_Identical_On_Local_And_Proxy_Paths(
+        string providerName,
+        bool serverGate)
+    {
+        var registry = ToolScopeRegistry.Build(
+            DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable);
+        var options = new SecurityOptions
+        {
+            AllowSensitiveHeapValues = serverGate,
+            EventSourceAllowlist = ["Configured.Custom.Provider"],
+        };
+        var policies = Policies(options);
+        var arguments = Arguments(new
+        {
+            kind = "event_source",
+            providerName,
+            unsafeProvider = true,
+        });
+        var principal = new BearerPrincipal("caller", ImmutableHashSet.Create("eventpipe"));
+
+        registry.Authorize("collect_events", arguments, principal, policies: policies)
+            .IsAllowed.Should().BeTrue();
+        registry.Authorize("collect_events", arguments, principal, proxyInvocation: true, policies: policies)
+            .IsAllowed.Should().BeTrue();
+    }
+
+    [Fact]
+    public void AllowCrossSessionAdmin_Is_A_Policy_Alternative()
+    {
+        var registry = ToolScopeRegistry.Build(
+            [typeof(DotnetDiagnostics.Mcp.Tools.ListOrchestratorTool)]);
+        var policies = Policies(
+            new SecurityOptions(),
+            new OrchestratorOptions { AllowCrossSessionAdmin = true });
+        var arguments = Arguments(new { kind = "investigations", includeAllSessions = true });
+        var principal = new BearerPrincipal(
+            "caller",
+            ImmutableHashSet.Create("orchestrator-attach"));
+
+        registry.Authorize("list_orchestrator", arguments, principal, policies: policies)
+            .IsAllowed.Should().BeTrue();
+    }
+
     private static IDictionary<string, JsonElement> Arguments<T>(T value)
         => JsonSerializer.SerializeToElement(value).EnumerateObject()
             .ToDictionary(static property => property.Name, static property => property.Value, StringComparer.Ordinal);
+
+    private static ToolScopeResolutionPolicies Policies(
+        SecurityOptions options,
+        OrchestratorOptions? orchestratorOptions = null)
+        => new(
+            new SymbolServerAllowlist(options),
+            new EventSourceAllowlist(options),
+            new SensitiveValueGate(options),
+            orchestratorOptions ?? new OrchestratorOptions());
 
 
     // --- fixtures -----------------------------------------------------------------

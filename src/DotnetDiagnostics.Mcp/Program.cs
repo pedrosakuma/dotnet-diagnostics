@@ -51,6 +51,7 @@ builder.Services.AddAzureDiscoveryServices(builder.Configuration);
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<DotnetDiagnostics.Mcp.Security.IPrincipalAccessor,
     DotnetDiagnostics.Mcp.Security.HttpContextPrincipalAccessor>();
+builder.Services.AddSingleton<DotnetDiagnostics.Mcp.Security.ToolScopeDelegationKeyProvider>();
 
 // M5 (issue #164): per-IP fixed-window rate limit applied to /mcp and the proxy
 // endpoints. Budget defaults come from OrchestratorOptions but the policy is

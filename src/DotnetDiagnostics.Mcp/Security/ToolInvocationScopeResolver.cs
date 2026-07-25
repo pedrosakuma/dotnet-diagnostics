@@ -34,7 +34,8 @@ internal static class ToolInvocationScopeResolver
     internal static Requirements Resolve(
         string toolName,
         IDictionary<string, JsonElement>? arguments,
-        bool proxyInvocation)
+        bool proxyInvocation,
+        ToolScopeResolutionPolicies? policies)
     {
         var additional = ImmutableArray.CreateBuilder<string>();
         var modifiers = ImmutableArray.CreateBuilder<string>();
@@ -47,18 +48,19 @@ internal static class ToolInvocationScopeResolver
 
             case "list_orchestrator":
                 Add(additional, GetListOrchestratorKindScope(GetString(arguments, "kind") ?? "pods"));
-                if (GetBoolean(arguments, "includeAllSessions"))
+                if (GetBoolean(arguments, "includeAllSessions") &&
+                    policies?.OrchestratorOptions?.AllowCrossSessionAdmin != true)
                 {
                     Add(modifiers, OrchestratorAdminScope);
                 }
                 break;
 
             case "collect_events":
-                ResolveCollectEvents(arguments, additional, modifiers);
+                ResolveCollectEvents(arguments, policies, additional, modifiers);
                 break;
 
             case "collect_sample":
-                ResolveCollectSample(arguments, additional, modifiers);
+                ResolveCollectSample(arguments, policies, additional, modifiers);
                 break;
 
             case "collect_batch":
@@ -66,11 +68,11 @@ internal static class ToolInvocationScopeResolver
                 break;
 
             case "inspect_heap":
-                ResolveInspectHeap(arguments, additional, modifiers);
+                ResolveInspectHeap(arguments, policies, additional, modifiers);
                 break;
 
             case "query_snapshot":
-                ResolveQuerySnapshot(arguments, proxyInvocation, additional, modifiers);
+                ResolveQuerySnapshot(arguments, proxyInvocation, policies, additional, modifiers);
                 break;
 
             case "get_bytes":
@@ -82,7 +84,7 @@ internal static class ToolInvocationScopeResolver
                 break;
 
             case "collect_thread_snapshot":
-                if (HasRemoteSymbolPath(arguments))
+                if (RequiresRemoteSymbolsScope(arguments, policies))
                 {
                     Add(modifiers, SymbolsRemoteScope);
                 }
@@ -132,6 +134,7 @@ internal static class ToolInvocationScopeResolver
 
     private static void ResolveCollectEvents(
         IDictionary<string, JsonElement>? arguments,
+        ToolScopeResolutionPolicies? policies,
         ImmutableArray<string>.Builder additional,
         ImmutableArray<string>.Builder modifiers)
     {
@@ -154,7 +157,8 @@ internal static class ToolInvocationScopeResolver
         }
 
         if (string.Equals(kind, "event_source", StringComparison.Ordinal) &&
-            GetBoolean(arguments, "unsafeProvider"))
+            GetBoolean(arguments, "unsafeProvider") &&
+            RequiresEventSourceAnyScope(arguments, policies))
         {
             Add(modifiers, EventSourceAnyScope);
         }
@@ -162,6 +166,7 @@ internal static class ToolInvocationScopeResolver
 
     private static void ResolveCollectSample(
         IDictionary<string, JsonElement>? arguments,
+        ToolScopeResolutionPolicies? policies,
         ImmutableArray<string>.Builder additional,
         ImmutableArray<string>.Builder modifiers)
     {
@@ -180,7 +185,7 @@ internal static class ToolInvocationScopeResolver
         var usesSymbols = string.Equals(kind, "off_cpu", StringComparison.Ordinal) ||
             (string.Equals(kind, "cpu", StringComparison.Ordinal) &&
              GetBoolean(arguments, "resolveSourceLines", defaultValue: true));
-        if (usesSymbols && HasRemoteSymbolPath(arguments))
+        if (usesSymbols && RequiresRemoteSymbolsScope(arguments, policies))
         {
             Add(modifiers, SymbolsRemoteScope);
         }
@@ -218,6 +223,7 @@ internal static class ToolInvocationScopeResolver
 
     private static void ResolveInspectHeap(
         IDictionary<string, JsonElement>? arguments,
+        ToolScopeResolutionPolicies? policies,
         ImmutableArray<string>.Builder additional,
         ImmutableArray<string>.Builder modifiers)
     {
@@ -233,7 +239,7 @@ internal static class ToolInvocationScopeResolver
         }
 
         if (!string.Equals(source, "gcdump", StringComparison.Ordinal) &&
-            HasRemoteSymbolPath(arguments))
+            RequiresRemoteSymbolsScope(arguments, policies))
         {
             Add(modifiers, SymbolsRemoteScope);
         }
@@ -242,6 +248,7 @@ internal static class ToolInvocationScopeResolver
     private static void ResolveQuerySnapshot(
         IDictionary<string, JsonElement>? arguments,
         bool proxyInvocation,
+        ToolScopeResolutionPolicies? policies,
         ImmutableArray<string>.Builder additional,
         ImmutableArray<string>.Builder modifiers)
     {
@@ -280,14 +287,35 @@ internal static class ToolInvocationScopeResolver
         {
             Add(modifiers, SensitiveParameterReadScope);
         }
-        else if (view is "duplicate-strings" or "object" or "frame-vars")
+        else if (view is "duplicate-strings" or "object" or "frame-vars" &&
+                 policies?.SensitiveValueGate?.IsAllowedByServer != true)
         {
             Add(modifiers, SensitiveHeapReadScope);
         }
     }
 
-    private static bool HasRemoteSymbolPath(IDictionary<string, JsonElement>? arguments)
-        => SymbolServerAllowlist.ContainsRemoteUrl(GetString(arguments, "symbolPath"));
+    private static bool RequiresRemoteSymbolsScope(
+        IDictionary<string, JsonElement>? arguments,
+        ToolScopeResolutionPolicies? policies)
+    {
+        var symbolPath = GetString(arguments, "symbolPath");
+        return SymbolServerAllowlist.ContainsRemoteUrl(symbolPath) &&
+            policies?.SymbolServerAllowlist?.Validate(symbolPath).IsAllowed != true;
+    }
+
+    private static bool RequiresEventSourceAnyScope(
+        IDictionary<string, JsonElement>? arguments,
+        ToolScopeResolutionPolicies? policies)
+    {
+        var providerName = GetString(arguments, "providerName");
+        if (!string.IsNullOrWhiteSpace(providerName) &&
+            policies?.EventSourceAllowlist?.IsAllowed(providerName) == true)
+        {
+            return false;
+        }
+
+        return policies?.SensitiveValueGate?.IsAllowedByServer != true;
+    }
 
     private static bool Matches(
         IDictionary<string, JsonElement>? arguments,

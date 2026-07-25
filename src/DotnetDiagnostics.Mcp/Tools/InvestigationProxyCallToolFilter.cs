@@ -66,6 +66,7 @@ internal static class InvestigationProxyCallToolFilter
         IInvestigationStore investigationStore,
         IInvestigationProxyClient proxyClient,
         OrchestratorOptions orchestratorOptions,
+        ToolScopeResolutionPolicies policies,
         IPrincipalAccessor principalAccessor,
         OrchestratorObservability observability,
         Func<ILogger?> loggerAccessor,
@@ -76,6 +77,7 @@ internal static class InvestigationProxyCallToolFilter
         ArgumentNullException.ThrowIfNull(investigationStore);
         ArgumentNullException.ThrowIfNull(proxyClient);
         ArgumentNullException.ThrowIfNull(orchestratorOptions);
+        ArgumentNullException.ThrowIfNull(policies);
         ArgumentNullException.ThrowIfNull(principalAccessor);
         ArgumentNullException.ThrowIfNull(observability);
         ArgumentNullException.ThrowIfNull(loggerAccessor);
@@ -97,7 +99,8 @@ internal static class InvestigationProxyCallToolFilter
                 principalAccessor,
                 observability,
                 loggerAccessor,
-                cancellationToken);
+                cancellationToken,
+                policies);
         };
     }
 
@@ -119,7 +122,8 @@ internal static class InvestigationProxyCallToolFilter
         IPrincipalAccessor principalAccessor,
         OrchestratorObservability observability,
         Func<ILogger?> loggerAccessor,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ToolScopeResolutionPolicies? policies = null)
     {
         ArgumentNullException.ThrowIfNull(scopeRegistry);
         var toolName = requestParams?.Name;
@@ -174,7 +178,8 @@ internal static class InvestigationProxyCallToolFilter
             toolName,
             sanitizedRequest?.Arguments,
             principalAccessor.Current,
-            proxyInvocation: true);
+            proxyInvocation: true,
+            policies: policies);
         if (!authorization.IsAllowed)
         {
             loggerAccessor()?.LogWarning(
@@ -251,14 +256,30 @@ internal static class InvestigationProxyCallToolFilter
 
         try
         {
+            if (principalAccessor.Current is not { } caller ||
+                string.IsNullOrWhiteSpace(handle.InternalScopeDelegationKey))
+            {
+                loggerAccessor()?.LogError(
+                    "Refusing to forward '{ToolName}' via investigation {HandleId}: internal scope delegation is unavailable.",
+                    toolName,
+                    handle.HandleId);
+                return BuildDelegationUnavailableResult(toolName, handle.HandleId);
+            }
+
+            var delegatedRequest = ToolScopeDelegation.Add(
+                sanitizedRequest!,
+                authorization,
+                caller,
+                handle.InternalScopeDelegationKey);
             loggerAccessor()?.LogDebug(
                 "Forwarding '{ToolName}' via investigation {HandleId} ({Namespace}/{Pod}).",
                 toolName, handle.HandleId, handle.Namespace, handle.PodName);
-            var result = await proxyClient.CallToolAsync(handle, sanitizedRequest!, cancellationToken).ConfigureAwait(false);
+            var result = await proxyClient.CallToolAsync(handle, delegatedRequest, cancellationToken).ConfigureAwait(false);
             observability.RecordProxyCall(principalAccessor.Current, handle.HandleId, toolName, result.IsError == true ? "failure" : "success");
             activity?.SetTag("event.outcome", result.IsError == true ? "failure" : "success");
             return result;
         }
+
         catch (Exception ex) when (!IsRethrowable(ex, cancellationToken))
         {
             loggerAccessor()?.LogWarning(
@@ -278,6 +299,20 @@ internal static class InvestigationProxyCallToolFilter
             };
         }
     }
+
+    private static CallToolResult BuildDelegationUnavailableResult(string toolName, string handleId)
+        => new()
+        {
+            IsError = true,
+            Content =
+            [
+                new TextContentBlock
+                {
+                    Text = $"Cannot forward '{toolName}' via investigation {handleId}: " +
+                        "the pod-local internal authorization channel is unavailable. Re-attach to the pod.",
+                },
+            ],
+        };
 
     /// <summary>Exposed for tests — mirror of <see cref="ToolErrorSurfaceFilter.IsRethrowable"/>.</summary>
     internal static bool IsRethrowable(Exception ex, CancellationToken cancellationToken)

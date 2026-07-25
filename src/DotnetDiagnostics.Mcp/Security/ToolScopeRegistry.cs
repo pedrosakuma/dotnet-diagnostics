@@ -74,7 +74,8 @@ internal sealed class ToolScopeRegistry
         string toolName,
         IDictionary<string, JsonElement>? arguments,
         BearerPrincipal? principal,
-        bool proxyInvocation = false)
+        bool proxyInvocation = false,
+        ToolScopeResolutionPolicies? policies = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
 
@@ -91,7 +92,11 @@ internal sealed class ToolScopeRegistry
         }
 
         var primaryDecision = ToolScopeAuthorizationFilter.Authorize(primary.Value, principal);
-        var invocation = ToolInvocationScopeResolver.Resolve(toolName, arguments, proxyInvocation);
+        var invocation = ToolInvocationScopeResolver.Resolve(
+            toolName,
+            arguments,
+            proxyInvocation,
+            policies);
         if (!primaryDecision.IsAllowed)
         {
             return new AuthorizationResult(

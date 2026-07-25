@@ -28,9 +28,10 @@ public enum InvestigationState
 /// </summary>
 /// <remarks>
 /// <para>
-/// The bearer token is generated per-attach and embedded into the ephemeral
-/// container's environment. It is never returned to the external client — the proxy
-/// (P3b-2) injects it on the orchestrator side of the boundary. This is the
+/// The bearer token and independent scope-delegation key are generated per-attach and
+/// embedded into the ephemeral container's environment. Neither is returned to the
+/// external client — the proxy injects the bearer and signs each approved invocation.
+/// This is the
 /// "per-attach Pod-local bearer token" mitigation called out in
 /// docs/central-orchestrator-design.md §6.4.
 /// </para>
@@ -58,4 +59,5 @@ public sealed record InvestigationHandle(
     // Hidden from the client-safe AttachSession projection so the LLM cannot
     // enumerate other callers' handles.
     [property: JsonIgnore] string? OwnerBearerName = null,
-    InvestigationProcessSelector? ProcessSelector = null);
+    InvestigationProcessSelector? ProcessSelector = null,
+    [property: JsonIgnore] string? InternalScopeDelegationKey = null);

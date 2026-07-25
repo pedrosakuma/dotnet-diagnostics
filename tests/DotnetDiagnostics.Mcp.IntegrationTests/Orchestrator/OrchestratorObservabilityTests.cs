@@ -114,7 +114,8 @@ public sealed class OrchestratorObservabilityTests
             PodLocalBearerToken: "secret",
             State: InvestigationState.Active,
             AttachedAt: DateTimeOffset.UtcNow.AddMinutes(-5),
-            ExpiresAt: DateTimeOffset.UtcNow.AddSeconds(-5)));
+            ExpiresAt: DateTimeOffset.UtcNow.AddSeconds(-5),
+            InternalScopeDelegationKey: "test-delegation-key"));
         await fx.Reaper.ReapExpiredAsync(DateTimeOffset.UtcNow);
 
         var metricsText = await (await fx.GetMetricsAsync("metrics-token")).Content.ReadAsStringAsync();
@@ -336,7 +337,8 @@ public sealed class OrchestratorObservabilityTests
                 State: InvestigationState.Active,
                 AttachedAt: DateTimeOffset.UtcNow,
                 ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
-                OwnerBearerName: request.OwnerBearerName);
+                OwnerBearerName: request.OwnerBearerName,
+                InternalScopeDelegationKey: "test-delegation-key");
             _store.Add(handle);
             return Task.FromResult(handle);
         }
