@@ -307,11 +307,11 @@ internal static class InvestigationProxyEndpoints
         // applied to decoded segments so percent-encoded variants are also
         // rejected.
         var trimmedRest = rest.Trim('/');
-        if (ContainsDotSegment(trimmedRest))
+        if (ContainsUnsafePathSegment(trimmedRest))
         {
             await WriteProblemAsync(context, StatusCodes.Status404NotFound,
                 "ProxyPathNotAllowed",
-                "Dot segments are not permitted in the proxy path.").ConfigureAwait(false);
+                "Dot segments and backslashes are not permitted in the proxy path.").ConfigureAwait(false);
             return;
         }
         var targetPath = string.IsNullOrEmpty(trimmedRest) ? McpPathSegment : McpPathSegment + "/" + trimmedRest;
@@ -532,19 +532,29 @@ internal static class InvestigationProxyEndpoints
            !HttpMethods.IsDelete(request.Method);
 
     /// <summary>
-    /// Returns true when any segment of <paramref name="path"/> is a relative
-    /// dot segment (".", "..") in raw or percent-encoded form. Defense against
-    /// path-traversal that could escape the <c>/mcp</c> upstream prefix once
-    /// <see cref="UriBuilder"/> normalizes the path.
+    /// Returns true when <paramref name="path"/> contains a relative dot segment
+    /// or backslash in raw or percent-encoded form. Defense against path traversal
+    /// that could escape the <c>/mcp</c> upstream prefix once <see cref="UriBuilder"/>
+    /// normalizes the path.
     /// </summary>
-    private static bool ContainsDotSegment(string path)
+    private static bool ContainsUnsafePathSegment(string path)
     {
         if (string.IsNullOrEmpty(path)) return false;
-        foreach (var raw in path.Split('/'))
+        string decoded;
+        try
         {
-            string segment;
-            try { segment = Uri.UnescapeDataString(raw); }
-            catch (UriFormatException) { return true; }
+            decoded = Uri.UnescapeDataString(path);
+        }
+        catch (UriFormatException)
+        {
+            return true;
+        }
+        if (decoded.Contains('\\'))
+        {
+            return true;
+        }
+        foreach (var segment in decoded.Split('/'))
+        {
             if (segment is "." or "..") return true;
         }
         return false;
