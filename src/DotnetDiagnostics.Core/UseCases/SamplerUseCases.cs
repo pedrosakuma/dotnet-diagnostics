@@ -482,11 +482,11 @@ public static class SamplerUseCases
                     requestedCount: ThreadSnapshotProjection.SummaryThreadLimit,
                     hardThreadLimit: ThreadSnapshotProjection.SummaryThreadLimit,
                     frameLimit: ThreadSnapshotProjection.SummaryFrameLimit,
-                    blockedOnly: true,
+                    blockedOnly: false,
                     offset: 0,
                     handle: handle.Id,
                     cursor: null);
-                summaryView = new ThreadSnapshotQueryResult(handle.Id, "top-blocked", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
+                summaryView = new ThreadSnapshotQueryResult(handle.Id, "threads-summary", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
                 {
                     Threads = topBlocked.Items,
                     Locks = Array.Empty<MonitorLockState>(),
@@ -500,10 +500,7 @@ public static class SamplerUseCases
                     NextThreadOffset = topBlocked.NextOffset,
                     NextThreadCursor = topBlocked.NextCursor,
                 };
-                var projectionLabel = topBlocked.UsedFallback
-                    ? "decisive/running thread(s)"
-                    : "blocked/waiting candidate(s)";
-                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Showing top {topBlocked.Items.Count} {projectionLabel} inline (omitted {topBlocked.TotalItems - topBlocked.Items.Count} candidate(s) and {snapshot.Locks.Count} lock(s); handle has all). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Views: top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool.";
+                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Showing top {topBlocked.Items.Count} decisive thread(s) inline (omitted {topBlocked.TotalItems - topBlocked.Items.Count} thread(s) and {snapshot.Locks.Count} lock(s); handle has all). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Views: top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool.";
             }
             else
             {

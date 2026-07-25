@@ -46,6 +46,9 @@ public static class CpuSampleQueryDispatcher
     /// <summary>Hard cap for the inline call-tree depth. Narrow with rootMethodFilter for deeper evidence.</summary>
     public const int MaxProjectedCallTreeDepth = 8;
 
+    /// <summary>Hard cap for source-tree metric traversal used by bounded call-tree ranking.</summary>
+    internal const int MaxCallTreeTraversalNodes = 100_000;
+
     /// <summary>Default hot-path threshold: a child must carry at least this % of its parent to extend the chain.</summary>
     public const double DefaultHotPathThresholdPercent = 50d;
 
@@ -103,13 +106,16 @@ public static class CpuSampleQueryDispatcher
             root = match;
         }
 
-        var (pruned, nodeCount, truncated) = PruneTree(root, effectiveDepth, effectiveNodes);
+        var (pruned, nodeCount, truncated, traversal) = PruneTree(root, effectiveDepth, effectiveNodes);
         var stamped = CallTreeIdentityProjector.Stamp(pruned, artifact.MethodIdentities);
         var view = new CallTreeView(artifact.ProcessId, artifact.TotalSamples, nodeCount, truncated, stamped)
         {
-            SelfSamples = artifact.SelfSamples ?? CpuSampleAnalytics.TotalSelfSamples(root),
+            SelfSamples = artifact.SelfSamples ?? traversal.TotalSelfSamples,
             NodeLimit = effectiveNodes,
             DepthLimit = effectiveDepth,
+            TraversalNodesVisited = traversal.NodesVisited,
+            TraversalNodeLimit = MaxCallTreeTraversalNodes,
+            TraversalLimitReached = traversal.LimitReached,
         };
         var summary = truncated
             ? $"Showing a bounded {nodeCount}-node call-tree projection (limit {effectiveNodes} nodes / depth {effectiveDepth}); narrow with rootMethodFilter or use top-methods for decisive self-time. Root: {root.Frame.Method} — {root.InclusiveSamples} inclusive samples. The handle retains the full tree."
@@ -117,6 +123,10 @@ public static class CpuSampleQueryDispatcher
         if (view.SelfSamples is { } self)
         {
             summary += $" Self split: {self.RunningSamples} running / {self.WaitingSamples} waiting.";
+        }
+        if (traversal.LimitReached)
+        {
+            summary += $" Decision-first ranking visited the bounded maximum of {MaxCallTreeTraversalNodes:N0} source nodes.";
         }
 
         return !truncated
@@ -303,13 +313,17 @@ public static class CpuSampleQueryDispatcher
         return best;
     }
 
-    private static (CallTreeNode Pruned, int NodeCount, bool Truncated) PruneTree(CallTreeNode root, int maxDepth, int maxNodes)
+    private static (CallTreeNode Pruned, int NodeCount, bool Truncated, SubtreeMetricIndex Traversal) PruneTree(
+        CallTreeNode root,
+        int maxDepth,
+        int maxNodes)
     {
+        var traversal = BuildSubtreeMetrics(root, MaxCallTreeTraversalNodes);
         var nodeBudget = maxNodes;
         var truncated = false;
         nodeBudget--;
         var pruned = WalkReserved(root, maxDepth);
-        return (pruned, maxNodes - nodeBudget, truncated);
+        return (pruned, maxNodes - nodeBudget, truncated, traversal);
 
         CallTreeNode WalkReserved(CallTreeNode n, int depthRemaining)
         {
@@ -320,7 +334,11 @@ public static class CpuSampleQueryDispatcher
             }
 
             var kept = new List<CallTreeNode>();
-            var candidates = SelectDecisiveChildren(n.Children, nodeBudget);
+            var candidates = SelectDecisiveChildren(
+                n.Children,
+                nodeBudget,
+                traversal.ClassificationAvailable,
+                traversal.SelfSamplesByNode);
             if (candidates.Length < n.Children.Count)
             {
                 truncated = true;
@@ -341,15 +359,22 @@ public static class CpuSampleQueryDispatcher
 
     private static CallTreeNode[] SelectDecisiveChildren(
         IReadOnlyList<CallTreeNode> children,
-        int limit)
+        int limit,
+        bool classificationAvailable,
+        IReadOnlyDictionary<CallTreeNode, SelfSampleBreakdown> selfSamplesByNode)
     {
         if (limit <= 0 || children.Count == 0) return Array.Empty<CallTreeNode>();
 
         var selected = new List<DecisiveChildCandidate>(Math.Min(limit, children.Count));
         foreach (var child in children)
         {
-            var candidate = new DecisiveChildCandidate(child, CountRunningSamples(child));
-            var index = selected.BinarySearch(candidate, DecisiveChildComparer.Instance);
+            selfSamplesByNode.TryGetValue(child, out var selfSamples);
+            var runningSamples = selfSamples?.RunningSamples ?? 0;
+            var candidate = new DecisiveChildCandidate(child, runningSamples);
+            var comparer = classificationAvailable
+                ? DecisiveChildComparer.Classified
+                : DecisiveChildComparer.Unclassified;
+            var index = selected.BinarySearch(candidate, comparer);
             if (index < 0) index = ~index;
             if (index >= limit) continue;
 
@@ -363,21 +388,56 @@ public static class CpuSampleQueryDispatcher
         return selected.Select(static candidate => candidate.Node).ToArray();
     }
 
-    private static long CountRunningSamples(CallTreeNode node)
+    private static SubtreeMetricIndex BuildSubtreeMetrics(CallTreeNode root, int visitLimit)
     {
-        var total = node.SelfSamples?.RunningSamples ?? 0;
-        foreach (var child in node.Children)
+        var metrics = new Dictionary<CallTreeNode, SelfSampleBreakdown>(ReferenceEqualityComparer.Instance);
+        var stack = new Stack<MetricFrame>();
+        stack.Push(new MetricFrame(root));
+        var nodesVisited = 1;
+        var classificationAvailable = root.SelfSamples is not null;
+        var limitReached = false;
+
+        while (stack.Count > 0)
         {
-            total += CountRunningSamples(child);
+            var frame = stack.Peek();
+            if (frame.NextChildIndex < frame.Node.Children.Count && nodesVisited < visitLimit)
+            {
+                var child = frame.Node.Children[frame.NextChildIndex++];
+                nodesVisited++;
+                classificationAvailable |= child.SelfSamples is not null;
+                stack.Push(new MetricFrame(child));
+                continue;
+            }
+
+            if (frame.NextChildIndex < frame.Node.Children.Count)
+            {
+                limitReached = true;
+            }
+
+            var runningSamples = frame.RunningDescendantSamples + (frame.Node.SelfSamples?.RunningSamples ?? 0);
+            var waitingSamples = frame.WaitingDescendantSamples + (frame.Node.SelfSamples?.WaitingSamples ?? 0);
+            var total = new SelfSampleBreakdown(runningSamples, waitingSamples);
+            metrics[frame.Node] = total;
+            stack.Pop();
+            if (stack.Count > 0)
+            {
+                stack.Peek().RunningDescendantSamples += runningSamples;
+                stack.Peek().WaitingDescendantSamples += waitingSamples;
+            }
         }
-        return total;
+
+        var totalSelfSamples = classificationAvailable && metrics.TryGetValue(root, out var rootSamples)
+            ? rootSamples
+            : null;
+        return new SubtreeMetricIndex(metrics, nodesVisited, classificationAvailable, limitReached, totalSelfSamples);
     }
 
     private sealed record DecisiveChildCandidate(CallTreeNode Node, long RunningSamples);
 
-    private sealed class DecisiveChildComparer : IComparer<DecisiveChildCandidate>
+    private sealed class DecisiveChildComparer(bool classificationAvailable) : IComparer<DecisiveChildCandidate>
     {
-        public static DecisiveChildComparer Instance { get; } = new();
+        public static DecisiveChildComparer Classified { get; } = new(true);
+        public static DecisiveChildComparer Unclassified { get; } = new(false);
 
         public int Compare(DecisiveChildCandidate? x, DecisiveChildCandidate? y)
         {
@@ -385,15 +445,22 @@ public static class CpuSampleQueryDispatcher
             if (x is null) return 1;
             if (y is null) return -1;
 
-            var xRunning = x.RunningSamples;
-            var yRunning = y.RunningSamples;
-            var result = (yRunning > 0).CompareTo(xRunning > 0);
-            if (result != 0) return result;
-            result = yRunning.CompareTo(xRunning);
+            var result = 0;
+            if (classificationAvailable)
+            {
+                var xRunning = x.RunningSamples;
+                var yRunning = y.RunningSamples;
+                result = (yRunning > 0).CompareTo(xRunning > 0);
+                if (result != 0) return result;
+                result = yRunning.CompareTo(xRunning);
+                if (result != 0) return result;
+                result = y.Node.ExclusiveSamples.CompareTo(x.Node.ExclusiveSamples);
+                if (result != 0) return result;
+            }
+
+            result = y.Node.InclusiveSamples.CompareTo(x.Node.InclusiveSamples);
             if (result != 0) return result;
             result = y.Node.ExclusiveSamples.CompareTo(x.Node.ExclusiveSamples);
-            if (result != 0) return result;
-            result = y.Node.InclusiveSamples.CompareTo(x.Node.InclusiveSamples);
             if (result != 0) return result;
             result = string.Compare(x.Node.Frame.Method, y.Node.Frame.Method, StringComparison.Ordinal);
             return result != 0
@@ -401,6 +468,21 @@ public static class CpuSampleQueryDispatcher
                 : string.Compare(x.Node.Frame.Module, y.Node.Frame.Module, StringComparison.Ordinal);
         }
     }
+
+    private sealed class MetricFrame(CallTreeNode node)
+    {
+        public CallTreeNode Node { get; } = node;
+        public int NextChildIndex { get; set; }
+        public long RunningDescendantSamples { get; set; }
+        public long WaitingDescendantSamples { get; set; }
+    }
+
+    private sealed record SubtreeMetricIndex(
+        IReadOnlyDictionary<CallTreeNode, SelfSampleBreakdown> SelfSamplesByNode,
+        int NodesVisited,
+        bool ClassificationAvailable,
+        bool LimitReached,
+        SelfSampleBreakdown? TotalSelfSamples);
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)
         => DiagnosticResult.Fail<T>(

@@ -1163,7 +1163,7 @@ public sealed class DiagnosticTools
         [Description("Include runtime frames (PInvoke trampolines, etc.) without an associated managed method. Off by default.")] bool includeRuntimeFrames = false,
         [Description("Include pure native frames where ClrMD cannot resolve a method. Off by default.")] bool includeNativeFrames = false,
         [Description("Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`.")] string? symbolPath = null,
-        [Description("Verbosity (summary|detail|raw). Default 'summary' returns at most 6 decisive threads with 6 frames each and no locks. 'detail'/'raw' return at most 8 decisive threads with 7 frames each plus 12 locks with at most 8 waiter ids per lock. Owner-and-waiter deadlock candidates rank first, but only query_snapshot(view=\"deadlocks\") confirms a cycle. Continue through the retained capture with query_snapshot thread/lock cursors or exact lock-address waiter paging.")]
+        [Description("Verbosity (summary|detail|raw). Default 'summary' returns at most 6 decisive threads with 6 frames each and no locks. 'detail'/'raw' return at most 8 decisive threads with 7 frames each plus 12 locks with at most 8 waiter ids per lock. Owner-and-waiter deadlock candidates rank first; query_snapshot(view=\"deadlocks\") evaluates inferred wait-for cycle candidates. Continue through the retained capture with query_snapshot thread/lock cursors or exact lock-address waiter paging.")]
         SamplingDepth depth = SamplingDepth.Summary,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
@@ -1241,11 +1241,11 @@ public sealed class DiagnosticTools
         "`threads-summary` (stable pages of up to 8 managed threads with state and up to 8 frames; use unified query_snapshot with `cursor`/`nextThreadCursor` for deep continuation), " +
         "`stack` (full captured frames of one thread — requires `threadId`; for `linux-native-stack` snapshots this is the OS thread id / TID), " +
         "`lock-graph` (stable pages of up to 12 held/contended SyncBlocks sorted by waiter count then recursion; use unified query_snapshot with `cursor`/`nextLockCursor`, or page one lock's waiter ids by `lockAddress` and `nextWaiterCursor`), " +
-        "`deadlocks` (wait-for cycle detection over the captured lock graph, with lock chains and suggested SOS follow-up commands), " +
+        "`deadlocks` (inferred wait-for cycle candidates over the captured lock graph, with per-edge source/confidence and suggested SOS follow-up commands), " +
         "`top-blocked` (stable pages of up to 8 blocked/waiting candidates), " +
         "`unique-stacks` (group by identical top-of-stack prefixes to spot a stuck herd), " +
         "`async-stalls` (best-effort grouping of async state-machine waits; useful when no SyncBlocks are contended), " +
-        "`wait-chains` (ranked CoreCLR monitor waiter→owner, async-continuation, and ThreadPool-starvation chains; deadlock cycles are flagged explicitly), and " +
+        "`wait-chains` (ranked CoreCLR monitor waiter→owner, async-continuation, and ThreadPool-starvation chains; inferred deadlock cycle candidates are flagged explicitly), and " +
         "`threadpool` (SOS !threadpool-style snapshot of worker/IOCP counts plus global/local queue depths and pending work items when the backend captured them). " +
         "Handles expire ~10 minutes after capture and survive target-process exit; only live-origin `resolve-address` and `frame-vars` re-attach via ClrMD and therefore require the original process to still be running.";
 

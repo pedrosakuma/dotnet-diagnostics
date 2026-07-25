@@ -334,7 +334,7 @@ query options:
     threads-summary  Up to 8 decisive threads per page, with state and up to 8 frames.
     stack            Full managed stack for --thread-id <ManagedThreadId>.
     lock-graph       Up to 12 monitor locks per page, or 8 waiter ids for --address.
-    deadlocks        Deadlock cycles.
+    deadlocks        Inferred deadlock cycle candidates.
     top-blocked      Up to 8 blocked/waiting candidates per page (default).
     unique-stacks    Deduplicated stacks by hash.
     async-stalls     Async continuation stalls.

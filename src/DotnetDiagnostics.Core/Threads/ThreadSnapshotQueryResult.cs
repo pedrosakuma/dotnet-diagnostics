@@ -98,7 +98,13 @@ public sealed record ResolvedAddressEntry(
 public sealed record ThreadDeadlockCycle(
     IReadOnlyList<ThreadDeadlockMember> CycleMembers,
     IReadOnlyList<ThreadDeadlockLink> LockChain,
-    IReadOnlyList<ThreadDeadlockCommand> RecommendedCommands);
+    IReadOnlyList<ThreadDeadlockCommand> RecommendedCommands)
+{
+    /// <summary>Classification of this stack-inferred wait-for cycle.</summary>
+    public string Classification { get; init; } = "inferred-deadlock-cycle-candidate";
+    /// <summary>Lowest confidence among the inferred waiter→owner edges in this cycle.</summary>
+    public string Confidence { get; init; } = "medium";
+}
 
 public sealed record ThreadDeadlockMember(
     int ThreadId,
@@ -112,7 +118,13 @@ public sealed record ThreadDeadlockLink(
     int OwnerThreadId,
     ulong LockObjectAddress,
     string? LockObjectTypeFullName,
-    string LockKind);
+    string LockKind)
+{
+    /// <summary>How this waiter→owner edge was obtained.</summary>
+    public string EdgeSource { get; init; } = "sync-block-owner + stack-root waiter inference";
+    /// <summary>Qualitative confidence of the inferred edge.</summary>
+    public string Confidence { get; init; } = "medium";
+}
 
 public sealed record ThreadDeadlockCommand(string Command, string Purpose);
 

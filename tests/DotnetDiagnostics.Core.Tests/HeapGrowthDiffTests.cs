@@ -158,7 +158,7 @@ public sealed class HeapGrowthDiffTests
         growth.Notes.Should().ContainSingle(note =>
             note.Contains("Skipped 1 retention path(s)", StringComparison.Ordinal) &&
             note.Contains(typeName, StringComparison.Ordinal) &&
-            note.Contains("no name-only correlation", StringComparison.Ordinal));
+            note.Contains("no weaker correlation", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -209,6 +209,150 @@ public sealed class HeapGrowthDiffTests
         growth.Growers.Single(g => g.Identity!.ModulePath == identityB.ModulePath)
             .RetentionPaths.Should().ContainSingle().Which.TargetObjectAddress.Should().Be(0xB001);
     }
+
+    [Fact]
+    public void Build_AsymmetricMvidMetadata_MatchesByUniqueSharedModulePathAndToken()
+    {
+        const string typeName = "Shared.Asymmetric";
+        var baselineIdentity = new TypeIdentity(typeName)
+        {
+            ModuleName = "Shared.dll",
+            ModulePath = "/app/Shared.dll",
+            MetadataToken = 0x02000001,
+        };
+        var currentIdentity = baselineIdentity with
+        {
+            ModuleVersionId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        };
+        var baseline = HeapSnapshotWithIdentity(null, (baselineIdentity, 1_000, 10));
+        var current = HeapSnapshotWithIdentity(null, (currentIdentity, 5_000, 50));
+
+        var growth = HeapGrowthDiff.Build(baseline, "b", current, "c", "bytes", minDeltaPct: 0, topN: 25);
+
+        var row = growth.Growers.Should().ContainSingle().Subject;
+        row.IsNew.Should().BeFalse();
+        row.BaselineBytes.Should().Be(1_000);
+        row.BytesDelta.Should().Be(4_000);
+    }
+
+    [Fact]
+    public void Build_DeduplicatesRankingLists_ButSumsDistinctLoadedModuleCopies()
+    {
+        const string typeName = "Shared.Copy";
+        var stableIdentity = new TypeIdentity(typeName)
+        {
+            ModuleName = "Shared.dll",
+            ModulePath = "/app/Shared.dll",
+            ModuleVersionId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            MetadataToken = 0x02000001,
+        };
+        var baselineCopyA = Stat(stableIdentity, 100, 10, moduleImageBase: 0x1000);
+        var baselineCopyB = Stat(stableIdentity, 200, 20, moduleImageBase: 0x2000);
+        var currentCopyA = Stat(stableIdentity, 150, 15, moduleImageBase: 0x3000);
+        var currentCopyB = Stat(stableIdentity, 250, 25, moduleImageBase: 0x4000);
+        var baseline = HeapSnapshotWithLists([baselineCopyA, baselineCopyB], [baselineCopyB, baselineCopyA]);
+        var current = HeapSnapshotWithLists([currentCopyA, currentCopyB], [currentCopyB, currentCopyA]);
+
+        var growth = HeapGrowthDiff.Build(baseline, "b", current, "c", "bytes", minDeltaPct: 0, topN: 25);
+
+        var row = growth.Growers.Should().ContainSingle().Subject;
+        row.BaselineBytes.Should().Be(300);
+        row.CurrentBytes.Should().Be(400);
+        row.BytesDelta.Should().Be(100);
+        row.BaselineInstances.Should().Be(30);
+        row.CurrentInstances.Should().Be(40);
+    }
+
+    [Fact]
+    public void Build_UniqueNameOnlyTargetIdentity_AttachesRetentionPath()
+    {
+        const string typeName = "Dynamic.Unique";
+        var identity = new TypeIdentity(typeName)
+        {
+            ModuleName = "DynamicAssembly",
+        };
+        var path = new RetentionPath(
+            typeName,
+            0xD001,
+            [new RetentionFrame("Root.Dynamic", 0xD000) { RootKind = "StrongHandle" }],
+            Truncated: false)
+        {
+            TargetIdentity = new TypeIdentity(typeName),
+        };
+        var baseline = HeapSnapshotWithIdentity(null, (identity, 100, 1));
+        var current = HeapSnapshotWithIdentity([path], (identity, 500, 5));
+
+        var growth = HeapGrowthDiff.Build(baseline, "b", current, "c", "bytes", minDeltaPct: 0, topN: 25);
+
+        growth.Growers.Should().ContainSingle()
+            .Which.RetentionPaths.Should().ContainSingle()
+            .Which.TargetObjectAddress.Should().Be(0xD001);
+    }
+
+    [Fact]
+    public void Build_OnUnix_ModulePathFallbackIsCaseSensitive()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        const string typeName = "Shared.CaseSensitive";
+        var upper = new TypeIdentity(typeName)
+        {
+            ModuleName = "Shared.dll",
+            ModulePath = "/app/Shared.dll",
+        };
+        var lower = new TypeIdentity(typeName)
+        {
+            ModuleName = "shared.dll",
+            ModulePath = "/app/shared.dll",
+        };
+        var path = new RetentionPath(
+            typeName,
+            0xC001,
+            [new RetentionFrame("Root.Lower", 0xC000) { RootKind = "StaticVar" }],
+            Truncated: false)
+        {
+            TargetIdentity = new TypeIdentity(typeName)
+            {
+                ModulePath = lower.ModulePath,
+                ModuleName = lower.ModuleName,
+            },
+        };
+        var baseline = HeapSnapshotWithIdentity(null, (upper, 100, 1), (lower, 100, 1));
+        var current = HeapSnapshotWithIdentity([path], (upper, 200, 2), (lower, 300, 3));
+
+        var growth = HeapGrowthDiff.Build(baseline, "b", current, "c", "bytes", minDeltaPct: 0, topN: 25);
+
+        growth.Growers.Single(row => row.Identity!.ModulePath == lower.ModulePath)
+            .RetentionPaths.Should().ContainSingle().Which.TargetObjectAddress.Should().Be(0xC001);
+        growth.Growers.Single(row => row.Identity!.ModulePath == upper.ModulePath)
+            .RetentionPaths.Should().BeNullOrEmpty();
+    }
+
+    [Fact]
+    public void ClrMdRetentionMatching_OnUnix_UsesCaseSensitiveModulePaths()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        var target = new TypeIdentity("Shared.CaseSensitive")
+        {
+            ModulePath = "/app/Shared.dll",
+            ModuleName = "Shared.dll",
+        };
+        var caseDistinctObserved = new TypeIdentity(target.TypeFullName)
+        {
+            ModulePath = "/app/shared.dll",
+            ModuleName = "shared.dll",
+        };
+
+        ClrMdRetentionAnalyzer.MatchesTarget(target, caseDistinctObserved, sameNameCount: 2)
+            .Should().BeFalse();
+        ClrMdRetentionAnalyzer.MatchesTarget(target, target, sameNameCount: 2)
+            .Should().BeTrue();
+    }
+
+    [Fact]
+    public void TypeIdentity_PublicSchema_DoesNotExposeRuntimeModuleImageBase()
+        => typeof(TypeIdentity).GetProperty("ModuleImageBase").Should().BeNull();
 
     [Fact]
     public void Build_NoRetentionPaths_EmitsRecaptureNote()
@@ -325,4 +469,29 @@ public sealed class HeapGrowthDiffTests
             RetentionPaths = retentionPaths,
         };
     }
+
+    private static TypeStat Stat(TypeIdentity identity, long bytes, long instances, ulong? moduleImageBase = null)
+        => new(
+            identity.TypeFullName,
+            identity.ModuleName,
+            instances,
+            bytes,
+            0,
+            identity)
+        {
+            ModuleImageBase = moduleImageBase,
+        };
+
+    private static HeapSnapshotArtifact HeapSnapshotWithLists(
+        IReadOnlyList<TypeStat> byBytes,
+        IReadOnlyList<TypeStat> byInstances)
+        => new(
+            HeapSnapshotOrigin.Live,
+            123,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMilliseconds(10),
+            new DumpRuntimeInfo("CoreCLR", "10.0.0", "x64", IsServerGC: false, HeapCount: 1),
+            new DumpHeapSummary(byBytes.Sum(stat => stat.TotalBytes), 0, 0, 0, 0, 0, 0),
+            byBytes,
+            byInstances);
 }

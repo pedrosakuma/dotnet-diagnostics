@@ -98,9 +98,11 @@ public sealed class CliDocParityTests
         help.Should().Contain("Up to 12 monitor locks per page");
         help.Should().Contain("--offset");
         help.Should().Contain("--cursor");
+        help.Should().Contain("--top <int>");
         help.Should().Contain("nextThreadCursor");
         help.Should().Contain("nextLockCursor");
         help.Should().Contain("nextWaiterCursor");
+        help.Should().Contain("Inferred deadlock cycle candidates");
         help.Should().NotContain("List all threads");
     }
 }

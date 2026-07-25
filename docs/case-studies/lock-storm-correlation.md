@@ -69,15 +69,19 @@ wait on?" (yes). That's the overlap.
 
 ```jsonc
 {
-  "threads": 26, "locks": 4,
-  "blocked": 22,          // threads with IsLikelyBlocked == true
-  "contendedLocks": 4     // locks with >1 waiter
+  "view": "threads-summary",
+  "totalThreads": 26,
+  "candidateThreads": 26,
+  "omittedThreads": 20,
+  "totalLocks": 4,
+  "omittedLocks": 4
 }
 ```
 
-22 of 26 threads look "blocked." Four locks are contended. Read in isolation,
-this says nothing: some waiting is normal under load, and a lock with waiters
-isn't unusual either. `query_snapshot(view="top-blocked", offset=0)` returns
+The bounded collection response shows six decisive threads and reports the
+complete thread/lock totals without serializing the lock graph. Read in
+isolation, this says little: some waiting is normal under load.
+`query_snapshot(view="top-blocked", offset=0)` returns
 only the first eight ranked candidates and a continuation:
 
 ```jsonc
@@ -101,8 +105,13 @@ graph when the collection hint reports contended locks.
 ## 2. The reveal — stable lock identity leads to the exact owner stack
 
 `query_snapshot(view="lock-graph", offset=0)` ranks the most-contended locks
-first. Selecting the demonstrated lock by address returns a bounded waiter-id
-page without losing its stable owner identity:
+first. After reading the demonstrated numeric `objectAddress`, select that
+exact lock before paging its waiters:
+
+`query_snapshot(view="lock-graph", address=135052701042856)`
+
+That exact selection returns a bounded waiter-id page without losing its stable
+owner identity:
 
 ```jsonc
 {

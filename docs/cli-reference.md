@@ -191,7 +191,7 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 | `--kind <kind>` | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`, `sweep`, `cpu`, `allocation`, `off_cpu` (alias `off-cpu`), `native-alloc`, `thread-snapshot`. |
 | `-d, --duration <int>` | Window in seconds (default: `counters` 5, `datas` 15, `sweep` 6, others 10). |
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
-| `--top <n>` | Top-N cap for sampler kinds: `cpu`, `allocation`, `off_cpu`, `native-alloc`. |
+| `--top <n>` | Top-N cap for sampler kinds (`cpu`, `allocation`, `off_cpu`, `native-alloc`) and session query pages/ranked views. |
 | `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |
 | `--interval <int>` | Refresh interval in seconds (`counters`, `db`, `kestrel`, `networking`). Default 1. |
 | `--watch <seconds>` | Re-run the command every N seconds, clear/redraw the human output, and stop cleanly on Ctrl-C. Not compatible with `--json`. With `--capture-when` it is reinterpreted as the metric **sample interval** for the bounded gated watch (no redraw loop). |
@@ -683,10 +683,10 @@ inside a `session`) expose the call-stack / blocking views (`threads-summary`, `
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
-| `threads-summary` | decisive thread summaries, eight per bounded page with up to eight frames each | `--cursor <opaque>` from `nextThreadCursor` |
-| `top-blocked` (default) | blocked threads and real lock waiters, eight per bounded page with up to eight frames each | `--cursor <opaque>` from `nextThreadCursor` |
-| `lock-graph` | contended locks, twelve per bounded page; or one lock's waiter IDs | `--cursor <opaque>` from `nextLockCursor`; add `--address <decimal\|0x-hex>` and use `nextWaiterCursor` to page one lock's waiters |
-| `wait-chains` | ranked CoreCLR monitor waiter→owner and async-continuation chains, including ThreadPool-starvation sinks and explicit deadlock cycles | — |
+| `threads-summary` | decisive thread summaries, eight per bounded page with up to eight frames each | `--top` (page size, capped at 8), `--cursor <opaque>` from `nextThreadCursor` |
+| `top-blocked` (default) | blocked threads and real lock waiters, eight per bounded page with up to eight frames each | `--top` (page size, capped at 8), `--cursor <opaque>` from `nextThreadCursor` |
+| `lock-graph` | contended locks, twelve per bounded page; or one lock's waiter IDs | `--top` (page size, capped at 12/8), `--cursor <opaque>` from `nextLockCursor`; add `--address <decimal\|0x-hex>` and use `nextWaiterCursor` to page one lock's waiters |
+| `wait-chains` | ranked CoreCLR monitor waiter→owner and async-continuation chains, including ThreadPool-starvation sinks and inferred deadlock cycle candidates | — |
 | `async-stalls` | stalled `async` state machines and their await points | — |
 | `unique-stacks` | threads folded into shared stack signatures, ranked by group size | `--frames-to-hash` (top frames in the signature hash, default `20`), `--min-count` (drop groups smaller than N, default `1`) |
 | `frame-vars` | one thread's local variables and parameters for a chosen stack frame (re-opens the origin via ClrMD) | `--thread-id <id>` (required) |

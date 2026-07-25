@@ -562,6 +562,28 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_ThreadSnapshotHandle_UsesTopOptionForPageSize()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(
+            Environment.ProcessId,
+            "thread-snapshot",
+            ThreadPagingSnapshot(),
+            TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view threads-summary --top 2\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("\"nextThreadOffset\": 2");
+        stdout.Should().Contain("\"managedThreadId\": 1,");
+        stdout.Should().Contain("\"managedThreadId\": 2,");
+        stdout.Should().NotContain("\"managedThreadId\": 3,");
+    }
+
+    [Fact]
     public async Task Query_ThreadSnapshotHandle_ForwardsStableContinuationCursor()
     {
         var (services, store) = BuildServices();

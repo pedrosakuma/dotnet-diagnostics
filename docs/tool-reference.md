@@ -198,7 +198,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="requests")` | The full in-flight request list. Summary keeps the headline counts + the oldest requests inline; drill in with `query_snapshot(handle, view=requests|longRunning)`. |
 | `collect_events(kind="startup")` | The loader/DI event lists and full timeline. Summary keeps headline counts, top assembly/module aggregates, and notes. |
 | `collect_events(kind="sweep")` | The five sub-snapshots' bulky lists (counters, gc, exceptions, threadpool, resource). Summary keeps observed signals + hypotheses + per-collector handles. Each sub-collector's full payload stays behind its handle (`data.sweep.handles`). |
-| `collect_thread_snapshot` | The lock graph plus threads beyond the top 6 decisive rows; each row is capped at 6 frames. Owner-and-waiter deadlock candidates, contended-lock owners, exceptions, and running application frames rank before generic parked workers; only `query_snapshot(view="deadlocks")` confirms a cycle. `detail` remains bounded at 8 threads × 7 frames + 12 locks. |
+| `collect_thread_snapshot` | The lock graph plus threads beyond the top 6 decisive rows; each row is capped at 6 frames. Owner-and-waiter deadlock candidates, contended-lock owners, exceptions, and running application frames rank before generic parked workers; `query_snapshot(view="deadlocks")` evaluates inferred wait-for cycle candidates and reports edge source/confidence. `detail` remains bounded at 8 threads × 7 frames + 12 locks. |
 
 Explicit `topN` always wins over the depth default — if you pass
 `topN=10, depth=Summary` you get up to 10 hotspots inline (the LLM knows what
@@ -2572,7 +2572,7 @@ exit until TTL; only `resolve-address` and `frame-vars` still require the origin
 live process. The inline ranking places owner-and-waiter deadlock candidates,
 contended-lock owners, threads with active exceptions, and running application
 frames before generic wait/park noise. Candidate ranking does not prove a cycle;
-confirm one with `query_snapshot(view="deadlocks")`.
+evaluate inferred wait-for cycle candidates with `query_snapshot(view="deadlocks")`.
 
 **Parameters:**
 
@@ -2660,8 +2660,12 @@ contract.
   nodes / depth 8. It ranks all direct children before bounded selection and
   reserves their node slots before traversing descendants, so a wide first
   branch cannot hide other selected siblings. A late low-volume branch with
-  running self-samples outranks generic waiting branches; narrow with
-  `rootMethodFilter` for deeper evidence.
+  running self-samples outranks generic waiting branches. When self/run
+  classification is unavailable (allocation trees), inclusive samples rank
+  before exclusive samples so hot deep branches survive pruning. Source-tree
+  metrics are computed once iteratively; `traversalNodesVisited`,
+  `traversalNodeLimit`, and `traversalLimitReached` disclose the bounded visit
+  budget. Narrow with `rootMethodFilter` for deeper evidence.
 
 **Common view-specific parameters** (each ignored outside its view):
 `rankBy` (`bytes`/`instances`), `typeFullName`, `address`,

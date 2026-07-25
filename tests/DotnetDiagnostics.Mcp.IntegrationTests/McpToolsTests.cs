@@ -174,7 +174,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         threadDepthDescription.Should().Contain("8 decisive threads");
         threadDepthDescription.Should().Contain("12 locks");
         threadDepthDescription.Should().Contain("deadlock candidates");
-        threadDepthDescription.Should().Contain("confirms a cycle");
+        threadDepthDescription.Should().Contain("evaluates inferred wait-for cycle candidates");
         threadDepthDescription.Should().NotContain("deadlock members");
         threadDepthDescription.Should().NotContain("top-3").And.NotContain("top-25");
 
@@ -193,7 +193,8 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         queryViewDescription.Should().Contain("CoreCLR monitor waiter");
         queryViewDescription.Should().Contain("async continuations");
         queryViewDescription.Should().Contain("ThreadPool starvation");
-        queryViewDescription.Should().Contain("deadlock cycles");
+        queryViewDescription.Should().Contain("inferred deadlock cycle candidates");
+        queryViewDescription.Should().Contain("source/confidence");
         queryViewDescription.Should().NotContain("Linux-native-stack only");
     }
 

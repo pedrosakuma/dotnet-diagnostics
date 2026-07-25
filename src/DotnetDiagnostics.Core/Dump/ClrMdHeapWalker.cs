@@ -49,7 +49,10 @@ internal static class ClrMdHeapWalker
                 segUsed += size;
                 totalBytes += size;
 
-                var key = new TypeKey(obj.Type.Name ?? "<unknown>", obj.Type.Module?.Name);
+                var key = new TypeKey(
+                    obj.Type.Name ?? "<unknown>",
+                    obj.Type.Module?.Name,
+                    obj.Type.Module?.ImageBase ?? 0);
                 if (!stats.TryGetValue(key, out var stat))
                 {
                     stat = new RawTypeStat(key.TypeName, key.ModuleName, obj.Type);
@@ -169,7 +172,10 @@ internal static class ClrMdHeapWalker
             InstanceCount: raw.Count,
             TotalBytes: raw.Bytes,
             TotalBytesPercent: pct,
-            Identity: buildTypeIdentity(raw.ClrType));
+            Identity: buildTypeIdentity(raw.ClrType))
+        {
+            ModuleImageBase = raw.ClrType.Module?.ImageBase,
+        };
     }
 
     private static void AggregateDelegate(ClrObject obj, Dictionary<DelegateKey, RawDelegateStat> sink)
@@ -287,7 +293,7 @@ internal static class ClrMdHeapWalker
         ClrMdTaskTimerAnalyzer.RawTaskTimerAggregation TaskTimers,
         ClrMdAssemblyLoadContextAnalyzer.RawAssemblyLoadContextAggregation AssemblyLoadContexts);
 
-    private readonly record struct TypeKey(string TypeName, string? ModuleName);
+    private readonly record struct TypeKey(string TypeName, string? ModuleName, ulong ModuleImageBase);
 
     private sealed class RawTypeStat
     {

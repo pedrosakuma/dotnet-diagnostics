@@ -121,7 +121,7 @@ internal static class ClrMdRetentionAnalyzer
         return results;
     }
 
-    private static bool MatchesTarget(TypeIdentity target, TypeIdentity observed, int sameNameCount)
+    internal static bool MatchesTarget(TypeIdentity target, TypeIdentity observed, int sameNameCount)
     {
         if (!string.Equals(target.TypeFullName, observed.TypeFullName, StringComparison.Ordinal))
         {
@@ -136,18 +136,24 @@ internal static class ClrMdRetentionAnalyzer
 
         if (!string.IsNullOrWhiteSpace(target.ModulePath))
         {
-            return string.Equals(target.ModulePath, observed.ModulePath, StringComparison.OrdinalIgnoreCase) &&
+            return PathEquals(target.ModulePath, observed.ModulePath) &&
                    (target.MetadataToken is not { } token || observed.MetadataToken == token);
         }
 
         if (!string.IsNullOrWhiteSpace(target.ModuleName))
         {
-            return string.Equals(target.ModuleName, observed.ModuleName, StringComparison.OrdinalIgnoreCase) &&
+            return PathEquals(target.ModuleName, observed.ModuleName) &&
                    (target.MetadataToken is not { } token || observed.MetadataToken == token);
         }
 
         return sameNameCount == 1;
     }
+
+    private static bool PathEquals(string left, string? right)
+        => string.Equals(
+            left,
+            right,
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     private static bool HasModuleIdentity(TypeIdentity identity)
         => identity.ModuleVersionId is not null ||

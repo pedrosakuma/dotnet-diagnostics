@@ -1,7 +1,9 @@
 using DotnetDiagnostics.Core;
+using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Threads;
+using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
 
@@ -9,6 +11,44 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
 public sealed class ThreadSnapshotToolTests
 {
+    [Fact]
+    public async Task CoreCollectionSummary_UsesAllThreadDecisiveProjection()
+    {
+        var blocked = Thread(
+            managedId: 1,
+            state: "Wait",
+            method: "System.Threading.Monitor.Wait",
+            isLikelyBlocked: true);
+        var running = Thread(
+            managedId: 2,
+            state: "Running",
+            method: "App.Worker.ProcessRequest",
+            isLikelyBlocked: false);
+        var snapshot = new ThreadSnapshotArtifact(
+            ThreadSnapshotOrigin.Dump,
+            42,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMilliseconds(10),
+            "CoreClr",
+            "10.0.0",
+            [blocked, running],
+            Array.Empty<MonitorLockState>());
+
+        var result = await SamplerUseCases.CollectThreadSnapshot(
+            new StubThreadSnapshotInspector(snapshot),
+            new MemoryDiagnosticHandleStore(),
+            resolver: null!,
+            new SymbolServerAllowlist(null),
+            principalAllowsSymbolsRemote: false,
+            dumpFilePath: "capture.dmp",
+            depth: SamplingDepth.Summary);
+
+        result.Error.Should().BeNull();
+        result.Data!.View.Should().Be("threads-summary");
+        result.Data.CandidateThreads.Should().Be(2);
+        result.Data.Threads.Select(thread => thread.ManagedThreadId).Should().Contain(2);
+    }
+
     [Fact]
     public async Task CollectThreadSnapshot_DefaultResponseAllocationDoesNotScaleWithCaptureVolume()
     {
@@ -166,6 +206,34 @@ public sealed class ThreadSnapshotToolTests
             "10.0.0",
             threads,
             locks);
+    }
+
+    private static ManagedThread Thread(int managedId, string state, string method, bool isLikelyBlocked)
+    {
+        var frame = new ManagedStackFrame(
+            "ManagedMethod",
+            method,
+            "App.Worker",
+            "App.dll",
+            0x1000,
+            0x2000);
+        return new ManagedThread(
+            managedId,
+            (uint)(10_000 + managedId),
+            (ulong)managedId,
+            state,
+            true,
+            false,
+            false,
+            false,
+            true,
+            0,
+            null,
+            method,
+            [frame])
+        {
+            IsLikelyBlocked = isLikelyBlocked,
+        };
     }
 
     private sealed class StubThreadSnapshotInspector(ThreadSnapshotArtifact snapshot) : IThreadSnapshotInspector

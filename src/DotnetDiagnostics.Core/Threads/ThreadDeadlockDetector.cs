@@ -4,8 +4,8 @@ namespace DotnetDiagnostics.Core.Threads;
 
 /// <summary>
 /// Pure in-memory deadlock detection over a captured <see cref="ThreadSnapshotArtifact"/>. Uses a
-/// DFS over waiter→owner edges inferred from the lock graph and returns every unique simple cycle
-/// up to the requested cap.
+/// DFS over waiter→owner edges inferred from the lock graph and returns every unique simple
+/// inferred-cycle candidate up to the requested cap.
 /// </summary>
 public static class ThreadDeadlockDetector
 {
@@ -106,7 +106,11 @@ public static class ThreadDeadlockDetector
                 OwnerThreadId: edge.OwnerThreadId,
                 LockObjectAddress: edge.LockObjectAddress,
                 LockObjectTypeFullName: edge.LockObjectTypeFullName,
-                LockKind: edge.LockKind))
+                LockKind: edge.LockKind)
+            {
+                EdgeSource = edge.EdgeSource,
+                Confidence = edge.Confidence,
+            })
             .ToArray();
 
         var commands = new List<ThreadDeadlockCommand>

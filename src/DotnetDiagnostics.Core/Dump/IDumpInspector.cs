@@ -420,7 +420,10 @@ public sealed record TypeStat(
     long InstanceCount,
     long TotalBytes,
     double TotalBytesPercent,
-    TypeIdentity? Identity = null);
+    TypeIdentity? Identity = null)
+{
+    internal ulong? ModuleImageBase { get; init; }
+}
 
 /// <summary>
 /// Canonical, machine-readable identity of a managed type observed in a dump

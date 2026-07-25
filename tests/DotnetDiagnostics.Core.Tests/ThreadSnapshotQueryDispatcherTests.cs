@@ -366,6 +366,7 @@ public sealed class ThreadSnapshotQueryDispatcherTests
             outcome.Hints.Should().ContainSingle()
                 .Which.NextTool.Should().Be("query_snapshot");
         }
+        waiters.Hints[0].SuggestedArguments!["address"].Should().Be("0x30000");
 
         var empty = snapshot with
         {
@@ -411,6 +412,16 @@ public sealed class ThreadSnapshotQueryDispatcherTests
             snapshot, Handle, "top-blocked", null, 50, 20, 1, cursor: cursor!);
         var mixedPaging = ThreadSnapshotQueryDispatcher.DispatchCursor(
             snapshot, Handle, "threads-summary", null, 50, 20, 1, offset: 1, cursor: cursor!);
+        var malformedWaiter = ThreadSnapshotQueryDispatcher.DispatchCursor(
+            snapshot,
+            Handle,
+            "lock-graph",
+            threadId: null,
+            topN: 50,
+            framesToHash: 20,
+            minCount: 1,
+            lockAddress: "0x30000",
+            cursor: "not-base64!");
 
         malformed.Error!.Message.Should().Contain("valid base64url");
         malformedString.Error!.Message.Should().Contain("truncated");
@@ -418,6 +429,7 @@ public sealed class ThreadSnapshotQueryDispatcherTests
         crossHandle.Error!.Message.Should().Contain("different snapshot handle");
         crossView.Error!.Message.Should().Contain("different thread view");
         mixedPaging.Error!.Message.Should().Contain("non-zero offset cannot be combined");
+        malformedWaiter.Hints[0].SuggestedArguments!["address"].Should().Be("0x30000");
     }
 
     [Fact]

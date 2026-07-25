@@ -276,6 +276,80 @@ public class CpuSampleQueryDispatcherTests
     }
 
     [Fact]
+    public void RenderCallTree_WithoutClassification_RanksInclusiveBeforeExclusive()
+    {
+        var coldLeaf = new CallTreeNode(
+            new SampledFrame("App.dll", "ColdLeaf"),
+            InclusiveSamples: 1,
+            ExclusiveSamples: 1,
+            Array.Empty<CallTreeNode>());
+        var hotDeepLeaf = new CallTreeNode(
+            new SampledFrame("App.dll", "HotDeepLeaf"),
+            InclusiveSamples: 1000,
+            ExclusiveSamples: 1000,
+            Array.Empty<CallTreeNode>());
+        var hotBranch = new CallTreeNode(
+            new SampledFrame("App.dll", "HotBranch"),
+            InclusiveSamples: 1000,
+            ExclusiveSamples: 0,
+            new[] { hotDeepLeaf });
+        var root = new CallTreeNode(
+            new SampledFrame("App.dll", "Root"),
+            InclusiveSamples: 1001,
+            ExclusiveSamples: 0,
+            new[] { coldLeaf, hotBranch });
+        var trace = new CpuSampleTraceArtifact(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), 1001, root);
+
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(trace, Handle, null, maxDepth: 8, maxNodes: 2);
+
+        outcome.Data!.Root.Children.Should().ContainSingle();
+        outcome.Data.Root.Children[0].Frame.Method.Should().Be("HotBranch");
+    }
+
+    [Fact]
+    public void RenderCallTree_LargeWideDeepTree_BoundsMetricTraversal()
+    {
+        const int branchCount = 200;
+        const int branchDepth = 600;
+        var branches = new CallTreeNode[branchCount];
+        for (var branchIndex = 0; branchIndex < branchCount; branchIndex++)
+        {
+            CallTreeNode node = new(
+                new SampledFrame("App.dll", $"Leaf{branchIndex}"),
+                InclusiveSamples: 1,
+                ExclusiveSamples: 1,
+                Array.Empty<CallTreeNode>());
+            for (var depth = 1; depth < branchDepth; depth++)
+            {
+                node = new CallTreeNode(
+                    new SampledFrame("App.dll", $"Branch{branchIndex}.Depth{depth}"),
+                    InclusiveSamples: 1,
+                    ExclusiveSamples: 0,
+                    new[] { node });
+            }
+            branches[branchIndex] = node;
+        }
+
+        var root = new CallTreeNode(
+            new SampledFrame("App.dll", "Root"),
+            InclusiveSamples: branchCount,
+            ExclusiveSamples: 0,
+            branches);
+        var trace = new CpuSampleTraceArtifact(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), branchCount, root);
+
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(
+            trace,
+            Handle,
+            rootMethodFilter: null,
+            maxDepth: 8,
+            maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
+
+        outcome.Data!.TraversalLimitReached.Should().BeTrue();
+        outcome.Data.TraversalNodesVisited.Should().Be(outcome.Data.TraversalNodeLimit);
+        outcome.Data.NodeCount.Should().BeLessThanOrEqualTo(CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
+    }
+
+    [Fact]
     public void RenderCallerCallee_MissingFilter_ReturnsInvalidArgument()
         => CpuSampleQueryDispatcher.RenderCallerCallee(Recursive(), Handle, methodFilter: null, topN: 10)
             .Error!.Kind.Should().Be("InvalidArgument");
