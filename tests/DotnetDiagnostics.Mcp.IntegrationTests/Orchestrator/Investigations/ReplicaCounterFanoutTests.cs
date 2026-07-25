@@ -273,6 +273,45 @@ public sealed class ReplicaCounterFanoutTests
     }
 
     [Fact]
+    public async Task CompareAsync_HungSelectorTimesOutWithoutConsumingHealthyCollectionBudget()
+    {
+        var selector = new InvestigationProcessSelector(ManagedEntrypointAssemblyName: "Worker");
+        var store = new MemoryInvestigationStore();
+        store.Add(ActiveHandle("inv-hung", "hung", processSelector: selector));
+        store.Add(ActiveHandle("inv-healthy", "healthy", processSelector: selector));
+
+        var proxy = new StubProxyClient
+        {
+            ["healthy"] = CountersResult(30, 100, 0, 42, "healthy"),
+        };
+        proxy.ProcessLists["healthy"] = ProcessListResult(
+            Process(42, "Worker", "dotnet Worker.dll --slot=healthy"));
+        proxy.ProcessListGates["hung"] = new TaskCompletionSource<CallToolResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var stopwatch = Stopwatch.StartNew();
+        var fanout = await ReplicaCounterFanout.CompareAsync(
+            store,
+            proxy,
+            callerBearerName: null,
+            investigationHandleIds: new[] { "inv-hung", "inv-healthy" },
+            durationSeconds: 5,
+            intervalSeconds: 1,
+            selectorResolutionTimeout: TimeSpan.FromMilliseconds(250),
+            CancellationToken.None);
+
+        stopwatch.Stop();
+        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5));
+        fanout.PodErrors.Should().ContainSingle()
+            .Which.Should().Contain("hung").And.Contain("process selection timed out");
+        var reading = fanout.Skew!.Replicas.Should().ContainSingle().Which;
+        reading.PodName.Should().Be("healthy");
+        reading.ProcessId.Should().Be(42);
+        proxy.Calls.Should().ContainSingle().Which.Should().Be("healthy");
+        proxy.CounterProcessIds.Should().Contain("healthy", 42);
+    }
+
+    [Fact]
     public async Task CompareAsync_ExplicitEmptyHandleList_DoesNotFallBackToCallerWideDiscovery()
     {
         var store = new MemoryInvestigationStore();

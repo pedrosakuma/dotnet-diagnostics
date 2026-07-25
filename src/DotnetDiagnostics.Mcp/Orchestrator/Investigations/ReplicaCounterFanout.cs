@@ -27,6 +27,8 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// </remarks>
 internal static class ReplicaCounterFanout
 {
+    private static readonly TimeSpan DefaultSelectorResolutionTimeout = TimeSpan.FromSeconds(10);
+
     private static readonly JsonSerializerOptions DeserializeOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -44,7 +46,7 @@ internal static class ReplicaCounterFanout
         int? ProcessId,
         string Failure);
 
-    internal static async Task<FanoutResult> CompareAsync(
+    internal static Task<FanoutResult> CompareAsync(
         IInvestigationStore store,
         IInvestigationProxyClient proxy,
         string? callerBearerName,
@@ -52,22 +54,40 @@ internal static class ReplicaCounterFanout
         int durationSeconds,
         int intervalSeconds,
         CancellationToken cancellationToken)
+        => CompareAsync(
+            store,
+            proxy,
+            callerBearerName,
+            investigationHandleIds,
+            durationSeconds,
+            intervalSeconds,
+            DefaultSelectorResolutionTimeout,
+            cancellationToken);
+
+    internal static async Task<FanoutResult> CompareAsync(
+        IInvestigationStore store,
+        IInvestigationProxyClient proxy,
+        string? callerBearerName,
+        IReadOnlyList<string>? investigationHandleIds,
+        int durationSeconds,
+        int intervalSeconds,
+        TimeSpan selectorResolutionTimeout,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(proxy);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(selectorResolutionTimeout, TimeSpan.Zero);
 
         var errors = new List<string>();
         var handles = ResolveHandles(store, callerBearerName, investigationHandleIds, errors);
         var readings = new List<ReplicaCounterReading>(handles.Length);
         var arguments = BuildCountersArguments(durationSeconds, intervalSeconds);
-        var timeoutSeconds = durationSeconds + 30;
-        var deadline = CreateDeadline(TimeSpan.FromSeconds(timeoutSeconds));
 
         // Phase 1 resolves every transport-neutral selector concurrently. No collection starts
         // until every resolution has completed or failed, otherwise slow Pod-local discovery
         // shifts that replica's EventPipe window later than its peers.
         var resolutionTasks = handles
-            .Select(handle => ResolveAsync(proxy, handle, deadline, timeoutSeconds, cancellationToken))
+            .Select(handle => ResolveAsync(proxy, handle, selectorResolutionTimeout, cancellationToken))
             .ToArray();
         var resolutions = await Task.WhenAll(resolutionTasks).ConfigureAwait(false);
 
@@ -84,9 +104,18 @@ internal static class ReplicaCounterFanout
         }
 
         // Phase 2 is the common barrier: only after all selector lookups finish do we create every
-        // collection task. Task.WhenAll preserves the resolved-handle ordering in the output.
+        // collection task. Its deadline starts after resolution so one hung selector cannot consume
+        // the requested EventPipe window for healthy replicas. Task.WhenAll preserves ordering.
+        var collectionTimeoutSeconds = durationSeconds + 30;
+        var collectionDeadline = CreateDeadline(TimeSpan.FromSeconds(collectionTimeoutSeconds));
         var collectionTasks = resolved
-            .Select(resolution => CollectAsync(proxy, resolution, arguments, deadline, timeoutSeconds, cancellationToken))
+            .Select(resolution => CollectAsync(
+                proxy,
+                resolution,
+                arguments,
+                collectionDeadline,
+                collectionTimeoutSeconds,
+                cancellationToken))
             .ToArray();
         var results = await Task.WhenAll(collectionTasks).ConfigureAwait(false);
 
@@ -113,8 +142,7 @@ internal static class ReplicaCounterFanout
     private static async Task<ProcessResolution> ResolveAsync(
         IInvestigationProxyClient proxy,
         InvestigationHandle handle,
-        long deadline,
-        int timeoutSeconds,
+        TimeSpan selectorResolutionTimeout,
         CancellationToken cancellationToken)
     {
         if (handle.ProcessSelector is null)
@@ -122,18 +150,8 @@ internal static class ReplicaCounterFanout
             return new ProcessResolution(handle, true, null, string.Empty);
         }
 
-        var remaining = GetRemaining(deadline);
-        if (remaining <= TimeSpan.Zero)
-        {
-            return new ProcessResolution(
-                handle,
-                false,
-                null,
-                $"process selection timed out after {timeoutSeconds}s");
-        }
-
         using var perPodCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        perPodCts.CancelAfter(remaining);
+        perPodCts.CancelAfter(selectorResolutionTimeout);
         try
         {
             var (processId, failure) = await ResolveProcessIdAsync(
@@ -155,7 +173,7 @@ internal static class ReplicaCounterFanout
                 handle,
                 false,
                 null,
-                $"process selection timed out after {timeoutSeconds}s");
+                $"process selection timed out after {selectorResolutionTimeout.TotalSeconds:0.###}s");
         }
         catch (Exception ex)
         {
