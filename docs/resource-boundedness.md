@@ -90,7 +90,7 @@ position as the final tie-breaker, without materializing full candidate arrays, 
 dictionaries, or sorts. Cursors validate their handle/view/key (and exact lock address for waiter
 pages); malformed, stale, and cross-handle values fail safely.
 The default collection response also defers thread-wait signal grouping and deadlock-graph
-construction; exact lock/deadlock evidence remains available through explicit handle queries.
+construction; the exact lock graph and deadlock-cycle analysis remain available through explicit handle queries.
 Direct offsets above `MaxDirectOffset = 256`, including `int.MaxValue`, are rejected before capture
 selection with guidance to restart at zero and follow the returned cursor. Small offsets remain for
 compatibility.

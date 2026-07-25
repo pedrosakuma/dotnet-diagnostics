@@ -9,36 +9,94 @@ internal static class ClrMdRetentionAnalyzer
         IReadOnlyList<TypeStat> topByBytes,
         int depthLimit,
         int targetCount,
+        Func<ClrType?, TypeIdentity?> buildTypeIdentity,
         List<string> warnings,
         CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(buildTypeIdentity);
+
         // Build a reverse map: object → first retainer found during a single roots/refs walk.
         // For each target type we then pick the largest instance and walk back to a root.
         // This is approximate (a real !gcroot does a full search) but cheap and "good enough"
         // to point the LLM at where to dig deeper.
-        var targets = new HashSet<string>(topByBytes.Take(targetCount).Select(t => t.TypeFullName), StringComparer.Ordinal);
-        if (targets.Count == 0) return Array.Empty<RetentionPath>();
+        var targets = topByBytes
+            .Take(targetCount)
+            .Select(stat => stat.Identity ?? new TypeIdentity(stat.TypeFullName) { ModuleName = stat.ModuleName })
+            .ToArray();
+        if (targets.Length == 0) return Array.Empty<RetentionPath>();
+        var sameNameCounts = targets
+            .Select(target => targets.Count(candidate =>
+                string.Equals(candidate.TypeFullName, target.TypeFullName, StringComparison.Ordinal)))
+            .ToArray();
+        var targetNames = targets
+            .Select(target => target.TypeFullName)
+            .ToHashSet(StringComparer.Ordinal);
 
-        var sampleInstances = new Dictionary<string, ClrObject>(StringComparer.Ordinal);
+        var samples = new ClrObject?[targets.Length];
+        var identityByType = new Dictionary<ClrType, TypeIdentity>();
         foreach (var obj in runtime.Heap.EnumerateObjects())
         {
             ct.ThrowIfCancellationRequested();
-            var typeName = obj.Type?.Name;
-            if (typeName is null || !targets.Contains(typeName)) continue;
-            if (sampleInstances.TryGetValue(typeName, out var existing) && existing.Size >= obj.Size) continue;
-            sampleInstances[typeName] = obj;
+            var clrType = obj.Type;
+            var typeName = clrType?.Name;
+            if (clrType is null || typeName is null || !targetNames.Contains(typeName)) continue;
+
+            if (!identityByType.TryGetValue(clrType, out var observedIdentity))
+            {
+                observedIdentity = buildTypeIdentity(clrType)
+                    ?? new TypeIdentity(typeName)
+                    {
+                        ModuleName = clrType.Module?.Name is { } modulePath ? Path.GetFileName(modulePath) : null,
+                        ModulePath = clrType.Module?.Name,
+                    };
+                identityByType[clrType] = observedIdentity;
+            }
+
+            for (var index = 0; index < targets.Length; index++)
+            {
+                if (!MatchesTarget(targets[index], observedIdentity, sameNameCounts[index]))
+                {
+                    continue;
+                }
+
+                if (samples[index] is not { } existing || existing.Size < obj.Size)
+                {
+                    samples[index] = obj;
+                }
+            }
         }
 
-        var targetAddresses = new HashSet<ulong>(sampleInstances.Values.Select(o => o.Address));
+        var targetAddresses = new HashSet<ulong>(samples.Where(sample => sample.HasValue).Select(sample => sample!.Value.Address));
+        var ambiguousNames = targets
+            .Where((target, index) => samples[index] is null && sameNameCounts[index] > 1 && !HasModuleIdentity(target))
+            .Select(target => target.TypeFullName)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        if (ambiguousNames.Length > 0)
+        {
+            warnings.Add(
+                $"Retention paths were omitted for same-named types without a unique MVID/token/module identity: {string.Join(", ", ambiguousNames)}.");
+        }
+        if (targetAddresses.Count == 0)
+        {
+            return Array.Empty<RetentionPath>();
+        }
+
         var rootByObject = BuildRootByObjectMap(runtime, targetAddresses, depthLimit, maxRetainedGraphObjects: 250_000, out var bfsCapHit, ct);
         if (bfsCapHit)
         {
             warnings.Add($"Retention-path BFS hit its safety cap before reaching every target type; deeply-retained instances may report Truncated=true with no chain found.");
         }
 
-        var results = new List<RetentionPath>(sampleInstances.Count);
-        foreach (var (typeName, instance) in sampleInstances)
+        var results = new List<RetentionPath>(samples.Length);
+        for (var index = 0; index < samples.Length; index++)
         {
+            if (samples[index] is not { } instance)
+            {
+                continue;
+            }
+
             ct.ThrowIfCancellationRequested();
             var reachedByBfs = rootByObject.ContainsKey(instance.Address);
             var chain = WalkUp(instance, rootByObject, depthLimit, out var truncated);
@@ -51,14 +109,50 @@ internal static class ClrMdRetentionAnalyzer
             }
 
             results.Add(new RetentionPath(
-                TargetTypeFullName: typeName,
+                TargetTypeFullName: targets[index].TypeFullName,
                 TargetObjectAddress: instance.Address,
                 Chain: chain,
-                Truncated: truncated));
+                Truncated: truncated)
+            {
+                TargetIdentity = targets[index],
+            });
         }
 
         return results;
     }
+
+    private static bool MatchesTarget(TypeIdentity target, TypeIdentity observed, int sameNameCount)
+    {
+        if (!string.Equals(target.TypeFullName, observed.TypeFullName, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (target.ModuleVersionId is { } moduleVersionId)
+        {
+            return observed.ModuleVersionId == moduleVersionId &&
+                   (target.MetadataToken is not { } token || observed.MetadataToken == token);
+        }
+
+        if (!string.IsNullOrWhiteSpace(target.ModulePath))
+        {
+            return string.Equals(target.ModulePath, observed.ModulePath, StringComparison.OrdinalIgnoreCase) &&
+                   (target.MetadataToken is not { } token || observed.MetadataToken == token);
+        }
+
+        if (!string.IsNullOrWhiteSpace(target.ModuleName))
+        {
+            return string.Equals(target.ModuleName, observed.ModuleName, StringComparison.OrdinalIgnoreCase) &&
+                   (target.MetadataToken is not { } token || observed.MetadataToken == token);
+        }
+
+        return sameNameCount == 1;
+    }
+
+    private static bool HasModuleIdentity(TypeIdentity identity)
+        => identity.ModuleVersionId is not null ||
+           !string.IsNullOrWhiteSpace(identity.ModulePath) ||
+           !string.IsNullOrWhiteSpace(identity.ModuleName);
 
     public static Dictionary<ulong, (ulong From, string? RootKind)> BuildRootByObjectMap(
         ClrRuntime runtime,

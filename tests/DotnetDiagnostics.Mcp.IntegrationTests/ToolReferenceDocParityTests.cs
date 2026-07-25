@@ -129,6 +129,29 @@ public sealed class ToolReferenceDocParityTests
     }
 
     [Fact]
+    public void ThreadSnapshotDocs_DistinguishDeadlockCandidatesFromConfirmedCycles()
+    {
+        var doc = ReadToolReference();
+
+        doc.Should().Contain("owner-and-waiter deadlock candidates");
+        doc.Should().Contain("only `query_snapshot(view=\"deadlocks\")` confirms a cycle");
+        doc.Should().NotContain("deadlock members");
+    }
+
+    [Fact]
+    public void LockStormCaseStudy_UsesSerializedThreadAndLockFieldShapes()
+    {
+        var doc = ReadRepoFile(Path.Combine("docs", "case-studies", "lock-storm-correlation.md"));
+
+        doc.Should().Contain("\"inferredWaitReason\":");
+        doc.Should().Contain("\"objectTypeFullName\":");
+        doc.Should().Contain("\"objectAddress\": 135052701042856");
+        doc.Should().NotContain("\"waitReason\":");
+        doc.Should().NotContain("\"type\":");
+        doc.Should().NotContain("\"objectAddress\": \"0x");
+    }
+
+    [Fact]
     public void RemovedToolAliases_AreConfinedToExplicitMigrationHistory()
     {
         var aliases = new[]

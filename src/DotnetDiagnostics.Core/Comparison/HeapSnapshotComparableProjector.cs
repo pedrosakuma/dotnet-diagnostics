@@ -75,6 +75,25 @@ public sealed class HeapSnapshotComparableProjector : IComparableProjector
         return result;
     }
 
+    internal static Dictionary<TypeIdentity, HeapDiffMetric> ProjectTypedByAvailableIdentity(HeapSnapshotArtifact snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var result = new Dictionary<TypeIdentity, HeapDiffMetric>(AvailableTypeIdentityComparer.Instance);
+        foreach (var stat in snapshot.TopTypesByBytes.Concat(snapshot.TopTypesByInstances))
+        {
+            var identity = stat.Identity ?? new TypeIdentity(stat.TypeFullName) { ModuleName = stat.ModuleName };
+            result[identity] = result.TryGetValue(identity, out var existing)
+                ? new HeapDiffMetric(
+                    TotalBytes: Math.Max(existing.TotalBytes, stat.TotalBytes),
+                    InstanceCount: Math.Max(existing.InstanceCount, stat.InstanceCount))
+                : new HeapDiffMetric(
+                    TotalBytes: stat.TotalBytes,
+                    InstanceCount: stat.InstanceCount);
+        }
+
+        return result;
+    }
+
     private static Dictionary<string, HeapAggregate> BuildAggregates(HeapSnapshotArtifact snapshot, string kind)
     {
         var aggregates = new Dictionary<string, HeapAggregate>(StringComparer.Ordinal);
@@ -110,4 +129,72 @@ public sealed class HeapSnapshotComparableProjector : IComparableProjector
         => new(new MetricDefinition(name, role, direction, aggregation, normalizedBy, unit), Math.Round(value, 4));
 
     private sealed record HeapAggregate(ComparableKey Key, string DisplayName, TypeIdentity Identity, long TotalBytes, long InstanceCount);
+
+    internal sealed class AvailableTypeIdentityComparer : IEqualityComparer<TypeIdentity>
+    {
+        public static AvailableTypeIdentityComparer Instance { get; } = new();
+
+        public bool Equals(TypeIdentity? x, TypeIdentity? y)
+        {
+            if (ReferenceEquals(x, y))
+            {
+                return true;
+            }
+            if (x is null || y is null)
+            {
+                return false;
+            }
+
+            return Key(x) == Key(y);
+        }
+
+        public int GetHashCode(TypeIdentity obj) => Key(obj).GetHashCode();
+
+        private static AvailableIdentityKey Key(TypeIdentity identity)
+        {
+            if (identity.ModuleVersionId is { } moduleVersionId)
+            {
+                return new AvailableIdentityKey(
+                    Kind: 3,
+                    identity.TypeFullName,
+                    moduleVersionId,
+                    identity.MetadataToken,
+                    Module: null);
+            }
+
+            if (!string.IsNullOrWhiteSpace(identity.ModulePath))
+            {
+                return new AvailableIdentityKey(
+                    Kind: 2,
+                    identity.TypeFullName,
+                    ModuleVersionId: null,
+                    identity.MetadataToken,
+                    Module: identity.ModulePath.ToUpperInvariant());
+            }
+
+            if (!string.IsNullOrWhiteSpace(identity.ModuleName))
+            {
+                return new AvailableIdentityKey(
+                    Kind: 1,
+                    identity.TypeFullName,
+                    ModuleVersionId: null,
+                    identity.MetadataToken,
+                    Module: identity.ModuleName.ToUpperInvariant());
+            }
+
+            return new AvailableIdentityKey(
+                Kind: 0,
+                identity.TypeFullName,
+                ModuleVersionId: null,
+                identity.MetadataToken,
+                Module: null);
+        }
+
+        private readonly record struct AvailableIdentityKey(
+            int Kind,
+            string TypeFullName,
+            Guid? ModuleVersionId,
+            int? MetadataToken,
+            string? Module);
+    }
 }

@@ -173,6 +173,9 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         threadDepthDescription.Should().Contain("6 decisive threads");
         threadDepthDescription.Should().Contain("8 decisive threads");
         threadDepthDescription.Should().Contain("12 locks");
+        threadDepthDescription.Should().Contain("deadlock candidates");
+        threadDepthDescription.Should().Contain("confirms a cycle");
+        threadDepthDescription.Should().NotContain("deadlock members");
         threadDepthDescription.Should().NotContain("top-3").And.NotContain("top-25");
 
         var querySnapshot = tools.Single(tool => tool.Name == "query_snapshot");

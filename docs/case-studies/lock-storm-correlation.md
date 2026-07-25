@@ -88,7 +88,7 @@ only the first eight ranked candidates and a continuation:
   "threadOffset": 0,
   "nextThreadCursor": "<opaque>",
   "threads": [
-    { "managedThreadId": 21, "waitReason": "Monitor.Enter (contended)" }
+    { "managedThreadId": 21, "inferredWaitReason": "Monitor.Enter (contended)" }
     // ... seven more bounded rows, each with at most eight frames
   ]
 }
@@ -110,7 +110,8 @@ page without losing its stable owner identity:
   "waiterOffset": 0,
   "nextWaiterCursor": "<opaque>",
   "locks": [{
-    "objectAddress": "0x7ad4684588a8",
+    "objectAddress": 135052701042856,
+    "objectTypeFullName": "System.Object",
     "ownerManagedThreadId": 14,
     "waitingThreadCount": 17,
     "waitingManagedThreadIds": [ /* first 8 ids */ ],
@@ -137,10 +138,10 @@ no resolvable managed owner thread and are not part of this correlation):
 ```jsonc
 {
   "locks": [
-    { "type": "System.Object", "objectAddress": "0x7ad4684588a8",
+    { "objectTypeFullName": "System.Object", "objectAddress": 135052701042856,
       "ownerManagedThreadId": 14, "waitingThreadCount": 17,
       "waitingManagedThreadIds": [ /* first 8 ids */ ] },
-    { "type": "System.Object", "ownerManagedThreadId": -1, "waitingThreadCount": 1000 }
+    { "objectTypeFullName": "System.Object", "ownerManagedThreadId": -1, "waitingThreadCount": 1000 }
     // … 2 more logger-internal locks, same shape, not the real bottleneck
   ]
 }

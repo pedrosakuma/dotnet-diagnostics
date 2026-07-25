@@ -444,7 +444,14 @@ public sealed record RetentionPath(
     string TargetTypeFullName,
     ulong TargetObjectAddress,
     IReadOnlyList<RetentionFrame> Chain,
-    bool Truncated);
+    bool Truncated)
+{
+    /// <summary>
+    /// Canonical target identity when the collector could resolve it. Growth correlation uses this
+    /// instead of the display name so same-named types from different modules are not conflated.
+    /// </summary>
+    public TypeIdentity? TargetIdentity { get; init; }
+}
 
 public sealed record RetentionFrame(
     string TypeFullName,

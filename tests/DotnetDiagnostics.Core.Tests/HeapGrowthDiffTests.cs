@@ -99,6 +99,118 @@ public sealed class HeapGrowthDiffTests
     }
 
     [Fact]
+    public void Build_SameNamedTypesAcrossModules_UsesIdentityAndSkipsAmbiguousNameOnlyPaths()
+    {
+        const string typeName = "Shared.Model";
+        var identityA = new TypeIdentity(typeName)
+        {
+            ModuleName = "ModuleA.dll",
+            ModuleVersionId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            MetadataToken = 0x02000001,
+        };
+        var identityB = new TypeIdentity(typeName)
+        {
+            ModuleName = "ModuleB.dll",
+            ModuleVersionId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            MetadataToken = 0x02000001,
+        };
+        var baseline = HeapSnapshotWithIdentity(
+            retentionPaths: null,
+            (identityA, 1_000, 10),
+            (identityB, 2_000, 20));
+        var exactPath = new RetentionPath(
+            typeName,
+            0xA001,
+            [new RetentionFrame("Root.A", 0xA000) { RootKind = "StaticVar" }],
+            Truncated: false)
+        {
+            TargetIdentity = identityA,
+        };
+        var moduleOnlyPath = new RetentionPath(
+            typeName,
+            0xB001,
+            [new RetentionFrame("Root.B", 0xB000) { RootKind = "StaticVar" }],
+            Truncated: false)
+        {
+            TargetIdentity = new TypeIdentity(typeName) { ModuleName = identityB.ModuleName },
+        };
+        var ambiguousPath = new RetentionPath(
+            typeName,
+            0xFFFF,
+            [new RetentionFrame("Root.Unknown", 0xFF00) { RootKind = "StaticVar" }],
+            Truncated: false);
+        var current = HeapSnapshotWithIdentity(
+            [exactPath, moduleOnlyPath, ambiguousPath],
+            (identityA, 5_000, 50),
+            (identityB, 6_000, 60));
+
+        var growth = HeapGrowthDiff.Build(baseline, "b", current, "c", "bytes", minDeltaPct: 5, topN: 25);
+
+        var growerA = growth.Growers.Single(g => g.Identity!.ModuleVersionId == identityA.ModuleVersionId);
+        growerA.RetentionPaths.Should().ContainSingle()
+            .Which.TargetObjectAddress.Should().Be(0xA001);
+        growerA.TotalRetentionPaths.Should().Be(1);
+
+        var growerB = growth.Growers.Single(g => g.Identity!.ModuleVersionId == identityB.ModuleVersionId);
+        growerB.RetentionPaths.Should().ContainSingle()
+            .Which.TargetObjectAddress.Should().Be(0xB001);
+        growerB.TotalRetentionPaths.Should().Be(1);
+        growth.Notes.Should().ContainSingle(note =>
+            note.Contains("Skipped 1 retention path(s)", StringComparison.Ordinal) &&
+            note.Contains(typeName, StringComparison.Ordinal) &&
+            note.Contains("no name-only correlation", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Build_SameNamedModulePathOnlyTypes_RemainSeparate()
+    {
+        const string typeName = "Shared.ModuleOnly";
+        var identityA = new TypeIdentity(typeName)
+        {
+            ModuleName = "Shared.dll",
+            ModulePath = "/app/a/Shared.dll",
+        };
+        var identityB = new TypeIdentity(typeName)
+        {
+            ModuleName = "Shared.dll",
+            ModulePath = "/app/b/Shared.dll",
+        };
+        var baseline = HeapSnapshotWithIdentity(
+            retentionPaths: null,
+            (identityA, 1_000, 10),
+            (identityB, 2_000, 20));
+        var current = HeapSnapshotWithIdentity(
+            [
+                new RetentionPath(
+                    typeName,
+                    0xA001,
+                    [new RetentionFrame("Root.A", 0xA000) { RootKind = "StaticVar" }],
+                    Truncated: false)
+                {
+                    TargetIdentity = identityA,
+                },
+                new RetentionPath(
+                    typeName,
+                    0xB001,
+                    [new RetentionFrame("Root.B", 0xB000) { RootKind = "StaticVar" }],
+                    Truncated: false)
+                {
+                    TargetIdentity = identityB,
+                },
+            ],
+            (identityA, 5_000, 50),
+            (identityB, 6_000, 60));
+
+        var growth = HeapGrowthDiff.Build(baseline, "b", current, "c", "bytes", minDeltaPct: 5, topN: 25);
+
+        growth.Growers.Should().HaveCount(2);
+        growth.Growers.Single(g => g.Identity!.ModulePath == identityA.ModulePath)
+            .RetentionPaths.Should().ContainSingle().Which.TargetObjectAddress.Should().Be(0xA001);
+        growth.Growers.Single(g => g.Identity!.ModulePath == identityB.ModulePath)
+            .RetentionPaths.Should().ContainSingle().Which.TargetObjectAddress.Should().Be(0xB001);
+    }
+
+    [Fact]
     public void Build_NoRetentionPaths_EmitsRecaptureNote()
     {
         var baseline = HeapSnapshot(("Leaky.Cache", 1_000, 10));
@@ -180,6 +292,33 @@ public sealed class HeapGrowthDiffTests
             WalkDuration: TimeSpan.FromMilliseconds(10),
             Runtime: new DumpRuntimeInfo("CoreCLR", "10.0.0", "x64", IsServerGC: false, HeapCount: 1),
             Heap: new DumpHeapSummary(heapTotalBytes, 0, 0, heapTotalBytes, 0, 0, heapTotalBytes),
+            TopTypesByBytes: stats,
+            TopTypesByInstances: stats)
+        {
+            RetentionPaths = retentionPaths,
+        };
+    }
+
+    private static HeapSnapshotArtifact HeapSnapshotWithIdentity(
+        IReadOnlyList<RetentionPath>? retentionPaths,
+        params (TypeIdentity identity, long bytes, long instances)[] rows)
+    {
+        var stats = rows.Select(row =>
+            new TypeStat(
+                TypeFullName: row.identity.TypeFullName,
+                ModuleName: row.identity.ModuleName,
+                InstanceCount: row.instances,
+                TotalBytes: row.bytes,
+                TotalBytesPercent: 0,
+                Identity: row.identity)).ToArray();
+
+        return new HeapSnapshotArtifact(
+            Origin: HeapSnapshotOrigin.Live,
+            ProcessId: 123,
+            CapturedAt: DateTimeOffset.UtcNow,
+            WalkDuration: TimeSpan.FromMilliseconds(10),
+            Runtime: new DumpRuntimeInfo("CoreCLR", "10.0.0", "x64", IsServerGC: false, HeapCount: 1),
+            Heap: new DumpHeapSummary(stats.Sum(stat => stat.TotalBytes), 0, 0, 0, 0, 0, 0),
             TopTypesByBytes: stats,
             TopTypesByInstances: stats)
         {

@@ -140,7 +140,7 @@ public static class ThreadSnapshotQueryDispatcher
             ? $"Snapshot '{handle}' contains no captured threads."
             : page.Offset >= page.TotalItems
                 ? $"Thread page offset {page.Offset} is exhausted for snapshot '{handle}'; the decisive thread set contains {page.TotalItems} item(s) and has no continuation."
-                : $"Returning {page.Items.Count}/{page.TotalItems} decisive thread(s) at position {page.Offset} from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}); running/owner/deadlock evidence is ranked before generic waits and frames are capped at {ThreadSnapshotProjection.QueryFrameLimit} per thread. Continue with nextThreadCursor; the handle retains all evidence.";
+                : $"Returning {page.Items.Count}/{page.TotalItems} decisive thread(s) at position {page.Offset} from snapshot '{handle}' ({origin}, pid {snapshot.ProcessId}); owner-and-waiter deadlock candidates, contended-lock owners, exceptions, and running frames rank before generic waits, and frames are capped at {ThreadSnapshotProjection.QueryFrameLimit} per thread. Confirm cycles with view='deadlocks'; continue with nextThreadCursor. The handle retains all evidence.";
         return DiagnosticResult.Ok(
             new ThreadSnapshotQueryResult(handle, "threads-summary", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
             {
