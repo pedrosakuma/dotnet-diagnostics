@@ -258,6 +258,7 @@ public sealed class InvestigationProxyCallToolFilterTests
     [Theory]
     [InlineData("collect_sample", "kind", "method-params", "eventpipe", "sensitive-parameter-read")]
     [InlineData("get_bytes", "kind", "delete", "module-bytes-read", "delete-artifact")]
+    [InlineData("query_snapshot", "handle", "opaque", "eventpipe", "sensitive-parameter-read")]
     public async Task Forwards_ModifierGatedCall_With_RequestBound_Exact_Delegation(
         string toolName,
         string argumentName,
@@ -281,11 +282,10 @@ public sealed class InvestigationProxyCallToolFilterTests
 
         result.IsError.Should().BeNull();
         fx.ProxyClient.CallCount.Should().Be(1);
-        var delegatedArguments = fx.ProxyClient.LastRequest!.Arguments!;
+        var delegatedRequest = fx.ProxyClient.LastRequest!;
         var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
         ToolScopeDelegation.TryConsume(
-            toolName,
-            delegatedArguments,
+            delegatedRequest,
             registry,
             new ToolScopeResolutionPolicies(null, null, null, null),
             ActiveHandle.InternalScopeDelegationKey,

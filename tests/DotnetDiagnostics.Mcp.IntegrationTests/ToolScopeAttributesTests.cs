@@ -264,7 +264,7 @@ public sealed class ToolScopeAttributesTests
             },
             {
                 "query_snapshot",
-                Arguments(new { handle = "heap-1", view = "retention-paths" }),
+                Arguments(new { handle = "heap-1", view = "RETENTION-PATHS" }),
                 new[] { "heap-read" },
                 "sensitive-heap-read",
                 true
@@ -283,7 +283,7 @@ public sealed class ToolScopeAttributesTests
             },
             {
                 "query_snapshot",
-                Arguments(new { handle = "threads-1", view = "frame-vars" }),
+                Arguments(new { handle = "threads-1", view = "FRAME-VARS" }),
                 new[] { "ptrace" },
                 "heap-read",
                 false

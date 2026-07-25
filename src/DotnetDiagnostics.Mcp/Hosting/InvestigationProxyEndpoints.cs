@@ -16,6 +16,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Protocol;
 
 namespace DotnetDiagnostics.Mcp.Hosting;
 
@@ -168,7 +169,17 @@ internal static class InvestigationProxyEndpoints
                 scopePolicies);
             if (rejection is not null)
             {
-                if (rejection.Kind == ProxyToolRejectionKind.NotAllowed)
+                if (rejection.Kind == ProxyToolRejectionKind.Malformed)
+                {
+                    logger.LogWarning(
+                        "Proxy rejected malformed JSON-RPC tool request for handle {HandleId}.",
+                        handleId);
+                    await WriteProblemAsync(context, StatusCodes.Status400BadRequest,
+                        "ProxyToolRequestMalformed",
+                        "The JSON-RPC tools/call request is malformed or contains duplicate object keys.")
+                        .ConfigureAwait(false);
+                }
+                else if (rejection.Kind == ProxyToolRejectionKind.NotAllowed)
                 {
                     logger.LogWarning(
                         "Proxy rejected disallowed tool name '{Tool}' for handle {HandleId}.",
@@ -535,6 +546,14 @@ internal static class InvestigationProxyEndpoints
         try
         {
             using var document = JsonDocument.Parse(body);
+            if (HasDuplicateObjectKeys(document.RootElement))
+            {
+                return new ProxyToolRejection(
+                    ProxyToolRejectionKind.Malformed,
+                    "<malformed>",
+                    null,
+                    false);
+            }
             if (document.RootElement.ValueKind == JsonValueKind.Array)
             {
                 foreach (var item in document.RootElement.EnumerateArray())
@@ -577,9 +596,16 @@ internal static class InvestigationProxyEndpoints
         }
         catch (JsonException)
         {
-            // Non-JSON body — let the upstream MCP handle it; the allowlist is
-            // a tool-invocation gate and non-JSON bodies are not invocations.
+            // Non-JSON bodies cannot execute a tool locally and remain an upstream protocol concern.
             return null;
+        }
+        catch (ArgumentException)
+        {
+            return new ProxyToolRejection(
+                ProxyToolRejectionKind.Malformed,
+                "<malformed>",
+                null,
+                false);
         }
     }
 
@@ -626,11 +652,41 @@ internal static class InvestigationProxyEndpoints
         }
 
         IDictionary<string, JsonElement>? arguments = null;
-        if (requestParams.TryGetProperty("arguments", out var argumentObject) &&
-            argumentObject.ValueKind == JsonValueKind.Object)
+        if (requestParams.TryGetProperty("arguments", out var argumentObject))
         {
-            arguments = argumentObject.EnumerateObject()
-                .ToDictionary(static property => property.Name, static property => property.Value, StringComparer.Ordinal);
+            if (argumentObject.ValueKind == JsonValueKind.Object)
+            {
+                arguments = argumentObject.EnumerateObject()
+                    .ToDictionary(static property => property.Name, static property => property.Value, StringComparer.Ordinal);
+            }
+            else if (argumentObject.ValueKind != JsonValueKind.Null)
+            {
+                return new ProxyToolRejection(
+                    ProxyToolRejectionKind.Malformed,
+                    toolName,
+                    null,
+                    false);
+            }
+        }
+
+        try
+        {
+            if (requestParams.Deserialize<CallToolRequestParams>() is null)
+            {
+                return new ProxyToolRejection(
+                    ProxyToolRejectionKind.Malformed,
+                    toolName,
+                    null,
+                    false);
+            }
+        }
+        catch (JsonException)
+        {
+            return new ProxyToolRejection(
+                ProxyToolRejectionKind.Malformed,
+                toolName,
+                null,
+                false);
         }
 
         var authorization = scopeRegistry.Authorize(
@@ -676,6 +732,33 @@ internal static class InvestigationProxyEndpoints
                string.Equals(method.GetString(), "tools/call", StringComparison.Ordinal);
     }
 
+    private static bool HasDuplicateObjectKeys(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in value.EnumerateObject())
+            {
+                if (!names.Add(property.Name) || HasDuplicateObjectKeys(property.Value))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (value.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in value.EnumerateArray())
+            {
+                if (HasDuplicateObjectKeys(item))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private static Task WriteProblemAsync(HttpContext context, int status, string detail)
         => WriteProblemAsync(context, status, kind: null, detail);
 
@@ -718,6 +801,7 @@ internal static class InvestigationProxyEndpoints
 
     private enum ProxyToolRejectionKind
     {
+        Malformed,
         NotAllowed,
         ScopeDenied,
     }

@@ -18,6 +18,8 @@ internal static class ToolScopeDelegation
     internal const string EnvironmentVariableName = "MCP_INTERNAL_SCOPE_DELEGATION_KEY";
     private static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan MaximumClockSkew = TimeSpan.FromSeconds(5);
+    private static readonly byte[] SignatureDomain =
+        "dotnet-diagnostics-mcp\0tools/call\0scope-delegation\0v1\0"u8.ToArray();
     private static readonly ConcurrentDictionary<string, long> UsedNonces = new(StringComparer.Ordinal);
 
     public static CallToolRequestParams Add(
@@ -35,21 +37,15 @@ internal static class ToolScopeDelegation
             ? new Dictionary<string, JsonElement>(StringComparer.Ordinal)
             : new Dictionary<string, JsonElement>(request.Arguments, StringComparer.Ordinal);
         arguments.Remove(ArgumentName);
+        var unsignedRequest = Clone(request, arguments);
         arguments[ArgumentName] = JsonSerializer.SerializeToElement(
-            CreateToken(request.Name, arguments, authorization, caller, secret, timeProvider));
+            CreateToken(unsignedRequest, authorization, caller, secret, timeProvider));
 
-        return new CallToolRequestParams
-        {
-            Name = request.Name,
-            Arguments = arguments,
-            Meta = request.Meta,
-            Task = request.Task,
-        };
+        return Clone(request, arguments);
     }
 
     public static bool TryConsume(
-        string toolName,
-        IDictionary<string, JsonElement>? arguments,
+        CallToolRequestParams request,
         ToolScopeRegistry registry,
         ToolScopeResolutionPolicies policies,
         string? secret,
@@ -59,6 +55,7 @@ internal static class ToolScopeDelegation
     {
         delegatedPrincipal = null;
         failure = string.Empty;
+        var arguments = request.Arguments;
         if (arguments is null || !arguments.TryGetValue(ArgumentName, out var tokenElement))
         {
             return false;
@@ -86,8 +83,7 @@ internal static class ToolScopeDelegation
             return false;
         }
 
-        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
-        var expectedSignature = hmac.ComputeHash(payloadBytes);
+        var expectedSignature = ComputeSignature(secret, payloadBytes);
         if (presentedSignature.Length != expectedSignature.Length ||
             !CryptographicOperations.FixedTimeEquals(presentedSignature, expectedSignature))
         {
@@ -111,8 +107,8 @@ internal static class ToolScopeDelegation
             payload.Scopes is null ||
             payload.Scopes.Length == 0 ||
             string.IsNullOrWhiteSpace(payload.Nonce) ||
-            !string.Equals(payload.Tool, toolName, StringComparison.Ordinal) ||
-            !string.Equals(payload.ArgumentsHash, ComputeArgumentsHash(arguments), StringComparison.Ordinal))
+            !string.Equals(payload.Tool, request.Name, StringComparison.Ordinal) ||
+            !string.Equals(payload.RequestHash, ComputeRequestHash(request), StringComparison.Ordinal))
         {
             failure = "internal scope delegation does not match this invocation";
             return false;
@@ -135,13 +131,13 @@ internal static class ToolScopeDelegation
 
         var principal = new BearerPrincipal("internal-proxy-delegation", scopes);
         var authorization = registry.Authorize(
-            toolName,
+            request.Name,
             arguments,
             principal,
             proxyInvocation: true,
             policies: policies);
         if (!authorization.IsAllowed ||
-            !scopes.SetEquals(GetLeastScopes(authorization, principal)))
+            !scopes.SetEquals(GetDelegatedScopes(request.Name, authorization, principal)))
         {
             failure = "internal scope delegation does not contain the exact required scopes";
             return false;
@@ -173,8 +169,7 @@ internal static class ToolScopeDelegation
     }
 
     internal static string CreateToken(
-        string toolName,
-        IDictionary<string, JsonElement>? arguments,
+        CallToolRequestParams request,
         ToolScopeRegistry.AuthorizationResult authorization,
         BearerPrincipal caller,
         string secret,
@@ -188,29 +183,31 @@ internal static class ToolScopeDelegation
         var now = (timeProvider ?? TimeProvider.System).GetUtcNow();
         var payload = new DelegationPayload(
             Version: 1,
-            Tool: toolName,
-            ArgumentsHash: ComputeArgumentsHash(arguments),
-            Scopes: GetLeastScopes(authorization, caller).Order(StringComparer.Ordinal).ToArray(),
+            Tool: request.Name,
+            RequestHash: ComputeRequestHash(request),
+            Scopes: GetDelegatedScopes(request.Name, authorization, caller).Order(StringComparer.Ordinal).ToArray(),
             ExpiresAtUnixSeconds: (now + Lifetime).ToUnixTimeSeconds(),
             Nonce: Base64UrlEncode(RandomNumberGenerator.GetBytes(18)));
         var payloadBytes = JsonSerializer.SerializeToUtf8Bytes(payload);
-        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
-        return Base64UrlEncode(payloadBytes) + "." + Base64UrlEncode(hmac.ComputeHash(payloadBytes));
+        return Base64UrlEncode(payloadBytes) + "." + Base64UrlEncode(ComputeSignature(secret, payloadBytes));
     }
 
-    internal static ImmutableHashSet<string> GetLeastScopes(
+    internal static ImmutableHashSet<string> GetDelegatedScopes(
+        string toolName,
         ToolScopeRegistry.AuthorizationResult authorization,
         BearerPrincipal principal)
     {
         var scopes = ImmutableHashSet.CreateBuilder<string>(StringComparer.Ordinal);
         if (authorization.Primary.IsAny)
         {
-            var selected = authorization.Primary.Any.FirstOrDefault(principal.HasScope);
-            if (selected is null)
+            var selected = string.Equals(toolName, "query_snapshot", StringComparison.Ordinal)
+                ? authorization.Primary.Any.Where(principal.HasScope).ToArray()
+                : authorization.Primary.Any.Where(principal.HasScope).Take(1).ToArray();
+            if (selected.Length == 0)
             {
                 throw new InvalidOperationException("The authorized principal does not satisfy a primary scope.");
             }
-            scopes.Add(selected);
+            scopes.UnionWith(selected);
         }
         else
         {
@@ -219,18 +216,30 @@ internal static class ToolScopeDelegation
 
         scopes.UnionWith(authorization.AdditionalScopes);
         scopes.UnionWith(authorization.ModifierScopes);
+        if (string.Equals(toolName, "query_snapshot", StringComparison.Ordinal) &&
+            principal.HasExplicitScope(ToolInvocationScopeResolver.SensitiveParameterReadScope))
+        {
+            // The orchestrator cannot inspect a pod-local handle's kind. Method-parameter
+            // handles require this literal modifier for every view, so carry it only when
+            // the caller explicitly presented it and bind it to this exact invocation.
+            scopes.Add(ToolInvocationScopeResolver.SensitiveParameterReadScope);
+        }
         return scopes.ToImmutable();
     }
 
-    private static string ComputeArgumentsHash(IDictionary<string, JsonElement>? arguments)
+    private static string ComputeRequestHash(CallToolRequestParams request)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
         {
             writer.WriteStartObject();
-            if (arguments is not null)
+            writer.WriteString("method", "tools/call");
+            writer.WriteString("name", request.Name);
+            writer.WritePropertyName("arguments");
+            writer.WriteStartObject();
+            if (request.Arguments is not null)
             {
-                foreach (var pair in arguments
+                foreach (var pair in request.Arguments
                              .Where(static pair => !string.Equals(pair.Key, ArgumentName, StringComparison.Ordinal))
                              .OrderBy(static pair => pair.Key, StringComparer.Ordinal))
                 {
@@ -238,6 +247,11 @@ internal static class ToolScopeDelegation
                     WriteCanonical(writer, pair.Value);
                 }
             }
+            writer.WriteEndObject();
+            writer.WritePropertyName("meta");
+            WriteCanonical(writer, JsonSerializer.SerializeToElement(request.Meta));
+            writer.WritePropertyName("task");
+            WriteCanonical(writer, JsonSerializer.SerializeToElement(request.Task));
             writer.WriteEndObject();
         }
 
@@ -310,16 +324,16 @@ internal static class ToolScopeDelegation
             return;
         }
 
+        var request = requestParams.Deserialize<CallToolRequestParams>() ??
+            throw new JsonException("JSON-RPC tools/call params are malformed.");
         var argumentObject = requestParams["arguments"] as JsonObject ?? new JsonObject();
         requestParams["arguments"] = argumentObject;
+        request.Arguments ??= new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        request.Arguments.Remove(ArgumentName);
         argumentObject.Remove(ArgumentName);
-        var arguments = argumentObject.ToDictionary(
-            static pair => pair.Key,
-            static pair => JsonSerializer.SerializeToElement(pair.Value),
-            StringComparer.Ordinal);
         var authorization = registry.Authorize(
             toolName,
-            arguments,
+            request.Arguments,
             caller,
             proxyInvocation: true,
             policies: policies);
@@ -330,8 +344,7 @@ internal static class ToolScopeDelegation
         }
 
         argumentObject[ArgumentName] = CreateToken(
-            toolName,
-            arguments,
+            request,
             authorization,
             caller,
             secret,
@@ -350,6 +363,7 @@ internal static class ToolScopeDelegation
             bytes = Convert.FromBase64String(padded);
             return true;
         }
+
         catch (FormatException)
         {
             bytes = Array.Empty<byte>();
@@ -357,10 +371,29 @@ internal static class ToolScopeDelegation
         }
     }
 
+    private static byte[] ComputeSignature(string secret, byte[] payloadBytes)
+    {
+        var input = new byte[SignatureDomain.Length + payloadBytes.Length];
+        SignatureDomain.CopyTo(input, 0);
+        payloadBytes.CopyTo(input, SignatureDomain.Length);
+        return HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), input);
+    }
+
+    private static CallToolRequestParams Clone(
+        CallToolRequestParams request,
+        IDictionary<string, JsonElement> arguments)
+        => new()
+        {
+            Name = request.Name,
+            Arguments = arguments,
+            Meta = request.Meta,
+            Task = request.Task,
+        };
+
     private sealed record DelegationPayload(
         int Version,
         string Tool,
-        string ArgumentsHash,
+        string RequestHash,
         string[] Scopes,
         long ExpiresAtUnixSeconds,
         string Nonce);
