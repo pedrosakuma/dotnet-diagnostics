@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Mcp.Hosting;
@@ -627,6 +628,77 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await response.Content.ReadAsStringAsync()).Should().Contain("sensitive-parameter-read");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsTaskAugmentedGatedDumpExploit()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "counters-attach",
+                System.Collections.Immutable.ImmutableHashSet.Create(
+                    "orchestrator-attach",
+                    "read-counters")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_gated_dump", InvestigationState.Active, "pod-token"));
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{" +
+            "\"name\":\"collect_events\"," +
+            "\"arguments\":{\"kind\":\"counters\",\"triggerWhen\":\"always-trigger\"," +
+            "\"captureKind\":\"Dump\",\"confirmDump\":true}," +
+            "\"task\":{\"ttl\":60000}}}";
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_gated_dump/mcp",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("dump-write");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Theory]
+    [MemberData(
+        nameof(ToolScopeAttributesTests.ArgumentAwareScopeCases),
+        MemberType = typeof(ToolScopeAttributesTests))]
+    public async Task Proxy_ArgumentAwareDenial_MatchesLocalAuthorization(
+        string toolName,
+        IDictionary<string, JsonElement> arguments,
+        string[] heldScopes,
+        string missingScope,
+        bool _)
+    {
+        await DisposeAsync();
+        var principal = new BearerPrincipal(
+            "parity-caller",
+            System.Collections.Immutable.ImmutableHashSet.Create(
+                heldScopes.Append("orchestrator-attach").ToArray()));
+        await InitializeWithPrincipalAsync(principal, allowCrossSessionAdmin: false);
+
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var localDecision = registry.Authorize(toolName, arguments, principal);
+        var proxyDecision = registry.Authorize(
+            toolName,
+            arguments,
+            principal,
+            proxyInvocation: true);
+        localDecision.IsAllowed.Should().BeFalse();
+        localDecision.MissingScope.Should().Be(missingScope);
+        proxyDecision.IsAllowed.Should().BeFalse();
+
+        _store.Add(NewHandle("inv_scope_parity", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_scope_parity/mcp",
+            new StringContent(
+                ToolCallPayload(toolName, JsonSerializer.Serialize(arguments)),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain(proxyDecision.MissingScope);
         _upstream.LastRequest.Should().BeNull();
     }
 

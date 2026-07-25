@@ -601,7 +601,11 @@ internal static class InvestigationProxyEndpoints
                 .ToDictionary(static property => property.Name, static property => property.Value, StringComparer.Ordinal);
         }
 
-        var authorization = scopeRegistry.Authorize(toolName, arguments, principal);
+        var authorization = scopeRegistry.Authorize(
+            toolName,
+            arguments,
+            principal,
+            proxyInvocation: true);
         return authorization.IsAllowed
             ? null
             : new ProxyToolRejection(

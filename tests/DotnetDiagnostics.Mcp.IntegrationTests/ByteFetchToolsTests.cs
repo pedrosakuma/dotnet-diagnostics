@@ -55,12 +55,10 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
             new Dictionary<string, object?> { ["kind"] = "module", ["moduleVersionId"] = GetSampleMvid(), ["processId"] = SampleProcessId },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBeTrue();
-        var envelope = DeserializeEnvelope(result);
-        envelope.Should().NotBeNull();
-        envelope!.Error.Should().NotBeNull();
-        envelope.Error!.Kind.Should().Be("Forbidden");
-        envelope.Error.Message.Should().Contain("module-bytes-read");
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("kind").GetString().Should().Be("forbidden");
+        envelope.GetProperty("modifier_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("module-bytes-read");
     }
 
     [Fact]
@@ -234,11 +232,10 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
             new Dictionary<string, object?> { ["kind"] = "trace", ["traceFilePath"] = "x.nettrace" },
             cancellationToken: CancellationToken.None);
 
-        var envelope = DeserializeEnvelope(result);
-        envelope.Should().NotBeNull();
-        envelope!.Error.Should().NotBeNull();
-        envelope.Error!.Kind.Should().Be("Forbidden");
-        envelope.Error.Message.Should().Contain("module-bytes-read");
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("kind").GetString().Should().Be("forbidden");
+        envelope.GetProperty("modifier_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("module-bytes-read");
     }
 
     [Fact]

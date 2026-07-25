@@ -73,8 +73,6 @@ public sealed class CollectBatchTool
     /// <c>method-params</c> is excluded from batching entirely (see <see cref="ValidateEntries"/>),
     /// so this is the only scope any collect_sample entry can ever need here.
     /// </summary>
-    private const string CollectSampleRequiredScope = "eventpipe";
-
     internal static readonly IReadOnlyList<string> AllowedTools = new[] { ToolCollectSample, ToolCollectEvents };
 
     /// <summary>Bound on concurrent EventPipe/ETW sessions a single call may open against one
@@ -169,8 +167,8 @@ public sealed class CollectBatchTool
         foreach (var entry in canonicalEntries)
         {
             var requiredScope = entry.Tool == ToolCollectSample
-                ? CollectSampleRequiredScope
-                : CollectEventsTool.GetRequiredScope(entry.Kind) ?? CollectSampleRequiredScope;
+                ? ToolInvocationScopeResolver.EventPipeScope
+                : CollectEventsTool.GetRequiredScope(entry.Kind) ?? ToolInvocationScopeResolver.EventPipeScope;
 
             if (!ToolDispatchGuards.RequireScope(
                     principal,

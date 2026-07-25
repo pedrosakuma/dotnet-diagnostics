@@ -33,7 +33,7 @@ public sealed class GetBytesTool
     internal const string KindList = "list";
     internal const string KindDelete = "delete";
 
-    internal const string DeleteArtifactScope = "delete-artifact";
+    internal const string DeleteArtifactScope = ToolInvocationScopeResolver.DeleteArtifactScope;
 
     internal static readonly IReadOnlyList<string> AllowedKinds = new[] { KindModule, KindDump, KindTrace, KindList, KindDelete };
 
