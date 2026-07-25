@@ -283,7 +283,11 @@ public sealed class SuspendedColdStartLauncherTests
             connectTimeout: TimeSpan.FromSeconds(30)))
         {
             portPath = target.DiagnosticPortPath;
-            File.Exists(portPath).Should().BeTrue("the launcher owns a live reverse-connect socket");
+            if (!OperatingSystem.IsWindows())
+            {
+                File.Exists(portPath).Should().BeTrue("the launcher owns a live Unix reverse-connect socket");
+            }
+
             target.HasExited.Should().BeFalse("the launched runtime is suspended waiting on the diagnostic port");
 
             var collector = new EventPipeStartupCollector();
@@ -296,7 +300,10 @@ public sealed class SuspendedColdStartLauncherTests
             snapshot.Notes.Should().Contain(n => n.Contains("Cold-start capture", StringComparison.Ordinal));
         }
 
-        File.Exists(portPath).Should().BeFalse("disposing the target removes the launcher-owned socket");
+        if (!OperatingSystem.IsWindows())
+        {
+            File.Exists(portPath).Should().BeFalse("disposing the target removes the launcher-owned Unix socket");
+        }
     }
 
     private static string? LocateSampleDll(string sampleName)
