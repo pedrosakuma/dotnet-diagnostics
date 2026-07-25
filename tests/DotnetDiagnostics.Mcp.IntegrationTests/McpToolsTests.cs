@@ -125,7 +125,9 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             tool.ReturnJsonSchema!.Value.ValueKind.Should().Be(JsonValueKind.Object);
             var authMeta = tool.ProtocolTool.Meta?["dotnetDiagnostics"]?["auth"]?.AsObject();
             authMeta.Should().NotBeNull($"tool {tool.Name} must advertise authorization metadata in tools/list _meta");
-            authMeta!["authorized"]!.GetValue<bool>().Should().BeTrue("the legacy root token should satisfy every scope");
+            authMeta!["authorized"]!.GetValue<bool>().Should().Be(
+                tool.Name != "get_bytes",
+                "wildcard root satisfies primary scopes but must not imply literal modifier scopes");
             authMeta["requiredScopes"]!.AsArray().Should().NotBeEmpty($"tool {tool.Name} must list required scopes");
             authMeta["semantics"]!.GetValue<string>().Should().BeOneOf("all", "any");
 
@@ -158,6 +160,11 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             var queryAuth = tools.Single(t => t.Name == "query_snapshot").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
             queryAuth["semantics"]!.GetValue<string>().Should().Be("any");
             queryAuth["requiredScopes"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Contain("read-counters");
+
+            var bytesAuth = tools.Single(t => t.Name == "get_bytes").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
+            bytesAuth["authorized"]!.GetValue<bool>().Should().BeFalse();
+            bytesAuth["requiredExplicitScopes"]!.AsArray().Select(n => n!.GetValue<string>())
+                .Should().Equal("module-bytes-read");
         }
     }
 

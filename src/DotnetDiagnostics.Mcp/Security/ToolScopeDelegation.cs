@@ -317,7 +317,9 @@ internal static class ToolScopeDelegation
         }
 
         if (node is not JsonObject envelope ||
-            envelope["method"]?.GetValue<string>() != "tools/call" ||
+            envelope["method"] is not JsonValue methodValue ||
+            !methodValue.TryGetValue<string>(out var method) ||
+            method != "tools/call" ||
             envelope["params"] is not JsonObject requestParams ||
             requestParams["name"]?.GetValue<string>() is not { Length: > 0 } toolName)
         {
