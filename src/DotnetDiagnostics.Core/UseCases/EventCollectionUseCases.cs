@@ -360,7 +360,13 @@ public static class EventCollectionUseCases
             depth,
             new HandledCollectionStrategy<GcSummary>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxEvents, ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.GcEvents, snap, evictWhenProcessExits: false),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(
+                    store,
+                    pid,
+                    CollectionHandleKinds.GcEvents,
+                    snap,
+                    evictWhenProcessExits: false,
+                    origin: HandleOrigin.Live),
                 BuildResult: (gc, handle, context) =>
                 {
                     var inlineGc = gc;
@@ -499,7 +505,13 @@ public static class EventCollectionUseCases
             SamplingDepth.Detail,
             new HandledCollectionStrategy<GcDatasSnapshot>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxEvents, ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.GcDatas, snap, evictWhenProcessExits: false),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(
+                    store,
+                    pid,
+                    CollectionHandleKinds.GcDatas,
+                    snap,
+                    evictWhenProcessExits: false,
+                    origin: HandleOrigin.Live),
                 BuildEarlyResult: (snapshot, context) =>
                 {
                     if (snapshot.HasData)
