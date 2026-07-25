@@ -184,6 +184,7 @@ public sealed class ThreadSnapshotQueryDispatcherTests
                 .ToArray(),
             Locks = Array.Empty<MonitorLockState>(),
         };
+        ThreadSnapshotProjection.Prepare(snapshot);
 
         var first = ThreadSnapshotQueryDispatcher.Dispatch(
             snapshot, Handle, "top-blocked", null, 50, 20, 1, offset: 0);
@@ -202,6 +203,36 @@ public sealed class ThreadSnapshotQueryDispatcherTests
             .Concat(second.Data.Threads!)
             .Should().HaveCount(10)
             .And.OnlyContain(thread => thread.IsLikelyBlocked);
+    }
+
+    [Fact]
+    public void Dispatch_TopBlocked_LockWaiterUsesBlockedWordingWithoutLikelyBlockedFlag()
+    {
+        var source = Snapshot();
+        var snapshot = source with
+        {
+            Threads = source.Threads
+                .Select(thread => thread with { IsLikelyBlocked = false, InferredWaitReason = null })
+                .ToArray(),
+            Locks =
+            [
+                new MonitorLockState(0x30_000, "App.Lock", 2, 10_002, 0x40_000, 0, 1, true, "test")
+                {
+                    WaitingManagedThreadIds = [1],
+                },
+            ],
+        };
+        ThreadSnapshotProjection.Prepare(snapshot);
+
+        var outcome = ThreadSnapshotQueryDispatcher.Dispatch(
+            snapshot, Handle, "top-blocked", null, 50, 20, 1);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.CandidateThreads.Should().Be(1);
+        outcome.Data.Threads.Should().ContainSingle()
+            .Which.ManagedThreadId.Should().Be(1);
+        outcome.Summary.Should().Contain("blocked/waiting");
+        outcome.Summary.Should().NotContain("decisive/running");
     }
 
     [Fact]
@@ -290,7 +321,7 @@ public sealed class ThreadSnapshotQueryDispatcherTests
             CreateThread(1, "GroupA"),
             CreateThread(2, "GroupB"),
         };
-        return new ThreadSnapshotArtifact(
+        var snapshot = new ThreadSnapshotArtifact(
             Origin: ThreadSnapshotOrigin.Live,
             ProcessId: 4242,
             CapturedAt: DateTimeOffset.UtcNow,
@@ -302,6 +333,8 @@ public sealed class ThreadSnapshotQueryDispatcherTests
         {
             Source = "clrmd-thread-walk",
         };
+        ThreadSnapshotProjection.Prepare(snapshot);
+        return snapshot;
     }
 
     private static ThreadSnapshotArtifact PagingSnapshot()
@@ -349,7 +382,7 @@ public sealed class ThreadSnapshotQueryDispatcherTests
                 WaitingManagedThreadIds = Enumerable.Range(1, 1_000).ToArray(),
             })
             .ToArray();
-        return new ThreadSnapshotArtifact(
+        var snapshot = new ThreadSnapshotArtifact(
             ThreadSnapshotOrigin.Live,
             4242,
             DateTimeOffset.UnixEpoch,
@@ -361,6 +394,8 @@ public sealed class ThreadSnapshotQueryDispatcherTests
         {
             Source = "clrmd-thread-walk",
         };
+        ThreadSnapshotProjection.Prepare(snapshot);
+        return snapshot;
     }
 
     private static ManagedThread CreateThread(int managedThreadId, string group)

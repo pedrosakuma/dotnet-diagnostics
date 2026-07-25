@@ -130,7 +130,7 @@ public static class ThreadSnapshotQueryDispatcher
                 return InvalidArg<ThreadSnapshotQueryResult>(nameof(lockAddress), "must be a decimal or 0x-prefixed hexadecimal lock object address");
             }
 
-            var selected = snapshot.Locks.FirstOrDefault(lockState => lockState.ObjectAddress == parsedAddress);
+            var selected = ThreadSnapshotProjection.FindLock(snapshot, parsedAddress);
             if (selected is null)
             {
                 return DiagnosticResult.Fail<ThreadSnapshotQueryResult>(
@@ -200,9 +200,8 @@ public static class ThreadSnapshotQueryDispatcher
             ThreadSnapshotProjection.QueryFrameLimit,
             blockedOnly: true,
             offset: offset);
-        var totalBlocked = snapshot.Threads.Count(static thread => thread.IsLikelyBlocked);
-        var summary = totalBlocked == 0
-            ? $"No threads were flagged likely blocked in snapshot '{handle}'; returning {page.Items.Count} decisive/running thread(s) at offset {offset} instead, capped at {ThreadSnapshotProjection.QueryFrameLimit} frames each."
+        var summary = page.UsedFallback
+            ? $"No blocked or lock-waiting candidates were captured in snapshot '{handle}'; returning {page.Items.Count} decisive/running thread(s) at offset {offset} instead, capped at {ThreadSnapshotProjection.QueryFrameLimit} frames each."
             : $"Returning {page.Items.Count}/{page.TotalItems} blocked/waiting thread(s) at offset {offset} from snapshot '{handle}', prioritizing deadlock and lock-wait evidence; frames are capped at {ThreadSnapshotProjection.QueryFrameLimit} per thread.";
         return DiagnosticResult.Ok(
             new ThreadSnapshotQueryResult(handle, "top-blocked", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)

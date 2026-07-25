@@ -86,6 +86,8 @@ public static class CpuSampleQueryDispatcher
         if (maxDepth < 1) return InvalidArg<CallTreeView>(nameof(maxDepth), "must be >= 1");
         if (maxNodes < 1) return InvalidArg<CallTreeView>(nameof(maxNodes), "must be >= 1");
 
+        var effectiveDepth = Math.Min(maxDepth, MaxProjectedCallTreeDepth);
+        var effectiveNodes = Math.Min(maxNodes, MaxProjectedCallTreeNodes);
         var root = artifact.Root;
         if (!string.IsNullOrWhiteSpace(rootMethodFilter))
         {
@@ -96,13 +98,11 @@ public static class CpuSampleQueryDispatcher
                     $"No frame matching '{rootMethodFilter}' in handle '{handle}'.",
                     new DiagnosticError("NotFound", "No frame in the merged call tree contains the supplied substring.", rootMethodFilter),
                     new NextActionHint("query_snapshot", "Re-issue without rootMethodFilter to inspect the full tree first.",
-                        new Dictionary<string, object?> { ["handle"] = handle, ["maxDepth"] = maxDepth, ["maxNodes"] = maxNodes }));
+                        new Dictionary<string, object?> { ["handle"] = handle, ["maxDepth"] = effectiveDepth, ["maxNodes"] = effectiveNodes }));
             }
             root = match;
         }
 
-        var effectiveDepth = Math.Min(maxDepth, MaxProjectedCallTreeDepth);
-        var effectiveNodes = Math.Min(maxNodes, MaxProjectedCallTreeNodes);
         var (pruned, nodeCount, truncated) = PruneTree(root, effectiveDepth, effectiveNodes);
         var stamped = CallTreeIdentityProjector.Stamp(pruned, artifact.MethodIdentities);
         var view = new CallTreeView(artifact.ProcessId, artifact.TotalSamples, nodeCount, truncated, stamped)

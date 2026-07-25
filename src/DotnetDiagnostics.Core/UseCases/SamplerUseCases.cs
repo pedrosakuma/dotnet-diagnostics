@@ -463,6 +463,7 @@ public static class SamplerUseCases
                 snapshot = await inspector.InspectLiveAsync(livePid, opts, cancellationToken).ConfigureAwait(false);
             }
 
+            ThreadSnapshotProjection.Prepare(snapshot);
             var handle = handles.Register(
                 snapshot.ProcessId,
                 ThreadSnapshotKind,
@@ -479,27 +480,57 @@ public static class SamplerUseCases
             string summary;
             if (depth == SamplingDepth.Summary)
             {
-                var topBlocked = snapshot.Threads
-                    .OrderByDescending(t => t.IsLikelyBlocked)
-                    .ThenByDescending(t => t.LockCount)
-                    .Take(3)
-                    .ToArray();
+                var topBlocked = ThreadSnapshotProjection.ProjectThreads(
+                    snapshot,
+                    requestedCount: 3,
+                    hardThreadLimit: 3,
+                    frameLimit: ThreadSnapshotProjection.SummaryFrameLimit,
+                    blockedOnly: true);
                 summaryView = new ThreadSnapshotQueryResult(handle.Id, "top-blocked", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
                 {
-                    Threads = topBlocked,
+                    Threads = topBlocked.Items,
                     Locks = Array.Empty<MonitorLockState>(),
+                    TotalThreads = snapshot.Threads.Count,
+                    CandidateThreads = topBlocked.TotalItems,
+                    OmittedThreads = topBlocked.TotalItems - topBlocked.Items.Count,
+                    FramesPerThreadLimit = ThreadSnapshotProjection.SummaryFrameLimit,
+                    TotalLocks = snapshot.Locks.Count,
+                    OmittedLocks = snapshot.Locks.Count,
+                    ThreadOffset = topBlocked.Offset,
+                    NextThreadOffset = topBlocked.NextOffset,
                 };
-                var droppedThreads = snapshot.Threads.Count - topBlocked.Length;
-                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Showing top {topBlocked.Length} blocked inline (dropped {droppedThreads} thread(s) and {snapshot.Locks.Count} lock(s); handle has all). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Views: top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool.";
+                var projectionLabel = topBlocked.UsedFallback
+                    ? "decisive/running thread(s)"
+                    : "blocked/waiting candidate(s)";
+                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Showing top {topBlocked.Items.Count} {projectionLabel} inline (omitted {topBlocked.TotalItems - topBlocked.Items.Count} candidate(s) and {snapshot.Locks.Count} lock(s); handle has all). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Views: top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool.";
             }
             else
             {
+                var projectedThreads = ThreadSnapshotProjection.ProjectThreads(
+                    snapshot,
+                    requestedCount: ThreadSnapshotProjection.DetailThreadLimit,
+                    hardThreadLimit: ThreadSnapshotProjection.DetailThreadLimit,
+                    frameLimit: ThreadSnapshotProjection.DetailFrameLimit);
+                var projectedLocks = ThreadSnapshotProjection.ProjectLocks(
+                    snapshot,
+                    requestedCount: ThreadSnapshotProjection.DetailLockLimit,
+                    hardLimit: ThreadSnapshotProjection.DetailLockLimit);
                 summaryView = new ThreadSnapshotQueryResult(handle.Id, "threads-summary", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
                 {
-                    Threads = snapshot.Threads.Take(25).ToArray(),
-                    Locks = snapshot.Locks.Take(25).ToArray(),
+                    Threads = projectedThreads.Items,
+                    Locks = projectedLocks.Items,
+                    TotalThreads = snapshot.Threads.Count,
+                    CandidateThreads = projectedThreads.TotalItems,
+                    OmittedThreads = projectedThreads.TotalItems - projectedThreads.Items.Count,
+                    FramesPerThreadLimit = ThreadSnapshotProjection.DetailFrameLimit,
+                    TotalLocks = snapshot.Locks.Count,
+                    OmittedLocks = projectedLocks.TotalItems - projectedLocks.Items.Count,
+                    ThreadOffset = projectedThreads.Offset,
+                    NextThreadOffset = projectedThreads.NextOffset,
+                    LockOffset = projectedLocks.Offset,
+                    NextLockOffset = projectedLocks.NextOffset,
                 };
-                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Views: top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool.";
+                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Showing {projectedThreads.Items.Count} thread(s) and {projectedLocks.Items.Count} lock(s) inline; handle retains all evidence. Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Views: top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool.";
             }
 
             if (snapshot.SnapshotKind is not "exact")

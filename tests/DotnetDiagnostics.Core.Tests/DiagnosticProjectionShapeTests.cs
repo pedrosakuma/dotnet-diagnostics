@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.Threads;
@@ -56,6 +57,43 @@ public sealed class DiagnosticProjectionShapeTests
         var detail = BuildThreadResult(snapshot, detailThreads, detailLocks, ThreadSnapshotProjection.DetailFrameLimit);
         JsonSerializer.SerializeToUtf8Bytes(summary, JsonOptions).Length.Should().BeLessThan(32_000);
         JsonSerializer.SerializeToUtf8Bytes(detail, JsonOptions).Length.Should().BeLessThan(64_000);
+    }
+
+    [Fact]
+    public void ThreadSnapshot_PreparedPagesAllocateIndependentlyOfCaptureVolume()
+    {
+        var small = LargePagingSnapshot(threadCount: 1_000, lockCount: 500);
+        var large = LargePagingSnapshot(threadCount: 20_000, lockCount: 10_000);
+        var handles = new MemoryDiagnosticHandleStore();
+        _ = handles.Register(small.ProcessId, "thread-snapshot", small, TimeSpan.FromMinutes(10));
+        _ = handles.Register(large.ProcessId, "thread-snapshot", large, TimeSpan.FromMinutes(10));
+
+        _ = MeasureProjectionAllocations(small, iterations: 2);
+        _ = MeasureProjectionAllocations(large, iterations: 2);
+        var smallAllocated = MeasureProjectionAllocations(small, iterations: 100);
+        var largeAllocated = MeasureProjectionAllocations(large, iterations: 100);
+
+        largeAllocated.Should().BeLessThanOrEqualTo(
+            smallAllocated + 256_000,
+            "prepared pages should allocate for only the bounded rows, not the 20x larger capture");
+
+        var threadPage = ThreadSnapshotProjection.ProjectThreads(
+            large,
+            requestedCount: 50,
+            hardThreadLimit: ThreadSnapshotProjection.QueryThreadLimit,
+            frameLimit: ThreadSnapshotProjection.QueryFrameLimit,
+            offset: 160);
+        var lockPage = ThreadSnapshotProjection.ProjectLocks(
+            large,
+            requestedCount: 50,
+            hardLimit: ThreadSnapshotProjection.DetailLockLimit,
+            offset: 240);
+        threadPage.Items.Should().HaveCount(ThreadSnapshotProjection.QueryThreadLimit);
+        threadPage.TotalItems.Should().Be(20_000);
+        threadPage.NextOffset.Should().Be(168);
+        lockPage.Items.Should().HaveCount(ThreadSnapshotProjection.DetailLockLimit);
+        lockPage.TotalItems.Should().Be(10_000);
+        lockPage.NextOffset.Should().Be(252);
     }
 
     [Fact]
@@ -190,7 +228,7 @@ public sealed class DiagnosticProjectionShapeTests
             .ToArray();
         threads[89] = CreateThread(90, blocked: false, "MyCompany.Orders.PriceCalculator.RunningHotPath");
 
-        return new ThreadSnapshotArtifact(
+        var snapshot = new ThreadSnapshotArtifact(
             ThreadSnapshotOrigin.Live,
             4242,
             DateTimeOffset.UnixEpoch,
@@ -213,6 +251,8 @@ public sealed class DiagnosticProjectionShapeTests
                     WaitingManagedThreadIds = Enumerable.Range(1, 10_000).ToArray(),
                 })
                 .ToArray());
+        ThreadSnapshotProjection.Prepare(snapshot);
+        return snapshot;
     }
 
     private static ManagedThread CreateThread(int id, bool blocked, string topFrame)
@@ -288,6 +328,89 @@ public sealed class DiagnosticProjectionShapeTests
             SelfSamples = new SelfSampleBreakdown(10, 99_990),
             MethodIdentities = identities,
         };
+    }
+
+    private static long MeasureProjectionAllocations(ThreadSnapshotArtifact snapshot, int iterations)
+    {
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var checksum = 0;
+        for (var i = 0; i < iterations; i++)
+        {
+            var threadPage = ThreadSnapshotProjection.ProjectThreads(
+                snapshot,
+                requestedCount: 50,
+                hardThreadLimit: ThreadSnapshotProjection.QueryThreadLimit,
+                frameLimit: ThreadSnapshotProjection.QueryFrameLimit,
+                offset: i % 20 * ThreadSnapshotProjection.QueryThreadLimit);
+            var lockPage = ThreadSnapshotProjection.ProjectLocks(
+                snapshot,
+                requestedCount: 50,
+                hardLimit: ThreadSnapshotProjection.DetailLockLimit,
+                offset: i % 20 * ThreadSnapshotProjection.DetailLockLimit);
+            checksum += threadPage.Items.Count + lockPage.Items.Count;
+        }
+
+        GC.KeepAlive(checksum);
+        return GC.GetAllocatedBytesForCurrentThread() - before;
+    }
+
+    private static ThreadSnapshotArtifact LargePagingSnapshot(int threadCount, int lockCount)
+    {
+        var frames = Enumerable.Range(0, 16)
+            .Select(index => new ManagedStackFrame(
+                "ManagedMethod",
+                $"App.Worker.Frame{index}",
+                "App.Worker",
+                "App.dll",
+                (ulong)(0x1000 + index),
+                (ulong)(0x2000 + index)))
+            .ToArray();
+        var threads = Enumerable.Range(1, threadCount)
+            .Select(id => new ManagedThread(
+                id,
+                (uint)(10_000 + id),
+                (ulong)id,
+                id % 3 == 0 ? "Wait" : "Running",
+                true,
+                false,
+                false,
+                false,
+                true,
+                (uint)(id % 4),
+                null,
+                frames[0].DisplayName,
+                frames)
+            {
+                IsLikelyBlocked = id % 3 == 0,
+                InferredWaitReason = id % 3 == 0 ? "Monitor.Enter" : null,
+            })
+            .ToArray();
+        var locks = Enumerable.Range(0, lockCount)
+            .Select(index => new MonitorLockState(
+                (ulong)(0x100_000 + index),
+                $"App.Lock{index % 16}",
+                index % threadCount + 1,
+                (uint)(10_001 + index % threadCount),
+                (ulong)(0x200_000 + index),
+                index % 3,
+                32,
+                true,
+                "test")
+            {
+                WaitingManagedThreadIds = Enumerable.Range(0, 32)
+                    .Select(waiter => (index * 31 + waiter) % threadCount + 1)
+                    .ToArray(),
+            })
+            .ToArray();
+        return new ThreadSnapshotArtifact(
+            ThreadSnapshotOrigin.Live,
+            4242,
+            DateTimeOffset.UnixEpoch,
+            TimeSpan.FromMilliseconds(50),
+            "CoreClr",
+            "10.0.0",
+            threads,
+            locks);
     }
 
     private static CpuSampleTraceArtifact FairSiblingCpuTrace()

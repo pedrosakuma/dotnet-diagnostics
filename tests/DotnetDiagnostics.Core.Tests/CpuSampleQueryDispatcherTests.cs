@@ -63,11 +63,19 @@ public class CpuSampleQueryDispatcherTests
     }
 
     [Fact]
-    public void RenderCallTree_RootMethodFilter_NoMatch_ReturnsNotFound()
+    public void RenderCallTree_RootMethodFilter_NoMatch_HintUsesEffectiveCaps()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: "does-not-exist", maxDepth: 8, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(
+            Trace(),
+            Handle,
+            rootMethodFilter: "does-not-exist",
+            maxDepth: 20,
+            maxNodes: 500);
 
         outcome.Error!.Kind.Should().Be("NotFound");
+        outcome.Hints.Should().ContainSingle();
+        outcome.Hints[0].SuggestedArguments!["maxDepth"].Should().Be(CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth);
+        outcome.Hints[0].SuggestedArguments!["maxNodes"].Should().Be(CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
     }
 
     [Fact]
