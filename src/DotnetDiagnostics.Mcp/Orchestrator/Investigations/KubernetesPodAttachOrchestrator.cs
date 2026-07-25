@@ -140,8 +140,9 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             AttachedAt: now,
             ExpiresAt: now + ttl,
             OwnerBearerName: request.OwnerBearerName,
-            ProcessSelector: processSelector,
-            InternalScopeDelegationKey: delegationKey);
+            OwnerPrincipalKey: request.OwnerPrincipalKey,
+            InternalScopeDelegationKey: delegationKey,
+            ProcessSelector: processSelector);
 
         // Atomic check-and-reserve: when reuse is allowed and a target tuple already has an
         // Active/Attaching handle, return it instead of patching a second ephemeral container.
@@ -149,6 +150,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         // target from both creating an ephemeral container.
         if (!_store.TryReserveTarget(handle, request.AllowReuseExistingSession, out var existing))
         {
+            var reusable = existing!;
             // H6 / B3 review (issue #164): reuse is owner-aware. A reused handle
             // is only returned to the caller when the caller owns it. Otherwise
             // we surface a structured error rather than binding the caller to
@@ -156,12 +158,11 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             // pod via the in-process call-tool forward and bypass the HTTP
             // proxy's ownership check). Un-owned handles (stdio / framework)
             // remain reusable by anyone.
-            if (existing!.OwnerBearerName is not null &&
-                !string.Equals(existing.OwnerBearerName, request.OwnerBearerName, StringComparison.Ordinal))
+            if (!InvestigationOwnership.IsOwnedBy(reusable, request.OwnerPrincipalKey))
             {
                 _logger.LogInformation(
                     "Refusing to reuse handle {HandleId} for {Namespace}/{Pod}/{Container}: owned by a different MCP session.",
-                    existing.HandleId, ns, request.PodName, container.Name);
+                    reusable.HandleId, ns, request.PodName, container.Name);
                 throw new OrchestratorException(
                     "PermissionDenied",
                     $"An investigation for {ns}/{request.PodName}/{container.Name} is already active in another MCP session. " +
@@ -170,27 +171,27 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
 
             if (processSelector is not null)
             {
-                if (existing.ProcessSelector is null)
+                if (reusable.ProcessSelector is null)
                 {
                     throw new OrchestratorException(
                         OrchestratorErrorKinds.InvalidArgument,
-                        $"Investigation {existing.HandleId} was attached without a process selector; " +
+                        $"Investigation {reusable.HandleId} was attached without a process selector; " +
                         $"detach it before attaching the same Pod with selector ({processSelector.Describe()}).");
                 }
-                else if (!existing.ProcessSelector.IsEquivalentTo(processSelector))
+                else if (!reusable.ProcessSelector.IsEquivalentTo(processSelector))
                 {
                     throw new OrchestratorException(
                         OrchestratorErrorKinds.InvalidArgument,
-                        $"Investigation {existing.HandleId} already has process selector " +
-                        $"({existing.ProcessSelector.Describe()}); detach it before attaching the same Pod " +
+                        $"Investigation {reusable.HandleId} already has process selector " +
+                        $"({reusable.ProcessSelector.Describe()}); detach it before attaching the same Pod " +
                         $"with a different selector ({processSelector.Describe()}).");
                 }
             }
 
             _logger.LogInformation(
                 "Reusing investigation handle {HandleId} for {Namespace}/{Pod}/{Container} (state={State}).",
-                existing.HandleId, ns, request.PodName, container.Name, existing.State);
-            return existing;
+                reusable.HandleId, ns, request.PodName, container.Name, reusable.State);
+            return reusable;
         }
 
         try
@@ -224,7 +225,9 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             throw;
         }
 
-        if (!_store.TryTransitionToActive(handle.HandleId, out var active) || active is null)
+        if (_store is not IInvestigationStoreActivation activation
+            || !activation.TryTransitionToActive(handle.HandleId, out var active)
+            || active is null)
         {
             throw new OrchestratorException(
                 OrchestratorErrorKinds.AttachFailed,

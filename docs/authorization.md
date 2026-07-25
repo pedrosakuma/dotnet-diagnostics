@@ -21,15 +21,22 @@ startup fails fast if any `[McpServerTool]` is missing one.
 ```json
 {
   "requiredScopes": ["dump-write", "ptrace"],
+  "requiredExplicitScopes": [],
   "semantics": "all",
+  "hasConditionalArgumentScopes": false,
   "authorized": false
 }
 ```
 
 - `requiredScopes` mirrors the attribute values.
+- `requiredExplicitScopes` lists unconditional literal grants that wildcard/root does not
+  imply (for example, CPU summary export's `eventpipe` requirement).
 - `semantics` is `all` for `[RequireScope]` and `any` for `[RequireAnyScope]`.
-- `authorized` is evaluated for the current bearer token, so clients can hide or
-  gray out tools the caller cannot invoke before attempting `tools/call`.
+- `hasConditionalArgumentScopes` is true when a concrete invocation may add requirements
+  based on `kind`, `view`, `source`, or another argument; those cannot be decided by
+  `tools/list` and are enforced at `tools/call`.
+- `authorized` evaluates the static and unconditional explicit requirements for the current
+  bearer token. Clients must still account for `hasConditionalArgumentScopes`.
 
 This is advisory discovery metadata, not a bypass: `tools/call` still enforces
 the same scopes, and dispatcher tools can apply narrower per-parameter or
@@ -44,7 +51,7 @@ per-handle checks at runtime.
 | `heap-read` | Read-only heap walks (type graphs, retention chains, addresses). | `inspect_heap(source="dump")`; **`inspect_heap(source="live")` additionally requires `ptrace`** |
 | `ptrace` | Authorization for sensitive live-memory/attach operations. Live ClrMD readers additionally need `CAP_SYS_PTRACE` (Linux) / debug privilege (Windows). `collect_process_dump` carries this bearer scope as defense in depth but writes through diagnostic IPC and does not itself require Linux `CAP_SYS_PTRACE`. | `collect_thread_snapshot`, `capture_method_bytes`, `inspect_heap(source="live")` (+`heap-read`), `collect_process_dump` (+`dump-write`) |
 | `dump-write` | Writes a full process dump (entire address space, zero redaction) to disk. **The single most dangerous scope.** Requires the separate `ptrace` bearer authorization scope as defense in depth; this does not imply a Linux kernel ptrace requirement for dump capture. | `collect_process_dump` (also needs `confirm=true` — see [below](#per-call-confirmation)) |
-| `investigation-export` | Read-only meta/planning tools + drilldown over already-collected handles. Exporting evidence additionally requires each handle's originating scope. | `start_investigation`, `export_investigation_summary` (+ `eventpipe`, `read-counters`, or `ptrace` per handle), `compare_to_baseline`, `query_snapshot(view="call-tree")` |
+| `investigation-export` | Read-only meta/planning tools + drilldown over already-collected handles. `export_investigation_summary` additionally requires each evidence handle's originating scope. | `start_investigation`, `export_investigation_summary`, `compare_to_baseline`, `query_snapshot(view="call-tree")` |
 | `orchestrator-list` | Enumerate pods the orchestrator may see. Pure discovery. | `list_orchestrator(kind="pods")` |
 | `orchestrator-attach` | Mutating Kubernetes calls that create ephemeral debug containers. | `attach_to_pod`, `detach_from_pod` |
 | `azure-discovery` | Enumerate .NET workload candidates in an Azure subscription. | `discover_azure` |
@@ -54,14 +61,6 @@ The unified dispatcher tools span two scopes and authorize with **any** of them:
 `list_orchestrator` accepts `orchestrator-list` **or** `orchestrator-attach`. The
 per-kind / per-view branch then tightens to the exact scope the requested operation
 needs.
-
-`export_investigation_summary` always requires `investigation-export`, then checks
-every requested handle at execution time: CPU/GC/DATAS evidence requires
-`eventpipe`, counters require `read-counters`, and thread snapshots require
-`ptrace`. For Kubernetes proxy calls the orchestrator cannot inspect pod-local
-handles, so its request-bound delegation carries only the relevant scopes the
-caller explicitly presented. The pod resolves each handle kind and enforces the
-exact scope; its wildcard bearer never acts as an authorization fallback.
 
 ### Modifier scopes
 
@@ -91,6 +90,16 @@ modifier scopes above). Used by `--stdio` / loopback defaults and the legacy
 | **stdio** (`--stdio`) | Synthetic in-memory token with `*` scope. The MCP client is the process owner; no bearer ever crosses a network. |
 | **Loopback HTTP** (`127.0.0.1` / `[::1]`) | Configured `Auth:BearerTokens` if present, else legacy `MCP_BEARER_TOKEN` → `*`. Developer ergonomics; unreachable from outside the host. |
 | **Non-loopback HTTP** | `Auth:BearerTokens` is **required** — each entry must declare a non-empty scope set. Legacy `MCP_BEARER_TOKEN` is accepted but logs a deprecation `Warning`; a future release removes that fallback and refuses to start without scoped bearers. |
+
+### Investigation ownership identity
+
+Investigation ownership never compares the human-readable bearer `Name`. Each
+authenticated principal receives a stable, provider-namespaced ownership key:
+configured opaque entries use their configuration entry ID, while JWT keys bind the
+authentication scheme, normalized issuer, audience/client, and subject. This prevents
+same-name principals from different issuers or authentication mechanisms from sharing
+routes. Legacy handles that contain only a display owner fail owner checks closed;
+truly ownerless stdio/framework handles retain their existing single-user behavior.
 
 ## Bearer tokens (config)
 
@@ -157,6 +166,10 @@ A validated JWT maps onto the **same scope model** above:
 - **Identity gating** uses `MCP_OIDC_REQUIRED_CLAIMS_JSON` — a JSON object mapping a claim to
   `null` (claim must be present), a string, or an array of allowed strings. Use it to pin the
   caller (`azp`/`client_id`/`sub`) so only your workload identity is accepted.
+- **Ownership identity** requires at least one stable subject claim (`sub`, NameIdentifier,
+  `oid`) or client claim (`azp`, `client_id`, `appid`). A validated token without all of these
+  claims is rejected rather than mapped to a shared fallback identity. Client-only service
+  principals remain supported.
 - **Principal name** (for audit logs) resolves from the first of `preferred_username`,
   `client_id`, `azp`, `appid`, `sub`.
 
@@ -212,10 +225,18 @@ callers to set it reflexively and destroy its signal.
 
 ## Drilldown over handles
 
-`query_snapshot` reads from handles minted by a collector. The tool itself accepts
-`read-counters` **or** `eventpipe`, then **re-applies the exact scope the originating
-collector required** at runtime, keyed on the handle kind — so a handle minted under
-`eventpipe` still demands `eventpipe` at query time even though the tool entry is broader.
+`query_snapshot` and `export_investigation_summary` read from handles minted by a collector.
+`query_snapshot` accepts a broad primary-scope union at entry and then applies its
+established kind/view authorization table. The export tool requires
+`investigation-export` and separately re-applies the originating collector scope for
+every evidence handle. CPU evidence requires an explicitly granted `eventpipe` scope;
+counters require `read-counters`; GC/DATAS require `eventpipe`; and thread snapshots
+require `ptrace`.
+
+For orchestrator-proxied exports, Pod-local handles are opaque to the orchestrator.
+The finalized request-bound delegation forwards only the evidence scopes the caller
+explicitly holds. The Pod resolves each handle kind and applies the exact rule above
+before reading the artifact, so its Pod-local root bearer never widens the caller.
 
 On top of that, specific `(handle origin, view)` pairs require a **modifier** scope: e.g.
 the `retention-paths` view on either a live or a dump heap snapshot requires

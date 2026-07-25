@@ -529,7 +529,7 @@ public sealed partial class CollectEventsTool
         var fanout = await DistributedTraceCorrelator.CorrelateAsync(
             store,
             proxy,
-            principal?.Name,
+            principal,
             ResolveInvestigationHandleIds(investigationHandleIds, requestContext, sessionBinder),
             traceId.Trim(),
             effectiveDuration,
@@ -648,7 +648,7 @@ public sealed partial class CollectEventsTool
         var fanout = await ReplicaCounterFanout.CompareAsync(
             store,
             proxy,
-            principal?.Name,
+            principal,
             ResolveInvestigationHandleIds(investigationHandleIds, requestContext, sessionBinder),
             effectiveDuration,
             intervalSeconds,

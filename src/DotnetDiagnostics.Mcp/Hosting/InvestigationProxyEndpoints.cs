@@ -39,8 +39,9 @@ namespace DotnetDiagnostics.Mcp.Hosting;
 /// 404 — new endpoints on the pod-local MCP do NOT become automatically reachable.
 /// </para>
 /// <para>
-/// When the handle carries an <c>OwnerBearerName</c>, the caller's authenticated
-/// bearer identity must match. Mismatch → structured 403 envelope. Handles minted
+/// When the handle carries an ownership key, the caller's stable provider-namespaced
+/// identity must match. Display names are never authorization inputs. Mismatch →
+/// structured 403 envelope. Handles minted
 /// without an owner (stdio attach, framework calls with no projected bearer identity)
 /// remain reachable by every authenticated caller for dev-time stdio ergonomics.
 /// </para>
@@ -247,7 +248,8 @@ internal static class InvestigationProxyEndpoints
             return;
         }
 
-        // Enforce per-owner authorization using bearer identity, not protocol-session
+        // Enforce per-owner authorization using the stable bearer ownership key, not
+        // display names or protocol-session
         // headers. Handles minted without an owner (stdio attach, framework calls
         // with no projected bearer identity) remain reachable by every authenticated caller.
         // When the deployment has explicitly opted into AllowCrossSessionAdmin
@@ -261,20 +263,16 @@ internal static class InvestigationProxyEndpoints
         // through OrchestratorAdminBypassPolicy emits a one-shot deprecation
         // warning the first time the flag is what enables the bypass.
         var adminBypass = OrchestratorAdminBypassPolicy.IsBypassAllowed(context.GetBearerPrincipal(), orchOptions, logger);
-        if (handle.OwnerBearerName is not null && !adminBypass)
+        if (!InvestigationOwnership.IsOwnedBy(handle, callerPrincipal) && !adminBypass)
         {
-            var caller = context.GetBearerPrincipal()?.Name;
-            if (!string.Equals(caller, handle.OwnerBearerName, StringComparison.Ordinal))
-            {
-                logger.LogWarning(
-                    "Cross-bearer proxy attempt rejected: handle={HandleId} owner=present caller={CallerPresent} method={Method} path={Path}.",
-                    handleId, caller is null ? "absent" : "present", context.Request.Method, context.Request.Path);
-                await WriteProblemAsync(context, StatusCodes.Status403Forbidden,
-                    "ProxyOwnerMismatch",
-                    $"Investigation handle '{handleId}' is owned by a different bearer identity. " +
-                    "Re-attach with the bearer that minted the handle, or have an operator use the orchestrator-admin bypass.").ConfigureAwait(false);
-                return;
-            }
+            logger.LogWarning(
+                "Cross-bearer proxy attempt rejected: handle={HandleId} owner=present caller={CallerPresent} method={Method} path={Path}.",
+                handleId, callerPrincipal is null ? "absent" : "present", context.Request.Method, context.Request.Path);
+            await WriteProblemAsync(context, StatusCodes.Status403Forbidden,
+                "ProxyOwnerMismatch",
+                $"Investigation handle '{handleId}' is owned by a different bearer identity. " +
+                "Re-attach with the bearer that minted the handle, or have an operator use the orchestrator-admin bypass.").ConfigureAwait(false);
+            return;
         }
 
         byte[]? delegatedBody = null;

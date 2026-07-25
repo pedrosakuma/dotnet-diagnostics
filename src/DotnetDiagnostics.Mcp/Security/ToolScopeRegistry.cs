@@ -41,10 +41,16 @@ internal sealed class ToolScopeRegistry
         bool MissingExplicitScope,
         Requirement Primary,
         ImmutableArray<string> AdditionalScopes,
+        ImmutableArray<string> ExplicitAdditionalScopes,
         ImmutableArray<string> ModifierScopes)
     {
         public ImmutableArray<string> RequiredScopes =>
-            Primary.Scopes.AddRange(AdditionalScopes).AddRange(ModifierScopes).Distinct().ToImmutableArray();
+            Primary.Scopes
+                .AddRange(AdditionalScopes)
+                .AddRange(ExplicitAdditionalScopes)
+                .AddRange(ModifierScopes)
+                .Distinct()
+                .ToImmutableArray();
     }
 
     private readonly ImmutableDictionary<string, Requirement> _byToolName;
@@ -88,6 +94,7 @@ internal sealed class ToolScopeRegistry
                 false,
                 default,
                 ImmutableArray<string>.Empty,
+                ImmutableArray<string>.Empty,
                 ImmutableArray<string>.Empty);
         }
 
@@ -105,6 +112,7 @@ internal sealed class ToolScopeRegistry
                 false,
                 primary.Value,
                 invocation.AdditionalScopes,
+                invocation.ExplicitAdditionalScopes,
                 invocation.ExplicitModifierScopes);
         }
 
@@ -118,6 +126,22 @@ internal sealed class ToolScopeRegistry
                     false,
                     primary.Value,
                     invocation.AdditionalScopes,
+                    invocation.ExplicitAdditionalScopes,
+                    invocation.ExplicitModifierScopes);
+            }
+        }
+
+        foreach (var scope in invocation.ExplicitAdditionalScopes)
+        {
+            if (principal?.HasExplicitScope(scope) != true)
+            {
+                return new AuthorizationResult(
+                    false,
+                    scope,
+                    false,
+                    primary.Value,
+                    invocation.AdditionalScopes,
+                    invocation.ExplicitAdditionalScopes,
                     invocation.ExplicitModifierScopes);
             }
         }
@@ -132,6 +156,7 @@ internal sealed class ToolScopeRegistry
                     true,
                     primary.Value,
                     invocation.AdditionalScopes,
+                    invocation.ExplicitAdditionalScopes,
                     invocation.ExplicitModifierScopes);
             }
         }
@@ -142,6 +167,7 @@ internal sealed class ToolScopeRegistry
             false,
             primary.Value,
             invocation.AdditionalScopes,
+            invocation.ExplicitAdditionalScopes,
             invocation.ExplicitModifierScopes);
     }
 

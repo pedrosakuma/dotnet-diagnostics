@@ -235,6 +235,13 @@ public sealed class ToolScopeAttributesTests
                 true
             },
             {
+                "export_investigation_summary",
+                Arguments(new { handle = "cpu-handle" }),
+                new[] { "investigation-export" },
+                "eventpipe",
+                false
+            },
+            {
                 "collect_batch",
                 Arguments(new
                 {

@@ -124,6 +124,65 @@ public sealed class OrchestratorToolsP4Tests
     }
 
     [Fact]
+    public async Task DetachFromPod_SameDisplayNameDifferentOwnershipKey_IsDenied()
+    {
+        const string displayName = "shared-display";
+        var fx = new Fixture();
+        var h = Active() with
+        {
+            OwnerBearerName = displayName,
+            OwnerPrincipalKey = PrincipalOwnershipKey.ForOpaqueEntry("owner-a"),
+        };
+        fx.Store.Add(h);
+
+        var result = await OrchestratorTools.DetachFromPod(
+            fx.Closer,
+            fx.Binder,
+            fx.Store,
+            fx.Options,
+            TestPrincipalAccessors.WithIdentity(
+                displayName,
+                PrincipalOwnershipKey.ForOpaqueEntry("owner-b"),
+                "orchestrator-attach"),
+            fx.Observability,
+            server: null!,
+            handleId: h.HandleId);
+
+        result.IsError.Should().BeTrue();
+        result.Error!.Kind.Should().Be("PermissionDenied");
+        fx.Store.GetById(h.HandleId)!.State.Should().Be(InvestigationState.Active);
+    }
+
+    [Fact]
+    public async Task DetachFromPod_SameOwnershipKeyDifferentDisplayName_IsAllowed()
+    {
+        var fx = new Fixture();
+        var ownerKey = PrincipalOwnershipKey.ForOpaqueEntry("owner-a");
+        var h = Active() with
+        {
+            OwnerBearerName = "old-display",
+            OwnerPrincipalKey = ownerKey,
+        };
+        fx.Store.Add(h);
+
+        var result = await OrchestratorTools.DetachFromPod(
+            fx.Closer,
+            fx.Binder,
+            fx.Store,
+            fx.Options,
+            TestPrincipalAccessors.WithIdentity(
+                "new-display",
+                ownerKey,
+                "orchestrator-attach"),
+            fx.Observability,
+            server: null!,
+            handleId: h.HandleId);
+
+        result.IsError.Should().BeFalse();
+        fx.Store.GetById(h.HandleId)!.State.Should().Be(InvestigationState.Closed);
+    }
+
+    [Fact]
     public async Task DetachFromPod_OwnerMismatch_AdminOverride_Allows()
     {
         var fx = new Fixture { Options = { AllowCrossSessionAdmin = true } };
@@ -260,6 +319,36 @@ public sealed class OrchestratorToolsP4Tests
         result.Data.AttachingCount.Should().Be(0);
         result.Data.ClosedCount.Should().Be(0);
         result.Data.Items.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ListActiveInvestigations_MatchesStableKey_NotDisplayName()
+    {
+        const string displayName = "shared-display";
+        var fx = new Fixture();
+        var callerKey = PrincipalOwnershipKey.ForOpaqueEntry("owner-a");
+        fx.Store.Add(Active("mine") with
+        {
+            OwnerBearerName = "old-display",
+            OwnerPrincipalKey = callerKey,
+        });
+        fx.Store.Add(Active("collision") with
+        {
+            OwnerBearerName = displayName,
+            OwnerPrincipalKey = PrincipalOwnershipKey.ForOpaqueEntry("owner-b"),
+        });
+
+        var result = await OrchestratorTools.ListActiveInvestigations(
+            fx.Store,
+            fx.Options,
+            TestPrincipalAccessors.WithIdentity(
+                displayName,
+                callerKey,
+                "orchestrator-attach"));
+
+        result.Data!.Items.Should().ContainSingle()
+            .Which.HandleId.Should().Be("mine");
+        result.Data.TotalKnown.Should().Be(1);
     }
 
     [Fact]

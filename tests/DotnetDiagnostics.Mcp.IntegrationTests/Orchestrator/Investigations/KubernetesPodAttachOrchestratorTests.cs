@@ -260,6 +260,48 @@ public class KubernetesPodAttachOrchestratorTests
     }
 
     [Fact]
+    public async Task AttachAsync_ReusesExistingHandle_ForSameStableOwner()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, store, _) = NewOrchestrator(api);
+        var ownerKey = PrincipalOwnershipKey.ForOpaqueEntry("operator-a");
+
+        var first = await orch.AttachAsync(
+            NewRequest(ownerBearerName: "display-a", ownerPrincipalKey: ownerKey),
+            CancellationToken.None);
+        var second = await orch.AttachAsync(
+            NewRequest(ownerBearerName: "renamed-display", ownerPrincipalKey: ownerKey),
+            CancellationToken.None);
+
+        second.Should().BeSameAs(first);
+        api.PatchInvocationCount.Should().Be(1);
+        store.Snapshot().Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task AttachAsync_RejectsReuse_WhenDisplayMatchesButOwnershipKeyDiffers()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, _, _) = NewOrchestrator(api);
+
+        await orch.AttachAsync(
+            NewRequest(
+                ownerBearerName: "shared-display",
+                ownerPrincipalKey: PrincipalOwnershipKey.ForOpaqueEntry("operator-a")),
+            CancellationToken.None);
+
+        var act = () => orch.AttachAsync(
+            NewRequest(
+                ownerBearerName: "shared-display",
+                ownerPrincipalKey: PrincipalOwnershipKey.ForOpaqueEntry("operator-b")),
+            CancellationToken.None);
+
+        (await act.Should().ThrowAsync<OrchestratorException>())
+            .Which.ErrorKind.Should().Be(OrchestratorErrorKinds.PermissionDenied);
+        api.PatchInvocationCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task AttachAsync_StoresNormalizedTransportNeutralProcessSelector()
     {
         var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
@@ -315,12 +357,30 @@ public class KubernetesPodAttachOrchestratorTests
         var (orch, _, _) = NewOrchestrator(api);
 
         var act = () => orch.AttachAsync(
-            NewRequest(processSelector: new InvestigationProcessSelector(" ", "\t")),
+            NewRequest(processSelector: new InvestigationProcessSelector(" ", "	")),
             CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<OrchestratorException>();
         ex.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.InvalidArgument);
         api.PatchInvoked.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task AttachAsync_LegacyDisplayOwner_FailsReuseClosed()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, _, _) = NewOrchestrator(api);
+
+        await orch.AttachAsync(
+            NewRequest(ownerBearerName: "legacy-display"),
+            CancellationToken.None);
+
+        var act = () => orch.AttachAsync(
+            NewRequest(ownerBearerName: "legacy-display"),
+            CancellationToken.None);
+
+        (await act.Should().ThrowAsync<OrchestratorException>())
+            .Which.ErrorKind.Should().Be(OrchestratorErrorKinds.PermissionDenied);
     }
 
     [Fact]
@@ -446,8 +506,8 @@ public class KubernetesPodAttachOrchestratorTests
             State: InvestigationState.Active,
             AttachedAt: DateTimeOffset.UtcNow,
             ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
-            ProcessSelector: new InvestigationProcessSelector("CoreClrSample"),
-            InternalScopeDelegationKey: "SECRET_DELEGATION_VALUE");
+            InternalScopeDelegationKey: "SECRET_DELEGATION_VALUE",
+            ProcessSelector: new InvestigationProcessSelector("CoreClrSample"));
 
         var json = System.Text.Json.JsonSerializer.Serialize(handle);
 
@@ -487,6 +547,8 @@ public class KubernetesPodAttachOrchestratorTests
         string? containerName = null,
         bool requirePreparedTarget = true,
         bool allowReuseExistingSession = true,
+        string? ownerBearerName = null,
+        string? ownerPrincipalKey = null,
         InvestigationProcessSelector? processSelector = null)
         => new(
             @namespace,
@@ -495,7 +557,9 @@ public class KubernetesPodAttachOrchestratorTests
             TtlSeconds: null,
             requirePreparedTarget,
             allowReuseExistingSession,
-            ProcessSelector: processSelector);
+            ownerBearerName,
+            ownerPrincipalKey,
+            processSelector);
 
     private static V1Pod BuildPreparedPod()
         => new()

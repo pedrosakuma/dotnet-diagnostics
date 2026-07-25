@@ -4,9 +4,9 @@ namespace DotnetDiagnostics.Mcp.Security;
 
 /// <summary>
 /// Identity stamped on <see cref="Microsoft.AspNetCore.Http.HttpContext"/> after a
-/// successful bearer-token authentication. Carries only the human-readable token
-/// <see cref="Name"/> (safe to log) and the granted <see cref="Scopes"/> — never the
-/// presented bearer value.
+/// successful bearer-token authentication. Carries a human-readable display
+/// <see cref="Name"/>, a stable authorization-only <see cref="OwnershipKey"/>, and
+/// granted <see cref="Scopes"/> — never the presented bearer value.
 /// </summary>
 /// <remarks>
 /// Foundational type for docs/authorization.md (per-tool authorization scopes). B5.2 will consume
@@ -37,15 +37,25 @@ public sealed class BearerPrincipal
         scope.Equals(RootScopeAlt, StringComparison.Ordinal);
 
     public BearerPrincipal(string name, ImmutableHashSet<string> scopes)
+        : this(name, scopes, PrincipalOwnershipKey.ForSynthetic(name))
+    {
+    }
+
+    public BearerPrincipal(
+        string name,
+        ImmutableHashSet<string> scopes,
+        string ownershipKey)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(scopes);
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownershipKey);
         if (scopes.Count == 0)
         {
             throw new ArgumentException("Bearer principal must carry at least one scope.", nameof(scopes));
         }
 
         Name = name;
+        OwnershipKey = ownershipKey;
         Scopes = scopes;
         _hasWildcard = scopes.Any(IsWildcard);
     }
@@ -53,6 +63,12 @@ public sealed class BearerPrincipal
     private readonly bool _hasWildcard;
 
     public string Name { get; }
+
+    /// <summary>
+    /// Stable, provider-namespaced identity used for ownership authorization.
+    /// <see cref="Name"/> is display-only and must never be compared for access control.
+    /// </summary>
+    public string OwnershipKey { get; }
 
     public ImmutableHashSet<string> Scopes { get; }
 

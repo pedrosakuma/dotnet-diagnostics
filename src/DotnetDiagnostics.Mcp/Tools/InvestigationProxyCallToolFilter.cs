@@ -244,10 +244,8 @@ internal static class InvestigationProxyCallToolFilter
         // the handle has an owner and it doesn't match the caller, surface a
         // structured error rather than silently widening access. Un-owned
         // handles (stdio / framework) remain forward-able by anyone.
-        var callerBearerName = principalAccessor.Current?.Name;
         var adminBypass = OrchestratorAdminBypassPolicy.IsBypassAllowed(principalAccessor.Current, orchestratorOptions, loggerAccessor() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
-        if (handle.OwnerBearerName is not null &&
-            !string.Equals(handle.OwnerBearerName, callerBearerName, StringComparison.Ordinal) &&
+        if (!InvestigationOwnership.IsOwnedBy(handle, principalAccessor.Current) &&
             !adminBypass)
         {
             loggerAccessor()?.LogWarning(

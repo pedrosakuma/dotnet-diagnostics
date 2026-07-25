@@ -208,12 +208,12 @@ public sealed class InvestigationProxyCallToolFilterTests
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(
             "orchestrator-attach",
             "investigation-export",
-            "read-counters"));
+            "eventpipe"));
         fx.Binder.Bind("session-export-task", ActiveHandle.HandleId);
         fx.Store.Add(ActiveHandle);
         var request = Params("export_investigation_summary", new Dictionary<string, JsonElement>
         {
-            ["handle"] = JsonSerializer.SerializeToElement("opaque-counter-handle"),
+            ["handle"] = JsonSerializer.SerializeToElement("opaque-cpu-handle"),
         });
         request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
         var promoterCalls = 0;
@@ -242,7 +242,203 @@ public sealed class InvestigationProxyCallToolFilterTests
             out var failure).Should().BeTrue(failure);
         delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
             "investigation-export",
-            "read-counters");
+            "eventpipe");
+    }
+
+    [Fact]
+    public async Task ProxiedExport_PreservesProducingToolEvidenceFromPod()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "investigation-export",
+            "eventpipe"));
+        fx.Binder.Bind("session-export-producer", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+        var upstream = new CallToolResult
+        {
+            Content =
+            [
+                new TextContentBlock
+                {
+                    Text = """{"Summary":{"Evidence":[{"SourceTool":"collect_events"}]}}""",
+                },
+            ],
+        };
+        fx.ProxyClient.Next = (_, _, _) => Task.FromResult(upstream);
+
+        var result = await fx.Invoke(
+            Params("export_investigation_summary", new Dictionary<string, JsonElement>
+            {
+                ["handle"] = JsonSerializer.SerializeToElement("gated-cpu-handle"),
+            }),
+            "session-export-producer");
+
+        result.Should().BeSameAs(upstream);
+        result.Content.OfType<TextContentBlock>().Single().Text.Should()
+            .Contain("\"SourceTool\":\"collect_events\"");
+        fx.LocalInvocations.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TaskAugmentedExport_MissingInvestigationScope_IsRejectedBeforePromotion()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "eventpipe"));
+        fx.Binder.Bind("session-export-task-denied", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+        var request = Params("export_investigation_summary", new Dictionary<string, JsonElement>
+        {
+            ["handle"] = JsonSerializer.SerializeToElement("opaque-cpu-handle"),
+        });
+        request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        var promoterCalls = 0;
+
+        var result = await fx.Invoke(
+            request,
+            "session-export-task-denied",
+            taskPromoter: (_, _) =>
+            {
+                promoterCalls++;
+                throw new InvalidOperationException("Unauthorized exports must not be promoted.");
+            });
+
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("investigation-export");
+        promoterCalls.Should().Be(0);
+        fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TaskAugmentedExport_MissingEvidenceScope_IsDelegatedWithoutWidening()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "investigation-export"));
+        fx.Binder.Bind("session-export-task-limited", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+        var request = Params("export_investigation_summary", new Dictionary<string, JsonElement>
+        {
+            ["handle"] = JsonSerializer.SerializeToElement("opaque-evidence-handle"),
+        });
+        request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        var promoterCalls = 0;
+
+        var result = await fx.Invoke(
+            request,
+            "session-export-task-limited",
+            taskPromoter: async (forward, ct) =>
+            {
+                promoterCalls++;
+                return await forward(ct);
+            });
+
+        result.IsError.Should().NotBe(true);
+        promoterCalls.Should().Be(1);
+        fx.ProxyClient.CallCount.Should().Be(1);
+        ToolScopeDelegation.TryConsume(
+            fx.ProxyClient.LastRequest!,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            ActiveHandle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo("investigation-export");
+    }
+
+    [Theory]
+    [InlineData(false, "or")]
+    [InlineData(false, "and")]
+    [InlineData(false, "or+and")]
+    [InlineData(true, "or")]
+    [InlineData(true, "and")]
+    [InlineData(true, "or+and")]
+    public async Task ProxyAndTaskDenials_PreserveStructuredScopeSemantics(
+        bool taskAugmented,
+        string requirementShape)
+    {
+        var (toolName, arguments, scopes) = requirementShape switch
+        {
+            "or" => (
+                "query_snapshot",
+                new Dictionary<string, JsonElement>
+                {
+                    ["handle"] = JsonSerializer.SerializeToElement("opaque"),
+                },
+                new[] { "orchestrator-attach" }),
+            "and" => (
+                "collect_process_dump",
+                new Dictionary<string, JsonElement>(),
+                new[] { "orchestrator-attach", "ptrace" }),
+            "or+and" => (
+                "inspect_process",
+                new Dictionary<string, JsonElement>
+                {
+                    ["view"] = JsonSerializer.SerializeToElement("requests-now"),
+                },
+                new[] { "orchestrator-attach", "read-counters" }),
+            _ => throw new InvalidOperationException($"Unknown requirement shape '{requirementShape}'."),
+        };
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(scopes));
+        fx.Binder.Bind("session-contract", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+        var request = Params(toolName, arguments);
+        if (taskAugmented)
+        {
+            request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        }
+        var promoterCalls = 0;
+
+        var result = await fx.Invoke(
+            request,
+            "session-contract",
+            taskPromoter: (_, _) =>
+            {
+                promoterCalls++;
+                throw new InvalidOperationException("Denied calls must not be promoted.");
+            });
+
+        result.IsError.Should().BeTrue();
+        fx.ProxyClient.CallCount.Should().Be(0);
+        fx.LocalInvocations.Should().Be(0);
+        promoterCalls.Should().Be(0);
+        var (summary, error) = ParseForbidden(result);
+
+        switch (requirementShape)
+        {
+            case "or":
+                summary.Should().Contain("requires any of [");
+                error.GetProperty("semantics").GetString().Should().Be("any");
+                error.GetProperty("any_of_scopes").EnumerateArray().Should().NotBeEmpty();
+                error.GetProperty("all_of_scopes").EnumerateArray().Should().BeEmpty();
+                error.GetProperty("any_of_satisfied").GetBoolean().Should().BeFalse();
+                error.GetProperty("missing_all_of_scopes").EnumerateArray().Should().BeEmpty();
+                break;
+            case "and":
+                summary.Should().Contain("requires all of [dump-write, ptrace]");
+                error.GetProperty("semantics").GetString().Should().Be("all");
+                error.GetProperty("any_of_scopes").EnumerateArray().Should().BeEmpty();
+                error.GetProperty("all_of_scopes").EnumerateArray()
+                    .Select(static scope => scope.GetString()).Should().Equal("dump-write", "ptrace");
+                error.GetProperty("missing_all_of_scopes").EnumerateArray()
+                    .Select(static scope => scope.GetString()).Should().Equal("dump-write");
+                break;
+            case "or+and":
+                summary.Should().Contain(
+                    "requires any of [read-counters, ptrace] and all of [ptrace]");
+                error.GetProperty("semantics").GetString().Should().Be("any+all");
+                error.GetProperty("any_of_scopes").EnumerateArray()
+                    .Select(static scope => scope.GetString()).Should().Equal("read-counters", "ptrace");
+                error.GetProperty("all_of_scopes").EnumerateArray()
+                    .Select(static scope => scope.GetString()).Should().Equal("ptrace");
+                error.GetProperty("any_of_satisfied").GetBoolean().Should().BeTrue();
+                error.GetProperty("missing_all_of_scopes").EnumerateArray()
+                    .Select(static scope => scope.GetString()).Should().Equal("ptrace");
+                error.GetProperty("message").GetString().Should().Be(
+                    "tool requires mandatory scope 'ptrace'");
+                break;
+        }
     }
 
     [Fact]
@@ -344,18 +540,18 @@ public sealed class InvestigationProxyCallToolFilterTests
     }
 
     [Fact]
-    public async Task RejectsExport_BeforeForwarding_WhenInvestigationExportScopeIsMissing()
+    public async Task RejectsExport_BeforeForwarding_WhenInvestigationScopeIsMissing()
     {
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(
             "orchestrator-attach",
-            "read-counters"));
+            "eventpipe"));
         fx.Binder.Bind("session-export-denied", ActiveHandle.HandleId);
         fx.Store.Add(ActiveHandle);
 
         var result = await fx.Invoke(
             Params("export_investigation_summary", new Dictionary<string, JsonElement>
             {
-                ["handle"] = JsonSerializer.SerializeToElement("opaque-counter-handle"),
+                ["handle"] = JsonSerializer.SerializeToElement("opaque-cpu-handle"),
             }),
             "session-export-denied");
 
@@ -402,18 +598,47 @@ public sealed class InvestigationProxyCallToolFilterTests
     }
 
     [Fact]
-    public async Task ForwardsExport_WithExplicitInvestigationHandleId_WithoutLocalExecution()
+    public async Task ForwardsExport_WithoutSynthesizingMissingEvidenceScope()
     {
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(
             "orchestrator-attach",
-            "investigation-export",
-            "read-counters"));
+            "investigation-export"));
+        fx.Binder.Bind("session-export-limited", ActiveHandle.HandleId);
         fx.Store.Add(ActiveHandle);
 
         var result = await fx.Invoke(
             Params("export_investigation_summary", new Dictionary<string, JsonElement>
             {
-                ["handle"] = JsonSerializer.SerializeToElement("opaque-counter-handle"),
+                ["handle"] = JsonSerializer.SerializeToElement("opaque-evidence-handle"),
+            }),
+            "session-export-limited");
+
+        result.IsError.Should().BeNull();
+        fx.ProxyClient.CallCount.Should().Be(1);
+        ToolScopeDelegation.TryConsume(
+            fx.ProxyClient.LastRequest!,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            ActiveHandle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo("investigation-export");
+    }
+
+    [Fact]
+    public async Task ForwardsExport_WithExplicitInvestigationHandleId_WithoutLocalExecution()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "investigation-export",
+            "eventpipe"));
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(
+            Params("export_investigation_summary", new Dictionary<string, JsonElement>
+            {
+                ["handle"] = JsonSerializer.SerializeToElement("opaque-cpu-handle"),
                 [InvestigationRoutingArguments.InvestigationHandleIdArgument] =
                     JsonSerializer.SerializeToElement(ActiveHandle.HandleId),
             }),
@@ -434,70 +659,7 @@ public sealed class InvestigationProxyCallToolFilterTests
             out var failure).Should().BeTrue(failure);
         delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
             "investigation-export",
-            "read-counters");
-    }
-
-    [Fact]
-    public async Task RejectsExportMissingScope_BeforeExplicitHandleLookup()
-    {
-        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
-            "orchestrator-attach",
-            "read-counters"));
-
-        var result = await fx.Invoke(
-            Params("export_investigation_summary", new Dictionary<string, JsonElement>
-            {
-                ["handle"] = JsonSerializer.SerializeToElement("opaque-counter-handle"),
-                [InvestigationRoutingArguments.InvestigationHandleIdArgument] =
-                    JsonSerializer.SerializeToElement("unknown-investigation"),
-            }),
-            sessionId: null);
-
-        result.IsError.Should().BeTrue();
-        var text = result.Content.OfType<TextContentBlock>().Single().Text;
-        text.Should().Contain("investigation-export");
-        text.Should().NotContain("unknown or no longer active");
-        fx.ProxyClient.CallCount.Should().Be(0);
-        fx.LocalInvocations.Should().Be(0);
-    }
-
-    [Fact]
-    public async Task ForwardsMixedExport_WithAllCallerEvidenceScopes()
-    {
-        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
-            "orchestrator-attach",
-            "investigation-export",
-            "read-counters",
-            "eventpipe",
-            "ptrace"));
-        fx.Binder.Bind("session-export-mixed", ActiveHandle.HandleId);
-        fx.Store.Add(ActiveHandle);
-
-        var result = await fx.Invoke(
-            Params("export_investigation_summary", new Dictionary<string, JsonElement>
-            {
-                ["handle"] = JsonSerializer.SerializeToElement("counter-handle"),
-                ["additionalHandles"] = JsonSerializer.SerializeToElement(
-                    new[] { "cpu-handle", "thread-handle" }),
-            }),
-            "session-export-mixed");
-
-        result.IsError.Should().BeNull();
-        fx.ProxyClient.CallCount.Should().Be(1);
-        fx.LocalInvocations.Should().Be(0);
-        ToolScopeDelegation.TryConsume(
-            fx.ProxyClient.LastRequest!,
-            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
-            new ToolScopeResolutionPolicies(null, null, null, null),
-            ActiveHandle.InternalScopeDelegationKey,
-            TimeProvider.System,
-            out var delegatedPrincipal,
-            out var failure).Should().BeTrue(failure);
-        delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
-            "investigation-export",
-            "read-counters",
-            "eventpipe",
-            "ptrace");
+            "eventpipe");
     }
 
     [Fact]
@@ -738,6 +900,44 @@ public sealed class InvestigationProxyCallToolFilterTests
     }
 
     [Fact]
+    public async Task RejectsSameDisplayName_WhenOwnershipKeysDiffer()
+    {
+        const string displayName = "shared-display";
+        var fx = new Fixture(TestPrincipalAccessors.WithIdentity(
+            displayName,
+            PrincipalOwnershipKey.ForJwt(
+                "oidc",
+                "https://issuer-b.example.test",
+                "audience",
+                "client",
+                "subject"),
+            "orchestrator-attach",
+            "read-counters"));
+        fx.Binder.Bind("session-owner-collision", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle with
+        {
+            OwnerBearerName = displayName,
+            OwnerPrincipalKey = PrincipalOwnershipKey.ForJwt(
+                "oidc",
+                "https://issuer-a.example.test",
+                "audience",
+                "client",
+                "subject"),
+        });
+
+        var result = await fx.Invoke(
+            Params("collect_events", new Dictionary<string, JsonElement>
+            {
+                ["kind"] = JsonSerializer.SerializeToElement("counters"),
+            }),
+            "session-owner-collision");
+
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("different bearer identity");
+        fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Forwards_WhenExplicitInvestigationHandleIdIsSupplied_ByAdminBearer()
     {
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(
@@ -965,6 +1165,15 @@ public sealed class InvestigationProxyCallToolFilterTests
     private static CallToolRequestParams Params(string toolName, IDictionary<string, JsonElement>? args = null)
         => new() { Name = toolName, Arguments = args };
 
+    private static (string Summary, JsonElement Error) ParseForbidden(CallToolResult result)
+    {
+        var text = result.Content.OfType<TextContentBlock>().Single().Text;
+        var separator = text.IndexOf('\n');
+        separator.Should().BeGreaterThan(0);
+        using var document = JsonDocument.Parse(text[(separator + 1)..]);
+        return (text[..separator], document.RootElement.GetProperty("error").Clone());
+    }
+
     private sealed class Fixture
     {
         public ToolScopeRegistry ScopeRegistry { get; } =
@@ -1046,7 +1255,7 @@ public sealed class InvestigationProxyCallToolFilterTests
         public IReadOnlyCollection<KeyValuePair<string, string>> Snapshot() => _map.ToArray();
     }
 
-    private sealed class InMemoryInvestigationStore : IInvestigationStore
+    private sealed class InMemoryInvestigationStore : IInvestigationStore, IInvestigationStoreActivation
     {
         private readonly Dictionary<string, InvestigationHandle> _byId = new(StringComparer.Ordinal);
 

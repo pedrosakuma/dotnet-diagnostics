@@ -13,8 +13,9 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// <param name="TtlSeconds">Per-handle TTL override; null uses <c>OrchestratorOptions.DefaultInvestigationTtlSeconds</c>.</param>
 /// <param name="RequirePreparedTarget">When true (default), refuse to attach to an unprepared Pod.</param>
 /// <param name="AllowReuseExistingSession">When true (default), return an existing Active/Attaching handle for the same target instead of patching a second ephemeral container.</param>
+/// <param name="OwnerBearerName">Display name of the caller, retained for diagnostics only. Authorization uses <paramref name="OwnerPrincipalKey"/>.</param>
+/// <param name="OwnerPrincipalKey">Stable provider-namespaced identity used for ownership authorization.</param>
 /// <param name="ProcessSelector">Optional transport-neutral process identity resolved inside the attached Pod before replica fan-out.</param>
-/// <param name="OwnerBearerName">Bearer principal name of the caller, stamped onto the minted handle for per-owner authorization. Null produces an un-scoped handle reachable by any authenticated caller (stdio / synthetic-root flows with no projected bearer identity).</param>
 public sealed record AttachRequest(
     string Namespace,
     string PodName,
@@ -22,13 +23,12 @@ public sealed record AttachRequest(
     int? TtlSeconds = null,
     bool RequirePreparedTarget = true,
     bool AllowReuseExistingSession = true,
-    // Bearer identity of the caller. The orchestrator stamps it onto the minted
-    // handle so /proxy/{handleId}, fan-out helpers, and list_orchestrator(kind="investigations")
-    // can enforce per-owner authorization without relying on protocol-session
-    // headers. Null is accepted (stdio / framework without a projected bearer
-    // identity) and produces an un-scoped handle reachable by any authenticated
-    // caller.
+    // Display name retained for diagnostics only; never use it for authorization.
     string? OwnerBearerName = null,
+    // Stable provider-namespaced caller identity used for ownership checks.
+    string? OwnerPrincipalKey = null,
+    // Optional transport-neutral process identity resolved inside the attached Pod before
+    // replica fan-out. Null preserves the previous default-process behavior.
     InvestigationProcessSelector? ProcessSelector = null);
 
 /// <summary>

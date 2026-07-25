@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using DotnetDiagnostics.Mcp.Auth;
+using DotnetDiagnostics.Mcp.Security;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 
@@ -50,6 +51,7 @@ public sealed class OidcJwtAuthOptionsTests
             new Claim("scp", "read-counters eventpipe"),
             new Claim("scope", "heap-read"),
             new Claim("azp", "diag-client"),
+            new Claim("sub", "subject-123"),
             new Claim("preferred_username", "entra-client"),
         }));
 
@@ -60,6 +62,73 @@ public sealed class OidcJwtAuthOptionsTests
         bearerPrincipal.Should().NotBeNull();
         bearerPrincipal!.Name.Should().Be("entra-client");
         bearerPrincipal.Scopes.Should().BeEquivalentTo(new[] { "read-counters", "eventpipe", "heap-read" });
+        bearerPrincipal.OwnershipKey.Should().Be(
+            PrincipalOwnershipKey.ForJwt(
+                OidcJwtAuthOptions.DefaultSchemeName,
+                "https://issuer.example.test",
+                "dotnet-diagnostics-mcp",
+                "diag-client",
+                "subject-123"));
+    }
+
+    [Fact]
+    public void TryCreatePrincipal_SameDisplayAndSubjectAcrossIssuers_HasDifferentOwnershipKey()
+    {
+        static OidcJwtAuthOptions Options(string issuer)
+            => OidcJwtAuthOptions.FromConfiguration(
+                new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["MCP_OIDC_ISSUER"] = issuer,
+                    ["MCP_OIDC_AUDIENCE"] = "dotnet-diagnostics-mcp",
+                }).Build());
+
+        var claims = new[]
+        {
+            new Claim("scope", "orchestrator-attach"),
+            new Claim("preferred_username", "shared-display"),
+            new Claim("azp", "diag-client"),
+            new Claim("sub", "shared-subject"),
+        };
+        Options("https://issuer-a.example.test").TryCreatePrincipal(
+            new ClaimsPrincipal(new ClaimsIdentity(claims)),
+            out var issuerA,
+            out _).Should().BeTrue();
+        Options("https://issuer-b.example.test").TryCreatePrincipal(
+            new ClaimsPrincipal(new ClaimsIdentity(claims)),
+            out var issuerB,
+            out _).Should().BeTrue();
+
+        issuerA!.Name.Should().Be(issuerB!.Name);
+        issuerA.OwnershipKey.Should().NotBe(issuerB.OwnershipKey);
+    }
+
+    [Fact]
+    public void TryCreatePrincipal_SameIssuerClientAndSubject_HasStableOwnershipKey()
+    {
+        var options = OidcJwtAuthOptions.FromConfiguration(
+            new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["MCP_OIDC_ISSUER"] = "https://issuer.example.test/",
+                ["MCP_OIDC_AUDIENCE"] = "dotnet-diagnostics-mcp",
+            }).Build());
+        var claims = new[]
+        {
+            new Claim("scope", "orchestrator-attach"),
+            new Claim("preferred_username", "display"),
+            new Claim("azp", "diag-client"),
+            new Claim("sub", "subject"),
+        };
+
+        options.TryCreatePrincipal(
+            new ClaimsPrincipal(new ClaimsIdentity(claims)),
+            out var first,
+            out _).Should().BeTrue();
+        options.TryCreatePrincipal(
+            new ClaimsPrincipal(new ClaimsIdentity(claims)),
+            out var second,
+            out _).Should().BeTrue();
+
+        first!.OwnershipKey.Should().Be(second!.OwnershipKey);
     }
 
     [Fact]

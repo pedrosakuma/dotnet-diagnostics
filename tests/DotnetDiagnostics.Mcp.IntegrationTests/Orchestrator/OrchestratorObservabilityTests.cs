@@ -338,6 +338,7 @@ public sealed class OrchestratorObservabilityTests
                 AttachedAt: DateTimeOffset.UtcNow,
                 ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
                 OwnerBearerName: request.OwnerBearerName,
+                OwnerPrincipalKey: request.OwnerPrincipalKey,
                 InternalScopeDelegationKey: "test-delegation-key");
             _store.Add(handle);
             return Task.FromResult(handle);

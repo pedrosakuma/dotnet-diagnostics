@@ -48,7 +48,35 @@ internal static class ToolInvocationScopeResolver
 
     internal readonly record struct Requirements(
         ImmutableArray<string> AdditionalScopes,
-        ImmutableArray<string> ExplicitModifierScopes);
+        ImmutableArray<string> ExplicitAdditionalScopes,
+        ImmutableArray<string> ExplicitModifierScopes,
+        bool HasConditionalArgumentScopes = false);
+
+    internal static Requirements ResolveCatalog(string toolName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+
+        var explicitAdditional = ImmutableArray.CreateBuilder<string>();
+        var modifiers = ImmutableArray.CreateBuilder<string>();
+        AddUnconditionalRequirements(toolName, explicitAdditional, modifiers);
+
+        var hasConditionalArgumentScopes = toolName is
+            "inspect_process" or
+            "list_orchestrator" or
+            "collect_events" or
+            "collect_sample" or
+            "collect_batch" or
+            "inspect_heap" or
+            "query_snapshot" or
+            "get_bytes" or
+            "collect_thread_snapshot" or
+            "export_investigation_summary";
+        return new Requirements(
+            ImmutableArray<string>.Empty,
+            explicitAdditional.ToImmutable(),
+            modifiers.ToImmutable(),
+            hasConditionalArgumentScopes);
+    }
 
     internal static Requirements Resolve(
         string toolName,
@@ -57,7 +85,9 @@ internal static class ToolInvocationScopeResolver
         ToolScopeResolutionPolicies? policies)
     {
         var additional = ImmutableArray.CreateBuilder<string>();
+        var explicitAdditional = ImmutableArray.CreateBuilder<string>();
         var modifiers = ImmutableArray.CreateBuilder<string>();
+        AddUnconditionalRequirements(toolName, explicitAdditional, modifiers);
 
         switch (toolName)
         {
@@ -95,7 +125,6 @@ internal static class ToolInvocationScopeResolver
                 break;
 
             case "get_bytes":
-                Add(modifiers, ModuleBytesReadScope);
                 if (Matches(arguments, "kind", "delete"))
                 {
                     Add(modifiers, DeleteArtifactScope);
@@ -108,9 +137,24 @@ internal static class ToolInvocationScopeResolver
                     Add(modifiers, SymbolsRemoteScope);
                 }
                 break;
+
         }
 
-        return new Requirements(additional.ToImmutable(), modifiers.ToImmutable());
+        return new Requirements(
+            additional.ToImmutable(),
+            explicitAdditional.ToImmutable(),
+            modifiers.ToImmutable());
+    }
+
+    private static void AddUnconditionalRequirements(
+        string toolName,
+        ImmutableArray<string>.Builder explicitAdditional,
+        ImmutableArray<string>.Builder modifiers)
+    {
+        if (string.Equals(toolName, "get_bytes", StringComparison.Ordinal))
+        {
+            Add(modifiers, ModuleBytesReadScope);
+        }
     }
 
     internal static string? GetCollectEventsKindScope(string? kind)

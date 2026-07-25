@@ -130,6 +130,44 @@ public sealed class ToolScopeIntegrationTests
         envelope.GetProperty("semantics").GetString().Should().Be("all");
     }
 
+    [Theory]
+    [InlineData("investigation-export", "eventpipe")]
+    [InlineData("eventpipe", "investigation-export")]
+    public async Task ExportSummary_MissingEitherScope_IsDenied(
+        string heldScope,
+        string missingScope)
+    {
+        await using var factory = CreateFactory(
+            ("limited-export", "limited-export-token", new[] { heldScope }));
+        await using var client = await ConnectWithTokenAsync(factory, "limited-export-token");
+
+        var result = await client.CallToolAsync(
+            "export_investigation_summary",
+            arguments: new Dictionary<string, object?> { ["handle"] = "cpu-handle" },
+            cancellationToken: CancellationToken.None);
+
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("required_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain(missingScope);
+    }
+
+    [Fact]
+    public async Task ExportSummary_WithBothScopes_ReachesToolBody()
+    {
+        await using var factory = CreateFactory(
+            ("cpu-export", "cpu-export-token", new[] { "investigation-export", "eventpipe" }));
+        await using var client = await ConnectWithTokenAsync(factory, "cpu-export-token");
+
+        var result = await client.CallToolAsync(
+            "export_investigation_summary",
+            arguments: new Dictionary<string, object?> { ["handle"] = "missing-cpu-handle" },
+            cancellationToken: CancellationToken.None);
+
+        var text = result.Content.OfType<TextContentBlock>().Single().Text;
+        text.Should().NotContain("\"kind\":\"forbidden\"");
+        text.Should().Contain("missing-cpu-handle");
+    }
+
     [Fact]
     public async Task CollectBatch_Entry_Missing_Scope_Is_Rejected_By_Authoritative_Filter_Before_Any_Session_Opens()
     {

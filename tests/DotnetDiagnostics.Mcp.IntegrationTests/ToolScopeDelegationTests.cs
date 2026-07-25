@@ -370,7 +370,7 @@ public sealed class ToolScopeDelegationTests
     }
 
     [Fact]
-    public void ExportSummary_Delegates_Only_CallerPresentedEvidenceScopes()
+    public void ExportSummary_Delegates_CanonicalCpuScope()
     {
         var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
         var arguments = Arguments(new { handle = "opaque" });
@@ -391,11 +391,11 @@ public sealed class ToolScopeDelegationTests
                 "export_investigation_summary",
                 authorization,
                 caller)
-            .Should().BeEquivalentTo("investigation-export", "eventpipe", "ptrace");
+            .Should().BeEquivalentTo("investigation-export", "eventpipe");
     }
 
     [Fact]
-    public void ExportSummary_DoesNotSynthesizeMissingEvidenceScopes()
+    public void ExportSummary_RejectsMissingEventPipeScope()
     {
         var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
         var arguments = Arguments(new { handle = "opaque" });
@@ -406,19 +406,14 @@ public sealed class ToolScopeDelegationTests
             caller,
             proxyInvocation: true,
             policies: StrictPolicies);
-        authorization.IsAllowed.Should().BeTrue();
-
-        ToolScopeDelegation.GetDelegatedScopes(
-                "export_investigation_summary",
-                authorization,
-                caller)
-            .Should().BeEquivalentTo("investigation-export");
+        authorization.IsAllowed.Should().BeFalse();
+        authorization.MissingScope.Should().Be("eventpipe");
     }
 
     [Theory]
     [InlineData(BearerPrincipal.RootScope)]
     [InlineData(BearerPrincipal.RootScopeAlt)]
-    public void ExportSummary_WildcardCaller_DoesNotSynthesizeEvidenceScopes(string wildcard)
+    public void ExportSummary_WildcardCaller_DoesNotSynthesizeEventPipeScope(string wildcard)
     {
         var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
         var arguments = Arguments(new { handle = "opaque" });
@@ -429,13 +424,8 @@ public sealed class ToolScopeDelegationTests
             caller,
             proxyInvocation: true,
             policies: StrictPolicies);
-        authorization.IsAllowed.Should().BeTrue();
-
-        ToolScopeDelegation.GetDelegatedScopes(
-                "export_investigation_summary",
-                authorization,
-                caller)
-            .Should().BeEquivalentTo("investigation-export");
+        authorization.IsAllowed.Should().BeFalse();
+        authorization.MissingScope.Should().Be("eventpipe");
     }
 
     private static (ToolScopeRegistry Registry, CallToolRequestParams Delegated)

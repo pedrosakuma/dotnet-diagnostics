@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Linq;
 using System.Text.Json;
@@ -10,6 +11,7 @@ using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
+using DotnetDiagnostics.Mcp.Security;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
 using ModelContextProtocol.Protocol;
@@ -41,7 +43,7 @@ public sealed class ReplicaCounterFanoutTests
         };
 
         var fanout = await ReplicaCounterFanout.CompareAsync(
-            store, proxy, callerBearerName: null, investigationHandleIds: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
+            store, proxy, callerPrincipal: null, investigationHandleIds: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(3);
         fanout.PodErrors.Should().BeEmpty();
@@ -61,7 +63,7 @@ public sealed class ReplicaCounterFanoutTests
         proxy.Throw["bad"] = new InvalidOperationException("port-forward died");
 
         var fanout = await ReplicaCounterFanout.CompareAsync(
-            store, proxy, callerBearerName: null, investigationHandleIds: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
+            store, proxy, callerPrincipal: null, investigationHandleIds: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(2);
         fanout.Skew.Should().NotBeNull();
@@ -81,7 +83,7 @@ public sealed class ReplicaCounterFanoutTests
         proxy.Throw["pod-b"] = new InvalidOperationException("died B");
 
         var fanout = await ReplicaCounterFanout.CompareAsync(
-            store, proxy, callerBearerName: null, investigationHandleIds: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
+            store, proxy, callerPrincipal: null, investigationHandleIds: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(2);
         fanout.Skew.Should().BeNull();
@@ -102,7 +104,7 @@ public sealed class ReplicaCounterFanoutTests
         var proxy = new StubProxyClient { ["mine"] = CountersResult(40, 40, 0, 1, "mine") };
 
         var fanout = await ReplicaCounterFanout.CompareAsync(
-            store, proxy, callerBearerName: "session-A", investigationHandleIds: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
+            store, proxy, callerPrincipal: Principal("session-A"), investigationHandleIds: null, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(1);
         proxy.Calls.Should().ContainSingle().Which.Should().Be("mine");
@@ -121,7 +123,7 @@ public sealed class ReplicaCounterFanoutTests
         };
 
         var fanout = await ReplicaCounterFanout.CompareAsync(
-            store, proxy, callerBearerName: "bearer-A", investigationHandleIds: new[] { "inv-b" }, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
+            store, proxy, callerPrincipal: Principal("bearer-A"), investigationHandleIds: new[] { "inv-b" }, durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(1);
         proxy.Calls.Should().ContainSingle().Which.Should().Be("pod-b");
@@ -148,7 +150,7 @@ public sealed class ReplicaCounterFanoutTests
             Process(207, "CoreClrSample", "dotnet CoreClrSample.dll --p6-target=b"));
 
         var fanout = await ReplicaCounterFanout.CompareAsync(
-            store, proxy, callerBearerName: null, investigationHandleIds: null,
+            store, proxy, callerPrincipal: null, investigationHandleIds: null,
             durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
 
         fanout.PodErrors.Should().BeEmpty();
@@ -173,7 +175,7 @@ public sealed class ReplicaCounterFanoutTests
             Process(52, "Worker", "dotnet Worker.dll --slot=two"));
 
         var fanout = await ReplicaCounterFanout.CompareAsync(
-            store, proxy, callerBearerName: null, investigationHandleIds: null,
+            store, proxy, callerPrincipal: null, investigationHandleIds: null,
             durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
 
         fanout.Skew!.Replicas.Should().ContainSingle(r => r.PodName == "good");
@@ -219,7 +221,7 @@ public sealed class ReplicaCounterFanoutTests
         var fanoutTask = ReplicaCounterFanout.CompareAsync(
             store,
             proxy,
-            callerBearerName: null,
+            callerPrincipal: null,
             investigationHandleIds: new[] { "inv-fast", "inv-slow", "inv-bad" },
             durationSeconds: 5,
             intervalSeconds: 1,
@@ -293,7 +295,7 @@ public sealed class ReplicaCounterFanoutTests
         var fanout = await ReplicaCounterFanout.CompareAsync(
             store,
             proxy,
-            callerBearerName: null,
+            callerPrincipal: null,
             investigationHandleIds: new[] { "inv-hung", "inv-healthy" },
             durationSeconds: 5,
             intervalSeconds: 1,
@@ -318,7 +320,7 @@ public sealed class ReplicaCounterFanoutTests
         store.Add(ActiveHandle("inv-a", "pod-a", ownerBearerName: "bearer-A"));
 
         var fanout = await ReplicaCounterFanout.CompareAsync(
-            store, new StubProxyClient(), callerBearerName: "bearer-A", investigationHandleIds: Array.Empty<string>(),
+            store, new StubProxyClient(), callerPrincipal: Principal("bearer-A"), investigationHandleIds: Array.Empty<string>(),
             durationSeconds: 5, intervalSeconds: 1, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(0);
@@ -341,7 +343,13 @@ public sealed class ReplicaCounterFanoutTests
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
         OwnerBearerName: ownerBearerName,
+        OwnerPrincipalKey: ownerBearerName is null
+            ? null
+            : PrincipalOwnershipKey.ForSynthetic(ownerBearerName),
         ProcessSelector: processSelector);
+
+    private static BearerPrincipal Principal(string name)
+        => new(name, ImmutableHashSet.Create("orchestrator-attach"));
 
     private static DotnetProcess Process(int processId, string entrypoint, string commandLine)
         => new(processId, commandLine, "linux", "x64", "10.0.0", entrypoint);

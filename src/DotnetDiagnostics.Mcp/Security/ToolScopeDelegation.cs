@@ -130,7 +130,10 @@ internal static class ToolScopeDelegation
             return false;
         }
 
-        var principal = new BearerPrincipal(DelegatedPrincipalName, scopes);
+        var principal = new BearerPrincipal(
+            DelegatedPrincipalName,
+            scopes,
+            PrincipalOwnershipKey.ForSystem(DelegatedPrincipalName));
         var authorization = registry.Authorize(
             request.Name,
             arguments,
@@ -218,6 +221,7 @@ internal static class ToolScopeDelegation
         }
 
         scopes.UnionWith(authorization.AdditionalScopes);
+        scopes.UnionWith(authorization.ExplicitAdditionalScopes);
         scopes.UnionWith(authorization.ModifierScopes);
         if (string.Equals(toolName, "query_snapshot", StringComparison.Ordinal) &&
             principal.HasExplicitScope(ToolInvocationScopeResolver.SensitiveParameterReadScope))
