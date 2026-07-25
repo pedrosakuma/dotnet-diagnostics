@@ -423,6 +423,7 @@ public sealed record TypeStat(
     TypeIdentity? Identity = null)
 {
     internal ulong? ModuleImageBase { get; init; }
+    internal IReadOnlyList<ulong> ModuleImageBases { get; init; } = Array.Empty<ulong>();
 }
 
 /// <summary>

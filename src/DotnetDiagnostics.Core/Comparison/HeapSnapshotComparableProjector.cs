@@ -305,7 +305,7 @@ public sealed class HeapSnapshotComparableProjector : IComparableProjector
             Module: string.Empty);
     }
 
-    private static TypeIdentity SelectRepresentativeIdentity(IEnumerable<TypeIdentity> identities)
+    internal static TypeIdentity SelectRepresentativeIdentity(IEnumerable<TypeIdentity> identities)
         => identities
             .OrderByDescending(static identity => identity.ModuleVersionId is not null)
             .ThenByDescending(static identity => identity.MetadataToken is not null)
