@@ -52,14 +52,14 @@ public sealed class DiscriminatorDispatchTests
     }
 
     [Fact]
-    public void TryValidate_IsCaseSensitive_RejectsDifferentCase()
+    public void TryValidate_IsCaseInsensitive_ReturnsCanonicalSpelling()
     {
-        // Documents the deliberate ordinal-match policy: 'SUMMARY' is NOT the same as 'summary'.
         var ok = DiscriminatorDispatch.TryValidate<string>(
-            "SUMMARY", Allowed, "view", out _, out var failure);
+            "SUMMARY", Allowed, "view", out var canonical, out var failure);
 
-        ok.Should().BeFalse();
-        failure!.Error!.Kind.Should().Be("InvalidArgument");
+        ok.Should().BeTrue();
+        canonical.Should().Be("summary");
+        failure.Should().BeNull();
     }
 
     [Fact]

@@ -697,12 +697,26 @@ internal static class InvestigationProxyEndpoints
         }
 
         if (!envelope.TryGetProperty("params", out var requestParams) ||
-            requestParams.ValueKind != JsonValueKind.Object ||
-            HasNonCanonicalProperty(requestParams, "name") ||
+            requestParams.ValueKind != JsonValueKind.Object)
+        {
+            return new ProxyToolRejection(
+                ProxyToolRejectionKind.NotAllowed,
+                "<missing-name>",
+                null,
+                false);
+        }
+        if (HasNonCanonicalProperty(requestParams, "name") ||
             HasNonCanonicalProperty(requestParams, "arguments") ||
             HasNonCanonicalProperty(requestParams, "task") ||
-            HasNonCanonicalProperty(requestParams, "_meta") ||
-            !requestParams.TryGetProperty("name", out var name) ||
+            HasNonCanonicalProperty(requestParams, "_meta"))
+        {
+            return new ProxyToolRejection(
+                ProxyToolRejectionKind.Malformed,
+                "<noncanonical-tool-params>",
+                null,
+                false);
+        }
+        if (!requestParams.TryGetProperty("name", out var name) ||
             name.ValueKind != JsonValueKind.String)
         {
             return new ProxyToolRejection(

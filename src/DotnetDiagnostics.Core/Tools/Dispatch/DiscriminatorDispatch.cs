@@ -10,11 +10,9 @@ namespace DotnetDiagnostics.Core.Tools.Dispatch;
 /// (see <see cref="DiagnosticError"/>).
 /// </summary>
 /// <remarks>
-/// <para>Matching is <b>case-sensitive ordinal</b>. Tool discriminators in this codebase
-/// (<c>view=summary</c>, <c>kind=cpu-sample</c>, <c>source=process</c>, …) are stable
-/// machine identifiers; a case-insensitive default would let typos like <c>SUMMARY</c>
-/// silently succeed and mask client bugs. The case-sensitive contract is enforced by
-/// <see cref="TryValidate{T}"/>'s lookup.</para>
+/// <para>Matching is <b>case-insensitive ordinal</b>. The helper returns the spelling from
+/// the <c>allowed</c> set, so downstream dispatch and argument-dependent authorization
+/// consume the same canonical discriminator even when a client varies casing.</para>
 /// </remarks>
 public static class DiscriminatorDispatch
 {
@@ -52,9 +50,7 @@ public static class DiscriminatorDispatch
         var trimmed = value.Trim();
         for (int i = 0; i < allowed.Count; i++)
         {
-            // Ordinal comparison: discriminators are machine-stable identifiers, see the
-            // class remarks for the deliberate case-sensitivity decision.
-            if (string.Equals(allowed[i], trimmed, StringComparison.Ordinal))
+            if (string.Equals(allowed[i], trimmed, StringComparison.OrdinalIgnoreCase))
             {
                 canonical = allowed[i];
                 failure = null;
