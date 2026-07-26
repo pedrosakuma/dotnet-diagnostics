@@ -21,15 +21,22 @@ startup fails fast if any `[McpServerTool]` is missing one.
 ```json
 {
   "requiredScopes": ["dump-write", "ptrace"],
+  "requiredExplicitScopes": [],
   "semantics": "all",
+  "hasConditionalArgumentScopes": false,
   "authorized": false
 }
 ```
 
 - `requiredScopes` mirrors the attribute values.
+- `requiredExplicitScopes` lists unconditional literal grants that wildcard/root does not
+  imply (for example, CPU summary export's `eventpipe` requirement).
 - `semantics` is `all` for `[RequireScope]` and `any` for `[RequireAnyScope]`.
-- `authorized` is evaluated for the current bearer token, so clients can hide or
-  gray out tools the caller cannot invoke before attempting `tools/call`.
+- `hasConditionalArgumentScopes` is true when a concrete invocation may add requirements
+  based on `kind`, `view`, `source`, or another argument; those cannot be decided by
+  `tools/list` and are enforced at `tools/call`.
+- `authorized` evaluates the static and unconditional explicit requirements for the current
+  bearer token. Clients must still account for `hasConditionalArgumentScopes`.
 
 This is advisory discovery metadata, not a bypass: `tools/call` still enforces
 the same scopes, and dispatcher tools can apply narrower per-parameter or

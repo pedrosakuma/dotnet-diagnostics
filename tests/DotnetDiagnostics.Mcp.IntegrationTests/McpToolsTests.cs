@@ -126,7 +126,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             var authMeta = tool.ProtocolTool.Meta?["dotnetDiagnostics"]?["auth"]?.AsObject();
             authMeta.Should().NotBeNull($"tool {tool.Name} must advertise authorization metadata in tools/list _meta");
             authMeta!["authorized"]!.GetValue<bool>().Should().Be(
-                tool.Name != "get_bytes",
+                tool.Name is not ("get_bytes" or "export_investigation_summary"),
                 "wildcard root satisfies primary scopes but must not imply literal modifier scopes");
             authMeta["delegationRequired"]!.GetValue<bool>().Should().BeFalse();
             authMeta["requiredScopes"]!.AsArray().Should().NotBeEmpty($"tool {tool.Name} must list required scopes");
@@ -161,11 +161,25 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             var queryAuth = tools.Single(t => t.Name == "query_snapshot").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
             queryAuth["semantics"]!.GetValue<string>().Should().Be("any");
             queryAuth["requiredScopes"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Contain("read-counters");
+            queryAuth["requiredExplicitScopes"]!.AsArray().Should().BeEmpty();
+            queryAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeTrue();
 
             var bytesAuth = tools.Single(t => t.Name == "get_bytes").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
             bytesAuth["authorized"]!.GetValue<bool>().Should().BeFalse();
             bytesAuth["requiredExplicitScopes"]!.AsArray().Select(n => n!.GetValue<string>())
                 .Should().Equal("module-bytes-read");
+            bytesAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeTrue();
+
+            var sampleAuth = tools.Single(t => t.Name == "collect_sample").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
+            sampleAuth["requiredExplicitScopes"]!.AsArray().Should().BeEmpty(
+                "method-params and remote-symbol modifiers depend on call arguments");
+            sampleAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeTrue();
+
+            var exportAuth = tools.Single(t => t.Name == "export_investigation_summary").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
+            exportAuth["authorized"]!.GetValue<bool>().Should().BeFalse();
+            exportAuth["requiredExplicitScopes"]!.AsArray()
+                .Select(n => n!.GetValue<string>()).Should().Equal("eventpipe");
+            exportAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeFalse();
         }
     }
 

@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
@@ -275,11 +276,6 @@ internal static class ToolScopeAuthorizationFilter
         BearerPrincipal? principal)
     {
         var presentedList = FormatPrincipalScopes(principal);
-        var hasAnyOf = !authorization.AnyOfScopes.IsDefaultOrEmpty;
-        var hasAllOf = !authorization.AllOfScopes.IsDefaultOrEmpty;
-        var semantics = hasAnyOf && hasAllOf
-            ? "any+all"
-            : hasAnyOf ? "any" : "all";
         var sb = new StringBuilder();
         sb.Append("forbidden: tool '")
           .Append(toolName)
@@ -293,33 +289,28 @@ internal static class ToolScopeAuthorizationFilter
 
         // Structured payload mirrors the BearerTokenMiddleware 401 envelope shape so the
         // client has one error grammar to reason about. The bearer value is NEVER in here.
+        var error = new System.Text.Json.Nodes.JsonObject
+        {
+            ["kind"] = "forbidden",
+            ["message"] = BuildMissingScopeMessage(authorization),
+            ["tool"] = toolName,
+            ["argument_scopes"] = new System.Text.Json.Nodes.JsonArray(
+                authorization.AdditionalScopes
+                    .AddRange(authorization.ExplicitAdditionalScopes)
+                    .Select(s => (System.Text.Json.Nodes.JsonNode?)s)
+                    .ToArray()),
+            ["modifier_scopes"] = new System.Text.Json.Nodes.JsonArray(
+                authorization.ModifierScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
+            ["principal_scopes"] = new System.Text.Json.Nodes.JsonArray(
+                (principal?.Scopes.OrderBy(s => s, StringComparer.Ordinal)
+                                  .Select(s => (System.Text.Json.Nodes.JsonNode?)s)
+                                  .ToArray())
+                ?? Array.Empty<System.Text.Json.Nodes.JsonNode?>()),
+        };
+        AddRequirementFields(error, authorization);
         var structured = new System.Text.Json.Nodes.JsonObject
         {
-            ["error"] = new System.Text.Json.Nodes.JsonObject
-            {
-                ["kind"] = "forbidden",
-                ["message"] = BuildMissingScopeMessage(authorization),
-                ["tool"] = toolName,
-                ["required_scopes"] = new System.Text.Json.Nodes.JsonArray(
-                    authorization.RequiredScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
-                ["any_of_scopes"] = new System.Text.Json.Nodes.JsonArray(
-                    authorization.AnyOfScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
-                ["all_of_scopes"] = new System.Text.Json.Nodes.JsonArray(
-                    authorization.AllOfScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
-                ["argument_scopes"] = new System.Text.Json.Nodes.JsonArray(
-                    authorization.AdditionalScopes
-                        .AddRange(authorization.ExplicitAdditionalScopes)
-                        .Select(s => (System.Text.Json.Nodes.JsonNode?)s)
-                        .ToArray()),
-                ["modifier_scopes"] = new System.Text.Json.Nodes.JsonArray(
-                    authorization.ModifierScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
-                ["principal_scopes"] = new System.Text.Json.Nodes.JsonArray(
-                    (principal?.Scopes.OrderBy(s => s, StringComparer.Ordinal)
-                                      .Select(s => (System.Text.Json.Nodes.JsonNode?)s)
-                                      .ToArray())
-                    ?? Array.Empty<System.Text.Json.Nodes.JsonNode?>()),
-                ["semantics"] = semantics,
-            },
+            ["error"] = error,
         };
 
         // The MCP CallToolResult is intentionally text-content-only (same reasoning as
@@ -362,18 +353,71 @@ internal static class ToolScopeAuthorizationFilter
         }
     }
 
-    private static string BuildMissingScopeMessage(
+    internal static string BuildMissingScopeMessage(
         ToolScopeRegistry.AuthorizationResult authorization)
     {
-        if (authorization.Primary.IsAny &&
-            authorization.Primary.Any.Contains(authorization.MissingScope, StringComparer.Ordinal))
+        var missingAll = authorization.MissingAllOfScopes.IsDefault
+            ? ImmutableArray<string>.Empty
+            : authorization.MissingAllOfScopes;
+        if (!authorization.IsAnyOfSatisfied)
         {
-            return $"tool requires any of scopes [{string.Join(", ", authorization.AnyOfScopes)}]";
+            var anyMessage =
+                $"tool requires any of scopes [{string.Join(", ", authorization.AnyOfScopes)}]";
+            return missingAll.IsDefaultOrEmpty
+                ? anyMessage
+                : $"{anyMessage} and is missing {FormatMissingAllOf(authorization, missingAll)}";
         }
 
-        return authorization.MissingExplicitScope
-            ? $"tool requires literal modifier scope '{authorization.MissingScope}'"
-            : $"tool requires mandatory scope '{authorization.MissingScope}'";
+        return $"tool requires {FormatMissingAllOf(authorization, missingAll)}";
+    }
+
+    private static string FormatMissingAllOf(
+        ToolScopeRegistry.AuthorizationResult authorization,
+        ImmutableArray<string> missingAll)
+    {
+        if (missingAll.IsDefaultOrEmpty)
+        {
+            return $"mandatory scope '{authorization.MissingScope}'";
+        }
+
+        if (missingAll.Length == 1)
+        {
+            return authorization.MissingExplicitScope
+                ? $"literal modifier scope '{missingAll[0]}'"
+                : $"mandatory scope '{missingAll[0]}'";
+        }
+
+        return $"mandatory scopes [{string.Join(", ", missingAll)}]";
+    }
+
+    internal static void AddRequirementFields(
+        System.Text.Json.Nodes.JsonObject target,
+        ToolScopeRegistry.AuthorizationResult authorization)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        target["required_scopes"] = new System.Text.Json.Nodes.JsonArray(
+            authorization.RequiredScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray());
+        target["any_of_scopes"] = new System.Text.Json.Nodes.JsonArray(
+            authorization.AnyOfScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray());
+        target["all_of_scopes"] = new System.Text.Json.Nodes.JsonArray(
+            authorization.AllOfScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray());
+        target["missing_all_of_scopes"] = new System.Text.Json.Nodes.JsonArray(
+            (authorization.MissingAllOfScopes.IsDefault
+                ? Array.Empty<System.Text.Json.Nodes.JsonNode?>()
+                : authorization.MissingAllOfScopes
+                    .Select(s => (System.Text.Json.Nodes.JsonNode?)s)
+                    .ToArray()));
+        target["any_of_satisfied"] = authorization.IsAnyOfSatisfied;
+        target["semantics"] = GetSemantics(authorization);
+    }
+
+    internal static string GetSemantics(ToolScopeRegistry.AuthorizationResult authorization)
+    {
+        var hasAnyOf = !authorization.AnyOfScopes.IsDefaultOrEmpty;
+        var hasAllOf = !authorization.AllOfScopes.IsDefaultOrEmpty;
+        return hasAnyOf && hasAllOf
+            ? "any+all"
+            : hasAnyOf ? "any" : "all";
     }
 
     private static string FormatScopes(ToolScopeRegistry.Requirement requirement)

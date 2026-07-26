@@ -971,6 +971,75 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.LastRequest.Should().BeNull();
     }
 
+    [Fact]
+    public async Task Proxy_QuerySnapshotDenial_PreservesPrimaryAlternatives()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "attach-only",
+                System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_query_contract", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_query_contract/mcp",
+            new StringContent(
+                ToolCallPayload("query_snapshot", "{\"handle\":\"opaque\"}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var problem = document.RootElement;
+        problem.GetProperty("kind").GetString().Should().Be("ProxyToolScopeDenied");
+        problem.GetProperty("semantics").GetString().Should().Be("any");
+        problem.GetProperty("any_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal(
+                "read-counters",
+                "eventpipe",
+                "heap-read",
+                "ptrace",
+                "investigation-export");
+        problem.GetProperty("all_of_scopes").EnumerateArray().Should().BeEmpty();
+        problem.GetProperty("any_of_satisfied").GetBoolean().Should().BeFalse();
+        problem.GetProperty("detail").GetString().Should().Contain("requires any of scopes");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_AnyAndAllDenial_IdentifiesMissingMandatoryScope()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "counters-only",
+                System.Collections.Immutable.ImmutableHashSet.Create(
+                    "orchestrator-attach",
+                    "read-counters")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_mixed_contract", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_mixed_contract/mcp",
+            new StringContent(
+                ToolCallPayload("inspect_process", "{\"view\":\"requests-now\"}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var problem = document.RootElement;
+        problem.GetProperty("status").GetInt32().Should().Be(403);
+        problem.GetProperty("kind").GetString().Should().Be("ProxyToolScopeDenied");
+        problem.GetProperty("semantics").GetString().Should().Be("any+all");
+        problem.GetProperty("any_of_satisfied").GetBoolean().Should().BeTrue();
+        problem.GetProperty("missing_all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("ptrace");
+        problem.GetProperty("detail").GetString().Should().Contain("mandatory scope 'ptrace'");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
     [Theory]
     [InlineData("investigation-export", "eventpipe")]
     [InlineData("eventpipe", "investigation-export")]

@@ -42,7 +42,9 @@ internal sealed class ToolScopeRegistry
         Requirement Primary,
         ImmutableArray<string> AdditionalScopes,
         ImmutableArray<string> ExplicitAdditionalScopes,
-        ImmutableArray<string> ModifierScopes)
+        ImmutableArray<string> ModifierScopes,
+        bool IsAnyOfSatisfied = true,
+        ImmutableArray<string> MissingAllOfScopes = default)
     {
         public ImmutableArray<string> AnyOfScopes =>
             Primary.IsAny
@@ -109,36 +111,31 @@ internal sealed class ToolScopeRegistry
                 ImmutableArray<string>.Empty);
         }
 
-        var primaryDecision = ToolScopeAuthorizationFilter.Authorize(primary.Value, principal);
         var invocation = ToolInvocationScopeResolver.Resolve(
             toolName,
             arguments,
             proxyInvocation,
             policies);
-        if (!primaryDecision.IsAllowed)
+        var isAnyOfSatisfied = !primary.Value.IsAny ||
+            primary.Value.Any.Any(scope => principal?.HasScope(scope) == true);
+        var missingAllOfScopes = ImmutableArray.CreateBuilder<string>();
+
+        if (!primary.Value.IsAny)
         {
-            return new AuthorizationResult(
-                false,
-                primaryDecision.MissingScope,
-                false,
-                primary.Value,
-                invocation.AdditionalScopes,
-                invocation.ExplicitAdditionalScopes,
-                invocation.ExplicitModifierScopes);
+            foreach (var scope in primary.Value.All)
+            {
+                if (principal?.HasScope(scope) != true)
+                {
+                    missingAllOfScopes.Add(scope);
+                }
+            }
         }
 
         foreach (var scope in invocation.AdditionalScopes)
         {
             if (principal?.HasScope(scope) != true)
             {
-                return new AuthorizationResult(
-                    false,
-                    scope,
-                    false,
-                    primary.Value,
-                    invocation.AdditionalScopes,
-                    invocation.ExplicitAdditionalScopes,
-                    invocation.ExplicitModifierScopes);
+                missingAllOfScopes.Add(scope);
             }
         }
 
@@ -146,14 +143,7 @@ internal sealed class ToolScopeRegistry
         {
             if (principal?.HasExplicitScope(scope) != true)
             {
-                return new AuthorizationResult(
-                    false,
-                    scope,
-                    false,
-                    primary.Value,
-                    invocation.AdditionalScopes,
-                    invocation.ExplicitAdditionalScopes,
-                    invocation.ExplicitModifierScopes);
+                missingAllOfScopes.Add(scope);
             }
         }
 
@@ -161,25 +151,28 @@ internal sealed class ToolScopeRegistry
         {
             if (principal?.HasExplicitScope(modifier) != true)
             {
-                return new AuthorizationResult(
-                    false,
-                    modifier,
-                    true,
-                    primary.Value,
-                    invocation.AdditionalScopes,
-                    invocation.ExplicitAdditionalScopes,
-                    invocation.ExplicitModifierScopes);
+                missingAllOfScopes.Add(modifier);
             }
         }
 
+        var missingAll = missingAllOfScopes.Distinct().ToImmutableArray();
+        var isAllowed = isAnyOfSatisfied && missingAll.IsDefaultOrEmpty;
+        var missingScope = !isAnyOfSatisfied
+            ? primary.Value.Any[0]
+            : missingAll.FirstOrDefault() ?? string.Empty;
+        var missingExplicitScope = missingAll.Contains(missingScope, StringComparer.Ordinal) &&
+            invocation.ExplicitModifierScopes.Contains(missingScope, StringComparer.Ordinal);
+
         return new AuthorizationResult(
-            true,
-            string.Empty,
-            false,
+            isAllowed,
+            missingScope,
+            missingExplicitScope,
             primary.Value,
             invocation.AdditionalScopes,
             invocation.ExplicitAdditionalScopes,
-            invocation.ExplicitModifierScopes);
+            invocation.ExplicitModifierScopes,
+            isAnyOfSatisfied,
+            missingAll);
     }
 
     /// <summary>Scans the supplied tool surface types for <c>[McpServerTool]</c> methods

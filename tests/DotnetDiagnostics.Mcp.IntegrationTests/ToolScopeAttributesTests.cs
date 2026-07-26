@@ -388,6 +388,27 @@ public sealed class ToolScopeAttributesTests
             .IsAllowed.Should().BeTrue();
     }
 
+    [Fact]
+    public void AuthorizationResult_OverlappingAnyAndAll_TracksMandatoryFailure()
+    {
+        var registry = ToolScopeRegistry.Build(
+            DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable);
+        var principal = new BearerPrincipal(
+            "counters",
+            ImmutableHashSet.Create("read-counters"));
+
+        var result = registry.Authorize(
+            "inspect_process",
+            Arguments(new { view = "requests-now" }),
+            principal);
+
+        result.IsAllowed.Should().BeFalse();
+        result.IsAnyOfSatisfied.Should().BeTrue();
+        result.MissingAllOfScopes.Should().Equal("ptrace");
+        ToolScopeAuthorizationFilter.BuildMissingScopeMessage(result)
+            .Should().Be("tool requires mandatory scope 'ptrace'");
+    }
+
     private static IDictionary<string, JsonElement> Arguments<T>(T value)
         => JsonSerializer.SerializeToElement(value).EnumerateObject()
             .ToDictionary(static property => property.Name, static property => property.Value, StringComparer.Ordinal);
@@ -517,7 +538,9 @@ public sealed class ToolScopeAuthorizationTests
             Any("read-counters", "ptrace"),
             ImmutableArray<string>.Empty,
             ImmutableArray<string>.Empty,
-            ImmutableArray<string>.Empty));
+            ImmutableArray<string>.Empty,
+            IsAnyOfSatisfied: false,
+            MissingAllOfScopes: ImmutableArray<string>.Empty));
 
         summary.Should().Contain("requires any of [read-counters, ptrace]");
         error.GetProperty("semantics").GetString().Should().Be("any");
@@ -537,15 +560,19 @@ public sealed class ToolScopeAuthorizationTests
             All("dump-write", "ptrace"),
             ImmutableArray<string>.Empty,
             ImmutableArray<string>.Empty,
-            ImmutableArray<string>.Empty));
+            ImmutableArray<string>.Empty,
+            IsAnyOfSatisfied: true,
+            MissingAllOfScopes: ImmutableArray.Create("dump-write", "ptrace")));
 
         summary.Should().Contain("requires all of [dump-write, ptrace]");
         error.GetProperty("semantics").GetString().Should().Be("all");
         error.GetProperty("any_of_scopes").EnumerateArray().Should().BeEmpty();
         error.GetProperty("all_of_scopes").EnumerateArray()
             .Select(static scope => scope.GetString()).Should().Equal("dump-write", "ptrace");
+        error.GetProperty("missing_all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("dump-write", "ptrace");
         error.GetProperty("message").GetString().Should().Be(
-            "tool requires mandatory scope 'dump-write'");
+            "tool requires mandatory scopes [dump-write, ptrace]");
     }
 
     [Fact]
@@ -558,7 +585,9 @@ public sealed class ToolScopeAuthorizationTests
             Any("eventpipe", "heap-read"),
             ImmutableArray<string>.Empty,
             ImmutableArray<string>.Empty,
-            ImmutableArray.Create("sensitive-heap-read")));
+            ImmutableArray.Create("sensitive-heap-read"),
+            IsAnyOfSatisfied: true,
+            MissingAllOfScopes: ImmutableArray.Create("sensitive-heap-read")));
 
         summary.Should().Contain(
             "requires any of [eventpipe, heap-read] and all of [sensitive-heap-read]");
@@ -569,6 +598,26 @@ public sealed class ToolScopeAuthorizationTests
             .Select(static scope => scope.GetString()).Should().Equal("sensitive-heap-read");
         error.GetProperty("message").GetString().Should().Be(
             "tool requires literal modifier scope 'sensitive-heap-read'");
+    }
+
+    [Fact]
+    public void ForbiddenEnvelope_OrAnd_WhenMandatoryGroupIsSatisfied_IdentifiesAnyGroupFailure()
+    {
+        var (_, error) = Forbidden(new ToolScopeRegistry.AuthorizationResult(
+            false,
+            "read-counters",
+            false,
+            Any("read-counters", "eventpipe"),
+            ImmutableArray.Create("ptrace"),
+            ImmutableArray<string>.Empty,
+            ImmutableArray<string>.Empty,
+            IsAnyOfSatisfied: false,
+            MissingAllOfScopes: ImmutableArray<string>.Empty));
+
+        error.GetProperty("any_of_satisfied").GetBoolean().Should().BeFalse();
+        error.GetProperty("missing_all_of_scopes").EnumerateArray().Should().BeEmpty();
+        error.GetProperty("message").GetString().Should().Be(
+            "tool requires any of scopes [read-counters, eventpipe]");
     }
 
     [Fact]

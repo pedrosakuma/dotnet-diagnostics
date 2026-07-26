@@ -220,11 +220,10 @@ internal static class InvestigationProxyEndpoints
                     logger.LogWarning(
                         "Proxy rejected tool '{Tool}' for handle {HandleId}: missing scope {MissingScope}.",
                         rejection.ToolName, handleId, rejection.MissingScope);
-                    await WriteProblemAsync(context, StatusCodes.Status403Forbidden,
-                        "ProxyToolScopeDenied",
-                        rejection.MissingExplicitScope
-                            ? $"Tool '{rejection.ToolName}' requires the literal modifier scope '{rejection.MissingScope}'."
-                            : $"Tool '{rejection.ToolName}' requires scope '{rejection.MissingScope}'.")
+                    await WriteScopeDeniedProblemAsync(
+                            context,
+                            rejection.ToolName,
+                            rejection.Authorization!.Value)
                         .ConfigureAwait(false);
                 }
                 return;
@@ -876,7 +875,8 @@ internal static class InvestigationProxyEndpoints
                 ProxyToolRejectionKind.ScopeDenied,
                 toolName,
                 authorization.MissingScope,
-                authorization.MissingExplicitScope);
+                authorization.MissingExplicitScope,
+                authorization);
     }
 
     private static bool ContainsToolCall(ReadOnlyMemory<byte> body)
@@ -995,6 +995,26 @@ internal static class InvestigationProxyEndpoints
             $"{{\"status\":{status}{kindFragment},\"detail\":{System.Text.Json.JsonSerializer.Serialize(detail)}}}");
     }
 
+    private static Task WriteScopeDeniedProblemAsync(
+        HttpContext context,
+        string toolName,
+        ToolScopeRegistry.AuthorizationResult authorization)
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        context.Response.ContentType = "application/problem+json";
+        var problem = new System.Text.Json.Nodes.JsonObject
+        {
+            ["status"] = StatusCodes.Status403Forbidden,
+            ["kind"] = "ProxyToolScopeDenied",
+            ["detail"] =
+               $"Tool '{toolName}' authorization denied: " +
+               ToolScopeAuthorizationFilter.BuildMissingScopeMessage(authorization) + ".",
+            ["tool"] = toolName,
+        };
+        ToolScopeAuthorizationFilter.AddRequirementFields(problem, authorization);
+        return context.Response.WriteAsync(problem.ToJsonString());
+    }
+
     private sealed class RequestBodyTooLargeException : Exception
     {
     }
@@ -1033,7 +1053,8 @@ internal static class InvestigationProxyEndpoints
         ProxyToolRejectionKind Kind,
         string ToolName,
         string? MissingScope,
-        bool MissingExplicitScope);
+        bool MissingExplicitScope,
+        ToolScopeRegistry.AuthorizationResult? Authorization = null);
 }
 
 /// <summary>
