@@ -374,6 +374,8 @@ public sealed class InvestigationProxyCallToolFilterTests
                 error.GetProperty("semantics").GetString().Should().Be("any");
                 error.GetProperty("any_of_scopes").EnumerateArray().Should().NotBeEmpty();
                 error.GetProperty("all_of_scopes").EnumerateArray().Should().BeEmpty();
+                error.GetProperty("any_of_satisfied").GetBoolean().Should().BeFalse();
+                error.GetProperty("missing_all_of_scopes").EnumerateArray().Should().BeEmpty();
                 break;
             case "and":
                 summary.Should().Contain("requires all of [dump-write, ptrace]");
@@ -381,6 +383,8 @@ public sealed class InvestigationProxyCallToolFilterTests
                 error.GetProperty("any_of_scopes").EnumerateArray().Should().BeEmpty();
                 error.GetProperty("all_of_scopes").EnumerateArray()
                     .Select(static scope => scope.GetString()).Should().Equal("dump-write", "ptrace");
+                error.GetProperty("missing_all_of_scopes").EnumerateArray()
+                    .Select(static scope => scope.GetString()).Should().Equal("dump-write");
                 break;
             case "or+and":
                 summary.Should().Contain(
@@ -390,6 +394,11 @@ public sealed class InvestigationProxyCallToolFilterTests
                     .Select(static scope => scope.GetString()).Should().Equal("read-counters", "ptrace");
                 error.GetProperty("all_of_scopes").EnumerateArray()
                     .Select(static scope => scope.GetString()).Should().Equal("ptrace");
+                error.GetProperty("any_of_satisfied").GetBoolean().Should().BeTrue();
+                error.GetProperty("missing_all_of_scopes").EnumerateArray()
+                    .Select(static scope => scope.GetString()).Should().Equal("ptrace");
+                error.GetProperty("message").GetString().Should().Be(
+                    "tool requires mandatory scope 'ptrace'");
                 break;
         }
     }

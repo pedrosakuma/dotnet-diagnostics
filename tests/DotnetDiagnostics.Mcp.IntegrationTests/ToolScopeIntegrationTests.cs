@@ -308,11 +308,21 @@ public sealed class ToolScopeIntegrationTests
         collectSampleAuth["authorized"]!.GetValue<bool>().Should().BeFalse();
         collectSampleAuth["semantics"]!.GetValue<string>().Should().Be("all");
         collectSampleAuth["requiredScopes"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Equal("eventpipe");
+        collectSampleAuth["requiredExplicitScopes"]!.AsArray().Should().BeEmpty();
+        collectSampleAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeTrue();
 
         var inspectProcessAuth = tools.Single(t => t.Name == "inspect_process").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
         inspectProcessAuth["authorized"]!.GetValue<bool>().Should().BeTrue();
         inspectProcessAuth["semantics"]!.GetValue<string>().Should().Be("any");
         inspectProcessAuth["requiredScopes"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Contain("read-counters");
+        inspectProcessAuth["requiredExplicitScopes"]!.AsArray().Should().BeEmpty();
+        inspectProcessAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeTrue();
+
+        var exportAuth = tools.Single(t => t.Name == "export_investigation_summary").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
+        exportAuth["authorized"]!.GetValue<bool>().Should().BeFalse();
+        exportAuth["requiredExplicitScopes"]!.AsArray()
+            .Select(n => n!.GetValue<string>()).Should().Equal("eventpipe");
+        exportAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeFalse();
     }
 
     [Fact]
@@ -335,6 +345,11 @@ public sealed class ToolScopeIntegrationTests
             .Select(static scope => scope.GetString()).Should().Equal("read-counters", "ptrace");
         envelope.GetProperty("all_of_scopes").EnumerateArray()
             .Select(static scope => scope.GetString()).Should().Equal("ptrace");
+        envelope.GetProperty("any_of_satisfied").GetBoolean().Should().BeTrue();
+        envelope.GetProperty("missing_all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("ptrace");
+        envelope.GetProperty("message").GetString().Should().Be(
+            "tool requires mandatory scope 'ptrace'");
         envelope.GetProperty("argument_scopes").EnumerateArray()
             .Select(static scope => scope.GetString()).Should().Contain("ptrace");
     }
@@ -359,6 +374,8 @@ public sealed class ToolScopeIntegrationTests
         envelope.GetProperty("any_of_scopes").EnumerateArray().Should().BeEmpty();
         envelope.GetProperty("all_of_scopes").EnumerateArray()
             .Select(static scope => scope.GetString()).Should().Equal("dump-write", "ptrace");
+        envelope.GetProperty("missing_all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("dump-write");
         envelope.GetProperty("required_scopes").EnumerateArray()
             .Select(e => e.GetString()).Should().Equal("dump-write", "ptrace");
     }
@@ -387,6 +404,8 @@ public sealed class ToolScopeIntegrationTests
                 "ptrace",
                 "investigation-export");
         envelope.GetProperty("all_of_scopes").EnumerateArray().Should().BeEmpty();
+        envelope.GetProperty("any_of_satisfied").GetBoolean().Should().BeFalse();
+        envelope.GetProperty("missing_all_of_scopes").EnumerateArray().Should().BeEmpty();
     }
 
     [Fact]

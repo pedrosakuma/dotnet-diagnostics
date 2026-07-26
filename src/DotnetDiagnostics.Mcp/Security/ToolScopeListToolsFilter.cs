@@ -66,21 +66,22 @@ internal static class ToolScopeListToolsFilter
         }
 
         var decision = ToolScopeAuthorizationFilter.Authorize(requirement, principal);
-        var unconditionalModifiers = ToolInvocationScopeResolver.Resolve(
-            tool.Name,
-            arguments: null,
-            proxyInvocation: false,
-            policies: null).ExplicitModifierScopes;
-        var modifiersAllowed = principal is not null &&
-            unconditionalModifiers.All(principal.HasExplicitScope);
+        var invocation = ToolInvocationScopeResolver.ResolveCatalog(tool.Name);
+        var requiredExplicitScopes = invocation.ExplicitAdditionalScopes
+            .AddRange(invocation.ExplicitModifierScopes)
+            .Distinct()
+            .ToArray();
+        var explicitScopesAllowed = principal is not null &&
+            requiredExplicitScopes.All(principal.HasExplicitScope);
         dotnetDiagnostics[AuthMetaKey] = new JsonObject
         {
             ["requiredScopes"] = new JsonArray(requirement.Scopes.Select(s => (JsonNode?)s).ToArray()),
             ["requiredExplicitScopes"] = new JsonArray(
-                unconditionalModifiers.Select(scope => (JsonNode?)scope).ToArray()),
+                requiredExplicitScopes.Select(scope => (JsonNode?)scope).ToArray()),
             ["semantics"] = requirement.IsAny ? "any" : "all",
+            ["hasConditionalArgumentScopes"] = invocation.HasConditionalArgumentScopes,
             ["delegationRequired"] = delegationRequired,
-            ["authorized"] = !delegationRequired && decision.IsAllowed && modifiersAllowed,
+            ["authorized"] = !delegationRequired && decision.IsAllowed && explicitScopesAllowed,
         };
 
         return new Tool
