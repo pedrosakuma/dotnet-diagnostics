@@ -89,13 +89,22 @@ internal sealed class OidcJwtProvider
             return false;
         }
 
-        var client = ResolveIdentityClaim(principal, "azp", "client_id", "appid") ?? "no-client";
+        var client = ResolveIdentityClaim(principal, "azp", "client_id", "appid");
         var subject = ResolveIdentityClaim(
-                principal,
-                "sub",
-                ClaimTypes.NameIdentifier,
-                "oid")
-            ?? client;
+            principal,
+            "sub",
+            ClaimTypes.NameIdentifier,
+            "oid");
+        if (client is null && subject is null)
+        {
+            bearerPrincipal = null;
+            failureMessage =
+                "JWT is missing a stable ownership identity claim. " +
+                "Provide at least one subject claim (sub, nameidentifier, oid) " +
+                "or client claim (azp, client_id, appid).";
+            return false;
+        }
+
         bearerPrincipal = new BearerPrincipal(
             ResolvePrincipalName(principal),
             scopes.ToImmutable(),
