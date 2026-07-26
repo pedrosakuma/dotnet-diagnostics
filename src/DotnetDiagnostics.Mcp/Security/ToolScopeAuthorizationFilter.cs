@@ -274,23 +274,18 @@ internal static class ToolScopeAuthorizationFilter
         ToolScopeRegistry.AuthorizationResult authorization,
         BearerPrincipal? principal)
     {
-        var requiredList = FormatScopes(authorization);
         var presentedList = FormatPrincipalScopes(principal);
-        var semantics = authorization.Primary.IsAny &&
-            authorization.AdditionalScopes.IsDefaultOrEmpty &&
-            authorization.ExplicitAdditionalScopes.IsDefaultOrEmpty &&
-            authorization.ModifierScopes.IsDefaultOrEmpty
-            ? "any"
-            : "all";
-        var kindWord = semantics == "any" ? "any of" : "scope";
+        var hasAnyOf = !authorization.AnyOfScopes.IsDefaultOrEmpty;
+        var hasAllOf = !authorization.AllOfScopes.IsDefaultOrEmpty;
+        var semantics = hasAnyOf && hasAllOf
+            ? "any+all"
+            : hasAnyOf ? "any" : "all";
         var sb = new StringBuilder();
         sb.Append("forbidden: tool '")
           .Append(toolName)
-          .Append("' requires ")
-          .Append(kindWord)
-          .Append(" [")
-          .Append(requiredList)
-          .Append("]; principal '")
+          .Append("' requires ");
+        AppendRequirementSummary(sb, authorization);
+        sb.Append("; principal '")
           .Append(principal?.Name ?? "(none)")
           .Append("' presented [")
           .Append(presentedList)
@@ -303,12 +298,14 @@ internal static class ToolScopeAuthorizationFilter
             ["error"] = new System.Text.Json.Nodes.JsonObject
             {
                 ["kind"] = "forbidden",
-                ["message"] = authorization.MissingExplicitScope
-                    ? $"tool requires literal modifier scope '{authorization.MissingScope}'"
-                    : $"tool requires scope '{authorization.MissingScope}'",
+                ["message"] = BuildMissingScopeMessage(authorization),
                 ["tool"] = toolName,
                 ["required_scopes"] = new System.Text.Json.Nodes.JsonArray(
                     authorization.RequiredScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
+                ["any_of_scopes"] = new System.Text.Json.Nodes.JsonArray(
+                    authorization.AnyOfScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
+                ["all_of_scopes"] = new System.Text.Json.Nodes.JsonArray(
+                    authorization.AllOfScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
                 ["argument_scopes"] = new System.Text.Json.Nodes.JsonArray(
                     authorization.AdditionalScopes
                         .AddRange(authorization.ExplicitAdditionalScopes)
@@ -338,6 +335,45 @@ internal static class ToolScopeAuthorizationFilter
             IsError = true,
             Content = new List<ContentBlock> { new TextContentBlock { Text = sb.ToString() } },
         };
+    }
+
+    private static void AppendRequirementSummary(
+        StringBuilder builder,
+        ToolScopeRegistry.AuthorizationResult authorization)
+    {
+        if (!authorization.AnyOfScopes.IsDefaultOrEmpty)
+        {
+            builder.Append("any of [")
+                .Append(string.Join(", ", authorization.AnyOfScopes))
+                .Append(']');
+        }
+
+        if (!authorization.AnyOfScopes.IsDefaultOrEmpty &&
+            !authorization.AllOfScopes.IsDefaultOrEmpty)
+        {
+            builder.Append(" and ");
+        }
+
+        if (!authorization.AllOfScopes.IsDefaultOrEmpty)
+        {
+            builder.Append("all of [")
+                .Append(string.Join(", ", authorization.AllOfScopes))
+                .Append(']');
+        }
+    }
+
+    private static string BuildMissingScopeMessage(
+        ToolScopeRegistry.AuthorizationResult authorization)
+    {
+        if (authorization.Primary.IsAny &&
+            authorization.Primary.Any.Contains(authorization.MissingScope, StringComparer.Ordinal))
+        {
+            return $"tool requires any of scopes [{string.Join(", ", authorization.AnyOfScopes)}]";
+        }
+
+        return authorization.MissingExplicitScope
+            ? $"tool requires literal modifier scope '{authorization.MissingScope}'"
+            : $"tool requires mandatory scope '{authorization.MissingScope}'";
     }
 
     private static string FormatScopes(ToolScopeRegistry.Requirement requirement)

@@ -327,7 +327,14 @@ public sealed class ToolScopeIntegrationTests
             arguments: new Dictionary<string, object?> { ["view"] = "requests-now", ["processId"] = -1 },
             cancellationToken: CancellationToken.None);
 
-        var (_, envelope) = ParseForbidden(result);
+        var (summary, envelope) = ParseForbidden(result);
+        summary.Should().Contain(
+            "requires any of [read-counters, ptrace] and all of [ptrace]");
+        envelope.GetProperty("semantics").GetString().Should().Be("any+all");
+        envelope.GetProperty("any_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("read-counters", "ptrace");
+        envelope.GetProperty("all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("ptrace");
         envelope.GetProperty("argument_scopes").EnumerateArray()
             .Select(static scope => scope.GetString()).Should().Contain("ptrace");
     }
@@ -346,9 +353,40 @@ public sealed class ToolScopeIntegrationTests
             arguments: new Dictionary<string, object?>(),
             cancellationToken: CancellationToken.None);
 
-        var (_, envelope) = ParseForbidden(result);
+        var (summary, envelope) = ParseForbidden(result);
+        summary.Should().Contain("requires all of [dump-write, ptrace]");
+        envelope.GetProperty("semantics").GetString().Should().Be("all");
+        envelope.GetProperty("any_of_scopes").EnumerateArray().Should().BeEmpty();
+        envelope.GetProperty("all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("dump-write", "ptrace");
         envelope.GetProperty("required_scopes").EnumerateArray()
             .Select(e => e.GetString()).Should().Equal("dump-write", "ptrace");
+    }
+
+    [Fact]
+    public async Task RequireAnyScope_Denial_PreservesAlternatives()
+    {
+        await using var factory = CreateFactory(
+            ("unrelated", "unrelated-secret", new[] { "orchestrator-list" }));
+        await using var client = await ConnectWithTokenAsync(factory, "unrelated-secret");
+
+        var result = await client.CallToolAsync(
+            "query_snapshot",
+            arguments: new Dictionary<string, object?> { ["handle"] = "bogus" },
+            cancellationToken: CancellationToken.None);
+
+        var (summary, envelope) = ParseForbidden(result);
+        summary.Should().Contain(
+            "requires any of [read-counters, eventpipe, heap-read, ptrace, investigation-export]");
+        envelope.GetProperty("semantics").GetString().Should().Be("any");
+        envelope.GetProperty("any_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal(
+                "read-counters",
+                "eventpipe",
+                "heap-read",
+                "ptrace",
+                "investigation-export");
+        envelope.GetProperty("all_of_scopes").EnumerateArray().Should().BeEmpty();
     }
 
     [Fact]

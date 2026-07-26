@@ -44,11 +44,22 @@ internal sealed class ToolScopeRegistry
         ImmutableArray<string> ExplicitAdditionalScopes,
         ImmutableArray<string> ModifierScopes)
     {
-        public ImmutableArray<string> RequiredScopes =>
-            Primary.Scopes
+        public ImmutableArray<string> AnyOfScopes =>
+            Primary.IsAny
+                ? Primary.Any.Distinct().ToImmutableArray()
+                : ImmutableArray<string>.Empty;
+
+        public ImmutableArray<string> AllOfScopes =>
+            (Primary.IsAny ? ImmutableArray<string>.Empty : Primary.All)
                 .AddRange(AdditionalScopes)
                 .AddRange(ExplicitAdditionalScopes)
                 .AddRange(ModifierScopes)
+                .Distinct()
+                .ToImmutableArray();
+
+        public ImmutableArray<string> RequiredScopes =>
+            AnyOfScopes
+                .AddRange(AllOfScopes)
                 .Distinct()
                 .ToImmutableArray();
     }
