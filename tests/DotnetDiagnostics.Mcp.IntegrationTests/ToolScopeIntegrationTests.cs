@@ -1,9 +1,12 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Mcp.Security;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -130,15 +133,11 @@ public sealed class ToolScopeIntegrationTests
         envelope.GetProperty("semantics").GetString().Should().Be("all");
     }
 
-    [Theory]
-    [InlineData("investigation-export", "eventpipe")]
-    [InlineData("eventpipe", "investigation-export")]
-    public async Task ExportSummary_MissingEitherScope_IsDenied(
-        string heldScope,
-        string missingScope)
+    [Fact]
+    public async Task ExportSummary_MissingInvestigationScope_IsDeniedByFilter()
     {
         await using var factory = CreateFactory(
-            ("limited-export", "limited-export-token", new[] { heldScope }));
+            ("eventpipe-only", "limited-export-token", new[] { "eventpipe" }));
         await using var client = await ConnectWithTokenAsync(factory, "limited-export-token");
 
         var result = await client.CallToolAsync(
@@ -148,7 +147,28 @@ public sealed class ToolScopeIntegrationTests
 
         var (_, envelope) = ParseForbidden(result);
         envelope.GetProperty("required_scopes").EnumerateArray()
-            .Select(static scope => scope.GetString()).Should().Contain(missingScope);
+            .Select(static scope => scope.GetString()).Should().Contain("investigation-export");
+    }
+
+    [Fact]
+    public async Task ExportSummary_MissingCpuEvidenceScope_IsDeniedByTool()
+    {
+        await using var factory = CreateFactory(
+            ("export-only", "export-only-token", new[] { "investigation-export" }));
+        await using var client = await ConnectWithTokenAsync(factory, "export-only-token");
+        var handle = factory.Services.GetRequiredService<IDiagnosticHandleStore>().Register(
+            Environment.ProcessId,
+            "cpu-sample",
+            CpuArtifact(),
+            TimeSpan.FromMinutes(1));
+
+        var result = await client.CallToolAsync(
+            "export_investigation_summary",
+            arguments: new Dictionary<string, object?> { ["handle"] = handle.Id },
+            cancellationToken: CancellationToken.None);
+
+        var text = result.Content.OfType<TextContentBlock>().Single().Text;
+        text.Should().Contain("Forbidden").And.Contain("eventpipe");
     }
 
     [Fact]
@@ -320,10 +340,23 @@ public sealed class ToolScopeIntegrationTests
 
         var exportAuth = tools.Single(t => t.Name == "export_investigation_summary").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
         exportAuth["authorized"]!.GetValue<bool>().Should().BeFalse();
-        exportAuth["requiredExplicitScopes"]!.AsArray()
-            .Select(n => n!.GetValue<string>()).Should().Equal("eventpipe");
-        exportAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeFalse();
+        exportAuth["requiredScopes"]!.AsArray().Select(n => n!.GetValue<string>())
+            .Should().Equal("investigation-export");
+        exportAuth["requiredExplicitScopes"]!.AsArray().Should().BeEmpty();
+        exportAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeTrue();
     }
+
+    private static CpuSampleTraceArtifact CpuArtifact()
+        => new(
+            Environment.ProcessId,
+            DateTimeOffset.UnixEpoch,
+            TimeSpan.FromSeconds(1),
+            1,
+            new CallTreeNode(
+                new SampledFrame(string.Empty, "<root>"),
+                1,
+                0,
+                [new CallTreeNode(new SampledFrame("App.dll", "App.Work"), 1, 1, [])]));
 
     [Fact]
     public async Task InspectProcess_RequestsNow_Denies_When_Ptrace_Is_Missing()

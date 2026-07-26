@@ -1040,12 +1040,8 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.LastRequest.Should().BeNull();
     }
 
-    [Theory]
-    [InlineData("investigation-export", "eventpipe")]
-    [InlineData("eventpipe", "investigation-export")]
-    public async Task Proxy_RejectsExport_WhenEitherRequiredScopeIsMissing(
-        string heldScope,
-        string missingScope)
+    [Fact]
+    public async Task Proxy_RejectsExport_WhenInvestigationScopeIsMissing()
     {
         await DisposeAsync();
         await InitializeWithPrincipalAsync(
@@ -1053,7 +1049,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                 "cpu-only",
                 System.Collections.Immutable.ImmutableHashSet.Create(
                     "orchestrator-attach",
-                    heldScope)),
+                    "eventpipe")),
             allowCrossSessionAdmin: false);
 
         _store.Add(NewHandle("inv_export_denied", InvestigationState.Active, "pod-token"));
@@ -1067,12 +1063,16 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                 "application/json"));
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        (await response.Content.ReadAsStringAsync()).Should().Contain(missingScope);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("investigation-export");
         _upstream.LastRequest.Should().BeNull();
     }
 
-    [Fact]
-    public async Task Proxy_DelegatesCallerEventPipeScope_ForCpuExportHandle()
+    [Theory]
+    [InlineData("read-counters")]
+    [InlineData("eventpipe")]
+    [InlineData("ptrace")]
+    public async Task Proxy_DelegatesCallerEvidenceScope_ForOpaqueExportHandle(
+        string evidenceScope)
     {
         await DisposeAsync();
         var principal = new BearerPrincipal(
@@ -1080,7 +1080,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             System.Collections.Immutable.ImmutableHashSet.Create(
                 "orchestrator-attach",
                 "investigation-export",
-                "eventpipe"));
+                evidenceScope));
         await InitializeWithPrincipalAsync(principal, allowCrossSessionAdmin: false);
         var handle = NewHandle("inv_export_allowed", InvestigationState.Active, "pod-token");
         _store.Add(handle);
@@ -1111,7 +1111,47 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             out var failure).Should().BeTrue(failure);
         delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
             "investigation-export",
-            "eventpipe");
+            evidenceScope);
+    }
+
+    [Fact]
+    public async Task Proxy_DoesNotSynthesizeMissingExportEvidenceScope()
+    {
+        await DisposeAsync();
+        var principal = new BearerPrincipal(
+            "limited-export-caller",
+            System.Collections.Immutable.ImmutableHashSet.Create(
+                "orchestrator-attach",
+                "investigation-export"));
+        await InitializeWithPrincipalAsync(principal, allowCrossSessionAdmin: false);
+        var handle = NewHandle("inv_export_limited", InvestigationState.Active, "pod-token");
+        _store.Add(handle);
+        _upstream.NextResponse = _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_export_limited/mcp",
+            new StringContent(
+                ToolCallPayload(
+                    "export_investigation_summary",
+                    "{\"handle\":\"opaque-evidence-handle\"}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(_upstream.LastRequestBody!);
+        var delegatedRequest = document.RootElement
+            .GetProperty("params")
+            .Deserialize<CallToolRequestParams>()!;
+        ToolScopeDelegation.TryConsume(
+            delegatedRequest,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            handle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo("investigation-export");
     }
 
     [Fact]

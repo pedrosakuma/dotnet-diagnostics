@@ -1,7 +1,14 @@
 using System.Collections.Immutable;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using DotnetDiagnostics.Core.Collection;
+using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Threads;
+using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Hosting;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Security;
@@ -21,6 +28,17 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
 {
     private const string PodToken = "pod-root-token";
     private const string DelegationKey = "pod-internal-delegation-key";
+    private static readonly DateTimeOffset T0 = DateTimeOffset.UnixEpoch;
+
+    public static TheoryData<string, string> ExportEvidenceKinds()
+        => new()
+        {
+            { "cpu-sample", "eventpipe" },
+            { CollectionHandleKinds.Counters, "read-counters" },
+            { CollectionHandleKinds.GcEvents, "eventpipe" },
+            { CollectionHandleKinds.GcDatas, "eventpipe" },
+            { SamplerUseCases.ThreadSnapshotKind, "ptrace" },
+        };
 
     [Theory]
     [InlineData("collect_sample")]
@@ -75,43 +93,68 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
         ResultText(result).Should().Contain("require an internal scope delegation");
     }
 
-    [Fact]
-    public async Task PodRoot_ExecutesExport_WithRequestBoundCallerEvidenceScope()
+    [Theory]
+    [MemberData(nameof(ExportEvidenceKinds))]
+    public async Task PodRoot_Export_RequiresExactDelegatedEvidenceScope(
+        string kind,
+        string requiredScope)
     {
         await using var factory = CreatePodFactory();
         await using var client = await ConnectAsync(factory);
-        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
-        var policies = CreatePolicies();
-        var arguments = Arguments(new { handle = "opaque-cpu-handle" });
-        var caller = new BearerPrincipal(
-            "central-export-caller",
-            new[] { "investigation-export", "eventpipe" }
-                .ToImmutableHashSet(StringComparer.Ordinal));
-        var authorization = registry.Authorize(
+        var store = factory.Services.GetRequiredService<IDiagnosticHandleStore>();
+        var handle = store.Register(
+            1234,
+            kind,
+            ExportArtifact(kind),
+            TimeSpan.FromMinutes(5),
+            origin: HandleOrigin.Live);
+        var arguments = Arguments(new { handle = handle.Id });
+
+        var denied = await CallDelegatedAsync(
+            client,
             "export_investigation_summary",
             arguments,
-            caller,
-            proxyInvocation: true,
-            policies: policies);
-        authorization.IsAllowed.Should().BeTrue();
-        var delegated = ToolScopeDelegation.Add(
-            new CallToolRequestParams
-            {
-                Name = "export_investigation_summary",
-                Arguments = arguments,
-            },
-            authorization,
-            caller,
-            DelegationKey);
+            ["investigation-export"]);
+        ResultText(denied).Should().Contain("Forbidden").And.Contain(requiredScope);
 
-        var result = await client.CallToolAsync(
+        var allowed = await CallDelegatedAsync(
+            client,
             "export_investigation_summary",
-            ToClientArguments(delegated.Arguments),
-            cancellationToken: CancellationToken.None);
+            arguments,
+            ["investigation-export", requiredScope]);
+        ResultText(allowed).Should().NotContain("Forbidden");
+        ResultText(allowed).Should().Contain("investigationId");
+    }
 
-        ResultText(result).Should().NotContain("internal scope delegation");
-        ResultText(result).Should().NotContain("Forbidden");
-        ResultText(result).Should().Contain("opaque-cpu-handle");
+    [Fact]
+    public async Task PodRoot_ExportMixedHandles_RequiresAllDelegatedEvidenceScopes()
+    {
+        await using var factory = CreatePodFactory();
+        await using var client = await ConnectAsync(factory);
+        var store = factory.Services.GetRequiredService<IDiagnosticHandleStore>();
+        var counters = RegisterExportArtifact(store, CollectionHandleKinds.Counters);
+        var gc = RegisterExportArtifact(store, CollectionHandleKinds.GcEvents);
+        var threads = RegisterExportArtifact(store, SamplerUseCases.ThreadSnapshotKind);
+        var arguments = Arguments(new
+        {
+            handle = counters.Id,
+            additionalHandles = new[] { gc.Id, threads.Id },
+        });
+
+        var denied = await CallDelegatedAsync(
+            client,
+            "export_investigation_summary",
+            arguments,
+            ["investigation-export", "read-counters", "eventpipe"]);
+        ResultText(denied).Should().Contain("Forbidden").And.Contain("ptrace");
+
+        var allowed = await CallDelegatedAsync(
+            client,
+            "export_investigation_summary",
+            arguments,
+            ["investigation-export", "read-counters", "eventpipe", "ptrace"]);
+        ResultText(allowed).Should().NotContain("Forbidden");
+        ResultText(allowed).Should().Contain("\"evidence\"");
     }
 
     [Fact]
@@ -232,6 +275,94 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
             new SensitiveValueGate(options),
             new OrchestratorOptions());
     }
+
+    private static async Task<CallToolResult> CallDelegatedAsync(
+        McpClient client,
+        string toolName,
+        IDictionary<string, JsonElement> arguments,
+        string[] callerScopes)
+    {
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var caller = new BearerPrincipal(
+            "central-caller",
+            callerScopes.ToImmutableHashSet(StringComparer.Ordinal));
+        var authorization = registry.Authorize(
+            toolName,
+            arguments,
+            caller,
+            proxyInvocation: true,
+            policies: CreatePolicies());
+        authorization.IsAllowed.Should().BeTrue();
+        var delegated = ToolScopeDelegation.Add(
+            new CallToolRequestParams { Name = toolName, Arguments = arguments },
+            authorization,
+            caller,
+            DelegationKey);
+
+        return await client.CallToolAsync(
+            toolName,
+            ToClientArguments(delegated.Arguments),
+            cancellationToken: CancellationToken.None);
+    }
+
+    private static DiagnosticHandle RegisterExportArtifact(
+        IDiagnosticHandleStore store,
+        string kind)
+        => store.Register(
+            1234,
+            kind,
+            ExportArtifact(kind),
+            TimeSpan.FromMinutes(5),
+            origin: HandleOrigin.Live);
+
+    private static object ExportArtifact(string kind)
+        => kind switch
+        {
+            "cpu-sample" => new CpuSampleTraceArtifact(
+                1234,
+                T0,
+                TimeSpan.FromSeconds(1),
+                1,
+                new CallTreeNode(
+                    new SampledFrame(string.Empty, "<root>"),
+                    1,
+                    0,
+                    [new CallTreeNode(new SampledFrame("App.dll", "App.Work"), 1, 1, [])])),
+            CollectionHandleKinds.Counters => new CounterSnapshot(
+                1234,
+                T0,
+                TimeSpan.FromSeconds(1),
+                [new CounterValue("System.Runtime", "threadpool-queue-length", "Queue", 1, CounterKind.Mean)],
+                [],
+                []),
+            CollectionHandleKinds.GcEvents => new GcSummary(
+                1234,
+                T0,
+                TimeSpan.FromSeconds(1),
+                1,
+                TimeSpan.FromMilliseconds(1),
+                TimeSpan.FromMilliseconds(1),
+                [new GenerationStats(0, 1)],
+                []),
+            CollectionHandleKinds.GcDatas => new GcDatasSnapshot(
+                1234,
+                T0,
+                TimeSpan.FromSeconds(1),
+                [new DatasSampleEvent(T0, 1, 100, 1, 0, 0, 1024, 512)],
+                [],
+                [],
+                new DatasParseStats(0, 0, 0)),
+            SamplerUseCases.ThreadSnapshotKind => new ThreadSnapshotArtifact(
+                ThreadSnapshotOrigin.Live,
+                1234,
+                T0,
+                TimeSpan.FromMilliseconds(1),
+                ".NET",
+                "10.0.0",
+                [],
+                []),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported evidence kind."),
+        };
 
     private static (IDictionary<string, JsonElement> Arguments, string[] CallerScopes)
         Invocation(string toolName)

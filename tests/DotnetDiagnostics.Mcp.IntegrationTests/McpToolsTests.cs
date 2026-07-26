@@ -128,7 +128,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             var authMeta = tool.ProtocolTool.Meta?["dotnetDiagnostics"]?["auth"]?.AsObject();
             authMeta.Should().NotBeNull($"tool {tool.Name} must advertise authorization metadata in tools/list _meta");
             authMeta!["authorized"]!.GetValue<bool>().Should().Be(
-                tool.Name is not ("get_bytes" or "export_investigation_summary"),
+                tool.Name is not "get_bytes",
                 "wildcard root satisfies primary scopes but must not imply literal modifier scopes");
             authMeta["delegationRequired"]!.GetValue<bool>().Should().BeFalse();
             authMeta["requiredScopes"]!.AsArray().Should().NotBeEmpty($"tool {tool.Name} must list required scopes");
@@ -178,10 +178,9 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             sampleAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeTrue();
 
             var exportAuth = tools.Single(t => t.Name == "export_investigation_summary").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
-            exportAuth["authorized"]!.GetValue<bool>().Should().BeFalse();
-            exportAuth["requiredExplicitScopes"]!.AsArray()
-                .Select(n => n!.GetValue<string>()).Should().Equal("eventpipe");
-            exportAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeFalse();
+            exportAuth["authorized"]!.GetValue<bool>().Should().BeTrue();
+            exportAuth["requiredExplicitScopes"]!.AsArray().Should().BeEmpty();
+            exportAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeTrue();
         }
     }
 
@@ -1529,17 +1528,32 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     [Fact]
     public async Task ExportInvestigationSummary_LegacyRootWithoutExplicitEventpipe_ReturnsForbidden()
     {
+        var handle = _factory.Services.GetRequiredService<IDiagnosticHandleStore>().Register(
+            Environment.ProcessId,
+            "cpu-sample",
+            new CpuSampleTraceArtifact(
+                Environment.ProcessId,
+                DateTimeOffset.UnixEpoch,
+                TimeSpan.FromSeconds(1),
+                1,
+                new CallTreeNode(
+                    new SampledFrame(string.Empty, "<root>"),
+                    1,
+                    0,
+                    [new CallTreeNode(new SampledFrame("App.dll", "App.Work"), 1, 1, [])])),
+            TimeSpan.FromMinutes(1));
         await using var client = await ConnectAsync();
 
         var result = await client.CallToolAsync(
             "export_investigation_summary",
-            new Dictionary<string, object?> { ["handle"] = "DEADBEEFDEADBEEFDEAD" },
+            new Dictionary<string, object?> { ["handle"] = handle.Id },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().BeTrue();
-        var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().Single().Text;
-        text.Should().Contain("\"kind\":\"forbidden\"");
-        text.Should().Contain("eventpipe");
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Error.Should().NotBeNull();
+        envelope.Error!.Kind.Should().Be("Forbidden");
+        envelope.Error.Detail.Should().Be("eventpipe");
     }
 
     [Fact]

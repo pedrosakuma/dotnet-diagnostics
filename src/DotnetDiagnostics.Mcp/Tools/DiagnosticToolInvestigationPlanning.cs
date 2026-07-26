@@ -102,12 +102,10 @@ internal static class DiagnosticToolInvestigationPlanning
                         new Dictionary<string, object?> { ["kind"] = "counters", ["durationSeconds"] = 5 }));
             }
 
-            if (!QuerySnapshotTool.AuthorizeHandleKind(
+            if (!AuthorizeEvidenceHandleKind(
                     principalAccessor.Current,
                     lookup.Value.Kind,
-                    view: null,
-                    toolName: "export_investigation_summary",
-                    failure: out var authorizationFailure))
+                    out var authorizationFailure))
             {
                 return ConvertFailure<ExportedInvestigationSummary>(authorizationFailure!);
             }
@@ -194,6 +192,37 @@ internal static class DiagnosticToolInvestigationPlanning
             (DotnetDiagnostics.Core.UseCases.SamplerUseCases.ThreadSnapshotKind, ThreadSnapshotArtifact) => true,
             _ => false,
         };
+
+    private static bool AuthorizeEvidenceHandleKind(
+        BearerPrincipal? principal,
+        string kind,
+        out DiagnosticResult<object>? failure)
+    {
+        var requiredScope = ToolInvocationScopeResolver.GetInvestigationExportHandleScope(kind);
+        if (requiredScope is null)
+        {
+            failure = null;
+            return true;
+        }
+
+        var requiresExplicitScope = string.Equals(kind, "cpu-sample", StringComparison.Ordinal);
+        var isAuthorized = requiresExplicitScope
+            ? principal?.HasExplicitScope(requiredScope) == true
+            : principal?.HasScope(requiredScope) == true;
+        if (isAuthorized)
+        {
+            failure = null;
+            return true;
+        }
+
+        var qualifier = requiresExplicitScope ? "explicitly granted " : string.Empty;
+        var message =
+            $"forbidden: tool 'export_investigation_summary' requires the {qualifier}scope '{requiredScope}' for kind '{kind}'.";
+        failure = DiagnosticResult.Fail<object>(
+            message,
+            new DiagnosticError("Forbidden", message, requiredScope));
+        return false;
+    }
 
     private static DiagnosticResult<T> ConvertFailure<T>(DiagnosticResult<object> failure)
         => new(failure.Summary, failure.Hints, failure.Error)

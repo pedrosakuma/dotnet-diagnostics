@@ -3143,8 +3143,10 @@ instead of relying on handle order.
 `HandleExpired` envelope with a hint to re-run the relevant collector; an
 unsupported or kind/type-mismatched handle returns `HandleKindMismatch`.
 **Scope:** `investigation-export` plus each handle's originating scope:
-`read-counters` for counters, `eventpipe` for GC/DATAS, and `ptrace` for thread
-snapshots.
+an explicitly granted `eventpipe` scope for CPU evidence, `read-counters` for
+counters, `eventpipe` for GC/DATAS, and `ptrace` for thread snapshots. Proxied
+exports use the finalized request-bound delegation; the Pod resolves the opaque
+handle kind before reading evidence.
 
 ---
 

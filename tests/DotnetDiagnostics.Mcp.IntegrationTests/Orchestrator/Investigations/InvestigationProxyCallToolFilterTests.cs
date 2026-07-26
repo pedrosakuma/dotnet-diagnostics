@@ -245,16 +245,12 @@ public sealed class InvestigationProxyCallToolFilterTests
             "eventpipe");
     }
 
-    [Theory]
-    [InlineData("investigation-export", "eventpipe")]
-    [InlineData("eventpipe", "investigation-export")]
-    public async Task TaskAugmentedExport_MissingEitherScope_IsRejectedBeforePromotion(
-        string heldScope,
-        string missingScope)
+    [Fact]
+    public async Task TaskAugmentedExport_MissingInvestigationScope_IsRejectedBeforePromotion()
     {
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(
             "orchestrator-attach",
-            heldScope));
+            "eventpipe"));
         fx.Binder.Bind("session-export-task-denied", ActiveHandle.HandleId);
         fx.Store.Add(ActiveHandle);
         var request = Params("export_investigation_summary", new Dictionary<string, JsonElement>
@@ -274,9 +270,47 @@ public sealed class InvestigationProxyCallToolFilterTests
             });
 
         result.IsError.Should().BeTrue();
-        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain(missingScope);
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("investigation-export");
         promoterCalls.Should().Be(0);
         fx.ProxyClient.CallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TaskAugmentedExport_MissingEvidenceScope_IsDelegatedWithoutWidening()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "investigation-export"));
+        fx.Binder.Bind("session-export-task-limited", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+        var request = Params("export_investigation_summary", new Dictionary<string, JsonElement>
+        {
+            ["handle"] = JsonSerializer.SerializeToElement("opaque-evidence-handle"),
+        });
+        request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        var promoterCalls = 0;
+
+        var result = await fx.Invoke(
+            request,
+            "session-export-task-limited",
+            taskPromoter: async (forward, ct) =>
+            {
+                promoterCalls++;
+                return await forward(ct);
+            });
+
+        result.IsError.Should().NotBe(true);
+        promoterCalls.Should().Be(1);
+        fx.ProxyClient.CallCount.Should().Be(1);
+        ToolScopeDelegation.TryConsume(
+            fx.ProxyClient.LastRequest!,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            ActiveHandle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo("investigation-export");
     }
 
     [Theory]
@@ -471,16 +505,12 @@ public sealed class InvestigationProxyCallToolFilterTests
         fx.ProxyClient.CallCount.Should().Be(0);
     }
 
-    [Theory]
-    [InlineData("investigation-export", "eventpipe")]
-    [InlineData("eventpipe", "investigation-export")]
-    public async Task RejectsExport_BeforeForwarding_WhenEitherRequiredScopeIsMissing(
-        string heldScope,
-        string missingScope)
+    [Fact]
+    public async Task RejectsExport_BeforeForwarding_WhenInvestigationScopeIsMissing()
     {
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(
             "orchestrator-attach",
-            heldScope));
+            "eventpipe"));
         fx.Binder.Bind("session-export-denied", ActiveHandle.HandleId);
         fx.Store.Add(ActiveHandle);
 
@@ -492,18 +522,21 @@ public sealed class InvestigationProxyCallToolFilterTests
             "session-export-denied");
 
         result.IsError.Should().BeTrue();
-        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain(missingScope);
+        result.Content.OfType<TextContentBlock>().Single().Text.Should().Contain("investigation-export");
         fx.ProxyClient.CallCount.Should().Be(0);
         fx.LocalInvocations.Should().Be(0);
     }
 
-    [Fact]
-    public async Task ForwardsExport_WithRequestBoundCallerEventPipeScope()
+    [Theory]
+    [InlineData("read-counters")]
+    [InlineData("eventpipe")]
+    [InlineData("ptrace")]
+    public async Task ForwardsExport_WithRequestBoundCallerEvidenceScope(string evidenceScope)
     {
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(
             "orchestrator-attach",
             "investigation-export",
-            "eventpipe"));
+            evidenceScope));
         fx.Binder.Bind("session-export-allowed", ActiveHandle.HandleId);
         fx.Store.Add(ActiveHandle);
 
@@ -527,7 +560,36 @@ public sealed class InvestigationProxyCallToolFilterTests
             out var failure).Should().BeTrue(failure);
         delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
             "investigation-export",
-            "eventpipe");
+            evidenceScope);
+    }
+
+    [Fact]
+    public async Task ForwardsExport_WithoutSynthesizingMissingEvidenceScope()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "investigation-export"));
+        fx.Binder.Bind("session-export-limited", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+
+        var result = await fx.Invoke(
+            Params("export_investigation_summary", new Dictionary<string, JsonElement>
+            {
+                ["handle"] = JsonSerializer.SerializeToElement("opaque-evidence-handle"),
+            }),
+            "session-export-limited");
+
+        result.IsError.Should().BeNull();
+        fx.ProxyClient.CallCount.Should().Be(1);
+        ToolScopeDelegation.TryConsume(
+            fx.ProxyClient.LastRequest!,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            ActiveHandle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo("investigation-export");
     }
 
     [Fact]

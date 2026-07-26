@@ -226,14 +226,17 @@ callers to set it reflexively and destroy its signal.
 ## Drilldown over handles
 
 `query_snapshot` and `export_investigation_summary` read from handles minted by a collector.
-`query_snapshot` accepts `read-counters` **or** `eventpipe` at entry, while the export
-tool requires `investigation-export`. Both then **re-apply the exact scope the originating
-collector required** at runtime, keyed on the handle kind — so a handle minted under
-`eventpipe` still demands `eventpipe` at query time even though the tool entry is broader.
-`export_investigation_summary` always also requires `investigation-export`; therefore
-counters require `investigation-export` + `read-counters`, GC/DATAS require
-`investigation-export` + `eventpipe`, and thread snapshots require
-`investigation-export` + `ptrace`.
+`query_snapshot` accepts a broad primary-scope union at entry and then applies its
+established kind/view authorization table. The export tool requires
+`investigation-export` and separately re-applies the originating collector scope for
+every evidence handle. CPU evidence requires an explicitly granted `eventpipe` scope;
+counters require `read-counters`; GC/DATAS require `eventpipe`; and thread snapshots
+require `ptrace`.
+
+For orchestrator-proxied exports, Pod-local handles are opaque to the orchestrator.
+The finalized request-bound delegation forwards only the evidence scopes the caller
+explicitly holds. The Pod resolves each handle kind and applies the exact rule above
+before reading the artifact, so its Pod-local root bearer never widens the caller.
 
 On top of that, specific `(handle origin, view)` pairs require a **modifier** scope: e.g.
 the `retention-paths` view on either a live or a dump heap snapshot requires

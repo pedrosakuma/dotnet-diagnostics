@@ -21,8 +21,10 @@ public sealed class InvestigationSummaryExportSecurityTests
     public static TheoryData<string, string> ScopedEvidenceKinds()
         => new()
         {
+            { "cpu-sample", "eventpipe" },
             { CollectionHandleKinds.Counters, "read-counters" },
             { CollectionHandleKinds.GcEvents, "eventpipe" },
+            { CollectionHandleKinds.GcDatas, "eventpipe" },
             { SamplerUseCases.ThreadSnapshotKind, "ptrace" },
         };
 
@@ -63,8 +65,16 @@ public sealed class InvestigationSummaryExportSecurityTests
 
         result.Error.Should().BeNull();
         result.Data.Should().NotBeNull();
-        result.Data!.Summary.Evidence.Should().ContainSingle()
-            .Which.Kind.Should().Be(kind);
+        if (kind == "cpu-sample")
+        {
+            result.Data!.Summary.Evidence.Should().BeNull(
+                "CPU-only exports retain the legacy v1 JSON shape");
+            return;
+        }
+
+        var evidence = result.Data!.Summary.Evidence.Should().ContainSingle().Which;
+        evidence.Kind.Should().Be(kind);
+        evidence.Origin.Should().Be("live");
     }
 
     [Fact]
@@ -79,7 +89,7 @@ public sealed class InvestigationSummaryExportSecurityTests
 
         var result = Export(
             store,
-            TestPrincipalAccessors.WithScopes("investigation-export"),
+            TestPrincipalAccessors.WithScopes("investigation-export", "eventpipe"),
             handle.Id);
 
         result.Error.Should().NotBeNull();
@@ -99,11 +109,96 @@ public sealed class InvestigationSummaryExportSecurityTests
 
         var result = Export(
             store,
-            TestPrincipalAccessors.WithScopes("investigation-export"),
+            TestPrincipalAccessors.WithScopes("investigation-export", "eventpipe"),
             handle.Id);
 
         result.Error.Should().NotBeNull();
         result.Error!.Kind.Should().Be("HandleKindMismatch");
+    }
+
+    [Fact]
+    public void Export_MissingPrincipal_FailsClosedForSupportedHandle()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var handle = store.Register(
+            1234,
+            CollectionHandleKinds.Counters,
+            CounterArtifact(),
+            TimeSpan.FromMinutes(10));
+
+        var result = Export(store, NullPrincipalAccessor.Instance, handle.Id);
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("Forbidden");
+        result.Error.Message.Should().Contain("read-counters");
+    }
+
+    [Fact]
+    public void Export_MixedHandles_RequiresEveryOriginatingScope()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var counters = store.Register(
+            1234,
+            CollectionHandleKinds.Counters,
+            CounterArtifact(),
+            TimeSpan.FromMinutes(10));
+        var gc = store.Register(
+            1234,
+            CollectionHandleKinds.GcEvents,
+            ArtifactFor(CollectionHandleKinds.GcEvents),
+            TimeSpan.FromMinutes(10));
+        var threads = store.Register(
+            1234,
+            SamplerUseCases.ThreadSnapshotKind,
+            ArtifactFor(SamplerUseCases.ThreadSnapshotKind),
+            TimeSpan.FromMinutes(10));
+
+        var denied = DiagnosticToolInvestigationPlanning.ExportInvestigationSummary(
+            NewExporter(),
+            store,
+            new NoopTelemetry(),
+            TestPrincipalAccessors.WithScopes(
+                "investigation-export",
+                "read-counters",
+                "eventpipe"),
+            counters.Id,
+            additionalHandles: [gc.Id, threads.Id]);
+
+        denied.Error.Should().NotBeNull();
+        denied.Error!.Kind.Should().Be("Forbidden");
+        denied.Error.Message.Should().Contain("ptrace");
+
+        var allowed = DiagnosticToolInvestigationPlanning.ExportInvestigationSummary(
+            NewExporter(),
+            store,
+            new NoopTelemetry(),
+            TestPrincipalAccessors.WithScopes(
+                "investigation-export",
+                "read-counters",
+                "eventpipe",
+                "ptrace"),
+            counters.Id,
+            additionalHandles: [gc.Id, threads.Id]);
+
+        allowed.Error.Should().BeNull();
+        allowed.Data!.Summary.Evidence.Should().HaveCount(3);
+    }
+
+    [Fact]
+    public void Export_GuessedHandle_ReturnsExpiredWithoutExportingEvidence()
+    {
+        var result = Export(
+            new MemoryDiagnosticHandleStore(),
+            TestPrincipalAccessors.WithScopes(
+                "investigation-export",
+                "read-counters",
+                "eventpipe",
+                "ptrace"),
+            "guessed-handle");
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("HandleExpired");
+        result.Data.Should().BeNull();
     }
 
     [Fact]
@@ -157,6 +252,7 @@ public sealed class InvestigationSummaryExportSecurityTests
     private static object ArtifactFor(string kind)
         => kind switch
         {
+            "cpu-sample" => CpuArtifact(),
             CollectionHandleKinds.Counters => CounterArtifact(),
             CollectionHandleKinds.GcEvents => new GcSummary(
                 1234,
@@ -167,6 +263,14 @@ public sealed class InvestigationSummaryExportSecurityTests
                 TimeSpan.FromMilliseconds(1),
                 [new GenerationStats(0, 1)],
                 []),
+            CollectionHandleKinds.GcDatas => new GcDatasSnapshot(
+                1234,
+                T0,
+                TimeSpan.FromSeconds(5),
+                [new DatasSampleEvent(T0, 1, 100, 1, 0, 0, 1024, 512)],
+                [],
+                [],
+                new DatasParseStats(0, 0, 0)),
             SamplerUseCases.ThreadSnapshotKind => new ThreadSnapshotArtifact(
                 ThreadSnapshotOrigin.Live,
                 1234,
@@ -216,5 +320,12 @@ public sealed class InvestigationSummaryExportSecurityTests
     private sealed class FixedClock(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class NullPrincipalAccessor : IPrincipalAccessor
+    {
+        internal static readonly NullPrincipalAccessor Instance = new();
+
+        public BearerPrincipal? Current => null;
     }
 }
