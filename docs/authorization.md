@@ -159,6 +159,10 @@ A validated JWT maps onto the **same scope model** above:
 - **Identity gating** uses `MCP_OIDC_REQUIRED_CLAIMS_JSON` — a JSON object mapping a claim to
   `null` (claim must be present), a string, or an array of allowed strings. Use it to pin the
   caller (`azp`/`client_id`/`sub`) so only your workload identity is accepted.
+- **Ownership identity** requires at least one stable subject claim (`sub`, NameIdentifier,
+  `oid`) or client claim (`azp`, `client_id`, `appid`). A validated token without all of these
+  claims is rejected rather than mapped to a shared fallback identity. Client-only service
+  principals remain supported.
 - **Principal name** (for audit logs) resolves from the first of `preferred_username`,
   `client_id`, `azp`, `appid`, `sub`.
 

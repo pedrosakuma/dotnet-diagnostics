@@ -131,6 +131,133 @@ public sealed class OidcJwtAuthOptionsTests
         first!.OwnershipKey.Should().Be(second!.OwnershipKey);
     }
 
+    [Theory]
+    [InlineData("identityless-a")]
+    [InlineData("identityless-b")]
+    public void TryCreatePrincipal_WithoutStableIdentityClaim_IsRejected(string displayName)
+    {
+        var options = Options();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("scope", "read-counters"),
+            new Claim("preferred_username", displayName),
+        }));
+
+        var result = options.TryCreatePrincipal(
+            principal,
+            out var bearerPrincipal,
+            out var failureMessage);
+
+        result.Should().BeFalse();
+        bearerPrincipal.Should().BeNull();
+        failureMessage.Should().Contain("stable ownership identity");
+    }
+
+    [Fact]
+    public void OwnershipKey_WithoutClientOrSubject_IsRejected()
+    {
+        var act = () => PrincipalOwnershipKey.ForJwt(
+            OidcJwtAuthOptions.DefaultSchemeName,
+            "https://issuer.example.test",
+            "dotnet-diagnostics-mcp",
+            client: null,
+            subject: null);
+
+        act.Should().Throw<ArgumentException>()
+            .WithMessage("*stable client or subject*");
+    }
+
+    [Fact]
+    public void TryCreatePrincipal_WithStableClientOnly_Succeeds()
+    {
+        var options = Options();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("scope", "read-counters"),
+            new Claim("azp", "service-principal-client"),
+        }));
+
+        options.TryCreatePrincipal(
+            principal,
+            out var bearerPrincipal,
+            out var failureMessage).Should().BeTrue();
+
+        failureMessage.Should().BeNull();
+        bearerPrincipal!.OwnershipKey.Should().Be(
+            PrincipalOwnershipKey.ForJwt(
+                OidcJwtAuthOptions.DefaultSchemeName,
+                "https://issuer.example.test",
+                "dotnet-diagnostics-mcp",
+                "service-principal-client",
+                subject: null));
+    }
+
+    [Fact]
+    public void TryCreatePrincipal_WithStableSubjectOnly_Succeeds()
+    {
+        var options = Options();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("scope", "read-counters"),
+            new Claim("sub", "workload-subject"),
+        }));
+
+        options.TryCreatePrincipal(
+            principal,
+            out var bearerPrincipal,
+            out var failureMessage).Should().BeTrue();
+
+        failureMessage.Should().BeNull();
+        bearerPrincipal!.OwnershipKey.Should().Be(
+            PrincipalOwnershipKey.ForJwt(
+                OidcJwtAuthOptions.DefaultSchemeName,
+                "https://issuer.example.test",
+                "dotnet-diagnostics-mcp",
+                client: null,
+                subject: "workload-subject"));
+    }
+
+    [Fact]
+    public void TryCreatePrincipal_ClientOnlyAndSubjectOnlyValues_DoNotCollide()
+    {
+        var options = Options();
+        options.TryCreatePrincipal(
+            Principal("azp", "shared-value"),
+            out var clientPrincipal,
+            out _).Should().BeTrue();
+        options.TryCreatePrincipal(
+            Principal("sub", "shared-value"),
+            out var subjectPrincipal,
+            out _).Should().BeTrue();
+
+        clientPrincipal!.OwnershipKey.Should().NotBe(subjectPrincipal!.OwnershipKey);
+    }
+
+    [Fact]
+    public void TryCreatePrincipal_SameSubjectAcrossProviderInstances_DoesNotCollide()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["MCP_OIDC_ISSUER"] = "https://issuer.example.test",
+            ["MCP_OIDC_AUDIENCE"] = "dotnet-diagnostics-mcp",
+            ["MCP_OIDC_PROVIDERS_JSON"] =
+                "[{\"issuer\":\"https://issuer.example.test\",\"audience\":\"dotnet-diagnostics-mcp\"}]",
+        }).Build();
+        var options = OidcJwtAuthOptions.FromConfiguration(configuration);
+        var principal = Principal("sub", "shared-subject");
+
+        options.Providers[0].TryCreatePrincipal(
+            principal,
+            out var firstProvider,
+            out _).Should().BeTrue();
+        options.Providers[1].TryCreatePrincipal(
+            principal,
+            out var secondProvider,
+            out _).Should().BeTrue();
+
+        firstProvider!.OwnershipKey.Should().NotBe(secondProvider!.OwnershipKey);
+    }
+
     [Fact]
     public void FromConfiguration_ParsesMultipleProviders_FromProvidersJson()
     {
@@ -214,4 +341,19 @@ public sealed class OidcJwtAuthOptionsTests
         options.Providers[0].GrantedScopes.Should().Equal("read-counters", "eventpipe");
         options.Providers[1].GrantedScopes.Should().Equal("read-counters");
     }
+
+    private static OidcJwtAuthOptions Options()
+        => OidcJwtAuthOptions.FromConfiguration(
+            new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["MCP_OIDC_ISSUER"] = "https://issuer.example.test",
+                ["MCP_OIDC_AUDIENCE"] = "dotnet-diagnostics-mcp",
+            }).Build());
+
+    private static ClaimsPrincipal Principal(string identityClaim, string identityValue)
+        => new(new ClaimsIdentity(new[]
+        {
+            new Claim("scope", "read-counters"),
+            new Claim(identityClaim, identityValue),
+        }));
 }

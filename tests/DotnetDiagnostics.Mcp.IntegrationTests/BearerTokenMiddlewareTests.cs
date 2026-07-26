@@ -344,6 +344,44 @@ public sealed class BearerTokenMiddlewareTests
     }
 
     [Fact]
+    public async Task JwtWithoutStableOwnershipIdentity_ReturnsStructuredUnauthenticatedEnvelope()
+    {
+        var oidcOptions = OidcOptionsWithProviders(
+            ("https://issuer.example.test", "dotnet-diagnostics-mcp"));
+        var identitylessPrincipal = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("scope", "read-counters"),
+            new Claim("preferred_username", "display-only"),
+        }, "Bearer"));
+        var authService = new PrincipalMappingAuthenticationService(
+            oidcOptions.Providers[0],
+            identitylessPrincipal);
+        var services = new ServiceCollection()
+            .AddSingleton<IAuthenticationService>(authService)
+            .BuildServiceProvider();
+
+        var ctx = await RunAsync(
+            RegistryWith(),
+            string.Concat(
+                "Bearer ",
+                CreateUnsignedJwt("https://issuer.example.test", "dotnet-diagnostics-mcp")),
+            path: "/mcp",
+            oidcOptions: oidcOptions,
+            requestServices: services);
+
+        ctx.Response.StatusCode.Should().Be(StatusCodes.Status401Unauthorized);
+        ctx.Response.ContentType.Should().Be("application/json");
+        ctx.Response.Headers.WWWAuthenticate.ToString().Should().Be("Bearer");
+        ((bool)ctx.Items["__nextCalled"]!).Should().BeFalse();
+        using var reader = new StreamReader(ctx.Response.Body, leaveOpen: true);
+        var body = await reader.ReadToEndAsync();
+        body.Should().Be(
+            "{\"error\":{\"kind\":\"unauthenticated\",\"message\":\"invalid bearer token\"}}");
+        ctx.GetBearerPrincipal().Should().BeNull();
+        authService.MappingFailure.Should().Contain("stable ownership identity");
+    }
+
+    [Fact]
     public void LegacyPrincipal_HasRootName_AndRootScope()
     {
         using var env = EnvScope.Set("MCP_BEARER_TOKEN", "legacy-secret");
@@ -371,6 +409,41 @@ public sealed class BearerTokenMiddlewareTests
             }
 
             return Task.FromResult(result);
+        }
+
+        public Task ChallengeAsync(HttpContext context, string? scheme, AuthenticationProperties? properties)
+            => throw new NotSupportedException();
+
+        public Task ForbidAsync(HttpContext context, string? scheme, AuthenticationProperties? properties)
+            => throw new NotSupportedException();
+
+        public Task SignInAsync(HttpContext context, string? scheme, ClaimsPrincipal principal, AuthenticationProperties? properties)
+            => throw new NotSupportedException();
+
+        public Task SignOutAsync(HttpContext context, string? scheme, AuthenticationProperties? properties)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class PrincipalMappingAuthenticationService(
+        OidcJwtProvider provider,
+        ClaimsPrincipal validatedPrincipal) : IAuthenticationService
+    {
+        public string? MappingFailure { get; private set; }
+
+        public Task<AuthenticateResult> AuthenticateAsync(HttpContext context, string? scheme)
+        {
+            if (!provider.TryCreatePrincipal(
+                    validatedPrincipal,
+                    out var bearerPrincipal,
+                    out var failureMessage))
+            {
+                MappingFailure = failureMessage;
+                return Task.FromResult(AuthenticateResult.Fail(failureMessage!));
+            }
+
+            context.SetBearerPrincipal(bearerPrincipal!);
+            return Task.FromResult(AuthenticateResult.Success(
+                new AuthenticationTicket(validatedPrincipal, scheme!)));
         }
 
         public Task ChallengeAsync(HttpContext context, string? scheme, AuthenticationProperties? properties)

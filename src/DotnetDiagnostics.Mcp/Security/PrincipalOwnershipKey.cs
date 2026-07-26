@@ -16,15 +16,43 @@ internal static class PrincipalOwnershipKey
         string scheme,
         string issuer,
         string audience,
-        string client,
-        string subject)
-        => Create(
+        string? client,
+        string? subject)
+    {
+        if (string.IsNullOrWhiteSpace(client) && string.IsNullOrWhiteSpace(subject))
+        {
+            throw new ArgumentException(
+                "A JWT ownership key requires a stable client or subject identifier.");
+        }
+
+        if (string.IsNullOrWhiteSpace(client))
+        {
+            return Create(
+                "oidc-jwt-subject",
+                Normalize(scheme),
+                NormalizeIssuer(issuer),
+                Normalize(audience),
+                Normalize(subject!));
+        }
+
+        if (string.IsNullOrWhiteSpace(subject))
+        {
+            return Create(
+                "oidc-jwt-client",
+                Normalize(scheme),
+                NormalizeIssuer(issuer),
+                Normalize(audience),
+                Normalize(client));
+        }
+
+        return Create(
             "oidc-jwt",
             Normalize(scheme),
             NormalizeIssuer(issuer),
             Normalize(audience),
             Normalize(client),
             Normalize(subject));
+    }
 
     internal static string ForSystem(string identity)
         => Create("system", Normalize(identity));
