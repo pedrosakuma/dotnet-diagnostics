@@ -710,9 +710,10 @@ public sealed class SessionReplTests
 
         exit.Should().Be(0);
         stderr.Should().BeEmpty();
-        stdout.Should().Contain("\"nextWaiterOffset\": 2");
-        stdout.Should().Contain("\"waitingManagedThreadIds\": [\n        1,\n        2\n");
-        stdout.Should().NotContain("\n        3,");
+        var normalizedOutput = stdout.ReplaceLineEndings("\n");
+        normalizedOutput.Should().Contain("\"nextWaiterOffset\": 2");
+        normalizedOutput.Should().Contain("\"waitingManagedThreadIds\": [\n        1,\n        2\n");
+        normalizedOutput.Should().NotContain("\n        3,");
     }
 
     [Fact]
