@@ -715,6 +715,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     [Fact]
     public async Task CollectBatch_CountersAndGc_PopulatesNarrowBoundedGen2MeterEvidence()
     {
+        const int retainedEventLimit = 200;
         await using var client = await ConnectAsync();
         using var driverCts = new CancellationTokenSource();
         var driver = Task.Run(async () =>
@@ -726,7 +727,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
                 {
                     _ = new byte[128 * 1024];
                     GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
-                    await Task.Delay(TimeSpan.FromMilliseconds(10), driverCts.Token);
+                    await Task.Delay(TimeSpan.FromMilliseconds(1), driverCts.Token);
                 }
             }
             catch (OperationCanceledException) when (driverCts.IsCancellationRequested)
@@ -764,12 +765,12 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         report!.Gen2Evidence.Should().NotBeNull();
         report.Gen2Evidence!.MeterRatePerSecond.Should().NotBeNull();
         report.Gen2Evidence.MeterProcessCumulative.Should().BeGreaterThan(0);
-        report.Gen2Evidence.GcCollectorWindowCount.Should().BeGreaterThan(200);
+        report.Gen2Evidence.GcCollectorWindowCount.Should().BeGreaterThan(retainedEventLimit);
 
         var gcEntry = report.Results
             .Single(static entry => entry.Tool == "collect_events" && entry.Kind == "gc");
         var gcData = gcEntry.Data!.Value.GetProperty("gc");
-        gcData.GetProperty("totalCollections").GetInt32().Should().BeGreaterThan(200);
+        gcData.GetProperty("totalCollections").GetInt32().Should().BeGreaterThan(retainedEventLimit);
         gcData.GetProperty("droppedEvents").GetInt32().Should().BeGreaterThan(0);
         var gcQuery = await client.CallToolAsync(
             "query_snapshot",
@@ -785,10 +786,10 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         var gcSnapshot = DeserializeStructured<CollectionQueryResult>(gcQuery);
         gcSnapshot.Should().NotBeNull();
         var gcPayload = gcSnapshot!.Payload.Should().BeOfType<JsonElement>().Subject;
-        gcPayload.GetProperty("retained").GetInt32().Should().Be(200);
+        gcPayload.GetProperty("retained").GetInt32().Should().Be(retainedEventLimit);
         gcPayload.GetProperty("dropped").GetInt32().Should().BeGreaterThan(0);
-        gcPayload.GetProperty("returned").GetInt32().Should().Be(200);
-        gcPayload.GetProperty("events").GetArrayLength().Should().Be(200);
+        gcPayload.GetProperty("returned").GetInt32().Should().Be(retainedEventLimit);
+        gcPayload.GetProperty("events").GetArrayLength().Should().Be(retainedEventLimit);
 
         var countersHandle = report.Results
             .Single(static entry => entry.Tool == "collect_events" && entry.Kind == "counters")
