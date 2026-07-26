@@ -451,6 +451,22 @@ public sealed class ToolScopeAuthorizationTests
     private static ToolScopeRegistry.Requirement Any(params string[] scopes) =>
         new(All: ImmutableArray<string>.Empty, Any: ImmutableArray.Create(scopes));
 
+    private static (string Summary, JsonElement Error) Forbidden(
+        ToolScopeRegistry.AuthorizationResult authorization)
+    {
+        var result = ToolScopeAuthorizationFilter.BuildForbiddenResult(
+            "sample_tool",
+            authorization,
+            With("presented"));
+        var text = result.Content
+            .OfType<ModelContextProtocol.Protocol.TextContentBlock>()
+            .Single()
+            .Text;
+        var separator = text.IndexOf('\n');
+        using var document = JsonDocument.Parse(text[(separator + 1)..]);
+        return (text[..separator], document.RootElement.GetProperty("error").Clone());
+    }
+
     [Fact]
     public void Authorize_Denies_When_No_Principal()
     {
@@ -489,6 +505,70 @@ public sealed class ToolScopeAuthorizationTests
         var none = ToolScopeAuthorizationFilter.Authorize(req, With("orchestrator-list"));
         none.IsAllowed.Should().BeFalse();
         none.MissingScope.Should().Be("read-counters");
+    }
+
+    [Fact]
+    public void ForbiddenEnvelope_OrOnly_PreservesAlternatives()
+    {
+        var (summary, error) = Forbidden(new ToolScopeRegistry.AuthorizationResult(
+            false,
+            "read-counters",
+            false,
+            Any("read-counters", "ptrace"),
+            ImmutableArray<string>.Empty,
+            ImmutableArray<string>.Empty,
+            ImmutableArray<string>.Empty));
+
+        summary.Should().Contain("requires any of [read-counters, ptrace]");
+        error.GetProperty("semantics").GetString().Should().Be("any");
+        error.GetProperty("any_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("read-counters", "ptrace");
+        error.GetProperty("all_of_scopes").EnumerateArray().Should().BeEmpty();
+        error.GetProperty("message").GetString().Should().Contain("any of scopes");
+    }
+
+    [Fact]
+    public void ForbiddenEnvelope_AndOnly_PreservesConjunction()
+    {
+        var (summary, error) = Forbidden(new ToolScopeRegistry.AuthorizationResult(
+            false,
+            "dump-write",
+            false,
+            All("dump-write", "ptrace"),
+            ImmutableArray<string>.Empty,
+            ImmutableArray<string>.Empty,
+            ImmutableArray<string>.Empty));
+
+        summary.Should().Contain("requires all of [dump-write, ptrace]");
+        error.GetProperty("semantics").GetString().Should().Be("all");
+        error.GetProperty("any_of_scopes").EnumerateArray().Should().BeEmpty();
+        error.GetProperty("all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("dump-write", "ptrace");
+        error.GetProperty("message").GetString().Should().Be(
+            "tool requires mandatory scope 'dump-write'");
+    }
+
+    [Fact]
+    public void ForbiddenEnvelope_OrAnd_PreservesBothRequirementGroups()
+    {
+        var (summary, error) = Forbidden(new ToolScopeRegistry.AuthorizationResult(
+            false,
+            "sensitive-heap-read",
+            true,
+            Any("eventpipe", "heap-read"),
+            ImmutableArray<string>.Empty,
+            ImmutableArray<string>.Empty,
+            ImmutableArray.Create("sensitive-heap-read")));
+
+        summary.Should().Contain(
+            "requires any of [eventpipe, heap-read] and all of [sensitive-heap-read]");
+        error.GetProperty("semantics").GetString().Should().Be("any+all");
+        error.GetProperty("any_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("eventpipe", "heap-read");
+        error.GetProperty("all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("sensitive-heap-read");
+        error.GetProperty("message").GetString().Should().Be(
+            "tool requires literal modifier scope 'sensitive-heap-read'");
     }
 
     [Fact]
