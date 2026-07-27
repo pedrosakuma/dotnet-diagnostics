@@ -203,7 +203,9 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             throw;
         }
 
-        if (!_store.TryTransitionToActive(handle.HandleId, out var active) || active is null)
+        if (_store is not IInvestigationStoreActivation activation
+            || !activation.TryTransitionToActive(handle.HandleId, out var active)
+            || active is null)
         {
             throw new OrchestratorException(
                 OrchestratorErrorKinds.AttachFailed,

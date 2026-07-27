@@ -66,6 +66,7 @@ public sealed class SummaryComparer : ISummaryComparer
             ["requestp95milliseconds"] = MetricDirection.Lower,
             ["requestp95seconds"] = MetricDirection.Lower,
             ["requestlatencyp95"] = MetricDirection.Lower,
+            ["httpserverrequestdurationp95"] = MetricDirection.Lower,
             ["requestscompleted"] = MetricDirection.Higher,
             ["requestthroughput"] = MetricDirection.Higher,
             ["requestspersecond"] = MetricDirection.Higher,
@@ -129,7 +130,12 @@ public sealed class SummaryComparer : ISummaryComparer
             .ToArray();
 
         var notes = new List<string>();
-        var metricDeltas = CompareKeyMetrics(baseline.Findings.KeyMetrics, current.Findings.KeyMetrics, notes);
+        var metricDeltas = CompareKeyMetrics(
+            baseline.Findings.KeyMetrics,
+            baseline.Findings.KeyMetricUnits,
+            current.Findings.KeyMetrics,
+            current.Findings.KeyMetricUnits,
+            notes);
         var verdict = Verdict(provenance, added, removed, changed, metricDeltas);
         return new SummaryDiff(verdict, provenance, added, removed, changed)
         {
@@ -234,7 +240,9 @@ public sealed class SummaryComparer : ISummaryComparer
 
     private static KeyMetricDelta[] CompareKeyMetrics(
         IReadOnlyDictionary<string, double>? baseline,
+        IReadOnlyDictionary<string, string?>? baselineUnits,
         IReadOnlyDictionary<string, double>? current,
+        IReadOnlyDictionary<string, string?>? currentUnits,
         List<string> notes)
     {
         if (baseline is null && current is null)
@@ -242,8 +250,8 @@ public sealed class SummaryComparer : ISummaryComparer
             return Array.Empty<KeyMetricDelta>();
         }
 
-        var baselineMetrics = CanonicalizeMetrics(baseline, "baseline", notes);
-        var currentMetrics = CanonicalizeMetrics(current, "current", notes);
+        var baselineMetrics = CanonicalizeMetrics(baseline, baselineUnits, "baseline", notes);
+        var currentMetrics = CanonicalizeMetrics(current, currentUnits, "current", notes);
         var names = baselineMetrics.Keys
             .Concat(currentMetrics.Keys)
             .Distinct(StringComparer.Ordinal)
@@ -296,6 +304,30 @@ public sealed class SummaryComparer : ISummaryComparer
                 continue;
             }
 
+            if (!TryGetComparableValues(
+                    baselineMetric!,
+                    currentMetric!,
+                    out var baselineComparable,
+                    out var currentComparable,
+                    out var conversionNote))
+            {
+                deltas.Add(new KeyMetricDelta(
+                    name,
+                    baselineMetric!.Value,
+                    currentMetric!.Value,
+                    hasDirection ? DirectionName(direction) : "unknown",
+                    Incomparable));
+                notes.Add(
+                    $"Key metric '{name}' has incompatible units " +
+                    $"'{baselineMetric.Unit ?? "(none)"}' and '{currentMetric.Unit ?? "(none)"}'; it does not drive the verdict.");
+                continue;
+            }
+
+            if (conversionNote is not null)
+            {
+                notes.Add($"Key metric '{name}' {conversionNote}");
+            }
+
             if (!hasDirection)
             {
                 deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable));
@@ -303,7 +335,7 @@ public sealed class SummaryComparer : ISummaryComparer
                 continue;
             }
 
-            var delta = currentMetric!.Value - baselineMetric!.Value;
+            var delta = currentComparable - baselineComparable;
             var outcome = Math.Abs(delta) <= double.Epsilon
                 ? Unchanged
                 : (delta < 0) == (direction == MetricDirection.Lower)
@@ -311,8 +343,8 @@ public sealed class SummaryComparer : ISummaryComparer
                     : Regressed;
             deltas.Add(new KeyMetricDelta(
                 name,
-                baselineMetric.Value,
-                currentMetric.Value,
+                baselineMetric!.Value,
+                currentMetric!.Value,
                 DirectionName(direction),
                 outcome));
         }
@@ -344,6 +376,7 @@ public sealed class SummaryComparer : ISummaryComparer
 
     private static Dictionary<string, CanonicalMetric> CanonicalizeMetrics(
         IReadOnlyDictionary<string, double>? metrics,
+        IReadOnlyDictionary<string, string?>? units,
         string side,
         List<string> notes)
     {
@@ -358,7 +391,9 @@ public sealed class SummaryComparer : ISummaryComparer
             var canonicalName = InvestigationMetricIdentity.IsCanonical(metric.Key)
                 ? metric.Key
                 : NormalizeMetricName(metric.Key);
-            if (result.TryAdd(canonicalName, new CanonicalMetric(metric.Key, metric.Value)))
+            string? unit = null;
+            _ = units?.TryGetValue(metric.Key, out unit);
+            if (result.TryAdd(canonicalName, new CanonicalMetric(metric.Key, metric.Value, unit)))
             {
                 continue;
             }
@@ -373,6 +408,103 @@ public sealed class SummaryComparer : ISummaryComparer
 
     private static string DirectionName(MetricDirection direction)
         => direction == MetricDirection.Lower ? "lower" : "higher";
+
+    private static bool TryGetComparableValues(
+        CanonicalMetric baseline,
+        CanonicalMetric current,
+        out double baselineValue,
+        out double currentValue,
+        out string? conversionNote)
+    {
+        baselineValue = baseline.Value;
+        currentValue = current.Value;
+        conversionNote = null;
+
+        var baselineUnit = NormalizeUnit(baseline.Unit);
+        var currentUnit = NormalizeUnit(current.Unit);
+        if (string.Equals(baselineUnit, currentUnit, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (TryRateUnit(baselineUnit, out var baselineRate)
+            && TryRateUnit(currentUnit, out var currentRate)
+            && string.Equals(baselineRate.BaseUnit, currentRate.BaseUnit, StringComparison.Ordinal))
+        {
+            baselineValue /= baselineRate.Seconds;
+            currentValue /= currentRate.Seconds;
+            conversionNote =
+                $"units '{baseline.Unit}' and '{current.Unit}' were normalized to '{baselineRate.BaseUnit}/s'.";
+            return true;
+        }
+
+        if (TryDurationUnit(baselineUnit, out var baselineSeconds)
+            && TryDurationUnit(currentUnit, out var currentSeconds))
+        {
+            baselineValue *= baselineSeconds;
+            currentValue *= currentSeconds;
+            conversionNote =
+                $"units '{baseline.Unit}' and '{current.Unit}' were normalized to seconds.";
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string? NormalizeUnit(string? unit)
+    {
+        if (unit is null)
+        {
+            return null;
+        }
+
+        var normalized = unit.Trim().ToLowerInvariant()
+            .Replace(" per ", "/", StringComparison.Ordinal);
+        return string.Concat(normalized.Where(static character => !char.IsWhiteSpace(character)));
+    }
+
+    private static bool TryRateUnit(string? unit, out RateUnit rate)
+    {
+        rate = default;
+        if (unit is null)
+        {
+            return false;
+        }
+
+        var slash = unit.LastIndexOf('/');
+        if (slash <= 0 || slash == unit.Length - 1)
+        {
+            return false;
+        }
+
+        var seconds = unit[(slash + 1)..] switch
+        {
+            "s" or "sec" or "second" or "seconds" => 1d,
+            "min" or "minute" or "minutes" => 60d,
+            "h" or "hr" or "hour" or "hours" => 3600d,
+            _ => 0d,
+        };
+        if (seconds == 0)
+        {
+            return false;
+        }
+
+        rate = new RateUnit(unit[..slash], seconds);
+        return true;
+    }
+
+    private static bool TryDurationUnit(string? unit, out double seconds)
+    {
+        seconds = unit switch
+        {
+            "s" or "sec" or "second" or "seconds" => 1d,
+            "ms" or "millisecond" or "milliseconds" => 0.001d,
+            "us" or "µs" or "microsecond" or "microseconds" => 0.000001d,
+            "ns" or "nanosecond" or "nanoseconds" => 0.000000001d,
+            _ => 0d,
+        };
+        return seconds > 0;
+    }
 
     private static SampleActivity Activity(SelfSampleBreakdown? samples)
     {
@@ -403,7 +535,9 @@ public sealed class SummaryComparer : ISummaryComparer
         Higher,
     }
 
-    private sealed record CanonicalMetric(string Name, double Value);
+    private sealed record CanonicalMetric(string Name, double Value, string? Unit);
+
+    private readonly record struct RateUnit(string BaseUnit, double Seconds);
 
     private enum SampleActivity
     {

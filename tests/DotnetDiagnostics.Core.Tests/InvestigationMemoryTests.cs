@@ -667,13 +667,14 @@ public class InvestigationMemoryTests
             "10.0.0",
             [thread],
             []);
-        var exported = NewExporter().Export(new ExportRequest(
+        var request = new ExportRequest(
             Evidence:
             [
                 new InvestigationEvidenceInput(malicious, "counters", meters, malicious),
                 new InvestigationEvidenceInput("threads", "thread-snapshot", threads),
-            ],
-            Format: SummaryFormat.Markdown));
+            ]);
+        var exported = NewExporter().Export(request with { Format = SummaryFormat.Markdown });
+        var structured = NewExporter().Export(request with { Format = SummaryFormat.Json });
 
         exported.Rendered.Should().Contain("### UNTRUSTED TARGET EVIDENCE")
             .And.Contain("**UNTRUSTED TARGET DATA:**")
@@ -689,6 +690,24 @@ public class InvestigationMemoryTests
         exported.Rendered[findingsStart..findingsEnd].Should()
             .Contain("  - Frames:")
             .And.Contain(MarkdownLiteral(malicious));
+
+        structured.Summary.EvidenceBoundary.Should().Be(
+            InvestigationEvidenceBoundary.UntrustedTargetData);
+        structured.Summary.Evidence.Should().OnlyContain(item =>
+            item.TrustBoundary.Classification == "untrusted-target-data"
+            && item.TrustBoundary.RawValuesPreserved
+            && item.TrustBoundary.Handling.Contains(
+                "Encoding or Markdown delimiting does not make the data trusted",
+                StringComparison.Ordinal));
+        structured.Summary.Evidence!.Should().Contain(item => item.Handle == malicious);
+        structured.Rendered.IndexOf("\"EvidenceBoundary\"", StringComparison.Ordinal)
+            .Should().BeLessThan(
+                structured.Rendered.IndexOf("\"Evidence\"", StringComparison.Ordinal),
+                "the structured trust boundary must precede raw evidence fields");
+        structured.Rendered.IndexOf("\"TrustBoundary\"", StringComparison.Ordinal)
+            .Should().BeLessThan(
+                structured.Rendered.IndexOf("\"Handle\"", StringComparison.Ordinal),
+                "each evidence item must declare its trust boundary before target-controlled values");
     }
 
     [Fact]
@@ -930,6 +949,119 @@ public class InvestigationMemoryTests
             && delta.Outcome == "incomparable");
         diff.Notes.Should().Contain(note =>
             note.Contains("invalid interval/rate-scale metadata", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Compare_EquivalentRateUnits_NormalizesBeforeVerdict()
+    {
+        var artifact = ArtifactFor(("App.dll", "App.Work", 10, 10));
+        var baseline = NewExporter().Export(new ExportRequest("before", artifact)).Summary with
+        {
+            Findings = new InvestigationFindings(
+                0,
+                T0,
+                TimeSpan.FromSeconds(1),
+                [],
+                new Dictionary<string, double> { ["request-throughput"] = 100 })
+            {
+                KeyMetricUnits = new Dictionary<string, string?> { ["request-throughput"] = "requests/s" },
+            },
+        };
+        var current = NewExporter().Export(new ExportRequest("after", artifact)).Summary with
+        {
+            Findings = new InvestigationFindings(
+                0,
+                T0,
+                TimeSpan.FromSeconds(1),
+                [],
+                new Dictionary<string, double> { ["request-throughput"] = 6000 })
+            {
+                KeyMetricUnits = new Dictionary<string, string?> { ["request-throughput"] = "requests/min" },
+            },
+        };
+
+        var diff = new SummaryComparer().Compare(baseline, current);
+
+        diff.Verdict.Should().Be("no_regression");
+        diff.KeyMetricDeltas.Should().ContainSingle()
+            .Which.Outcome.Should().Be("unchanged");
+        diff.Notes.Should().Contain(note =>
+            note.Contains("normalized to 'requests/s'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Compare_IncompatibleMetricUnits_AreIncomparable()
+    {
+        var artifact = ArtifactFor(("App.dll", "App.Work", 10, 10));
+        var baseline = NewExporter().Export(new ExportRequest("before", artifact)).Summary with
+        {
+            Findings = new InvestigationFindings(
+                0,
+                T0,
+                TimeSpan.FromSeconds(1),
+                [],
+                new Dictionary<string, double> { ["request-throughput"] = 100 })
+            {
+                KeyMetricUnits = new Dictionary<string, string?> { ["request-throughput"] = "requests/s" },
+            },
+        };
+        var current = NewExporter().Export(new ExportRequest("after", artifact)).Summary with
+        {
+            Findings = new InvestigationFindings(
+                0,
+                T0,
+                TimeSpan.FromSeconds(1),
+                [],
+                new Dictionary<string, double> { ["request-throughput"] = 200 })
+            {
+                KeyMetricUnits = new Dictionary<string, string?> { ["request-throughput"] = "bytes/s" },
+            },
+        };
+
+        var diff = new SummaryComparer().Compare(baseline, current);
+
+        diff.Verdict.Should().Be("incomparable");
+        diff.KeyMetricDeltas.Should().ContainSingle()
+            .Which.Outcome.Should().Be("incomparable");
+        diff.Notes.Should().Contain(note =>
+            note.Contains("incompatible units 'requests/s' and 'bytes/s'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Compare_HttpServerRequestDurationP95_DrivesRegressionAndImprovement()
+    {
+        CounterSnapshot Snapshot(double p95, string unit) => MeterSnapshot(
+        [
+            new MeterInstrumentValue(
+                "OpenTelemetry",
+                "http.server.request.duration",
+                unit,
+                "Histogram",
+                new Dictionary<string, string?> { ["http.route"] = "/orders" },
+                LastValue: null,
+                Rate: null,
+                Histogram: new HistogramSnapshot(100, 10, p95 / 2, p95, p95 * 1.5)),
+        ]);
+        var fast = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("fast", "counters", Snapshot(0.1, "s"))])).Summary;
+        var slow = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("slow", "counters", Snapshot(200, "ms"))])).Summary;
+
+        var regression = new SummaryComparer().Compare(fast, slow);
+        var improvement = new SummaryComparer().Compare(slow, fast);
+
+        regression.Verdict.Should().Be("regression_metrics");
+        regression.KeyMetricDeltas.Should().ContainSingle(delta =>
+            delta.Name.Contains("instrument=http.server.request.duration", StringComparison.Ordinal)
+            && delta.Name.EndsWith("|stat=p95", StringComparison.Ordinal)
+            && delta.BetterDirection == "lower"
+            && delta.Outcome == "regressed");
+        regression.Notes.Should().Contain(note =>
+            note.Contains("normalized to seconds", StringComparison.Ordinal));
+        improvement.Verdict.Should().Be("improvement");
+        improvement.KeyMetricDeltas.Should().ContainSingle(delta =>
+            delta.BetterDirection == "lower"
+            && delta.Outcome == "improved");
     }
 
     [Fact]

@@ -1512,7 +1512,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         OwnerPrincipalKey: ownerPrincipalKey ?? PrincipalOwnershipKey.ForSynthetic(ownerBearerName),
         InternalScopeDelegationKey: "test-delegation-key");
 
-    private sealed class StubInvestigationStore : IInvestigationStore
+    private sealed class StubInvestigationStore : IInvestigationStore, IInvestigationStoreActivation
     {
         private readonly ConcurrentDictionary<string, InvestigationHandle> _byId = new(StringComparer.Ordinal);
         public void Add(InvestigationHandle handle) => _byId[handle.HandleId] = handle;

@@ -219,6 +219,9 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
             TargetsFix: request.TargetsFix,
             Notes: request.Notes)
         {
+            EvidenceBoundary = legacyCpuOnly
+                ? null
+                : InvestigationEvidenceBoundary.UntrustedTargetData,
             Evidence = legacyCpuOnly ? null : projections.Select(static projection => projection.Evidence).ToArray(),
         };
 

@@ -48,6 +48,7 @@ public interface IDiagnosticHandleStore
         string? producingTool = null)
     {
         var handle = Register(processId, kind, artifact, ttl, evictWhenProcessExits, origin);
+        DiagnosticHandleMetadata.Record(this, handle.Id, producingTool);
         return handle with { ProducingTool = producingTool };
     }
 

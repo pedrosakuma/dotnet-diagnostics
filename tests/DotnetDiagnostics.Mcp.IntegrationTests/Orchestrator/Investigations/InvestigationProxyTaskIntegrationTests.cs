@@ -292,7 +292,7 @@ public sealed class InvestigationProxyTaskIntegrationTests
         public Task DisposeForHandleAsync(string handleId) => Task.CompletedTask;
     }
 
-    private sealed class TaskInvestigationStore : IInvestigationStore
+    private sealed class TaskInvestigationStore : IInvestigationStore, IInvestigationStoreActivation
     {
         private readonly ConcurrentDictionary<string, InvestigationHandle> _handles =
             new(StringComparer.Ordinal);

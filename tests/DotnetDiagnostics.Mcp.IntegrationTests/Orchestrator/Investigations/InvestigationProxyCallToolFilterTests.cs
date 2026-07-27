@@ -1255,7 +1255,7 @@ public sealed class InvestigationProxyCallToolFilterTests
         public IReadOnlyCollection<KeyValuePair<string, string>> Snapshot() => _map.ToArray();
     }
 
-    private sealed class InMemoryInvestigationStore : IInvestigationStore
+    private sealed class InMemoryInvestigationStore : IInvestigationStore, IInvestigationStoreActivation
     {
         private readonly Dictionary<string, InvestigationHandle> _byId = new(StringComparer.Ordinal);
 
