@@ -158,15 +158,11 @@ public sealed class InvestigationProxyTaskIntegrationTests
             TestPrincipalAccessors.WithScopes("read-counters"),
             services);
         var handle = new InvestigationHandle(
-            "closed-handle",
-            "ns",
-            "pod",
-            "app",
-            "diag",
-            "pod-token",
-            InvestigationState.Active,
-            DateTimeOffset.UtcNow,
-            DateTimeOffset.UtcNow.AddMinutes(10),
+            HandleId: "closed-handle",
+            Kubernetes: new KubernetesInvestigationTarget("ns", "pod", "app", "diag", "pod-token"),
+            State: InvestigationState.Active,
+            AttachedAt: DateTimeOffset.UtcNow,
+            ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(10),
             InternalScopeDelegationKey: "closed-handle-key");
         await proxy.DisposeForHandleAsync(handle.HandleId);
 
@@ -269,28 +265,20 @@ public sealed class InvestigationProxyTaskIntegrationTests
             builder.ConfigureTestServices(services =>
             {
                 Store.Add(new InvestigationHandle(
-                    HandleId,
-                    "ns",
-                    "pod",
-                    "app",
-                    "diag",
-                    "pod-token",
-                    InvestigationState.Active,
-                    DateTimeOffset.UtcNow,
-                    DateTimeOffset.UtcNow.AddMinutes(10),
+                    HandleId: HandleId,
+                    Kubernetes: new KubernetesInvestigationTarget("ns", "pod", "app", "diag", "pod-token"),
+                    State: InvestigationState.Active,
+                    AttachedAt: DateTimeOffset.UtcNow,
+                    ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(10),
                     OwnerBearerName: AuthorizedName,
                     OwnerPrincipalKey: PrincipalOwnershipKey.ForOpaqueEntry("Auth:BearerTokens:0"),
                     InternalScopeDelegationKey: "task-proxy-delegation-key"));
                 Store.Add(new InvestigationHandle(
-                    ExportHandleId,
-                    "ns",
-                    "pod",
-                    "app",
-                    "diag-export",
-                    "pod-token",
-                    InvestigationState.Active,
-                    DateTimeOffset.UtcNow,
-                    DateTimeOffset.UtcNow.AddMinutes(10),
+                    HandleId: ExportHandleId,
+                    Kubernetes: new KubernetesInvestigationTarget("ns", "pod", "app", "diag-export", "pod-token"),
+                    State: InvestigationState.Active,
+                    AttachedAt: DateTimeOffset.UtcNow,
+                    ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(10),
                     OwnerBearerName: ExportName,
                     OwnerPrincipalKey: PrincipalOwnershipKey.ForOpaqueEntry("Auth:BearerTokens:2"),
                     InternalScopeDelegationKey: "export-task-proxy-delegation-key"));
@@ -429,11 +417,7 @@ public sealed class InvestigationProxyTaskIntegrationTests
             return InvestigationTerminalTransition.Transitioned;
         }
 
-        public InvestigationHandle? FindReusableTarget(
-            string podNamespace,
-            string podName,
-            string containerName)
-            => null;
+        public InvestigationHandle? FindReusableTarget(string reservationKey) => null;
 
         public IReadOnlyCollection<InvestigationHandle> Snapshot() => _handles.Values.ToArray();
     }

@@ -79,13 +79,9 @@ public class KubernetesPortForwardManagerTests
     }
 
     private static InvestigationHandle NewHandle() => new(
-        HandleId: "inv_" + Guid.NewGuid().ToString("N"),
-        Namespace: "ns",
-        PodName: "pod",
-        TargetContainerName: "app",
-        EphemeralContainerName: "diag",
-        PodLocalBearerToken: "token",
-        State: InvestigationState.Active,
+            HandleId: "inv_" + Guid.NewGuid().ToString("N"),
+            Kubernetes: new KubernetesInvestigationTarget("ns", "pod", "app", "diag", "token"),
+            State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(10));
 

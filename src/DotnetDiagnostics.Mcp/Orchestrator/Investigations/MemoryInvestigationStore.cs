@@ -33,14 +33,12 @@ internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestiga
         ArgumentNullException.ThrowIfNull(newHandle);
         lock (_gate)
         {
-            if (allowReuse)
+            if (allowReuse && !string.IsNullOrEmpty(newHandle.ReservationKey))
             {
                 foreach (var h in _byId.Values)
                 {
                     if (h.State is InvestigationState.Active or InvestigationState.Attaching &&
-                        string.Equals(h.Namespace, newHandle.Namespace, StringComparison.Ordinal) &&
-                        string.Equals(h.PodName, newHandle.PodName, StringComparison.Ordinal) &&
-                        string.Equals(h.TargetContainerName, newHandle.TargetContainerName, StringComparison.Ordinal))
+                        string.Equals(h.ReservationKey, newHandle.ReservationKey, StringComparison.Ordinal))
                     {
                         existing = h;
                         return false;
@@ -136,16 +134,15 @@ internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestiga
         }
     }
 
-    public InvestigationHandle? FindReusableTarget(string podNamespace, string podName, string containerName)
+    public InvestigationHandle? FindReusableTarget(string reservationKey)
     {
         lock (_gate)
         {
+            if (string.IsNullOrEmpty(reservationKey)) return null;
             foreach (var h in _byId.Values)
             {
                 if (h.State is InvestigationState.Active or InvestigationState.Attaching &&
-                    string.Equals(h.Namespace, podNamespace, StringComparison.Ordinal) &&
-                    string.Equals(h.PodName, podName, StringComparison.Ordinal) &&
-                    string.Equals(h.TargetContainerName, containerName, StringComparison.Ordinal))
+                    string.Equals(h.ReservationKey, reservationKey, StringComparison.Ordinal))
                 {
                     return h;
                 }

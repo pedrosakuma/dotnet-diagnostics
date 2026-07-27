@@ -97,7 +97,7 @@ internal static class ReplicaCounterFanout
         {
             if (!resolution.Succeeded)
             {
-                errors.Add($"Pod '{resolution.Handle.PodName}' (handle {resolution.Handle.HandleId}): {resolution.Failure}");
+                errors.Add($"Target '{resolution.Handle.TargetDisplayName}' (handle {resolution.Handle.HandleId}): {resolution.Failure}");
                 continue;
             }
 
@@ -124,7 +124,7 @@ internal static class ReplicaCounterFanout
         {
             if (snapshot is null)
             {
-                errors.Add($"Pod '{handle.PodName}' (handle {handle.HandleId}): {failure}");
+                errors.Add($"Target '{handle.TargetDisplayName}' (handle {handle.HandleId}): {failure}");
                 continue;
             }
 

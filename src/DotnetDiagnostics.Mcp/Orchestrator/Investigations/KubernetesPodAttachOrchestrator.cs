@@ -131,11 +131,12 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
 
         var handle = new InvestigationHandle(
             HandleId: handleId,
-            Namespace: ns,
-            PodName: request.PodName,
-            TargetContainerName: container.Name,
-            EphemeralContainerName: ephemeralName,
-            PodLocalBearerToken: token,
+            Kubernetes: new KubernetesInvestigationTarget(
+                Namespace: ns,
+                PodName: request.PodName,
+                TargetContainerName: container.Name,
+                EphemeralContainerName: ephemeralName,
+                PodLocalBearerToken: token),
             State: InvestigationState.Attaching,
             AttachedAt: now,
             ExpiresAt: now + ttl,

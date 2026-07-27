@@ -41,10 +41,7 @@ public sealed class InvestigationStoreCompatibilityTests
 
         public InvestigationHandle? GetById(string handleId) => null;
 
-        public InvestigationHandle? FindReusableTarget(
-            string podNamespace,
-            string podName,
-            string containerName) => null;
+        public InvestigationHandle? FindReusableTarget(string reservationKey) => null;
 
         public IReadOnlyCollection<InvestigationHandle> Snapshot() => [];
     }

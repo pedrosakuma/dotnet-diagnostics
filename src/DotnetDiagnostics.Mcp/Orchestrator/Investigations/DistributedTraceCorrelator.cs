@@ -62,7 +62,7 @@ internal static class DistributedTraceCorrelator
         {
             if (capture is null)
             {
-                errors.Add($"Pod '{handle.PodName}' (handle {handle.HandleId}): {failure}");
+                errors.Add($"Target '{handle.TargetDisplayName}' (handle {handle.HandleId}): {failure}");
                 continue;
             }
 

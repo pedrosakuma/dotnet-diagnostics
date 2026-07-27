@@ -28,26 +28,30 @@ public enum InvestigationState
 /// </summary>
 /// <remarks>
 /// <para>
+/// Transport-specific metadata lives in provider-typed properties (e.g. <see cref="Kubernetes"/>)
+/// rather than as flat fields on the record. This keeps the core handle, proxy endpoint, and
+/// fan-out paths transport-neutral, and allows a future <c>ExternalMcp</c> target to be
+/// represented without forking the shared proxy infrastructure.
+/// </para>
+/// <para>
 /// The bearer token and independent scope-delegation key are generated per-attach and
-/// embedded into the ephemeral container's environment. Neither is returned to the
-/// external client — the proxy injects the bearer and signs each approved invocation.
-/// This is the
-/// "per-attach Pod-local bearer token" mitigation called out in
+/// embedded into the ephemeral container's environment. The bearer token is kept in
+/// the transport-specific metadata (<see cref="KubernetesInvestigationTarget.PodLocalBearerToken"/>)
+/// and injected by the transport implementation into <see cref="System.Net.Http.HttpClient.DefaultRequestHeaders"/>
+/// — it is never returned to the external client.
+/// This is the "per-attach Pod-local bearer token" mitigation called out in
 /// docs/central-orchestrator-design.md §6.4.
 /// </para>
 /// <para>
-/// <see cref="EphemeralContainerName"/> is informational: ephemeral containers cannot
-/// be removed once added (Kubernetes constraint), so the name is surfaced to operators
-/// who audit a Pod's <c>ephemeralContainerStatuses</c> after detach.
+/// The backward-compatible computed properties <see cref="Namespace"/>, <see cref="PodName"/>,
+/// <see cref="TargetContainerName"/>, and <see cref="EphemeralContainerName"/> delegate to
+/// <see cref="Kubernetes"/> so existing callers that read these values compile without change.
+/// Code that sets or creates handles must use <see cref="Kubernetes"/> directly.
 /// </para>
 /// </remarks>
 public sealed record InvestigationHandle(
     string HandleId,
-    string Namespace,
-    string PodName,
-    string TargetContainerName,
-    string EphemeralContainerName,
-    [property: JsonIgnore] string PodLocalBearerToken,
+    KubernetesInvestigationTarget? Kubernetes,
     InvestigationState State,
     DateTimeOffset AttachedAt,
     DateTimeOffset ExpiresAt,
@@ -62,4 +66,48 @@ public sealed record InvestigationHandle(
     [property: JsonIgnore] string? InternalScopeDelegationKey = null,
     // Optional transport-neutral process selector resolved inside the attached Pod before
     // fan-out collectors run.
-    InvestigationProcessSelector? ProcessSelector = null);
+    InvestigationProcessSelector? ProcessSelector = null)
+{
+    /// <summary>
+    /// Transport-neutral display label used in logs, error messages, and observability.
+    /// For Kubernetes targets this is <c>namespace/pod/container</c>; for any target
+    /// without provider-specific metadata it falls back to <see cref="HandleId"/>.
+    /// </summary>
+    public string TargetDisplayName => Kubernetes is { } k
+        ? $"{k.Namespace}/{k.PodName}/{k.TargetContainerName}"
+        : HandleId;
+
+    /// <summary>
+    /// Provider-specific deduplication key used by <see cref="IInvestigationStore"/> to
+    /// prevent duplicate attachments to the same target. For Kubernetes this is
+    /// <c>k8s:namespace/pod/container</c>; non-Kubernetes handles return an empty string
+    /// (no reservation).
+    /// </summary>
+    [JsonIgnore]
+    public string ReservationKey => Kubernetes is { } k
+        ? $"k8s:{k.Namespace}/{k.PodName}/{k.TargetContainerName}"
+        : string.Empty;
+
+    // ── Backward-compatible properties ──────────────────────────────────────────────────
+    // These delegate to the Kubernetes target so existing callers that read them compile
+    // without modification. They return empty string when the handle has no Kubernetes
+    // metadata (e.g. future ExternalMcp handles).
+
+    /// <summary>Kubernetes namespace; empty string for non-Kubernetes handles.</summary>
+    public string Namespace => Kubernetes?.Namespace ?? string.Empty;
+
+    /// <summary>Kubernetes pod name; empty string for non-Kubernetes handles.</summary>
+    public string PodName => Kubernetes?.PodName ?? string.Empty;
+
+    /// <summary>Target container name; empty string for non-Kubernetes handles.</summary>
+    public string TargetContainerName => Kubernetes?.TargetContainerName ?? string.Empty;
+
+    /// <summary>
+    /// Name of the injected ephemeral diagnostics container; empty string for
+    /// non-Kubernetes handles. Informational — ephemeral containers cannot be removed
+    /// once added (Kubernetes constraint), so the name is surfaced to operators who audit
+    /// a Pod's <c>ephemeralContainerStatuses</c> after detach.
+    /// </summary>
+    public string EphemeralContainerName => Kubernetes?.EphemeralContainerName ?? string.Empty;
+}
+

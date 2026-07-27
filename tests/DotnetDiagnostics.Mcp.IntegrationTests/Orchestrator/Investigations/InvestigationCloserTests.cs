@@ -17,13 +17,9 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests.Orchestrator.Investigations;
 public sealed class InvestigationCloserTests
 {
     private static InvestigationHandle Active(string id = "h-1") => new(
-        HandleId: id,
-        Namespace: "ns",
-        PodName: "pod",
-        TargetContainerName: "api",
-        EphemeralContainerName: "diag",
-        PodLocalBearerToken: "secret",
-        State: InvestigationState.Active,
+            HandleId: id,
+            Kubernetes: new KubernetesInvestigationTarget("ns", "pod", "api", "diag", "secret"),
+            State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30));
 

@@ -137,7 +137,11 @@ internal static class DiagnosticServiceRegistration
         services.AddSingleton<IPodInventory, KubernetesPodInventory>();
         services.AddSingleton<Orchestrator.Investigations.IInvestigationStore, Orchestrator.Investigations.MemoryInvestigationStore>();
         services.AddSingleton<Orchestrator.Investigations.IInvestigationSessionBinder, Orchestrator.Investigations.MemoryInvestigationSessionBinder>();
-        services.AddSingleton<Orchestrator.Investigations.IPortForwardManager, Orchestrator.Investigations.KubernetesPortForwardManager>();
+        services.AddSingleton<Orchestrator.Investigations.KubernetesPortForwardManager>();
+        services.AddSingleton<Orchestrator.Investigations.IInvestigationTransportManager>(
+            sp => sp.GetRequiredService<Orchestrator.Investigations.KubernetesPortForwardManager>());
+        services.AddSingleton<Orchestrator.Investigations.IPortForwardManager>(
+            sp => sp.GetRequiredService<Orchestrator.Investigations.KubernetesPortForwardManager>());
         services.AddSingleton<Orchestrator.Investigations.IInvestigationProxyClient, Orchestrator.Investigations.PodLocalInvestigationProxyClient>();
         services.AddSingleton<Orchestrator.Investigations.IPodAttachOrchestrator, Orchestrator.Investigations.KubernetesPodAttachOrchestrator>();
         services.AddSingleton<Orchestrator.Investigations.InvestigationCloser>();

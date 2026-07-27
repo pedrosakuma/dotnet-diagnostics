@@ -32,20 +32,20 @@ public sealed class InvestigationCloser
 {
     private readonly IInvestigationStore _store;
     private readonly IInvestigationProxyClient _proxyClient;
-    private readonly IPortForwardManager _portForwardManager;
+    private readonly IInvestigationTransportManager _transportManager;
     private readonly IInvestigationSessionBinder _sessionBinder;
     private readonly ILogger<InvestigationCloser> _logger;
 
     public InvestigationCloser(
         IInvestigationStore store,
         IInvestigationProxyClient proxyClient,
-        IPortForwardManager portForwardManager,
+        IInvestigationTransportManager transportManager,
         IInvestigationSessionBinder sessionBinder,
         ILogger<InvestigationCloser>? logger = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _proxyClient = proxyClient ?? throw new ArgumentNullException(nameof(proxyClient));
-        _portForwardManager = portForwardManager ?? throw new ArgumentNullException(nameof(portForwardManager));
+        _transportManager = transportManager ?? throw new ArgumentNullException(nameof(transportManager));
         _sessionBinder = sessionBinder ?? throw new ArgumentNullException(nameof(sessionBinder));
         _logger = logger ?? NullLogger<InvestigationCloser>.Instance;
     }
@@ -133,12 +133,12 @@ public sealed class InvestigationCloser
     {
         try
         {
-            await _portForwardManager.CloseAsync(handleId).ConfigureAwait(false);
+            await _transportManager.CloseAsync(handleId).ConfigureAwait(false);
             return 0;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Closing port-forward for handle {HandleId} threw; continuing close pipeline.", handleId);
+            _logger.LogWarning(ex, "Closing transport for handle {HandleId} threw; continuing close pipeline.", handleId);
             return 1;
         }
     }

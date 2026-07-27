@@ -61,6 +61,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                 if (proxyBytesCap.HasValue) opts.ProxyRequestSizeLimitBytes = proxyBytesCap.Value;
                 services.AddSingleton(opts);
                 services.AddSingleton<IInvestigationStore>(_store);
+                services.AddSingleton<IInvestigationTransportManager>(_manager);
                 services.AddSingleton<IPortForwardManager>(_manager);
                 services.AddSingleton(ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable));
                 services.AddLogging();
@@ -395,6 +396,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                 services.AddSingleton(new EventSourceAllowlist(securityOptions));
                 services.AddSingleton(new SensitiveValueGate(securityOptions));
                 services.AddSingleton<IInvestigationStore>(_store);
+                services.AddSingleton<IInvestigationTransportManager>(_manager);
                 services.AddSingleton<IPortForwardManager>(_manager);
                 services.AddSingleton(ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable));
                 services.AddLogging(b =>
@@ -467,6 +469,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                 };
                 services.AddSingleton(opts);
                 services.AddSingleton<IInvestigationStore>(_store);
+                services.AddSingleton<IInvestigationTransportManager>(_manager);
                 services.AddSingleton<IPortForwardManager>(_manager);
                 services.AddSingleton(ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable));
                 services.AddLogging();
@@ -1479,13 +1482,9 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     }
 
     private static InvestigationHandle NewHandle(string id, InvestigationState state, string podToken = "pod") => new(
-        HandleId: id,
-        Namespace: "ns",
-        PodName: "pod",
-        TargetContainerName: "app",
-        EphemeralContainerName: "diag",
-        PodLocalBearerToken: podToken,
-        State: state,
+            HandleId: id,
+            Kubernetes: new KubernetesInvestigationTarget("ns", "pod", "app", "diag", podToken),
+            State: state,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5),
         InternalScopeDelegationKey: "test-delegation-key");
@@ -1500,11 +1499,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         string podToken,
         string? ownerPrincipalKey = null) => new(
         HandleId: id,
-        Namespace: "ns",
-        PodName: "pod",
-        TargetContainerName: "app",
-        EphemeralContainerName: "diag",
-        PodLocalBearerToken: podToken,
+        Kubernetes: new KubernetesInvestigationTarget("ns", "pod", "app", "diag", podToken),
         State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5),
@@ -1542,7 +1537,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             _byId[handleId] = current with { State = targetState, FailureReason = targetState == InvestigationState.Closed ? current.FailureReason : failureReason ?? current.FailureReason };
             return InvestigationTerminalTransition.Transitioned;
         }
-        public InvestigationHandle? FindReusableTarget(string ns, string pod, string c) => null;
+        public InvestigationHandle? FindReusableTarget(string reservationKey) => null;
         public System.Collections.Generic.IReadOnlyCollection<InvestigationHandle> Snapshot() => _byId.Values.ToArray();
     }
 
@@ -1559,6 +1554,12 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         public Task<HttpClient> GetOrCreateClientAsync(InvestigationHandle handle, CancellationToken ct)
         {
             OnGet?.Invoke(handle);
+            // Mimic the production transport: inject the pod-local bearer into DefaultRequestHeaders
+            // so the proxy endpoint does not need to know about the credential directly.
+            _client.DefaultRequestHeaders.Authorization =
+                handle.Kubernetes is not null
+                    ? new AuthenticationHeaderValue("Bearer", handle.Kubernetes.PodLocalBearerToken)
+                    : null;
             return Task.FromResult(_client);
         }
 
