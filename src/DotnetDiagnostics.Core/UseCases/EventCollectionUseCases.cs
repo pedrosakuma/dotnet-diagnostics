@@ -364,18 +364,28 @@ public static class EventCollectionUseCases
                 BuildResult: (gc, handle, context) =>
                 {
                     var inlineGc = gc;
-                    var droppedEvents = 0;
+                    var inlineOmittedEvents = 0;
                     if (context.Depth == SamplingDepth.Summary && gc.Events.Count > 0)
                     {
-                        droppedEvents = gc.Events.Count;
+                        inlineOmittedEvents = gc.Events.Count;
                         inlineGc = gc with { Events = Array.Empty<GcEvent>() };
                     }
 
                     var summary = gc.TotalCollections == 0
                         ? $"No GC activity in {context.DurationSeconds}s — heap is quiet or the workload is idle."
-                        : (context.Depth == SamplingDepth.Summary && droppedEvents > 0
-                            ? $"{gc.TotalCollections} collection(s), max pause {gc.MaxPauseTime.TotalMilliseconds:F1}ms, total pause {gc.TotalPauseTime.TotalMilliseconds:F1}ms. Dropped {droppedEvents} Event(s) from inline (handle has all)."
-                            : $"{gc.TotalCollections} collection(s), max pause {gc.MaxPauseTime.TotalMilliseconds:F1}ms, total pause {gc.TotalPauseTime.TotalMilliseconds:F1}ms.");
+                        : $"{gc.TotalCollections} collection(s), max pause {gc.MaxPauseTime.TotalMilliseconds:F1}ms, total pause {gc.TotalPauseTime.TotalMilliseconds:F1}ms.";
+                    if (inlineOmittedEvents > 0)
+                    {
+                        summary += $" Omitted {inlineOmittedEvents} retained event row(s) from inline; the handle retains them.";
+                    }
+                    if (gc.DroppedEvents > 0)
+                    {
+                        summary += $" Raw detail reached maxEvents={maxEvents}; {gc.DroppedEvents} later event row(s) were omitted, but totals and generation counts remain exact.";
+                    }
+                    if (gc.DroppedHeapStats > 0)
+                    {
+                        summary += $" {gc.DroppedHeapStats} later heap-stat sample(s) were also omitted after maxEvents={maxEvents}.";
+                    }
 
                     var primaryHint = gc.MaxPauseTime.TotalMilliseconds > 100
                         ? new NextActionHint("collect_process_dump",

@@ -23,6 +23,7 @@ public static class GcActivityCorrelator
         var maxPauseDuration = gcSummary.MaxPauseTime > TimeSpan.Zero
             ? gcSummary.MaxPauseTime
             : TimeSpan.Zero;
+        var correlationTruncated = gcSummary.DroppedEvents > 0;
         var topImpacted = new PriorityQueue<ImpactedActivity, ImpactedActivity>(
             Comparer<ImpactedActivity>.Create(static (left, right) => CompareImpactedAscending(left, right)));
         var impactedCount = 0;
@@ -81,7 +82,8 @@ public static class GcActivityCorrelator
                     durationMs,
                     totalOverlapMs,
                     gcPausePercent,
-                    overlappingGcEvents);
+                    overlappingGcEvents,
+                    GcPauseIsLowerBound: correlationTruncated);
                 impactedCount++;
                 totalGcOverlapMs += impactedActivity.GcPauseMs;
                 topImpacted.Enqueue(impactedActivity, impactedActivity);
@@ -109,6 +111,11 @@ public static class GcActivityCorrelator
             totalGcOverlapMs,
             gcSummary.TotalCollections,
             gcSummary.TotalPauseTime.TotalMilliseconds,
+            gcSummary.Events.Count,
+            gcSummary.DroppedEvents,
+            correlationTruncated,
+            correlationTruncated ? "retained-prefix" : "full-window",
+            correlationTruncated,
             orderedTopImpacted);
     }
 
@@ -180,9 +187,13 @@ public sealed record ImpactedActivity(
     double DurationMs,
     double GcPauseMs,
     double GcPausePercent,
-    IReadOnlyList<GcOverlapEvent> GcEvents);
+    IReadOnlyList<GcOverlapEvent> GcEvents,
+    bool GcPauseIsLowerBound);
 
-/// <summary>Result of correlating GC events with activity spans.</summary>
+/// <summary>
+/// Result of correlating retained GC event rows with activity spans. Exact full-window GC
+/// aggregates remain separate from prefix-scoped correlation values.
+/// </summary>
 public sealed record GcOverlayResult(
     int TotalActivities,
     int CompletedActivities,
@@ -191,4 +202,9 @@ public sealed record GcOverlayResult(
     double TotalGcOverlapMs,
     int TotalGcCollections,
     double TotalGcPauseMs,
+    int RetainedGcEvents,
+    int DroppedGcEvents,
+    bool CorrelationTruncated,
+    string CorrelationScope,
+    bool CorrelationValuesAreLowerBounds,
     IReadOnlyList<ImpactedActivity> ImpactedActivities);

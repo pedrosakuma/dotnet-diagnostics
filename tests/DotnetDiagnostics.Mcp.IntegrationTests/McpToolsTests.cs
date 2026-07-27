@@ -713,6 +713,108 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task CollectBatch_CountersAndGc_PopulatesNarrowBoundedGen2MeterEvidence()
+    {
+        const int retainedEventLimit = 200;
+        await using var client = await ConnectAsync();
+        using var driverCts = new CancellationTokenSource();
+        var driver = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(1500), driverCts.Token);
+                while (!driverCts.IsCancellationRequested)
+                {
+                    _ = new byte[128 * 1024];
+                    GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
+                    await Task.Delay(TimeSpan.FromMilliseconds(1), driverCts.Token);
+                }
+            }
+            catch (OperationCanceledException) when (driverCts.IsCancellationRequested)
+            {
+            }
+        });
+
+        ModelContextProtocol.Protocol.CallToolResult result;
+        try
+        {
+            result = await client.CallToolAsync(
+                "collect_batch",
+                new Dictionary<string, object?>
+                {
+                    ["requests"] = new object[]
+                    {
+                        new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
+                        new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "gc" },
+                    },
+                    ["processId"] = Environment.ProcessId,
+                    ["durationSeconds"] = 10,
+                },
+                cancellationToken: CancellationToken.None);
+        }
+        finally
+        {
+            driverCts.Cancel();
+        }
+
+        await driver;
+
+        result.IsError.Should().NotBe(true);
+        var report = DeserializeStructured<CollectBatchReport>(result);
+        report.Should().NotBeNull();
+        report!.Gen2Evidence.Should().NotBeNull();
+        report.Gen2Evidence!.MeterRatePerSecond.Should().NotBeNull();
+        report.Gen2Evidence.MeterProcessCumulative.Should().BeGreaterThan(0);
+        report.Gen2Evidence.GcCollectorWindowCount.Should().BeGreaterThan(retainedEventLimit);
+
+        var gcEntry = report.Results
+            .Single(static entry => entry.Tool == "collect_events" && entry.Kind == "gc");
+        var gcData = gcEntry.Data!.Value.GetProperty("gc");
+        gcData.GetProperty("totalCollections").GetInt32().Should().BeGreaterThan(retainedEventLimit);
+        gcData.GetProperty("droppedEvents").GetInt32().Should().BeGreaterThan(0);
+        var gcQuery = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = gcEntry.Handle,
+                ["view"] = "events",
+                ["topN"] = 250,
+            },
+            cancellationToken: CancellationToken.None);
+
+        gcQuery.IsError.Should().NotBe(true);
+        var gcSnapshot = DeserializeStructured<CollectionQueryResult>(gcQuery);
+        gcSnapshot.Should().NotBeNull();
+        var gcPayload = gcSnapshot!.Payload.Should().BeOfType<JsonElement>().Subject;
+        gcPayload.GetProperty("retained").GetInt32().Should().Be(retainedEventLimit);
+        gcPayload.GetProperty("dropped").GetInt32().Should().BeGreaterThan(0);
+        gcPayload.GetProperty("returned").GetInt32().Should().Be(retainedEventLimit);
+        gcPayload.GetProperty("events").GetArrayLength().Should().Be(retainedEventLimit);
+
+        var countersHandle = report.Results
+            .Single(static entry => entry.Tool == "collect_events" && entry.Kind == "counters")
+            .Handle;
+        countersHandle.Should().NotBeNullOrWhiteSpace();
+        var query = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = countersHandle,
+                ["view"] = "summary",
+            },
+            cancellationToken: CancellationToken.None);
+
+        query.IsError.Should().NotBe(true);
+        var snapshot = DeserializeStructured<CollectionQueryResult>(query);
+        snapshot.Should().NotBeNull();
+        var payload = snapshot!.Payload.Should().BeOfType<JsonElement>().Subject;
+        payload.GetProperty("meterCount").GetInt32().Should()
+            .BeInRange(1, CollectBatchTool.Gen2MeterMaxTimeSeries);
+        payload.GetProperty("meters").EnumerateArray().Should().OnlyContain(meter =>
+            meter.GetProperty("instrument").GetString() == "dotnet.gc.collections");
+    }
+
+    [Fact]
     public async Task CollectBatch_RejectsMethodParamsKind_BeforeAnySessionOpens()
     {
         await using var client = await ConnectAsync();

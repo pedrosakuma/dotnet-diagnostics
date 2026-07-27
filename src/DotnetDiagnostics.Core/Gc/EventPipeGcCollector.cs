@@ -54,8 +54,9 @@ public sealed class EventPipeGcCollector : IGcCollector
         var startedAt = DateTimeOffset.UtcNow;
         // EventPipeEventSource invokes these callbacks on the single source.Process() thread, so
         // plain collections are sufficient and avoid unnecessary synchronization on the hot path.
-        var events = new List<GcEvent>(Math.Min(maxEvents, 128));
+        var aggregation = new GcEventAggregation(maxEvents);
         var heapStats = new List<GcHeapStatsSample>(Math.Min(maxEvents, 128));
+        var droppedHeapStats = 0;
         var pending = new Dictionary<long, GCStartTraceData>();
 
         await EventPipeCollectionRunner.RunAsync(
@@ -76,13 +77,8 @@ public sealed class EventPipeGcCollector : IGcCollector
                         return;
                     }
 
-                    if (events.Count >= maxEvents)
-                    {
-                        return;
-                    }
-
                     var pause = traceEvent.TimeStamp - start.TimeStamp;
-                    events.Add(new GcEvent(
+                    aggregation.Add(new GcEvent(
                         Timestamp: new DateTimeOffset(start.TimeStamp.ToUniversalTime(), TimeSpan.Zero),
                         Generation: start.Depth,
                         Reason: start.Reason.ToString(),
@@ -94,6 +90,7 @@ public sealed class EventPipeGcCollector : IGcCollector
                 {
                     if (heapStats.Count >= maxEvents)
                     {
+                        droppedHeapStats++;
                         return;
                     }
 
@@ -117,24 +114,69 @@ public sealed class EventPipeGcCollector : IGcCollector
             ex => _logger.LogDebug(ex, "EventPipe GC source ended for pid {Pid}.", processId),
             cancellationToken).ConfigureAwait(false);
 
-        var collected = events;
-        var totalPause = collected.Aggregate(TimeSpan.Zero, (acc, e) => acc + e.PauseDuration);
-        var maxPause = collected.Count == 0 ? TimeSpan.Zero : collected.Max(e => e.PauseDuration);
-        var perGen = collected
-            .GroupBy(e => e.Generation)
-            .Select(g => new GenerationStats(g.Key, g.Count()))
-            .OrderBy(g => g.Generation)
-            .ToList();
-
         return new GcSummary(
             ProcessId: processId,
             StartedAt: startedAt,
             Duration: duration,
-            TotalCollections: collected.Count,
-            TotalPauseTime: totalPause,
-            MaxPauseTime: maxPause,
-            Generations: perGen,
-            Events: collected,
-            HeapStats: heapStats.OrderBy(s => s.Timestamp).ToList());
+            TotalCollections: aggregation.TotalCollections,
+            TotalPauseTime: aggregation.TotalPauseTime,
+            MaxPauseTime: aggregation.MaxPauseTime,
+            Generations: aggregation.Generations,
+            Events: aggregation.Events,
+            HeapStats: heapStats.OrderBy(s => s.Timestamp).ToList(),
+            DroppedEvents: aggregation.DroppedEvents,
+            DroppedHeapStats: droppedHeapStats);
+    }
+}
+
+/// <summary>
+/// Keeps exact constant-size GC aggregates while retaining only the first configured number of raw
+/// events. EventPipe callbacks are single-threaded, so no synchronization is required.
+/// </summary>
+internal sealed class GcEventAggregation
+{
+    private readonly int _maxEvents;
+    private readonly List<GcEvent> _events;
+    private readonly int[] _generationCounts = new int[3];
+    private long _totalPauseTicks;
+    private long _maxPauseTicks;
+
+    public GcEventAggregation(int maxEvents)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxEvents, 1);
+        _maxEvents = maxEvents;
+        _events = new List<GcEvent>(Math.Min(maxEvents, 128));
+    }
+
+    public int TotalCollections { get; private set; }
+
+    public int DroppedEvents => TotalCollections - _events.Count;
+
+    public TimeSpan TotalPauseTime => TimeSpan.FromTicks(_totalPauseTicks);
+
+    public TimeSpan MaxPauseTime => TimeSpan.FromTicks(_maxPauseTicks);
+
+    public IReadOnlyList<GcEvent> Events => _events;
+
+    public IReadOnlyList<GenerationStats> Generations =>
+        Enumerable.Range(0, _generationCounts.Length)
+            .Where(generation => _generationCounts[generation] > 0)
+            .Select(generation => new GenerationStats(generation, _generationCounts[generation]))
+            .ToList();
+
+    public void Add(GcEvent gcEvent)
+    {
+        TotalCollections++;
+        _totalPauseTicks += gcEvent.PauseDuration.Ticks;
+        _maxPauseTicks = Math.Max(_maxPauseTicks, gcEvent.PauseDuration.Ticks);
+        if ((uint)gcEvent.Generation < (uint)_generationCounts.Length)
+        {
+            _generationCounts[gcEvent.Generation]++;
+        }
+
+        if (_events.Count < _maxEvents)
+        {
+            _events.Add(gcEvent);
+        }
     }
 }
