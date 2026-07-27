@@ -26,19 +26,20 @@ namespace DotnetDiagnostics.Mcp.Tools;
 [McpServerToolType]
 public sealed class GetBytesTool
 {
+    internal const string ToolName = "get_bytes";
     internal const string KindModule = "module";
     internal const string KindDump = "dump";
     internal const string KindTrace = "trace";
     internal const string KindList = "list";
     internal const string KindDelete = "delete";
 
-    internal const string DeleteArtifactScope = "delete-artifact";
+    internal const string DeleteArtifactScope = ToolInvocationScopeResolver.DeleteArtifactScope;
 
     internal static readonly IReadOnlyList<string> AllowedKinds = new[] { KindModule, KindDump, KindTrace, KindList, KindDelete };
 
     [RequireScope("module-bytes-read")]
     [McpServerTool(
-        Name = "get_bytes",
+        Name = ToolName,
         Title = "Fetch module/dump/trace bytes; list or delete artifacts",
         Destructive = true,
         ReadOnly = false,

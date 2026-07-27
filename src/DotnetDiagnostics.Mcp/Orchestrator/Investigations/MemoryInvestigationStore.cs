@@ -9,7 +9,7 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// via a single lock — handle counts are bounded by orchestrator concurrency in
 /// practice, so contention isn't a concern.
 /// </summary>
-internal sealed class MemoryInvestigationStore : IInvestigationStore
+internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestigationStoreActivation
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, InvestigationHandle> _byId = new(StringComparer.Ordinal);
@@ -69,6 +69,23 @@ internal sealed class MemoryInvestigationStore : IInvestigationStore
                     $"Investigation handle '{handle.HandleId}' is not registered.");
             }
             _byId[handle.HandleId] = handle;
+        }
+    }
+
+    public bool TryTransitionToActive(string handleId, out InvestigationHandle? active)
+    {
+        lock (_gate)
+        {
+            if (!_byId.TryGetValue(handleId, out var current) ||
+                current.State != InvestigationState.Attaching)
+            {
+                active = null;
+                return false;
+            }
+
+            active = current with { State = InvestigationState.Active };
+            _byId[handleId] = active;
+            return true;
         }
     }
 

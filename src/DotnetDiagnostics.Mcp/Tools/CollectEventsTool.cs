@@ -263,10 +263,12 @@ public sealed partial class CollectEventsTool
                 new DiagnosticError("InvalidArgument", $"Unhandled kind '{canonicalKind}'.", nameof(kind)));
         }
 
+        var requiredScope = ToolInvocationScopeResolver.GetCollectEventsKindScope(canonicalKind)
+            ?? ToolInvocationScopeResolver.EventPipeScope;
         if (!ToolDispatchGuards.RequireScope(
                 principal,
-                handler.RequiredScope,
-                () => $"kind='{canonicalKind}' requires the '{handler.RequiredScope}' scope. " +
+                requiredScope,
+                () => $"kind='{canonicalKind}' requires the '{requiredScope}' scope. " +
                       "collect_events preserves the per-kind authorization boundary of its legacy collectors.",
                 out DiagnosticResult<CollectEventsEnvelope>? scopeFailure,
                 errorKind: "InsufficientScope"))
@@ -410,7 +412,8 @@ public sealed partial class CollectEventsTool
         // captureKind-specific scope re-check (the dispatch gate only proved read-counters/eventpipe).
         if (principal is not null && GatedCaptureKinds.TryParse(captureKind, out var parsedKind))
         {
-            foreach (var scope in RequiredCaptureScopes(parsedKind.Value))
+            foreach (var scope in ToolInvocationScopeResolver.GetGatedCaptureScopes(
+                         GatedCaptureKinds.Token(parsedKind.Value)))
             {
                 if (!principal.HasScope(scope))
                 {
@@ -428,15 +431,6 @@ public sealed partial class CollectEventsTool
 
         return Project(result, "counters", (env, data) => env with { GatedCapture = data });
     }
-
-    private static string[] RequiredCaptureScopes(GatedCaptureKind kind) => kind switch
-    {
-        GatedCaptureKind.CpuSample => new[] { "eventpipe" },
-        GatedCaptureKind.Heap => new[] { "heap-read", "ptrace" },
-        GatedCaptureKind.ThreadSnapshot => new[] { "ptrace" },
-        GatedCaptureKind.Dump => new[] { "dump-write", "ptrace" },
-        _ => Array.Empty<string>(),
-    };
 
     private static IReadOnlyList<string>? ResolveInvestigationHandleIds(
         IReadOnlyList<string>? explicitHandleIds,
@@ -535,7 +529,7 @@ public sealed partial class CollectEventsTool
         var fanout = await DistributedTraceCorrelator.CorrelateAsync(
             store,
             proxy,
-            principal?.Name,
+            principal,
             ResolveInvestigationHandleIds(investigationHandleIds, requestContext, sessionBinder),
             traceId.Trim(),
             effectiveDuration,
@@ -654,7 +648,7 @@ public sealed partial class CollectEventsTool
         var fanout = await ReplicaCounterFanout.CompareAsync(
             store,
             proxy,
-            principal?.Name,
+            principal,
             ResolveInvestigationHandleIds(investigationHandleIds, requestContext, sessionBinder),
             effectiveDuration,
             intervalSeconds,

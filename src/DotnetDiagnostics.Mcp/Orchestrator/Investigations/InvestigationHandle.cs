@@ -28,9 +28,10 @@ public enum InvestigationState
 /// </summary>
 /// <remarks>
 /// <para>
-/// The bearer token is generated per-attach and embedded into the ephemeral
-/// container's environment. It is never returned to the external client — the proxy
-/// (P3b-2) injects it on the orchestrator side of the boundary. This is the
+/// The bearer token and independent scope-delegation key are generated per-attach and
+/// embedded into the ephemeral container's environment. Neither is returned to the
+/// external client — the proxy injects the bearer and signs each approved invocation.
+/// This is the
 /// "per-attach Pod-local bearer token" mitigation called out in
 /// docs/central-orchestrator-design.md §6.4.
 /// </para>
@@ -51,11 +52,14 @@ public sealed record InvestigationHandle(
     DateTimeOffset AttachedAt,
     DateTimeOffset ExpiresAt,
     string? FailureReason = null,
-    // Identity of the bearer principal that minted this handle. Authorization is
-    // bound to the authenticated bearer and its scopes, not to protocol session
-    // headers. Null preserves stdio / synthetic-root ergonomics for transports
-    // that do not project a bearer identity into the tool call.
-    // Hidden from the client-safe AttachSession projection so the LLM cannot
-    // enumerate other callers' handles.
+    // Display-only name of the bearer principal that minted this handle.
     [property: JsonIgnore] string? OwnerBearerName = null,
+    // Stable provider-namespaced identity used for authorization. A legacy handle
+    // with OwnerBearerName but no OwnerPrincipalKey fails owner checks closed.
+    [property: JsonIgnore] string? OwnerPrincipalKey = null,
+    // Independent replay-protected signing secret used when the proxy delegates a narrowed
+    // tool/scope subset to the Pod-local transport. Never exposed to the client.
+    [property: JsonIgnore] string? InternalScopeDelegationKey = null,
+    // Optional transport-neutral process selector resolved inside the attached Pod before
+    // fan-out collectors run.
     InvestigationProcessSelector? ProcessSelector = null);

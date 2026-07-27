@@ -6,6 +6,7 @@ using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Investigation;
 using DotnetDiagnostics.Core.Memory;
+using DotnetDiagnostics.Mcp.Security;
 
 namespace DotnetDiagnostics.Mcp.Tools;
 
@@ -14,11 +15,12 @@ internal static class DiagnosticToolBaselineComparison
     public static DiagnosticResult<object> CompareToBaseline(
         ISummaryComparer comparer,
         IDiagnosticHandleStore handles,
+        IPrincipalAccessor principalAccessor,
         [Description("Baseline summary JSON (from a prior export_investigation_summary). Optional when snapshotsJson is supplied.")] string? baselineSummaryJson = null,
         [Description("Current summary JSON (from export_investigation_summary on the new investigation). Optional when snapshotsJson is supplied.")] string? currentSummaryJson = null,
         [Description("Ordered ComparableSnapshot JSON bodies to compare as a journey. JSON bodies only; do not pass file paths.")] string[]? snapshotsJson = null,
         [Description("ComparableSnapshot journey only: maximum metric series / key rows returned in compact inline payloads and used to bound key-matrix construction. Must be >= 1. Defaults to 25.")] int topN = 25,
-        [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix when it is below the inline threshold; `compact` returns verdict/headline/counts/notes plus top-N metric and key deltas. Large full diffs always return compact inline data plus a journey://diff/{handle} Resource link. Defaults to `full`.")] string depth = "full",
+        [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix; local large results may use a journey://diff/{handle} Resource link, while proxied results stay inline because dynamic pod Resources are not forwarded. `compact` returns verdict/headline/counts/notes plus top-N deltas. Defaults to `full`.")] string depth = "full",
         [Description("ComparableSnapshot journey only: `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers.")] string? mode = null,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null)
@@ -30,7 +32,14 @@ internal static class DiagnosticToolBaselineComparison
 
         if (snapshotsJson is { Length: > 0 })
         {
-            return CompareSnapshotBodies(comparer, handles, snapshotsJson, topN, depth, journeyMode);
+            return CompareSnapshotBodies(
+                comparer,
+                handles,
+                principalAccessor,
+                snapshotsJson,
+                topN,
+                depth,
+                journeyMode);
         }
 
         if (string.IsNullOrWhiteSpace(baselineSummaryJson)) return InvalidArg<object>(nameof(baselineSummaryJson), "is required when snapshotsJson is omitted");
@@ -45,7 +54,14 @@ internal static class DiagnosticToolBaselineComparison
             new DiagnosticError("InvalidArgument", $"Argument '{parameterName}' {requirement}.", parameterName),
             new NextActionHint("inspect_process", "Re-issue with valid arguments. See tool schema for ranges and defaults."));
 
-    private static DiagnosticResult<object> CompareSnapshotBodies(ISummaryComparer comparer, IDiagnosticHandleStore handles, string[] snapshotsJson, int topN, string depth, JourneyMode mode)
+    private static DiagnosticResult<object> CompareSnapshotBodies(
+        ISummaryComparer comparer,
+        IDiagnosticHandleStore handles,
+        IPrincipalAccessor principalAccessor,
+        string[] snapshotsJson,
+        int topN,
+        string depth,
+        JourneyMode mode)
     {
         var schemas = new List<string>(snapshotsJson.Length);
         for (var i = 0; i < snapshotsJson.Length; i++)
@@ -85,7 +101,7 @@ internal static class DiagnosticToolBaselineComparison
         {
             return DiagnosticResult.Fail<object>(
                 "Mixed comparison schemas are not supported in one compare_to_baseline call.",
-                new DiagnosticError("MixedSchemas", $"schemas='{string.Join(", ", distinctSchemas)}'"),
+                new DiagnosticError("MixedSchemas", "The supplied documents use different comparison schemas.", "MixedSchemaSet"),
                 new NextActionHint("compare_to_baseline", "Compare either InvestigationSummary documents or ComparableSnapshot documents, not both."));
         }
 
@@ -98,14 +114,23 @@ internal static class DiagnosticToolBaselineComparison
                     new DiagnosticError("InvalidArgument", $"Received {snapshotsJson.Length} InvestigationSummary documents.", nameof(snapshotsJson)),
                     new NextActionHint("compare_to_baseline", "Pass exactly two InvestigationSummary JSON documents, or pass 2..N ComparableSnapshot documents.")),
             ComparableSnapshot.SchemaV1 => snapshotsJson.Length >= 2
-                ? CompareComparableSnapshots(handles, snapshotsJson, topN, journeyDepth, mode)
+                ? CompareComparableSnapshots(
+                    handles,
+                    snapshotsJson,
+                    topN,
+                    journeyDepth,
+                    mode,
+                    allowResourceLink: !string.Equals(
+                        principalAccessor.Current?.Name,
+                        ToolScopeDelegation.DelegatedPrincipalName,
+                        StringComparison.Ordinal))
                 : DiagnosticResult.Fail<object>(
                     "ComparableSnapshot comparison requires at least two JSON documents.",
                     new DiagnosticError("InvalidArgument", $"Received {snapshotsJson.Length} ComparableSnapshot document.", nameof(snapshotsJson)),
                     new NextActionHint("compare_to_baseline", "Pass 2..N ComparableSnapshot JSON documents for a journey comparison.")),
             _ => DiagnosticResult.Fail<object>(
                 "Unsupported comparison schema.",
-                new DiagnosticError("UnsupportedSchema", $"schema='{distinctSchemas[0]}'"),
+                new DiagnosticError("UnsupportedSchema", "The supplied comparison schema is unsupported.", "UnsupportedComparisonSchema"),
                 new NextActionHint("compare_to_baseline", "Re-export snapshots or summaries with the current server version.")),
         };
     }
@@ -131,7 +156,7 @@ internal static class DiagnosticToolBaselineComparison
         {
             return DiagnosticResult.Fail<object>(
                 "Could not parse one of the supplied summary JSON documents.",
-                new DiagnosticError("InvalidSummaryJson", ex.Message),
+                new DiagnosticError("InvalidSummaryJson", "A supplied summary JSON document is malformed or incompatible.", "SummaryDeserializationFailed"),
                 new NextActionHint("export_investigation_summary", "Re-export the baseline and current summaries and try again."));
         }
 
@@ -140,7 +165,7 @@ internal static class DiagnosticToolBaselineComparison
         {
             return DiagnosticResult.Fail<object>(
                 $"Unsupported schema. Expected '{InvestigationSummary.SchemaV1}'.",
-                new DiagnosticError("UnsupportedSchema", $"baseline='{baseline.Schema}' current='{current.Schema}'"),
+                new DiagnosticError("UnsupportedSchema", "One or both supplied summary schemas are unsupported.", "UnsupportedInvestigationSummarySchema"),
                 new NextActionHint("export_investigation_summary", "Re-export both summaries with the current server version."));
         }
 
@@ -185,7 +210,13 @@ internal static class DiagnosticToolBaselineComparison
         return "Optional: capture a fresh sample to confirm the improvement is stable.";
     }
 
-    private static DiagnosticResult<object> CompareComparableSnapshots(IDiagnosticHandleStore handles, string[] snapshotsJson, int topN, JourneyDiffDepth depth, JourneyMode mode)
+    private static DiagnosticResult<object> CompareComparableSnapshots(
+        IDiagnosticHandleStore handles,
+        string[] snapshotsJson,
+        int topN,
+        JourneyDiffDepth depth,
+        JourneyMode mode,
+        bool allowResourceLink)
     {
         var snapshots = new List<ComparableSnapshot>(snapshotsJson.Length);
         try
@@ -212,7 +243,7 @@ internal static class DiagnosticToolBaselineComparison
         {
             return DiagnosticResult.Fail<object>(
                 "Could not parse one of the supplied comparable snapshot JSON documents.",
-                new DiagnosticError("InvalidSnapshotJson", ex.Message),
+                new DiagnosticError("InvalidSnapshotJson", "A supplied comparable snapshot JSON document is malformed or incompatible.", "SnapshotDeserializationFailed"),
                 new NextActionHint("compare_to_baseline", "Re-export the comparable snapshots and try again."));
         }
 
@@ -233,7 +264,7 @@ internal static class DiagnosticToolBaselineComparison
             ? "No pairwise headline."
             : string.Create(
                 CultureInfo.InvariantCulture,
-                $"{headline.Relation}: {headline.Verdict} ({diff.Labels[headline.FromIndex]} → {diff.Labels[headline.ToIndex]}).");
+                $"{headline.Relation}: {headline.Verdict} (capture #{headline.FromIndex} → capture #{headline.ToIndex}).");
         var summaryLine = string.Create(
             CultureInfo.InvariantCulture,
             $"Verdict: {diff.Verdict}. {headlineText} Metrics: {diff.MetricSeries.Count}; rows: {diff.KeyMatrix.Count}.");
@@ -247,7 +278,13 @@ internal static class DiagnosticToolBaselineComparison
             summaryLine,
             evictWhenProcessExits: false,
             HandleOrigin.Imported,
-            new NextActionHint("compare_to_baseline", "Optional: compare another persisted snapshot journey with the same kind."));
+            allowResourceLink,
+            hints:
+            [
+                new NextActionHint(
+                    "compare_to_baseline",
+                    "Optional: compare another persisted snapshot journey with the same kind."),
+            ]);
     }
 
     private static bool TryValidateComparableSnapshotJson(
@@ -509,9 +546,9 @@ internal static class DiagnosticToolBaselineComparison
 
             return true;
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            error = ex.Message;
+            error = "JSON is malformed.";
             return false;
         }
     }

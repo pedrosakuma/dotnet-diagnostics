@@ -15,10 +15,12 @@ internal static class ToolScopeListToolsFilter
 
     public static McpRequestFilter<ListToolsRequestParams, ListToolsResult> Create(
         ToolScopeRegistry registry,
-        Func<IPrincipalAccessor?> principalAccessor)
+        Func<IPrincipalAccessor?> principalAccessor,
+        Func<bool>? delegationRequired = null)
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(principalAccessor);
+        delegationRequired ??= static () => false;
 
         return next => async (request, cancellationToken) =>
         {
@@ -37,7 +39,11 @@ internal static class ToolScopeListToolsFilter
                     continue;
                 }
 
-                annotatedTools.Add(CloneWithScopeMetadata(tool, requirement.Value, principal));
+                annotatedTools.Add(CloneWithScopeMetadata(
+                    tool,
+                    requirement.Value,
+                    principal,
+                    delegationRequired()));
             }
 
             result.Tools = annotatedTools;
@@ -48,7 +54,8 @@ internal static class ToolScopeListToolsFilter
     private static Tool CloneWithScopeMetadata(
         Tool tool,
         ToolScopeRegistry.Requirement requirement,
-        BearerPrincipal? principal)
+        BearerPrincipal? principal,
+        bool delegationRequired)
     {
         var meta = tool.Meta?.DeepClone() as JsonObject ?? new JsonObject();
         var dotnetDiagnostics = meta[DotnetDiagnosticsMetaKey] as JsonObject;
@@ -59,11 +66,22 @@ internal static class ToolScopeListToolsFilter
         }
 
         var decision = ToolScopeAuthorizationFilter.Authorize(requirement, principal);
+        var invocation = ToolInvocationScopeResolver.ResolveCatalog(tool.Name);
+        var requiredExplicitScopes = invocation.ExplicitAdditionalScopes
+            .AddRange(invocation.ExplicitModifierScopes)
+            .Distinct()
+            .ToArray();
+        var explicitScopesAllowed = principal is not null &&
+            requiredExplicitScopes.All(principal.HasExplicitScope);
         dotnetDiagnostics[AuthMetaKey] = new JsonObject
         {
             ["requiredScopes"] = new JsonArray(requirement.Scopes.Select(s => (JsonNode?)s).ToArray()),
+            ["requiredExplicitScopes"] = new JsonArray(
+                requiredExplicitScopes.Select(scope => (JsonNode?)scope).ToArray()),
             ["semantics"] = requirement.IsAny ? "any" : "all",
-            ["authorized"] = decision.IsAllowed,
+            ["hasConditionalArgumentScopes"] = invocation.HasConditionalArgumentScopes,
+            ["delegationRequired"] = delegationRequired,
+            ["authorized"] = !delegationRequired && decision.IsAllowed && explicitScopesAllowed,
         };
 
         return new Tool

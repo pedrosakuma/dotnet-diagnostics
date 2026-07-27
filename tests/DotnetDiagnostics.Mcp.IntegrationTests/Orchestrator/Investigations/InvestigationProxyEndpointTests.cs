@@ -5,8 +5,10 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Mcp.Hosting;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
@@ -19,6 +21,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Protocol;
 using Xunit;
 
 namespace DotnetDiagnostics.Mcp.IntegrationTests.Orchestrator.Investigations;
@@ -59,6 +62,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                 services.AddSingleton(opts);
                 services.AddSingleton<IInvestigationStore>(_store);
                 services.AddSingleton<IPortForwardManager>(_manager);
+                services.AddSingleton(ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable));
                 services.AddLogging();
                 services.AddRouting();
                 // The proxy endpoint chains .RequireRateLimiting("mcp") so the test
@@ -112,6 +116,81 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _store.Add(NewHandle("inv_term_" + state, state));
         var response = await _client.PostAsync($"/proxy/inv_term_{state}/mcp", new StringContent("{}", Encoding.UTF8, "application/json"));
         response.StatusCode.Should().Be(HttpStatusCode.Gone);
+    }
+
+    [Fact]
+    public async Task Proxy_ReturnsGone_WhenHandleClosesDuringTransportLookup()
+    {
+        var handle = NewHandle("inv_closing_race", InvestigationState.Active);
+        _store.Add(handle);
+        _manager.OnGet = _ =>
+            _store.Update(handle with { State = InvestigationState.Closed });
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_closing_race/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Gone);
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_ReturnsGone_WhenClosedTransportLookupThrows()
+    {
+        var handle = NewHandle("inv_closed_lookup", InvestigationState.Active);
+        _store.Add(handle);
+        _manager.OnGet = _ =>
+        {
+            _store.Update(handle with { State = InvestigationState.Closed });
+            throw new OrchestratorException(
+                OrchestratorErrorKinds.PortForwardFailed,
+                "closed transport");
+        };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_closed_lookup/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Gone);
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_ReturnsGone_WhenDetachDisposesTransportDuringSend()
+    {
+        var handle = NewHandle("inv_send_close_race", InvestigationState.Active);
+        _store.Add(handle);
+        _upstream.NextResponse = _ =>
+        {
+            _store.Update(handle with { State = InvestigationState.Closed });
+            throw new ObjectDisposedException("port-forward");
+        };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_send_close_race/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Gone);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("became inactive");
+    }
+
+    [Fact]
+    public async Task Proxy_ReturnsGone_WhenDetachInterruptsConnectionEstablishment()
+    {
+        var handle = NewHandle("inv_connect_close_race", InvestigationState.Active);
+        _store.Add(handle);
+        _upstream.NextResponse = _ =>
+        {
+            _store.Update(handle with { State = InvestigationState.Closed });
+            throw new HttpRequestException("port-forward closed");
+        };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_connect_close_race/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Gone);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("became inactive");
     }
 
     [Fact]
@@ -291,7 +370,8 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     private async Task InitializeWithPrincipalAsync(
         BearerPrincipal? principal,
         bool allowCrossSessionAdmin,
-        CapturingLoggerProvider? capture = null)
+        CapturingLoggerProvider? capture = null,
+        SecurityOptions? securityOptions = null)
     {
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
@@ -310,8 +390,13 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                     AllowCrossSessionAdmin = allowCrossSessionAdmin,
                 };
                 services.AddSingleton(opts);
+                securityOptions ??= new SecurityOptions();
+                services.AddSingleton(new SymbolServerAllowlist(securityOptions));
+                services.AddSingleton(new EventSourceAllowlist(securityOptions));
+                services.AddSingleton(new SensitiveValueGate(securityOptions));
                 services.AddSingleton<IInvestigationStore>(_store);
                 services.AddSingleton<IPortForwardManager>(_manager);
+                services.AddSingleton(ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable));
                 services.AddLogging(b =>
                 {
                     if (capture is not null) b.AddProvider(capture);
@@ -383,6 +468,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
                 services.AddSingleton(opts);
                 services.AddSingleton<IInvestigationStore>(_store);
                 services.AddSingleton<IPortForwardManager>(_manager);
+                services.AddSingleton(ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable));
                 services.AddLogging();
                 services.AddRouting();
                 services.AddRateLimiter(o =>
@@ -438,6 +524,122 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Proxy_RejectsCrossIssuerCaller_WithSameDisplayNameAndSubject()
+    {
+        const string displayName = "shared-name";
+        var ownerKey = PrincipalOwnershipKey.ForJwt(
+            "oidc",
+            "https://issuer-a.example.test",
+            "dotnet-diagnostics",
+            "client",
+            "subject");
+        var caller = new BearerPrincipal(
+            displayName,
+            System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach"),
+            PrincipalOwnershipKey.ForJwt(
+                "oidc",
+                "https://issuer-b.example.test",
+                "dotnet-diagnostics",
+                "client",
+                "subject"));
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(caller, allowCrossSessionAdmin: false);
+        _store.Add(NewHandleOwned("inv_cross_issuer", displayName, "pod-token", ownerKey));
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_cross_issuer/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsJwtCaller_WhenOpaqueOwnerHasSameDisplayName()
+    {
+        const string displayName = "shared-name";
+        var caller = new BearerPrincipal(
+            displayName,
+            System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach"),
+            PrincipalOwnershipKey.ForJwt(
+                "oidc",
+                "https://issuer.example.test",
+                "dotnet-diagnostics",
+                "client",
+                "subject"));
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(caller, allowCrossSessionAdmin: false);
+        _store.Add(NewHandleOwned(
+            "inv_opaque_jwt",
+            displayName,
+            "pod-token",
+            PrincipalOwnershipKey.ForOpaqueEntry(displayName)));
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_opaque_jwt/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_AllowsSameStableJwtIdentity()
+    {
+        const string displayName = "renamable-display";
+        var ownershipKey = PrincipalOwnershipKey.ForJwt(
+            "oidc",
+            "https://issuer.example.test/",
+            "dotnet-diagnostics",
+            "client",
+            "subject");
+        var caller = new BearerPrincipal(
+            "different-current-display",
+            System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach"),
+            PrincipalOwnershipKey.ForJwt(
+                "oidc",
+                "https://issuer.example.test",
+                "dotnet-diagnostics",
+                "client",
+                "subject"));
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(caller, allowCrossSessionAdmin: false);
+        _store.Add(NewHandleOwned("inv_same_identity", displayName, "pod-token", ownershipKey));
+        _upstream.NextResponse = _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_same_identity/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        _upstream.LastRequest.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_LegacyDisplayOwner_DoesNotMatchByName()
+    {
+        const string displayName = "legacy-owner";
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                displayName,
+                System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach")),
+            allowCrossSessionAdmin: false);
+        _store.Add(NewHandle("inv_legacy_owner", InvestigationState.Active, "pod-token") with
+        {
+            OwnerBearerName = displayName,
+        });
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_legacy_owner/mcp",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Proxy_RejectsDisallowedPath_WithStructured404()
     {
         // H7: any path under /proxy/{handleId}/ that isn't /mcp[...] is rejected
@@ -475,6 +677,8 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     [Theory]
     [InlineData("/proxy/inv_dot/mcp/../health")]
     [InlineData("/proxy/inv_dot/mcp/%2e%2e/health")]
+    [InlineData("/proxy/inv_dot/mcp/%2e%2e%5cmetrics")]
+    [InlineData("/proxy/inv_dot/mcp/%255c..%255cmetrics")]
     public async Task Proxy_RejectsDotSegmentPath_WithStructured404(string url)
     {
         // B3 review (issue #164 High 3): dot-segments must be rejected before
@@ -527,6 +731,39 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.LastRequest.Should().BeNull();
     }
 
+    [Theory]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\"}}}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\",\"kind\":\"exceptions\"}}}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\"},\"task\":1}}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\",\"params\":{\"uri\":\"diag://guides/investigation\",\"URI\":\"heap://snapshot/heap-handle\"}}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"Method\":\"resources/read\",\"Params\":{\"Uri\":\"heap://snapshot/heap-handle\"}}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"Arguments\":{\"kind\":\"counters\"}}}")]
+    [InlineData("[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\"}}},{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":1}]")]
+    [InlineData("[]")]
+    [InlineData("[1,{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\"}}}]")]
+    [InlineData("not-json")]
+    public async Task Proxy_RejectsMalformedOrDuplicateJson_WithoutForwarding(string payload)
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "caller",
+                System.Collections.Immutable.ImmutableHashSet.Create(
+                    "orchestrator-attach",
+                    "read-counters",
+                    "read-events")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_jrpc_duplicate", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_jrpc_duplicate/mcp",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ProxyToolRequestMalformed");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
     [Fact]
     public async Task Proxy_AllowsJsonRpcInitialize_Passthrough()
     {
@@ -542,18 +779,630 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.LastRequest.Should().NotBeNull();
     }
 
+    [Theory]
+    [InlineData("heap://snapshot/heap-handle")]
+    [InlineData("thread://snapshot/thread-handle")]
+    [InlineData("trace://session/trace-handle")]
+    [InlineData("journey://diff/diff-handle")]
+    [InlineData("signals://cpu-sample/cpu-handle")]
+    public async Task Proxy_RejectsPodLocalDiagnosticResourceRead(string resourceUri)
+    {
+        _store.Add(NewHandle("inv_resource_blocked", InvestigationState.Active, "pod-token"));
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\",\"params\":{\"uri\":" +
+            JsonSerializer.Serialize(resourceUri) + "}}";
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_resource_blocked/mcp",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ProxyResourceNotAllowed");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsPodLocalDiagnosticResourceRead_InBatch()
+    {
+        _store.Add(NewHandle("inv_resource_batch", InvestigationState.Active, "pod-token"));
+        var payload =
+            "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}," +
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"resources/read\"," +
+            "\"params\":{\"uri\":\"heap://snapshot/heap-handle\"}}]";
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_resource_batch/mcp",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ProxyResourceNotAllowed");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsUtf16DiagnosticResourceRead_WithoutForwarding()
+    {
+        _store.Add(NewHandle("inv_resource_utf16", InvestigationState.Active, "pod-token"));
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\"," +
+            "\"params\":{\"uri\":\"heap://snapshot/heap-handle\"}}";
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_resource_utf16/mcp",
+            new StringContent(payload, Encoding.Unicode, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ProxyJsonCharsetUnsupported");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsMalformedUtf16ContentType_WithoutForwarding()
+    {
+        _store.Add(NewHandle("inv_resource_utf16_malformed", InvestigationState.Active, "pod-token"));
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\"," +
+            "\"params\":{\"uri\":\"heap://snapshot/heap-handle\"}}";
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/proxy/inv_resource_utf16_malformed/mcp")
+        {
+            Content = new ByteArrayContent(Encoding.Unicode.GetBytes(payload)),
+        };
+        request.Content.Headers.TryAddWithoutValidation(
+            "Content-Type",
+            "application/json;charset=utf-16;");
+
+        var response = await _client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ProxyJsonCharsetUnsupported");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsDuplicateCharsetParameters_WithoutForwarding()
+    {
+        _store.Add(NewHandle("inv_resource_duplicate_charset", InvestigationState.Active, "pod-token"));
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\"," +
+            "\"params\":{\"uri\":\"heap://snapshot/heap-handle\"}}";
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/proxy/inv_resource_duplicate_charset/mcp")
+        {
+            Content = new ByteArrayContent(Encoding.Unicode.GetBytes(payload)),
+        };
+        request.Content.Headers.TryAddWithoutValidation(
+            "Content-Type",
+            "application/json;charset=utf-8;charset=utf-16");
+
+        var response = await _client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ProxyJsonCharsetUnsupported");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_AllowsStaticInvestigationGuideResourceRead()
+    {
+        _store.Add(NewHandle("inv_resource_guide", InvestigationState.Active, "pod-token"));
+        _upstream.NextResponse = _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("guide") };
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\"," +
+            "\"params\":{\"uri\":\"diag://guides/investigation\"}}";
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_resource_guide/mcp",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        _upstream.LastRequest.Should().NotBeNull();
+    }
+
     [Fact]
     public async Task Proxy_AllowsJsonRpcKnownTool_Passthrough()
     {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "caller",
+                System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach", "read-counters")),
+            allowCrossSessionAdmin: false);
+
         _store.Add(NewHandle("inv_jrpc_ok", InvestigationState.Active, "pod-token"));
         _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
 
-        var allowed = InvestigationProxyToolAllowlist.AllowedToolNames.First();
-        var payload = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"" + allowed + "\",\"arguments\":{}}}";
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{" +
+            "\"name\":\"collect_events\",\"arguments\":{\"kind\":\"counters\",\"" +
+            ToolScopeDelegation.ArgumentName + "\":\"client-forged\"}," +
+            "\"task\":{\"ttl\":60000}}}";
         var response = await _client.PostAsync("/proxy/inv_jrpc_ok/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         _upstream.LastRequest.Should().NotBeNull();
+        _upstream.LastRequestBody.Should().Contain("\"task\"");
+        _upstream.LastRequestBody.Should().Contain(ToolScopeDelegation.ArgumentName);
+        _upstream.LastRequestBody.Should().NotContain("client-forged");
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsDumpTool_BeforeHandleLookup_EvenForTaskRequest()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "attach-ptrace",
+                System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach", "ptrace")),
+            allowCrossSessionAdmin: false);
+
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"collect_process_dump\",\"arguments\":{},\"task\":{\"ttl\":60000}}}";
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_dump_scope/mcp",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("dump-write");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsPtraceTool_WhenCallerOnlyHasOrchestratorAttach()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "attach-only",
+                System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_ptrace_scope", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_ptrace_scope/mcp",
+            new StringContent(ToolCallPayload("collect_thread_snapshot"), Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("ptrace");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_QuerySnapshotDenial_PreservesPrimaryAlternatives()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "attach-only",
+                System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_query_contract", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_query_contract/mcp",
+            new StringContent(
+                ToolCallPayload("query_snapshot", "{\"handle\":\"opaque\"}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var problem = document.RootElement;
+        problem.GetProperty("kind").GetString().Should().Be("ProxyToolScopeDenied");
+        problem.GetProperty("semantics").GetString().Should().Be("any");
+        problem.GetProperty("any_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal(
+                "read-counters",
+                "eventpipe",
+                "heap-read",
+                "ptrace",
+                "investigation-export");
+        problem.GetProperty("all_of_scopes").EnumerateArray().Should().BeEmpty();
+        problem.GetProperty("any_of_satisfied").GetBoolean().Should().BeFalse();
+        problem.GetProperty("detail").GetString().Should().Contain("requires any of scopes");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_AnyAndAllDenial_IdentifiesMissingMandatoryScope()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "counters-only",
+                System.Collections.Immutable.ImmutableHashSet.Create(
+                    "orchestrator-attach",
+                    "read-counters")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_mixed_contract", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_mixed_contract/mcp",
+            new StringContent(
+                ToolCallPayload("inspect_process", "{\"view\":\"requests-now\"}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var problem = document.RootElement;
+        problem.GetProperty("status").GetInt32().Should().Be(403);
+        problem.GetProperty("kind").GetString().Should().Be("ProxyToolScopeDenied");
+        problem.GetProperty("semantics").GetString().Should().Be("any+all");
+        problem.GetProperty("any_of_satisfied").GetBoolean().Should().BeTrue();
+        problem.GetProperty("missing_all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("ptrace");
+        problem.GetProperty("detail").GetString().Should().Contain("mandatory scope 'ptrace'");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsExport_WhenInvestigationScopeIsMissing()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "cpu-only",
+                System.Collections.Immutable.ImmutableHashSet.Create(
+                    "orchestrator-attach",
+                    "eventpipe")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_export_denied", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_export_denied/mcp",
+            new StringContent(
+                ToolCallPayload(
+                    "export_investigation_summary",
+                    "{\"handle\":\"opaque-cpu-handle\"}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("investigation-export");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("read-counters")]
+    [InlineData("eventpipe")]
+    [InlineData("ptrace")]
+    public async Task Proxy_DelegatesCallerEvidenceScope_ForOpaqueExportHandle(
+        string evidenceScope)
+    {
+        await DisposeAsync();
+        var principal = new BearerPrincipal(
+            "export-caller",
+            System.Collections.Immutable.ImmutableHashSet.Create(
+                "orchestrator-attach",
+                "investigation-export",
+                evidenceScope));
+        await InitializeWithPrincipalAsync(principal, allowCrossSessionAdmin: false);
+        var handle = NewHandle("inv_export_allowed", InvestigationState.Active, "pod-token");
+        _store.Add(handle);
+        _upstream.NextResponse = _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_export_allowed/mcp",
+            new StringContent(
+                ToolCallPayload(
+                    "export_investigation_summary",
+                    "{\"handle\":\"opaque-evidence-handle\"}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(_upstream.LastRequestBody!);
+        var delegatedRequest = document.RootElement
+            .GetProperty("params")
+            .Deserialize<CallToolRequestParams>()!;
+        ToolScopeDelegation.TryConsume(
+            delegatedRequest,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            handle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo(
+            "investigation-export",
+            evidenceScope);
+    }
+
+    [Fact]
+    public async Task Proxy_DoesNotSynthesizeMissingExportEvidenceScope()
+    {
+        await DisposeAsync();
+        var principal = new BearerPrincipal(
+            "limited-export-caller",
+            System.Collections.Immutable.ImmutableHashSet.Create(
+                "orchestrator-attach",
+                "investigation-export"));
+        await InitializeWithPrincipalAsync(principal, allowCrossSessionAdmin: false);
+        var handle = NewHandle("inv_export_limited", InvestigationState.Active, "pod-token");
+        _store.Add(handle);
+        _upstream.NextResponse = _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_export_limited/mcp",
+            new StringContent(
+                ToolCallPayload(
+                    "export_investigation_summary",
+                    "{\"handle\":\"opaque-evidence-handle\"}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(_upstream.LastRequestBody!);
+        var delegatedRequest = document.RootElement
+            .GetProperty("params")
+            .Deserialize<CallToolRequestParams>()!;
+        ToolScopeDelegation.TryConsume(
+            delegatedRequest,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            handle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo("investigation-export");
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsModifierGatedTool_WhenLiteralModifierScopeIsMissing()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "eventpipe-only",
+                System.Collections.Immutable.ImmutableHashSet.Create("orchestrator-attach", "eventpipe")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_modifier_scope", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_modifier_scope/mcp",
+            new StringContent(
+                ToolCallPayload("collect_sample", "{\"kind\":\"method-params\"}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("sensitive-parameter-read");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("RETENTION-PATHS")]
+    [InlineData("GROWTH")]
+    public async Task Proxy_RejectsMixedCaseSensitiveHeapView_WithoutSensitiveHeapScope(string view)
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "heap-only",
+                System.Collections.Immutable.ImmutableHashSet.Create(
+                    "orchestrator-attach",
+                    "heap-read")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_retention_scope", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_retention_scope/mcp",
+            new StringContent(
+                ToolCallPayload(
+                    "query_snapshot",
+                    $"{{\"handle\":\"heap-handle\",\"view\":\"{view}\"}}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("sensitive-heap-read");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("collect_sample", "{\"kind\":\"method-params\"}", "eventpipe", "sensitive-parameter-read")]
+    [InlineData("get_bytes", "{\"kind\":\"delete\",\"artifactPath\":\"artifact\"}", "module-bytes-read", "delete-artifact")]
+    [InlineData("query_snapshot", "{\"handle\":\"opaque\",\"view\":\"summary\"}", "eventpipe", "sensitive-parameter-read")]
+    [InlineData("query_snapshot", "{\"handle\":\"opaque\",\"view\":\"RETENTION-PATHS\"}", "heap-read", "sensitive-heap-read")]
+    [InlineData("query_snapshot", "{\"handle\":\"opaque\",\"view\":\"GROWTH\"}", "heap-read", "sensitive-heap-read")]
+    public async Task Proxy_Delegates_Exact_Modifier_Scopes(
+        string toolName,
+        string argumentsJson,
+        string primaryScope,
+        string modifierScope)
+    {
+        await DisposeAsync();
+        var principal = new BearerPrincipal(
+            "modifier-caller",
+            System.Collections.Immutable.ImmutableHashSet.Create(
+                "orchestrator-attach",
+                primaryScope,
+                modifierScope));
+        await InitializeWithPrincipalAsync(principal, allowCrossSessionAdmin: false);
+        var handle = NewHandle("inv_modifier_allowed", InvestigationState.Active, "pod-token");
+        _store.Add(handle);
+        _upstream.NextResponse = _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_modifier_allowed/mcp",
+            new StringContent(
+                ToolCallPayload(toolName, argumentsJson),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(_upstream.LastRequestBody!);
+        var delegatedRequest = document.RootElement
+            .GetProperty("params")
+            .Deserialize<CallToolRequestParams>()!;
+        ToolScopeDelegation.TryConsume(
+            delegatedRequest,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            handle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo(primaryScope, modifierScope);
+    }
+
+    [Fact]
+    public async Task Proxy_Delegates_OpaqueEventPipeQuery_WithoutUnrelatedPrimaryScopes()
+    {
+        await DisposeAsync();
+        var principal = new BearerPrincipal(
+            "eventpipe-query-caller",
+            System.Collections.Immutable.ImmutableHashSet.Create(
+                "orchestrator-attach",
+                "eventpipe"));
+        await InitializeWithPrincipalAsync(principal, allowCrossSessionAdmin: false);
+        var handle = NewHandle("inv_eventpipe_query", InvestigationState.Active, "pod-token");
+        _store.Add(handle);
+        _upstream.NextResponse = _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_eventpipe_query/mcp",
+            new StringContent(
+                ToolCallPayload(
+                    "query_snapshot",
+                    "{\"handle\":\"opaque\",\"view\":\"summary\"}"),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(_upstream.LastRequestBody!);
+        var delegatedRequest = document.RootElement
+            .GetProperty("params")
+            .Deserialize<CallToolRequestParams>()!;
+        ToolScopeDelegation.TryConsume(
+            delegatedRequest,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            handle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo("eventpipe");
+    }
+
+    [Theory]
+    [InlineData(
+        "collect_sample",
+        "{\"kind\":\"cpu\",\"symbolPath\":\"srv*/symbols*https://symbols.example.test\"}")]
+    [InlineData(
+        "collect_events",
+        "{\"kind\":\"event_source\",\"providerName\":\"Custom.Provider\",\"unsafeProvider\":true}")]
+    public async Task Proxy_Honors_Configured_Policy_Alternatives(
+        string toolName,
+        string argumentsJson)
+    {
+        await DisposeAsync();
+        var security = new SecurityOptions
+        {
+            SymbolServerAllowlist = ["symbols.example.test"],
+            EventSourceAllowlist = ["Custom.Provider"],
+        };
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "policy-caller",
+                System.Collections.Immutable.ImmutableHashSet.Create(
+                    "orchestrator-attach",
+                    "eventpipe")),
+            allowCrossSessionAdmin: false,
+            securityOptions: security);
+        _store.Add(NewHandle("inv_policy_allowed", InvestigationState.Active, "pod-token"));
+        _upstream.NextResponse = _ =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_policy_allowed/mcp",
+            new StringContent(
+                ToolCallPayload(toolName, argumentsJson),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        _upstream.LastRequestBody.Should().Contain(ToolScopeDelegation.ArgumentName);
+    }
+
+    [Fact]
+    public async Task Proxy_RejectsTaskAugmentedGatedDumpExploit()
+    {
+        await DisposeAsync();
+        await InitializeWithPrincipalAsync(
+            new BearerPrincipal(
+                "counters-attach",
+                System.Collections.Immutable.ImmutableHashSet.Create(
+                    "orchestrator-attach",
+                    "read-counters")),
+            allowCrossSessionAdmin: false);
+
+        _store.Add(NewHandle("inv_gated_dump", InvestigationState.Active, "pod-token"));
+        var payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{" +
+            "\"name\":\"collect_events\"," +
+            "\"arguments\":{\"kind\":\"counters\",\"triggerWhen\":\"always-trigger\"," +
+            "\"captureKind\":\"Dump\",\"confirmDump\":true}," +
+            "\"task\":{\"ttl\":60000}}}";
+
+        var response = await _client.PostAsync(
+            "/proxy/inv_gated_dump/mcp",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("dump-write");
+        _upstream.LastRequest.Should().BeNull();
+    }
+
+    [Theory]
+    [MemberData(
+        nameof(ToolScopeAttributesTests.ArgumentAwareScopeCases),
+        MemberType = typeof(ToolScopeAttributesTests))]
+    public async Task Proxy_ArgumentAwareDenial_MatchesLocalAuthorization(
+        string toolName,
+        IDictionary<string, JsonElement> arguments,
+        string[] heldScopes,
+        string missingScope,
+        bool _)
+    {
+        await DisposeAsync();
+        var principal = new BearerPrincipal(
+            "parity-caller",
+            System.Collections.Immutable.ImmutableHashSet.Create(
+                heldScopes.Append("orchestrator-attach").ToArray()));
+        await InitializeWithPrincipalAsync(principal, allowCrossSessionAdmin: false);
+
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var localDecision = registry.Authorize(toolName, arguments, principal);
+        var proxyDecision = registry.Authorize(
+            toolName,
+            arguments,
+            principal,
+            proxyInvocation: true);
+        localDecision.IsAllowed.Should().BeFalse();
+        localDecision.MissingScope.Should().Be(missingScope);
+        proxyDecision.IsAllowed.Should().BeFalse();
+
+        _store.Add(NewHandle("inv_scope_parity", InvestigationState.Active, "pod-token"));
+        var response = await _client.PostAsync(
+            "/proxy/inv_scope_parity/mcp",
+            new StringContent(
+                ToolCallPayload(toolName, JsonSerializer.Serialize(arguments)),
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync()).Should().Contain(proxyDecision.MissingScope);
+        _upstream.LastRequest.Should().BeNull();
     }
 
     [Fact]
@@ -605,7 +1454,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
 
         var payload = new string('x', 1025);
-        var response = await _client.PostAsync("/proxy/inv_exact_limit/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
+        var response = await _client.PostAsync("/proxy/inv_exact_limit/mcp", new StringContent(payload, Encoding.UTF8, "application/octet-stream"));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         (await response.Content.ReadAsStringAsync()).Should().Be("ok");
@@ -622,7 +1471,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         _upstream.NextResponse = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
 
         var payload = new string('x', 1024);
-        var response = await _client.PostAsync("/proxy/inv_exact_aligned_limit/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
+        var response = await _client.PostAsync("/proxy/inv_exact_aligned_limit/mcp", new StringContent(payload, Encoding.UTF8, "application/octet-stream"));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         (await response.Content.ReadAsStringAsync()).Should().Be("ok");
@@ -638,9 +1487,18 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         PodLocalBearerToken: podToken,
         State: state,
         AttachedAt: DateTimeOffset.UtcNow,
-        ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5));
+        ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5),
+        InternalScopeDelegationKey: "test-delegation-key");
 
-    private static InvestigationHandle NewHandleOwned(string id, string ownerBearerName, string podToken) => new(
+    private static string ToolCallPayload(string toolName, string arguments = "{}")
+        => "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"" +
+           toolName + "\",\"arguments\":" + arguments + "}}";
+
+    private static InvestigationHandle NewHandleOwned(
+        string id,
+        string ownerBearerName,
+        string podToken,
+        string? ownerPrincipalKey = null) => new(
         HandleId: id,
         Namespace: "ns",
         PodName: "pod",
@@ -650,15 +1508,30 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5),
-        OwnerBearerName: ownerBearerName);
+        OwnerBearerName: ownerBearerName,
+        OwnerPrincipalKey: ownerPrincipalKey ?? PrincipalOwnershipKey.ForSynthetic(ownerBearerName),
+        InternalScopeDelegationKey: "test-delegation-key");
 
-    private sealed class StubInvestigationStore : IInvestigationStore
+    private sealed class StubInvestigationStore : IInvestigationStore, IInvestigationStoreActivation
     {
         private readonly ConcurrentDictionary<string, InvestigationHandle> _byId = new(StringComparer.Ordinal);
         public void Add(InvestigationHandle handle) => _byId[handle.HandleId] = handle;
         public bool TryReserveTarget(InvestigationHandle newHandle, bool allowReuse, out InvestigationHandle? existing)
         { existing = null; _byId[newHandle.HandleId] = newHandle; return true; }
         public void Update(InvestigationHandle handle) => _byId[handle.HandleId] = handle;
+        public bool TryTransitionToActive(string handleId, out InvestigationHandle? active)
+        {
+            if (!_byId.TryGetValue(handleId, out var current) ||
+                current.State != InvestigationState.Attaching)
+            {
+                active = null;
+                return false;
+            }
+
+            active = current with { State = InvestigationState.Active };
+            _byId[handleId] = active;
+            return true;
+        }
         public InvestigationHandle? GetById(string id) => _byId.TryGetValue(id, out var h) ? h : null;
         public InvestigationTerminalTransition TryTransitionToTerminal(string handleId, InvestigationState targetState, string? failureReason, out InvestigationState? previousState)
         {
@@ -676,11 +1549,19 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
     private sealed class StubPortForwardManager : IPortForwardManager
     {
         private readonly HttpClient _client;
+        public Action<InvestigationHandle>? OnGet { get; set; }
+
         public StubPortForwardManager(CapturingUpstream upstream)
         {
             _client = new HttpClient(upstream) { BaseAddress = new Uri("http://pod-local") };
         }
-        public Task<HttpClient> GetOrCreateClientAsync(InvestigationHandle handle, CancellationToken ct) => Task.FromResult(_client);
+
+        public Task<HttpClient> GetOrCreateClientAsync(InvestigationHandle handle, CancellationToken ct)
+        {
+            OnGet?.Invoke(handle);
+            return Task.FromResult(_client);
+        }
+
         public Task CloseAsync(string handleId) => Task.CompletedTask;
     }
 

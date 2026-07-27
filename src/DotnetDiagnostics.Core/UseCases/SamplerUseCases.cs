@@ -98,13 +98,14 @@ public static class SamplerUseCases
             return WithContext(AttachGuard.ClassifyAttachFailure<CpuSample>("collect_sample", pid, ex), ctx);
         }
 
-        var handle = handles.Register(
+        var handle = handles.RegisterWithMetadata(
             pid,
             "cpu-sample",
             result.Artifact,
             SampleHandleTtl,
             evictWhenProcessExits: false,
-            origin: HandleOrigin.Live);
+            origin: HandleOrigin.Live,
+            producingTool: "collect_sample");
         var signals = CpuSampleSignals.Detect(result.Summary, handle.Id);
 
         var hints = new List<NextActionHint>
@@ -113,7 +114,7 @@ public static class SamplerUseCases
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "top-methods", ["rankBy"] = "exclusive" })
             { Priority = NextActionHintPriority.High },
             new("query_snapshot", "Walk the merged caller→callee tree built from the same samples.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes })
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
             { Priority = NextActionHintPriority.High },
             new("collect_events", "Confirm hot path isn't driven by exception-heavy control flow.",
                 new Dictionary<string, object?>
@@ -202,7 +203,7 @@ public static class SamplerUseCases
             handle.Id,
             handle.ExpiresAt,
             new NextActionHint("query_snapshot", "Walk the merged allocation call-site tree to find which code paths are allocating the most.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes })
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
             { Priority = NextActionHintPriority.High },
             new NextActionHint("collect_sample", "Cross-reference: identify hot CPU paths that correlate with the top allocating types.",
                 new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
@@ -401,7 +402,7 @@ public static class SamplerUseCases
             handle.Id,
             handle.ExpiresAt,
             new NextActionHint("query_snapshot", "Walk the native allocation call tree to find which code paths allocate the most.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes }),
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = 8, ["maxNodes"] = 200 }),
             new NextActionHint("inspect_process", "Correlate with the memory trend (RSS / anonymous pages) to confirm native growth.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["view"] = "memory_trend" }));
         return WithContext(ok, resolved.Context);

@@ -62,6 +62,15 @@ public interface IInvestigationStore
 }
 
 /// <summary>
+/// Optional atomic activation capability. Kept separate so existing
+/// <see cref="IInvestigationStore"/> implementations remain binary-compatible.
+/// </summary>
+public interface IInvestigationStoreActivation
+{
+    bool TryTransitionToActive(string handleId, out InvestigationHandle? active);
+}
+
+/// <summary>
 /// Result of <see cref="IInvestigationStore.TryTransitionToTerminal"/>.
 /// </summary>
 public enum InvestigationTerminalTransition

@@ -1,4 +1,7 @@
 using System.Collections.Immutable;
+using System.Text.Json;
+using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Security;
 using FluentAssertions;
 using ModelContextProtocol.Server;
@@ -93,6 +96,7 @@ public sealed class ToolScopeAttributesTests
             typeof(DotnetDiagnostics.Mcp.Tools.InspectProcessTool),
             typeof(DotnetDiagnostics.Mcp.Tools.CollectEventsTool),
             typeof(DotnetDiagnostics.Mcp.Tools.CollectSampleTool),
+            typeof(DotnetDiagnostics.Mcp.Tools.CollectBatchTool),
             typeof(DotnetDiagnostics.Mcp.Tools.QuerySnapshotTool),
             typeof(DotnetDiagnostics.Mcp.Tools.InspectHeapTool),
             typeof(DotnetDiagnostics.Mcp.Tools.GetBytesTool),
@@ -112,6 +116,305 @@ public sealed class ToolScopeAttributesTests
         registry.TryGet("list_orchestrator")!.Value.Any.Should().Equal("orchestrator-list", "orchestrator-attach");
         registry.TryGet("discover_azure")!.Value.All.Should().Equal("azure-discovery");
     }
+
+    [Fact]
+    public void ToolScopeRegistry_Authorize_Requires_Literal_MethodParameter_Modifier()
+    {
+        var registry = ToolScopeRegistry.Build(
+            DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable);
+        var arguments = new Dictionary<string, System.Text.Json.JsonElement>
+        {
+            ["kind"] = System.Text.Json.JsonSerializer.SerializeToElement(" method-params "),
+        };
+
+        var wildcardOnly = new BearerPrincipal(
+            "root",
+            ImmutableHashSet.Create(BearerPrincipal.RootScope));
+        var denied = registry.Authorize("collect_sample", arguments, wildcardOnly);
+
+        denied.IsAllowed.Should().BeFalse();
+        denied.MissingScope.Should().Be("sensitive-parameter-read");
+        denied.MissingExplicitScope.Should().BeTrue();
+
+        var allowed = registry.Authorize(
+            "collect_sample",
+            arguments,
+            new BearerPrincipal(
+                "capture",
+                ImmutableHashSet.Create("eventpipe", "sensitive-parameter-read")));
+        allowed.IsAllowed.Should().BeTrue();
+    }
+
+    [Theory]
+    [MemberData(nameof(ArgumentAwareScopeCases))]
+    public void ToolScopeRegistry_Authorize_Uses_One_ArgumentAware_Resolver(
+        string toolName,
+        IDictionary<string, JsonElement> arguments,
+        string[] heldScopes,
+        string missingScope,
+        bool explicitModifier)
+    {
+        var registry = ToolScopeRegistry.Build(
+            DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable);
+        var denied = registry.Authorize(
+            toolName,
+            arguments,
+            new BearerPrincipal("limited", ImmutableHashSet.Create(heldScopes)));
+
+        denied.IsAllowed.Should().BeFalse();
+        denied.MissingScope.Should().Be(missingScope);
+        denied.MissingExplicitScope.Should().Be(explicitModifier);
+
+        var allowed = registry.Authorize(
+            toolName,
+            arguments,
+            new BearerPrincipal("allowed", ImmutableHashSet.Create(heldScopes.Append(missingScope).ToArray())));
+        allowed.IsAllowed.Should().BeTrue();
+    }
+
+    public static TheoryData<string, IDictionary<string, JsonElement>, string[], string, bool>
+        ArgumentAwareScopeCases => new()
+        {
+            {
+                "inspect_process",
+                Arguments(new { view = "REQUESTS-NOW" }),
+                new[] { "read-counters" },
+                "ptrace",
+                false
+            },
+            {
+                "collect_events",
+                Arguments(new { kind = "EXCEPTIONS" }),
+                new[] { "read-counters" },
+                "eventpipe",
+                false
+            },
+            {
+                "collect_events",
+                Arguments(new
+                {
+                    kind = "COUNTERS",
+                    triggerWhen = "always-trigger",
+                    captureKind = "Dump",
+                    confirmDump = true,
+                }),
+                new[] { "read-counters", "ptrace" },
+                "dump-write",
+                false
+            },
+            {
+                "collect_events",
+                Arguments(new { kind = "EVENT_SOURCE", unsafeProvider = true }),
+                new[] { "eventpipe" },
+                "eventsource-any",
+                true
+            },
+            {
+                "collect_sample",
+                Arguments(new { kind = "CPU", resolveMethodInstantiations = true }),
+                new[] { "eventpipe" },
+                "ptrace",
+                false
+            },
+            {
+                "collect_sample",
+                Arguments(new
+                {
+                    kind = "CPU",
+                    symbolPath = "srv*/symbols*https://symbols.example.test",
+                }),
+                new[] { "eventpipe" },
+                "symbols-remote",
+                true
+            },
+            {
+                "collect_sample",
+                Arguments(new { kind = "METHOD-PARAMS" }),
+                new[] { "eventpipe" },
+                "sensitive-parameter-read",
+                true
+            },
+            {
+                "collect_batch",
+                Arguments(new
+                {
+                    requests = new[]
+                    {
+                        new { tool = "COLLECT_EVENTS", kind = "COUNTERS" },
+                        new { tool = "COLLECT_EVENTS", kind = "EXCEPTIONS" },
+                    },
+                }),
+                new[] { "read-counters" },
+                "eventpipe",
+                false
+            },
+            {
+                "inspect_heap",
+                Arguments(new { source = "LIVE" }),
+                new[] { "heap-read" },
+                "ptrace",
+                false
+            },
+            {
+                "inspect_heap",
+                Arguments(new { source = "DUMP", includeRetentionPaths = true }),
+                new[] { "heap-read" },
+                "sensitive-heap-read",
+                true
+            },
+            {
+                "query_snapshot",
+                Arguments(new { handle = "heap-1", view = "RETENTION-PATHS" }),
+                new[] { "heap-read" },
+                "sensitive-heap-read",
+                true
+            },
+            {
+                "query_snapshot",
+                Arguments(new
+                {
+                    handle = "params-1",
+                    view = "events",
+                    includeSensitiveValues = true,
+                }),
+                new[] { "eventpipe" },
+                "sensitive-parameter-read",
+                true
+            },
+            {
+                "query_snapshot",
+                Arguments(new { handle = "threads-1", view = "FRAME-VARS" }),
+                new[] { "ptrace" },
+                "heap-read",
+                false
+            },
+            {
+                "get_bytes",
+                Arguments(new { kind = "DUMP", dumpFilePath = "capture.dmp" }),
+                new[] { BearerPrincipal.RootScope },
+                "module-bytes-read",
+                true
+            },
+            {
+                "get_bytes",
+                Arguments(new { kind = "DELETE", artifactPath = "capture.dmp" }),
+                new[] { "module-bytes-read" },
+                "delete-artifact",
+                true
+            },
+            {
+                "collect_thread_snapshot",
+                Arguments(new { symbolPath = "srv*/symbols*https://symbols.example.test" }),
+                new[] { "ptrace" },
+                "symbols-remote",
+                true
+            },
+        };
+
+    [Fact]
+    public void Allowlisted_Symbol_Host_Is_A_Policy_Alternative_On_Local_And_Proxy_Paths()
+    {
+        var registry = ToolScopeRegistry.Build(
+            DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable);
+        var options = new SecurityOptions
+        {
+            SymbolServerAllowlist = ["symbols.example.test"],
+        };
+        var policies = Policies(options);
+        var arguments = Arguments(new
+        {
+            kind = "cpu",
+            symbolPath = "srv*/symbols*https://symbols.example.test",
+        });
+        var principal = new BearerPrincipal("caller", ImmutableHashSet.Create("eventpipe"));
+
+        registry.Authorize("collect_sample", arguments, principal, policies: policies)
+            .IsAllowed.Should().BeTrue();
+        registry.Authorize("collect_sample", arguments, principal, proxyInvocation: true, policies: policies)
+            .IsAllowed.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("System.Runtime", false)]
+    [InlineData("Configured.Custom.Provider", false)]
+    [InlineData("Unlisted.Custom.Provider", true)]
+    public void EventSource_Policy_Alternatives_Are_Identical_On_Local_And_Proxy_Paths(
+        string providerName,
+        bool serverGate)
+    {
+        var registry = ToolScopeRegistry.Build(
+            DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable);
+        var options = new SecurityOptions
+        {
+            AllowSensitiveHeapValues = serverGate,
+            EventSourceAllowlist = ["Configured.Custom.Provider"],
+        };
+        var policies = Policies(options);
+        var arguments = Arguments(new
+        {
+            kind = "event_source",
+            providerName,
+            unsafeProvider = true,
+        });
+        var principal = new BearerPrincipal("caller", ImmutableHashSet.Create("eventpipe"));
+
+        registry.Authorize("collect_events", arguments, principal, policies: policies)
+            .IsAllowed.Should().BeTrue();
+        registry.Authorize("collect_events", arguments, principal, proxyInvocation: true, policies: policies)
+            .IsAllowed.Should().BeTrue();
+    }
+
+    [Fact]
+    public void AllowCrossSessionAdmin_Is_A_Policy_Alternative()
+    {
+        var registry = ToolScopeRegistry.Build(
+            [typeof(DotnetDiagnostics.Mcp.Tools.ListOrchestratorTool)]);
+        var policies = Policies(
+            new SecurityOptions(),
+            new OrchestratorOptions { AllowCrossSessionAdmin = true });
+        var arguments = Arguments(new { kind = "investigations", includeAllSessions = true });
+        var principal = new BearerPrincipal(
+            "caller",
+            ImmutableHashSet.Create("orchestrator-attach"));
+
+        registry.Authorize("list_orchestrator", arguments, principal, policies: policies)
+            .IsAllowed.Should().BeTrue();
+    }
+
+    [Fact]
+    public void AuthorizationResult_OverlappingAnyAndAll_TracksMandatoryFailure()
+    {
+        var registry = ToolScopeRegistry.Build(
+            DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable);
+        var principal = new BearerPrincipal(
+            "counters",
+            ImmutableHashSet.Create("read-counters"));
+
+        var result = registry.Authorize(
+            "inspect_process",
+            Arguments(new { view = "requests-now" }),
+            principal);
+
+        result.IsAllowed.Should().BeFalse();
+        result.IsAnyOfSatisfied.Should().BeTrue();
+        result.MissingAllOfScopes.Should().Equal("ptrace");
+        ToolScopeAuthorizationFilter.BuildMissingScopeMessage(result)
+            .Should().Be("tool requires mandatory scope 'ptrace'");
+    }
+
+    private static IDictionary<string, JsonElement> Arguments<T>(T value)
+        => JsonSerializer.SerializeToElement(value).EnumerateObject()
+            .ToDictionary(static property => property.Name, static property => property.Value, StringComparer.Ordinal);
+
+    private static ToolScopeResolutionPolicies Policies(
+        SecurityOptions options,
+        OrchestratorOptions? orchestratorOptions = null)
+        => new(
+            new SymbolServerAllowlist(options),
+            new EventSourceAllowlist(options),
+            new SensitiveValueGate(options),
+            orchestratorOptions ?? new OrchestratorOptions());
+
 
     // --- fixtures -----------------------------------------------------------------
 
@@ -162,6 +465,22 @@ public sealed class ToolScopeAuthorizationTests
     private static ToolScopeRegistry.Requirement Any(params string[] scopes) =>
         new(All: ImmutableArray<string>.Empty, Any: ImmutableArray.Create(scopes));
 
+    private static (string Summary, JsonElement Error) Forbidden(
+        ToolScopeRegistry.AuthorizationResult authorization)
+    {
+        var result = ToolScopeAuthorizationFilter.BuildForbiddenResult(
+            "sample_tool",
+            authorization,
+            With("presented"));
+        var text = result.Content
+            .OfType<ModelContextProtocol.Protocol.TextContentBlock>()
+            .Single()
+            .Text;
+        var separator = text.IndexOf('\n');
+        using var document = JsonDocument.Parse(text[(separator + 1)..]);
+        return (text[..separator], document.RootElement.GetProperty("error").Clone());
+    }
+
     [Fact]
     public void Authorize_Denies_When_No_Principal()
     {
@@ -200,6 +519,98 @@ public sealed class ToolScopeAuthorizationTests
         var none = ToolScopeAuthorizationFilter.Authorize(req, With("orchestrator-list"));
         none.IsAllowed.Should().BeFalse();
         none.MissingScope.Should().Be("read-counters");
+    }
+
+    [Fact]
+    public void ForbiddenEnvelope_OrOnly_PreservesAlternatives()
+    {
+        var (summary, error) = Forbidden(new ToolScopeRegistry.AuthorizationResult(
+            false,
+            "read-counters",
+            false,
+            Any("read-counters", "ptrace"),
+            ImmutableArray<string>.Empty,
+            ImmutableArray<string>.Empty,
+            ImmutableArray<string>.Empty,
+            IsAnyOfSatisfied: false,
+            MissingAllOfScopes: ImmutableArray<string>.Empty));
+
+        summary.Should().Contain("requires any of [read-counters, ptrace]");
+        error.GetProperty("semantics").GetString().Should().Be("any");
+        error.GetProperty("any_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("read-counters", "ptrace");
+        error.GetProperty("all_of_scopes").EnumerateArray().Should().BeEmpty();
+        error.GetProperty("message").GetString().Should().Contain("any of scopes");
+    }
+
+    [Fact]
+    public void ForbiddenEnvelope_AndOnly_PreservesConjunction()
+    {
+        var (summary, error) = Forbidden(new ToolScopeRegistry.AuthorizationResult(
+            false,
+            "dump-write",
+            false,
+            All("dump-write", "ptrace"),
+            ImmutableArray<string>.Empty,
+            ImmutableArray<string>.Empty,
+            ImmutableArray<string>.Empty,
+            IsAnyOfSatisfied: true,
+            MissingAllOfScopes: ImmutableArray.Create("dump-write", "ptrace")));
+
+        summary.Should().Contain("requires all of [dump-write, ptrace]");
+        error.GetProperty("semantics").GetString().Should().Be("all");
+        error.GetProperty("any_of_scopes").EnumerateArray().Should().BeEmpty();
+        error.GetProperty("all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("dump-write", "ptrace");
+        error.GetProperty("missing_all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("dump-write", "ptrace");
+        error.GetProperty("message").GetString().Should().Be(
+            "tool requires mandatory scopes [dump-write, ptrace]");
+    }
+
+    [Fact]
+    public void ForbiddenEnvelope_OrAnd_PreservesBothRequirementGroups()
+    {
+        var (summary, error) = Forbidden(new ToolScopeRegistry.AuthorizationResult(
+            false,
+            "sensitive-heap-read",
+            true,
+            Any("eventpipe", "heap-read"),
+            ImmutableArray<string>.Empty,
+            ImmutableArray<string>.Empty,
+            ImmutableArray.Create("sensitive-heap-read"),
+            IsAnyOfSatisfied: true,
+            MissingAllOfScopes: ImmutableArray.Create("sensitive-heap-read")));
+
+        summary.Should().Contain(
+            "requires any of [eventpipe, heap-read] and all of [sensitive-heap-read]");
+        error.GetProperty("semantics").GetString().Should().Be("any+all");
+        error.GetProperty("any_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("eventpipe", "heap-read");
+        error.GetProperty("all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("sensitive-heap-read");
+        error.GetProperty("message").GetString().Should().Be(
+            "tool requires literal modifier scope 'sensitive-heap-read'");
+    }
+
+    [Fact]
+    public void ForbiddenEnvelope_OrAnd_WhenMandatoryGroupIsSatisfied_IdentifiesAnyGroupFailure()
+    {
+        var (_, error) = Forbidden(new ToolScopeRegistry.AuthorizationResult(
+            false,
+            "read-counters",
+            false,
+            Any("read-counters", "eventpipe"),
+            ImmutableArray.Create("ptrace"),
+            ImmutableArray<string>.Empty,
+            ImmutableArray<string>.Empty,
+            IsAnyOfSatisfied: false,
+            MissingAllOfScopes: ImmutableArray<string>.Empty));
+
+        error.GetProperty("any_of_satisfied").GetBoolean().Should().BeFalse();
+        error.GetProperty("missing_all_of_scopes").EnumerateArray().Should().BeEmpty();
+        error.GetProperty("message").GetString().Should().Be(
+            "tool requires any of scopes [read-counters, eventpipe]");
     }
 
     [Fact]

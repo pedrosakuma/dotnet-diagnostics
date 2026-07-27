@@ -1,9 +1,12 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Mcp.Security;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -131,14 +134,69 @@ public sealed class ToolScopeIntegrationTests
     }
 
     [Fact]
-    public async Task CollectBatch_Entry_Missing_Scope_Is_Rejected_By_Internal_PreAuth_Before_Any_Session_Opens()
+    public async Task ExportSummary_MissingInvestigationScope_IsDeniedByFilter()
     {
-        // collect_batch's own outer gate is RequireAnyScope("read-counters", "eventpipe"), so a
-        // read-counters-only token passes that union gate and reaches the method body. But a
-        // collect_sample(kind="cpu") entry needs 'eventpipe', which this token doesn't have — the
-        // per-entry pre-authorization loop (issue #665 Part C) must reject the whole call with a
-        // structured InsufficientScope error before any session opens, mirroring how
-        // CollectEventsTool re-checks scope per kind internally.
+        await using var factory = CreateFactory(
+            ("eventpipe-only", "limited-export-token", new[] { "eventpipe" }));
+        await using var client = await ConnectWithTokenAsync(factory, "limited-export-token");
+
+        var result = await client.CallToolAsync(
+            "export_investigation_summary",
+            arguments: new Dictionary<string, object?> { ["handle"] = "cpu-handle" },
+            cancellationToken: CancellationToken.None);
+
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("required_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("investigation-export");
+    }
+
+    [Fact]
+    public async Task ExportSummary_MissingCpuEvidenceScope_IsDeniedByTool()
+    {
+        await using var factory = CreateFactory(
+            ("export-only", "export-only-token", new[] { "investigation-export" }));
+        await using var client = await ConnectWithTokenAsync(factory, "export-only-token");
+        var handle = factory.Services.GetRequiredService<IDiagnosticHandleStore>().Register(
+            Environment.ProcessId,
+            "cpu-sample",
+            CpuArtifact(),
+            TimeSpan.FromMinutes(1));
+
+        var result = await client.CallToolAsync(
+            "export_investigation_summary",
+            arguments: new Dictionary<string, object?> { ["handle"] = handle.Id },
+            cancellationToken: CancellationToken.None);
+
+        var text = result.Content.OfType<TextContentBlock>().Single().Text;
+        text.Should().Contain("Forbidden").And.Contain("eventpipe");
+    }
+
+    [Fact]
+    public async Task ExportSummary_WithBothScopes_ReachesToolBody()
+    {
+        await using var factory = CreateFactory(
+            ("cpu-export", "cpu-export-token", new[] { "investigation-export", "eventpipe" }));
+        await using var client = await ConnectWithTokenAsync(factory, "cpu-export-token");
+
+        var result = await client.CallToolAsync(
+            "export_investigation_summary",
+            arguments: new Dictionary<string, object?> { ["handle"] = "missing-cpu-handle" },
+            cancellationToken: CancellationToken.None);
+
+        var text = result.Content.OfType<TextContentBlock>().Single().Text;
+        text.Should().NotContain("\"kind\":\"forbidden\"");
+        JsonDocument.Parse(text).RootElement
+            .GetProperty("error")
+            .GetProperty("kind")
+            .GetString()
+            .Should().Be("HandleExpired");
+    }
+
+    [Fact]
+    public async Task CollectBatch_Entry_Missing_Scope_Is_Rejected_By_Authoritative_Filter_Before_Any_Session_Opens()
+    {
+        // collect_batch's static gate is a union, but the authoritative argument resolver expands
+        // every nested entry before the tool body runs.
         await using var factory = CreateFactory(
             ("counters-only", "counters-secret-batch", new[] { "read-counters" }));
         await using var client = await ConnectWithTokenAsync(factory, "counters-secret-batch");
@@ -155,10 +213,110 @@ public sealed class ToolScopeIntegrationTests
             },
             cancellationToken: CancellationToken.None);
 
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("argument_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("eventpipe");
+    }
+
+    [Fact]
+    public async Task CollectBatch_PascalCaseNestedFields_UseTheSameArgumentScopes()
+    {
+        await using var factory = CreateFactory(
+            ("counters-only", "counters-secret-pascal-batch", new[] { "read-counters" }));
+        await using var client = await ConnectWithTokenAsync(factory, "counters-secret-pascal-batch");
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            arguments: new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["Tool"] = "collect_sample", ["Kind"] = "cpu" },
+                },
+                ["durationSeconds"] = 1,
+            },
+            cancellationToken: CancellationToken.None);
+
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("argument_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("eventpipe");
+    }
+
+    [Fact]
+    public async Task CaseInsensitiveDuplicateArgumentKeys_AreRejectedBeforeToolBinding()
+    {
+        await using var factory = CreateFactory(
+            ("heap-reader", "heap-duplicate-secret", new[] { "heap-read", "ptrace" }));
+        await using var client = await ConnectWithTokenAsync(factory, "heap-duplicate-secret");
+
+        var result = await client.CallToolAsync(
+            "inspect_heap",
+            arguments: new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["source"] = "live",
+                ["includeRetentionPaths"] = true,
+                ["IncludeRetentionPaths"] = false,
+            },
+            cancellationToken: CancellationToken.None);
+
         result.IsError.Should().BeTrue();
-        var text = result.Content.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
-        text.Should().Contain("\"kind\":\"InsufficientScope\"");
-        text.Should().Contain("eventpipe");
+        string.Join("\n", result.Content.OfType<TextContentBlock>().Select(static block => block.Text))
+            .Should().Contain("unique ignoring case");
+    }
+
+    [Fact]
+    public async Task CaseInsensitiveDuplicateNestedBatchKeys_AreRejected()
+    {
+        await using var factory = CreateFactory(
+            ("batch-reader", "batch-duplicate-secret", new[] { "read-counters", "eventpipe" }));
+        await using var client = await ConnectWithTokenAsync(factory, "batch-duplicate-secret");
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            arguments: new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?>(StringComparer.Ordinal)
+                    {
+                        ["tool"] = "collect_events",
+                        ["Tool"] = "collect_sample",
+                        ["kind"] = "counters",
+                    },
+                },
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        string.Join("\n", result.Content.OfType<TextContentBlock>().Select(static block => block.Text))
+            .Should().Contain("unique ignoring case");
+    }
+
+    [Fact]
+    public async Task CollectEvents_GatedDump_IsDeniedLocally_WithoutDumpWrite()
+    {
+        await using var factory = CreateFactory(
+            ("counters-attach", "counters-secret-gated-dump",
+                new[] { "orchestrator-attach", "read-counters" }));
+        await using var client = await ConnectWithTokenAsync(factory, "counters-secret-gated-dump");
+
+        var result = await client.CallToolAsync(
+            "collect_events",
+            arguments: new Dictionary<string, object?>
+            {
+                ["kind"] = "counters",
+                ["triggerWhen"] = "always-trigger",
+                ["captureKind"] = "dump",
+                ["confirmDump"] = true,
+            },
+            cancellationToken: CancellationToken.None);
+
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("tool").GetString().Should().Be("collect_events");
+        envelope.GetProperty("argument_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("dump-write");
+        envelope.GetProperty("principal_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().NotContain("dump-write");
     }
 
     [Fact]
@@ -174,12 +332,35 @@ public sealed class ToolScopeIntegrationTests
         collectSampleAuth["authorized"]!.GetValue<bool>().Should().BeFalse();
         collectSampleAuth["semantics"]!.GetValue<string>().Should().Be("all");
         collectSampleAuth["requiredScopes"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Equal("eventpipe");
+        collectSampleAuth["requiredExplicitScopes"]!.AsArray().Should().BeEmpty();
+        collectSampleAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeTrue();
 
         var inspectProcessAuth = tools.Single(t => t.Name == "inspect_process").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
         inspectProcessAuth["authorized"]!.GetValue<bool>().Should().BeTrue();
         inspectProcessAuth["semantics"]!.GetValue<string>().Should().Be("any");
         inspectProcessAuth["requiredScopes"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Contain("read-counters");
+        inspectProcessAuth["requiredExplicitScopes"]!.AsArray().Should().BeEmpty();
+        inspectProcessAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeTrue();
+
+        var exportAuth = tools.Single(t => t.Name == "export_investigation_summary").ProtocolTool.Meta!["dotnetDiagnostics"]!["auth"]!.AsObject();
+        exportAuth["authorized"]!.GetValue<bool>().Should().BeFalse();
+        exportAuth["requiredScopes"]!.AsArray().Select(n => n!.GetValue<string>())
+            .Should().Equal("investigation-export");
+        exportAuth["requiredExplicitScopes"]!.AsArray().Should().BeEmpty();
+        exportAuth["hasConditionalArgumentScopes"]!.GetValue<bool>().Should().BeTrue();
     }
+
+    private static CpuSampleTraceArtifact CpuArtifact()
+        => new(
+            Environment.ProcessId,
+            DateTimeOffset.UnixEpoch,
+            TimeSpan.FromSeconds(1),
+            1,
+            new CallTreeNode(
+                new SampledFrame(string.Empty, "<root>"),
+                1,
+                0,
+                [new CallTreeNode(new SampledFrame("App.dll", "App.Work"), 1, 1, [])]));
 
     [Fact]
     public async Task InspectProcess_RequestsNow_Denies_When_Ptrace_Is_Missing()
@@ -193,10 +374,21 @@ public sealed class ToolScopeIntegrationTests
             arguments: new Dictionary<string, object?> { ["view"] = "requests-now", ["processId"] = -1 },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().BeTrue();
-        var text = result.Content.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
-        text.Should().Contain("\"kind\":\"Forbidden\"");
-        text.Should().Contain("ptrace");
+        var (summary, envelope) = ParseForbidden(result);
+        summary.Should().Contain(
+            "requires any of [read-counters, ptrace] and all of [ptrace]");
+        envelope.GetProperty("semantics").GetString().Should().Be("any+all");
+        envelope.GetProperty("any_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("read-counters", "ptrace");
+        envelope.GetProperty("all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("ptrace");
+        envelope.GetProperty("any_of_satisfied").GetBoolean().Should().BeTrue();
+        envelope.GetProperty("missing_all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("ptrace");
+        envelope.GetProperty("message").GetString().Should().Be(
+            "tool requires mandatory scope 'ptrace'");
+        envelope.GetProperty("argument_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("ptrace");
     }
 
     [Fact]
@@ -213,9 +405,44 @@ public sealed class ToolScopeIntegrationTests
             arguments: new Dictionary<string, object?>(),
             cancellationToken: CancellationToken.None);
 
-        var (_, envelope) = ParseForbidden(result);
+        var (summary, envelope) = ParseForbidden(result);
+        summary.Should().Contain("requires all of [dump-write, ptrace]");
+        envelope.GetProperty("semantics").GetString().Should().Be("all");
+        envelope.GetProperty("any_of_scopes").EnumerateArray().Should().BeEmpty();
+        envelope.GetProperty("all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("dump-write", "ptrace");
+        envelope.GetProperty("missing_all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("dump-write");
         envelope.GetProperty("required_scopes").EnumerateArray()
             .Select(e => e.GetString()).Should().Equal("dump-write", "ptrace");
+    }
+
+    [Fact]
+    public async Task RequireAnyScope_Denial_PreservesAlternatives()
+    {
+        await using var factory = CreateFactory(
+            ("unrelated", "unrelated-secret", new[] { "orchestrator-list" }));
+        await using var client = await ConnectWithTokenAsync(factory, "unrelated-secret");
+
+        var result = await client.CallToolAsync(
+            "query_snapshot",
+            arguments: new Dictionary<string, object?> { ["handle"] = "bogus" },
+            cancellationToken: CancellationToken.None);
+
+        var (summary, envelope) = ParseForbidden(result);
+        summary.Should().Contain(
+            "requires any of [read-counters, eventpipe, heap-read, ptrace, investigation-export]");
+        envelope.GetProperty("semantics").GetString().Should().Be("any");
+        envelope.GetProperty("any_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal(
+                "read-counters",
+                "eventpipe",
+                "heap-read",
+                "ptrace",
+                "investigation-export");
+        envelope.GetProperty("all_of_scopes").EnumerateArray().Should().BeEmpty();
+        envelope.GetProperty("any_of_satisfied").GetBoolean().Should().BeFalse();
+        envelope.GetProperty("missing_all_of_scopes").EnumerateArray().Should().BeEmpty();
     }
 
     [Fact]

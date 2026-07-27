@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
@@ -32,10 +33,12 @@ internal static class ToolScopeAuthorizationFilter
     public static McpRequestFilter<CallToolRequestParams, CallToolResult> Create(
         ToolScopeRegistry registry,
         Func<IPrincipalAccessor?> principalAccessor,
+        Func<IServiceProvider?> servicesAccessor,
         Func<ILogger?> loggerAccessor)
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(principalAccessor);
+        ArgumentNullException.ThrowIfNull(servicesAccessor);
         ArgumentNullException.ThrowIfNull(loggerAccessor);
 
         return next => async (request, cancellationToken) =>
@@ -54,11 +57,62 @@ internal static class ToolScopeAuthorizationFilter
                 return await next(request, cancellationToken).ConfigureAwait(false);
             }
 
+            if (HasCaseInsensitiveDuplicateKeys(request.Params?.Arguments))
+            {
+                loggerAccessor()?.LogWarning(
+                    "Tool {Tool} denied because its arguments contain case-insensitive duplicate keys.",
+                    toolName);
+                return BuildInvalidArgumentsResult(
+                    toolName,
+                    "argument names must be unique ignoring case");
+            }
+
             // Stdio (no IPrincipalAccessor registered) is treated identically to root.
             var accessor = principalAccessor();
             var principal = accessor?.Current ?? StdioRootPrincipalAccessor.Instance.Current;
+            var services = servicesAccessor();
+            var policies = ToolScopeResolutionPolicies.FromServices(services);
+            var delegationFailure = string.Empty;
+            BearerPrincipal? delegatedPrincipal = null;
+            var delegationKey = (services?.GetService(typeof(ToolScopeDelegationKeyProvider))
+                as ToolScopeDelegationKeyProvider)?.Key;
+            var hasDelegation = request.Params?.Arguments?.ContainsKey(ToolScopeDelegation.ArgumentName) == true;
+            if (!string.IsNullOrWhiteSpace(delegationKey) && !hasDelegation)
+            {
+                loggerAccessor()?.LogWarning(
+                    "Tool {Tool} denied because the pod-local request had no internal scope delegation.",
+                    toolName);
+                return BuildDelegationForbiddenResult(
+                    toolName,
+                    "pod-local tool calls require an internal scope delegation");
+            }
+            if (hasDelegation)
+            {
+                ToolScopeDelegation.TryConsume(
+                    request.Params!,
+                    registry,
+                    policies,
+                    delegationKey,
+                    services?.GetService(typeof(TimeProvider)) as TimeProvider,
+                    out delegatedPrincipal,
+                    out delegationFailure);
+                if (delegatedPrincipal is null)
+                {
+                    loggerAccessor()?.LogWarning(
+                        "Tool {Tool} denied because internal scope delegation validation failed: {Reason}.",
+                        toolName,
+                        delegationFailure);
+                    return BuildDelegationForbiddenResult(toolName, delegationFailure);
+                }
+                principal = delegatedPrincipal;
+            }
 
-            var decision = Authorize(requirement.Value, principal);
+            var decision = registry.Authorize(
+                toolName,
+                request.Params?.Arguments,
+                principal,
+                proxyInvocation: delegatedPrincipal is not null,
+                policies: policies);
             var logger = loggerAccessor();
             if (decision.IsAllowed)
             {
@@ -66,7 +120,23 @@ internal static class ToolScopeAuthorizationFilter
                     "Tool {Tool} authorized for principal {TokenName} (scopes {RequiredScopes}).",
                     toolName,
                     principal?.Name ?? "(none)",
-                    FormatScopes(requirement.Value));
+                    FormatScopes(decision));
+                var taskNeedsPrincipalSnapshot = request.Params?.Task is not null;
+                if (delegatedPrincipal is null && !taskNeedsPrincipalSnapshot)
+                {
+                    return await next(request, cancellationToken).ConfigureAwait(false);
+                }
+
+                if (accessor is not HttpContextPrincipalAccessor httpAccessor)
+                {
+                    return delegatedPrincipal is not null
+                        ? BuildDelegationForbiddenResult(
+                            toolName,
+                            "internal scope delegation requires an HTTP request context")
+                        : await next(request, cancellationToken).ConfigureAwait(false);
+                }
+
+                using var delegationLease = httpAccessor.PushDelegation(principal!);
                 return await next(request, cancellationToken).ConfigureAwait(false);
             }
 
@@ -77,9 +147,91 @@ internal static class ToolScopeAuthorizationFilter
                 decision.MissingScope,
                 FormatPrincipalScopes(principal));
 
-            return BuildForbiddenResult(toolName, requirement.Value, principal, decision.MissingScope);
+            return BuildForbiddenResult(toolName, decision, principal);
         };
     }
+
+    private static bool HasCaseInsensitiveDuplicateKeys(
+        IDictionary<string, System.Text.Json.JsonElement>? arguments)
+    {
+        if (arguments is null)
+        {
+            return false;
+        }
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var argument in arguments)
+        {
+            if (!names.Add(argument.Key) || HasCaseInsensitiveDuplicateKeys(argument.Value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasCaseInsensitiveDuplicateKeys(System.Text.Json.JsonElement value)
+    {
+        if (value.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in value.EnumerateObject())
+            {
+                if (!names.Add(property.Name) || HasCaseInsensitiveDuplicateKeys(property.Value))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (value.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var item in value.EnumerateArray())
+            {
+                if (HasCaseInsensitiveDuplicateKeys(item))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static CallToolResult BuildInvalidArgumentsResult(string toolName, string reason)
+        => new()
+        {
+            IsError = true,
+            Content =
+            [
+                new TextContentBlock
+                {
+                    Text = $"invalid arguments: tool '{toolName}' {reason}.",
+                },
+            ],
+        };
+
+    private static CallToolResult BuildDelegationForbiddenResult(string toolName, string reason)
+        => new()
+        {
+            IsError = true,
+            Content =
+            [
+                new TextContentBlock
+                {
+                    Text = $"forbidden: tool '{toolName}' received an invalid internal scope delegation.\n" +
+                        new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["error"] = new System.Text.Json.Nodes.JsonObject
+                            {
+                                ["kind"] = "forbidden",
+                                ["message"] = reason,
+                                ["tool"] = toolName,
+                            },
+                        }.ToJsonString(),
+                },
+            ],
+        };
 
     internal readonly record struct AuthorizationDecision(bool IsAllowed, string MissingScope)
     {
@@ -120,21 +272,16 @@ internal static class ToolScopeAuthorizationFilter
 
     internal static CallToolResult BuildForbiddenResult(
         string toolName,
-        ToolScopeRegistry.Requirement requirement,
-        BearerPrincipal? principal,
-        string missingScope)
+        ToolScopeRegistry.AuthorizationResult authorization,
+        BearerPrincipal? principal)
     {
-        var requiredList = FormatScopes(requirement);
         var presentedList = FormatPrincipalScopes(principal);
-        var kindWord = requirement.IsAny ? "any of" : "scope";
         var sb = new StringBuilder();
         sb.Append("forbidden: tool '")
           .Append(toolName)
-          .Append("' requires ")
-          .Append(kindWord)
-          .Append(" [")
-          .Append(requiredList)
-          .Append("]; principal '")
+          .Append("' requires ");
+        AppendRequirementSummary(sb, authorization);
+        sb.Append("; principal '")
           .Append(principal?.Name ?? "(none)")
           .Append("' presented [")
           .Append(presentedList)
@@ -142,22 +289,28 @@ internal static class ToolScopeAuthorizationFilter
 
         // Structured payload mirrors the BearerTokenMiddleware 401 envelope shape so the
         // client has one error grammar to reason about. The bearer value is NEVER in here.
+        var error = new System.Text.Json.Nodes.JsonObject
+        {
+            ["kind"] = "forbidden",
+            ["message"] = BuildMissingScopeMessage(authorization),
+            ["tool"] = toolName,
+            ["argument_scopes"] = new System.Text.Json.Nodes.JsonArray(
+                authorization.AdditionalScopes
+                    .AddRange(authorization.ExplicitAdditionalScopes)
+                    .Select(s => (System.Text.Json.Nodes.JsonNode?)s)
+                    .ToArray()),
+            ["modifier_scopes"] = new System.Text.Json.Nodes.JsonArray(
+                authorization.ModifierScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
+            ["principal_scopes"] = new System.Text.Json.Nodes.JsonArray(
+                (principal?.Scopes.OrderBy(s => s, StringComparer.Ordinal)
+                                  .Select(s => (System.Text.Json.Nodes.JsonNode?)s)
+                                  .ToArray())
+                ?? Array.Empty<System.Text.Json.Nodes.JsonNode?>()),
+        };
+        AddRequirementFields(error, authorization);
         var structured = new System.Text.Json.Nodes.JsonObject
         {
-            ["error"] = new System.Text.Json.Nodes.JsonObject
-            {
-                ["kind"] = "forbidden",
-                ["message"] = $"tool requires scope '{missingScope}'",
-                ["tool"] = toolName,
-                ["required_scopes"] = new System.Text.Json.Nodes.JsonArray(
-                    requirement.Scopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray()),
-                ["principal_scopes"] = new System.Text.Json.Nodes.JsonArray(
-                    (principal?.Scopes.OrderBy(s => s, StringComparer.Ordinal)
-                                      .Select(s => (System.Text.Json.Nodes.JsonNode?)s)
-                                      .ToArray())
-                    ?? Array.Empty<System.Text.Json.Nodes.JsonNode?>()),
-                ["semantics"] = requirement.IsAny ? "any" : "all",
-            },
+            ["error"] = error,
         };
 
         // The MCP CallToolResult is intentionally text-content-only (same reasoning as
@@ -175,8 +328,103 @@ internal static class ToolScopeAuthorizationFilter
         };
     }
 
+    private static void AppendRequirementSummary(
+        StringBuilder builder,
+        ToolScopeRegistry.AuthorizationResult authorization)
+    {
+        if (!authorization.AnyOfScopes.IsDefaultOrEmpty)
+        {
+            builder.Append("any of [")
+                .Append(string.Join(", ", authorization.AnyOfScopes))
+                .Append(']');
+        }
+
+        if (!authorization.AnyOfScopes.IsDefaultOrEmpty &&
+            !authorization.AllOfScopes.IsDefaultOrEmpty)
+        {
+            builder.Append(" and ");
+        }
+
+        if (!authorization.AllOfScopes.IsDefaultOrEmpty)
+        {
+            builder.Append("all of [")
+                .Append(string.Join(", ", authorization.AllOfScopes))
+                .Append(']');
+        }
+    }
+
+    internal static string BuildMissingScopeMessage(
+        ToolScopeRegistry.AuthorizationResult authorization)
+    {
+        var missingAll = authorization.MissingAllOfScopes.IsDefault
+            ? ImmutableArray<string>.Empty
+            : authorization.MissingAllOfScopes;
+        if (!authorization.IsAnyOfSatisfied)
+        {
+            var anyMessage =
+                $"tool requires any of scopes [{string.Join(", ", authorization.AnyOfScopes)}]";
+            return missingAll.IsDefaultOrEmpty
+                ? anyMessage
+                : $"{anyMessage} and is missing {FormatMissingAllOf(authorization, missingAll)}";
+        }
+
+        return $"tool requires {FormatMissingAllOf(authorization, missingAll)}";
+    }
+
+    private static string FormatMissingAllOf(
+        ToolScopeRegistry.AuthorizationResult authorization,
+        ImmutableArray<string> missingAll)
+    {
+        if (missingAll.IsDefaultOrEmpty)
+        {
+            return $"mandatory scope '{authorization.MissingScope}'";
+        }
+
+        if (missingAll.Length == 1)
+        {
+            return authorization.MissingExplicitScope
+                ? $"literal modifier scope '{missingAll[0]}'"
+                : $"mandatory scope '{missingAll[0]}'";
+        }
+
+        return $"mandatory scopes [{string.Join(", ", missingAll)}]";
+    }
+
+    internal static void AddRequirementFields(
+        System.Text.Json.Nodes.JsonObject target,
+        ToolScopeRegistry.AuthorizationResult authorization)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        target["required_scopes"] = new System.Text.Json.Nodes.JsonArray(
+            authorization.RequiredScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray());
+        target["any_of_scopes"] = new System.Text.Json.Nodes.JsonArray(
+            authorization.AnyOfScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray());
+        target["all_of_scopes"] = new System.Text.Json.Nodes.JsonArray(
+            authorization.AllOfScopes.Select(s => (System.Text.Json.Nodes.JsonNode?)s).ToArray());
+        target["missing_all_of_scopes"] = new System.Text.Json.Nodes.JsonArray(
+            (authorization.MissingAllOfScopes.IsDefault
+                ? Array.Empty<System.Text.Json.Nodes.JsonNode?>()
+                : authorization.MissingAllOfScopes
+                    .Select(s => (System.Text.Json.Nodes.JsonNode?)s)
+                    .ToArray()));
+        target["any_of_satisfied"] = authorization.IsAnyOfSatisfied;
+        target["semantics"] = GetSemantics(authorization);
+    }
+
+    internal static string GetSemantics(ToolScopeRegistry.AuthorizationResult authorization)
+    {
+        var hasAnyOf = !authorization.AnyOfScopes.IsDefaultOrEmpty;
+        var hasAllOf = !authorization.AllOfScopes.IsDefaultOrEmpty;
+        return hasAnyOf && hasAllOf
+            ? "any+all"
+            : hasAnyOf ? "any" : "all";
+    }
+
     private static string FormatScopes(ToolScopeRegistry.Requirement requirement)
         => string.Join(", ", requirement.Scopes);
+
+    private static string FormatScopes(ToolScopeRegistry.AuthorizationResult authorization)
+        => string.Join(", ", authorization.RequiredScopes);
 
     private static string FormatPrincipalScopes(BearerPrincipal? principal)
     {

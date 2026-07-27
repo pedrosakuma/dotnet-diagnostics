@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using DotnetDiagnostics.Mcp.Observability;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
+using DotnetDiagnostics.Mcp.Security;
 using FluentAssertions;
 using k8s.Autorest;
 using k8s.Models;
@@ -45,6 +46,9 @@ public class KubernetesPodAttachOrchestratorTests
         api.PatchedSpec!.Image.Should().Be(options.EphemeralContainerImage);
         api.PatchedSpec.TargetContainerName.Should().Be(Container);
         api.PatchedSpec.Env.Should().Contain(e => e.Name == "MCP_BEARER_TOKEN" && e.Value == handle.PodLocalBearerToken);
+        api.PatchedSpec.Env.Should().Contain(e =>
+            e.Name == ToolScopeDelegation.EnvironmentVariableName &&
+            e.Value == handle.InternalScopeDelegationKey);
         api.PatchedSpec.Env.Should().Contain(e => e.Name == "ASPNETCORE_URLS" && e.Value == $"http://0.0.0.0:{options.ProxyPodPort}");
         api.PatchedSpec.Args.Should().Equal("--urls", $"http://0.0.0.0:{options.ProxyPodPort}");
         store.GetById(handle.HandleId).Should().BeSameAs(handle);
@@ -61,6 +65,31 @@ public class KubernetesPodAttachOrchestratorTests
 
         api.PatchedSpec!.Env.Should().Contain(e => e.Name == "ASPNETCORE_URLS" && e.Value == "http://0.0.0.0:18888");
         api.PatchedSpec.Args.Should().Equal("--urls", "http://0.0.0.0:18888");
+    }
+
+    [Fact]
+    public async Task AttachAsync_Propagates_Authorization_Alternative_Policies_ToPod()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var security = new DotnetDiagnostics.Core.Security.SecurityOptions
+        {
+            AllowSensitiveHeapValues = true,
+            AllowMethodParameterCapture = true,
+            SymbolServerAllowlist = ["symbols.example.test"],
+            EventSourceAllowlist = ["Custom.Provider"],
+        };
+        var (orch, _, _) = NewOrchestrator(api, securityOptions: security);
+
+        await orch.AttachAsync(NewRequest(), CancellationToken.None);
+
+        api.PatchedSpec!.Env.Should().Contain(e =>
+            e.Name == "Diagnostics__AllowSensitiveHeapValues" && e.Value == "True");
+        api.PatchedSpec.Env.Should().Contain(e =>
+            e.Name == "Diagnostics__AllowMethodParameterCapture" && e.Value == "True");
+        api.PatchedSpec.Env.Should().Contain(e =>
+            e.Name == "Diagnostics__SymbolServerAllowlist__0" && e.Value == "symbols.example.test");
+        api.PatchedSpec.Env.Should().Contain(e =>
+            e.Name == "Diagnostics__EventSourceAllowlist__0" && e.Value == "Custom.Provider");
     }
 
     [Fact]
@@ -231,6 +260,48 @@ public class KubernetesPodAttachOrchestratorTests
     }
 
     [Fact]
+    public async Task AttachAsync_ReusesExistingHandle_ForSameStableOwner()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, store, _) = NewOrchestrator(api);
+        var ownerKey = PrincipalOwnershipKey.ForOpaqueEntry("operator-a");
+
+        var first = await orch.AttachAsync(
+            NewRequest(ownerBearerName: "display-a", ownerPrincipalKey: ownerKey),
+            CancellationToken.None);
+        var second = await orch.AttachAsync(
+            NewRequest(ownerBearerName: "renamed-display", ownerPrincipalKey: ownerKey),
+            CancellationToken.None);
+
+        second.Should().BeSameAs(first);
+        api.PatchInvocationCount.Should().Be(1);
+        store.Snapshot().Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task AttachAsync_RejectsReuse_WhenDisplayMatchesButOwnershipKeyDiffers()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, _, _) = NewOrchestrator(api);
+
+        await orch.AttachAsync(
+            NewRequest(
+                ownerBearerName: "shared-display",
+                ownerPrincipalKey: PrincipalOwnershipKey.ForOpaqueEntry("operator-a")),
+            CancellationToken.None);
+
+        var act = () => orch.AttachAsync(
+            NewRequest(
+                ownerBearerName: "shared-display",
+                ownerPrincipalKey: PrincipalOwnershipKey.ForOpaqueEntry("operator-b")),
+            CancellationToken.None);
+
+        (await act.Should().ThrowAsync<OrchestratorException>())
+            .Which.ErrorKind.Should().Be(OrchestratorErrorKinds.PermissionDenied);
+        api.PatchInvocationCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task AttachAsync_StoresNormalizedTransportNeutralProcessSelector()
     {
         var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
@@ -286,12 +357,30 @@ public class KubernetesPodAttachOrchestratorTests
         var (orch, _, _) = NewOrchestrator(api);
 
         var act = () => orch.AttachAsync(
-            NewRequest(processSelector: new InvestigationProcessSelector(" ", "\t")),
+            NewRequest(processSelector: new InvestigationProcessSelector(" ", "	")),
             CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<OrchestratorException>();
         ex.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.InvalidArgument);
         api.PatchInvoked.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task AttachAsync_LegacyDisplayOwner_FailsReuseClosed()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, _, _) = NewOrchestrator(api);
+
+        await orch.AttachAsync(
+            NewRequest(ownerBearerName: "legacy-display"),
+            CancellationToken.None);
+
+        var act = () => orch.AttachAsync(
+            NewRequest(ownerBearerName: "legacy-display"),
+            CancellationToken.None);
+
+        (await act.Should().ThrowAsync<OrchestratorException>())
+            .Which.ErrorKind.Should().Be(OrchestratorErrorKinds.PermissionDenied);
     }
 
     [Fact]
@@ -381,10 +470,32 @@ public class KubernetesPodAttachOrchestratorTests
     }
 
     [Fact]
+    public async Task AttachAsync_DoesNotReviveHandleClosedDuringReadiness()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, store, _) = NewOrchestrator(api);
+        api.OnRunningObserved = () =>
+        {
+            var attaching = store.Snapshot().Single();
+            store.TryTransitionToTerminal(
+                attaching.HandleId,
+                InvestigationState.Closed,
+                failureReason: null,
+                out _).Should().Be(InvestigationTerminalTransition.Transitioned);
+        };
+
+        var act = () => orch.AttachAsync(NewRequest(), CancellationToken.None);
+
+        var error = await act.Should().ThrowAsync<OrchestratorException>();
+        error.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.AttachFailed);
+        store.Snapshot().Should().ContainSingle(handle => handle.State == InvestigationState.Closed);
+    }
+
+    [Fact]
     public void InvestigationHandle_SerializedShape_ExcludesBearerToken()
     {
         // Defence in depth: even if a future caller serializes the internal handle directly,
-        // [JsonIgnore] on PodLocalBearerToken must keep the secret out of the wire shape.
+        // [JsonIgnore] on both internal secrets must keep them out of the wire shape.
         var handle = new InvestigationHandle(
             HandleId: "inv_test",
             Namespace: Ns,
@@ -395,12 +506,15 @@ public class KubernetesPodAttachOrchestratorTests
             State: InvestigationState.Active,
             AttachedAt: DateTimeOffset.UtcNow,
             ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
+            InternalScopeDelegationKey: "SECRET_DELEGATION_VALUE",
             ProcessSelector: new InvestigationProcessSelector("CoreClrSample"));
 
         var json = System.Text.Json.JsonSerializer.Serialize(handle);
 
         json.Should().NotContain("SECRET_TOKEN_VALUE");
         json.Should().NotContain("PodLocalBearerToken");
+        json.Should().NotContain("SECRET_DELEGATION_VALUE");
+        json.Should().NotContain("InternalScopeDelegationKey");
     }
 
     [Fact]
@@ -433,6 +547,8 @@ public class KubernetesPodAttachOrchestratorTests
         string? containerName = null,
         bool requirePreparedTarget = true,
         bool allowReuseExistingSession = true,
+        string? ownerBearerName = null,
+        string? ownerPrincipalKey = null,
         InvestigationProcessSelector? processSelector = null)
         => new(
             @namespace,
@@ -441,7 +557,9 @@ public class KubernetesPodAttachOrchestratorTests
             TtlSeconds: null,
             requirePreparedTarget,
             allowReuseExistingSession,
-            ProcessSelector: processSelector);
+            ownerBearerName,
+            ownerPrincipalKey,
+            processSelector);
 
     private static V1Pod BuildPreparedPod()
         => new()
@@ -466,7 +584,11 @@ public class KubernetesPodAttachOrchestratorTests
         };
 
     private static (KubernetesPodAttachOrchestrator orch, IInvestigationStore store, OrchestratorOptions options)
-        NewOrchestrator(StubAttachApi api, bool requirePreparedLabel = true, int attachTimeoutSeconds = 10)
+        NewOrchestrator(
+            StubAttachApi api,
+            bool requirePreparedLabel = true,
+            int attachTimeoutSeconds = 10,
+            DotnetDiagnostics.Core.Security.SecurityOptions? securityOptions = null)
     {
         var options = new OrchestratorOptions
         {
@@ -486,7 +608,14 @@ public class KubernetesPodAttachOrchestratorTests
         var closer = new InvestigationCloser(store, new NoOpProxyClient(), new NoOpPortForwardManager(), new MemoryInvestigationSessionBinder());
         var time = new FakeTimeProvider();
         var orch = new KubernetesPodAttachOrchestrator(
-            api, store, closer, observability, options, time, TimeSpan.FromMilliseconds(1),
+            api,
+            store,
+            closer,
+            observability,
+            options,
+            securityOptions ?? new DotnetDiagnostics.Core.Security.SecurityOptions(),
+            time,
+            TimeSpan.FromMilliseconds(1),
             NullLogger<KubernetesPodAttachOrchestrator>.Instance);
         return (orch, store, options);
     }
@@ -520,6 +649,7 @@ public class KubernetesPodAttachOrchestratorTests
         public bool PatchInvoked { get; private set; }
         public int PatchInvocationCount { get; private set; }
         public V1EphemeralContainer? PatchedSpec { get; private set; }
+        public Action? OnRunningObserved { get; set; }
 
         public Task<V1PodList> ListPodsAsync(string? namespaceName, string? labelSelector, string? fieldSelector, int? limit, string? continueToken, CancellationToken cancellationToken)
             => throw new NotSupportedException();
@@ -537,6 +667,11 @@ public class KubernetesPodAttachOrchestratorTests
                 var state = _readCount >= _ephemeralRunningAfter
                     ? new V1ContainerState { Running = new V1ContainerStateRunning() }
                     : new V1ContainerState { Waiting = new V1ContainerStateWaiting { Reason = "ContainerCreating" } };
+                if (state.Running is not null)
+                {
+                    OnRunningObserved?.Invoke();
+                    OnRunningObserved = null;
+                }
                 if (existing is null)
                 {
                     statuses.Add(new V1ContainerStatus

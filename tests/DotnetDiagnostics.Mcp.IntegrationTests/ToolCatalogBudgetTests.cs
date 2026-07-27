@@ -15,9 +15,13 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 [Collection(DiagnosticIntegrationGroup.Name)]
 public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTests.FullCatalogFactory>
 {
-    // Baseline measured 2026-07-15: 199,760 bytes. 220,000 leaves 10.1% headroom
-    // for deliberate schema evolution without allowing catalog growth to go unnoticed.
-    private const int MaximumCatalogBytes = 220_000;
+    // Baseline measured 2026-07-15: 199,760 bytes. Re-measured after the Phase 16
+    // proxy-delegation/scope-authorization batch (#706, #713-#723 - added
+    // collect_batch, delegated-scope prose on export/investigation/orchestrator
+    // tools, and Azure discovery docs): 220,804 bytes. 230,000 leaves ~4.2%
+    // headroom over that measurement for further deliberate schema evolution
+    // without allowing catalog growth to go unnoticed.
+    private const int MaximumCatalogBytes = 230_000;
 
     private readonly FullCatalogFactory _factory;
     private readonly ITestOutputHelper _output;

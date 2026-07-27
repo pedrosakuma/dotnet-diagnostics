@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Reflection;
+using System.Text.Json;
 using ModelContextProtocol.Server;
 
 namespace DotnetDiagnostics.Mcp.Security;
@@ -34,6 +35,37 @@ internal sealed class ToolScopeRegistry
         public ImmutableArray<string> Scopes => IsAny ? Any : All;
     }
 
+    public readonly record struct AuthorizationResult(
+        bool IsAllowed,
+        string MissingScope,
+        bool MissingExplicitScope,
+        Requirement Primary,
+        ImmutableArray<string> AdditionalScopes,
+        ImmutableArray<string> ExplicitAdditionalScopes,
+        ImmutableArray<string> ModifierScopes,
+        bool IsAnyOfSatisfied = true,
+        ImmutableArray<string> MissingAllOfScopes = default)
+    {
+        public ImmutableArray<string> AnyOfScopes =>
+            Primary.IsAny
+                ? Primary.Any.Distinct().ToImmutableArray()
+                : ImmutableArray<string>.Empty;
+
+        public ImmutableArray<string> AllOfScopes =>
+            (Primary.IsAny ? ImmutableArray<string>.Empty : Primary.All)
+                .AddRange(AdditionalScopes)
+                .AddRange(ExplicitAdditionalScopes)
+                .AddRange(ModifierScopes)
+                .Distinct()
+                .ToImmutableArray();
+
+        public ImmutableArray<string> RequiredScopes =>
+            AnyOfScopes
+                .AddRange(AllOfScopes)
+                .Distinct()
+                .ToImmutableArray();
+    }
+
     private readonly ImmutableDictionary<string, Requirement> _byToolName;
 
     private ToolScopeRegistry(ImmutableDictionary<string, Requirement> byToolName)
@@ -50,6 +82,98 @@ internal sealed class ToolScopeRegistry
 
     /// <summary>Tool names registered with this index (used by tests / startup logs).</summary>
     public IReadOnlyCollection<string> KnownToolNames => _byToolName.Keys.ToArray();
+
+    /// <summary>
+    /// Authorizes one concrete invocation. Static primary scopes come from the tool attributes;
+    /// argument-dependent primary and literal modifier scopes come from
+    /// <see cref="ToolInvocationScopeResolver"/> so local dispatch and both orchestrator proxy
+    /// paths share one decision point.
+    /// </summary>
+    public AuthorizationResult Authorize(
+        string toolName,
+        IDictionary<string, JsonElement>? arguments,
+        BearerPrincipal? principal,
+        bool proxyInvocation = false,
+        ToolScopeResolutionPolicies? policies = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+
+        var primary = TryGet(toolName);
+        if (primary is null)
+        {
+            return new AuthorizationResult(
+                false,
+                "<unknown>",
+                false,
+                default,
+                ImmutableArray<string>.Empty,
+                ImmutableArray<string>.Empty,
+                ImmutableArray<string>.Empty);
+        }
+
+        var invocation = ToolInvocationScopeResolver.Resolve(
+            toolName,
+            arguments,
+            proxyInvocation,
+            policies);
+        var isAnyOfSatisfied = !primary.Value.IsAny ||
+            primary.Value.Any.Any(scope => principal?.HasScope(scope) == true);
+        var missingAllOfScopes = ImmutableArray.CreateBuilder<string>();
+
+        if (!primary.Value.IsAny)
+        {
+            foreach (var scope in primary.Value.All)
+            {
+                if (principal?.HasScope(scope) != true)
+                {
+                    missingAllOfScopes.Add(scope);
+                }
+            }
+        }
+
+        foreach (var scope in invocation.AdditionalScopes)
+        {
+            if (principal?.HasScope(scope) != true)
+            {
+                missingAllOfScopes.Add(scope);
+            }
+        }
+
+        foreach (var scope in invocation.ExplicitAdditionalScopes)
+        {
+            if (principal?.HasExplicitScope(scope) != true)
+            {
+                missingAllOfScopes.Add(scope);
+            }
+        }
+
+        foreach (var modifier in invocation.ExplicitModifierScopes)
+        {
+            if (principal?.HasExplicitScope(modifier) != true)
+            {
+                missingAllOfScopes.Add(modifier);
+            }
+        }
+
+        var missingAll = missingAllOfScopes.Distinct().ToImmutableArray();
+        var isAllowed = isAnyOfSatisfied && missingAll.IsDefaultOrEmpty;
+        var missingScope = !isAnyOfSatisfied
+            ? primary.Value.Any[0]
+            : missingAll.FirstOrDefault() ?? string.Empty;
+        var missingExplicitScope = missingAll.Contains(missingScope, StringComparer.Ordinal) &&
+            invocation.ExplicitModifierScopes.Contains(missingScope, StringComparer.Ordinal);
+
+        return new AuthorizationResult(
+            isAllowed,
+            missingScope,
+            missingExplicitScope,
+            primary.Value,
+            invocation.AdditionalScopes,
+            invocation.ExplicitAdditionalScopes,
+            invocation.ExplicitModifierScopes,
+            isAnyOfSatisfied,
+            missingAll);
+    }
 
     /// <summary>Scans the supplied tool surface types for <c>[McpServerTool]</c> methods
     /// and reads their scope attributes. Throws when any tool method is missing both
@@ -119,4 +243,5 @@ internal sealed class ToolScopeRegistry
 
         return new ToolScopeRegistry(builder.ToImmutable());
     }
+
 }

@@ -166,13 +166,14 @@ public static class EventCollectionUseCases
 
         // The handle always carries the FULL snapshot (query_snapshot drilldown stays cheap),
         // but the inline payload is depth-gated to keep first-look responses small.
-        var handle = handles.Register(
+        var handle = handles.RegisterWithMetadata(
             pid,
             CollectionHandleKinds.Counters,
             snapshot,
             CollectionHandleTtl,
             evictWhenProcessExits: false,
-            origin: HandleOrigin.Live);
+            origin: HandleOrigin.Live,
+            producingTool: "collect_events");
 
         // Signal-grouping ("vector") layer (#514/#527): forward only the salient, diagnosis-agnostic
         // counter movement rather than making the consumer re-derive it from the full counter table.
@@ -360,7 +361,13 @@ public static class EventCollectionUseCases
             depth,
             new HandledCollectionStrategy<GcSummary>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxEvents, ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.GcEvents, snap, evictWhenProcessExits: false),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(
+                    store,
+                    pid,
+                    CollectionHandleKinds.GcEvents,
+                    snap,
+                    evictWhenProcessExits: false,
+                    origin: HandleOrigin.Live),
                 BuildResult: (gc, handle, context) =>
                 {
                     var inlineGc = gc;
@@ -499,7 +506,13 @@ public static class EventCollectionUseCases
             SamplingDepth.Detail,
             new HandledCollectionStrategy<GcDatasSnapshot>(
                 CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), maxEvents, ct),
-                RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.GcDatas, snap, evictWhenProcessExits: false),
+                RegisterHandle: static (store, pid, snap) => RegisterHandle(
+                    store,
+                    pid,
+                    CollectionHandleKinds.GcDatas,
+                    snap,
+                    evictWhenProcessExits: false,
+                    origin: HandleOrigin.Live),
                 BuildEarlyResult: (snapshot, context) =>
                 {
                     if (snapshot.HasData)
@@ -1406,7 +1419,14 @@ public static class EventCollectionUseCases
         bool evictWhenProcessExits = true,
         HandleOrigin origin = HandleOrigin.Live)
         where T : notnull
-        => handles.Register(processId, kind, snapshot, CollectionHandleTtl, evictWhenProcessExits, origin);
+        => handles.RegisterWithMetadata(
+            processId,
+            kind,
+            snapshot,
+            CollectionHandleTtl,
+            evictWhenProcessExits,
+            origin,
+            producingTool: "collect_events");
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)
         => DiagnosticResult.Fail<T>(

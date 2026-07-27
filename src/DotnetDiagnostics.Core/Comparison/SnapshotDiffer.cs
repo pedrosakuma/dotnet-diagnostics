@@ -96,7 +96,7 @@ public static class SnapshotDiffer
                 }
                 else if (!string.Equals(defs[kv.Key].Unit, kv.Value.Definition.Unit, StringComparison.Ordinal))
                 {
-                    var note = $"Metric '{kv.Key}' has inconsistent units across captures; comparing raw values.";
+                    const string note = "A metric has inconsistent units across captures; raw values were compared and its labels/units remain inside the untrusted comparison fields.";
                     if (!notes.Contains(note))
                     {
                         notes.Add(note);
@@ -126,7 +126,7 @@ public static class SnapshotDiffer
             }
             else if (values.Any(v => v is null))
             {
-                var note = $"Metric '{name}' is absent from one or more captures.";
+                const string note = "A metric is absent from one or more captures; its label remains inside the untrusted comparison fields.";
                 if (!notes.Contains(note))
                 {
                     notes.Add(note);
@@ -199,7 +199,9 @@ public static class SnapshotDiffer
             }
 
             var (key, name) = display[id];
-            var dispersion = mode == JourneyMode.Dispersion ? Dispersion(values) : null;
+            var dispersion = mode == JourneyMode.Dispersion
+                ? Dispersion(values, missingAsZero: true)
+                : null;
             rows.Add(new KeyMatrixRow(key, name, values, deltaAbs, deltaPct, direction, dispersion));
         }
 
@@ -241,7 +243,7 @@ public static class SnapshotDiffer
             var id = KeyMatchId(row.Key);
             if (!map.TryAdd(id, (primary.Value, row.Key, row.DisplayName, primary.Definition.BetterDirection)))
             {
-                var note = $"Duplicate key '{id}' within a capture; keeping first occurrence.";
+                const string note = "A duplicate untrusted key occurred within a capture; the first occurrence was retained.";
                 if (!notes.Contains(note))
                 {
                     notes.Add(note);
@@ -530,24 +532,22 @@ public static class SnapshotDiffer
             return NoOverlap;
         }
 
-        double maxCv;
+        var scalarMaxCv = 0.0;
         if (series.Count > 0)
         {
             var role = HighestRoleOf(series);
-            maxCv = series
+            scalarMaxCv = series
                 .Where(s => s.Definition.Role == role && s.Dispersion is not null)
                 .Select(s => s.Dispersion!.CoefficientOfVariation)
                 .DefaultIfEmpty(0)
                 .Max();
         }
-        else
-        {
-            // Key-set kinds carry no scalar metrics; measure spread across each row's per-capture values.
-            maxCv = keyMatrix
-                .Select(r => r.Dispersion?.CoefficientOfVariation ?? 0)
-                .DefaultIfEmpty(0)
-                .Max();
-        }
+
+        var keyMaxCv = keyMatrix
+            .Select(r => r.Dispersion?.CoefficientOfVariation ?? 0)
+            .DefaultIfEmpty(0)
+            .Max();
+        var maxCv = Math.Max(scalarMaxCv, keyMaxCv);
 
         return maxCv > DispersionCvThreshold ? Dispersed : Uniform;
     }
@@ -660,7 +660,7 @@ public static class SnapshotDiffer
         return allNonPos ? MetricTrend.MonotonicDown : MetricTrend.Converged;
     }
 
-    private static DispersionStats? Dispersion(double?[] values)
+    private static DispersionStats? Dispersion(double?[] values, bool missingAsZero = false)
     {
         var present = new List<(int Index, double Value)>();
         for (var i = 0; i < values.Length; i++)
@@ -668,6 +668,10 @@ public static class SnapshotDiffer
             if (values[i] is double d)
             {
                 present.Add((i, d));
+            }
+            else if (missingAsZero)
+            {
+                present.Add((i, 0));
             }
         }
 

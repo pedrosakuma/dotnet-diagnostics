@@ -55,12 +55,10 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
             new Dictionary<string, object?> { ["kind"] = "module", ["moduleVersionId"] = GetSampleMvid(), ["processId"] = SampleProcessId },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().BeTrue();
-        var envelope = DeserializeEnvelope(result);
-        envelope.Should().NotBeNull();
-        envelope!.Error.Should().NotBeNull();
-        envelope.Error!.Kind.Should().Be("Forbidden");
-        envelope.Error.Message.Should().Contain("module-bytes-read");
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("kind").GetString().Should().Be("forbidden");
+        envelope.GetProperty("modifier_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("module-bytes-read");
     }
 
     [Fact]
@@ -234,11 +232,10 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
             new Dictionary<string, object?> { ["kind"] = "trace", ["traceFilePath"] = "x.nettrace" },
             cancellationToken: CancellationToken.None);
 
-        var envelope = DeserializeEnvelope(result);
-        envelope.Should().NotBeNull();
-        envelope!.Error.Should().NotBeNull();
-        envelope.Error!.Kind.Should().Be("Forbidden");
-        envelope.Error.Message.Should().Contain("module-bytes-read");
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("kind").GetString().Should().Be("forbidden");
+        envelope.GetProperty("modifier_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("module-bytes-read");
     }
 
     [Fact]
@@ -328,10 +325,9 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
             new Dictionary<string, object?> { ["kind"] = "delete", ["artifactPath"] = "keep.dmp" },
             cancellationToken: CancellationToken.None);
 
-        var envelope = DeserializeEnvelope(result);
-        envelope!.Error.Should().NotBeNull();
-        envelope.Error!.Kind.Should().Be("Forbidden");
-        envelope.Error.Message.Should().Contain("delete-artifact");
+        result.IsError.Should().BeTrue();
+        result.Content.OfType<TextContentBlock>().Single().Text
+            .Should().Contain("delete-artifact");
         File.Exists(path).Should().BeTrue();
     }
 

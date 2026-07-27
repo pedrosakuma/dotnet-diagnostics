@@ -66,6 +66,25 @@ internal static class InvestigationRoutingArguments
         {
             Name = requestParams.Name,
             Arguments = cleaned,
+            Meta = requestParams.Meta,
+            Task = requestParams.Task,
+        };
+    }
+
+    /// <summary>
+    /// Creates the pod-bound form of an orchestrator-owned task call. The original task
+    /// metadata remains on the outer request so the SDK manages it in the caller's session;
+    /// the pod executes one synchronous delegated invocation.
+    /// </summary>
+    internal static CallToolRequestParams WithoutTask(CallToolRequestParams request)
+    {
+        System.ArgumentNullException.ThrowIfNull(request);
+        return new CallToolRequestParams
+        {
+            Name = request.Name,
+            Arguments = request.Arguments,
+            Meta = request.Meta,
+            Task = null,
         };
     }
 }

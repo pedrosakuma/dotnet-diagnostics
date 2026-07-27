@@ -17,17 +17,49 @@ public interface IPrincipalAccessor
 }
 
 /// <summary>HTTP-transport implementation: reads the principal stamped by
-/// <c>BearerTokenMiddleware</c> off <see cref="HttpContext.Items"/>.</summary>
+/// <c>BearerTokenMiddleware</c> off <see cref="HttpContext.Items"/>, with an
+/// async-flow-local override for a verified pod-internal scope delegation.</summary>
 internal sealed class HttpContextPrincipalAccessor : IPrincipalAccessor
 {
     private readonly IHttpContextAccessor _accessor;
+    private readonly AsyncLocal<BearerPrincipal?> _delegatedPrincipal = new();
 
     public HttpContextPrincipalAccessor(IHttpContextAccessor accessor)
     {
         _accessor = accessor;
     }
 
-    public BearerPrincipal? Current => _accessor.HttpContext?.GetBearerPrincipal();
+    public BearerPrincipal? Current =>
+        _delegatedPrincipal.Value ?? _accessor.HttpContext?.GetBearerPrincipal();
+
+    public IDisposable PushDelegation(BearerPrincipal principal)
+    {
+        ArgumentNullException.ThrowIfNull(principal);
+        var previous = _delegatedPrincipal.Value;
+        // Store the immutable principal directly in AsyncLocal. MCP task promotion captures
+        // this ExecutionContext while the handler runs; restoring the parent slot below does
+        // not mutate the value captured by that background task.
+        _delegatedPrincipal.Value = principal;
+        return new DelegationLease(this, previous);
+    }
+
+    private sealed class DelegationLease(
+        HttpContextPrincipalAccessor accessor,
+        BearerPrincipal? previous) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                // Replace only the disposing flow's slot. Never clear a shared mutable holder:
+                // promoted task flows must retain their verified principal until completion.
+                accessor._delegatedPrincipal.Value = previous;
+            }
+        }
+    }
+
 }
 
 /// <summary>Stdio-transport implementation: returns a synthetic root principal so every

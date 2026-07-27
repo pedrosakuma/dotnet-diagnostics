@@ -1412,20 +1412,22 @@ public sealed class DiagnosticTools
         Idempotent = true,
         UseStructuredContent = true)]
     [Description(
-        "Reads a prior collect_sample(kind=\"cpu\") drill-down handle and produces a portable, versioned " +
+        "Reads one or more supported evidence handles (CPU, counters, GC, or thread snapshot) and produces a portable, versioned " +
         "InvestigationSummary (~5-20 KB JSON) ready to paste into a PR, ADR, or ticket. " +
-        "Includes build + container provenance harvested from the sidecar environment, stable " +
+        "Includes explicit source-tool/kind/handle provenance, build + container provenance harvested from the sidecar environment, stable " +
         "module+methodFullName symbol refs (survive rebuilds where line numbers shift), and " +
         "optional lineage to a previous investigation. Set `format=markdown` for a human-readable " +
         "version. The server is stateless: the LLM owns persistence — paste the JSON into a doc " +
         "and feed it back via `compare_to_baseline` on the next deploy. When the operator opts in " +
         "(MCP_INVESTIGATION_OTEL=1) the summary is also emitted as an OpenTelemetry span for " +
         "durable, queryable investigation history; off by default.")]
-    public static DiagnosticResult<ExportedInvestigationSummary> ExportInvestigationSummary(
+    public static Task<DiagnosticResult<ExportedInvestigationSummary>> ExportInvestigationSummary(
         IInvestigationSummaryExporter exporter,
         IDiagnosticHandleStore handles,
         DotnetDiagnostics.Mcp.Observability.IInvestigationTelemetryEmitter telemetry,
-        [Description("Handle returned by a prior collect_sample(kind=\"cpu\") call.")] string handle,
+        IPrincipalAccessor principalAccessor,
+        [Description("Primary evidence handle from collect_sample(kind=\"cpu\"), collect_events(kind=\"counters\"|\"gc\"|\"datas\"), or collect_thread_snapshot.")] string handle,
+        [Description("Optional additional supported evidence handles from the same process. Up to 7; duplicates are ignored.")] string[]? additionalHandles = null,
         [Description("Output format: 'json' (default — portable, machine-readable) or 'markdown' (human-readable for PRs).")] SummaryFormat format = SummaryFormat.Json,
         [Description("Max hotspots to include in the summary. Defaults to 10.")] int topHotspots = 10,
         [Description("Optional managed assembly name for the target (from inspect_process(view='list')).")] string? buildAssemblyName = null,
@@ -1435,12 +1437,17 @@ public sealed class DiagnosticTools
         [Description("Optional short description of the proposed fix.")] string? fixDescription = null,
         [Description("Optional free-form notes appended to the summary.")] string? notes = null,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
-        string? investigationHandleId = null)
-        => DiagnosticToolInvestigationPlanning.ExportInvestigationSummary(
+        string? investigationHandleId = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(DiagnosticToolInvestigationPlanning.ExportInvestigationSummary(
             exporter,
             handles,
             telemetry,
+            principalAccessor,
             handle,
+            additionalHandles,
             format,
             topHotspots,
             buildAssemblyName,
@@ -1449,7 +1456,8 @@ public sealed class DiagnosticTools
             fixPullRequestUrl,
             fixDescription,
             notes,
-            investigationHandleId);
+            investigationHandleId));
+    }
 
     [RequireScope("investigation-export")]
     [McpServerTool(
@@ -1463,22 +1471,25 @@ public sealed class DiagnosticTools
         "Diffs either two InvestigationSummary JSON documents (produced by export_investigation_summary) " +
         "or 2..N persisted ComparableSnapshot JSON documents. Legacy summaries return the same " +
         "SummaryDiff as before; comparable snapshots return either the full SnapshotJourneyDiff when small " +
-        "or a compact verdict/headline/top-deltas summary with a journey://diff/{handle} Resource link for large matrices. " +
+        "or a compact verdict/headline/top-deltas summary with a journey://diff/{handle} Resource link for large local matrices; " +
+        "proxied full results stay inline because dynamic pod Resources are not forwarded. " +
         "Pass JSON bodies only; the stateless sidecar never reads comparison inputs from file paths.")]
     public static DiagnosticResult<object> CompareToBaseline(
         ISummaryComparer comparer,
         IDiagnosticHandleStore handles,
+        IPrincipalAccessor principalAccessor,
         [Description("Baseline summary JSON (from a prior export_investigation_summary). Optional when snapshotsJson is supplied.")] string? baselineSummaryJson = null,
         [Description("Current summary JSON (from export_investigation_summary on the new investigation). Optional when snapshotsJson is supplied.")] string? currentSummaryJson = null,
         [Description("Ordered ComparableSnapshot JSON bodies to compare as a journey. JSON bodies only; do not pass file paths.")] string[]? snapshotsJson = null,
         [Description("ComparableSnapshot journey only: maximum metric series / key rows returned in compact inline payloads and used to bound key-matrix construction. Must be >= 1. Defaults to 25.")] int topN = 25,
-        [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix when it is below the inline threshold; `compact` returns verdict/headline/counts/notes plus top-N metric and key deltas. Large full diffs always return compact inline data plus a journey://diff/{handle} Resource link. Defaults to `full`.")] string depth = "full",
+        [Description("ComparableSnapshot journey only: inline verbosity. `full` returns the full matrix; local large results may use a journey://diff/{handle} Resource link, while proxied results stay inline because dynamic pod Resources are not forwarded. `compact` returns verdict/headline/counts/notes plus top-N deltas. Defaults to `full`.")] string depth = "full",
         [Description("ComparableSnapshot journey only: `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers.")] string? mode = null,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null)
         => DiagnosticToolBaselineComparison.CompareToBaseline(
             comparer,
             handles,
+            principalAccessor,
             baselineSummaryJson,
             currentSummaryJson,
             snapshotsJson,

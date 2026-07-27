@@ -150,13 +150,14 @@ public static class GatedCaptureUseCases
                     var result = await cpuSampler
                         .SampleAsync(pid, TimeSpan.FromSeconds(CpuSampleDurationSeconds), topN: 25, nativeAotSymbols: nativeAotSymbols, cancellationToken: ct)
                         .ConfigureAwait(false);
-                    var handle = handles.Register(
+                    var handle = handles.RegisterWithMetadata(
                         pid,
                         CpuSampleHandleKind,
                         result.Artifact,
                         HandleTtl,
                         evictWhenProcessExits: false,
-                        origin: HandleOrigin.Live);
+                        origin: HandleOrigin.Live,
+                        producingTool: "collect_events");
                     return new GatedCaptureOutcome(
                         $"Captured CPU sample ({result.Summary.TotalSamples:N0} samples over {CpuSampleDurationSeconds}s) when {predicate.Metric.Token()}={FormatValue(trigger.ObservedValue)}. Handle `{handle.Id}`.",
                         handle.Id, handle.ExpiresAt);
@@ -165,13 +166,14 @@ public static class GatedCaptureUseCases
                 case GatedCaptureKind.ThreadSnapshot:
                 {
                     var snapshot = await threadInspector.InspectLiveAsync(pid, options: null, ct).ConfigureAwait(false);
-                    var handle = handles.Register(
+                    var handle = handles.RegisterWithMetadata(
                         snapshot.ProcessId,
                         ThreadSnapshotHandleKind,
                         snapshot,
                         HandleTtl,
                         evictWhenProcessExits: false,
-                        origin: HandleOrigin.Live);
+                        origin: HandleOrigin.Live,
+                        producingTool: "collect_events");
                     return new GatedCaptureOutcome(
                         $"Captured thread snapshot ({snapshot.Threads.Count} threads, {snapshot.Locks.Count} monitor locks) when {predicate.Metric.Token()}={FormatValue(trigger.ObservedValue)}. Handle `{handle.Id}`.",
                         handle.Id, handle.ExpiresAt);

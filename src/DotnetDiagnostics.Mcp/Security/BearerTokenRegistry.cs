@@ -164,7 +164,10 @@ internal sealed class BearerTokenRegistry : IPrincipalResolver
         for (var i = 0; i < source.Count; i++)
         {
             var entry = source[i];
-            var principal = new BearerPrincipal(entry.Name, entry.Scopes);
+            var principal = new BearerPrincipal(
+                entry.Name,
+                entry.Scopes,
+                PrincipalOwnershipKey.ForOpaqueEntry(entry.EntryId));
             arr[i] = new Entry(Encoding.UTF8.GetBytes(entry.Token), principal);
         }
         return arr;
@@ -174,7 +177,8 @@ internal sealed class BearerTokenRegistry : IPrincipalResolver
     {
         var principal = new BearerPrincipal(
             BearerPrincipal.LegacyRootName,
-            ImmutableHashSet.Create(BearerPrincipal.RootScope));
+            ImmutableHashSet.Create(BearerPrincipal.RootScope),
+            PrincipalOwnershipKey.ForSystem(BearerPrincipal.LegacyRootName));
         return new[] { new Entry(Encoding.UTF8.GetBytes(token), principal) };
     }
 
@@ -261,7 +265,11 @@ internal sealed class BearerTokenRegistry : IPrincipalResolver
                     $"Auth:BearerTokens entry '{name}' reuses a Token value already registered for another entry.");
             }
 
-            result.Add(new ScopedTokenEntry(name, token, scopes.ToImmutable()));
+            result.Add(new ScopedTokenEntry(
+                $"Auth:BearerTokens:{index}",
+                name,
+                token,
+                scopes.ToImmutable()));
             index++;
         }
 
@@ -269,7 +277,11 @@ internal sealed class BearerTokenRegistry : IPrincipalResolver
     }
 
     private sealed record Entry(byte[] TokenBytes, BearerPrincipal Principal);
-    private sealed record ScopedTokenEntry(string Name, string Token, ImmutableHashSet<string> Scopes);
+    private sealed record ScopedTokenEntry(
+        string EntryId,
+        string Name,
+        string Token,
+        ImmutableHashSet<string> Scopes);
 
     private readonly record struct TokenIndexKey(
         int Length,

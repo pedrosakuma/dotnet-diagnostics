@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Immutable;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -8,6 +9,7 @@ using System.Threading.Tasks;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Activities;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
+using DotnetDiagnostics.Mcp.Security;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
 using ModelContextProtocol.Protocol;
@@ -46,7 +48,7 @@ public sealed class DistributedTraceCorrelatorTests
         };
 
         var fanout = await DistributedTraceCorrelator.CorrelateAsync(
-            store, proxy, callerBearerName: null, investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
+            store, proxy, callerPrincipal: null, investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
             sources: null, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(2);
@@ -86,7 +88,7 @@ public sealed class DistributedTraceCorrelatorTests
         proxy.Throw["bad"] = new InvalidOperationException("port-forward died");
 
         var fanout = await DistributedTraceCorrelator.CorrelateAsync(
-            store, proxy, callerBearerName: null, investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
+            store, proxy, callerPrincipal: null, investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
             sources: null, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(2);
@@ -108,7 +110,7 @@ public sealed class DistributedTraceCorrelatorTests
         proxy.Throw["pod-b"] = new InvalidOperationException("forward died B");
 
         var fanout = await DistributedTraceCorrelator.CorrelateAsync(
-            store, proxy, callerBearerName: null, investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
+            store, proxy, callerPrincipal: null, investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
             sources: null, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(2);
@@ -140,7 +142,7 @@ public sealed class DistributedTraceCorrelatorTests
         };
 
         var fanout = await DistributedTraceCorrelator.CorrelateAsync(
-            store, proxy, callerBearerName: "session-A", investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
+            store, proxy, callerPrincipal: Principal("session-A"), investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
             sources: null, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(1);
@@ -163,7 +165,7 @@ public sealed class DistributedTraceCorrelatorTests
         };
 
         var fanout = await DistributedTraceCorrelator.CorrelateAsync(
-            store, proxy, callerBearerName: "bearer-A", investigationHandleIds: new[] { "inv-b" }, TraceId, durationSeconds: 5, maxActivities: 100,
+            store, proxy, callerPrincipal: Principal("bearer-A"), investigationHandleIds: new[] { "inv-b" }, TraceId, durationSeconds: 5, maxActivities: 100,
             sources: null, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(1);
@@ -177,7 +179,7 @@ public sealed class DistributedTraceCorrelatorTests
         store.Add(ActiveHandle("inv-a", "pod-a", ownerBearerName: "bearer-A"));
 
         var fanout = await DistributedTraceCorrelator.CorrelateAsync(
-            store, new StubProxyClient(), callerBearerName: "bearer-A", investigationHandleIds: Array.Empty<string>(), TraceId,
+            store, new StubProxyClient(), callerPrincipal: Principal("bearer-A"), investigationHandleIds: Array.Empty<string>(), TraceId,
             durationSeconds: 5, maxActivities: 100, sources: null, CancellationToken.None);
 
         fanout.AttachedActivePods.Should().Be(0);
@@ -223,7 +225,7 @@ public sealed class DistributedTraceCorrelatorTests
         };
 
         var fanoutTask = DistributedTraceCorrelator.CorrelateAsync(
-            store, proxy, callerBearerName: null, investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
+            store, proxy, callerPrincipal: null, investigationHandleIds: null, TraceId, durationSeconds: 5, maxActivities: 100,
             sources: null, CancellationToken.None);
 
         await Task.Delay(50);
@@ -244,7 +246,13 @@ public sealed class DistributedTraceCorrelatorTests
         State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
-        OwnerBearerName: ownerBearerName);
+        OwnerBearerName: ownerBearerName,
+        OwnerPrincipalKey: ownerBearerName is null
+            ? null
+            : PrincipalOwnershipKey.ForSynthetic(ownerBearerName));
+
+    private static BearerPrincipal Principal(string name)
+        => new(name, ImmutableHashSet.Create("orchestrator-attach"));
 
     private static CapturedActivity Span(
         string source, string operation, string spanId, string? parentSpanId,

@@ -3,6 +3,7 @@ using System.Text.Json;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Mcp.Resources;
 
 namespace DotnetDiagnostics.Mcp.Tools;
@@ -41,7 +42,12 @@ public sealed record JourneyDiffCompactSummary(
     int TopN,
     string? ResourceUri,
     string? Handle,
-    DateTimeOffset? HandleExpiresAt);
+    DateTimeOffset? HandleExpiresAt)
+{
+    [System.Text.Json.Serialization.JsonPropertyOrder(-20)]
+    public InvestigationEvidenceBoundary UntrustedDataBoundary { get; init; } =
+        InvestigationEvidenceBoundary.UntrustedComparisonData;
+}
 
 internal static class JourneyDiffPresentation
 {
@@ -49,8 +55,9 @@ internal static class JourneyDiffPresentation
     public const string HandleKind = "journey-diff";
 
     /// <summary>
-    /// Full journey diffs above 32 KiB are replaced inline with a compact summary and a
-    /// <c>journey://diff/{handle}</c> Resource link, keeping large matrices out of model context.
+    /// Local full journey diffs above 32 KiB are replaced inline with a compact summary and a
+    /// <c>journey://diff/{handle}</c> Resource link. Proxied calls disable the link and retain
+    /// the full result inline because dynamic pod Resources are intentionally not forwarded.
     /// </summary>
     public const int InlineThresholdBytes = 32 * 1024;
 
@@ -89,6 +96,7 @@ internal static class JourneyDiffPresentation
         string summaryLine,
         bool evictWhenProcessExits,
         HandleOrigin origin,
+        bool allowResourceLink = true,
         params NextActionHint[] hints)
     {
         ArgumentNullException.ThrowIfNull(diff);
@@ -96,7 +104,7 @@ internal static class JourneyDiffPresentation
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(topN);
 
         var serialized = JsonSerializer.SerializeToUtf8Bytes(diff, JourneyDiffResourceJsonContext.Default.SnapshotJourneyDiff);
-        var shouldStore = serialized.Length > InlineThresholdBytes;
+        var shouldStore = allowResourceLink && serialized.Length > InlineThresholdBytes;
         DiagnosticHandle? handle = null;
         if (shouldStore)
         {
@@ -163,15 +171,10 @@ internal static class JourneyDiffPresentation
                 $"{diff.Mode}: {diff.Verdict} across {diff.Labels.Count} captures");
         }
 
-        var from = LabelAt(diff.Labels, headline.FromIndex);
-        var to = LabelAt(diff.Labels, headline.ToIndex);
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"{headline.Relation}: {headline.Verdict} ({from} → {to})");
+            $"{headline.Relation}: {headline.Verdict} (capture #{headline.FromIndex} → capture #{headline.ToIndex})");
     }
-
-    private static string LabelAt(IReadOnlyList<string> labels, int index)
-        => index >= 0 && index < labels.Count ? labels[index] : index.ToString(CultureInfo.InvariantCulture);
 
     private static MetricSeries[] TopMetricSeries(IReadOnlyList<MetricSeries> series, int topN, JourneyMode mode)
     {

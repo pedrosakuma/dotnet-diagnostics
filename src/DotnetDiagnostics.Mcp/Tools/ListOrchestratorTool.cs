@@ -116,7 +116,7 @@ public sealed class ListOrchestratorTool
         {
             if (!ToolDispatchGuards.RequireScope(
                     principalAccessor.Current,
-                    "orchestrator-attach",
+                    ToolInvocationScopeResolver.GetListOrchestratorKindScope(canonicalKind),
                     () => "list_orchestrator(kind=investigations) requires the 'orchestrator-attach' scope.",
                     out DiagnosticResult<ListOrchestratorResult>? scopeFailure,
                     new NextActionHint(
@@ -133,7 +133,7 @@ public sealed class ListOrchestratorTool
         {
             if (!ToolDispatchGuards.RequireScope(
                     principalAccessor.Current,
-                    "orchestrator-list",
+                    ToolInvocationScopeResolver.GetListOrchestratorKindScope(canonicalKind),
                     () => "list_orchestrator(kind=pods) requires the 'orchestrator-list' scope.",
                     out DiagnosticResult<ListOrchestratorResult>? scopeFailure,
                     new NextActionHint(

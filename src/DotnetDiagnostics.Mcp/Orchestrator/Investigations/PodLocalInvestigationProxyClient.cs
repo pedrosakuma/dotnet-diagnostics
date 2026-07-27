@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using DotnetDiagnostics.Mcp.Security;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
@@ -35,16 +36,29 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 internal sealed class PodLocalInvestigationProxyClient : IInvestigationProxyClient, IAsyncDisposable
 {
     private readonly IPortForwardManager _portForwardManager;
+    private readonly ToolScopeRegistry _scopeRegistry;
+    private readonly IPrincipalAccessor _principalAccessor;
+    private readonly ToolScopeResolutionPolicies _scopePolicies;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ConcurrentDictionary<string, Lazy<Task<McpClient>>> _clients = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _closedHandles = new(StringComparer.Ordinal);
     private int _disposed;
 
     public PodLocalInvestigationProxyClient(
         IPortForwardManager portForwardManager,
+        ToolScopeRegistry scopeRegistry,
+        IPrincipalAccessor principalAccessor,
+        IServiceProvider services,
         ILoggerFactory? loggerFactory = null)
     {
         ArgumentNullException.ThrowIfNull(portForwardManager);
+        ArgumentNullException.ThrowIfNull(scopeRegistry);
+        ArgumentNullException.ThrowIfNull(principalAccessor);
+        ArgumentNullException.ThrowIfNull(services);
         _portForwardManager = portForwardManager;
+        _scopeRegistry = scopeRegistry;
+        _principalAccessor = principalAccessor;
+        _scopePolicies = ToolScopeResolutionPolicies.FromServices(services);
         _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
     }
 
@@ -56,6 +70,12 @@ internal sealed class PodLocalInvestigationProxyClient : IInvestigationProxyClie
         ArgumentNullException.ThrowIfNull(handle);
         ArgumentNullException.ThrowIfNull(request);
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (_closedHandles.ContainsKey(handle.HandleId))
+        {
+            throw new InvalidOperationException(
+                $"Refusing to forward tool '{request.Name}' to investigation {handle.HandleId}: " +
+                "the investigation has been closed.");
+        }
 
         // H7 (issue #164): defense-in-depth allowlist check. The CallTool filter
         // is the primary gate, but enforcing again here guarantees that any
@@ -70,7 +90,40 @@ internal sealed class PodLocalInvestigationProxyClient : IInvestigationProxyClie
                 "tool is not on the orchestrator's investigation-proxy allowlist (DiagnosticTools surface).");
         }
 
+        if (_principalAccessor.Current is not { } caller ||
+            string.IsNullOrWhiteSpace(handle.InternalScopeDelegationKey))
+        {
+            throw new InvalidOperationException(
+                $"Refusing to forward tool '{request.Name}' to investigation {handle.HandleId}: " +
+                "the internal scope-delegation context is unavailable.");
+        }
+
+        var authorization = _scopeRegistry.Authorize(
+            request.Name,
+            request.Arguments,
+            caller,
+            proxyInvocation: true,
+            policies: _scopePolicies);
+        if (!authorization.IsAllowed)
+        {
+            throw new InvalidOperationException(
+                $"Refusing to forward tool '{request.Name}' to investigation {handle.HandleId}: " +
+                $"the caller lacks required scope '{authorization.MissingScope}'.");
+        }
+        request = ToolScopeDelegation.Add(
+            request,
+            authorization,
+            caller,
+            handle.InternalScopeDelegationKey);
+
         var client = await GetOrCreateClientAsync(handle, cancellationToken).ConfigureAwait(false);
+        if (_closedHandles.ContainsKey(handle.HandleId))
+        {
+            await DisposeForHandleAsync(handle.HandleId).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"Refusing to forward tool '{request.Name}' to investigation {handle.HandleId}: " +
+                "the investigation was closed before the pod call started.");
+        }
         return await client.CallToolAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
@@ -83,6 +136,7 @@ internal sealed class PodLocalInvestigationProxyClient : IInvestigationProxyClie
     public async Task DisposeForHandleAsync(string handleId)
     {
         if (string.IsNullOrEmpty(handleId)) return;
+        _closedHandles.TryAdd(handleId, 0);
         if (!_clients.TryRemove(handleId, out var slot)) return;
 
         try

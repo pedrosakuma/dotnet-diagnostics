@@ -153,7 +153,7 @@ public sealed class InspectProcessTool
 
         if (!ToolDispatchGuards.RequireScope(
                 principalAccessor.Current,
-                canonical == RequestsNowView ? "ptrace" : "read-counters",
+                ToolInvocationScopeResolver.GetInspectProcessViewScope(canonical),
                 () => canonical == RequestsNowView
                     ? $"view='{canonical}' requires the 'ptrace' scope because it captures a live thread snapshot."
                     : $"view='{canonical}' requires the 'read-counters' scope. inspect_process preserves the legacy authorization boundary of its bootstrap views.",

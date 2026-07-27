@@ -121,7 +121,7 @@ public sealed class InspectHeapTool
             // work locally; dedicated bearers must hold the literal `ptrace` scope.
             if (!ToolDispatchGuards.RequireScope(
                     principalAccessor.Current,
-                    "ptrace",
+                    ToolInvocationScopeResolver.PtraceScope,
                     () => $"forbidden: tool '{ToolName}' with source='live' requires scope 'ptrace'.",
                     out DiagnosticResult<object>? scopeFailure,
                     new NextActionHint(ToolName,

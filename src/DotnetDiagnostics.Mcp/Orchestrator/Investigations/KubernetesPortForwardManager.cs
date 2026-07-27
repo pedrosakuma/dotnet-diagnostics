@@ -33,6 +33,7 @@ internal sealed class KubernetesPortForwardManager : IPortForwardManager, IAsync
     private readonly OrchestratorOptions _options;
     private readonly ILogger<KubernetesPortForwardManager> _logger;
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _closedHandles = new(StringComparer.Ordinal);
     private readonly object _gate = new();
 
     public KubernetesPortForwardManager(
@@ -50,6 +51,13 @@ internal sealed class KubernetesPortForwardManager : IPortForwardManager, IAsync
         ArgumentNullException.ThrowIfNull(handle);
         lock (_gate)
         {
+            if (_closedHandles.Contains(handle.HandleId))
+            {
+                throw new OrchestratorException(
+                    OrchestratorErrorKinds.PortForwardFailed,
+                    $"Investigation {handle.HandleId} is closed; its port-forward transport cannot be recreated.");
+            }
+
             if (_entries.TryGetValue(handle.HandleId, out var existing))
             {
                 return Task.FromResult(existing.Client);
@@ -69,6 +77,7 @@ internal sealed class KubernetesPortForwardManager : IPortForwardManager, IAsync
         Entry? removed;
         lock (_gate)
         {
+            _closedHandles.Add(handleId);
             if (!_entries.Remove(handleId, out removed)) return Task.CompletedTask;
         }
         SafeDispose(removed!, handleId);

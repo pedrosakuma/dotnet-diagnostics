@@ -94,12 +94,13 @@ public sealed class OrchestratorObservabilityTests
             },
             sessionId: "session-1",
             next: (_, _) => ValueTask.FromResult(new CallToolResult()),
-            fx.Binder,
-            fx.Store,
-            fx.ProxyClient,
-            fx.Options,
-            TestPrincipalAccessors.WithScopes("orchestrator-attach"),
-            fx.Observability,
+            scopeRegistry: ToolScopeRegistry.Build(DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable),
+            sessionBinder: fx.Binder,
+            investigationStore: fx.Store,
+            proxyClient: fx.ProxyClient,
+            orchestratorOptions: fx.Options,
+            principalAccessor: TestPrincipalAccessors.WithScopes("orchestrator-attach", "read-counters"),
+            observability: fx.Observability,
             loggerAccessor: () => NullLogger.Instance,
             cancellationToken: CancellationToken.None);
         proxyResult.IsError.Should().NotBe(true);
@@ -113,7 +114,8 @@ public sealed class OrchestratorObservabilityTests
             PodLocalBearerToken: "secret",
             State: InvestigationState.Active,
             AttachedAt: DateTimeOffset.UtcNow.AddMinutes(-5),
-            ExpiresAt: DateTimeOffset.UtcNow.AddSeconds(-5)));
+            ExpiresAt: DateTimeOffset.UtcNow.AddSeconds(-5),
+            InternalScopeDelegationKey: "test-delegation-key"));
         await fx.Reaper.ReapExpiredAsync(DateTimeOffset.UtcNow);
 
         var metricsText = await (await fx.GetMetricsAsync("metrics-token")).Content.ReadAsStringAsync();
@@ -169,18 +171,20 @@ public sealed class OrchestratorObservabilityTests
                 Name = "collect_events",
                 Arguments = new Dictionary<string, JsonElement>
                 {
+                    ["kind"] = JsonSerializer.SerializeToElement("counters"),
                     ["processId"] = JsonDocument.Parse("null").RootElement,
                     ["secretValue"] = JsonDocument.Parse("\"do-not-log-this\"").RootElement,
                 },
             },
             sessionId: "audit-session",
             next: (_, _) => ValueTask.FromResult(new CallToolResult()),
-            binder,
-            store,
-            proxyClient,
-            options,
-            TestPrincipalAccessors.WithScopes("orchestrator-attach"),
-            observability,
+            scopeRegistry: ToolScopeRegistry.Build(DotnetDiagnostics.Mcp.Hosting.PodLocalToolSurfaces.Proxyable),
+            sessionBinder: binder,
+            investigationStore: store,
+            proxyClient: proxyClient,
+            orchestratorOptions: options,
+            principalAccessor: TestPrincipalAccessors.WithScopes("orchestrator-attach", "read-counters"),
+            observability: observability,
             loggerAccessor: () => NullLogger.Instance,
             cancellationToken: CancellationToken.None);
 
@@ -333,7 +337,9 @@ public sealed class OrchestratorObservabilityTests
                 State: InvestigationState.Active,
                 AttachedAt: DateTimeOffset.UtcNow,
                 ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
-                OwnerBearerName: request.OwnerBearerName);
+                OwnerBearerName: request.OwnerBearerName,
+                OwnerPrincipalKey: request.OwnerPrincipalKey,
+                InternalScopeDelegationKey: "test-delegation-key");
             _store.Add(handle);
             return Task.FromResult(handle);
         }

@@ -10,6 +10,54 @@ namespace DotnetDiagnostics.Core.Tests;
 public class MemoryDiagnosticHandleStoreTests
 {
     [Fact]
+    public void DiagnosticHandle_PositionalApiRemainsCompatibleWithOptionalProducerMetadata()
+    {
+        var handle = new DiagnosticHandle(
+            "h",
+            DateTimeOffset.UnixEpoch.AddMinutes(1),
+            1234,
+            "cpu-sample");
+
+        var (id, expiresAt, processId, kind) = handle;
+        id.Should().Be("h");
+        expiresAt.Should().Be(DateTimeOffset.UnixEpoch.AddMinutes(1));
+        processId.Should().Be(1234);
+        kind.Should().Be("cpu-sample");
+        handle.ProducingTool.Should().BeNull();
+
+        var stamped = handle with { ProducingTool = "collect_events" };
+        stamped.ProducingTool.Should().Be("collect_events");
+        stamped.Id.Should().Be(handle.Id);
+
+        typeof(IDiagnosticHandleStore).GetMethod(
+            nameof(IDiagnosticHandleStore.Register),
+            [
+                typeof(int),
+                typeof(string),
+                typeof(object),
+                typeof(TimeSpan),
+                typeof(bool),
+                typeof(HandleOrigin?),
+            ]).Should().NotBeNull("the original Register binary member must remain available");
+    }
+
+    [Fact]
+    public void Register_PersistsOptionalProducingTool()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+
+        var handle = store.RegisterWithMetadata(
+            1234,
+            "cpu-sample",
+            new object(),
+            TimeSpan.FromMinutes(1),
+            producingTool: "collect_events");
+
+        handle.ProducingTool.Should().Be("collect_events");
+        store.TryGetWithKind(handle.Id)!.Value.Handle.ProducingTool.Should().Be("collect_events");
+    }
+
+    [Fact]
     public void Register_IssuesUniqueIdsAndStoresArtifact()
     {
         var store = new MemoryDiagnosticHandleStore();
