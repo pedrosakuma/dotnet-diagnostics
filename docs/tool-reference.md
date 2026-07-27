@@ -204,7 +204,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="requests")` | The full in-flight request list. Summary keeps the headline counts + the oldest requests inline; drill in with `query_snapshot(handle, view=requests|longRunning)`. |
 | `collect_events(kind="startup")` | The loader/DI event lists and full timeline. Summary keeps headline counts, top assembly/module aggregates, and notes. |
 | `collect_events(kind="sweep")` | The five sub-snapshots' bulky lists (counters, gc, exceptions, threadpool, resource). Summary keeps observed signals + hypotheses + per-collector handles. Each sub-collector's full payload stays behind its handle (`data.sweep.handles`). |
-| `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph\|deadlocks\|unique-stacks\|async-stalls\|wait-chains)`. |
+| `collect_thread_snapshot` | The lock graph plus threads beyond the top 6 decisive rows; each row is capped at 6 frames. Owner-and-waiter deadlock candidates, contended-lock owners, exceptions, and running application frames rank before generic parked workers; `query_snapshot(view="deadlocks")` evaluates inferred wait-for cycle candidates and reports edge source/confidence. `detail` remains bounded at 8 threads × 7 frames + 12 locks. |
 
 Explicit `topN` always wins over the depth default — if you pass
 `topN=10, depth=Summary` you get up to 10 hotspots inline (the LLM knows what
@@ -2579,11 +2579,15 @@ is refused, not crashed).
 ## `collect_thread_snapshot`
 
 Captures managed thread states plus the SyncBlock lock graph (holder address,
-owning thread, waiter count) from a live process or a dump. Returns the top-3
-blocked threads inline plus a `thread-snapshot` `handle` (~10 min TTL) for
+owning thread, waiter count) from a live process or a dump. Returns a bounded,
+decision-oriented thread projection inline plus a `thread-snapshot` `handle`
+(~10 min TTL) for
 deadlock / unique-stack / wait-chain drilldown. Handles now survive producer-PID
 exit until TTL; only `resolve-address` and `frame-vars` still require the original
-live process.
+live process. The inline ranking places owner-and-waiter deadlock candidates,
+contended-lock owners, threads with active exceptions, and running application
+frames before generic wait/park noise. Candidate ranking does not prove a cycle;
+evaluate inferred wait-for cycle candidates with `query_snapshot(view="deadlocks")`.
 
 **Parameters:**
 
