@@ -185,7 +185,11 @@ public sealed class ToolScopeIntegrationTests
 
         var text = result.Content.OfType<TextContentBlock>().Single().Text;
         text.Should().NotContain("\"kind\":\"forbidden\"");
-        text.Should().Contain("missing-cpu-handle");
+        JsonDocument.Parse(text).RootElement
+            .GetProperty("error")
+            .GetProperty("kind")
+            .GetString()
+            .Should().Be("HandleExpired");
     }
 
     [Fact]
