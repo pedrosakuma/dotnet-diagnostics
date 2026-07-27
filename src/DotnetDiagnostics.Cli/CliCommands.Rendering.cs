@@ -15,6 +15,7 @@ using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ThreadPool;
+using DotnetDiagnostics.Core.Threads;
 
 namespace DotnetDiagnostics.Cli;
 
@@ -183,6 +184,79 @@ internal static partial class CliCommands
         }
     }
 
+    internal static void RenderThreadSnapshotEvidence(StringBuilder sb, ThreadSnapshotArtifact snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(sb);
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        const int maxGroups = 5;
+        const int maxFrames = 6;
+        const int maxLocks = 5;
+        const int maxWaiterIds = 8;
+
+        var blockedThreads = snapshot.Threads.Where(static thread => thread.IsLikelyBlocked).ToArray();
+        var allGroups = ThreadSnapshotUniqueStackGrouper.Group(blockedThreads);
+        var groups = allGroups.Take(maxGroups).ToArray();
+        var allLocks = snapshot.Locks
+            .Where(static lockState => lockState.IsContended || lockState.WaitingThreadCount > 0)
+            .OrderByDescending(static lockState => lockState.WaitingThreadCount)
+            .ThenBy(static lockState => lockState.ObjectAddress)
+            .ToArray();
+        var locks = allLocks.Take(maxLocks).ToArray();
+
+        if (groups.Length == 0 && locks.Length == 0 && snapshot.ThreadPool is null)
+        {
+            return;
+        }
+
+        sb.AppendLine();
+        sb.AppendLine(CultureInfo.InvariantCulture,
+            $"  Bounded evidence (up to {maxGroups} blocked stack groups × {maxFrames} frames; {maxLocks} contended locks):");
+
+        if (groups.Length > 0)
+        {
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"    Blocked stack groups (showing {groups.Length}/{allGroups.Count}):");
+            foreach (var group in groups)
+            {
+                var percentage = snapshot.Threads.Count == 0
+                    ? 0
+                    : (double)group.ThreadCount / snapshot.Threads.Count * 100;
+                var threadIds = string.Join(", ", group.SampleThreads.Select(static sample =>
+                    sample.ManagedThreadId.ToString(CultureInfo.InvariantCulture)));
+                sb.AppendLine(CultureInfo.InvariantCulture,
+                    $"      - {group.ThreadCount}/{snapshot.Threads.Count} thread(s) ({percentage:F1}%), wait={group.InferredWaitReason ?? "<unknown>"}, sample managed ids=[{threadIds}]");
+                foreach (var frame in group.CanonicalFrames.TakeLast(maxFrames))
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"          at {frame.DisplayName}");
+                }
+            }
+        }
+
+        if (locks.Length > 0)
+        {
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"    Contended locks (showing {locks.Length}/{allLocks.Length}):");
+            foreach (var lockState in locks)
+            {
+                var waiterIds = lockState.WaitingManagedThreadIds
+                    .Take(maxWaiterIds)
+                    .Select(static id => id.ToString(CultureInfo.InvariantCulture));
+                var waiterSample = lockState.WaitingManagedThreadIds.Count == 0
+                    ? "not captured"
+                    : string.Join(", ", waiterIds);
+                sb.AppendLine(CultureInfo.InvariantCulture,
+                    $"      - 0x{lockState.ObjectAddress:x} {lockState.ObjectTypeFullName ?? "<unknown>"}: owner managed {lockState.OwnerManagedThreadId} / OS {lockState.OwnerOSThreadId}; {lockState.WaitingThreadCount} waiter(s), sample managed ids=[{waiterSample}]");
+            }
+        }
+
+        if (snapshot.ThreadPool is { } threadPool)
+        {
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"    ThreadPool: pending={threadPool.PendingWorkItems}, workers={threadPool.Workers.Current} current/{threadPool.Workers.Active} active/{threadPool.Workers.Idle} idle, global queue={threadPool.Queues.GlobalQueueLength}, local queue={threadPool.Queues.LocalQueues.Sum(static queue => queue.QueueLength)}.");
+        }
+    }
+
     private static bool TryParseDumpType(string value, out ProcessDumpType dumpType) =>
         Enum.TryParse(value, ignoreCase: true, out dumpType) && Enum.IsDefined(dumpType);
 
@@ -281,12 +355,18 @@ internal static partial class CliCommands
             }
 
             var built = BuildResult(result, renderData);
+            var savedLine = string.Create(
+                CultureInfo.InvariantCulture,
+                $"  saved comparable snapshot: {saved!.Label} -> {options.SavePath}");
             return built with
             {
                 Human = string.Concat(
                     built.Human,
                     Environment.NewLine,
-                    string.Create(CultureInfo.InvariantCulture, $"  saved comparable snapshot: {saved!.Label} -> {options.SavePath}")),
+                    savedLine),
+                RenderHumanForBoundTarget = built.RenderHumanForBoundTarget is { } renderForBoundTarget
+                    ? boundPid => string.Concat(renderForBoundTarget(boundPid), Environment.NewLine, savedLine)
+                    : null,
             };
         }
 
@@ -298,7 +378,7 @@ internal static partial class CliCommands
     /// resolved-process digest, next-action hints) plus a command-specific data block supplied by
     /// <paramref name="renderData"/> (skipped on error / null payload).
     /// </summary>
-    private static CliCommandResult BuildResult<T>(DiagnosticResult<T> result, Action<StringBuilder, T> renderData)
+    internal static CliCommandResult BuildResult<T>(DiagnosticResult<T> result, Action<StringBuilder, T> renderData)
     {
         // Project Core's MCP-audience hints into CLI vocabulary ONCE, before both the human table and
         // the --json envelope are produced, so neither leaks MCP tool names / call syntax (#301).
@@ -308,10 +388,17 @@ internal static partial class CliCommands
         {
             Handle = projected.Handle,
             HandleExpiresAt = projected.HandleExpiresAt,
+            RenderHumanForBoundTarget = boundPid => RenderEnvelope(
+                projected,
+                renderData,
+                reason => CliCommandExecution.RemoveBoundPidArgument(reason, boundPid)),
         };
     }
 
-    private static string RenderEnvelope<T>(DiagnosticResult<T> result, Action<StringBuilder, T> renderData)
+    private static string RenderEnvelope<T>(
+        DiagnosticResult<T> result,
+        Action<StringBuilder, T> renderData,
+        Func<string, string>? transformHintReason = null)
     {
         var sb = new StringBuilder();
         sb.Append(result.IsError ? "ERROR: " : string.Empty);
@@ -342,7 +429,8 @@ internal static partial class CliCommands
             sb.AppendLine("  next:");
             foreach (var hint in result.Hints)
             {
-                sb.AppendLine(CultureInfo.InvariantCulture, $"    - {hint.NextTool}: {hint.Reason}");
+                var reason = transformHintReason?.Invoke(hint.Reason) ?? hint.Reason;
+                sb.AppendLine(CultureInfo.InvariantCulture, $"    - {hint.NextTool}: {reason}");
             }
         }
 

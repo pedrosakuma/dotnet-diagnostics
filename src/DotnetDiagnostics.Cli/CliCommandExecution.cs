@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace DotnetDiagnostics.Cli;
 
@@ -18,7 +19,8 @@ internal sealed record CliExecutionOptions(
     CliExecutionContext Context,
     bool AnsiEnabled,
     bool ShowProgress,
-    int? LaunchedTargetPid = null);
+    int? LaunchedTargetPid = null,
+    int? BoundTargetPid = null);
 
 internal sealed record CliExecutionOutcome(CliOptions Options, CliCommandResult? Result, int ExitCode);
 
@@ -29,6 +31,9 @@ internal static class CliCommandExecution
         WriteIndented = true,
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
+
+    internal const string OneShotHandleNotice =
+        "This handle is in-memory and valid only until this one-shot command exits; a later invocation cannot query it. Use --depth detail or --json for inline evidence, or run the originating command and query inside one 'session' REPL.";
 
     public static bool TryPrepareOneShot(
         IReadOnlyList<string> args,
@@ -272,12 +277,33 @@ internal static class CliCommandExecution
     {
         if (options.Json)
         {
-            await stdout.WriteLineAsync(JsonSerializer.Serialize(result.Envelope, result.Envelope.GetType(), JsonOptions))
+            var envelope = JsonSerializer.SerializeToNode(result.Envelope, result.Envelope.GetType(), JsonOptions);
+            if (envelope is JsonObject boundEnvelope
+                && executionOptions.BoundTargetPid is { } boundPid)
+            {
+                RemoveBoundPidFromHintReasons(boundEnvelope, boundPid);
+            }
+            if (envelope is JsonObject objectEnvelope
+                && executionOptions.Context == CliExecutionContext.OneShot
+                && result.Handle is not null)
+            {
+                objectEnvelope["handleNotice"] = OneShotHandleNotice;
+            }
+
+            await stdout.WriteLineAsync(JsonSerializer.Serialize(envelope, JsonOptions))
                 .ConfigureAwait(false);
         }
         else
         {
-            var human = result.RawHuman ? result.Human : CliAnsi.ColorizeHuman(result.Human, executionOptions.AnsiEnabled);
+            var human = executionOptions.BoundTargetPid is { } boundPid
+                && result.RenderHumanForBoundTarget is { } renderForBoundTarget
+                ? renderForBoundTarget(boundPid)
+                : result.Human;
+            if (executionOptions.Context == CliExecutionContext.OneShot && result.Handle is not null)
+            {
+                human = string.Concat(human, Environment.NewLine, "  note: ", OneShotHandleNotice);
+            }
+            human = result.RawHuman ? human : CliAnsi.ColorizeHuman(human, executionOptions.AnsiEnabled);
             await stdout.WriteLineAsync(human).ConfigureAwait(false);
         }
 
@@ -295,6 +321,29 @@ internal static class CliCommandExecution
 
         await stderr.WriteLineAsync($"dotnet-diagnostics-cli {options.Command}: cancelled mid-window — diagnostic session stopped and temp files cleaned up. Payload is partial.")
             .ConfigureAwait(false);
+    }
+
+    internal static string RemoveBoundPidArgument(string value, int boundPid)
+        => value.Replace(
+            string.Create(CultureInfo.InvariantCulture, $" --pid {boundPid}"),
+            string.Empty,
+            StringComparison.Ordinal);
+
+    private static void RemoveBoundPidFromHintReasons(JsonObject envelope, int boundPid)
+    {
+        if (envelope["hints"] is not JsonArray hints)
+        {
+            return;
+        }
+
+        foreach (var hint in hints.OfType<JsonObject>())
+        {
+            if (hint["reason"] is JsonValue reason
+                && reason.TryGetValue<string>(out var text))
+            {
+                hint["reason"] = RemoveBoundPidArgument(text, boundPid);
+            }
+        }
     }
 
     private static async Task<T> WithProgressAsync<T>(

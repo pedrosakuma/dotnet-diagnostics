@@ -179,6 +179,11 @@ internal static partial class CliCommands
                 }
             }
 
+            if (BuildCliTriageSignalSeparationNote(t) is { } separationNote)
+            {
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  Signal separation: {separationNote}");
+            }
+
             if (t.TopIndicators?.Count > 0)
             {
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  Indicators:");
@@ -189,6 +194,27 @@ internal static partial class CliCommands
                 }
             }
         });
+    }
+
+    internal static string? BuildCliTriageSignalSeparationNote(TriageResult triage)
+    {
+        ArgumentNullException.ThrowIfNull(triage);
+
+        var latencyElevated = triage.ObservedSignals?.Any(static signal =>
+            string.Equals(signal.Name, "http.request-duration-p95", StringComparison.Ordinal)) == true;
+        var backlogElevated = triage.ObservedSignals?.Any(static signal =>
+            string.Equals(signal.Name, "threadpool.queue", StringComparison.Ordinal)) == true;
+
+        if (!latencyElevated
+            || backlogElevated
+            || triage.Evidence.ThreadPoolQueueLength is not { } queue)
+        {
+            return null;
+        }
+
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"request latency remains elevated, but ThreadPool queue={queue:F0} did not cross the backlog threshold, so the starvation signal is absent in this window. Treat the remaining latency as expected only if it matches the workload or SLO; counter triage cannot infer intent.");
     }
 
     private static async Task<CliCommandResult> InspectRuntimeConfigAsync(

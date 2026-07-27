@@ -447,17 +447,20 @@ public sealed class SessionReplTests
         stdout.Should().Contain("call-tree");
     }
 
-    [Fact]
-    public async Task Query_CpuSampleHandle_TopMethodsView_RanksByExclusive()
+    [Theory]
+    [InlineData("--top")]
+    [InlineData("--top-types")]
+    public async Task Query_CpuSampleHandle_TopMethodsView_HonorsTopOption(string topOption)
     {
         var (services, store) = BuildServices();
         var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
 
         var (exit, stdout, _) = await RunReplAsync(
-            $"query --handle {handle.Id} --view top-methods --top 1\nexit\n", services);
+            $"query --handle {handle.Id} --view top-methods {topOption} 1\nexit\n", services);
 
         exit.Should().Be(0);
         stdout.Should().Contain("LeafB"); // 60 exclusive beats LeafA's 40
+        stdout.Should().NotContain("LeafA");
     }
 
     [Fact]
@@ -514,6 +517,25 @@ public sealed class SessionReplTests
         exit.Should().Be(0);
         stderr.Should().BeEmpty();
         stdout.Should().Contain("top-blocked");
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotUniqueStacks_HonorsTop()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(
+            Environment.ProcessId,
+            "thread-snapshot",
+            ThreadSnapshotWithUniqueGroups(6),
+            TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view unique-stacks --top 3\nexit\n", services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Split("\"signatureHash\"", StringSplitOptions.None).Should().HaveCount(4);
+        stdout.Should().Contain("Returning 3/6 unique stack group(s)");
     }
 
     [Fact]
@@ -1476,6 +1498,48 @@ public sealed class SessionReplTests
         {
             Source = "clrmd-thread-walk",
         };
+    }
+
+    private static ThreadSnapshotArtifact ThreadSnapshotWithUniqueGroups(int count)
+    {
+        var threads = Enumerable.Range(1, count)
+            .Select(id =>
+            {
+                var frames = new[]
+                {
+                    new ManagedStackFrame("ManagedMethod", $"Group{id}.Leaf", $"Group{id}.Type", "App.dll", (ulong)id, (ulong)(id + 100)),
+                    new ManagedStackFrame("ManagedMethod", $"Group{id}.Root", $"Group{id}.Type", "App.dll", (ulong)(id + 200), (ulong)(id + 300)),
+                };
+                return new ManagedThread(
+                    id,
+                    (uint)(10_000 + id),
+                    (ulong)id,
+                    "Wait",
+                    IsAlive: true,
+                    IsBackground: false,
+                    IsFinalizer: false,
+                    IsGc: false,
+                    IsThreadpoolWorker: true,
+                    LockCount: 0,
+                    CurrentExceptionType: null,
+                    TopFrameMethod: frames[0].DisplayName,
+                    Frames: frames)
+                {
+                    IsLikelyBlocked = true,
+                    InferredWaitReason = "Monitor.Wait",
+                };
+            })
+            .ToArray();
+
+        return new ThreadSnapshotArtifact(
+            ThreadSnapshotOrigin.Live,
+            Environment.ProcessId,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMilliseconds(25),
+            "CoreClr",
+            "10.0.0",
+            threads,
+            []);
     }
 
     private static OffCpuSnapshotArtifact OffCpuSnapshot()

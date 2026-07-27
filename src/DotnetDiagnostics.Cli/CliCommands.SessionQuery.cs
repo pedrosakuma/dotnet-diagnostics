@@ -20,16 +20,18 @@ internal static partial class CliCommands
 {
     private static CliCommandResult Query()
     {
+        const string detail =
+            "Drill-down handles are scoped to a live process. The one-shot CLI is stateless, so a handle "
+            + "from a previous command no longer exists. Start the interactive REPL with 'dotnet-diagnostics "
+            + "session': there, a 'collect' (or 'inspect-heap' / 'dump') issues a handle you can drill into "
+            + "with 'query --handle <id> --view <view>' in the same session. For a one-shot answer instead, "
+            + "re-run the originating command with --depth detail (or --json) to get the full result inline.";
         var result = DiagnosticResult.Fail<object>(
             "The 'query' drill-down command needs a live session. Start one with 'dotnet-diagnostics session'.",
             new DiagnosticError(
                 "NotSupported",
-                "Drill-down handles are scoped to a live session. The one-shot CLI is stateless, so a handle "
-                + "from a previous command no longer exists. Start the interactive REPL with 'dotnet-diagnostics "
-                + "session': there, a 'collect' (or 'inspect-heap' / 'dump') issues a handle you can drill into "
-                + "with 'query --handle <id> --view <view>' in the same session. For a one-shot answer instead, "
-                + "re-run the originating command with --depth detail (or --json) to get the full result inline.",
-                "one-shot-cli"),
+                detail,
+                detail),
             new NextActionHint("session", "Start the interactive session REPL, then collect and query --handle <id> --view <view> there."),
             new NextActionHint("collect", "Or re-run the originating command with --depth detail (or --json) to get the full result inline."));
 
@@ -232,7 +234,7 @@ internal static partial class CliCommands
                 "This view correlates two collected artifacts, which the session cannot supply yet; re-run the originating command with the inline flags you need.");
         }
 
-        var topN = options.TopTypes ?? 50;
+        var topN = ResolveQueryTopN(options, 50);
         var outcome = CollectionQueryDispatcher.Dispatch(kind, options.View, lookup.Value.Artifact, topN);
 
         if (outcome.Result is { } queryResult)
@@ -286,7 +288,7 @@ internal static partial class CliCommands
         }
 
         var view = string.IsNullOrWhiteSpace(options.View) ? "top-types" : options.View;
-        var topN = options.TopTypes ?? 50;
+        var topN = ResolveQueryTopN(options, 50);
         var outcome = HeapSnapshotQueryDispatcher.Dispatch(heap, options.Handle!, view, topN, options.RankBy, options.TypeFilter);
 
         if (outcome.Result is { } heapResult)
@@ -484,7 +486,7 @@ internal static partial class CliCommands
         }
 
         var handle = options.Handle!;
-        var topN = options.Top ?? CpuSampleQueryDispatcher.DefaultTopN;
+        var topN = ResolveQueryTopN(options, CpuSampleQueryDispatcher.DefaultTopN);
 
         switch (normalized)
         {
@@ -606,7 +608,7 @@ internal static partial class CliCommands
             return await QueryFrameVarsAsync(services, options, snapshot, cancellationToken).ConfigureAwait(false);
         }
 
-        var topN = options.TopTypes ?? 50;
+        var topN = ResolveQueryTopN(options, 50);
         var framesToHash = options.FramesToHash ?? 20;
         var minCount = options.MinCount ?? 1;
         var result = ThreadSnapshotQueryDispatcher.Dispatch(
@@ -695,7 +697,7 @@ internal static partial class CliCommands
                 $"Valid views: {string.Join(", ", OffCpuQueryDispatcher.SessionViews)}.");
         }
 
-        var topN = options.TopTypes ?? 25;
+        var topN = ResolveQueryTopN(options, 25);
         var result = OffCpuQueryDispatcher.Dispatch(snapshot, view, topN, options.StackRank);
 
         return BuildResult<OffCpuQueryView>(result, static (sb, qr) =>
@@ -704,6 +706,9 @@ internal static partial class CliCommands
             sb.AppendLine(JsonSerializer.Serialize(qr, QueryJsonOptions));
         });
     }
+
+    private static int ResolveQueryTopN(CliOptions options, int defaultValue)
+        => options.Top ?? options.TopTypes ?? defaultValue;
 
     private static CliCommandResult Fail(string summary, string errorKind, string detail)
     {

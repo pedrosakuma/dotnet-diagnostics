@@ -58,6 +58,10 @@ internal sealed record CliCommandResult(bool IsError, bool Cancelled, object Env
     /// ANSI colorization — because it is a machine-readable payload (e.g. <c>export-summary</c>'s
     /// portable JSON document) that a consumer pipes or persists.</summary>
     public bool RawHuman { get; init; }
+
+    /// <summary>Re-renders structured hint reasons for a bound session target without modifying
+    /// command-specific human evidence.</summary>
+    public Func<int, string>? RenderHumanForBoundTarget { get; init; }
 }
 
 /// <summary>
