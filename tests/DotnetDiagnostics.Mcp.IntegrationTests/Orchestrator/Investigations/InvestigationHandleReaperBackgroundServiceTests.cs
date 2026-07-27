@@ -19,13 +19,9 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests.Orchestrator.Investigations;
 public sealed class InvestigationHandleReaperBackgroundServiceTests
 {
     private static InvestigationHandle Handle(string id, InvestigationState state, DateTimeOffset expiresAt) => new(
-        HandleId: id,
-        Namespace: "ns",
-        PodName: "pod",
-        TargetContainerName: "api",
-        EphemeralContainerName: "diag",
-        PodLocalBearerToken: "secret",
-        State: state,
+            HandleId: id,
+            Kubernetes: new KubernetesInvestigationTarget("ns", "pod", "api", "diag", "secret"),
+            State: state,
         AttachedAt: DateTimeOffset.UtcNow.AddMinutes(-10),
         ExpiresAt: expiresAt);
 

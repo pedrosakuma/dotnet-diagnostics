@@ -52,10 +52,11 @@ public interface IInvestigationStore
 
     /// <summary>
     /// Returns an existing <see cref="InvestigationState.Active"/> or
-    /// <see cref="InvestigationState.Attaching"/> handle for the given target, or null
+    /// <see cref="InvestigationState.Attaching"/> handle whose
+    /// <see cref="InvestigationHandle.ReservationKey"/> matches the given key, or null
     /// if none. Used by <c>attach_to_pod</c> to honour the reuse policy from §5.5.
     /// </summary>
-    InvestigationHandle? FindReusableTarget(string podNamespace, string podName, string containerName);
+    InvestigationHandle? FindReusableTarget(string reservationKey);
 
     /// <summary>Snapshot of every known handle. Order is unspecified.</summary>
     IReadOnlyCollection<InvestigationHandle> Snapshot();

@@ -26,6 +26,13 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// fresh <c>WebSocketNamespacedPodPortForwardAsync</c> call and exposes channel 0 of the
 /// demuxer as the connection stream.
 /// </para>
+/// <para>
+/// The per-attach Pod-local bearer token is injected into each client's
+/// <see cref="HttpClient.DefaultRequestHeaders"/> so all callers of
+/// <see cref="IInvestigationTransportManager.GetOrCreateClientAsync"/> receive a client
+/// that already carries the upstream credentials. Proxy endpoints and MCP tool calls do
+/// not need to know or inject the bearer themselves.
+/// </para>
 /// </remarks>
 internal sealed class KubernetesPortForwardManager : IPortForwardManager, IAsyncDisposable
 {
@@ -66,8 +73,8 @@ internal sealed class KubernetesPortForwardManager : IPortForwardManager, IAsync
             var entry = BuildEntry(handle);
             _entries[handle.HandleId] = entry;
             _logger.LogInformation(
-                "Port-forward transport registered for investigation {HandleId} → {Namespace}/{Pod}:{Port}.",
-                handle.HandleId, handle.Namespace, handle.PodName, _options.ProxyPodPort);
+                "Port-forward transport registered for investigation {HandleId} → {Target}:{Port}.",
+                handle.HandleId, handle.TargetDisplayName, _options.ProxyPodPort);
             return Task.FromResult(entry.Client);
         }
     }
@@ -151,6 +158,17 @@ internal sealed class KubernetesPortForwardManager : IPortForwardManager, IAsync
             // EventSource passthrough) don't trip the default 100s HttpClient timeout.
             Timeout = Timeout.InfiniteTimeSpan,
         };
+
+        // Transport-owned credential injection: the per-attach Pod-local bearer token is
+        // set here in DefaultRequestHeaders so every outbound request (proxy endpoint raw
+        // HTTP forwarding AND MCP tool calls via McpClient) carries the correct credential
+        // without any caller needing to know the token value.
+        if (handle.Kubernetes?.PodLocalBearerToken is { Length: > 0 } token)
+        {
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        }
+
         return new Entry(client, cts);
     }
 
@@ -164,7 +182,7 @@ internal sealed class KubernetesPortForwardManager : IPortForwardManager, IAsync
         IStreamDemuxer demuxer;
         try
         {
-            demuxer = await _podsApi.OpenPortForwardAsync(handle.Namespace, handle.PodName, podPort, linked.Token)
+            demuxer = await _podsApi.OpenPortForwardAsync(handle.Kubernetes!.Namespace, handle.Kubernetes.PodName, podPort, linked.Token)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (managerCt.IsCancellationRequested)
@@ -175,14 +193,14 @@ internal sealed class KubernetesPortForwardManager : IPortForwardManager, IAsync
         {
             throw new OrchestratorException(
                 OrchestratorErrorKinds.PortForwardFailed,
-                $"Kubernetes API rejected the port-forward upgrade for {handle.Namespace}/{handle.PodName}:{podPort} " +
+                $"Kubernetes API rejected the port-forward upgrade for {handle.Kubernetes!.Namespace}/{handle.Kubernetes.PodName}:{podPort} " +
                 $"with {(int?)ex.Response?.StatusCode}: {ex.Message}.", ex);
         }
         catch (Exception ex) when (ex is not OrchestratorException)
         {
             throw new OrchestratorException(
                 OrchestratorErrorKinds.PortForwardFailed,
-                $"Failed to open port-forward to {handle.Namespace}/{handle.PodName}:{podPort}: {ex.Message}.", ex);
+                $"Failed to open port-forward to {handle.Kubernetes!.Namespace}/{handle.Kubernetes.PodName}:{podPort}: {ex.Message}.", ex);
         }
 
         var dataStream = demuxer.GetStream((byte?)0, (byte?)0);

@@ -97,8 +97,8 @@ public sealed class InvestigationHandleReaperBackgroundService : BackgroundServi
                 }
                 _observability.RecordDetach(principal: null, handle.HandleId, "ttl", "success");
                 _logger.LogInformation(
-                    "Expired investigation {HandleId} ({Namespace}/{Pod} container={Container}); unbound {SessionCount} session(s).",
-                    handle.HandleId, handle.Namespace, handle.PodName, handle.TargetContainerName,
+                    "Expired investigation {HandleId} ({Target}); unbound {SessionCount} session(s).",
+                    handle.HandleId, handle.TargetDisplayName,
                     outcome.UnboundSessionIds.Count);
             }
         }

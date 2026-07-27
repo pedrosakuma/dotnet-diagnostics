@@ -106,13 +106,9 @@ public sealed class OrchestratorObservabilityTests
         proxyResult.IsError.Should().NotBe(true);
 
         fx.Store.Add(new InvestigationHandle(
-            HandleId: "expired-handle",
-            Namespace: "ns-a",
-            PodName: "api-1",
-            TargetContainerName: "app",
-            EphemeralContainerName: "diag-1",
-            PodLocalBearerToken: "secret",
-            State: InvestigationState.Active,
+                HandleId: "expired-handle",
+                Kubernetes: new KubernetesInvestigationTarget("ns-a", "api-1", "app", "diag-1", "secret"),
+                State: InvestigationState.Active,
             AttachedAt: DateTimeOffset.UtcNow.AddMinutes(-5),
             ExpiresAt: DateTimeOffset.UtcNow.AddSeconds(-5),
             InternalScopeDelegationKey: "test-delegation-key"));
@@ -271,7 +267,9 @@ public sealed class OrchestratorObservabilityTests
             builder.Services.AddSingleton<IInvestigationSessionBinder>(sp => sp.GetRequiredService<MemoryInvestigationSessionBinder>());
             builder.Services.AddSingleton<StubProxyClient>();
             builder.Services.AddSingleton<IInvestigationProxyClient>(sp => sp.GetRequiredService<StubProxyClient>());
-            builder.Services.AddSingleton<IPortForwardManager, NoOpPortForwardManager>();
+            builder.Services.AddSingleton<NoOpPortForwardManager>();
+            builder.Services.AddSingleton<IInvestigationTransportManager>(sp => sp.GetRequiredService<NoOpPortForwardManager>());
+            builder.Services.AddSingleton<IPortForwardManager>(sp => sp.GetRequiredService<NoOpPortForwardManager>());
             builder.Services.AddSingleton<InvestigationCloser>();
             builder.Services.AddSingleton<InvestigationHandleReaperBackgroundService>();
             builder.Services.AddSingleton<StubAttachOrchestrator>();
@@ -328,13 +326,9 @@ public sealed class OrchestratorObservabilityTests
         public Task<InvestigationHandle> AttachAsync(AttachRequest request, CancellationToken cancellationToken)
         {
             var handle = new InvestigationHandle(
-                HandleId: $"inv-{_nextId++}",
-                Namespace: string.IsNullOrWhiteSpace(request.Namespace) ? "ns-a" : request.Namespace,
-                PodName: request.PodName,
-                TargetContainerName: request.ContainerName ?? "app",
-                EphemeralContainerName: "diag-1",
-                PodLocalBearerToken: "pod-secret",
-                State: InvestigationState.Active,
+                    HandleId: $"inv-{_nextId++}",
+                    Kubernetes: new KubernetesInvestigationTarget(string.IsNullOrWhiteSpace(request.Namespace) ? "ns-a" : request.Namespace, request.PodName, request.ContainerName ?? "app", "diag-1", "pod-secret"),
+                    State: InvestigationState.Active,
                 AttachedAt: DateTimeOffset.UtcNow,
                 ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
                 OwnerBearerName: request.OwnerBearerName,

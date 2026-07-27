@@ -31,13 +31,9 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests.Orchestrator;
 public sealed class InvestigationProxyCallToolFilterTests
 {
     private static readonly InvestigationHandle ActiveHandle = new(
-        HandleId: "inv-1",
-        Namespace: "ns",
-        PodName: "pod-a",
-        TargetContainerName: "api",
-        EphemeralContainerName: "diag-1",
-        PodLocalBearerToken: "pod-bearer",
-        State: InvestigationState.Active,
+            HandleId: "inv-1",
+            Kubernetes: new KubernetesInvestigationTarget("ns", "pod-a", "api", "diag-1", "pod-bearer"),
+            State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
         InternalScopeDelegationKey: "test-delegation-key");
@@ -1297,7 +1293,7 @@ public sealed class InvestigationProxyCallToolFilterTests
             _byId[handleId] = current with { State = targetState, FailureReason = targetState == InvestigationState.Closed ? current.FailureReason : failureReason ?? current.FailureReason };
             return InvestigationTerminalTransition.Transitioned;
         }
-        public InvestigationHandle? FindReusableTarget(string podNamespace, string podName, string containerName) => null;
+        public InvestigationHandle? FindReusableTarget(string reservationKey) => null;
         public IReadOnlyCollection<InvestigationHandle> Snapshot() => _byId.Values.ToArray();
     }
 

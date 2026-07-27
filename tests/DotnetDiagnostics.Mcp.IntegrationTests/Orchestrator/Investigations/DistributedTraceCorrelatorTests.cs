@@ -237,13 +237,9 @@ public sealed class DistributedTraceCorrelatorTests
     }
 
     private static InvestigationHandle ActiveHandle(string handleId, string podName, string? ownerBearerName = null) => new(
-        HandleId: handleId,
-        Namespace: "ns",
-        PodName: podName,
-        TargetContainerName: "api",
-        EphemeralContainerName: "diag",
-        PodLocalBearerToken: "pod-bearer",
-        State: InvestigationState.Active,
+            HandleId: handleId,
+            Kubernetes: new KubernetesInvestigationTarget("ns", podName, "api", "diag", "pod-bearer"),
+            State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
         OwnerBearerName: ownerBearerName,

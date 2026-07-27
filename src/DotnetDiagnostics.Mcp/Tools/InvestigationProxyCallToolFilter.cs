@@ -322,8 +322,8 @@ internal static class InvestigationProxyCallToolFilter
                     caller,
                     currentHandle.InternalScopeDelegationKey);
                 loggerAccessor()?.LogDebug(
-                    "Forwarding '{ToolName}' via investigation {HandleId} ({Namespace}/{Pod}).",
-                    toolName, currentHandle.HandleId, currentHandle.Namespace, currentHandle.PodName);
+                    "Forwarding '{ToolName}' via investigation {HandleId} ({Target}).",
+                    toolName, currentHandle.HandleId, currentHandle.TargetDisplayName);
                 var result = await proxyClient.CallToolAsync(
                     currentHandle,
                     delegatedRequest,

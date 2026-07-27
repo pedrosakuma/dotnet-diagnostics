@@ -14,9 +14,11 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 
 /// <summary>
 /// Production <see cref="IInvestigationProxyClient"/>. Caches one MCP client per
-/// investigation handle, sharing the underlying port-forward <see cref="HttpClient"/>
-/// from <see cref="IPortForwardManager"/> and injecting the per-attach Pod-local
-/// bearer token via <see cref="HttpClientTransportOptions.AdditionalHeaders"/>.
+/// investigation handle, sharing the underlying transport <see cref="System.Net.Http.HttpClient"/>
+/// from <see cref="IInvestigationTransportManager"/>. The transport implementation injects
+/// upstream credentials (e.g. the per-attach Pod-local bearer token) into the client's
+/// <see cref="System.Net.Http.HttpClient.DefaultRequestHeaders"/> so this class remains
+/// transport-neutral and does not need to know the token value.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -35,7 +37,7 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// </remarks>
 internal sealed class PodLocalInvestigationProxyClient : IInvestigationProxyClient, IAsyncDisposable
 {
-    private readonly IPortForwardManager _portForwardManager;
+    private readonly IInvestigationTransportManager _transportManager;
     private readonly ToolScopeRegistry _scopeRegistry;
     private readonly IPrincipalAccessor _principalAccessor;
     private readonly ToolScopeResolutionPolicies _scopePolicies;
@@ -45,17 +47,17 @@ internal sealed class PodLocalInvestigationProxyClient : IInvestigationProxyClie
     private int _disposed;
 
     public PodLocalInvestigationProxyClient(
-        IPortForwardManager portForwardManager,
+        IInvestigationTransportManager transportManager,
         ToolScopeRegistry scopeRegistry,
         IPrincipalAccessor principalAccessor,
         IServiceProvider services,
         ILoggerFactory? loggerFactory = null)
     {
-        ArgumentNullException.ThrowIfNull(portForwardManager);
+        ArgumentNullException.ThrowIfNull(transportManager);
         ArgumentNullException.ThrowIfNull(scopeRegistry);
         ArgumentNullException.ThrowIfNull(principalAccessor);
         ArgumentNullException.ThrowIfNull(services);
-        _portForwardManager = portForwardManager;
+        _transportManager = transportManager;
         _scopeRegistry = scopeRegistry;
         _principalAccessor = principalAccessor;
         _scopePolicies = ToolScopeResolutionPolicies.FromServices(services);
@@ -235,17 +237,13 @@ internal sealed class PodLocalInvestigationProxyClient : IInvestigationProxyClie
         // The port-forward manager keeps one HttpClient per handle keyed by HandleId.
         // We don't own it — disposal here would tear down the shared transport every
         // other consumer (proxy endpoint, etc.) is also using.
-        var http = await _portForwardManager.GetOrCreateClientAsync(handle, CancellationToken.None).ConfigureAwait(false);
+        var http = await _transportManager.GetOrCreateClientAsync(handle, CancellationToken.None).ConfigureAwait(false);
 
         var options = new HttpClientTransportOptions
         {
             Endpoint = new Uri(http.BaseAddress!, "/mcp"),
             Name = $"InvestigationProxy/{handle.HandleId}",
             TransportMode = HttpTransportMode.AutoDetect,
-            AdditionalHeaders = new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                ["Authorization"] = $"Bearer {handle.PodLocalBearerToken}",
-            },
         };
 
         var transport = new HttpClientTransport(options, http, _loggerFactory, ownsHttpClient: false);

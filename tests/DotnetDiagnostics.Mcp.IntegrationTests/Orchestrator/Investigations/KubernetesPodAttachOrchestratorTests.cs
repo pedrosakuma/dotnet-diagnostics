@@ -41,11 +41,11 @@ public class KubernetesPodAttachOrchestratorTests
         handle.TargetContainerName.Should().Be(Container);
         handle.HandleId.Should().StartWith("inv_");
         handle.EphemeralContainerName.Should().StartWith(options.EphemeralContainerNamePrefix);
-        handle.PodLocalBearerToken.Should().NotBeNullOrWhiteSpace();
+        handle.Kubernetes!.PodLocalBearerToken.Should().NotBeNullOrWhiteSpace();
         api.PatchInvoked.Should().BeTrue();
         api.PatchedSpec!.Image.Should().Be(options.EphemeralContainerImage);
         api.PatchedSpec.TargetContainerName.Should().Be(Container);
-        api.PatchedSpec.Env.Should().Contain(e => e.Name == "MCP_BEARER_TOKEN" && e.Value == handle.PodLocalBearerToken);
+        api.PatchedSpec.Env.Should().Contain(e => e.Name == "MCP_BEARER_TOKEN" && e.Value == handle.Kubernetes!.PodLocalBearerToken);
         api.PatchedSpec.Env.Should().Contain(e =>
             e.Name == ToolScopeDelegation.EnvironmentVariableName &&
             e.Value == handle.InternalScopeDelegationKey);
@@ -497,13 +497,9 @@ public class KubernetesPodAttachOrchestratorTests
         // Defence in depth: even if a future caller serializes the internal handle directly,
         // [JsonIgnore] on both internal secrets must keep them out of the wire shape.
         var handle = new InvestigationHandle(
-            HandleId: "inv_test",
-            Namespace: Ns,
-            PodName: Pod,
-            TargetContainerName: Container,
-            EphemeralContainerName: "dotnet-dbg-mcp-abcd",
-            PodLocalBearerToken: "SECRET_TOKEN_VALUE",
-            State: InvestigationState.Active,
+                HandleId: "inv_test",
+                Kubernetes: new KubernetesInvestigationTarget(Ns, Pod, Container, "dotnet-dbg-mcp-abcd", "SECRET_TOKEN_VALUE"),
+                State: InvestigationState.Active,
             AttachedAt: DateTimeOffset.UtcNow,
             ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
             InternalScopeDelegationKey: "SECRET_DELEGATION_VALUE",
@@ -521,13 +517,9 @@ public class KubernetesPodAttachOrchestratorTests
     public void AttachSession_FromHandle_DropsBearerToken()
     {
         var handle = new InvestigationHandle(
-            HandleId: "inv_test",
-            Namespace: Ns,
-            PodName: Pod,
-            TargetContainerName: Container,
-            EphemeralContainerName: "dotnet-dbg-mcp-abcd",
-            PodLocalBearerToken: "SECRET_TOKEN_VALUE",
-            State: InvestigationState.Active,
+                HandleId: "inv_test",
+                Kubernetes: new KubernetesInvestigationTarget(Ns, Pod, Container, "dotnet-dbg-mcp-abcd", "SECRET_TOKEN_VALUE"),
+                State: InvestigationState.Active,
             AttachedAt: DateTimeOffset.UtcNow,
             ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
             ProcessSelector: new InvestigationProcessSelector("CoreClrSample"));

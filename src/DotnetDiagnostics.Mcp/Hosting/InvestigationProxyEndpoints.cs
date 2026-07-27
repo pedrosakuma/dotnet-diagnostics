@@ -25,11 +25,11 @@ namespace DotnetDiagnostics.Mcp.Hosting;
 /// <summary>
 /// Maps the orchestrator's per-handle reverse proxy at <c>{ProxyBasePath}/{handleId}/mcp</c>.
 /// Validates the handle, enforces per-owner authorization, resolves the cached
-/// <see cref="HttpClient"/> from <see cref="IPortForwardManager"/>, swaps the
-/// client-supplied <c>Authorization</c> header for the per-attach Pod-local bearer
-/// token, forwards the request to the ephemeral container's diagnostics MCP, and
-/// streams the response back. The Pod-local secret never leaves the orchestrator
-/// process.
+/// <see cref="HttpClient"/> from <see cref="IInvestigationTransportManager"/> (which
+/// pre-injects upstream credentials in <see cref="HttpClient.DefaultRequestHeaders"/>),
+/// strips the client-supplied <c>Authorization</c> header, forwards the request to the
+/// investigation target's diagnostics MCP, and streams the response back.
+/// The Pod-local secret never leaves the orchestrator process.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -313,7 +313,7 @@ internal static class InvestigationProxyEndpoints
         }
         var targetPath = string.IsNullOrEmpty(trimmedRest) ? McpPathSegment : McpPathSegment + "/" + trimmedRest;
 
-        var manager = context.RequestServices.GetRequiredService<IPortForwardManager>();
+        var manager = context.RequestServices.GetRequiredService<IInvestigationTransportManager>();
         HttpClient client;
         try
         {
@@ -355,7 +355,7 @@ internal static class InvestigationProxyEndpoints
         // bytes and has no h2 handshake.
         upstream.Version = HttpVersion.Version11;
         upstream.VersionPolicy = HttpVersionPolicy.RequestVersionExact;
-        CopyRequestHeaders(context.Request, upstream, handle.PodLocalBearerToken);
+        CopyRequestHeaders(context.Request, upstream);
 
         try
         {
@@ -547,7 +547,7 @@ internal static class InvestigationProxyEndpoints
         }
     }
 
-    private static void CopyRequestHeaders(HttpRequest source, HttpRequestMessage destination, string podToken)
+    private static void CopyRequestHeaders(HttpRequest source, HttpRequestMessage destination)
     {
         foreach (var h in source.Headers)
         {
@@ -555,7 +555,6 @@ internal static class InvestigationProxyEndpoints
             if (h.Key.StartsWith("Content-", StringComparison.OrdinalIgnoreCase)) continue;
             destination.Headers.TryAddWithoutValidation(h.Key, (IEnumerable<string>)h.Value!);
         }
-        destination.Headers.TryAddWithoutValidation("Authorization", $"Bearer {podToken}");
     }
 
     private static void CopyResponseHeaders(HttpResponseMessage source, HttpResponse destination)
