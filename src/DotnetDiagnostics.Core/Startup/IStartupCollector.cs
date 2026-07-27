@@ -14,9 +14,11 @@ public interface IStartupCollector
 
     /// <summary>
     /// True cold-start capture (issue #446): arms the EventPipe session on a <b>suspended</b> reverse-
-    /// connected target and only then resumes it, so pre-attach events (static ctors, DI build,
-    /// module-init exceptions, startup timings) are recorded. CLI-only — requires
-    /// <see cref="SuspendedColdStartLauncher"/> to have launched the target.
+    /// connected target and only then resumes it, so non-replayed DependencyInjection call-site
+    /// activity emitted during startup is recorded (plus loader events when the runtime emits them).
+    /// Requires
+    /// <see cref="SuspendedColdStartLauncher"/> to have launched the target; callers include the CLI
+    /// and the gated stdio MCP startup-launch path.
     /// </summary>
     Task<StartupSnapshot> CollectColdStartAsync(
         SuspendedTarget target,

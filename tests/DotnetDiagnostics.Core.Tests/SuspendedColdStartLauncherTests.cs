@@ -10,7 +10,8 @@ namespace DotnetDiagnostics.Core.Tests;
 /// <summary>
 /// Live cold-start capture (issue #446): launch CoreClrSample SUSPENDED on a reverse-connect diagnostic
 /// port, arm the startup session before any managed code runs, resume, and prove that pre-attach DI
-/// container build (ServiceProviderBuilt) is captured — an event the post-attach path always misses.
+/// container activity (CallSiteBuilt / ServiceResolved) is captured before an ordinary attach can
+/// observe it. ServiceProviderBuilt is replayed and is therefore not a cold-start discriminator.
 /// </summary>
 [Collection("LiveProcess")]
 public sealed class SuspendedColdStartLauncherTests
@@ -267,7 +268,7 @@ public sealed class SuspendedColdStartLauncherTests
     }
 
     [Fact(Timeout = 60_000)]
-    public async Task ColdStart_CapturesPreAttach_DiServiceProviderBuilt()
+    public async Task ColdStart_CapturesPreAttach_DiCallSiteActivity()
     {
         var sampleDll = SuspendedColdStartLauncherTests.LocateSampleDll("CoreClrSample");
         if (sampleDll is null)

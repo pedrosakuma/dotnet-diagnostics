@@ -264,8 +264,9 @@ internal sealed record CliOptions
     /// <summary>
     /// Cold-start capture opt-in (<c>--suspend-startup</c>, issue #446). With <c>--launch</c>, spawns the
     /// target suspended on a reverse-connect <c>DOTNET_DiagnosticPorts</c> port, arms the EventPipe
-    /// session before any managed code runs, then resumes — capturing static ctors, DI build,
-    /// module-init exceptions and startup timings the post-attach path misses. CLI-only; default OFF.
+    /// session before any managed code runs, then resumes — capturing non-replayed DependencyInjection
+    /// call-site activity the post-attach path misses (plus loader events when emitted). The MCP equivalent is
+    /// gated to stdio startup collection; this CLI flag defaults OFF.
     /// Applies to <c>collect --kind startup</c> and <c>collect --kind cpu</c>.
     /// </summary>
     public bool SuspendStartup { get; init; }

@@ -11,13 +11,13 @@ namespace DotnetDiagnostics.Core.Launch;
 /// <c>DOTNET_DiagnosticPorts=&lt;path&gt;,suspend</c>; the runtime then connects back to a
 /// <see cref="DiagnosticsClientConnector"/> that this process listens on and blocks before any managed
 /// code runs. The caller arms an EventPipe session on the returned <see cref="SuspendedTarget.Client"/>
-/// and only then calls <see cref="SuspendedTarget.ResumeAsync"/>, so static constructors, DI container
-/// build, module-init exceptions and startup timings are captured — events the post-attach path
-/// (CLI <c>--launch</c> / MCP attach) always misses. Mirrors dotnet-monitor's reverse-connect.
+/// and only then calls <see cref="SuspendedTarget.ResumeAsync"/>, so callers can capture EventPipe
+/// activity emitted before an ordinary post-start attach. Mirrors dotnet-monitor's reverse-connect.
 /// </summary>
 /// <remarks>
-/// <para>This Core primitive serves the CLI and the explicitly gated stdio MCP launch path. It only
-/// wraps <see cref="ChildProcessLauncher"/> and the connector's public
+/// <para>This primitive is used by the CLI and by the explicitly gated stdio MCP
+/// <c>collect_events(kind="startup", launch=...)</c> path. It only wraps
+/// <see cref="ChildProcessLauncher"/> and the connector's public
 /// <see cref="DiagnosticsClientConnector.FromDiagnosticPort"/>, carries no MCP knowledge, and never
 /// modifies the target application (only its launch parentage + env vars).</para>
 /// </remarks>
