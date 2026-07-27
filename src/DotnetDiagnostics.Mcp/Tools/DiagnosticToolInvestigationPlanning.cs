@@ -96,8 +96,8 @@ internal static class DiagnosticToolInvestigationPlanning
             if (lookup is null)
             {
                 return DiagnosticResult.Fail<ExportedInvestigationSummary>(
-                    $"Handle '{requestedHandle}' is unknown or expired.",
-                    new DiagnosticError("HandleExpired", "Drill-down handles live ~10min and may be invalidated when the target process exits.", requestedHandle),
+                    "An evidence handle is unknown or expired.",
+                    new DiagnosticError("HandleExpired", "Drill-down handles live ~10min and may be invalidated when the target process exits.", nameof(handle)),
                     new NextActionHint("collect_events", "Re-run the evidence collector on the same pid to issue a fresh handle.",
                         new Dictionary<string, object?> { ["kind"] = "counters", ["durationSeconds"] = 5 }));
             }
@@ -113,11 +113,11 @@ internal static class DiagnosticToolInvestigationPlanning
             if (!IsSupportedEvidencePair(lookup.Value.Kind, lookup.Value.Artifact))
             {
                 return DiagnosticResult.Fail<ExportedInvestigationSummary>(
-                    $"Handle '{requestedHandle}' has unsupported or mismatched kind '{lookup.Value.Kind}'.",
+                    "An evidence handle has an unsupported or mismatched kind/artifact pair.",
                     new DiagnosticError(
                         "HandleKindMismatch",
                         "Supported canonical summary evidence pairs are cpu-sample/CpuSampleTraceArtifact, counters/CounterSnapshot, gc-events/GcSummary, gc-datas/GcDatasSnapshot, and thread-snapshot/ThreadSnapshotArtifact.",
-                        requestedHandle),
+                        "UnsupportedEvidencePair"),
                     new NextActionHint("collect_events", "Collect a supported counters or GC artifact.",
                         new Dictionary<string, object?> { ["kind"] = "counters", ["durationSeconds"] = 5 }));
             }
@@ -127,7 +127,7 @@ internal static class DiagnosticToolInvestigationPlanning
             {
                 return DiagnosticResult.Fail<ExportedInvestigationSummary>(
                     "All evidence handles must belong to the same process.",
-                    new DiagnosticError("EvidenceProcessMismatch", $"Handle '{requestedHandle}' belongs to PID {lookup.Value.Handle.ProcessId}; expected PID {processId}.", requestedHandle),
+                    new DiagnosticError("EvidenceProcessMismatch", "An evidence handle belongs to a different process.", nameof(additionalHandles)),
                     new NextActionHint("export_investigation_summary", "Re-issue with handles collected from one process."));
             }
 
@@ -135,7 +135,8 @@ internal static class DiagnosticToolInvestigationPlanning
                 requestedHandle,
                 lookup.Value.Kind,
                 lookup.Value.Artifact,
-                lookup.Value.Handle.Origin.ToString().ToLowerInvariant()));
+                lookup.Value.Handle.Origin.ToString().ToLowerInvariant(),
+                DiagnosticHandleMetadata.ResolveProducingTool(handles, lookup.Value)));
         }
 
         if (evidence.Count(static item => item.Kind == "cpu-sample") > 1)
@@ -168,10 +169,19 @@ internal static class DiagnosticToolInvestigationPlanning
         {
             return DiagnosticResult.Fail<ExportedInvestigationSummary>(
                 ex.Message,
-                new DiagnosticError("EvidenceMetricConflict", ex.Message, ex.MetricName),
+                new DiagnosticError("EvidenceMetricConflict", ex.Message, "ConflictingMetricIdentity"),
                 new NextActionHint(
                     "export_investigation_summary",
                     "Remove one handle that reports the conflicting metric, or export the captures separately."));
+        }
+        catch (InvalidEvidenceMetricException ex)
+        {
+            return DiagnosticResult.Fail<ExportedInvestigationSummary>(
+                ex.Message,
+                new DiagnosticError("InvalidEvidenceMetric", ex.Message, "NonFiniteMetricValue"),
+                new NextActionHint(
+                    "export_investigation_summary",
+                    "Re-collect the evidence; the producer emitted a non-finite metric value."));
         }
 
         telemetry.Emit(exported.Summary, string.Join(",", requestedHandles));
@@ -205,14 +215,19 @@ internal static class DiagnosticToolInvestigationPlanning
             return true;
         }
 
-        if (principal?.HasScope(requiredScope) == true)
+        var requiresExplicitScope = string.Equals(kind, "cpu-sample", StringComparison.Ordinal);
+        var isAuthorized = requiresExplicitScope
+            ? principal?.HasExplicitScope(requiredScope) == true
+            : principal?.HasScope(requiredScope) == true;
+        if (isAuthorized)
         {
             failure = null;
             return true;
         }
 
+        var qualifier = requiresExplicitScope ? "explicitly granted " : string.Empty;
         var message =
-            $"forbidden: tool 'export_investigation_summary' requires scope '{requiredScope}' for kind '{kind}'.";
+            $"forbidden: tool 'export_investigation_summary' requires the {qualifier}scope '{requiredScope}'.";
         failure = DiagnosticResult.Fail<object>(
             message,
             new DiagnosticError("Forbidden", message, requiredScope));

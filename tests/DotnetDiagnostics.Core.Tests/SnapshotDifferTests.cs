@@ -163,6 +163,36 @@ public sealed class SnapshotDifferTests
         diff.MetricSeries.Single().Dispersion!.OutlierIndex.Should().Be(3);
     }
 
+    [Fact]
+    public void Dispersion_CpuIdenticalScalarsButDivergentHotspots_IsDispersed()
+    {
+        ComparableSnapshot CpuSnap(string label, string hotspot) => new(
+            ComparableSnapshot.SchemaV1,
+            "cpu-sample",
+            label,
+            DateTimeOffset.UnixEpoch,
+            1,
+            [Metric("waitingSelfPercent", 10)],
+            [
+                new ComparableRow(
+                    new ComparableKey("cpu-sample", $"App.dll!{hotspot}"),
+                    hotspot,
+                    [Metric("exclusivePercent", 80)]),
+            ]);
+
+        var diff = SnapshotDiffer.Compare(
+        [
+            CpuSnap("pod0", "App.WorkA"),
+            CpuSnap("pod1", "App.WorkA"),
+            CpuSnap("pod2", "App.WorkB"),
+        ], JourneyMode.Dispersion);
+
+        diff.MetricSeries.Single().Dispersion!.CoefficientOfVariation.Should().Be(0);
+        diff.KeyMatrix.Should().Contain(row =>
+            row.Dispersion!.CoefficientOfVariation > 0.1);
+        diff.Verdict.Should().Be("dispersed");
+    }
+
     // ---- Key-set kinds ----------------------------------------------------------------------
 
     [Fact]
@@ -285,7 +315,7 @@ public sealed class SnapshotDifferTests
 
         var diff = SnapshotDiffer.Compare(new[] { snapshot, after });
 
-        diff.Notes.Should().Contain(n => n.Contains("Duplicate key"));
+        diff.Notes.Should().Contain(n => n.Contains("duplicate untrusted key", StringComparison.Ordinal));
         // First occurrence kept: 10 -> 5 is an improvement, not 99 -> 5.
         diff.KeyMatrix.Single().Values[0].Should().Be(10);
     }

@@ -67,6 +67,7 @@ public sealed class EventCollectionHandleOriginTests
         var lookup = store.TryGetWithKind(handle!);
         lookup.Should().NotBeNull();
         lookup!.Value.Handle.Origin.Should().Be(HandleOrigin.Live);
+        lookup.Value.Handle.ProducingTool.Should().Be("collect_events");
 
         store.InvalidateForProcess(ProcessId).Should().Be(0);
         store.TryGetWithKind(handle!).Should().NotBeNull();

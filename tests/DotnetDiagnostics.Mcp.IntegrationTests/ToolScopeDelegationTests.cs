@@ -370,12 +370,13 @@ public sealed class ToolScopeDelegationTests
     }
 
     [Fact]
-    public void ExportSummary_Delegates_CanonicalCpuScope()
+    public void ExportSummary_Delegates_OnlyCallerPresentedEvidenceScopes()
     {
         var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
         var arguments = Arguments(new { handle = "opaque" });
         var caller = Principal(
             "investigation-export",
+            "read-counters",
             "eventpipe",
             "ptrace",
             "symbols-remote");
@@ -391,11 +392,15 @@ public sealed class ToolScopeDelegationTests
                 "export_investigation_summary",
                 authorization,
                 caller)
-            .Should().BeEquivalentTo("investigation-export", "eventpipe");
+            .Should().BeEquivalentTo(
+                "investigation-export",
+                "read-counters",
+                "eventpipe",
+                "ptrace");
     }
 
     [Fact]
-    public void ExportSummary_RejectsMissingEventPipeScope()
+    public void ExportSummary_DoesNotSynthesizeMissingEvidenceScopes()
     {
         var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
         var arguments = Arguments(new { handle = "opaque" });
@@ -406,14 +411,18 @@ public sealed class ToolScopeDelegationTests
             caller,
             proxyInvocation: true,
             policies: StrictPolicies);
-        authorization.IsAllowed.Should().BeFalse();
-        authorization.MissingScope.Should().Be("eventpipe");
+        authorization.IsAllowed.Should().BeTrue();
+        ToolScopeDelegation.GetDelegatedScopes(
+                "export_investigation_summary",
+                authorization,
+                caller)
+            .Should().BeEquivalentTo("investigation-export");
     }
 
     [Theory]
     [InlineData(BearerPrincipal.RootScope)]
     [InlineData(BearerPrincipal.RootScopeAlt)]
-    public void ExportSummary_WildcardCaller_DoesNotSynthesizeEventPipeScope(string wildcard)
+    public void ExportSummary_WildcardCaller_DoesNotSynthesizeEvidenceScopes(string wildcard)
     {
         var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
         var arguments = Arguments(new { handle = "opaque" });
@@ -424,8 +433,12 @@ public sealed class ToolScopeDelegationTests
             caller,
             proxyInvocation: true,
             policies: StrictPolicies);
-        authorization.IsAllowed.Should().BeFalse();
-        authorization.MissingScope.Should().Be("eventpipe");
+        authorization.IsAllowed.Should().BeTrue();
+        ToolScopeDelegation.GetDelegatedScopes(
+                "export_investigation_summary",
+                authorization,
+                caller)
+            .Should().BeEquivalentTo("investigation-export");
     }
 
     private static (ToolScopeRegistry Registry, CallToolRequestParams Delegated)

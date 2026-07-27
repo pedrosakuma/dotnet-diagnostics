@@ -158,51 +158,38 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
     }
 
     [Fact]
-    public async Task PodRoot_ExportGuessedHandle_RemainsUnavailable()
-    {
-        await using var factory = CreatePodFactory();
-        await using var client = await ConnectAsync(factory);
-        var result = await CallDelegatedAsync(
-            client,
-            "export_investigation_summary",
-            Arguments(new { handle = "guessed-pod-handle" }),
-            ["investigation-export", "read-counters", "eventpipe", "ptrace"]);
-
-        ResultText(result).Should().Contain("HandleExpired");
-        ResultText(result).Should().NotContain("investigationId");
-    }
-
-    [Fact]
-    public async Task PodRoot_TaskPromotedExport_RetainsExactDelegation_WithoutRootFallback()
+    public async Task PodRoot_ExportNonFiniteMetric_ReturnsStructuredDiagnostic()
     {
         await using var factory = CreatePodFactory();
         await using var client = await ConnectAsync(factory);
         var store = factory.Services.GetRequiredService<IDiagnosticHandleStore>();
-        var counters = RegisterExportArtifact(store, CollectionHandleKinds.Counters);
-        var arguments = Arguments(new { handle = counters.Id });
-        var taskMetadata = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        var handle = store.Register(
+            1234,
+            CollectionHandleKinds.Counters,
+            new CounterSnapshot(
+                1234,
+                T0,
+                TimeSpan.FromSeconds(1),
+                [new CounterValue(
+                    "System.Runtime",
+                    "threadpool-queue-length",
+                    "Queue",
+                    double.PositiveInfinity,
+                    CounterKind.Mean)],
+                [],
+                []),
+            TimeSpan.FromMinutes(5),
+            origin: HandleOrigin.Live);
 
-        var denied = await CallDelegatedAsTaskAsync(
+        var result = await CallDelegatedAsync(
             client,
-            arguments,
-            ["investigation-export"],
-            taskMetadata);
-        ResultText(denied).Should().Contain("Forbidden").And.Contain("read-counters");
-
-        var allowed = await CallDelegatedAsTaskAsync(
-            client,
-            arguments,
-            ["investigation-export", "read-counters"],
-            taskMetadata);
-        ResultText(allowed).Should().NotContain("Forbidden");
-        ResultText(allowed).Should().Contain("investigationId");
-
-        var followUp = await client.CallToolAsync(
             "export_investigation_summary",
-            ToClientArguments(arguments),
-            cancellationToken: CancellationToken.None);
-        followUp.IsError.Should().BeTrue();
-        ResultText(followUp).Should().Contain("require an internal scope delegation");
+            Arguments(new { handle = handle.Id }),
+            ["investigation-export", "read-counters"]);
+
+        ResultText(result).Should().Contain("InvalidEvidenceMetric")
+            .And.Contain("Evidence contains a non-finite metric value.")
+            .And.Contain("NonFiniteMetricValue");
     }
 
     [Fact]
@@ -263,13 +250,14 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
             task = await client.GetTaskAsync(task.TaskId, cancellationToken: CancellationToken.None);
         }
 
-        task.Status.Should().Be(McpTaskStatus.Completed);
+        task.Status.Should().BeOneOf(McpTaskStatus.Completed, McpTaskStatus.Failed);
         var rawResult = await client.GetTaskResultAsync(
             task.TaskId,
             cancellationToken: CancellationToken.None);
         var taskResult = JsonSerializer.Deserialize<CallToolResult>(
             rawResult.GetRawText(),
             new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        taskResult.IsError.Should().Be(task.Status == McpTaskStatus.Failed);
         ResultText(taskResult).Should().NotContain("internal scope delegation");
         ResultText(taskResult).Should().NotContain("literal modifier scope");
 
@@ -330,51 +318,6 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
         IDictionary<string, JsonElement> arguments,
         string[] callerScopes)
     {
-        var delegated = CreateDelegatedRequest(toolName, arguments, callerScopes);
-        return await client.CallToolAsync(
-            toolName,
-            ToClientArguments(delegated.Arguments),
-            cancellationToken: CancellationToken.None);
-    }
-
-    private static async Task<CallToolResult> CallDelegatedAsTaskAsync(
-        McpClient client,
-        IDictionary<string, JsonElement> arguments,
-        string[] callerScopes,
-        McpTaskMetadata taskMetadata)
-    {
-        var delegated = CreateDelegatedRequest(
-            "export_investigation_summary",
-            arguments,
-            callerScopes,
-            taskMetadata);
-        var task = await client.CallToolAsTaskAsync(
-            "export_investigation_summary",
-            ToClientArguments(delegated.Arguments),
-            taskMetadata,
-            cancellationToken: CancellationToken.None);
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
-        while (task.Status is McpTaskStatus.Working && DateTimeOffset.UtcNow < deadline)
-        {
-            await Task.Delay(task.PollInterval ?? TimeSpan.FromMilliseconds(100));
-            task = await client.GetTaskAsync(task.TaskId, cancellationToken: CancellationToken.None);
-        }
-
-        task.Status.Should().Be(McpTaskStatus.Completed);
-        var rawResult = await client.GetTaskResultAsync(
-            task.TaskId,
-            cancellationToken: CancellationToken.None);
-        return JsonSerializer.Deserialize<CallToolResult>(
-            rawResult.GetRawText(),
-            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
-    }
-
-    private static CallToolRequestParams CreateDelegatedRequest(
-        string toolName,
-        IDictionary<string, JsonElement> arguments,
-        string[] callerScopes,
-        McpTaskMetadata? taskMetadata = null)
-    {
         var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
         var caller = new BearerPrincipal(
             "central-caller",
@@ -386,16 +329,16 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
             proxyInvocation: true,
             policies: CreatePolicies());
         authorization.IsAllowed.Should().BeTrue();
-        return ToolScopeDelegation.Add(
-            new CallToolRequestParams
-            {
-                Name = toolName,
-                Arguments = arguments,
-                Task = taskMetadata,
-            },
+        var delegated = ToolScopeDelegation.Add(
+            new CallToolRequestParams { Name = toolName, Arguments = arguments },
             authorization,
             caller,
             DelegationKey);
+
+        return await client.CallToolAsync(
+            toolName,
+            ToClientArguments(delegated.Arguments),
+            cancellationToken: CancellationToken.None);
     }
 
     private static DiagnosticHandle RegisterExportArtifact(

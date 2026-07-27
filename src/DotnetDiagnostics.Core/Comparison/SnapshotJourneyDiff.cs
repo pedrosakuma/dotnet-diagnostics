@@ -1,3 +1,6 @@
+using System.Text.Json.Serialization;
+using DotnetDiagnostics.Core.Memory;
+
 namespace DotnetDiagnostics.Core.Comparison;
 
 /// <summary>
@@ -100,4 +103,9 @@ public sealed record SnapshotJourneyDiff(
     IReadOnlyList<MetricSeries> MetricSeries,
     IReadOnlyList<KeyMatrixRow> KeyMatrix,
     PairwiseJourney? Pairwise,
-    IReadOnlyList<string> Notes);
+    IReadOnlyList<string> Notes)
+{
+    [JsonPropertyOrder(-20)]
+    public InvestigationEvidenceBoundary UntrustedDataBoundary { get; init; } =
+        InvestigationEvidenceBoundary.UntrustedComparisonData;
+}

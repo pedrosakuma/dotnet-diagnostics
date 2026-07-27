@@ -27,7 +27,30 @@ public interface IDiagnosticHandleStore
     /// the legacy-boundary authorization table (#207) distinguish offline-imported artifacts from
     /// dumps captured on-host.</param>
     /// <returns>The newly-issued handle.</returns>
-    DiagnosticHandle Register(int processId, string kind, object artifact, TimeSpan ttl, bool evictWhenProcessExits = true, HandleOrigin? origin = null);
+    DiagnosticHandle Register(
+        int processId,
+        string kind,
+        object artifact,
+        TimeSpan ttl,
+        bool evictWhenProcessExits = true,
+        HandleOrigin? origin = null);
+
+    /// <summary>
+    /// Metadata-aware registration that preserves the original <see cref="Register"/> binary surface.
+    /// </summary>
+    DiagnosticHandle RegisterWithMetadata(
+        int processId,
+        string kind,
+        object artifact,
+        TimeSpan ttl,
+        bool evictWhenProcessExits = true,
+        HandleOrigin? origin = null,
+        string? producingTool = null)
+    {
+        var handle = Register(processId, kind, artifact, ttl, evictWhenProcessExits, origin);
+        DiagnosticHandleMetadata.Record(this, handle.Id, producingTool);
+        return handle with { ProducingTool = producingTool };
+    }
 
     /// <summary>
     /// Retrieves the artifact previously stored under <paramref name="handle"/>, casting it
@@ -98,6 +121,9 @@ public sealed record DiagnosticHandle(string Id, DateTimeOffset ExpiresAt, int P
     /// Defaults to <see cref="HandleOrigin.Live"/> so existing callers that construct
     /// <see cref="DiagnosticHandle"/> via the positional record syntax keep compiling.</summary>
     public HandleOrigin Origin { get; init; } = HandleOrigin.Live;
+
+    /// <summary>Tool that produced the artifact. Null retains legacy kind-based inference.</summary>
+    public string? ProducingTool { get; init; }
 }
 
 /// <summary>Bundle returned by <see cref="IDiagnosticHandleStore.TryGetWithKind"/>: the

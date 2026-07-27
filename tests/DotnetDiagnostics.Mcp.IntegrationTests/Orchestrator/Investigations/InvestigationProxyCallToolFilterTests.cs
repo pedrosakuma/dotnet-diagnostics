@@ -309,6 +309,44 @@ public sealed class InvestigationProxyCallToolFilterTests
         fx.ProxyClient.CallCount.Should().Be(0);
     }
 
+    [Fact]
+    public async Task TaskAugmentedExport_MissingEvidenceScope_IsDelegatedWithoutWidening()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "investigation-export"));
+        fx.Binder.Bind("session-export-task-limited", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+        var request = Params("export_investigation_summary", new Dictionary<string, JsonElement>
+        {
+            ["handle"] = JsonSerializer.SerializeToElement("opaque-evidence-handle"),
+        });
+        request.Task = new McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) };
+        var promoterCalls = 0;
+
+        var result = await fx.Invoke(
+            request,
+            "session-export-task-limited",
+            taskPromoter: async (forward, ct) =>
+            {
+                promoterCalls++;
+                return await forward(ct);
+            });
+
+        result.IsError.Should().NotBe(true);
+        promoterCalls.Should().Be(1);
+        fx.ProxyClient.CallCount.Should().Be(1);
+        ToolScopeDelegation.TryConsume(
+            fx.ProxyClient.LastRequest!,
+            ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable),
+            new ToolScopeResolutionPolicies(null, null, null, null),
+            ActiveHandle.InternalScopeDelegationKey,
+            TimeProvider.System,
+            out var delegatedPrincipal,
+            out var failure).Should().BeTrue(failure);
+        delegatedPrincipal!.Scopes.Should().BeEquivalentTo("investigation-export");
+    }
+
     [Theory]
     [InlineData(false, "or")]
     [InlineData(false, "and")]

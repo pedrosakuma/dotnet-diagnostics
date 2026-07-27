@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core.CpuSampling;
 
 namespace DotnetDiagnostics.Core.Memory;
@@ -19,6 +20,10 @@ public sealed record SummaryDiff(
     IReadOnlyList<HotspotDelta> RemovedHotspots,
     IReadOnlyList<HotspotDelta> ChangedHotspots)
 {
+    [JsonPropertyOrder(-20)]
+    public InvestigationEvidenceBoundary UntrustedDataBoundary { get; init; } =
+        InvestigationEvidenceBoundary.UntrustedComparisonData;
+
     public IReadOnlyList<KeyMetricDelta> KeyMetricDeltas { get; init; } = Array.Empty<KeyMetricDelta>();
 
     public IReadOnlyList<string> Notes { get; init; } = Array.Empty<string>();
@@ -29,22 +34,37 @@ public sealed record ProvenanceDelta(
     bool GitShaChanged,
     bool AssemblyVersionChanged,
     bool ContainerChanged,
-    string Summary);
+    string Summary)
+{
+    public string? BaselineImage { get; init; }
+    public string? CurrentImage { get; init; }
+    public string? BaselineGitSha { get; init; }
+    public string? CurrentGitSha { get; init; }
+    public string? BaselineAssemblyVersion { get; init; }
+    public string? CurrentAssemblyVersion { get; init; }
+}
 
 public sealed record HotspotDelta(
     SymbolRef Symbol,
     double? BaselineInclusivePercent,
     double? CurrentInclusivePercent,
-    double? InclusiveDeltaPoints,
-    SelfSampleBreakdown? BaselineSelfSamples = null,
-    SelfSampleBreakdown? CurrentSelfSamples = null);
+    double? InclusiveDeltaPoints)
+{
+    public SelfSampleBreakdown? BaselineSelfSamples { get; init; }
+
+    public SelfSampleBreakdown? CurrentSelfSamples { get; init; }
+}
 
 public sealed record KeyMetricDelta(
     string Name,
     double? BaselineValue,
     double? CurrentValue,
     string BetterDirection,
-    string Outcome);
+    string Outcome)
+{
+    public string? BaselineUnit { get; init; }
+    public string? CurrentUnit { get; init; }
+}
 
 public sealed class SummaryComparer : ISummaryComparer
 {
@@ -63,6 +83,7 @@ public sealed class SummaryComparer : ISummaryComparer
             ["requestp95milliseconds"] = MetricDirection.Lower,
             ["requestp95seconds"] = MetricDirection.Lower,
             ["requestlatencyp95"] = MetricDirection.Lower,
+            ["httpserverrequestdurationp95"] = MetricDirection.Lower,
             ["requestscompleted"] = MetricDirection.Higher,
             ["requestthroughput"] = MetricDirection.Higher,
             ["requestspersecond"] = MetricDirection.Higher,
@@ -85,8 +106,10 @@ public sealed class SummaryComparer : ISummaryComparer
                 h.Symbol,
                 null,
                 h.InclusivePercent,
-                h.InclusivePercent,
-                CurrentSelfSamples: h.SelfSamples))
+                h.InclusivePercent)
+            {
+                CurrentSelfSamples = h.SelfSamples,
+            })
             .OrderByDescending(d => d.CurrentInclusivePercent ?? 0)
             .ToArray();
 
@@ -96,8 +119,10 @@ public sealed class SummaryComparer : ISummaryComparer
                 h.Symbol,
                 h.InclusivePercent,
                 null,
-                -h.InclusivePercent,
-                BaselineSelfSamples: h.SelfSamples))
+                -h.InclusivePercent)
+            {
+                BaselineSelfSamples = h.SelfSamples,
+            })
             .OrderByDescending(d => d.BaselineInclusivePercent ?? 0)
             .ToArray();
 
@@ -111,16 +136,23 @@ public sealed class SummaryComparer : ISummaryComparer
                     kv.Key,
                     b,
                     c,
-                    Math.Round(c - b, 2),
-                    kv.Value.SelfSamples,
-                    currentMap[kv.Key].SelfSamples);
+                    Math.Round(c - b, 2))
+                {
+                    BaselineSelfSamples = kv.Value.SelfSamples,
+                    CurrentSelfSamples = currentMap[kv.Key].SelfSamples,
+                };
             })
             .Where(d => Math.Abs(d.InclusiveDeltaPoints!.Value) >= SignificantChangePoints)
             .OrderByDescending(d => Math.Abs(d.InclusiveDeltaPoints!.Value))
             .ToArray();
 
         var notes = new List<string>();
-        var metricDeltas = CompareKeyMetrics(baseline.Findings.KeyMetrics, current.Findings.KeyMetrics, notes);
+        var metricDeltas = CompareKeyMetrics(
+            baseline.Findings.KeyMetrics,
+            baseline.Findings.KeyMetricUnits,
+            current.Findings.KeyMetrics,
+            current.Findings.KeyMetricUnits,
+            notes);
         var verdict = Verdict(provenance, added, removed, changed, metricDeltas);
         return new SummaryDiff(verdict, provenance, added, removed, changed)
         {
@@ -136,13 +168,23 @@ public sealed class SummaryComparer : ISummaryComparer
         var asmVerChanged = !string.Equals(b.Build?.AssemblyVersion, c.Build?.AssemblyVersion, StringComparison.Ordinal);
         var containerChanged = imageChanged;
 
-        var parts = new List<string>();
-        if (imageChanged) parts.Add($"image {b.Container?.Image ?? "(none)"} → {c.Container?.Image ?? "(none)"}");
-        if (gitShaChanged) parts.Add($"git {b.Build?.GitSha ?? "(none)"} → {c.Build?.GitSha ?? "(none)"}");
-        if (asmVerChanged) parts.Add($"version {b.Build?.AssemblyVersion ?? "(none)"} → {c.Build?.AssemblyVersion ?? "(none)"}");
-        var summary = parts.Count == 0 ? "Same build + container" : string.Join("; ", parts);
+        var changedFields = new List<string>();
+        if (imageChanged) changedFields.Add("image");
+        if (gitShaChanged) changedFields.Add("git SHA");
+        if (asmVerChanged) changedFields.Add("assembly version");
+        var summary = changedFields.Count == 0
+            ? "Same build + container"
+            : $"Provenance changed ({string.Join(", ", changedFields)}); raw labels are untrusted fields.";
 
-        return new ProvenanceDelta(imageChanged, gitShaChanged, asmVerChanged, containerChanged, summary);
+        return new ProvenanceDelta(imageChanged, gitShaChanged, asmVerChanged, containerChanged, summary)
+        {
+            BaselineImage = b.Container?.Image,
+            CurrentImage = c.Container?.Image,
+            BaselineGitSha = b.Build?.GitSha,
+            CurrentGitSha = c.Build?.GitSha,
+            BaselineAssemblyVersion = b.Build?.AssemblyVersion,
+            CurrentAssemblyVersion = c.Build?.AssemblyVersion,
+        };
     }
 
     private static string Verdict(
@@ -191,7 +233,7 @@ public sealed class SummaryComparer : ISummaryComparer
 
         if (metrics == Evidence.Regressed)
         {
-            if (removedWaiting)
+            if (removedWaiting || removed.Length > 0)
             {
                 return "mixed";
             }
@@ -225,7 +267,9 @@ public sealed class SummaryComparer : ISummaryComparer
 
     private static KeyMetricDelta[] CompareKeyMetrics(
         IReadOnlyDictionary<string, double>? baseline,
+        IReadOnlyDictionary<string, string?>? baselineUnits,
         IReadOnlyDictionary<string, double>? current,
+        IReadOnlyDictionary<string, string?>? currentUnits,
         List<string> notes)
     {
         if (baseline is null && current is null)
@@ -233,8 +277,8 @@ public sealed class SummaryComparer : ISummaryComparer
             return Array.Empty<KeyMetricDelta>();
         }
 
-        var baselineMetrics = CanonicalizeMetrics(baseline, "baseline", notes);
-        var currentMetrics = CanonicalizeMetrics(current, "current", notes);
+        var baselineMetrics = CanonicalizeMetrics(baseline, baselineUnits, "baseline", notes);
+        var currentMetrics = CanonicalizeMetrics(current, currentUnits, "current", notes);
         var names = baselineMetrics.Keys
             .Concat(currentMetrics.Keys)
             .Distinct(StringComparer.Ordinal)
@@ -247,7 +291,16 @@ public sealed class SummaryComparer : ISummaryComparer
             var hasBaseline = baselineMetrics.TryGetValue(canonicalName, out var baselineMetric);
             var hasCurrent = currentMetrics.TryGetValue(canonicalName, out var currentMetric);
             var name = hasBaseline ? baselineMetric!.Name : currentMetric!.Name;
-            var hasDirection = MetricDirections.TryGetValue(canonicalName, out var direction);
+            var directionName = NormalizeMetricName(
+                InvestigationMetricIdentity.ComparableName(name));
+            var isCumulativeLast = InvestigationMetricIdentity.IsCumulativeMeterLast(name);
+            var isRawIncrement = InvestigationMetricIdentity.IsEventCounterRawIncrement(name);
+            var isUnnormalizedIncrement = isRawIncrement
+                && InvestigationMetricIdentity.IsUnnormalizedEventCounterIncrement(name);
+            var direction = default(MetricDirection);
+            var hasDirection = !isCumulativeLast
+                && !isRawIncrement
+                && MetricDirections.TryGetValue(directionName, out direction);
             if (!hasBaseline || !hasCurrent)
             {
                 deltas.Add(new KeyMetricDelta(
@@ -255,19 +308,79 @@ public sealed class SummaryComparer : ISummaryComparer
                     hasBaseline ? baselineMetric!.Value : null,
                     hasCurrent ? currentMetric!.Value : null,
                     hasDirection ? DirectionName(direction) : "unknown",
-                    Incomparable));
-                notes.Add($"Key metric '{name}' is absent from one summary; it does not drive the verdict.");
+                    Incomparable)
+                {
+                    BaselineUnit = hasBaseline ? baselineMetric!.Unit : null,
+                    CurrentUnit = hasCurrent ? currentMetric!.Unit : null,
+                });
+                notes.Add("A key metric is absent from one summary; the unmatched untrusted label is retained only in KeyMetricDeltas.");
                 continue;
+            }
+
+            if (isCumulativeLast)
+            {
+                deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable)
+                {
+                    BaselineUnit = baselineMetric.Unit,
+                    CurrentUnit = currentMetric.Unit,
+                });
+                notes.Add("A cumulative meter total is retained in untrusted delta fields but does not drive the verdict; its rate series is used instead.");
+                continue;
+            }
+
+            if (isRawIncrement)
+            {
+                deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable)
+                {
+                    BaselineUnit = baselineMetric.Unit,
+                    CurrentUnit = currentMetric.Unit,
+                });
+                notes.Add(InvestigationMetricIdentity.HasInvalidEventCounterRateMetadata(name)
+                    ? "A raw EventCounter increment has invalid interval/rate-scale metadata and is incomparable; its untrusted label is retained only in KeyMetricDeltas."
+                    : isUnnormalizedIncrement
+                        ? "A raw EventCounter increment has no interval/rate-scale metadata and is incomparable; its untrusted label is retained only in KeyMetricDeltas."
+                        : "A raw EventCounter increment is retained in untrusted delta fields but does not drive the verdict; its normalized rate series is used instead.");
+                continue;
+            }
+
+            if (!TryGetComparableValues(
+                    baselineMetric!,
+                    currentMetric!,
+                    out var baselineComparable,
+                    out var currentComparable,
+                    out var conversionNote))
+            {
+                deltas.Add(new KeyMetricDelta(
+                    name,
+                    baselineMetric!.Value,
+                    currentMetric!.Value,
+                    hasDirection ? DirectionName(direction) : "unknown",
+                    Incomparable)
+                {
+                    BaselineUnit = baselineMetric.Unit,
+                    CurrentUnit = currentMetric.Unit,
+                });
+                notes.Add("A key metric has incompatible units and does not drive the verdict; raw metric and unit labels are retained only in KeyMetricDeltas.");
+                continue;
+            }
+
+            if (conversionNote is not null)
+            {
+                notes.Add(conversionNote);
             }
 
             if (!hasDirection)
             {
-                deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable));
-                notes.Add($"Key metric '{name}' has no registered better-direction semantics; its delta is reported but does not drive the verdict.");
+                deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable)
+                {
+                    BaselineUnit = baselineMetric.Unit,
+                    CurrentUnit = currentMetric.Unit,
+                });
+                notes.Add("A key metric has no registered better-direction semantics; its untrusted label and delta are reported but do not drive the verdict.");
                 continue;
             }
 
-            var delta = currentMetric!.Value - baselineMetric!.Value;
+            var delta = currentComparable - baselineComparable;
             var outcome = Math.Abs(delta) <= double.Epsilon
                 ? Unchanged
                 : (delta < 0) == (direction == MetricDirection.Lower)
@@ -275,10 +388,14 @@ public sealed class SummaryComparer : ISummaryComparer
                     : Regressed;
             deltas.Add(new KeyMetricDelta(
                 name,
-                baselineMetric.Value,
-                currentMetric.Value,
+                baselineMetric!.Value,
+                currentMetric!.Value,
                 DirectionName(direction),
-                outcome));
+                outcome)
+            {
+                BaselineUnit = baselineMetric.Unit,
+                CurrentUnit = currentMetric.Unit,
+            });
         }
 
         return deltas.ToArray();
@@ -286,23 +403,29 @@ public sealed class SummaryComparer : ISummaryComparer
 
     private static Evidence MetricEvidence(IReadOnlyList<KeyMetricDelta> deltas)
     {
-        if (deltas.Count == 0)
+        var verdictDeltas = deltas
+            .Where(static delta =>
+                !InvestigationMetricIdentity.IsCumulativeMeterLast(delta.Name)
+                && !InvestigationMetricIdentity.IsNormalizedRawEventCounterIncrement(delta.Name))
+            .ToArray();
+        if (verdictDeltas.Length == 0)
         {
             return Evidence.None;
         }
 
-        var improved = deltas.Any(static delta => delta.Outcome == Improved);
-        var regressed = deltas.Any(static delta => delta.Outcome == Regressed);
+        var improved = verdictDeltas.Any(static delta => delta.Outcome == Improved);
+        var regressed = verdictDeltas.Any(static delta => delta.Outcome == Regressed);
         if (improved && regressed) return Evidence.Mixed;
         if (improved) return Evidence.Improved;
         if (regressed) return Evidence.Regressed;
-        return deltas.Any(static delta => delta.Outcome == Incomparable)
+        return verdictDeltas.Any(static delta => delta.Outcome == Incomparable)
             ? Evidence.Incomparable
             : Evidence.Unchanged;
     }
 
     private static Dictionary<string, CanonicalMetric> CanonicalizeMetrics(
         IReadOnlyDictionary<string, double>? metrics,
+        IReadOnlyDictionary<string, string?>? units,
         string side,
         List<string> notes)
     {
@@ -314,15 +437,18 @@ public sealed class SummaryComparer : ISummaryComparer
 
         foreach (var metric in metrics.OrderBy(static item => item.Key, StringComparer.Ordinal))
         {
-            var canonicalName = NormalizeMetricName(metric.Key);
-            if (result.TryAdd(canonicalName, new CanonicalMetric(metric.Key, metric.Value)))
+            var canonicalName = InvestigationMetricIdentity.IsCanonical(metric.Key)
+                ? metric.Key
+                : NormalizeMetricName(metric.Key);
+            string? unit = null;
+            _ = units?.TryGetValue(metric.Key, out unit);
+            if (result.TryAdd(canonicalName, new CanonicalMetric(metric.Key, metric.Value, unit)))
             {
                 continue;
             }
 
             notes.Add(
-                $"{side} key metrics '{result[canonicalName].Name}' and '{metric.Key}' normalize to '{canonicalName}'; " +
-                $"keeping '{result[canonicalName].Name}' deterministically.");
+                $"{side} contains colliding key metric labels after normalization; the ordinal-first untrusted label was retained deterministically.");
         }
 
         return result;
@@ -330,6 +456,101 @@ public sealed class SummaryComparer : ISummaryComparer
 
     private static string DirectionName(MetricDirection direction)
         => direction == MetricDirection.Lower ? "lower" : "higher";
+
+    private static bool TryGetComparableValues(
+        CanonicalMetric baseline,
+        CanonicalMetric current,
+        out double baselineValue,
+        out double currentValue,
+        out string? conversionNote)
+    {
+        baselineValue = baseline.Value;
+        currentValue = current.Value;
+        conversionNote = null;
+
+        var baselineUnit = NormalizeUnit(baseline.Unit);
+        var currentUnit = NormalizeUnit(current.Unit);
+        if (string.Equals(baselineUnit, currentUnit, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (TryRateUnit(baselineUnit, out var baselineRate)
+            && TryRateUnit(currentUnit, out var currentRate)
+            && string.Equals(baselineRate.BaseUnit, currentRate.BaseUnit, StringComparison.Ordinal))
+        {
+            baselineValue /= baselineRate.Seconds;
+            currentValue /= currentRate.Seconds;
+            conversionNote = "Equivalent rate units were normalized to a per-second basis.";
+            return true;
+        }
+
+        if (TryDurationUnit(baselineUnit, out var baselineSeconds)
+            && TryDurationUnit(currentUnit, out var currentSeconds))
+        {
+            baselineValue *= baselineSeconds;
+            currentValue *= currentSeconds;
+            conversionNote = "Equivalent duration units were normalized to seconds.";
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string? NormalizeUnit(string? unit)
+    {
+        if (unit is null)
+        {
+            return null;
+        }
+
+        var normalized = unit.Trim().ToLowerInvariant()
+            .Replace(" per ", "/", StringComparison.Ordinal);
+        return string.Concat(normalized.Where(static character => !char.IsWhiteSpace(character)));
+    }
+
+    private static bool TryRateUnit(string? unit, out RateUnit rate)
+    {
+        rate = default;
+        if (unit is null)
+        {
+            return false;
+        }
+
+        var slash = unit.LastIndexOf('/');
+        if (slash <= 0 || slash == unit.Length - 1)
+        {
+            return false;
+        }
+
+        var seconds = unit[(slash + 1)..] switch
+        {
+            "s" or "sec" or "second" or "seconds" => 1d,
+            "min" or "minute" or "minutes" => 60d,
+            "h" or "hr" or "hour" or "hours" => 3600d,
+            _ => 0d,
+        };
+        if (seconds == 0)
+        {
+            return false;
+        }
+
+        rate = new RateUnit(unit[..slash], seconds);
+        return true;
+    }
+
+    private static bool TryDurationUnit(string? unit, out double seconds)
+    {
+        seconds = unit switch
+        {
+            "s" or "sec" or "second" or "seconds" => 1d,
+            "ms" or "millisecond" or "milliseconds" => 0.001d,
+            "us" or "µs" or "microsecond" or "microseconds" => 0.000001d,
+            "ns" or "nanosecond" or "nanoseconds" => 0.000000001d,
+            _ => 0d,
+        };
+        return seconds > 0;
+    }
 
     private static SampleActivity Activity(SelfSampleBreakdown? samples)
     {
@@ -360,7 +581,9 @@ public sealed class SummaryComparer : ISummaryComparer
         Higher,
     }
 
-    private sealed record CanonicalMetric(string Name, double Value);
+    private sealed record CanonicalMetric(string Name, double Value, string? Unit);
+
+    private readonly record struct RateUnit(string BaseUnit, double Seconds);
 
     private enum SampleActivity
     {

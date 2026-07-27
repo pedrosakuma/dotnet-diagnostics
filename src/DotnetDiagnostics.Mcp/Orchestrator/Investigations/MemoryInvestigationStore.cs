@@ -9,7 +9,7 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// via a single lock — handle counts are bounded by orchestrator concurrency in
 /// practice, so contention isn't a concern.
 /// </summary>
-internal sealed class MemoryInvestigationStore : IInvestigationStore
+internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestigationStoreActivation
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, InvestigationHandle> _byId = new(StringComparer.Ordinal);

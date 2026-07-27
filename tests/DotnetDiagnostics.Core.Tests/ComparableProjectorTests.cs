@@ -104,7 +104,11 @@ public sealed class ComparableProjectorTests
             Counters: new[]
             {
                 new CounterValue("System.Runtime", "cpu-usage", "CPU Usage", 42.5, CounterKind.Mean, "%"),
-                new CounterValue("System.Runtime", "gen-0-gc-count", "Gen 0 GC Count", 7, CounterKind.Sum, "count"),
+                new CounterValue("System.Runtime", "gen-0-gc-count", "Gen 0 GC Count", 14, CounterKind.Sum, "count")
+                {
+                    IntervalSec = 2,
+                    DisplayRateTimeScale = TimeSpan.FromSeconds(1),
+                },
             },
             Meters: new[]
             {
@@ -123,13 +127,54 @@ public sealed class ComparableProjectorTests
 
         var names = snap.Metrics.Select(m => m.Definition.Name).ToList();
         names.Should().Contain("counter:System.Runtime/cpu-usage");
-        names.Should().Contain("counter:System.Runtime/gen-0-gc-count");
+        names.Should().Contain("counter:System.Runtime/gen-0-gc-count/rate");
         names.Should().Contain("meter:MyApp/request-duration[route=/api]/p50");
         names.Should().Contain("meter:MyApp/request-duration[route=/api]/p99");
 
         var byName = snap.Metrics.ToDictionary(m => m.Definition.Name);
-        byName["counter:System.Runtime/gen-0-gc-count"].Definition.Aggregation.Should().Be(MetricAggregation.Total);
+        byName["counter:System.Runtime/gen-0-gc-count/rate"].Value.Should().Be(7);
+        byName["counter:System.Runtime/gen-0-gc-count/rate"].Definition.Aggregation.Should().Be(MetricAggregation.Rate);
         byName["counter:System.Runtime/cpu-usage"].Definition.Aggregation.Should().Be(MetricAggregation.Point);
+    }
+
+    [Fact]
+    public void EventCounterPayload_PreservesIncrementNormalizationMetadata()
+    {
+        var counter = EventPipeCounterCollector.ExtractCounterPayload(
+            "Test.Provider",
+            new Dictionary<string, object>
+            {
+                ["Name"] = "requests-per-second",
+                ["DisplayName"] = "Requests",
+                ["DisplayUnits"] = "requests",
+                ["Increment"] = 50.0,
+                ["IntervalSec"] = 2.5,
+                ["DisplayRateTimeScale"] = TimeSpan.FromSeconds(1),
+            });
+
+        counter.Should().NotBeNull();
+        counter!.Kind.Should().Be(CounterKind.Sum);
+        counter.Value.Should().Be(50);
+        counter.IntervalSec.Should().Be(2.5);
+        counter.DisplayRateTimeScale.Should().Be(TimeSpan.FromSeconds(1));
+        CounterValueNormalization.TryGetRate(counter, out var rate).Should().BeTrue();
+        rate.Should().Be(20);
+    }
+
+    [Fact]
+    public void CountersProjector_SumWithoutNormalizationMetadata_IsNotCompared()
+    {
+        var snapshot = new CounterSnapshot(
+            1,
+            DateTimeOffset.UnixEpoch,
+            TimeSpan.FromSeconds(5),
+            [new CounterValue("Test.Provider", "requests-per-second", "Requests", 100, CounterKind.Sum, "requests")],
+            [],
+            []);
+
+        var projected = new CountersComparableProjector().Project(snapshot, "capture");
+
+        projected.Metrics.Should().BeEmpty();
     }
 
     [Fact]

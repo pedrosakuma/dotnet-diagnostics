@@ -14,7 +14,47 @@ public sealed record CounterValue(
     string DisplayName,
     double Value,
     CounterKind Kind,
-    string? Unit = null);
+    string? Unit = null)
+{
+    /// <summary>Actual EventCounter increment interval from the payload, in seconds.</summary>
+    public double? IntervalSec { get; init; }
+
+    /// <summary>Time scale the producer uses when displaying an Increment as a rate.</summary>
+    public TimeSpan? DisplayRateTimeScale { get; init; }
+}
+
+internal static class CounterValueNormalization
+{
+    internal static bool TryGetRate(CounterValue counter, out double rate)
+    {
+        if (counter.Kind != CounterKind.Sum
+            || counter.IntervalSec is not double intervalSec
+            || intervalSec <= 0
+            || !double.IsFinite(intervalSec)
+            || counter.DisplayRateTimeScale is not { } scale
+            || scale <= TimeSpan.Zero)
+        {
+            rate = 0;
+            return false;
+        }
+
+        rate = counter.Value / intervalSec;
+        return double.IsFinite(rate);
+    }
+
+    internal static bool HasRateMetadata(CounterValue counter)
+        => counter.IntervalSec.HasValue || counter.DisplayRateTimeScale.HasValue;
+
+    internal static string? RateUnit(CounterValue counter)
+    {
+        if (counter.Unit is null)
+        {
+            return null;
+        }
+
+        return $"{counter.Unit}/s";
+    }
+}
 
 /// <summary>Percentile snapshot reconstituted from a Meter histogram payload.</summary>
 public sealed record HistogramSnapshot(

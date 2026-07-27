@@ -460,6 +460,13 @@ public sealed class EventPipeCounterCollector : ICounterCollector
             return null;
         }
 
+        return ExtractCounterPayload(traceEvent.ProviderName, data);
+    }
+
+    internal static CounterValue? ExtractCounterPayload(
+        string providerName,
+        IDictionary<string, object> data)
+    {
         var name = AsString(data, "Name");
         var display = AsString(data, "DisplayName");
         var unit = data.TryGetValue("DisplayUnits", out var u) ? u as string : null;
@@ -482,12 +489,20 @@ public sealed class EventPipeCounterCollector : ICounterCollector
         }
 
         return new CounterValue(
-            Provider: traceEvent.ProviderName,
+            Provider: providerName,
             Name: name,
             DisplayName: string.IsNullOrEmpty(display) ? name : display,
             Value: value,
             Kind: kind,
-            Unit: string.IsNullOrEmpty(unit) ? null : unit);
+            Unit: string.IsNullOrEmpty(unit) ? null : unit)
+        {
+            IntervalSec = data.TryGetValue("IntervalSec", out var interval)
+                ? ToDouble(interval)
+                : null,
+            DisplayRateTimeScale = data.TryGetValue("DisplayRateTimeScale", out var timeScale)
+                ? ToTimeSpan(timeScale)
+                : null,
+        };
     }
 
     private static string AsString(IDictionary<string, object> data, string key)
@@ -531,6 +546,13 @@ public sealed class EventPipeCounterCollector : ICounterCollector
         long l => l,
         int i => i,
         _ => Convert.ToDouble(value, CultureInfo.InvariantCulture),
+    };
+
+    private static TimeSpan? ToTimeSpan(object value) => value switch
+    {
+        TimeSpan timeSpan => timeSpan,
+        string text when TimeSpan.TryParse(text, CultureInfo.InvariantCulture, out var parsed) => parsed,
+        _ => null,
     };
 
     private sealed record InstrumentMetadata(
