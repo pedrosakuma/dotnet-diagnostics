@@ -468,7 +468,7 @@ Five leak requests during triage and five more during counters grew the GC
 heap from approximately 22.59 MB to 43.67 MB. Counters also reported a
 33,653,264-byte LOH and a 138.80 MB working set. The live heap contained
 44,667,896 bytes, of which `System.Byte[]` accounted for 42,105,103 bytes
-(96.07%). Its retention path was initially rendered as
+(94.26%). Its retention path was initially rendered as
 `Byte[] -> <retainer> -> <retainer> -> Stack`. The two object queries resolved
 those anonymous intermediates to a length-16 `System.Byte[][]` and then a
 `List<System.Byte[]>` whose `_items` field referenced that backing array.
