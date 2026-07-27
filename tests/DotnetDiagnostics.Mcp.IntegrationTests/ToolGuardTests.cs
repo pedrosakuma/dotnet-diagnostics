@@ -252,6 +252,31 @@ public sealed class ToolGuardTests
             "every non-protocol/non-cancel exception must be surfaced as a structured error");
     }
 
+    [Fact]
+    public void ToolErrorSurfaceFilter_IsStructuredFailure_OnlyMatchesRootErrorEnvelope()
+    {
+        var failure = new ModelContextProtocol.Protocol.CallToolResult
+        {
+            StructuredContent = System.Text.Json.JsonSerializer.SerializeToElement(new
+            {
+                summary = "attach denied",
+                error = new { kind = "PermissionDenied", message = "PTRACE_ATTACH failed" },
+            }),
+        };
+        var success = new ModelContextProtocol.Protocol.CallToolResult
+        {
+            StructuredContent = System.Text.Json.JsonSerializer.SerializeToElement(new
+            {
+                summary = "captured",
+                error = (object?)null,
+                data = new { kind = "confirmation_required" },
+            }),
+        };
+
+        ToolErrorSurfaceFilter.IsStructuredFailure(failure).Should().BeTrue();
+        ToolErrorSurfaceFilter.IsStructuredFailure(success).Should().BeFalse();
+    }
+
 
     private sealed class ThrowingDumpInspector : IDumpInspector
     {
