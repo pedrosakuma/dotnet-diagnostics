@@ -321,7 +321,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
                         "Wait for that container to exit, or ask its owner to detach and restart the pod.");
                 }
 
-                if (closed.PodLocalBearerToken is null)
+                if (closed.Kubernetes?.PodLocalBearerToken is null)
                 {
                     // Token was scrubbed or handle is malformed — can't reconnect.
                     continue;
@@ -362,14 +362,10 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
     {
         var revived = new InvestigationHandle(
             HandleId: "inv_" + RandomHex(16),
-            Namespace: stale.Namespace,
-            PodName: stale.PodName,
-            TargetContainerName: stale.TargetContainerName,
             // Carry forward the same ephemeral container name and bearer token: the
             // running sidecar was started with these values and will only accept the
             // original token. Generating a fresh token here would cause 401 errors.
-            EphemeralContainerName: stale.EphemeralContainerName,
-            PodLocalBearerToken: stale.PodLocalBearerToken,
+            Kubernetes: stale.Kubernetes! with { },
             State: InvestigationState.Attaching,
             AttachedAt: now,
             ExpiresAt: now + ttl,

@@ -563,7 +563,7 @@ public class KubernetesPodAttachOrchestratorTests
         second.HandleId.Should().NotBe(first.HandleId, "reattach creates a distinct handle");
         second.EphemeralContainerName.Should().Be(first.EphemeralContainerName,
             "the existing running container is reused — no new container was patched");
-        second.PodLocalBearerToken.Should().Be(first.PodLocalBearerToken,
+        second.Kubernetes!.PodLocalBearerToken.Should().Be(first.Kubernetes!.PodLocalBearerToken,
             "the running sidecar was started with the old token; reuse must carry it forward");
         api.PatchInvocationCount.Should().Be(1, "no second K8s ephemeral container patch");
         store.Snapshot().Should().HaveCount(2, "original Closed handle + new Active handle");
@@ -669,7 +669,7 @@ public class KubernetesPodAttachOrchestratorTests
         h2.State.Should().Be(InvestigationState.Active);
         h2.HandleId.Should().NotBe(h1.HandleId);
         h2.EphemeralContainerName.Should().Be(h1.EphemeralContainerName);
-        h2.PodLocalBearerToken.Should().Be(h1.PodLocalBearerToken);
+        h2.Kubernetes!.PodLocalBearerToken.Should().Be(h1.Kubernetes!.PodLocalBearerToken);
         api.PatchInvocationCount.Should().Be(1, "no second K8s patch — stale container was reused");
         store.Snapshot().Should().HaveCount(2);
         store.Snapshot().Should().Contain(h => h.State == InvestigationState.Closed);  // h1
@@ -677,7 +677,7 @@ public class KubernetesPodAttachOrchestratorTests
 
         // — Phase 4: collect (verify handle is usable) ————————————————————————————————
         store.GetById(h2.HandleId).Should().NotBeNull();
-        h2.PodLocalBearerToken.Should().NotBeNullOrWhiteSpace(
+        h2.Kubernetes!.PodLocalBearerToken.Should().NotBeNullOrWhiteSpace(
             "the bearer token is required for the proxy to authenticate with the sidecar");
 
         // — Phase 5: detach again ——————————————————————————————————————————————————————
