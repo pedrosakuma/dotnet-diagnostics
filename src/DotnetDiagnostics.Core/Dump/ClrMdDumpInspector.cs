@@ -253,7 +253,14 @@ public sealed class ClrMdDumpInspector : IDumpInspector
         IReadOnlyList<RetentionPath>? retention = null;
         if (opts.IncludeRetentionPaths)
         {
-            retention = ClrMdRetentionAnalyzer.ResolveRetentionPaths(runtime, byBytes, opts.RetentionPathLimit, opts.SnapshotRetentionPathTargets, warnings, ct);
+            retention = ClrMdRetentionAnalyzer.ResolveRetentionPaths(
+                runtime,
+                byBytes,
+                opts.RetentionPathLimit,
+                opts.SnapshotRetentionPathTargets,
+                BuildTypeIdentity,
+                warnings,
+                ct);
         }
 
         var roots = WalkRoots(runtime, warnings, ct);

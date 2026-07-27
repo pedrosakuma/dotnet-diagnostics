@@ -61,8 +61,14 @@ public sealed class ThreadByWaitTargetProvider : ISignalProvider<ThreadWaitSigna
             Buckets: buckets,
             NextAction: new NextActionHint(
                 "query_snapshot",
-                "Inspect the lock graph for this target to see the owning thread and full waiter list.",
-                new Dictionary<string, object?> { ["handle"] = context.HandleId, ["view"] = "lock-graph" }));
+                "Inspect this lock's owner and first bounded waiter page; continue with nextWaiterCursor when present.",
+                new Dictionary<string, object?>
+                {
+                    ["handle"] = context.HandleId,
+                    ["view"] = "lock-graph",
+                    ["address"] = $"0x{top1.ObjectAddress:x}",
+                    ["offset"] = 0,
+                }));
     }
 
     private static string TargetKey(Threads.MonitorLockState l) =>

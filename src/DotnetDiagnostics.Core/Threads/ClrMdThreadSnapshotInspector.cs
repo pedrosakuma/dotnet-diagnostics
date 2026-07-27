@@ -209,6 +209,7 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
             .Where(thread => thread.ManagedThreadId > 0)
             .ToDictionary(thread => thread.ManagedThreadId);
         var locks = WalkSyncBlocks(runtime, clrThreads, threadByAddress, managedThreadsById, warnings, ct);
+        StampLockRoles(managedThreadsById, locks);
         var threadPool = CaptureThreadPool(
             runtime,
             threads,
@@ -219,6 +220,31 @@ public sealed class ClrMdThreadSnapshotInspector : IThreadSnapshotInspector
             isLiveCapture,
             ct);
         return (threads, locks, threadPool);
+    }
+
+    internal static void StampLockRoles(
+        IReadOnlyDictionary<int, ManagedThread> managedThreadsById,
+        IReadOnlyList<MonitorLockState> locks)
+    {
+        for (var lockIndex = 0; lockIndex < locks.Count; lockIndex++)
+        {
+            var lockState = locks[lockIndex];
+            if (lockState.IsContended &&
+                lockState.OwnerManagedThreadId > 0 &&
+                managedThreadsById.TryGetValue(lockState.OwnerManagedThreadId, out var owner))
+            {
+                owner.AddLockRoles(isContendedOwner: true, isWaiter: false);
+            }
+
+            for (var waiterIndex = 0; waiterIndex < lockState.WaitingManagedThreadIds.Count; waiterIndex++)
+            {
+                var waiterId = lockState.WaitingManagedThreadIds[waiterIndex];
+                if (waiterId > 0 && managedThreadsById.TryGetValue(waiterId, out var waiter))
+                {
+                    waiter.AddLockRoles(isContendedOwner: false, isWaiter: true);
+                }
+            }
+        }
     }
 
     private List<ManagedStackFrame> WalkStack(ClrThread t, ThreadSnapshotOptions opts, NativeModuleMap moduleMap, IDataReader? reader)

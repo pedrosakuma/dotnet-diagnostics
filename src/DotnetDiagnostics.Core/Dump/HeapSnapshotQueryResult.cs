@@ -22,6 +22,12 @@ public sealed record HeapSnapshotQueryResult(
     public IReadOnlyList<RetentionPath>? RetentionPaths { get; init; }
     /// <summary>Echoes the substring filter applied to retention-path queries, if any.</summary>
     public string? FilterTypeFullName { get; init; }
+    /// <summary>Total retention paths matching the filter in the full artifact.</summary>
+    public int? TotalRetentionPaths { get; init; }
+    /// <summary>Matching retention paths omitted from this bounded inline projection.</summary>
+    public int? OmittedRetentionPaths { get; init; }
+    /// <summary>Maximum root/retainer frames returned per path. The handle keeps the complete chain.</summary>
+    public int? RetentionFrameLimit { get; init; }
     /// <summary>Populated when <see cref="View"/> is <c>"roots-by-kind"</c>.</summary>
     public IReadOnlyList<RootKindStat>? RootsByKind { get; init; }
     /// <summary>Populated when <see cref="View"/> is <c>"finalizer-queue"</c>.</summary>

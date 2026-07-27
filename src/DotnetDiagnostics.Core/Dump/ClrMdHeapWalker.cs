@@ -1,3 +1,4 @@
+using DotnetDiagnostics.Core.Comparison;
 using Microsoft.Diagnostics.Runtime;
 
 namespace DotnetDiagnostics.Core.Dump;
@@ -49,7 +50,10 @@ internal static class ClrMdHeapWalker
                 segUsed += size;
                 totalBytes += size;
 
-                var key = new TypeKey(obj.Type.Name ?? "<unknown>", obj.Type.Module?.Name);
+                var key = new TypeKey(
+                    obj.Type.Name ?? "<unknown>",
+                    obj.Type.Module?.Name,
+                    obj.Type.Module?.ImageBase ?? 0);
                 if (!stats.TryGetValue(key, out var stat))
                 {
                     stat = new RawTypeStat(key.TypeName, key.ModuleName, obj.Type);
@@ -126,17 +130,10 @@ internal static class ClrMdHeapWalker
         }
 
         var snapshotTopN = Math.Max(opts.TopTypes, opts.SnapshotTopTypes);
-        var byBytes = stats.Values
-            .OrderByDescending(s => s.Bytes)
-            .Take(snapshotTopN)
-            .Select(s => ToTypeStat(s, totalBytes, buildTypeIdentity))
+        var copyStats = stats.Values
+            .Select(stat => ToTypeStat(stat, totalBytes, buildTypeIdentity))
             .ToArray();
-
-        var byInstances = stats.Values
-            .OrderByDescending(s => s.Count)
-            .Take(snapshotTopN)
-            .Select(s => ToTypeStat(s, totalBytes, buildTypeIdentity))
-            .ToArray();
+        var (byBytes, byInstances) = AggregateAndRankTypeStats(copyStats, totalBytes, snapshotTopN);
 
         return new HeapWalkResult(
             byBytes,
@@ -163,14 +160,111 @@ internal static class ClrMdHeapWalker
     private static TypeStat ToTypeStat(RawTypeStat raw, long totalBytes, Func<ClrType?, TypeIdentity?> buildTypeIdentity)
     {
         var pct = totalBytes > 0 ? Math.Round(100.0 * raw.Bytes / totalBytes, 2) : 0.0;
+        var moduleName = raw.ModuleName is { } modulePath ? Path.GetFileName(modulePath) : null;
+        var identity = buildTypeIdentity(raw.ClrType)
+            ?? new TypeIdentity(raw.TypeName)
+            {
+                ModuleName = moduleName,
+                ModulePath = raw.ModuleName,
+            };
+        identity = identity with
+        {
+            ModuleName = identity.ModuleName ?? moduleName,
+            ModulePath = identity.ModulePath ?? raw.ModuleName,
+        };
+        var moduleImageBase = raw.ClrType.Module?.ImageBase;
         return new TypeStat(
             TypeFullName: raw.TypeName,
-            ModuleName: raw.ModuleName is { } mn ? Path.GetFileName(mn) : null,
+            ModuleName: moduleName,
             InstanceCount: raw.Count,
             TotalBytes: raw.Bytes,
             TotalBytesPercent: pct,
-            Identity: buildTypeIdentity(raw.ClrType));
+            Identity: identity)
+        {
+            ModuleImageBase = moduleImageBase,
+            ModuleImageBases = moduleImageBase is { } imageBase ? [imageBase] : Array.Empty<ulong>(),
+        };
     }
+
+    internal static (TypeStat[] ByBytes, TypeStat[] ByInstances) AggregateAndRankTypeStats(
+        IReadOnlyList<TypeStat> copyStats,
+        long totalBytes,
+        int topN)
+    {
+        ArgumentNullException.ThrowIfNull(copyStats);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(topN);
+
+        var deduplicatedCopies = new Dictionary<CopyTypeKey, TypeStat>();
+        foreach (var stat in copyStats)
+        {
+            var identity = NormalizeIdentity(stat);
+            var key = new CopyTypeKey(
+                HeapSnapshotComparableProjector.GetCanonicalIdentityKey(identity),
+                stat.ModuleImageBase);
+            if (!deduplicatedCopies.TryGetValue(key, out var existing))
+            {
+                deduplicatedCopies[key] = stat with { Identity = identity };
+                continue;
+            }
+
+            deduplicatedCopies[key] = existing with
+            {
+                InstanceCount = Math.Max(existing.InstanceCount, stat.InstanceCount),
+                TotalBytes = Math.Max(existing.TotalBytes, stat.TotalBytes),
+            };
+        }
+
+        var aggregated = deduplicatedCopies.Values
+            .GroupBy(stat => HeapSnapshotComparableProjector.GetCanonicalIdentityKey(stat.Identity!))
+            .Select(group =>
+            {
+                var rows = group.ToArray();
+                var identity = HeapSnapshotComparableProjector.SelectRepresentativeIdentity(
+                    rows.Select(static row => row.Identity!));
+                var imageBases = rows
+                    .SelectMany(static row => row.ModuleImageBases.Count > 0
+                        ? row.ModuleImageBases
+                        : row.ModuleImageBase is { } imageBase ? [imageBase] : Array.Empty<ulong>())
+                    .Distinct()
+                    .Order()
+                    .ToArray();
+                var bytes = rows.Sum(static row => row.TotalBytes);
+                var instances = rows.Sum(static row => row.InstanceCount);
+                return new TypeStat(
+                    identity.TypeFullName,
+                    identity.ModuleName,
+                    instances,
+                    bytes,
+                    totalBytes > 0 ? Math.Round(100.0 * bytes / totalBytes, 2) : 0,
+                    identity)
+                {
+                    ModuleImageBase = imageBases.Length == 1 ? imageBases[0] : null,
+                    ModuleImageBases = imageBases,
+                };
+            })
+            .ToArray();
+
+        var byBytes = aggregated
+            .OrderByDescending(static stat => stat.TotalBytes)
+            .ThenBy(static stat => stat.TypeFullName, StringComparer.Ordinal)
+            .ThenBy(static stat => stat.Identity?.ModulePath, StringComparer.Ordinal)
+            .Take(topN)
+            .ToArray();
+        var byInstances = aggregated
+            .OrderByDescending(static stat => stat.InstanceCount)
+            .ThenBy(static stat => stat.TypeFullName, StringComparer.Ordinal)
+            .ThenBy(static stat => stat.Identity?.ModulePath, StringComparer.Ordinal)
+            .Take(topN)
+            .ToArray();
+        return (byBytes, byInstances);
+    }
+
+    private static TypeIdentity NormalizeIdentity(TypeStat stat)
+        => stat.Identity
+            ?? new TypeIdentity(stat.TypeFullName)
+            {
+                ModuleName = stat.ModuleName,
+            };
 
     private static void AggregateDelegate(ClrObject obj, Dictionary<DelegateKey, RawDelegateStat> sink)
     {
@@ -287,7 +381,11 @@ internal static class ClrMdHeapWalker
         ClrMdTaskTimerAnalyzer.RawTaskTimerAggregation TaskTimers,
         ClrMdAssemblyLoadContextAnalyzer.RawAssemblyLoadContextAggregation AssemblyLoadContexts);
 
-    private readonly record struct TypeKey(string TypeName, string? ModuleName);
+    private readonly record struct TypeKey(string TypeName, string? ModuleName, ulong ModuleImageBase);
+
+    private readonly record struct CopyTypeKey(
+        HeapSnapshotComparableProjector.HeapCanonicalIdentityKey CanonicalIdentity,
+        ulong? ModuleImageBase);
 
     private sealed class RawTypeStat
     {

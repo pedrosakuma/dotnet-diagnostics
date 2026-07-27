@@ -61,7 +61,7 @@ Legend: `✅` works · `⚠️` works with caveats (footnote) · `❌` unavailab
 | `collect_sample(kind="off_cpu")` | ✅ `perf` | ⚠️ ETW kernel logger, elevated [^win-etw-elev] | ✅ `perf` [^perf-install] | ⚠️ ETW kernel logger, elevated [^win-etw-elev] |
 | `collect_sample(kind="allocation")` | ✅ TypeName populated | ✅ TypeName populated | ⚠️ TypeName empty [^aot-typename] | ⚠️ TypeName empty [^aot-typename] |
 | `collect_thread_snapshot` | ✅ `clrmd-thread-walk` | ✅ `clrmd-thread-walk` | ✅ `linux-native-stack` ([#92](https://github.com/pedrosakuma/dotnet-diagnostics/issues/92)) | ✅ `etw-native-stack` ([#93](https://github.com/pedrosakuma/dotnet-diagnostics/issues/93)) |
-| `query_snapshot` | ✅ full lock graph | ✅ full lock graph | ⚠️ no managed lock graph [^lock-graph] | ⚠️ no managed lock graph [^lock-graph] |
+| `query_snapshot` | ✅ paged lock graph + exact waiter paging | ✅ paged lock graph + exact waiter paging | ⚠️ no managed lock graph [^lock-graph] | ⚠️ no managed lock graph [^lock-graph] |
 | `inspect_heap(source="live")` / `query_snapshot` | ✅ | ✅ | ❌ [^heap] | ❌ [^heap] |
 | `inspect_heap(source="dump")` (heap) | ✅ | ✅ | ❌ [^heap] | ❌ [^heap] |
 | `inspect_heap(source="gcdump")` | ✅ full type names | ✅ full type names | ❌ crashes target [^aot-gcdump] | ❌ crashes target [^aot-gcdump] |

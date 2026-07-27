@@ -202,6 +202,73 @@ public sealed class QuerySnapshotFrameVarsToolTests
     }
 
     [Fact]
+    public async Task ArtifactOnlyThreadView_UnifiedQueryPagesRetainedThreads()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var artifact = ThreadArtifact() with
+        {
+            Threads = Enumerable.Range(1, 13)
+                .Select(id => new ManagedThread(
+                    id,
+                    (uint)(10_000 + id),
+                    (ulong)id,
+                    "Running",
+                    true,
+                    false,
+                    false,
+                    false,
+                    false,
+                    0,
+                    null,
+                    $"Thread{id}.Run",
+                    [new ManagedStackFrame("ManagedMethod", $"Thread{id}.Run", $"Thread{id}", "App.dll", 0x1000, 0x2000)]))
+                .ToArray(),
+            Locks =
+            [
+                new MonitorLockState(0x30_000, "App.Lock", 1, 10_001, 0x40_000, 0, 20, true, "test")
+                {
+                    WaitingManagedThreadIds = Enumerable.Range(1, 20).ToArray(),
+                },
+            ],
+        };
+        var handle = store.Register(artifact.ProcessId, DiagnosticTools.ThreadSnapshotKind, artifact, TimeSpan.FromMinutes(10));
+
+        var first = await QuerySnapshotTool.QuerySnapshotPaged(
+            store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null),
+            new SecurityOptions(), TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
+            handle: handle.Id, view: "threads-summary", offset: 0);
+        var firstPage = first.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
+        var second = await QuerySnapshotTool.QuerySnapshotCursorPaged(
+            store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null),
+            new SecurityOptions(), TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
+            handle: handle.Id, view: "threads-summary", cursor: firstPage.NextThreadCursor);
+
+        var secondPage = second.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
+        firstPage.TotalThreads.Should().Be(13);
+        firstPage.CandidateThreads.Should().Be(13);
+        firstPage.NextThreadOffset.Should().Be(8);
+        secondPage.NextThreadOffset.Should().BeNull();
+        firstPage.Threads!
+            .Concat(secondPage.Threads!)
+            .Select(thread => thread.ManagedThreadId)
+            .Should().BeEquivalentTo(Enumerable.Range(1, 13));
+
+        var firstLockPage = await QuerySnapshotTool.QuerySnapshotPaged(
+            store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null),
+            new SecurityOptions(), TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
+            handle: handle.Id, view: "lock-graph", address: "0x30000");
+        var firstSelectedLock = firstLockPage.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
+        var lockPage = await QuerySnapshotTool.QuerySnapshotCursorPaged(
+            store, new StubDumpInspector(), new SensitiveDataRedactor(null), new SensitiveValueGate(null),
+            new SecurityOptions(), TestPrincipalAccessors.Root, new ClrMdNativeAddressResolver(), new StubFrameResolver(Empty()),
+            handle: handle.Id, view: "lock-graph", address: "0x30000", cursor: firstSelectedLock.NextWaiterCursor);
+        var selectedLock = lockPage.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
+        selectedLock.Locks.Should().ContainSingle()
+            .Which.WaitingManagedThreadIds.Should().Equal(Enumerable.Range(9, 8));
+        selectedLock.NextWaiterOffset.Should().Be(16);
+    }
+
+    [Fact]
     public async Task FrameVars_LiveOriginExitedProcess_ReturnsStructuredProcessExitedError()
     {
         const int processId = 962701;

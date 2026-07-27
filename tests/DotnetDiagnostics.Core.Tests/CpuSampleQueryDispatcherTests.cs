@@ -16,7 +16,7 @@ public class CpuSampleQueryDispatcherTests
     [Fact]
     public void RenderCallTree_ReturnsView_FromTrace()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: null, maxDepth: 8, maxNodes: 200);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: null, maxDepth: 8, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
 
         outcome.Error.Should().BeNull();
         outcome.Data.Should().NotBeNull();
@@ -30,7 +30,7 @@ public class CpuSampleQueryDispatcherTests
     [Fact]
     public void RenderCallTree_MaxDepthBelowOne_ReturnsInvalidArgument()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, null, maxDepth: 0, maxNodes: 200);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, null, maxDepth: 0, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
 
         outcome.Error!.Kind.Should().Be("InvalidArgument");
     }
@@ -46,7 +46,7 @@ public class CpuSampleQueryDispatcherTests
     [Fact]
     public void RenderCallTree_DepthOne_TruncatesChildren()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, null, maxDepth: 1, maxNodes: 200);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, null, maxDepth: 1, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
 
         outcome.Error.Should().BeNull();
         outcome.Data!.Root.Children.Should().BeEmpty();
@@ -56,18 +56,26 @@ public class CpuSampleQueryDispatcherTests
     [Fact]
     public void RenderCallTree_RootMethodFilter_ReRootsAtMatch()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: "leafa", maxDepth: 8, maxNodes: 200);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: "leafa", maxDepth: 8, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
 
         outcome.Error.Should().BeNull();
         outcome.Data!.Root.Frame.Method.Should().Be("LeafA");
     }
 
     [Fact]
-    public void RenderCallTree_RootMethodFilter_NoMatch_ReturnsNotFound()
+    public void RenderCallTree_RootMethodFilter_NoMatch_HintUsesEffectiveCaps()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: "does-not-exist", maxDepth: 8, maxNodes: 200);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(
+            Trace(),
+            Handle,
+            rootMethodFilter: "does-not-exist",
+            maxDepth: 20,
+            maxNodes: 500);
 
         outcome.Error!.Kind.Should().Be("NotFound");
+        outcome.Hints.Should().ContainSingle();
+        outcome.Hints[0].SuggestedArguments!["maxDepth"].Should().Be(CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth);
+        outcome.Hints[0].SuggestedArguments!["maxNodes"].Should().Be(CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
     }
 
     [Fact]
@@ -248,14 +256,220 @@ public class CpuSampleQueryDispatcherTests
     [Fact]
     public void RenderCallTree_PropagatesSelfSampleSplit()
     {
-        var outcome = CpuSampleQueryDispatcher.RenderCallTree(ClassifiedTrace(), Handle, rootMethodFilter: null, maxDepth: 8, maxNodes: 200);
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(ClassifiedTrace(), Handle, rootMethodFilter: null, maxDepth: 8, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
 
         outcome.Error.Should().BeNull();
         outcome.Data!.SelfSamples.Should().Be(new SelfSampleBreakdown(40, 60));
-        outcome.Data.Root.Children[0].Frame.Method.Should().Be("System.Threading.LowLevelLifoSemaphore.WaitForSignal");
-        outcome.Data.Root.Children[0].SelfSamples.Should().Be(new SelfSampleBreakdown(0, 60));
-        outcome.Data.Root.Children[1].Frame.Method.Should().Be("MyApp.Worker.BurnCpu");
-        outcome.Data.Root.Children[1].SelfSamples.Should().Be(new SelfSampleBreakdown(40, 0));
+        outcome.Data.Root.Children[0].Frame.Method.Should().Be("MyApp.Worker.BurnCpu");
+        outcome.Data.Root.Children[0].SelfSamples.Should().Be(new SelfSampleBreakdown(40, 0));
+        outcome.Data.Root.Children[1].Frame.Method.Should().Be("System.Threading.LowLevelLifoSemaphore.WaitForSignal");
+        outcome.Data.Root.Children[1].SelfSamples.Should().Be(new SelfSampleBreakdown(0, 60));
+    }
+
+    [Fact]
+    public void RenderCallTree_UntruncatedResponse_DoesNotRecommendAlreadySatisfiedCallTree()
+    {
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(Trace(), Handle, rootMethodFilter: null, maxDepth: 8, maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
+
+        outcome.Data!.Truncated.Should().BeFalse();
+        outcome.Hints.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RenderCallTree_WithoutClassification_RanksInclusiveBeforeExclusive()
+    {
+        var coldLeaf = new CallTreeNode(
+            new SampledFrame("App.dll", "ColdLeaf"),
+            InclusiveSamples: 1,
+            ExclusiveSamples: 1,
+            Array.Empty<CallTreeNode>());
+        var hotDeepLeaf = new CallTreeNode(
+            new SampledFrame("App.dll", "HotDeepLeaf"),
+            InclusiveSamples: 1000,
+            ExclusiveSamples: 1000,
+            Array.Empty<CallTreeNode>());
+        var hotBranch = new CallTreeNode(
+            new SampledFrame("App.dll", "HotBranch"),
+            InclusiveSamples: 1000,
+            ExclusiveSamples: 0,
+            new[] { hotDeepLeaf });
+        var root = new CallTreeNode(
+            new SampledFrame("App.dll", "Root"),
+            InclusiveSamples: 1001,
+            ExclusiveSamples: 0,
+            new[] { coldLeaf, hotBranch });
+        var trace = new CpuSampleTraceArtifact(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), 1001, root);
+
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(trace, Handle, null, maxDepth: 8, maxNodes: 2);
+
+        outcome.Data!.Root.Children.Should().ContainSingle();
+        outcome.Data.Root.Children[0].Frame.Method.Should().Be("HotBranch");
+    }
+
+    [Fact]
+    public void RenderCallTree_LargeWideDeepTree_BoundsMetricTraversal()
+    {
+        const int branchCount = 200;
+        const int branchDepth = 600;
+        var branches = new CallTreeNode[branchCount];
+        for (var branchIndex = 0; branchIndex < branchCount; branchIndex++)
+        {
+            CallTreeNode node = new(
+                new SampledFrame("App.dll", $"Leaf{branchIndex}"),
+                InclusiveSamples: 1,
+                ExclusiveSamples: 1,
+                Array.Empty<CallTreeNode>());
+            for (var depth = 1; depth < branchDepth; depth++)
+            {
+                node = new CallTreeNode(
+                    new SampledFrame("App.dll", $"Branch{branchIndex}.Depth{depth}"),
+                    InclusiveSamples: 1,
+                    ExclusiveSamples: 0,
+                    new[] { node });
+            }
+            branches[branchIndex] = node;
+        }
+
+        var root = new CallTreeNode(
+            new SampledFrame("App.dll", "Root"),
+            InclusiveSamples: branchCount,
+            ExclusiveSamples: 0,
+            branches);
+        var trace = new CpuSampleTraceArtifact(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), branchCount, root);
+
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(
+            trace,
+            Handle,
+            rootMethodFilter: null,
+            maxDepth: 8,
+            maxNodes: CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
+
+        outcome.Data!.TraversalLimitReached.Should().BeTrue();
+        outcome.Data.TraversalNodesVisited.Should().Be(outcome.Data.TraversalNodeLimit);
+        outcome.Data.NodeCount.Should().BeLessThanOrEqualTo(CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
+    }
+
+    [Fact]
+    public void RenderCallTree_IncompleteClassifiedTraversal_UsesInclusiveFallbackForLateBranch()
+    {
+        CallTreeNode deep = new(
+            new SampledFrame("App.dll", "EarlyLeaf"),
+            InclusiveSamples: 1,
+            ExclusiveSamples: 1,
+            Array.Empty<CallTreeNode>())
+        {
+            SelfSamples = new SelfSampleBreakdown(0, 1),
+        };
+        for (var depth = 0; depth < 100_005; depth++)
+        {
+            deep = new CallTreeNode(
+                new SampledFrame("App.dll", $"Early.Depth{depth}"),
+                InclusiveSamples: 1,
+                ExclusiveSamples: depth == 100_004 ? 1 : 0,
+                new[] { deep })
+            {
+                SelfSamples = new SelfSampleBreakdown(0, depth == 100_004 ? 1 : 0),
+            };
+        }
+
+        var lateRunning = new CallTreeNode(
+            new SampledFrame("App.dll", "LateRunningBranch"),
+            InclusiveSamples: 1_000,
+            ExclusiveSamples: 0,
+            Array.Empty<CallTreeNode>())
+        {
+            SelfSamples = new SelfSampleBreakdown(1_000, 0),
+        };
+        var root = new CallTreeNode(
+            new SampledFrame("App.dll", "Root"),
+            InclusiveSamples: 1_001,
+            ExclusiveSamples: 0,
+            new[] { deep, lateRunning })
+        {
+            SelfSamples = new SelfSampleBreakdown(0, 0),
+        };
+        var trace = new CpuSampleTraceArtifact(
+            123,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(1),
+            1_001,
+            root);
+
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(
+            trace,
+            Handle,
+            rootMethodFilter: null,
+            maxDepth: 2,
+            maxNodes: 2);
+
+        outcome.Data!.TraversalLimitReached.Should().BeTrue();
+        outcome.Data.Root.Children.Should().ContainSingle()
+            .Which.Frame.Method.Should().Be("LateRunningBranch");
+    }
+
+    [Fact]
+    public void RenderCallTree_MixedMetricCompleteness_UsesOneTransitiveSiblingOrder()
+    {
+        var running = new CallTreeNode(
+            new SampledFrame("App.dll", "Running"),
+            InclusiveSamples: 1,
+            ExclusiveSamples: 1,
+            Array.Empty<CallTreeNode>())
+        {
+            SelfSamples = new SelfSampleBreakdown(1, 0),
+        };
+        var inclusive = new CallTreeNode(
+            new SampledFrame("App.dll", "Inclusive"),
+            InclusiveSamples: 100,
+            ExclusiveSamples: 0,
+            Array.Empty<CallTreeNode>())
+        {
+            SelfSamples = new SelfSampleBreakdown(0, 100),
+        };
+        CallTreeNode incomplete = new(
+            new SampledFrame("App.dll", "IncompleteLeaf"),
+            InclusiveSamples: 50,
+            ExclusiveSamples: 0,
+            Array.Empty<CallTreeNode>())
+        {
+            SelfSamples = new SelfSampleBreakdown(0, 0),
+        };
+        for (var depth = 0; depth < 100_005; depth++)
+        {
+            incomplete = new CallTreeNode(
+                new SampledFrame("App.dll", depth == 100_004 ? "Incomplete" : $"Incomplete.Depth{depth}"),
+                InclusiveSamples: 50,
+                ExclusiveSamples: 0,
+                new[] { incomplete })
+            {
+                SelfSamples = new SelfSampleBreakdown(0, 0),
+            };
+        }
+
+        var root = new CallTreeNode(
+            new SampledFrame("App.dll", "Root"),
+            InclusiveSamples: 151,
+            ExclusiveSamples: 0,
+            new[] { running, inclusive, incomplete })
+        {
+            SelfSamples = new SelfSampleBreakdown(0, 0),
+        };
+        var trace = new CpuSampleTraceArtifact(
+            123,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(1),
+            151,
+            root);
+
+        var outcome = CpuSampleQueryDispatcher.RenderCallTree(
+            trace,
+            Handle,
+            rootMethodFilter: null,
+            maxDepth: 2,
+            maxNodes: 3);
+
+        outcome.Data!.Root.Children.Select(child => child.Frame.Method)
+            .Should().Equal("Inclusive", "Incomplete");
     }
 
     [Fact]

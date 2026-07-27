@@ -74,7 +74,6 @@ public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
         {
             throw new ArgumentOutOfRangeException(nameof(ttl), "TTL must be positive.");
         }
-
         List<Removal> removals;
         DiagnosticHandle handle;
         int entryCount;

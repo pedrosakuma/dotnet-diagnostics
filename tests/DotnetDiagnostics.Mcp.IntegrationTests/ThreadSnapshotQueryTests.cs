@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Reflection;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.Threads;
@@ -8,6 +10,47 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
 public sealed class ThreadSnapshotQueryTests
 {
+    [Fact]
+    public void QueryThreadSnapshot_OriginalSevenParameterClrSignaturesRemainAvailable()
+    {
+        var parameterTypes = new[]
+        {
+            typeof(IDiagnosticHandleStore),
+            typeof(string),
+            typeof(string),
+            typeof(int?),
+            typeof(int),
+            typeof(int),
+            typeof(int),
+        };
+
+        var publicMethod = typeof(DiagnosticTools).GetMethod(
+            nameof(DiagnosticTools.QueryThreadSnapshot),
+            parameterTypes);
+        publicMethod.Should().NotBeNull();
+        var description = publicMethod!.GetCustomAttribute<DescriptionAttribute>()!.Description;
+        description.Should().Contain("CoreCLR monitor waiter");
+        description.Should().Contain("ThreadPool-starvation");
+        description.Should().NotContain("Linux-native-stack only");
+
+        var implementationType = typeof(DiagnosticTools).Assembly.GetType(
+            "DotnetDiagnostics.Mcp.Tools.DiagnosticToolThreadingAndJit");
+        implementationType.Should().NotBeNull();
+        implementationType!.GetMethod(
+            nameof(DiagnosticTools.QueryThreadSnapshot),
+            parameterTypes).Should().NotBeNull();
+
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = CreateSnapshot();
+        var handle = store.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10), evictWhenProcessExits: false);
+
+        var result = DiagnosticTools.QueryThreadSnapshot(
+            store, handle.Id, "unique-stacks", null, 2, 2, 3);
+
+        result.Error.Should().BeNull();
+        result.Data!.UniqueStacks.Should().HaveCount(2);
+    }
+
     [Fact]
     public void QueryThreadSnapshot_UniqueStacks_GroupsAndOrdersThreads()
     {
@@ -49,6 +92,59 @@ public sealed class ThreadSnapshotQueryTests
     }
 
     [Fact]
+    public void QueryThreadSnapshot_PositionalUniqueStackArgumentsRemainCompatible()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = CreateSnapshot();
+        var handle = store.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10), evictWhenProcessExits: false);
+
+        var result = DiagnosticTools.QueryThreadSnapshot(
+            store,
+            handle.Id,
+            "unique-stacks",
+            null,
+            2,
+            2,
+            3);
+
+        result.Error.Should().BeNull();
+        result.Data!.UniqueStacks.Should().HaveCount(2);
+        result.Summary.Should().Contain("top 2 frame(s)");
+    }
+
+    [Fact]
+    public async Task QuerySnapshot_PositionalArgumentsRemainCompatibleWhenOffsetIsAppendOnly()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = CreateSnapshot();
+        var handle = store.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10), evictWhenProcessExits: false);
+
+        var result = await QuerySnapshotTool.QuerySnapshot(
+            store,
+            null!,
+            null!,
+            null!,
+            TestPrincipalAccessors.Root,
+            null!,
+            null!,
+            handle.Id,
+            "unique-stacks",
+            2,
+            "bytes",
+            null,
+            null,
+            false,
+            null,
+            2,
+            3);
+
+        result.Error.Should().BeNull();
+        var data = result.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
+        data.UniqueStacks.Should().HaveCount(2);
+        result.Summary.Should().Contain("top 2 frame(s)");
+    }
+
+    [Fact]
     public void QueryThreadSnapshot_Stack_IgnoresUniqueStackParameters()
     {
         var store = new MemoryDiagnosticHandleStore();
@@ -75,6 +171,47 @@ public sealed class ThreadSnapshotQueryTests
         result.Data!.View.Should().Be("async-stalls");
         result.Data.AsyncStalls.Should().NotBeNull();
         result.Data.AsyncStalls!.ClassifiedThreads.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public void QueryThreadSnapshot_ThreadsSummary_PagesWithoutLosingThreadIds()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = CreateSnapshot();
+        var handle = store.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10), evictWhenProcessExits: false);
+
+        var first = DiagnosticTools.QueryThreadSnapshotPaged(store, handle.Id, view: "threads-summary", offset: 0);
+        var second = DiagnosticTools.QueryThreadSnapshotPaged(
+            store,
+            handle.Id,
+            view: "threads-summary",
+            offset: 8);
+
+        first.Data!.NextThreadOffset.Should().Be(8);
+        first.Data.NextThreadCursor.Should().NotBeNullOrWhiteSpace();
+        second.Data!.NextThreadOffset.Should().BeNull();
+        first.Data.Threads!
+            .Concat(second.Data.Threads!)
+            .Select(thread => thread.ManagedThreadId)
+            .Should().BeEquivalentTo(Enumerable.Range(1, 13));
+    }
+
+    [Fact]
+    public void QueryThreadSnapshot_RejectsDeepRandomOffsetWithCursorGuidance()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = CreateSnapshot();
+        var handle = store.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10), evictWhenProcessExits: false);
+
+        var result = DiagnosticTools.QueryThreadSnapshotPaged(
+            store,
+            handle.Id,
+            view: "threads-summary",
+            offset: int.MaxValue);
+
+        result.Data.Should().BeNull();
+        result.Error!.Kind.Should().Be("InvalidArgument");
+        result.Error.Message.Should().Contain("returned next cursor");
     }
 
     private static ThreadSnapshotArtifact CreateSnapshot()

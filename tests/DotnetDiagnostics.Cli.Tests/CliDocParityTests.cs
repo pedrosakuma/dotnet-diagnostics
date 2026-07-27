@@ -86,4 +86,26 @@ public sealed class CliDocParityTests
                 $"docs/cli-reference.md must document the completion-advertised flag '{flag}'.");
         }
     }
+
+    [Fact]
+    public void QueryHelp_AdvertisesBoundedThreadPagesAndContinuationFields()
+    {
+        var help = CliCommandCatalog.CommandDescriptors
+            .Single(descriptor => descriptor.Name == "query")
+            .OptionsHelpText;
+
+        help.Should().Contain("Up to 8 decisive threads per page");
+        help.Should().Contain("Up to 12 monitor locks per page");
+        help.Should().Contain("--offset");
+        help.Should().Contain("--cursor");
+        help.Should().Contain("--top <int>");
+        help.Should().Contain("--top-types <int>");
+        help.Should().Contain("wins when --top-types");
+        help.Should().Contain("nextThreadCursor");
+        help.Should().Contain("nextLockCursor");
+        help.Should().Contain("nextWaiterCursor");
+        help.Should().Contain("Inferred deadlock cycle candidates");
+        help.Should().Contain("per-edge source/confidence");
+        help.Should().NotContain("List all threads");
+    }
 }

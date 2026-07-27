@@ -31,6 +31,8 @@ public sealed class QueryThreadSnapshotDeadlockTests
         deadlocks.Should().HaveCount(1);
 
         var cycle = deadlocks[0];
+        cycle.Classification.Should().Be("inferred-deadlock-cycle-candidate");
+        cycle.Confidence.Should().Be("medium");
         cycle.CycleMembers.Select(member => member.ThreadId).Should().Equal(1, 2);
         cycle.CycleMembers.Select(member => member.TopFrameMethod).Should().Equal(
             "System.Threading.Monitor.Enter(System.Object)",
@@ -42,7 +44,11 @@ public sealed class QueryThreadSnapshotDeadlockTests
         cycle.LockChain[1].WaitingThreadId.Should().Be(2);
         cycle.LockChain[1].OwnerThreadId.Should().Be(1);
         cycle.LockChain[1].LockObjectAddress.Should().Be(0x1000);
+        cycle.LockChain.Should().OnlyContain(link =>
+            link.EdgeSource == "sync-block-owner + stack-root waiter inference" &&
+            link.Confidence == "medium");
         cycle.RecommendedCommands.Select(command => command.Command).Should().Contain(ExpectedSosCommands);
+        result.Summary.Should().Contain("inferred deadlock cycle candidate");
     }
 
     [Fact]
@@ -58,7 +64,7 @@ public sealed class QueryThreadSnapshotDeadlockTests
         var data = result.Data!;
         data.Deadlocks.Should().NotBeNull();
         data.Deadlocks.Should().BeEmpty();
-        result.Summary.Should().Contain("No deadlock cycles detected");
+        result.Summary.Should().Contain("No inferred deadlock cycle candidates found");
     }
 
     private static ThreadSnapshotArtifact BuildTwoThreadDeadlockSnapshot()

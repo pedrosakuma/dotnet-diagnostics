@@ -149,7 +149,7 @@ Linux runs must use process isolation.
 |---|---|---|
 | `culture-lookup` | ThreadPool/framework overhead or more compute is required | Inclusive dispatch frames are not the self-time leader; `CompareInfo.IcuGetHashCodeOfString` owns at least 34.4% of self-time |
 | `sync-over-async` | CPU saturation requires scaling out | CPU remains below 2.44% while the queue grows and many `SpinThenBlockingWait`/`Task.WaitAll` frames appear |
-| `lock-storm` | Parked workers imply unrelated I/O or GC | `correlation.thread-overlap` joins the `Thread.Sleep` owner to 15-17 monitor waiters |
+| `lock-storm` | Parked workers imply unrelated I/O or GC | the ranked lock page identifies the owner of a monitor with 15-17 waiters, and the exact owner stack resolves to `Thread.Sleep` |
 
 The lock result remains a correlation until the owner/waiter relation and owner
 wait state are both present. The manifest forbids claiming that the grouping

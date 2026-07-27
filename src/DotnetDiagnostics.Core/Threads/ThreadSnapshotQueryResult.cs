@@ -37,6 +37,36 @@ public sealed record ThreadSnapshotQueryResult(
     public IReadOnlyList<ResolvedAddressEntry>? ResolvedAddresses { get; init; }
     /// <summary>Populated for <c>frame-vars</c> (issue #449).</summary>
     public FrameVariablesResult? FrameVariables { get; init; }
+    /// <summary>Total threads in the full artifact before inline projection.</summary>
+    public int? TotalThreads { get; init; }
+    /// <summary>Threads in the ranked candidate set paged by this view.</summary>
+    public int? CandidateThreads { get; init; }
+    /// <summary>Candidate threads omitted from this bounded inline projection.</summary>
+    public int? OmittedThreads { get; init; }
+    /// <summary>Maximum frames retained per projected thread. The handle keeps every captured frame.</summary>
+    public int? FramesPerThreadLimit { get; init; }
+    /// <summary>Total locks in the full artifact before inline projection.</summary>
+    public int? TotalLocks { get; init; }
+    /// <summary>Locks omitted from this bounded inline projection.</summary>
+    public int? OmittedLocks { get; init; }
+    /// <summary>Zero-based ranked-thread offset used for this page.</summary>
+    public int? ThreadOffset { get; init; }
+    /// <summary>Offset for the next ranked-thread page, or null when this page is terminal.</summary>
+    public int? NextThreadOffset { get; init; }
+    /// <summary>Opaque stable continuation for the next ranked-thread page, or null when terminal.</summary>
+    public string? NextThreadCursor { get; init; }
+    /// <summary>Zero-based ranked-lock offset used for this page.</summary>
+    public int? LockOffset { get; init; }
+    /// <summary>Offset for the next ranked-lock page, or null when this page is terminal.</summary>
+    public int? NextLockOffset { get; init; }
+    /// <summary>Opaque stable continuation for the next ranked-lock page, or null when terminal.</summary>
+    public string? NextLockCursor { get; init; }
+    /// <summary>Zero-based waiter-id offset used when selecting one lock by address.</summary>
+    public int? WaiterOffset { get; init; }
+    /// <summary>Offset for the next waiter-id page on the selected lock, or null when terminal.</summary>
+    public int? NextWaiterOffset { get; init; }
+    /// <summary>Opaque stable continuation for the next waiter-id page on the selected lock, or null when terminal.</summary>
+    public string? NextWaiterCursor { get; init; }
 }
 
 /// <summary>
@@ -68,7 +98,13 @@ public sealed record ResolvedAddressEntry(
 public sealed record ThreadDeadlockCycle(
     IReadOnlyList<ThreadDeadlockMember> CycleMembers,
     IReadOnlyList<ThreadDeadlockLink> LockChain,
-    IReadOnlyList<ThreadDeadlockCommand> RecommendedCommands);
+    IReadOnlyList<ThreadDeadlockCommand> RecommendedCommands)
+{
+    /// <summary>Classification of this stack-inferred wait-for cycle.</summary>
+    public string Classification { get; init; } = "inferred-deadlock-cycle-candidate";
+    /// <summary>Lowest confidence among the inferred waiter→owner edges in this cycle.</summary>
+    public string Confidence { get; init; } = "medium";
+}
 
 public sealed record ThreadDeadlockMember(
     int ThreadId,
@@ -82,7 +118,13 @@ public sealed record ThreadDeadlockLink(
     int OwnerThreadId,
     ulong LockObjectAddress,
     string? LockObjectTypeFullName,
-    string LockKind);
+    string LockKind)
+{
+    /// <summary>How this waiter→owner edge was obtained.</summary>
+    public string EdgeSource { get; init; } = "sync-block-owner + stack-root waiter inference";
+    /// <summary>Qualitative confidence of the inferred edge.</summary>
+    public string Confidence { get; init; } = "medium";
+}
 
 public sealed record ThreadDeadlockCommand(string Command, string Purpose);
 
@@ -128,8 +170,8 @@ public sealed record AsyncStalledThread(
 /// <summary>
 /// Aggregate returned by <c>query_snapshot(view="wait-chains")</c>. Unifies three wait-edge kinds
 /// (sync monitor locks, async continuations, ThreadPool starvation) into ranked directed wait-chains.
-/// <see cref="Chains"/> is ordered longest / most-blocked first; cycles (true deadlocks) are flagged
-/// distinctly from open chains via <see cref="WaitChain.IsCycle"/>.
+/// <see cref="Chains"/> is ordered longest / most-blocked first; inferred cycle candidates are flagged
+/// distinctly from open chains.
 /// </summary>
 public sealed record WaitChainsView(
     string View,
@@ -140,13 +182,16 @@ public sealed record WaitChainsView(
     bool ThreadPoolStarved,
     IReadOnlyList<WaitChain> Chains)
 {
+    /// <summary>Number of chains whose inferred wait-owner edges form a cycle candidate.</summary>
+    public int InferredCycleCandidateCount { get; init; }
+
     /// <summary>Analyzer-wide honest caveats (e.g. async-ownership indeterminacy from a snapshot).</summary>
     public IReadOnlyList<string> Notes { get; init; } = Array.Empty<string>();
 }
 
 /// <summary>
 /// One ranked wait-chain: a directed walk <c>root → wait-reason → next node → …</c> terminating in a
-/// cycle, a ThreadPool-starvation sink, an async construct, or a running lock owner.
+/// inferred cycle candidate, a ThreadPool-starvation sink, an async construct, or a running lock owner.
 /// </summary>
 public sealed record WaitChain(
     int Rank,
@@ -157,6 +202,12 @@ public sealed record WaitChain(
     string TerminalKind,
     IReadOnlyList<WaitChainLink> Links)
 {
+    /// <summary>Whether inferred wait-owner edges form a cycle candidate.</summary>
+    public bool IsInferredCycleCandidate { get; init; }
+
+    /// <summary>Confidence of the inferred cycle candidate, or <c>none</c>.</summary>
+    public string InferenceConfidence { get; init; } = "none";
+
     /// <summary>Per-chain caveats (e.g. indeterminate async-resumption ownership) — never guesses.</summary>
     public IReadOnlyList<string> Notes { get; init; } = Array.Empty<string>();
 }
@@ -182,4 +233,8 @@ public sealed record WaitChainLink(
     public string? LockObjectTypeFullName { get; init; }
     /// <summary>Honest caveat attached to this hop (e.g. async-ownership not recoverable from a snapshot).</summary>
     public string? Note { get; init; }
+    /// <summary>Evidence used to infer this edge.</summary>
+    public string EdgeSource { get; init; } = "unknown";
+    /// <summary>Confidence in the inferred edge: high, medium, or low.</summary>
+    public string Confidence { get; init; } = "low";
 }

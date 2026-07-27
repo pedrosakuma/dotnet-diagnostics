@@ -191,7 +191,7 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 | `--kind <kind>` | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`, `sweep`, `cpu`, `allocation`, `off_cpu` (alias `off-cpu`), `native-alloc`, `thread-snapshot`. |
 | `-d, --duration <int>` | Window in seconds (default: `counters` 5, `datas` 15, `sweep` 6, others 10). |
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
-| `--top <n>` | Top-N cap for sampler kinds: `cpu`, `allocation`, `off_cpu`, `native-alloc`. |
+| `--top <n>` | Top-N cap for sampler kinds (`cpu`, `allocation`, `off_cpu`, `native-alloc`) and session query pages/ranked views. |
 | `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |
 | `--interval <int>` | Refresh interval in seconds (`counters`, `db`, `kestrel`, `networking`). Default 1. |
 | `--watch <seconds>` | Re-run the command every N seconds, clear/redraw the human output, and stop cleanly on Ctrl-C. Not compatible with `--json`. With `--capture-when` it is reinterpreted as the metric **sample interval** for the bounded gated watch (no redraw loop). |
@@ -249,7 +249,7 @@ The standalone CLI now exposes the same **Core-only** sampler families the MCP s
 | `allocation` | Managed allocation samples (`GCAllocationTick`) with top types by bytes/count and call-tree drilldown. | `--top` | top types by bytes/count, plus `signals[]` such as `allocations.by-type` / `allocations.by-site` |
 | `off_cpu` / `off-cpu` | Off-CPU stacks (where threads wait / block) via perf or ETW backend. | `--top`, `--symbol-path` | top blocking stacks ranked by off-CPU time |
 | `native-alloc` | Native allocator-call hotspots (`malloc` / `calloc` / `realloc`) via perf/ETW backend. Counts are sampled **calls**, not bytes. | `--top`, `--native-alloc-sample-period` | top allocator stacks + shared call-tree handle |
-| `thread-snapshot` | Point-in-time managed threads + lock graph from a live pid or dump. | `--dump-file`, `--max-frames-per-thread`, `--include-runtime-frames`, `--include-native-frames`, `--symbol-path` | top blocked threads inline (`summary`) or a wider thread/lock slice (`detail`/`raw`), plus `signals[]` such as `threads.by-wait-state` |
+| `thread-snapshot` | Point-in-time managed threads + lock graph from a live pid or dump. | `--dump-file`, `--max-frames-per-thread`, `--include-runtime-frames`, `--include-native-frames`, `--symbol-path` | decisive threads inline (`summary`) or bounded thread/lock pages (`detail`/`raw`); continue through the session `query` command |
 
 Examples:
 
@@ -443,12 +443,13 @@ export-summary --handle h-abc123 --out ./cpu-summary.json
 
 ### Signal-grouping layer
 
-`collect --kind counters`, `exceptions`, `gc`, `sweep`, `cpu`, `allocation` and `thread-snapshot` embed a top-level `signals[]` array in
+`collect --kind counters`, `exceptions`, `gc`, `sweep`, `cpu`, `allocation`, and `thread-snapshot`
+embed a top-level `signals[]` array in
 the JSON envelope (`--json` or `--depth detail`/`raw`) whenever something is salient — the same
 diagnosis-agnostic "vector" the MCP server documents in
 [tool-reference.md](./tool-reference.md#signal-grouping-layer): a stable `signal` id (e.g.
-`exceptions.by-type`, `gc.gen2-share`, `counters.trend`, `cpu.self-time.method`, `allocations.by-type`,
-`threads.by-wait-state`, `correlation.co-occurrence`), a one-line
+`exceptions.by-type`, `gc.gen2-share`, `counters.trend`, `cpu.self-time.method`,
+`allocations.by-type`, `threads.by-wait-target`, `correlation.thread-overlap`), a one-line
 `summary`, a `salience` in `[0,1]`, and `buckets[]` referencing a handle. It groups and correlates;
 it never names a root cause or a fix. Omitted from the wire when nothing stands out.
 
@@ -592,12 +593,15 @@ exposes drilldown views computed from the merged call tree without re-sampling:
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
-| `call-tree` (default) | the merged inclusive/exclusive call tree; CPU handles can also carry `selfSamples` on the view and per node | `--max-depth` (tree depth, default `8`), `--max-nodes`, `--min-count`, `--root-method-filter`, `--rank-by` |
+| `call-tree` (default) | the merged inclusive/exclusive call tree; CPU handles can also carry `selfSamples` on the view and per node | `--max-depth` (tree depth, default `8`), `--max-nodes` (default `64`; larger requests are clamped to the `64`-node wire cap), `--min-count`, `--root-method-filter`, `--rank-by` |
 | `top-methods` | methods ranked by sample cost; CPU handles include per-method `selfSamples.runningSamples` vs `selfSamples.waitingSamples` | `--top` (default `20`), `--rank-by exclusive\|inclusive` |
 | `by-module` | samples grouped by owning module | `--top`, `--rank-by` |
 | `by-namespace` | samples grouped by namespace | `--top`, `--rank-by` |
 | `hot-path` | the dominant stack from the root down; CPU handles include per-frame `selfSamples` | `--threshold` (percent, default `50`) |
 | `caller-callee` | a focus method with its direct callers + callees; CPU handles include the focus method's `selfSamples` | `--root-method-filter <substring>` (required), `--top` |
+
+For session ranked views, `--top` is preferred. The older `--top-types` remains a compatibility
+alias; when both are present, `--top` wins.
 
 `--rank-by inclusive` ranks/credits by inclusive samples; any other value (including the default) uses
 exclusive samples. `caller-callee` requires `--root-method-filter` to resolve exactly one method: zero matches
@@ -615,10 +619,10 @@ GC handles (`collect --kind gc`) expose pause-analysis views over the events alr
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
 | `summary` (default) | total/max pause + per-generation counts | — |
-| `events` | raw GC events | `--top-types` (cap) |
+| `events` | raw GC events | `--top` (`--top-types` compatibility alias) |
 | `pauseHistogram` | pause-duration buckets | — |
-| `timeline` | per-GC rows (index, gen, reason, type, pause, gap-since-previous-start) ordered by start time | `--top-types` (earliest N) |
-| `longestPauses` | the N longest pauses, ranked descending | `--top-types` (N) |
+| `timeline` | per-GC rows (index, gen, reason, type, pause, gap-since-previous-start) ordered by start time | `--top` (`--top-types` compatibility alias; earliest N) |
+| `longestPauses` | the N longest pauses, ranked descending | `--top` (`--top-types` compatibility alias) |
 | `byGeneration` | count + total/mean/max pause per gen0/gen1/gen2/background bucket | — |
 
 `byGeneration` keeps background GCs in their own bucket, so `gen2` counts non-background gen2 collections only.
@@ -657,8 +661,8 @@ Heap-snapshot handles (`inspect-heap`) expose the projection views rendered from
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
-| `top-types` (default) | top types by bytes/instances | `--top-types`, `--rank-by bytes\|instances` |
-| `retention-paths` | short GC retention chains | `--type-filter <substring>`, `--top-types` |
+| `top-types` (default) | top types by bytes/instances | `--top` (`--top-types` compatibility alias), `--rank-by bytes\|instances` |
+| `retention-paths` | short GC retention chains | `--type-filter <substring>`, `--top` (`--top-types` compatibility alias) |
 | `gcroot` | shortest GC-root chain for one object (SOS `!gcroot`) | `--address <decimal\|0x-hex>` (**dump-origin handles only**) |
 | `object` | one managed object's shape (SOS `!do`) | `--address <decimal\|0x-hex>` (**dump-origin handles only**) |
 
@@ -674,8 +678,8 @@ captured in the artifact:
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
-| `topStacks` (default) | blocking stacks ranked by off-CPU time | — |
-| `byThread` | per-thread off-CPU rollup | — |
+| `topStacks` (default) | blocking stacks ranked by off-CPU time | `--top` (`--top-types` compatibility alias) |
+| `byThread` | per-thread off-CPU rollup | `--top` (`--top-types` compatibility alias) |
 | `stack` | one specific blocking stack | `--stack-rank <n>` |
 
 Thread-snapshot handles (`collect --kind thread-snapshot`, or a gated `--capture thread-snapshot`
@@ -685,13 +689,21 @@ inside a `session`) expose the call-stack / blocking views (`threads-summary`, `
 
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
-| `wait-chains` | who-waits-on-whom chains toward the blocking root | — |
+| `threads-summary` | decisive thread summaries, eight per bounded page with up to eight frames each | `--top` (page size, capped at 8), `--cursor <opaque>` from `nextThreadCursor` |
+| `top-blocked` (default) | blocked threads and real lock waiters, eight per bounded page with up to eight frames each | `--top` (page size, capped at 8), `--cursor <opaque>` from `nextThreadCursor` |
+| `lock-graph` | contended locks, twelve per bounded page; or one lock's waiter IDs | `--top` (page size, capped at 12/8), `--cursor <opaque>` from `nextLockCursor`; add `--address <decimal\|0x-hex>` and use `nextWaiterCursor` to page one lock's waiters |
+| `wait-chains` | ranked CoreCLR monitor waiter→owner and async-continuation chains, including ThreadPool-starvation sinks and inferred cycle candidates; links expose `edgeSource` / `confidence` | — |
 | `async-stalls` | stalled `async` state machines and their await points | — |
 | `unique-stacks` | threads folded into shared stack signatures, ranked by group size | `--frames-to-hash` (top frames in the signature hash, default `20`), `--min-count` (drop groups smaller than N, default `1`) |
 | `frame-vars` | one thread's local variables and parameters for a chosen stack frame (re-opens the origin via ClrMD) | `--thread-id <id>` (required) |
 
 `frame-vars` requires `--thread-id` to pick the thread whose frame variables to resolve; the thread must
 be present in the captured snapshot.
+MCP and CLI session queries share the same versioned opaque cursors. Pass a returned cursor unchanged
+to the next `query` command; it is bound to the snapshot handle, view, deterministic final sort key,
+and (for waiter pages) lock address. Malformed and cross-handle cursors fail with `InvalidArgument`.
+`--offset` remains a compatibility option for positions `0..256`; deeper random offsets are rejected
+with guidance to restart at zero and follow cursors, avoiding quadratic rescans.
 
 For every ranked/list query view, `--top N` is the common row/group cap. `--top-types N` remains a
 backward-compatible query alias; when both are supplied, `--top` wins. Views whose shape is controlled

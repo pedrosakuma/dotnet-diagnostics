@@ -42,4 +42,8 @@ internal sealed record MonitorWaitEdge(
     int OwnerThreadId,
     ulong LockObjectAddress,
     string? LockObjectTypeFullName,
-    string LockKind);
+    string LockKind)
+{
+    public string EdgeSource { get; init; } = "sync-block-owner + stack-root waiter inference";
+    public string Confidence { get; init; } = "medium";
+}

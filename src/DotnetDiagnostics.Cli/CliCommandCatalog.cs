@@ -27,7 +27,7 @@ internal static class CliCommandCatalog
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--dump-type", "--out", "--mvid",
         "--asset", "--handle", "--view", "--provider-filter", "--root-method-filter", "--rank-by",
-        "--type-filter", "--address", "--max-depth", "--max-nodes", "--thread-id",
+        "--type-filter", "--address", "--offset", "--cursor", "--max-depth", "--max-nodes", "--thread-id",
         "--native-alloc-sample-period", "--max-frames-per-thread", "--watch",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
         "--symptom", "--hypothesis", "--max-tool-calls", "--top-hotspots",
@@ -316,28 +316,33 @@ dump options:
 query options:
       --handle <id>             Session drill-down handle.
       --view <name>             Session drill-down view.
-      --top <int>               Session query: cap ranked rows/groups consistently across views.
+      --top <int>               Session query: cap ranked rows/groups; wins when --top-types is also set.
       --top-types <int>         Backward-compatible alias for --top on query views.
       --provider-filter <text>  Session query: event-catalog provider substring filter.
       --changes-only            Session query: DATAS 'tuning' view; show only heap-count changes.
       --root-method-filter <t>  Session query: CPU method filter; event-catalog event-name filter.
       --thread-id <int>         Session query: ManagedThreadId; required for thread-snapshot 'frame-vars' view.
+      --offset <int>            Session query: compatibility offset 0..256 for bounded thread/lock pages.
+      --cursor <opaque>         Session query: stable continuation returned by the prior thread/lock page.
+      --address <decimal|0xhex> Session query: heap object/root address or exact thread-snapshot lock address.
       --stack-rank <int>        Session query: 1-based rank for the off-CPU 'stack' view.
   Note: handles are process-local. A one-shot command's handle disappears when that command exits,
   so one-shot 'query' always returns a NotSupported envelope (exit 1). Use --depth detail / --json
   for inline evidence, or run both the originating command and query inside one 'session' REPL.
 
   Thread-snapshot views (session only):
-    threads-summary  List all threads with state and top frame.
+    threads-summary  Up to 8 decisive threads per page, with state and up to 8 frames.
     stack            Full managed stack for --thread-id <ManagedThreadId>.
-    lock-graph       Monitor lock ownership graph.
-    deadlocks        Deadlock cycles.
-    top-blocked      Threads most likely blocked (default).
+    lock-graph       Up to 12 monitor locks per page, or 8 waiter ids for --address.
+    deadlocks        Inferred deadlock cycle candidates.
+    top-blocked      Up to 8 blocked/waiting candidates per page (default).
     unique-stacks    Deduplicated stacks by hash.
     async-stalls     Async continuation stalls.
-    wait-chains      Thread wait-chain analysis.
+    wait-chains      Inferred wait chains with per-edge source/confidence.
     threadpool       Thread-pool queue/worker statistics.
     frame-vars       Object-typed locals/parameters on each frame via ClrMD re-open; requires --thread-id.
+  Continue bounded pages with --cursor using nextThreadCursor, nextLockCursor, or
+  nextWaiterCursor from the prior response. --offset is compatibility-only and rejects values > 256.
 """,
             string.Empty,
             [
@@ -349,6 +354,8 @@ query options:
                 "--rank-by",
                 "--type-filter",
                 "--address",
+                "--offset",
+                "--cursor",
                 "--max-depth",
                 "--max-nodes",
                 "--thread-id",

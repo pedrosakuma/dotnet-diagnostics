@@ -9,9 +9,12 @@ internal static class ComparableKeyFactory
     public static ComparableKey ForType(string kind, TypeIdentity? identity, string typeFullName, string? moduleName)
     {
         var effectiveModule = identity?.ModuleName ?? moduleName;
+        var stableModule = identity?.ModulePath is { } modulePath && !string.IsNullOrWhiteSpace(modulePath)
+            ? NormalizePath(modulePath)
+            : effectiveModule;
         return new ComparableKey(
             Kind: kind,
-            StableId: StableTypeId(effectiveModule, typeFullName),
+            StableId: StableTypeId(stableModule, typeFullName),
             ExactId: ExactId(identity?.ModuleVersionId, identity?.MetadataToken),
             Module: effectiveModule,
             TypeName: typeFullName);
@@ -40,6 +43,9 @@ internal static class ComparableKeyFactory
         => string.IsNullOrWhiteSpace(moduleName)
             ? methodFullName
             : string.Concat(moduleName, "!", methodFullName);
+
+    private static string NormalizePath(string path)
+        => OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path;
 
     private static string? ExactId(Guid? moduleVersionId, int? metadataToken)
         => moduleVersionId is Guid mvid && metadataToken is int token

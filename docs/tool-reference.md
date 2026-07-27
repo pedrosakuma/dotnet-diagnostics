@@ -46,9 +46,8 @@ Each `SignalGroup` carries:
 - `signal`: stable id of the **grouping dimension** — not a diagnosis (e.g.
   `cpu.self-time.concentration`, `cpu.self-time.by-namespace`, `exceptions.by-type`,
   `exceptions.by-throw-site`, `allocations.by-type`, `allocations.by-site`,
-  `gc.pause-time-share`, `gc.gen2-share`, `gc.loh-growth`, `threads.by-wait-state`,
-  `threads.by-wait-target`, `counters.trend`, `correlation.co-occurrence`,
-  `correlation.thread-overlap`).
+  `gc.pause-time-share`, `gc.gen2-share`, `gc.loh-growth`, `counters.trend`,
+  `correlation.co-occurrence`).
 - `summary`: one-line description of what stands out.
 - `salience`: `0`–`1`, how far the grouping stands out (magnitude / concentration).
 - `buckets[]`: the top members of the grouping, each `{ key, magnitude, unit,
@@ -92,14 +91,13 @@ were gen2, elevated vs. the gen0-dominated norm) and `gc.loh-growth` (LOH size g
 across the window, from the `GCHeapStats` time series) — each a magnitude the consumer
 interprets, never a verdict.
 
-**Threads.** `collect_thread_snapshot` surfaces two thread-concentration groupings:
-`threads.by-wait-state` (do many threads share the same inferred wait state — e.g.
-`Monitor.Enter (contended)`, `Thread.Sleep`, `Socket I/O` — from each thread's top
-frame) and `threads.by-wait-target` (the finer, resolvable-only complement: does one
-SyncBlock/monitor account for most of the lock-waiting threads). Neither names lock
-contention or sync-over-async as a cause — that conclusion is left to the consumer,
-who can drill via the referenced handle (`view=top-blocked` / `view=lock-graph`).
-`threads.by-wait-target` simply produces nothing when no lock has waiters.
+**Threads.** `collect_thread_snapshot` keeps collection and registration bounded by
+returning a small decisive-thread projection plus a handle, rather than eagerly
+materializing capture-wide signal indexes. Follow its `nextAction` with
+`query_snapshot(view="wait-chains")` or page `view="top-blocked"` and
+`view="lock-graph"`; select one lock by `address` and page its waiter IDs with
+the returned `nextWaiterCursor`. Exact stacks remain available through
+`view="stack"` and `threadId`.
 
 **Counters.** `collect_events(kind="counters")` surfaces `counters.trend`: which
 counter moved the most between the first and last observed value in the collection
@@ -120,12 +118,8 @@ of them stand out at once (e.g. a counter trend and an elevated `gc.gen2-share` 
 same sweep), leading the envelope with buckets referencing each contributing collector's
 handle. Salience is the *minimum* of the contributing groupings, so the correlation is
 never rated above its weakest ingredient, and it produces nothing when only one collector
-stands out — the common, uncorrelated case. `collect_thread_snapshot` additionally
-surfaces `correlation.thread-overlap`: does a thread that owns a contended lock (the
-`threads.by-wait-target` domain) also appear among the blocked threads
-(`threads.by-wait-state` domain)? A pure thread-identity intersection over the same
-snapshot, not a new capture — it produces nothing when no contended lock's owner is
-itself blocked. Neither correlation infers a cause; both stay drill-in pointers.
+stands out — the common, uncorrelated case. It does not infer a cause; it remains a
+drill-in pointer.
 
 ### Implicit bootstrap (`processId` is optional)
 
@@ -169,8 +163,8 @@ adds a uniform `depth` parameter to every windowed collector. Values:
 
 - `Summary` returns a small, decision-grade payload inline (the smallest piece
   of evidence the LLM needs to choose the next tool). This is the default.
-- `Detail` returns the historical pre-#41 payload (top-N hotspots, full
-  `Events[]` lists, full `Notes`, etc.).
+- `Detail` returns a larger bounded projection (top-N hotspots, retained
+  `Events[]` lists, full `Notes`, etc.). It does not imply an unbounded wire payload.
 - `Raw` is reserved for parity with the artifact handle; today equivalent to
   `Detail` for every tool.
 
@@ -204,7 +198,7 @@ Per-tool `Summary` semantics:
 | `collect_events(kind="requests")` | The full in-flight request list. Summary keeps the headline counts + the oldest requests inline; drill in with `query_snapshot(handle, view=requests|longRunning)`. |
 | `collect_events(kind="startup")` | The loader/DI event lists and full timeline. Summary keeps headline counts, top assembly/module aggregates, and notes. |
 | `collect_events(kind="sweep")` | The five sub-snapshots' bulky lists (counters, gc, exceptions, threadpool, resource). Summary keeps observed signals + hypotheses + per-collector handles. Each sub-collector's full payload stays behind its handle (`data.sweep.handles`). |
-| `collect_thread_snapshot` | The lock graph + threads beyond the top 3 most-blocked. Drill in with `query_snapshot(view=lock-graph\|deadlocks\|unique-stacks\|async-stalls\|wait-chains)`. |
+| `collect_thread_snapshot` | The lock graph plus threads beyond the top 6 decisive rows; each row is capped at 6 frames. Owner-and-waiter deadlock candidates, contended-lock owners, exceptions, and running application frames rank before generic parked workers; `query_snapshot(view="deadlocks")` evaluates inferred wait-for cycle candidates and reports edge source/confidence. `detail` remains bounded at 8 threads × 7 frames + 12 locks. |
 
 Explicit `topN` always wins over the depth default — if you pass
 `topN=10, depth=Summary` you get up to 10 hotspots inline (the LLM knows what
@@ -542,9 +536,12 @@ sync-over-async (`Task.Wait`/`.Result`/`GetResult`) or awaiting an incomplete co
 construct it is blocked on (classified by the same recognizer as `async-stalls`); (3) **ThreadPool
 starvation** — a sync-over-async chain that terminates in "waiting for a ThreadPool worker that isn't
 available", detected when the snapshot's ThreadPool has pending work, no idle workers, and is at its
-maximum. Chains are ranked longest / most-blocked first; true **cycles** are flagged distinctly
-(`isCycle=true`, `terminalKind="cycle"`) from open chains that sink in starvation, an async construct,
-or a running lock owner. Each hop reports `edgeKind`, a human `waitReason`, and the target node.
+maximum. Chains are ranked longest / most-blocked first; inferred **cycle candidates** are flagged
+distinctly (`isInferredCycleCandidate=true`, `terminalKind="inferred-cycle-candidate"`) from open
+chains that sink in starvation, an async construct, or a running lock owner. The compatibility
+fields `isCycle` and `cycleCount` remain populated, while `inferredCycleCandidateCount` states the
+semantics explicitly. Each hop reports `edgeKind`, a human `waitReason`, the target node,
+`edgeSource`, and `confidence`; treat a candidate as evidence to verify, not a confirmed deadlock.
 **Honesty about async ownership:** monitor hops carry a concrete `ownerThreadId` (recorded in the
 snapshot), but async-continuation resumption ownership is generally **not** recoverable from a
 point-in-time snapshot — nothing in thread state records which thread/task will complete an
@@ -2576,11 +2573,15 @@ is refused, not crashed).
 ## `collect_thread_snapshot`
 
 Captures managed thread states plus the SyncBlock lock graph (holder address,
-owning thread, waiter count) from a live process or a dump. Returns the top-3
-blocked threads inline plus a `thread-snapshot` `handle` (~10 min TTL) for
+owning thread, waiter count) from a live process or a dump. Returns a bounded,
+decision-oriented thread projection inline plus a `thread-snapshot` `handle`
+(~10 min TTL) for
 deadlock / unique-stack / wait-chain drilldown. Handles now survive producer-PID
 exit until TTL; only `resolve-address` and `frame-vars` still require the original
-live process.
+live process. The inline ranking places owner-and-waiter deadlock candidates,
+contended-lock owners, threads with active exceptions, and running application
+frames before generic wait/park noise. Candidate ranking does not prove a cycle;
+evaluate inferred wait-for cycle candidates with `query_snapshot(view="deadlocks")`.
 
 **Parameters:**
 
@@ -2592,12 +2593,16 @@ live process.
 | `includeRuntimeFrames` | `bool` | `false` | Include PInvoke trampolines / runtime frames with no managed method |
 | `includeNativeFrames` | `bool` | `false` | Include pure native frames ClrMD cannot resolve |
 | `symbolPath` | `string?` | — | NT_SYMBOL_PATH-style path (same remote-server allowlist rule as `inspect_heap`) |
-| `depth` | `string` | `summary` | `summary` (top-3 blocked, no lock graph) \| `detail` (top-25 threads + top-25 locks) \| `raw` (= detail). The full snapshot is always retained behind the handle |
+| `depth` | `string` | `summary` | `summary` (≤6 threads × 6 frames, no locks) \| `detail`/`raw` (≤8 threads × 7 frames + 12 locks, each with ≤8 waiter ids). Continue through the retained capture with `query_snapshot` cursors or exact lock-address waiter paging |
 
 **Returns:** `ThreadSnapshotQueryResult` + `thread-snapshot` handle. Drill via
 [`query_snapshot`](#query_snapshot) thread views: `threads-summary`, `stack`,
 `lock-graph`, `deadlocks`, `top-blocked`, `unique-stacks`, `async-stalls`,
 `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`.
+Collection may emit up to three bounded `signals[]` groups for concentrated wait states, lock
+targets, and blocked lock-owner overlap (up to five buckets each). It does not eagerly build a
+capture-sized derived index or deadlock/wait-chain graph; complete evidence remains behind the
+handle and graph analysis runs only when its explicit drilldown view is requested.
 
 **Scope:** `ptrace`. **Requires:** live attach needs `CAP_SYS_PTRACE` on Linux.
 
@@ -2620,7 +2625,9 @@ contract.
 |---|---|---|---|
 | `handle` | `string` | — | Drilldown handle from a prior collector |
 | `view` | `string?` | per-kind default | Kind-specific view (catalog below). Omit for the kind's default |
-| `topN` | `int?` | 50 heap/thread/collection, 25 off-CPU | Max entries in a ranked-list view |
+| `topN` | `int?` | 50 heap/thread/collection, 25 off-CPU | Requested entries in a ranked-list view. Thread lists (8), lock graph (12), and retention paths (10) have lower hard wire caps; handles retain the complete artifact |
+| `offset` | `int` | 0 | Compatibility page offset (`0..256`) for thread `top-blocked` / `threads-summary` and `lock-graph`. Deeper random offsets are rejected because ranked offset selection is quadratic |
+| `cursor` | `string?` | null | Opaque versioned continuation from `nextThreadCursor`, `nextLockCursor`, or `nextWaiterCursor`. Bound to the handle/view and exact lock address where applicable; do not combine with non-zero `offset` |
 
 **View catalog (by handle kind):**
 
@@ -2628,12 +2635,30 @@ contract.
   `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`,
   `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`,
   `object`, `gcroot`, `objsize`, `async`, `diff`, `growth`.
+  `retention-paths` returns at most 10 paths and 12 frames per path inline.
+  Compaction always preserves the target and terminal root (including
+  `rootKind`), then fills the remaining budget with ordered intermediates.
+  Every intermediate carries its resolved type plus stable object address; the
+  complete captured chains remain behind the handle.
 - **thread** (`collect_thread_snapshot`): `top-blocked` (default),
   `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`,
   `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars`.
   Live-origin handles remain queryable after process exit for the artifact-only
   views; `resolve-address` and `frame-vars` instead return a structured
-  `ProcessExited` error once the original live process is gone.
+  `ProcessExited` error once the original live process is gone. Thread and lock
+  list views are bounded pages selected with `offset` and report their next
+  offsets. Thread pages report `totalThreads` for the complete snapshot and
+  `candidateThreads` for the ranked set paged by the current view, so
+  `omittedThreads` is always relative to `candidateThreads`. Each projected
+  page is selected by deterministic scans with page-sized workspace; no
+  capture-sized ranking index, waiter set, address dictionary, or sorted copy
+  is retained with the handle. `top-blocked` treats captured lock waiters as blocked candidates
+  even when a backend did not set `isLikelyBlocked`. Each projected lock
+  includes at most eight waiter IDs plus
+  `totalWaitingManagedThreadIds` / `omittedWaitingManagedThreadIds`; paging
+  preserves access to every retained lock. Select one stable lock object with
+  `address` and follow `nextWaiterCursor` to recover every waiter ID retained
+  behind the handle without producing an unbounded response.
 - **off-CPU** (`collect_sample(kind="off_cpu")`): `topStacks` (default),
   `byThread`, `stack`.
 - **collection** (`collect_events(kind=…)`): `summary` (default), plus
@@ -2642,11 +2667,20 @@ contract.
   `config`, `timeline`, `hillClimbing`, `requests`, `longRunning`, …
 - **cpu-sample / allocation-sample / native-alloc-sample**: `call-tree`
   (default), `top-methods`, `by-module`, `by-namespace`, `hot-path`,
-  `caller-callee`, `diff`.
+  `caller-callee`, `diff`. The broad `call-tree` projection is capped at 64
+  nodes / depth 8. It ranks all direct children before bounded selection and
+  reserves their node slots before traversing descendants, so a wide first
+  branch cannot hide other selected siblings. A late low-volume branch with
+  running self-samples outranks generic waiting branches. When self/run
+  classification is unavailable (allocation trees), inclusive samples rank
+  before exclusive samples so hot deep branches survive pruning. Source-tree
+  metrics are computed once iteratively; `traversalNodesVisited`,
+  `traversalNodeLimit`, and `traversalLimitReached` disclose the bounded visit
+  budget. Narrow with `rootMethodFilter` for deeper evidence.
 
 **Common view-specific parameters** (each ignored outside its view):
 `rankBy` (`bytes`/`instances`), `typeFullName`, `address`,
-`includeSensitiveValues`, `threadId`, `framesToHash`, `minCount`, `stackRank`,
+`includeSensitiveValues`, `threadId`, `offset`, `framesToHash`, `minCount`, `stackRank`,
 `rootMethodFilter`, `providerFilter`, `changesOnly`, `maxDepth`, `maxNodes`,
 `baselineHandle`, `comparisonHandles`, `minDeltaPct`, `depth`, `mode`,
 `hotPathThresholdPercent`. See the tool's parameter descriptions for the exact

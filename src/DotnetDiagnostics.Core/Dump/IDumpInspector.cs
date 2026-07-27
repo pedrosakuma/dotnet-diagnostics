@@ -420,7 +420,11 @@ public sealed record TypeStat(
     long InstanceCount,
     long TotalBytes,
     double TotalBytesPercent,
-    TypeIdentity? Identity = null);
+    TypeIdentity? Identity = null)
+{
+    internal ulong? ModuleImageBase { get; init; }
+    internal IReadOnlyList<ulong> ModuleImageBases { get; init; } = Array.Empty<ulong>();
+}
 
 /// <summary>
 /// Canonical, machine-readable identity of a managed type observed in a dump
@@ -444,7 +448,14 @@ public sealed record RetentionPath(
     string TargetTypeFullName,
     ulong TargetObjectAddress,
     IReadOnlyList<RetentionFrame> Chain,
-    bool Truncated);
+    bool Truncated)
+{
+    /// <summary>
+    /// Canonical target identity when the collector could resolve it. Growth correlation uses this
+    /// instead of the display name so same-named types from different modules are not conflated.
+    /// </summary>
+    public TypeIdentity? TargetIdentity { get; init; }
+}
 
 public sealed record RetentionFrame(
     string TypeFullName,

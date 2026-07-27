@@ -33,7 +33,7 @@ public static class WaitChainAnalyzer
     private const string TargetThread = "thread";
     private const string TargetConstruct = "async-construct";
     private const string TargetThreadPool = "threadpool-starvation";
-    private const string TargetCycle = "cycle";
+    private const string TargetCycle = "inferred-cycle-candidate";
     private const string TargetOwnerRunning = "owner-running";
 
     private const string AsyncOwnershipNote =
@@ -54,8 +54,8 @@ public static class WaitChainAnalyzer
         var threadPoolStarved = IsThreadPoolStarved(snapshot.ThreadPool);
 
         // Each blocked thread has at most one outgoing wait edge (a thread waits on one thing at a
-        // time), so the wait-graph is a functional graph: chains, plus rho-shapes that close into a
-        // cycle. Monitor edges take precedence over async edges — a concrete contended lock is a
+        // time), so the inferred wait-graph is a functional graph: chains, plus rho-shapes that may
+        // close into a cycle candidate. Monitor edges take precedence over async edges — a concrete contended lock is a
         // stronger signal than a parked continuation.
         var edges = new Dictionary<int, WaitEdge>();
         var monitorTargets = new HashSet<int>();
@@ -100,8 +100,8 @@ public static class WaitChainAnalyzer
             }
         }
 
-        // Pure cycles have no source node — every member has an incoming monitor edge. Pick the
-        // lowest unwalked thread id with an outgoing edge and walk it to surface the deadlock.
+        // Pure inferred cycle candidates have no source node — every member has an incoming monitor
+        // edge. Pick the lowest unwalked thread id with an outgoing edge and walk it.
         foreach (var id in edges.Keys.OrderBy(x => x))
         {
             if (coveredRoots.Contains(id))
@@ -147,6 +147,7 @@ public static class WaitChainAnalyzer
             ThreadPoolStarved: threadPoolStarved,
             Chains: ranked)
         {
+            InferredCycleCandidateCount = cycleCount,
             Notes = notes,
         };
     }
@@ -209,6 +210,12 @@ public static class WaitChainAnalyzer
             TerminalKind: terminalKind,
             Links: links)
         {
+            IsInferredCycleCandidate = isCycle,
+            InferenceConfidence = isCycle
+                ? links.Select(static link => link.Confidence).Contains("low", StringComparer.Ordinal)
+                    ? "low"
+                    : "medium"
+                : "none",
             Notes = notes,
         };
     }
@@ -229,6 +236,8 @@ public static class WaitChainAnalyzer
                 : null,
             LockObjectTypeFullName = edge.LockObjectTypeFullName,
             Note = edge.Note,
+            EdgeSource = edge.EdgeSource,
+            Confidence = edge.Confidence,
         };
     }
 
@@ -257,7 +266,9 @@ public static class WaitChainAnalyzer
             OwnerThreadId: owner.ManagedThreadId,
             LockObjectAddress: candidate.LockObjectAddress,
             LockObjectTypeFullName: candidate.LockObjectTypeFullName,
-            Note: null);
+            Note: null,
+            EdgeSource: candidate.EdgeSource,
+            Confidence: candidate.Confidence);
     }
 
     private static WaitEdge? BuildAsyncEdge(ManagedThread thread, bool threadPoolStarved)
@@ -283,7 +294,9 @@ public static class WaitChainAnalyzer
                     OwnerThreadId: null,
                     LockObjectAddress: null,
                     LockObjectTypeFullName: null,
-                    Note: ThreadPoolStarvationNote);
+                    Note: ThreadPoolStarvationNote,
+                    EdgeSource: "stack-classification + threadpool-snapshot",
+                    Confidence: "medium");
             }
 
             return new WaitEdge(
@@ -294,7 +307,9 @@ public static class WaitChainAnalyzer
                 OwnerThreadId: null,
                 LockObjectAddress: null,
                 LockObjectTypeFullName: null,
-                Note: AsyncOwnershipNote);
+                Note: AsyncOwnershipNote,
+                EdgeSource: "stack-classification",
+                Confidence: "low");
         }
 
         var (label, reason) = bucket switch
@@ -315,7 +330,9 @@ public static class WaitChainAnalyzer
             OwnerThreadId: null,
             LockObjectAddress: null,
             LockObjectTypeFullName: null,
-            Note: AsyncOwnershipNote);
+            Note: AsyncOwnershipNote,
+            EdgeSource: "stack-classification",
+            Confidence: "low");
     }
 
     private static bool IsThreadPoolStarved(ThreadPoolSnapshot? threadPool)
@@ -346,5 +363,7 @@ public static class WaitChainAnalyzer
         int? OwnerThreadId,
         ulong? LockObjectAddress,
         string? LockObjectTypeFullName,
-        string? Note);
+        string? Note,
+        string EdgeSource,
+        string Confidence);
 }

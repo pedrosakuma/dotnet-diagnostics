@@ -507,8 +507,8 @@ internal static partial class CliCommands
                     $"Valid views: {string.Join(", ", CpuSampleQueryDispatcher.SessionViews)}.");
         }
 
-        var maxDepth = options.MaxDepth ?? 8;
-        var maxNodes = options.MaxNodes ?? 200;
+        var maxDepth = options.MaxDepth ?? CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth;
+        var maxNodes = options.MaxNodes ?? CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes;
         var result = CpuSampleQueryDispatcher.RenderCallTree(trace, handle, options.RootMethodFilter, maxDepth, maxNodes);
 
         return BuildResult<CallTreeView>(result, SerializeQuery);
@@ -611,8 +611,17 @@ internal static partial class CliCommands
         var topN = ResolveQueryTopN(options, 50);
         var framesToHash = options.FramesToHash ?? 20;
         var minCount = options.MinCount ?? 1;
-        var result = ThreadSnapshotQueryDispatcher.Dispatch(
-            snapshot, options.Handle!, view, options.ThreadId, topN, framesToHash, minCount);
+        var result = ThreadSnapshotQueryDispatcher.DispatchCursor(
+            snapshot,
+            options.Handle!,
+            view,
+            options.ThreadId,
+            topN,
+            framesToHash,
+            minCount,
+            offset: options.Offset ?? 0,
+            lockAddress: options.Address,
+            cursor: options.Cursor);
 
         return BuildResult<ThreadSnapshotQueryResult>(result, static (sb, qr) =>
         {

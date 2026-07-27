@@ -20,10 +20,10 @@ public sealed class ThreadSnapshotResources
         MimeType = "application/json")]
     [Description(
         "JSON snapshot of the ThreadSnapshotArtifact registered under a drilldown handle by " +
-        "collect_thread_snapshot. Includes runtime info, every managed thread (state, stack frames " +
+        "collect_thread_snapshot. This Resource exposes the complete retained capture: runtime info, managed threads (state, stack frames " +
         "with MethodIdentity handoff for dotnet-assembly-mcp, inferred wait reason), the lock " +
         "(SyncBlock) graph with owners + waiter counts, and optional ThreadPool counters/queues " +
-        "when captured by the backend. Returns an error contents block when the handle is unknown " +
+        "when captured by the backend. It may be large; prefer bounded query_snapshot thread/lock pages for LLM use. Returns an error contents block when the handle is unknown " +
         "or expired.")]
     public static string ReadSnapshot(IDiagnosticHandleStore handles, string handle)
     {

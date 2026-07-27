@@ -123,7 +123,7 @@ public sealed partial class QuerySnapshotTool
     [Description(
         "Drill into a prior collector's snapshot/sample by handle. The available views depend on the " +
         "handle's kind — choose one via the 'view' parameter.")]
-    public static async Task<DiagnosticResult<object>> QuerySnapshot(
+    public static async Task<DiagnosticResult<object>> QuerySnapshotCursorPaged(
         IDiagnosticHandleStore handles,
         IDumpInspector inspector,
         SensitiveDataRedactor redactor,
@@ -133,11 +133,11 @@ public sealed partial class QuerySnapshotTool
         INativeAddressResolver addressResolver,
         IFrameVariableResolver frameVariableResolver,
         [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_sample(kind=\"cpu\"|\"off_cpu\"|\"allocation\"|\"native-alloc\"|\"method-params\"), or collect_events(kind=\"counters\"|\"exceptions\"|\"crash-guard\"|\"gc\"|\"datas\"|\"catalog\"|\"event_source\"|\"activities\"|\"logs\"|\"jit\"|\"threadpool\"|\"contention\"|\"db\"|\"kestrel\"|\"networking\"|\"requests\"|\"startup\")).")] string handle,
-        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff|growth. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|wait-chains|threadpool|resolve-address|frame-vars. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|exceptions|stack|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns|requests|longRunning. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
-        [Description("Maximum entries returned by any ranked-list view. Omit to use the per-kind legacy default: 50 for heap / thread / collection, 25 for off-CPU. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
+        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff|growth. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|wait-chains|threadpool|resolve-address|frame-vars. Thread wait-chains includes CoreCLR monitor waiter→owner edges, async continuations, ThreadPool starvation, and inferred cycle candidates with per-edge source/confidence; deadlocks exposes the same inference metadata. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|exceptions|stack|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns|requests|longRunning. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|diff. Omit to use the kind's default view.")] string? view = null,
+        [Description("Requested entries for ranked-list views. Omit for per-kind defaults (50 heap/thread/collection, 25 off-CPU). LLM projections remain hard-bounded: thread lists 8 rows, lock graph 12, retention paths 10; full evidence stays behind the handle. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
         [Description("Ranking for ranked views. Heap view='top-types'/'growth': 'bytes' (default) or 'instances'. CPU-sample view='top-methods': 'exclusive' (self-time, default) or 'inclusive'.")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
-        [Description("Heap view='object'/'gcroot'/'objsize': managed object address. Thread view='resolve-address': one or more native/instruction addresses (comma-separated) to classify into (module, rva, build-id) or an unmapped verdict. Decimal or 0x-prefixed hex.")] string? address = null,
+        [Description("Heap view='object'/'gcroot'/'objsize': managed object address. Thread view='lock-graph': exact lock object address whose retained waiter IDs should be paged; thread view='resolve-address': one or more native/instruction addresses (comma-separated) to classify into (module, rva, build-id) or an unmapped verdict. Decimal or 0x-prefixed hex.")] string? address = null,
         [Description("Heap views 'duplicate-strings' / 'object' only: opt-in to raw string content / field-value previews (gated by `Diagnostics:AllowSensitiveHeapValues` AND `sensitive-heap-read` scope per docs/authorization.md#modifier-scopes).")] bool includeSensitiveValues = false,
         [Description("Thread view='stack' only: thread id (ManagedThreadId for CoreCLR snapshots, OS TID for linux-native-stack snapshots). Required for view='frame-vars' (ManagedThreadId).")] int? threadId = null,
         [Description("Thread view='unique-stacks' only: number of top frames folded into the signature hash. Defaults to 20.")] int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
@@ -146,8 +146,8 @@ public sealed partial class QuerySnapshotTool
         [Description("Call-tree (cpu-sample / allocation-sample) only: optional case-insensitive substring; the tree is re-rooted at the highest-ranked frame whose method name contains this text. Event-catalog views reuse this as an event-name substring filter.")] string? rootMethodFilter = null,
         [Description("Event-catalog views only: optional case-insensitive provider-name substring filter.")] string? providerFilter = null,
         [Description("DATAS 'tuning' view only: when true, emit only the rows where the heap-count decision changed versus the previous GC (plus the first row as a baseline).")] bool changesOnly = false,
-        [Description("Call-tree only: maximum tree depth from the root. Must be >= 1. Defaults to 8.")] int maxDepth = 8,
-        [Description("Call-tree only: approximate cap on the number of nodes returned (top children at each level). Must be >= 1. Defaults to 200.")] int maxNodes = 200,
+        [Description("Call-tree only: requested tree depth from the root. Must be >= 1. The inline projection is hard-capped at depth 8; narrow with rootMethodFilter for deeper evidence.")] int maxDepth = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth,
+        [Description("Call-tree only: requested node cap. Must be >= 1. The inline LLM projection is hard-capped at 64 nodes; the complete tree remains behind the handle.")] int maxNodes = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes,
         [Description("Diff view: baseline handle to compare against the current `handle`. Required for legacy pairwise diff unless `comparisonHandles` is supplied. Heap view='growth': required — the EARLIER live heap snapshot handle to diff the current (later) one against.")] string? baselineHandle = null,
         [Description("Diff view only: ordered handles to compare before the current `handle` for N-way journey diffs. Do not combine with `baselineHandle`; the current handle is appended as the final capture.")] string[]? comparisonHandles = null,
         [Description("Diff/growth views: minimum absolute delta percentage required for a row to surface. Defaults to 5.0.")] double minDeltaPct = 5.0,
@@ -157,6 +157,8 @@ public sealed partial class QuerySnapshotTool
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
+        [Description("Zero-based compatibility offset for paged thread-list and lock-graph views. Values above 256 are rejected because ranked random access is quadratic. Prefer cursor continuation. Defaults to 0.")] int offset = 0,
+        [Description("Opaque continuation returned by a thread page as nextThreadCursor, nextLockCursor, or nextWaiterCursor. Bound to the handle/view (and lock address for waiter pages); malformed or cross-handle cursors are rejected. Do not combine with a non-zero offset.")] string? cursor = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(handle))
@@ -208,6 +210,8 @@ public sealed partial class QuerySnapshotTool
             Handle = handle,
             View = view,
             TopN = topN,
+            Offset = offset,
+            Cursor = cursor,
             RankBy = rankBy,
             TypeFullName = typeFullName,
             Address = address,
@@ -234,6 +238,149 @@ public sealed partial class QuerySnapshotTool
 
         return await handler(context).ConfigureAwait(false);
     }
+
+    public static Task<DiagnosticResult<object>> QuerySnapshotPaged(
+        IDiagnosticHandleStore handles,
+        IDumpInspector inspector,
+        SensitiveDataRedactor redactor,
+        SensitiveValueGate sensitiveGate,
+        SecurityOptions securityOptions,
+        IPrincipalAccessor principalAccessor,
+        INativeAddressResolver addressResolver,
+        IFrameVariableResolver frameVariableResolver,
+        string handle,
+        string? view = null,
+        int? topN = null,
+        string rankBy = "bytes",
+        string? typeFullName = null,
+        string? address = null,
+        bool includeSensitiveValues = false,
+        int? threadId = null,
+        int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
+        int minCount = 1,
+        int? stackRank = null,
+        string? rootMethodFilter = null,
+        string? providerFilter = null,
+        bool changesOnly = false,
+        int maxDepth = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth,
+        int maxNodes = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes,
+        string? baselineHandle = null,
+        string[]? comparisonHandles = null,
+        double minDeltaPct = 5.0,
+        string depth = "full",
+        string? mode = null,
+        double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
+        string? investigationHandleId = null,
+        LegacyDiagnosticsFlagDeprecation? deprecation = null,
+        int offset = 0,
+        CancellationToken cancellationToken = default)
+        => QuerySnapshotCursorPaged(
+            handles,
+            inspector,
+            redactor,
+            sensitiveGate,
+            securityOptions,
+            principalAccessor,
+            addressResolver,
+            frameVariableResolver,
+            handle,
+            view,
+            topN,
+            rankBy,
+            typeFullName,
+            address,
+            includeSensitiveValues,
+            threadId,
+            framesToHash,
+            minCount,
+            stackRank,
+            rootMethodFilter,
+            providerFilter,
+            changesOnly,
+            maxDepth,
+            maxNodes,
+            baselineHandle,
+            comparisonHandles,
+            minDeltaPct,
+            depth,
+            mode,
+            hotPathThresholdPercent,
+            investigationHandleId,
+            deprecation,
+            offset,
+            cursor: null,
+            cancellationToken: cancellationToken);
+
+    public static Task<DiagnosticResult<object>> QuerySnapshot(
+        IDiagnosticHandleStore handles,
+        IDumpInspector inspector,
+        SensitiveDataRedactor redactor,
+        SensitiveValueGate sensitiveGate,
+        SecurityOptions securityOptions,
+        IPrincipalAccessor principalAccessor,
+        INativeAddressResolver addressResolver,
+        IFrameVariableResolver frameVariableResolver,
+        string handle,
+        string? view = null,
+        int? topN = null,
+        string rankBy = "bytes",
+        string? typeFullName = null,
+        string? address = null,
+        bool includeSensitiveValues = false,
+        int? threadId = null,
+        int framesToHash = ThreadSnapshotUniqueStackGrouper.DefaultFramesToHash,
+        int minCount = 1,
+        int? stackRank = null,
+        string? rootMethodFilter = null,
+        string? providerFilter = null,
+        bool changesOnly = false,
+        int maxDepth = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth,
+        int maxNodes = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes,
+        string? baselineHandle = null,
+        string[]? comparisonHandles = null,
+        double minDeltaPct = 5.0,
+        string depth = "full",
+        string? mode = null,
+        double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
+        string? investigationHandleId = null,
+        LegacyDiagnosticsFlagDeprecation? deprecation = null,
+        CancellationToken cancellationToken = default)
+        => QuerySnapshotCursorPaged(
+            handles,
+            inspector,
+            redactor,
+            sensitiveGate,
+            securityOptions,
+            principalAccessor,
+            addressResolver,
+            frameVariableResolver,
+            handle,
+            view,
+            topN,
+            rankBy,
+            typeFullName,
+            address,
+            includeSensitiveValues,
+            threadId,
+            framesToHash,
+            minCount,
+            stackRank,
+            rootMethodFilter,
+            providerFilter,
+            changesOnly,
+            maxDepth,
+            maxNodes,
+            baselineHandle,
+            comparisonHandles,
+            minDeltaPct,
+            depth,
+            mode,
+            hotPathThresholdPercent,
+            investigationHandleId,
+            deprecation,
+            offset: 0,
+            cursor: null,
+            cancellationToken: cancellationToken);
 
 
     private static bool IsDiffView(string? view)
@@ -319,14 +466,19 @@ public sealed partial class QuerySnapshotTool
             ? $"No types grew (>= {minDeltaPct}% by {normalizedRank}) between baseline '{baselineHandle}' and current '{handle}' over {growth.Elapsed.TotalSeconds:F1}s — verdict {growth.Verdict}."
             : $"Heap grew {growth.TotalHeapGrowthBytes:N0} bytes over {growth.Elapsed.TotalSeconds:F1}s (pid {growth.ProcessId}); {growth.TotalGrowers} type(s) grew, top {growth.Growers.Count} returned ranked by {normalizedRank}. Top grower `{topGrower.TypeFullName}` +{topGrower.BytesDelta:N0} bytes / +{topGrower.InstancesDelta:N0} instances. Verdict {growth.Verdict}.";
 
-        var hint = topGrower is { RetentionPaths: null or { Count: 0 } }
-            ? new NextActionHint("inspect_heap",
-                "Re-capture both snapshots with includeRetentionPaths=true to see what's holding the top growers.",
-                new Dictionary<string, object?> { ["processId"] = growth.ProcessId, ["source"] = "live", ["includeRetentionPaths"] = true })
-            : new NextActionHint(ToolName,
-                "Drill into a specific grower with view='retention-paths' on the current handle.",
-                new Dictionary<string, object?> { ["handle"] = handle, ["view"] = "retention-paths", ["typeFullName"] = topGrower?.TypeFullName });
+        if (topGrower is null)
+        {
+            return AsObjectEnvelope(DiagnosticResult.Ok<object>(growth, summary));
+        }
 
+        if (topGrower.RetentionPaths is { Count: > 0 })
+        {
+            return AsObjectEnvelope(DiagnosticResult.Ok<object>(growth, summary));
+        }
+
+        var hint = new NextActionHint("inspect_heap",
+            "Re-capture both snapshots with includeRetentionPaths=true to see what's holding the top growers.",
+            new Dictionary<string, object?> { ["processId"] = growth.ProcessId, ["source"] = "live", ["includeRetentionPaths"] = true });
         return AsObjectEnvelope(DiagnosticResult.Ok<object>(growth, summary, hint));
     }
 
@@ -1035,8 +1187,8 @@ public sealed partial class QuerySnapshotTool
         string? rootMethodFilter = null,
         string? providerFilter = null,
         bool changesOnly = false,
-        int maxDepth = 8,
-        int maxNodes = 200,
+        int maxDepth = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth,
+        int maxNodes = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes,
         string? baselineHandle = null,
         string[]? comparisonHandles = null,
         double minDeltaPct = 5.0,
@@ -1046,7 +1198,7 @@ public sealed partial class QuerySnapshotTool
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         CancellationToken cancellationToken = default)
-        => QuerySnapshot(
+        => QuerySnapshotCursorPaged(
             handles,
             inspector,
             redactor,
@@ -1079,7 +1231,8 @@ public sealed partial class QuerySnapshotTool
             hotPathThresholdPercent,
             investigationHandleId,
             deprecation,
-            cancellationToken);
+            offset: 0,
+            cancellationToken: cancellationToken);
 
     // Derived from KindHandlers (QuerySnapshotTool.Dispatch.cs) so the two lists can never drift —
     // a kind registered for dispatch is automatically reflected in the "supported kinds" error text

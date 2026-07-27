@@ -37,7 +37,7 @@ public sealed class QueryThreadSnapshotWaitChainTests
     }
 
     [Fact]
-    public void QueryThreadSnapshot_WaitChainsView_FlagsDeadlockCycle()
+    public void QueryThreadSnapshot_WaitChainsView_LabelsInferredCycleCandidate()
     {
         var store = new MemoryDiagnosticHandleStore();
         var handle = store.Register(4242, "thread-snapshot", BuildTwoThreadCycleSnapshot(), TimeSpan.FromMinutes(5));
@@ -47,7 +47,12 @@ public sealed class QueryThreadSnapshotWaitChainTests
         result.IsError.Should().BeFalse();
         var view = result.Data!.WaitChains!;
         view.CycleCount.Should().Be(1);
-        view.Chains.Should().ContainSingle().Which.IsCycle.Should().BeTrue();
+        view.InferredCycleCandidateCount.Should().Be(1);
+        var chain = view.Chains.Should().ContainSingle().Subject;
+        chain.IsInferredCycleCandidate.Should().BeTrue();
+        chain.TerminalKind.Should().Be("inferred-cycle-candidate");
+        chain.Links.Should().OnlyContain(link => link.EdgeSource.Contains("inference", StringComparison.Ordinal));
+        result.Summary.Should().Contain("inferred cycle candidate");
     }
 
     private static ThreadSnapshotArtifact BuildSyncToStarvationSnapshot()

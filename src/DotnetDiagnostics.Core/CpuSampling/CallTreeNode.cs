@@ -59,6 +59,16 @@ public sealed record CallTreeView(
     /// originating artifact carried wait/run classification.
     /// </summary>
     public SelfSampleBreakdown? SelfSamples { get; init; }
+    /// <summary>Effective node cap applied to this LLM-oriented projection.</summary>
+    public int NodeLimit { get; init; }
+    /// <summary>Effective depth cap applied to this LLM-oriented projection.</summary>
+    public int DepthLimit { get; init; }
+    /// <summary>Source-tree nodes visited while computing decision-first subtree metrics.</summary>
+    public int TraversalNodesVisited { get; init; }
+    /// <summary>Hard source-tree visit cap applied before projection.</summary>
+    public int TraversalNodeLimit { get; init; }
+    /// <summary>Whether source-tree metric traversal reached <see cref="TraversalNodeLimit"/>.</summary>
+    public bool TraversalLimitReached { get; init; }
 }
 
 /// <summary>

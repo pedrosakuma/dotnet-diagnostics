@@ -69,6 +69,38 @@ implications:
 | Perf/ETW off-CPU & CPU samplers (`OffCpu/`, `CpuSampling/`) | `perf record --max-size` (already capped pre-fix) + the parser/aggregator now streams `perf script`/ETW output instead of buffering the full text/span list before aggregating | Same final aggregate (call tree / stack rollups) as before | Nothing — this was a pure streaming refactor (same category as the Dump/Collection rows above), listed here because it shares the "buffer full output" root cause with the other perf-tooling fixes | N/A |
 | Perf native-allocation sampler (`NativeAlloc/PerfNativeAllocSampler.cs`) | Same streaming parser as CPU/off-CPU, **plus** a hard `PerfScriptSampleBudget = 250,000` samples | The first 250,000 parsed perf-script samples | Parsing stops once the budget is hit; hotspots reflect only the processed prefix, not the full allocator-hot run | `aggregate.Truncated` → note: *"Stopped parsing perf script after 250,000 samples to keep allocator-hot captures bounded; hotspots reflect the processed prefix only."* — **this is a real trade-off, not a pure refactor**, since a single very allocation-heavy run can exceed the budget and silently-in-spirit (though not silently-in-notes) miss later hotspots |
 
+## Bounded LLM response projections
+
+These caps bound the **wire projection**, not collector retention. The full artifact remains
+behind its existing handle, so narrowing a follow-up query does not re-collect or discard evidence.
+
+| Projection | Inline cap | Selection |
+|---|---:|---|
+| `collect_thread_snapshot(depth="summary")` | 6 threads × 6 frames; no locks | Deadlocks, contended-lock owners, exceptions, and running frames before generic waits |
+| `collect_thread_snapshot(depth="detail"|"raw")` | 8 threads × 7 frames + 12 locks × 8 waiter IDs | Same thread ranking; most-contended locks first; each lock reports total/omitted waiter-ID counts |
+| `query_snapshot` thread summaries / lock graph | 8 threads × 8 frames / 12 locks × 8 waiter IDs per page | Versioned opaque cursors encode the final deterministic sort key and scan the retained capture with page-sized workspace; no capture-sized ranking cache is built or retained. Thread pages expose whole-snapshot `totalThreads` separately from the paged `candidateThreads`; `stack(threadId=...)` selects an exact full captured stack, and `lock-graph(address=...)` cursor-pages every retained waiter ID for one stable lock address |
+| CPU `call-tree` | 64 nodes, depth 8 | Every direct child participates in decision-first ranking; selected direct-child slots are reserved before descendants consume the remaining budget, and branches containing running self-samples precede waiting-only branches; use `rootMethodFilter` to narrow |
+| Heap `retention-paths` | 10 paths × 12 frames | Target and terminal root (`RootKind`) are always preserved, with typed/addressed intermediates filling the remaining budget; projection truncation sets `Truncated=true` |
+| Heap `growth` rows | 1 path × 12 frames per grower | Carries total/omitted path counts; the current heap handle retains every path |
+
+Thread and lock continuation scans the complete retained capture at most once per selected page
+slot, so work is O(capture size × page size) independent of page depth and workspace/derived retained
+state remain O(page size). Versioned cursors carry stable total-order keys, including original capture
+position as the final tie-breaker, without materializing full candidate arrays, waiter sets,
+dictionaries, or sorts. Cursors validate their handle/view/key (and exact lock address for waiter
+pages); malformed, stale, and cross-handle values fail safely.
+The default collection response may emit up to three bounded thread-wait signal groups, each with
+at most five buckets; its aggregation workspace is fixed-size and retains no capture-sized derived
+index. Deadlock/wait-chain graph construction remains deferred, with exact lock and inferred-cycle
+analysis available through explicit handle queries.
+Direct offsets above `MaxDirectOffset = 256`, including `int.MaxValue`, are rejected before capture
+selection with guidance to restart at zero and follow the returned cursor. Small offsets remain for
+compatibility.
+
+Hints also avoid suggesting evidence already present in the current payload: an untruncated call
+tree has no redundant call-tree hint, and heap-growth output with inline retention paths does not
+recommend fetching those same paths again.
+
 ## Measured impact (synthetic 300k-event load)
 
 A throwaway benchmark (not committed — reproducible by feeding N synthetic

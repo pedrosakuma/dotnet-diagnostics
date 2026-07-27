@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Reflection;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Capabilities;
 using DotnetDiagnostics.Core.CpuSampling;
@@ -204,6 +206,22 @@ public sealed class ToolGuardTests
         view.Root.Children.Single().Identity.ModuleVersionId.Should().Be(Guid.Parse("44444444-4444-4444-4444-444444444444"));
         view.Root.Children.Single().SelfSamples.Should().Be(new SelfSampleBreakdown(3, 1));
         view.SelfSamples.Should().Be(new SelfSampleBreakdown(3, 1));
+    }
+
+    [Fact]
+    public void GetCallTree_PublicAndImplementationDefaultsMatchBoundedDispatcher()
+    {
+        foreach (var toolType in new[] { typeof(DiagnosticTools), typeof(DiagnosticToolSampling) })
+        {
+            var method = toolType.GetMethod(
+                nameof(DiagnosticTools.GetCallTree),
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            var maxNodes = method!.GetParameters().Single(parameter => parameter.Name == "maxNodes");
+
+            maxNodes.DefaultValue.Should().Be(CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes);
+            maxNodes.GetCustomAttribute<DescriptionAttribute>()!.Description.Should().Contain(
+                CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
     }
 
     [Fact]

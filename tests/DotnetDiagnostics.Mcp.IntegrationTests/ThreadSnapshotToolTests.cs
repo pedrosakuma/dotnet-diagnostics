@@ -1,5 +1,9 @@
+using DotnetDiagnostics.Core;
+using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Threads;
+using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
 
@@ -7,6 +11,133 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
 public sealed class ThreadSnapshotToolTests
 {
+    [Fact]
+    public async Task CoreCollectionSummary_UsesAllThreadDecisiveProjection()
+    {
+        var blocked = Thread(
+            managedId: 1,
+            state: "Wait",
+            method: "System.Threading.Monitor.Wait",
+            isLikelyBlocked: true);
+        var running = Thread(
+            managedId: 2,
+            state: "Running",
+            method: "App.Worker.ProcessRequest",
+            isLikelyBlocked: false);
+        var snapshot = new ThreadSnapshotArtifact(
+            ThreadSnapshotOrigin.Dump,
+            42,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMilliseconds(10),
+            "CoreClr",
+            "10.0.0",
+            [blocked, running],
+            Array.Empty<MonitorLockState>());
+
+        var result = await SamplerUseCases.CollectThreadSnapshot(
+            new StubThreadSnapshotInspector(snapshot),
+            new MemoryDiagnosticHandleStore(),
+            resolver: null!,
+            new SymbolServerAllowlist(null),
+            principalAllowsSymbolsRemote: false,
+            dumpFilePath: "capture.dmp",
+            depth: SamplingDepth.Summary);
+
+        result.Error.Should().BeNull();
+        result.Data!.View.Should().Be("threads-summary");
+        result.Data.CandidateThreads.Should().Be(2);
+        result.Data.Threads.Select(thread => thread.ManagedThreadId).Should().Contain(2);
+    }
+
+    [Fact]
+    public async Task CollectThreadSnapshot_DefaultResponseAllocationDoesNotScaleWithCaptureVolume()
+    {
+        var small = LargeSnapshot(threadCount: 1_000, lockCount: 500);
+        var large = LargeSnapshot(threadCount: 20_000, lockCount: 10_000);
+
+        _ = await MeasureCollectionAllocations(small);
+        var (smallAllocated, _, _) = await MeasureCollectionAllocations(small);
+        var (largeAllocated, result, handles) = await MeasureCollectionAllocations(large);
+
+        largeAllocated.Should().BeLessThanOrEqualTo(
+            smallAllocated + 256_000,
+            "the actual collect/register/first-response path must not eagerly index every thread, lock, waiter, signal, or deadlock edge");
+        result.Error.Should().BeNull();
+        var compatibleSignalIds = new[]
+        {
+            "threads.by-wait-state",
+            "threads.by-wait-target",
+            "correlation.thread-overlap",
+        };
+        if (result.Signals is { } signals)
+        {
+            signals.Should().HaveCountLessThanOrEqualTo(3);
+            signals.Should().OnlyContain(signal => signal.Buckets.Count <= 5);
+            signals.Select(signal => signal.Signal)
+                .Should().OnlyContain(signal => compatibleSignalIds.Contains(signal));
+        }
+        result.Data!.Threads.Should().HaveCount(ThreadSnapshotProjection.SummaryThreadLimit);
+        result.Data.Locks.Should().BeEmpty();
+        result.Data.NextThreadCursor.Should().NotBeNullOrWhiteSpace();
+
+        var nextPage = DiagnosticTools.QueryThreadSnapshotPaged(
+            handles,
+            result.Data.Handle,
+            view: "threads-summary",
+            offset: ThreadSnapshotProjection.QueryThreadLimit);
+        nextPage.Data!.Threads.Should().HaveCount(ThreadSnapshotProjection.QueryThreadLimit);
+        var exactLock = DiagnosticTools.QueryThreadSnapshotPaged(
+            handles,
+            result.Data.Handle,
+            view: "lock-graph",
+            offset: 0,
+            lockAddress: "0x100000");
+        exactLock.Data!.Locks.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task CollectThreadSnapshot_RestoresBoundedCompatibleSignals()
+    {
+        var threads = Enumerable.Range(1, 10)
+            .Select(id => Thread(id, "Wait", "System.Threading.Monitor.Enter", isLikelyBlocked: true) with
+            {
+                InferredWaitReason = "Monitor.Enter (contended)",
+                IsLockWaiter = id > 1,
+            })
+            .ToArray();
+        var monitor = new MonitorLockState(
+            0xCAFE,
+            "App.SharedLock",
+            OwnerManagedThreadId: 1,
+            OwnerOSThreadId: 10_001,
+            OwnerThreadAddress: 1,
+            RecursionCount: 1,
+            WaitingThreadCount: 9,
+            IsContended: true,
+            Source: "test")
+        {
+            WaitingManagedThreadIds = Enumerable.Range(2, 9).ToArray(),
+        };
+        var snapshot = new ThreadSnapshotArtifact(
+            ThreadSnapshotOrigin.Live,
+            Environment.ProcessId,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMilliseconds(25),
+            "CoreClr",
+            "10.0.0",
+            threads,
+            [monitor]);
+
+        var (_, result, _) = await MeasureCollectionAllocations(snapshot);
+
+        result.Signals.Should().NotBeNull();
+        result.Signals!.Select(signal => signal.Signal).Should().BeEquivalentTo(
+            "threads.by-wait-state",
+            "threads.by-wait-target",
+            "correlation.thread-overlap");
+        result.Signals.Should().OnlyContain(signal => signal.Buckets.Count <= 5);
+    }
+
     [Fact]
     public void QueryThreadSnapshot_ThreadpoolView_ReturnsCapturedThreadPool()
     {
@@ -55,5 +186,123 @@ public sealed class ThreadSnapshotToolTests
         result.Data.ThreadPool!.PendingWorkItems.Should().Be(7);
         result.Data.ThreadPool.Queues.LocalQueues.Should().ContainSingle();
         result.Summary.Should().Contain("pending work items 7");
+    }
+
+    private static async Task<(long Allocated, DiagnosticResult<ThreadSnapshotQueryResult> Result, MemoryDiagnosticHandleStore Handles)>
+        MeasureCollectionAllocations(ThreadSnapshotArtifact snapshot)
+    {
+        var handles = new MemoryDiagnosticHandleStore();
+        var inspector = new StubThreadSnapshotInspector(snapshot);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var result = await DiagnosticTools.CollectThreadSnapshot(
+            inspector,
+            handles,
+            ToolGuardTests.EchoResolver(),
+            new SymbolServerAllowlist(null),
+            TestPrincipalAccessors.Root,
+            processId: snapshot.ProcessId);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        return (allocated, result, handles);
+    }
+
+    private static ThreadSnapshotArtifact LargeSnapshot(int threadCount, int lockCount)
+    {
+        var frame = new ManagedStackFrame(
+            "ManagedMethod",
+            "App.Worker.Run",
+            "App.Worker",
+            "App.dll",
+            0x1000,
+            0x2000);
+        var threads = Enumerable.Range(1, threadCount)
+            .Select(id => new ManagedThread(
+                id,
+                (uint)(10_000 + id),
+                (ulong)id,
+                "Wait",
+                true,
+                false,
+                false,
+                false,
+                true,
+                0,
+                null,
+                frame.DisplayName,
+                [frame])
+            {
+                IsLikelyBlocked = true,
+                IsContendedLockOwner = id <= lockCount,
+                IsLockWaiter = id > 1,
+                IsDeadlockCandidate = id is > 1 && id <= lockCount,
+                InferredWaitReason = $"WaitReason{id}",
+            })
+            .ToArray();
+        var locks = Enumerable.Range(0, lockCount)
+            .Select(index => new MonitorLockState(
+                (ulong)(0x100_000 + index),
+                $"App.Lock{index}",
+                index + 1,
+                (uint)(10_001 + index),
+                (ulong)(index + 1),
+                0,
+                1,
+                true,
+                "test")
+            {
+                WaitingManagedThreadIds = [index % threadCount + 2],
+            })
+            .ToArray();
+        return new ThreadSnapshotArtifact(
+            ThreadSnapshotOrigin.Live,
+            Environment.ProcessId,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMilliseconds(25),
+            "CoreClr",
+            "10.0.0",
+            threads,
+            locks);
+    }
+
+    private static ManagedThread Thread(int managedId, string state, string method, bool isLikelyBlocked)
+    {
+        var frame = new ManagedStackFrame(
+            "ManagedMethod",
+            method,
+            "App.Worker",
+            "App.dll",
+            0x1000,
+            0x2000);
+        return new ManagedThread(
+            managedId,
+            (uint)(10_000 + managedId),
+            (ulong)managedId,
+            state,
+            true,
+            false,
+            false,
+            false,
+            true,
+            0,
+            null,
+            method,
+            [frame])
+        {
+            IsLikelyBlocked = isLikelyBlocked,
+        };
+    }
+
+    private sealed class StubThreadSnapshotInspector(ThreadSnapshotArtifact snapshot) : IThreadSnapshotInspector
+    {
+        public Task<ThreadSnapshotArtifact> InspectLiveAsync(
+            int processId,
+            ThreadSnapshotOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(snapshot);
+
+        public Task<ThreadSnapshotArtifact> InspectDumpAsync(
+            string dumpFilePath,
+            ThreadSnapshotOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(snapshot);
     }
 }

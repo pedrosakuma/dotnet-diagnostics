@@ -53,8 +53,8 @@ public static class HeapGrowthDiff
         var rankByInstances = string.Equals(rankBy?.Trim(), RankByInstances, StringComparison.OrdinalIgnoreCase);
         var normalizedRank = rankByInstances ? RankByInstances : RankByBytes;
 
-        var baselineByType = HeapSnapshotComparableProjector.ProjectTyped(baseline);
-        var currentByType = HeapSnapshotComparableProjector.ProjectTyped(current);
+        var baselineByType = HeapSnapshotComparableProjector.ProjectTypedByAvailableIdentity(baseline);
+        var currentByType = HeapSnapshotComparableProjector.ProjectTypedByAvailableIdentity(current);
 
         var notes = new List<string>();
         if (baseline.ProcessId != current.ProcessId)
@@ -67,24 +67,42 @@ public static class HeapGrowthDiff
             notes.Add($"Current snapshot '{currentHandle}' was captured before baseline '{baselineHandle}'; pass the EARLIER capture as baselineHandle for a meaningful growth diff.");
         }
 
-        var overlapCount = baselineByType.Keys.Count(currentByType.ContainsKey);
-        if (overlapCount == 0)
-        {
-            notes.Add("No overlapping types between baseline and current snapshots; growth is reported as all-new allocations.");
-        }
-
         // Retention paths recorded on the *current* snapshot answer "what's holding the grown
-        // objects now?". Index them by target type so we can attach to each grower cheaply.
-        var retentionByType = IndexRetentionPaths(current.RetentionPaths);
-        if (retentionByType.Count == 0)
+        // objects now?". Correlate by the strongest shared type identity, never by an ambiguous
+        // display name shared by multiple modules.
+        var retentionByType = IndexRetentionPaths(current.RetentionPaths, currentByType, notes);
+        if (current.RetentionPaths is null || current.RetentionPaths.Count == 0)
         {
             notes.Add("Current snapshot carries no retention paths; re-run inspect_heap(source=\"live\", includeRetentionPaths=true) to populate \"what's holding them\" for the top growers.");
         }
 
         var growers = new List<HeapTypeGrowth>();
-        foreach (var (identity, currentMetric) in currentByType)
+        var overlapCount = 0;
+        var ambiguousGrowthCorrelations = 0;
+        foreach (var currentType in currentByType)
         {
-            baselineByType.TryGetValue(identity, out var baselineMetric);
+            var baselineSelection = HeapSnapshotComparableProjector.FindUniqueBestMatch(currentType.Identity, baselineByType);
+            if (baselineSelection.Ambiguous)
+            {
+                ambiguousGrowthCorrelations++;
+                continue;
+            }
+
+            var baselineType = baselineSelection.Match;
+            if (baselineType is not null)
+            {
+                var reverse = HeapSnapshotComparableProjector.FindUniqueBestMatch(baselineType.Identity, currentByType);
+                if (reverse.Ambiguous || reverse.Match is null || !Equals(reverse.Match.Identity, currentType.Identity))
+                {
+                    ambiguousGrowthCorrelations++;
+                    continue;
+                }
+                overlapCount++;
+            }
+
+            var identity = currentType.Identity;
+            var currentMetric = currentType.Metric;
+            var baselineMetric = baselineType?.Metric;
             var baselineBytes = baselineMetric?.TotalBytes ?? 0;
             var baselineInstances = baselineMetric?.InstanceCount ?? 0;
             var bytesDelta = currentMetric.TotalBytes - baselineBytes;
@@ -104,7 +122,11 @@ public static class HeapGrowthDiff
                 continue;
             }
 
-            retentionByType.TryGetValue(identity.TypeFullName, out var paths);
+            retentionByType.TryGetValue(currentType, out var paths);
+            var projectedPaths = paths?
+                .Take(1)
+                .Select(HeapSnapshotQueryDispatcher.ProjectRetentionPath)
+                .ToArray();
             growers.Add(new HeapTypeGrowth(
                 identity.TypeFullName,
                 identity.ModuleName,
@@ -116,11 +138,22 @@ public static class HeapGrowthDiff
                 currentMetric.InstanceCount,
                 instancesDelta,
                 instancesPct,
-                IsNew: baselineMetric is null)
+                IsNew: baselineType is null)
             {
                 Identity = identity,
-                RetentionPaths = paths,
+                RetentionPaths = projectedPaths,
+                TotalRetentionPaths = paths?.Count,
+                OmittedRetentionPaths = paths is null ? null : paths.Count - (projectedPaths?.Length ?? 0),
             });
+        }
+
+        if (overlapCount == 0)
+        {
+            notes.Add("No unambiguous overlapping types between baseline and current snapshots; unmatched growth is reported as new allocations.");
+        }
+        if (ambiguousGrowthCorrelations > 0)
+        {
+            notes.Add($"Omitted {ambiguousGrowthCorrelations} current type row(s) whose strongest shared baseline identity was ambiguous.");
         }
 
         var ranked = growers
@@ -155,24 +188,57 @@ public static class HeapGrowthDiff
         };
     }
 
-    private static Dictionary<string, IReadOnlyList<RetentionPath>> IndexRetentionPaths(IReadOnlyList<RetentionPath>? paths)
+    private static Dictionary<HeapComparableType, IReadOnlyList<RetentionPath>> IndexRetentionPaths(
+        IReadOnlyList<RetentionPath>? paths,
+        IReadOnlyList<HeapComparableType> currentTypes,
+        List<string> notes)
     {
-        var index = new Dictionary<string, List<RetentionPath>>(StringComparer.Ordinal);
+        var index = new Dictionary<HeapComparableType, List<RetentionPath>>();
+        var ambiguousByName = new Dictionary<string, int>(StringComparer.Ordinal);
+        var unmatchedByName = new Dictionary<string, int>(StringComparer.Ordinal);
         if (paths is not null)
         {
             foreach (var path in paths)
             {
-                if (!index.TryGetValue(path.TargetTypeFullName, out var list))
+                var targetIdentity = path.TargetIdentity is { } retainedIdentity
+                    ? retainedIdentity with { TypeFullName = path.TargetTypeFullName }
+                    : new TypeIdentity(path.TargetTypeFullName);
+                var selection = HeapSnapshotComparableProjector.FindUniqueBestMatch(targetIdentity, currentTypes);
+                if (selection.Match is null)
                 {
-                    list = new List<RetentionPath>();
-                    index[path.TargetTypeFullName] = list;
+                    var counts = selection.Ambiguous ? ambiguousByName : unmatchedByName;
+                    counts[path.TargetTypeFullName] =
+                        counts.GetValueOrDefault(path.TargetTypeFullName) + 1;
+                    continue;
                 }
 
+                if (!index.TryGetValue(selection.Match, out var list))
+                {
+                    list = new List<RetentionPath>();
+                    index[selection.Match] = list;
+                }
                 list.Add(path);
             }
         }
 
-        return index.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<RetentionPath>)kv.Value, StringComparer.Ordinal);
+        foreach (var (typeName, count) in ambiguousByName.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            notes.Add(
+                $"Skipped {count} retention path(s) for '{typeName}' because multiple current type identities tied at the strongest shared MVID/token/module identity; no weaker correlation was applied.");
+        }
+
+        foreach (var (typeName, count) in unmatchedByName.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            if (currentTypes.Any(type => string.Equals(type.Identity.TypeFullName, typeName, StringComparison.Ordinal)))
+            {
+                notes.Add(
+                    $"Skipped {count} retention path(s) for '{typeName}' because its available module identity conflicted with every current type row.");
+            }
+        }
+
+        return index.ToDictionary(
+            pair => pair.Key,
+            pair => (IReadOnlyList<RetentionPath>)pair.Value);
     }
 
     private static double PercentDelta(long baseline, long current)

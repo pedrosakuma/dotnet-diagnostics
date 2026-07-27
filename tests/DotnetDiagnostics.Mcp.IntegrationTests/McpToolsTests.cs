@@ -159,6 +159,43 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             queryAuth["semantics"]!.GetValue<string>().Should().Be("any");
             queryAuth["requiredScopes"]!.AsArray().Select(n => n!.GetValue<string>()).Should().Contain("read-counters");
         }
+
+        var threadSnapshot = tools.Single(tool => tool.Name == "collect_thread_snapshot");
+        threadSnapshot.Description.Should().Contain("6-thread");
+        threadSnapshot.Description.Should().Contain("8 threads");
+        threadSnapshot.Description.Should().Contain("12 locks");
+        threadSnapshot.Description.Should().Contain("exact per-lock waiter paging");
+        var threadDepthDescription = threadSnapshot.JsonSchema
+            .GetProperty("properties")
+            .GetProperty("depth")
+            .GetProperty("description")
+            .GetString();
+        threadDepthDescription.Should().Contain("6 decisive threads");
+        threadDepthDescription.Should().Contain("8 decisive threads");
+        threadDepthDescription.Should().Contain("12 locks");
+        threadDepthDescription.Should().Contain("deadlock candidates");
+        threadDepthDescription.Should().Contain("evaluates inferred wait-for cycle candidates");
+        threadDepthDescription.Should().NotContain("deadlock members");
+        threadDepthDescription.Should().NotContain("top-3").And.NotContain("top-25");
+
+        var querySnapshot = tools.Single(tool => tool.Name == "query_snapshot");
+        var queryOffset = querySnapshot.JsonSchema.GetProperty("properties").GetProperty("offset");
+        queryOffset.GetProperty("default").GetInt32().Should().Be(0);
+        queryOffset.GetProperty("description").GetString().Should().Contain("above 256");
+        var queryCursor = querySnapshot.JsonSchema.GetProperty("properties").GetProperty("cursor");
+        queryCursor.GetProperty("description").GetString().Should().Contain("nextThreadCursor");
+        queryCursor.GetProperty("description").GetString().Should().Contain("cross-handle");
+        var queryViewDescription = querySnapshot.JsonSchema
+            .GetProperty("properties")
+            .GetProperty("view")
+            .GetProperty("description")
+            .GetString();
+        queryViewDescription.Should().Contain("CoreCLR monitor waiter");
+        queryViewDescription.Should().Contain("async continuations");
+        queryViewDescription.Should().Contain("ThreadPool starvation");
+        queryViewDescription.Should().Contain("inferred cycle candidates");
+        queryViewDescription.Should().Contain("source/confidence");
+        queryViewDescription.Should().NotContain("Linux-native-stack only");
     }
 
     [Fact]

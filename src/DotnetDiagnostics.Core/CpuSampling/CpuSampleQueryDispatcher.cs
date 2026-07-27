@@ -40,6 +40,15 @@ public static class CpuSampleQueryDispatcher
     /// <summary>Default number of rows returned by the ranked CPU views.</summary>
     public const int DefaultTopN = 20;
 
+    /// <summary>Hard cap for the inline call-tree projection. The handle retains the complete tree.</summary>
+    public const int MaxProjectedCallTreeNodes = 64;
+
+    /// <summary>Hard cap for the inline call-tree depth. Narrow with rootMethodFilter for deeper evidence.</summary>
+    public const int MaxProjectedCallTreeDepth = 8;
+
+    /// <summary>Hard cap for source-tree metric traversal used by bounded call-tree ranking.</summary>
+    internal const int MaxCallTreeTraversalNodes = 100_000;
+
     /// <summary>Default hot-path threshold: a child must carry at least this % of its parent to extend the chain.</summary>
     public const double DefaultHotPathThresholdPercent = 50d;
 
@@ -80,7 +89,9 @@ public static class CpuSampleQueryDispatcher
         if (maxDepth < 1) return InvalidArg<CallTreeView>(nameof(maxDepth), "must be >= 1");
         if (maxNodes < 1) return InvalidArg<CallTreeView>(nameof(maxNodes), "must be >= 1");
 
-        var root = CallTreeIdentityProjector.Stamp(artifact.Root, artifact.MethodIdentities);
+        var effectiveDepth = Math.Min(maxDepth, MaxProjectedCallTreeDepth);
+        var effectiveNodes = Math.Min(maxNodes, MaxProjectedCallTreeNodes);
+        var root = artifact.Root;
         if (!string.IsNullOrWhiteSpace(rootMethodFilter))
         {
             var match = FindHighestRankedDescendant(root, rootMethodFilter);
@@ -90,32 +101,41 @@ public static class CpuSampleQueryDispatcher
                     $"No frame matching '{rootMethodFilter}' in handle '{handle}'.",
                     new DiagnosticError("NotFound", "No frame in the merged call tree contains the supplied substring.", rootMethodFilter),
                     new NextActionHint("query_snapshot", "Re-issue without rootMethodFilter to inspect the full tree first.",
-                        new Dictionary<string, object?> { ["handle"] = handle, ["maxDepth"] = maxDepth, ["maxNodes"] = maxNodes }));
+                        new Dictionary<string, object?> { ["handle"] = handle, ["maxDepth"] = effectiveDepth, ["maxNodes"] = effectiveNodes }));
             }
             root = match;
         }
 
-        var (pruned, nodeCount, truncated) = PruneTree(root, maxDepth, maxNodes);
-        var view = new CallTreeView(artifact.ProcessId, artifact.TotalSamples, nodeCount, truncated, pruned)
+        var (pruned, nodeCount, truncated, traversal) = PruneTree(root, effectiveDepth, effectiveNodes);
+        var stamped = CallTreeIdentityProjector.Stamp(pruned, artifact.MethodIdentities);
+        var view = new CallTreeView(artifact.ProcessId, artifact.TotalSamples, nodeCount, truncated, stamped)
         {
-            SelfSamples = artifact.SelfSamples ?? CpuSampleAnalytics.TotalSelfSamples(root),
+            SelfSamples = artifact.SelfSamples ?? traversal.TotalSelfSamples,
+            NodeLimit = effectiveNodes,
+            DepthLimit = effectiveDepth,
+            TraversalNodesVisited = traversal.NodesVisited,
+            TraversalNodeLimit = MaxCallTreeTraversalNodes,
+            TraversalLimitReached = traversal.LimitReached,
         };
         var summary = truncated
-            ? $"Showing {nodeCount} nodes (truncated; raise maxNodes or maxDepth, or narrow with rootMethodFilter). Root: {root.Frame.Method} — {root.InclusiveSamples} inclusive samples."
+            ? $"Showing a bounded {nodeCount}-node call-tree projection (limit {effectiveNodes} nodes / depth {effectiveDepth}); narrow with rootMethodFilter or use top-methods for decisive self-time. Root: {root.Frame.Method} — {root.InclusiveSamples} inclusive samples. The handle retains the full tree."
             : $"Showing the full sub-tree rooted at {root.Frame.Method} ({nodeCount} nodes, {root.InclusiveSamples} inclusive samples).";
         if (view.SelfSamples is { } self)
         {
             summary += $" Self split: {self.RunningSamples} running / {self.WaitingSamples} waiting.";
         }
+        if (traversal.LimitReached)
+        {
+            summary += $" Decision-first ranking visited the bounded maximum of {MaxCallTreeTraversalNodes:N0} source nodes.";
+        }
 
-        var drilldownMethod = pruned.Children.Count > 0 ? pruned.Children[0].Frame.Method : null;
-        return drilldownMethod is null
+        return !truncated
             ? DiagnosticResult.Ok(view, summary)
             : DiagnosticResult.Ok(
                 view,
                 summary,
-                new NextActionHint("query_snapshot", "Drill deeper by anchoring at the hottest child method.",
-                    new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallTreeView, ["rootMethodFilter"] = drilldownMethod, ["maxDepth"] = 6 }));
+                new NextActionHint("query_snapshot", "Rank methods by exclusive self-time instead of requesting another broad tree.",
+                    new Dictionary<string, object?> { ["handle"] = handle, ["view"] = TopMethodsView, ["rankBy"] = "exclusive" }));
     }
 
     /// <summary>Renders the <c>top-methods</c> view: per-method exclusive/inclusive aggregation, ranked and capped.</summary>
@@ -293,22 +313,20 @@ public static class CpuSampleQueryDispatcher
         return best;
     }
 
-    private static (CallTreeNode Pruned, int NodeCount, bool Truncated) PruneTree(CallTreeNode root, int maxDepth, int maxNodes)
+    private static (CallTreeNode Pruned, int NodeCount, bool Truncated, SubtreeMetricIndex Traversal) PruneTree(
+        CallTreeNode root,
+        int maxDepth,
+        int maxNodes)
     {
+        var traversal = BuildSubtreeMetrics(root, MaxCallTreeTraversalNodes);
         var nodeBudget = maxNodes;
         var truncated = false;
-        var pruned = Walk(root, maxDepth);
-        return (pruned, maxNodes - nodeBudget, truncated);
+        nodeBudget--;
+        var pruned = WalkReserved(root, maxDepth);
+        return (pruned, maxNodes - nodeBudget, truncated, traversal);
 
-        CallTreeNode Walk(CallTreeNode n, int depthRemaining)
+        CallTreeNode WalkReserved(CallTreeNode n, int depthRemaining)
         {
-            if (nodeBudget <= 0)
-            {
-                truncated = true;
-                return n with { Children = Array.Empty<CallTreeNode>() };
-            }
-            nodeBudget--;
-
             if (depthRemaining <= 1 || n.Children.Count == 0)
             {
                 if (n.Children.Count > 0) truncated = true;
@@ -316,19 +334,167 @@ public static class CpuSampleQueryDispatcher
             }
 
             var kept = new List<CallTreeNode>();
-            foreach (var child in n.Children)
+            var candidates = SelectDecisiveChildren(
+                n.Children,
+                nodeBudget,
+                traversal.ClassificationAvailable,
+                traversal.MetricsByNode);
+            if (candidates.Length < n.Children.Count)
             {
-                if (nodeBudget <= 0)
-                {
-                    truncated = true;
-                    break;
-                }
-                kept.Add(Walk(child, depthRemaining - 1));
+                truncated = true;
+            }
+
+            // Reserve one slot for every selected direct child before any descendant walk.
+            // This prevents the highest-ranked child's subtree from consuming the budget and
+            // hiding decisive sibling branches that already won global child selection.
+            nodeBudget -= candidates.Length;
+            foreach (var child in candidates)
+            {
+                kept.Add(WalkReserved(child, depthRemaining - 1));
             }
 
             return n with { Children = kept };
         }
     }
+
+    private static CallTreeNode[] SelectDecisiveChildren(
+        IReadOnlyList<CallTreeNode> children,
+        int limit,
+        bool classificationAvailable,
+        IReadOnlyDictionary<CallTreeNode, SubtreeNodeMetric> metricsByNode)
+    {
+        if (limit <= 0 || children.Count == 0) return Array.Empty<CallTreeNode>();
+
+        var selected = new List<DecisiveChildCandidate>(Math.Min(limit, children.Count));
+        var useClassification = classificationAvailable
+            && children.All(child =>
+                metricsByNode.TryGetValue(child, out var metric)
+                && metric.Complete);
+        var comparer = useClassification
+            ? DecisiveChildComparer.Classified
+            : DecisiveChildComparer.Unclassified;
+        foreach (var child in children)
+        {
+            metricsByNode.TryGetValue(child, out var metric);
+            var candidate = new DecisiveChildCandidate(
+                child,
+                metric?.Samples.RunningSamples ?? 0);
+            var index = selected.BinarySearch(candidate, comparer);
+            if (index < 0) index = ~index;
+            if (index >= limit) continue;
+
+            selected.Insert(index, candidate);
+            if (selected.Count > limit)
+            {
+                selected.RemoveAt(selected.Count - 1);
+            }
+        }
+
+        return selected.Select(static candidate => candidate.Node).ToArray();
+    }
+
+    private static SubtreeMetricIndex BuildSubtreeMetrics(CallTreeNode root, int visitLimit)
+    {
+        var metrics = new Dictionary<CallTreeNode, SubtreeNodeMetric>(ReferenceEqualityComparer.Instance);
+        var stack = new Stack<MetricFrame>();
+        stack.Push(new MetricFrame(root));
+        var nodesVisited = 1;
+        var classificationAvailable = root.SelfSamples is not null;
+        var limitReached = false;
+
+        while (stack.Count > 0)
+        {
+            var frame = stack.Peek();
+            if (frame.NextChildIndex < frame.Node.Children.Count && nodesVisited < visitLimit)
+            {
+                var child = frame.Node.Children[frame.NextChildIndex++];
+                nodesVisited++;
+                classificationAvailable |= child.SelfSamples is not null;
+                stack.Push(new MetricFrame(child));
+                continue;
+            }
+
+            if (frame.NextChildIndex < frame.Node.Children.Count)
+            {
+                limitReached = true;
+                frame.Complete = false;
+            }
+
+            var runningSamples = frame.RunningDescendantSamples + (frame.Node.SelfSamples?.RunningSamples ?? 0);
+            var waitingSamples = frame.WaitingDescendantSamples + (frame.Node.SelfSamples?.WaitingSamples ?? 0);
+            var total = new SelfSampleBreakdown(runningSamples, waitingSamples);
+            metrics[frame.Node] = new SubtreeNodeMetric(total, frame.Complete);
+            stack.Pop();
+            if (stack.Count > 0)
+            {
+                stack.Peek().RunningDescendantSamples += runningSamples;
+                stack.Peek().WaitingDescendantSamples += waitingSamples;
+                stack.Peek().Complete &= frame.Complete;
+            }
+        }
+
+        var totalSelfSamples = classificationAvailable
+            && metrics.TryGetValue(root, out var rootMetric)
+            && rootMetric.Complete
+            ? rootMetric.Samples
+            : null;
+        return new SubtreeMetricIndex(metrics, nodesVisited, classificationAvailable, limitReached, totalSelfSamples);
+    }
+
+    private sealed record DecisiveChildCandidate(CallTreeNode Node, long RunningSamples);
+
+    private sealed class DecisiveChildComparer(bool classificationAvailable) : IComparer<DecisiveChildCandidate>
+    {
+        public static DecisiveChildComparer Classified { get; } = new(true);
+        public static DecisiveChildComparer Unclassified { get; } = new(false);
+
+        public int Compare(DecisiveChildCandidate? x, DecisiveChildCandidate? y)
+        {
+            if (ReferenceEquals(x, y)) return 0;
+            if (x is null) return 1;
+            if (y is null) return -1;
+
+            var result = 0;
+            if (classificationAvailable)
+            {
+                var xRunning = x.RunningSamples;
+                var yRunning = y.RunningSamples;
+                result = (yRunning > 0).CompareTo(xRunning > 0);
+                if (result != 0) return result;
+                result = yRunning.CompareTo(xRunning);
+                if (result != 0) return result;
+                result = y.Node.ExclusiveSamples.CompareTo(x.Node.ExclusiveSamples);
+                if (result != 0) return result;
+            }
+
+            result = y.Node.InclusiveSamples.CompareTo(x.Node.InclusiveSamples);
+            if (result != 0) return result;
+            result = y.Node.ExclusiveSamples.CompareTo(x.Node.ExclusiveSamples);
+            if (result != 0) return result;
+            result = string.Compare(x.Node.Frame.Method, y.Node.Frame.Method, StringComparison.Ordinal);
+            return result != 0
+                ? result
+                : string.Compare(x.Node.Frame.Module, y.Node.Frame.Module, StringComparison.Ordinal);
+        }
+    }
+
+    private sealed class MetricFrame(CallTreeNode node)
+    {
+        public CallTreeNode Node { get; } = node;
+        public int NextChildIndex { get; set; }
+        public long RunningDescendantSamples { get; set; }
+        public long WaitingDescendantSamples { get; set; }
+        public bool Complete { get; set; } = true;
+    }
+
+    private sealed record SubtreeNodeMetric(SelfSampleBreakdown Samples, bool Complete);
+
+    private sealed record SubtreeMetricIndex(
+        IReadOnlyDictionary<CallTreeNode, SubtreeNodeMetric> MetricsByNode,
+        int NodesVisited,
+        bool ClassificationAvailable,
+        bool LimitReached,
+        SelfSampleBreakdown? TotalSelfSamples);
 
     private static DiagnosticResult<T> InvalidArg<T>(string parameterName, string requirement)
         => DiagnosticResult.Fail<T>(

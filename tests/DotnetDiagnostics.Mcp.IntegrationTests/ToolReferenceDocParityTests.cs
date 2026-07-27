@@ -129,6 +129,36 @@ public sealed class ToolReferenceDocParityTests
     }
 
     [Fact]
+    public void ThreadSnapshotDocs_DescribeInferredDeadlockCandidatesAndEdgeConfidence()
+    {
+        var doc = ReadToolReference();
+
+        doc.Should().Contain("owner-and-waiter deadlock candidates");
+        doc.Should().Contain("evaluates inferred wait-for cycle candidates");
+        doc.Should().Contain("edge source/confidence");
+        doc.Should().NotContain("confirms a cycle");
+        doc.Should().NotContain("deadlock members");
+    }
+
+    [Fact]
+    public void LockStormCaseStudy_UsesSerializedThreadAndLockFieldShapes()
+    {
+        var doc = ReadRepoFile(Path.Combine("docs", "case-studies", "lock-storm-correlation.md"));
+
+        doc.Should().Contain("\"inferredWaitReason\":");
+        doc.Should().Contain("\"objectTypeFullName\":");
+        doc.Should().Contain("\"objectAddress\": 135052701042856");
+        doc.Should().Contain("\"totalThreads\":");
+        doc.Should().Contain("\"totalLocks\":");
+        doc.Should().Contain("query_snapshot(view=\"lock-graph\", address=135052701042856)");
+        doc.Should().NotContain("\"waitReason\":");
+        doc.Should().NotContain("\"type\":");
+        doc.Should().NotContain("\"objectAddress\": \"0x");
+        doc.IndexOf("address=135052701042856", StringComparison.Ordinal).Should().BeLessThan(
+            doc.IndexOf("\"nextWaiterCursor\":", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void RemovedToolAliases_AreConfinedToExplicitMigrationHistory()
     {
         var aliases = new[]

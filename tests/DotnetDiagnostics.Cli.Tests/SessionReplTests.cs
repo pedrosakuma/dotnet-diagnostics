@@ -220,6 +220,36 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_HeapHandle_TopTakesPrecedenceOverLegacyTopTypes()
+    {
+        var (services, store) = BuildServices();
+        var stats = new[]
+        {
+            new TypeStat("Type.Large", "App.dll", 10, 4_096, 80),
+            new TypeStat("Type.Small", "App.dll", 5, 1_024, 20),
+        };
+        var snapshot = HeapSnapshot() with
+        {
+            TopTypesByBytes = stats,
+            TopTypesByInstances = stats,
+        };
+        var handle = store.Register(
+            Environment.ProcessId,
+            HeapInspectionUseCases.HeapSnapshotKind,
+            snapshot,
+            TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view top-types --top 1 --top-types 2\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("Type.Large");
+        stdout.Should().NotContain("Type.Small");
+    }
+
+    [Fact]
     public async Task Query_HeapHandle_DefaultsToTopTypes()
     {
         var (services, store) = BuildServices();
@@ -375,6 +405,7 @@ public sealed class SessionReplTests
         stderr.Should().BeEmpty();
         stdout.Should().Contain("Root");
         stdout.Should().Contain("LeafA");
+        stdout.Should().Contain($"\"nodeLimit\": {CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes}");
     }
 
     [Fact]
@@ -464,6 +495,38 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_CpuSampleHandle_LegacyTopTypesFallbackAndTopPrecedence()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view top-methods --top 1 --top-types 2\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("LeafB");
+        stdout.Should().NotContain("LeafA");
+    }
+
+    [Fact]
+    public async Task Query_CpuSampleHandle_LegacyTopTypesStillCapsRows()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view top-methods --top-types 1\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("LeafB");
+        stdout.Should().NotContain("LeafA");
+    }
+
+    [Fact]
     public async Task Query_CpuSampleHandle_TopMethodsView_RendersSelfSampleSplit()
     {
         var (services, store) = BuildServices();
@@ -536,6 +599,155 @@ public sealed class SessionReplTests
         stderr.Should().BeEmpty();
         stdout.Split("\"signatureHash\"", StringSplitOptions.None).Should().HaveCount(4);
         stdout.Should().Contain("Returning 3/6 unique stack group(s)");
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotHandle_ForwardsContinuationOffset()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(
+            Environment.ProcessId,
+            "thread-snapshot",
+            ThreadPagingSnapshot(),
+            TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view threads-summary --offset 8\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("\"threadOffset\": 8");
+        stdout.Should().Contain("\"nextThreadOffset\": 16");
+        stdout.Should().Contain("\"managedThreadId\": 9");
+        stdout.Should().NotContain("\"managedThreadId\": 1,");
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotHandle_UsesTopOptionForPageSize()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(
+            Environment.ProcessId,
+            "thread-snapshot",
+            ThreadPagingSnapshot(),
+            TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view threads-summary --top 2\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("\"nextThreadOffset\": 2");
+        stdout.Should().Contain("\"managedThreadId\": 1,");
+        stdout.Should().Contain("\"managedThreadId\": 2,");
+        stdout.Should().NotContain("\"managedThreadId\": 3,");
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotHandle_ForwardsStableContinuationCursor()
+    {
+        var (services, store) = BuildServices();
+        var snapshot = ThreadPagingSnapshot();
+        var handle = store.Register(
+            Environment.ProcessId,
+            "thread-snapshot",
+            snapshot,
+            TimeSpan.FromMinutes(10));
+        var first = ThreadSnapshotQueryDispatcher.DispatchPaged(
+            snapshot, handle.Id, "threads-summary", null, 50, 20, 1);
+        var cursor = first.Data!.NextThreadCursor;
+        cursor.Should().NotBeNull();
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view threads-summary --cursor {cursor!}\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("\"threadOffset\": 8");
+        stdout.Should().Contain("\"managedThreadId\": 9");
+        stdout.Should().NotContain("\"managedThreadId\": 1,");
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotHandle_ForwardsLockAddressAndWaiterOffset()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(
+            Environment.ProcessId,
+            "thread-snapshot",
+            ThreadPagingSnapshot(),
+            TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view lock-graph --address 0x30000 --offset 8\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("\"waiterOffset\": 8");
+        stdout.Should().Contain("\"nextWaiterOffset\": 16");
+        stdout.Should().Contain("\"waitingManagedThreadIds\"");
+        stdout.Should().Contain("9,");
+        stdout.Should().Contain("16");
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotHandle_ExactLockWaitersUseTopBeforeLegacyTopTypes()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(
+            Environment.ProcessId,
+            "thread-snapshot",
+            ThreadPagingSnapshot(),
+            TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view lock-graph --address 0x30000 --top 2 --top-types 5\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        var normalizedOutput = stdout.ReplaceLineEndings("\n");
+        normalizedOutput.Should().Contain("\"nextWaiterOffset\": 2");
+        normalizedOutput.Should().Contain("\"waitingManagedThreadIds\": [\n        1,\n        2\n");
+        normalizedOutput.Should().NotContain("\n        3,");
+    }
+
+    [Fact]
+    public async Task Query_ThreadSnapshotHandle_ForwardsExactLockWaiterCursor()
+    {
+        var (services, store) = BuildServices();
+        var snapshot = ThreadPagingSnapshot();
+        var handle = store.Register(
+            Environment.ProcessId,
+            "thread-snapshot",
+            snapshot,
+            TimeSpan.FromMinutes(10));
+        var first = ThreadSnapshotQueryDispatcher.DispatchPaged(
+            snapshot,
+            handle.Id,
+            "lock-graph",
+            threadId: null,
+            topN: 50,
+            framesToHash: 20,
+            minCount: 1,
+            lockAddress: "0x30000");
+        var cursor = first.Data!.NextWaiterCursor;
+        cursor.Should().NotBeNull();
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view lock-graph --address 0x30000 --cursor {cursor!}\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("\"waiterOffset\": 8");
+        stdout.Should().Contain("\"waitingManagedThreadIds\"");
+        stdout.Should().Contain("9,");
+        stdout.Should().Contain("16");
     }
 
     [Fact]
@@ -651,6 +863,22 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_OffCpuHandle_LegacyTopTypesStillCapsRows()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "off-cpu-snapshot", OffCpuSnapshot(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            $"query --handle {handle.Id} --view topStacks --top-types 1\nexit\n",
+            services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("LeafA");
+        stdout.Should().NotContain("LeafB");
+    }
+
+    [Fact]
     public async Task Query_OffCpuHandle_StackView_ReturnsRequestedRank()
     {
         var (services, store) = BuildServices();
@@ -705,16 +933,18 @@ public sealed class SessionReplTests
     }
 
     [Fact]
-    public async Task Query_GcHandle_LongestPausesView_RanksByPause()
+    public async Task Query_GcHandle_LongestPausesView_TopPrecedesLegacyTopTypes()
     {
         var (services, store) = BuildServices();
         var handle = store.Register(Environment.ProcessId, CollectionHandleKinds.GcEvents, GcSummaryArtifact(), TimeSpan.FromMinutes(10));
 
         var (exit, stdout, _) = await RunReplAsync(
-            $"query --handle {handle.Id} --view longestPauses --top-types 1\nexit\n", services);
+            $"query --handle {handle.Id} --view longestPauses --top 1 --top-types 2\nexit\n", services);
 
         exit.Should().Be(0);
         stdout.Should().Contain("view=longestPauses");
+        stdout.Should().Contain("AllocLarge");
+        stdout.Should().NotContain("BackgroundGC");
     }
 
     [Fact]
@@ -1540,6 +1770,59 @@ public sealed class SessionReplTests
             "10.0.0",
             threads,
             []);
+    }
+
+    private static ThreadSnapshotArtifact ThreadPagingSnapshot()
+    {
+        var frame = new ManagedStackFrame(
+            "ManagedMethod",
+            "App.Worker.Run",
+            "App.Worker",
+            "App.dll",
+            0x1000,
+            0x2000);
+        var threads = Enumerable.Range(1, 20)
+            .Select(id => new ManagedThread(
+                id,
+                (uint)(10_000 + id),
+                (ulong)id,
+                "Running",
+                true,
+                false,
+                false,
+                false,
+                true,
+                0,
+                null,
+                frame.DisplayName,
+                [frame])
+            {
+                IsLockWaiter = true,
+            })
+            .ToArray();
+        var lockState = new MonitorLockState(
+            0x30_000,
+            "App.Lock",
+            20,
+            10_020,
+            20,
+            0,
+            20,
+            true,
+            "test")
+        {
+            WaitingManagedThreadIds = Enumerable.Range(1, 20).ToArray(),
+        };
+
+        return new ThreadSnapshotArtifact(
+            ThreadSnapshotOrigin.Live,
+            Environment.ProcessId,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMilliseconds(25),
+            "CoreClr",
+            "10.0.0",
+            threads,
+            [lockState]);
     }
 
     private static OffCpuSnapshotArtifact OffCpuSnapshot()

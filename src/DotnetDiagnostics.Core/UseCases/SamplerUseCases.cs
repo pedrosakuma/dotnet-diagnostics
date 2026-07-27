@@ -113,7 +113,7 @@ public static class SamplerUseCases
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "top-methods", ["rankBy"] = "exclusive" })
             { Priority = NextActionHintPriority.High },
             new("query_snapshot", "Walk the merged caller→callee tree built from the same samples.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes })
             { Priority = NextActionHintPriority.High },
             new("collect_events", "Confirm hot path isn't driven by exception-heavy control flow.",
                 new Dictionary<string, object?>
@@ -202,7 +202,7 @@ public static class SamplerUseCases
             handle.Id,
             handle.ExpiresAt,
             new NextActionHint("query_snapshot", "Walk the merged allocation call-site tree to find which code paths are allocating the most.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes })
             { Priority = NextActionHintPriority.High },
             new NextActionHint("collect_sample", "Cross-reference: identify hot CPU paths that correlate with the top allocating types.",
                 new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
@@ -401,7 +401,7 @@ public static class SamplerUseCases
             handle.Id,
             handle.ExpiresAt,
             new NextActionHint("query_snapshot", "Walk the native allocation call tree to find which code paths allocate the most.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = 8, ["maxNodes"] = 200 }),
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes }),
             new NextActionHint("inspect_process", "Correlate with the memory trend (RSS / anonymous pages) to confirm native growth.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["view"] = "memory_trend" }));
         return WithContext(ok, resolved.Context);
@@ -470,36 +470,75 @@ public static class SamplerUseCases
                 ThreadSnapshotHandleTtl,
                 evictWhenProcessExits: false,
                 origin: snapshot.Origin == ThreadSnapshotOrigin.Live ? HandleOrigin.Live : HandleOrigin.Dump);
+            var signals = ThreadWaitSignals.Detect(snapshot, handle.Id);
             var origin = snapshot.Origin.ToString().ToLowerInvariant();
             var blocked = snapshot.Threads.Count(t => t.IsLikelyBlocked);
             var contended = snapshot.Locks.Count(l => l.IsContended);
-            var signals = ThreadWaitSignals.Detect(snapshot, handle.Id);
-
             ThreadSnapshotQueryResult summaryView;
             string summary;
             if (depth == SamplingDepth.Summary)
             {
-                var topBlocked = snapshot.Threads
-                    .OrderByDescending(t => t.IsLikelyBlocked)
-                    .ThenByDescending(t => t.LockCount)
-                    .Take(3)
-                    .ToArray();
-                summaryView = new ThreadSnapshotQueryResult(handle.Id, "top-blocked", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
+                var topBlocked = ThreadSnapshotProjection.ProjectThreads(
+                    snapshot,
+                    requestedCount: ThreadSnapshotProjection.SummaryThreadLimit,
+                    hardThreadLimit: ThreadSnapshotProjection.SummaryThreadLimit,
+                    frameLimit: ThreadSnapshotProjection.SummaryFrameLimit,
+                    blockedOnly: false,
+                    offset: 0,
+                    handle: handle.Id,
+                    cursor: null);
+                summaryView = new ThreadSnapshotQueryResult(handle.Id, "threads-summary", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
                 {
-                    Threads = topBlocked,
+                    Threads = topBlocked.Items,
                     Locks = Array.Empty<MonitorLockState>(),
+                    TotalThreads = snapshot.Threads.Count,
+                    CandidateThreads = topBlocked.TotalItems,
+                    OmittedThreads = topBlocked.TotalItems - topBlocked.Items.Count,
+                    FramesPerThreadLimit = ThreadSnapshotProjection.SummaryFrameLimit,
+                    TotalLocks = snapshot.Locks.Count,
+                    OmittedLocks = snapshot.Locks.Count,
+                    ThreadOffset = topBlocked.Offset,
+                    NextThreadOffset = topBlocked.NextOffset,
+                    NextThreadCursor = topBlocked.NextCursor,
                 };
-                var droppedThreads = snapshot.Threads.Count - topBlocked.Length;
-                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Showing top {topBlocked.Length} blocked inline (dropped {droppedThreads} thread(s) and {snapshot.Locks.Count} lock(s); handle has all). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Views: top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool.";
+                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Showing top {topBlocked.Items.Count} decisive thread(s) inline (omitted {topBlocked.TotalItems - topBlocked.Items.Count} thread(s) and {snapshot.Locks.Count} lock(s); handle has all). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Views: top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool.";
             }
             else
             {
+                var projectedThreads = ThreadSnapshotProjection.ProjectThreads(
+                    snapshot,
+                    requestedCount: ThreadSnapshotProjection.DetailThreadLimit,
+                    hardThreadLimit: ThreadSnapshotProjection.DetailThreadLimit,
+                    frameLimit: ThreadSnapshotProjection.DetailFrameLimit,
+                    blockedOnly: false,
+                    offset: 0,
+                    handle: handle.Id,
+                    cursor: null);
+                var projectedLocks = ThreadSnapshotProjection.ProjectLocks(
+                    snapshot,
+                    requestedCount: ThreadSnapshotProjection.DetailLockLimit,
+                    hardLimit: ThreadSnapshotProjection.DetailLockLimit,
+                    offset: 0,
+                    handle: handle.Id,
+                    cursor: null);
                 summaryView = new ThreadSnapshotQueryResult(handle.Id, "threads-summary", origin, snapshot.ProcessId, snapshot.CapturedAt, snapshot.WalkDuration)
                 {
-                    Threads = snapshot.Threads.Take(25).ToArray(),
-                    Locks = snapshot.Locks.Take(25).ToArray(),
+                    Threads = projectedThreads.Items,
+                    Locks = projectedLocks.Items,
+                    TotalThreads = snapshot.Threads.Count,
+                    CandidateThreads = projectedThreads.TotalItems,
+                    OmittedThreads = projectedThreads.TotalItems - projectedThreads.Items.Count,
+                    FramesPerThreadLimit = ThreadSnapshotProjection.DetailFrameLimit,
+                    TotalLocks = snapshot.Locks.Count,
+                    OmittedLocks = projectedLocks.TotalItems - projectedLocks.Items.Count,
+                    ThreadOffset = projectedThreads.Offset,
+                    NextThreadOffset = projectedThreads.NextOffset,
+                    NextThreadCursor = projectedThreads.NextCursor,
+                    LockOffset = projectedLocks.Offset,
+                    NextLockOffset = projectedLocks.NextOffset,
+                    NextLockCursor = projectedLocks.NextCursor,
                 };
-                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Views: top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool.";
+                summary = $"{origin} thread snapshot of pid {snapshot.ProcessId}: {snapshot.Threads.Count} thread(s) ({blocked} likely blocked), {snapshot.Locks.Count} SyncBlock(s) ({contended} contended). Showing {projectedThreads.Items.Count} thread(s) and {projectedLocks.Items.Count} lock(s) inline; handle retains all evidence. Walk {snapshot.WalkDuration.TotalMilliseconds:N0} ms. Handle `{handle.Id}` (~10 min). Views: top-blocked|threads-summary|stack|lock-graph|deadlocks|unique-stacks|async-stalls|threadpool.";
             }
 
             if (snapshot.SnapshotKind is not "exact")
@@ -530,7 +569,8 @@ public static class SamplerUseCases
             var result = hint is null
                 ? DiagnosticResult.Ok(summaryView, summary)
                 : DiagnosticResult.Ok(summaryView, summary, hint);
-            return WithContext(result with { Signals = signals.Count > 0 ? signals : null }, liveCtx);
+            result = result with { Signals = signals.Count > 0 ? signals : null };
+            return WithContext(result, liveCtx);
         }, cancellationToken, retryArguments: hasDump
             ? null
             : new Dictionary<string, object?>
