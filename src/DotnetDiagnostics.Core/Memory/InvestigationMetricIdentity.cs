@@ -34,12 +34,24 @@ internal static class InvestigationMetricIdentity
             var statistic = TryReadComponent(identity, "stat");
             return instrument is null
                 ? identity
-                : statistic is null or "last"
+                : statistic is null or "last" or "rate"
                     ? instrument
                     : $"{instrument}.{statistic}";
         }
 
         return identity;
+    }
+
+    internal static bool IsCumulativeMeterLast(string identity)
+    {
+        if (!identity.StartsWith("meter|", StringComparison.Ordinal)
+            || !string.Equals(TryReadComponent(identity, "stat"), "last", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var kind = TryReadComponent(identity, "kind");
+        return kind?.EndsWith("Counter", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     internal static bool IsCanonical(string identity)

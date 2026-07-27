@@ -249,7 +249,10 @@ public sealed class SummaryComparer : ISummaryComparer
             var name = hasBaseline ? baselineMetric!.Name : currentMetric!.Name;
             var directionName = NormalizeMetricName(
                 InvestigationMetricIdentity.ComparableName(name));
-            var hasDirection = MetricDirections.TryGetValue(directionName, out var direction);
+            var isCumulativeLast = InvestigationMetricIdentity.IsCumulativeMeterLast(name);
+            var direction = default(MetricDirection);
+            var hasDirection = !isCumulativeLast
+                && MetricDirections.TryGetValue(directionName, out direction);
             if (!hasBaseline || !hasCurrent)
             {
                 deltas.Add(new KeyMetricDelta(
@@ -259,6 +262,13 @@ public sealed class SummaryComparer : ISummaryComparer
                     hasDirection ? DirectionName(direction) : "unknown",
                     Incomparable));
                 notes.Add($"Key metric '{name}' is absent from one summary; it does not drive the verdict.");
+                continue;
+            }
+
+            if (isCumulativeLast)
+            {
+                deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable));
+                notes.Add($"Cumulative meter total '{name}' is retained as evidence but does not drive the verdict; compare its rate series instead.");
                 continue;
             }
 
@@ -288,17 +298,20 @@ public sealed class SummaryComparer : ISummaryComparer
 
     private static Evidence MetricEvidence(IReadOnlyList<KeyMetricDelta> deltas)
     {
-        if (deltas.Count == 0)
+        var verdictDeltas = deltas
+            .Where(static delta => !InvestigationMetricIdentity.IsCumulativeMeterLast(delta.Name))
+            .ToArray();
+        if (verdictDeltas.Length == 0)
         {
             return Evidence.None;
         }
 
-        var improved = deltas.Any(static delta => delta.Outcome == Improved);
-        var regressed = deltas.Any(static delta => delta.Outcome == Regressed);
+        var improved = verdictDeltas.Any(static delta => delta.Outcome == Improved);
+        var regressed = verdictDeltas.Any(static delta => delta.Outcome == Regressed);
         if (improved && regressed) return Evidence.Mixed;
         if (improved) return Evidence.Improved;
         if (regressed) return Evidence.Regressed;
-        return deltas.Any(static delta => delta.Outcome == Incomparable)
+        return verdictDeltas.Any(static delta => delta.Outcome == Incomparable)
             ? Evidence.Incomparable
             : Evidence.Unchanged;
     }
