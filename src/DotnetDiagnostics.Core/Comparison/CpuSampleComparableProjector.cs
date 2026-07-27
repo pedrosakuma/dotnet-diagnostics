@@ -41,14 +41,62 @@ internal static class CpuSampleComparableProjection
         }
 
         var rows = ProjectRows(snapshot, kind);
+        var metrics = string.Equals(kind, "cpu-sample", StringComparison.Ordinal)
+            ? ProjectSelfSampleMetrics(snapshot)
+            : Array.Empty<MetricValue>();
         return new ComparableSnapshot(
             Schema: ComparableSnapshot.SchemaV1,
             Kind: kind,
             Label: label,
             CapturedAt: snapshot.StartedAt,
             ProcessId: snapshot.ProcessId,
-            Metrics: Array.Empty<MetricValue>(),
+            Metrics: metrics,
             Rows: rows);
+    }
+
+    private static MetricValue[] ProjectSelfSampleMetrics(CpuSampleTraceArtifact artifact)
+    {
+        if (artifact.SelfSamples is not { } selfSamples)
+        {
+            return Array.Empty<MetricValue>();
+        }
+
+        var totalSamples = artifact.TotalSamples == 0 ? 1 : artifact.TotalSamples;
+        return
+        [
+            Metric(
+                "waitingSelfPercent",
+                MetricRole.Primary,
+                BetterDirection.Lower,
+                MetricAggregation.Percent,
+                MetricNormalization.SampleCount,
+                "%",
+                100.0 * selfSamples.WaitingSamples / totalSamples),
+            Metric(
+                "runningSelfPercent",
+                MetricRole.Context,
+                BetterDirection.Neutral,
+                MetricAggregation.Percent,
+                MetricNormalization.SampleCount,
+                "%",
+                100.0 * selfSamples.RunningSamples / totalSamples),
+            Metric(
+                "waitingSelfSamples",
+                MetricRole.Context,
+                BetterDirection.Neutral,
+                MetricAggregation.Total,
+                MetricNormalization.None,
+                "samples",
+                selfSamples.WaitingSamples),
+            Metric(
+                "runningSelfSamples",
+                MetricRole.Context,
+                BetterDirection.Neutral,
+                MetricAggregation.Total,
+                MetricNormalization.None,
+                "samples",
+                selfSamples.RunningSamples),
+        ];
     }
 
     private static ComparableRow[] ProjectRows(CpuSampleTraceArtifact artifact, string kind)
@@ -61,15 +109,33 @@ internal static class CpuSampleComparableProjection
             .Select(row =>
             {
                 var exclusivePercent = 100.0 * row.ExclusiveSamples / totalSamples;
-                return new ComparableRow(
-                    row.Key,
-                    row.DisplayName,
-                    new[]
-                    {
-                        Metric("exclusivePercent", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Percent, MetricNormalization.SampleCount, "%", exclusivePercent),
-                        Metric("exclusiveSamples", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "samples", row.ExclusiveSamples),
-                        Metric("inclusiveSamples", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, MetricNormalization.None, "samples", row.InclusiveSamples),
-                    });
+                var metrics = new List<MetricValue>
+                {
+                    Metric("exclusivePercent", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Percent, MetricNormalization.SampleCount, "%", exclusivePercent),
+                    Metric("exclusiveSamples", MetricRole.Secondary, BetterDirection.Lower, MetricAggregation.Total, MetricNormalization.None, "samples", row.ExclusiveSamples),
+                    Metric("inclusiveSamples", MetricRole.Context, BetterDirection.Neutral, MetricAggregation.Total, MetricNormalization.None, "samples", row.InclusiveSamples),
+                };
+                if (row.HasSelfSampleClassification)
+                {
+                    metrics.Add(Metric(
+                        "runningExclusiveSamples",
+                        MetricRole.Context,
+                        BetterDirection.Neutral,
+                        MetricAggregation.Total,
+                        MetricNormalization.None,
+                        "samples",
+                        row.RunningExclusiveSamples));
+                    metrics.Add(Metric(
+                        "waitingExclusiveSamples",
+                        MetricRole.Secondary,
+                        BetterDirection.Lower,
+                        MetricAggregation.Total,
+                        MetricNormalization.None,
+                        "samples",
+                        row.WaitingExclusiveSamples));
+                }
+
+                return new ComparableRow(row.Key, row.DisplayName, metrics);
             })
             .ToArray();
     }
@@ -111,17 +177,32 @@ internal static class CpuSampleComparableProjection
             var identity = node.Identity ?? (artifact.MethodIdentities.TryGetValue(symbol, out var resolved) ? resolved : null);
             var key = ComparableKeyFactory.ForMethod(kind, symbol, identity);
             var matchId = key.ExactId ?? key.StableId;
+            var selfSamples = string.Equals(kind, "cpu-sample", StringComparison.Ordinal)
+                ? node.SelfSamples
+                : null;
             if (aggregates.TryGetValue(matchId, out var existing))
             {
                 aggregates[matchId] = existing with
                 {
                     ExclusiveSamples = existing.ExclusiveSamples + node.ExclusiveSamples,
                     InclusiveSamples = Math.Max(existing.InclusiveSamples, node.InclusiveSamples),
+                    RunningExclusiveSamples = existing.RunningExclusiveSamples + (selfSamples?.RunningSamples ?? 0),
+                    WaitingExclusiveSamples = existing.WaitingExclusiveSamples + (selfSamples?.WaitingSamples ?? 0),
+                    HasSelfSampleClassification = existing.HasSelfSampleClassification || selfSamples is not null,
                 };
                 continue;
             }
 
-            aggregates[matchId] = new CpuAggregate(key, symbol.MethodFullName, symbol, identity, node.ExclusiveSamples, node.InclusiveSamples);
+            aggregates[matchId] = new CpuAggregate(
+                key,
+                symbol.MethodFullName,
+                symbol,
+                identity,
+                node.ExclusiveSamples,
+                node.InclusiveSamples,
+                selfSamples?.RunningSamples ?? 0,
+                selfSamples?.WaitingSamples ?? 0,
+                selfSamples is not null);
         }
 
         return aggregates;
@@ -152,5 +233,14 @@ internal static class CpuSampleComparableProjection
         double value)
         => new(new MetricDefinition(name, role, direction, aggregation, normalizedBy, unit), Math.Round(value, 4));
 
-    private sealed record CpuAggregate(ComparableKey Key, string DisplayName, SymbolRef Symbol, MethodIdentity? Identity, long ExclusiveSamples, long InclusiveSamples);
+    private sealed record CpuAggregate(
+        ComparableKey Key,
+        string DisplayName,
+        SymbolRef Symbol,
+        MethodIdentity? Identity,
+        long ExclusiveSamples,
+        long InclusiveSamples,
+        long RunningExclusiveSamples,
+        long WaitingExclusiveSamples,
+        bool HasSelfSampleClassification);
 }
