@@ -316,7 +316,7 @@ dump options:
 query options:
       --handle <id>             Session drill-down handle.
       --view <name>             Session drill-down view.
-      --top <int>               Session query: cap ranked rows/groups consistently across views.
+      --top <int>               Session query: cap ranked rows/groups; wins when --top-types is also set.
       --top-types <int>         Backward-compatible alias for --top on query views.
       --provider-filter <text>  Session query: event-catalog provider substring filter.
       --changes-only            Session query: DATAS 'tuning' view; show only heap-count changes.
