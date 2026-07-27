@@ -191,7 +191,7 @@ public sealed class SummaryComparer : ISummaryComparer
 
         if (metrics == Evidence.Regressed)
         {
-            if (removedWaiting || removed.Length > 0)
+            if (removedWaiting)
             {
                 return "mixed";
             }

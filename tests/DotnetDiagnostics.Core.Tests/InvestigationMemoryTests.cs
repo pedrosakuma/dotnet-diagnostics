@@ -300,6 +300,52 @@ public class InvestigationMemoryTests
     }
 
     [Fact]
+    public void Compare_RegressedMetricsWithRemovedRunningHotspotAndNewHotspot_IsRegressionNewHotspot()
+    {
+        // Regression test for the tautological `removedWaiting || removed.Length > 0` bug: a removed
+        // hotspot whose baseline activity was Running (not Waiting) must not force "mixed" just because
+        // `removed` is non-empty - it should fall through to the new-hotspot classification.
+        var exporter = NewExporter();
+        var baseline = exporter.Export(new ExportRequest("before", ClassifiedArtifactFor(
+            1000,
+            ("M.dll", "M.OldRunningLeader", 400, 400, 400, 0)))).Summary;
+        var current = exporter.Export(new ExportRequest("after", ClassifiedArtifactFor(
+            1000,
+            ("M.dll", "M.NewRunningLeader", 450, 450, 450, 0)))).Summary;
+        baseline = baseline with
+        {
+            Findings = baseline.Findings with
+            {
+                KeyMetrics = new Dictionary<string, double>
+                {
+                    ["threadpool-queue-length"] = 0,
+                    ["requests-completed"] = 100,
+                },
+            },
+        };
+        current = current with
+        {
+            Findings = current.Findings with
+            {
+                KeyMetrics = new Dictionary<string, double>
+                {
+                    ["threadpool-queue-length"] = 500,
+                    ["requests-completed"] = 20,
+                },
+            },
+        };
+
+        var diff = new SummaryComparer().Compare(baseline, current);
+
+        diff.Verdict.Should().Be("regression_new_hotspot");
+        diff.RemovedHotspots.Should().Contain(h =>
+            h.Symbol.MethodFullName == "M.OldRunningLeader"
+            && h.BaselineSelfSamples == new SelfSampleBreakdown(400, 0));
+        diff.NewHotspots.Should().Contain(h => h.Symbol.MethodFullName == "M.NewRunningLeader");
+        diff.KeyMetricDeltas.Should().OnlyContain(delta => delta.Outcome == "regressed");
+    }
+
+    [Fact]
     public void Compare_MetricNamesMatchCaseAndPunctuationInsensitively()
     {
         var exporter = NewExporter();
