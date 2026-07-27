@@ -150,7 +150,12 @@ need `CAP_SYS_PTRACE` — they go through the diagnostic IPC socket only.
 ## Smoke-test the MCP endpoint
 
 ```bash
-# Health (no auth)
+# Wait for Docker's image healthcheck, which probes /health without requiring auth
+until [ "$(docker inspect --format '{{.State.Health.Status}}' mcp)" = healthy ]; do
+  sleep 2
+done
+
+# Health remains directly available without auth
 curl -fsS http://127.0.0.1:18887/health
 
 # Initialize the MCP session and grab the session id from the response header

@@ -62,6 +62,9 @@ public static class TriageClassifier
     /// <summary>Managed-memory activity hypothesis.</summary>
     public const string ManagedMemoryActivityHypothesis = "managed-memory.activity";
 
+    /// <summary>Memory-footprint growth hypothesis.</summary>
+    public const string MemoryFootprintGrowthHypothesis = "memory.footprint-growth";
+
     /// <summary>Waiting or backpressure hypothesis; deliberately does not assert I/O.</summary>
     public const string WaitingOrBackpressureHypothesis = "work.waiting-or-backpressure";
 
@@ -84,6 +87,10 @@ public static class TriageClassifier
     private const double RequestDurationHighThresholdMilliseconds = 500;
     private const double RequestDurationCriticalThresholdMilliseconds = 2_000;
     private const double RequestDurationNormalThresholdMilliseconds = 100;
+    private const double EffectiveCoreSaturationThreshold = 0.8;
+    private const double EffectiveCoreCriticalThreshold = 1.0;
+    private const double MemoryGrowthRelativeThresholdPercent = 20;
+    private const double MemoryGrowthAbsoluteThresholdMegabytes = 1;
 
     /// <summary>Maximum number of top indicators to return.</summary>
     private const int MaxTopIndicators = 5;
@@ -104,6 +111,10 @@ public static class TriageClassifier
         var gen2Count = GetCounter(snapshot, "gen-2-gc-count");
         var heapSize = GetCounter(snapshot, "gc-heap-size");
         var exceptionCount = GetCounter(snapshot, "exception-count");
+        var targetProcessorCount = snapshot.ProcessorCount is > 0 ? snapshot.ProcessorCount : null;
+        double? effectiveCoreUsage = cpu is not null && targetProcessorCount is > 0
+            ? cpu.Value * targetProcessorCount.Value / 100
+            : null;
 
         var evidence = new TriageEvidence(
             CpuUsage: cpu,
@@ -114,7 +125,15 @@ public static class TriageClassifier
             Gen2GcCount: gen2Count,
             GcHeapSize: heapSize,
             ExceptionCount: exceptionCount,
-            RequestDurationP95: requestDurationP95);
+            RequestDurationP95: requestDurationP95)
+        {
+            LogicalProcessorCount = targetProcessorCount,
+            CpuTopologyStatus = targetProcessorCount is null ? "unknown" : "observed",
+            EffectiveCoreUsage = effectiveCoreUsage,
+            GcHeapSizeTrend = GetCounterTrend(snapshot, "gc-heap-size"),
+            LohSizeTrend = GetCounterTrend(snapshot, "loh-size"),
+            WorkingSetTrend = GetCounterTrend(snapshot, "working-set"),
+        };
 
         var topIndicators = BuildTopIndicators(evidence);
         var observedSignals = BuildObservedSignals(evidence);
@@ -129,7 +148,7 @@ public static class TriageClassifier
                     : DegradedAssessment;
 
         var verdicts = new List<string>();
-        if (cpu >= CpuDegradedThreshold)
+        if (cpu >= CpuDegradedThreshold || effectiveCoreUsage >= EffectiveCoreSaturationThreshold)
         {
             verdicts.Add(CpuBound);
         }
@@ -149,7 +168,9 @@ public static class TriageClassifier
             verdicts.Add(LockContention);
         }
 
-        if (allocRate >= AllocRateDegradedThreshold || gen2Count >= Gen2GcDegradedThreshold)
+        if (allocRate >= AllocRateDegradedThreshold
+            || gen2Count >= Gen2GcDegradedThreshold
+            || HasMaterialMemoryGrowth(evidence))
         {
             verdicts.Add(MemoryPressure);
         }
@@ -191,6 +212,21 @@ public static class TriageClassifier
                     "cpu-usage", cpu, "%", ">=",
                     critical ? CpuCriticalThreshold : CpuDegradedThreshold,
                     "The process crossed the configured CPU-utilization threshold."));
+        }
+
+        if (evidence.EffectiveCoreUsage is { } effectiveCores
+            && effectiveCores >= EffectiveCoreSaturationThreshold)
+        {
+            var critical = effectiveCores >= EffectiveCoreCriticalThreshold;
+            AddSignal(
+                signals,
+                "cpu.effective-core-consumption",
+                critical ? "critical" : "high",
+                $"Host-normalized CPU was {evidence.CpuUsage:F1}% across {evidence.LogicalProcessorCount} logical processors, equivalent to {effectiveCores:F2} cores.",
+                BuildThresholdEvidence(
+                    "effective-core-usage", effectiveCores, "cores", ">=",
+                    critical ? EffectiveCoreCriticalThreshold : EffectiveCoreSaturationThreshold,
+                    "Topology-adjusted CPU crossed the configured approximately-one-core threshold."));
         }
 
         if (evidence.TimeInGc is { } timeInGc && timeInGc >= TimeInGcDegradedThreshold)
@@ -281,6 +317,17 @@ public static class TriageClassifier
                     "The exception count crossed the configured observation threshold."));
         }
 
+        var growingMemory = GetMaterialMemoryGrowth(evidence);
+        if (growingMemory.Count > 0)
+        {
+            AddSignal(
+                signals,
+                "memory.intra-window-growth",
+                "high",
+                $"Memory counters grew during the window: {string.Join(", ", growingMemory.Select(FormatTrendSummary))}.",
+                growingMemory.SelectMany(BuildGrowthEvidence).ToArray());
+        }
+
         var requestDurationMilliseconds = ToMilliseconds(evidence.RequestDurationP95);
         if (requestDurationMilliseconds is { } p95 && p95 >= RequestDurationHighThresholdMilliseconds)
         {
@@ -306,19 +353,37 @@ public static class TriageClassifier
         var hypotheses = new List<TriageHypothesis>();
         var requestDurationMilliseconds = ToMilliseconds(evidence.RequestDurationP95);
 
-        if (evidence.CpuUsage is { } cpu && cpu >= CpuDegradedThreshold)
+        if ((evidence.CpuUsage is { } cpu && cpu >= CpuDegradedThreshold)
+            || evidence.EffectiveCoreUsage >= EffectiveCoreSaturationThreshold)
         {
-            var highConfidence = cpu >= CpuCriticalThreshold;
+            var highConfidence = evidence.CpuUsage >= CpuCriticalThreshold
+                || evidence.EffectiveCoreUsage >= EffectiveCoreCriticalThreshold;
+            var supporting = new List<TriageEvidenceItem>();
+            if (evidence.CpuUsage is { } hostCpu && hostCpu >= CpuDegradedThreshold)
+            {
+                supporting.Add(BuildThresholdEvidence(
+                    "cpu-usage", hostCpu, "%", ">=",
+                    highConfidence && hostCpu >= CpuCriticalThreshold
+                        ? CpuCriticalThreshold
+                        : CpuDegradedThreshold,
+                    "Host-normalized CPU crossed the configured utilization threshold."));
+            }
+            if (evidence.EffectiveCoreUsage is { } effectiveCores
+                && effectiveCores >= EffectiveCoreSaturationThreshold)
+            {
+                supporting.Add(BuildThresholdEvidence(
+                    "effective-core-usage", effectiveCores, "cores", ">=",
+                    highConfidence && effectiveCores >= EffectiveCoreCriticalThreshold
+                        ? EffectiveCoreCriticalThreshold
+                        : EffectiveCoreSaturationThreshold,
+                    "Topology-adjusted CPU crossed the approximately-one-core threshold."));
+            }
+
             hypotheses.Add(new TriageHypothesis(
                 CpuComputeDemandHypothesis,
                 highConfidence ? "high" : "moderate",
-                "The process spent a large share of the window doing compute work; the hot code path and resource limit are not identified by counters.",
-                [BuildThresholdEvidence(
-                    "cpu-usage", cpu, "%", ">=",
-                    highConfidence ? CpuCriticalThreshold : CpuDegradedThreshold,
-                    highConfidence
-                        ? "CPU crossed the critical threshold used to assign high confidence."
-                        : "CPU crossed the threshold used to emit the compute-demand hypothesis.")],
+                "The process consumed a material amount of compute capacity; the hot code path, parallelism shape, and resource limit are not identified by counters.",
+                supporting,
                 [],
                 "Capture on-CPU samples and inspect exclusive hot frames before assigning a cause."));
         }
@@ -413,6 +478,7 @@ public static class TriageClassifier
 
         if (evidence.CpuUsage is { } lowCpu
             && lowCpu < LowCpuThreshold
+            && evidence.EffectiveCoreUsage is not >= EffectiveCoreSaturationThreshold
             && evidence.ThreadPoolQueueLength is { } waitingQueue
             && waitingQueue >= QueueLengthElevatedThreshold
             && requestDurationMilliseconds is { } waitingP95
@@ -487,6 +553,18 @@ public static class TriageClassifier
                 "Collect allocation samples, GC events, and a memory trend before distinguishing churn from retention."));
         }
 
+        var growingMemory = GetMaterialMemoryGrowth(evidence);
+        if (growingMemory.Count > 0)
+        {
+            hypotheses.Add(new TriageHypothesis(
+                MemoryFootprintGrowthHypothesis,
+                growingMemory.Count >= 2 ? "high" : "moderate",
+                "One or more memory counters rose materially across the captured window. This supports a growing footprint, but one window does not establish a leak or identify retained objects.",
+                growingMemory.SelectMany(BuildGrowthEvidence).ToArray(),
+                [],
+                "Repeat a longer memory trend and compare heap snapshots before assigning a retention cause."));
+        }
+
         return hypotheses
             .OrderByDescending(static hypothesis => ConfidenceRank(hypothesis.Confidence))
             .ThenByDescending(hypothesis => StrongestObservedSignalRank(hypothesis, observedSignals))
@@ -558,8 +636,8 @@ public static class TriageClassifier
         string name,
         string level,
         string summary,
-        TriageEvidenceItem evidence)
-        => signals.Add(new TriageObservedSignal(name, level, summary, [evidence]));
+        params TriageEvidenceItem[] evidence)
+        => signals.Add(new TriageObservedSignal(name, level, summary, evidence));
 
     private static TriageEvidenceItem BuildThresholdEvidence(
         string name,
@@ -592,6 +670,18 @@ public static class TriageClassifier
                 _ => ((int)(cpu / 30 * 20), "normal")
             };
             indicators.Add(("cpu-usage", cpu, "%", score, level));
+        }
+
+        if (evidence.EffectiveCoreUsage is { } effectiveCores)
+        {
+            var (score, level) = effectiveCores switch
+            {
+                >= EffectiveCoreCriticalThreshold => ((int)Math.Min(100, 80 + (effectiveCores - 1) * 5), "critical"),
+                >= EffectiveCoreSaturationThreshold => ((int)(50 + (effectiveCores - 0.8) / 0.2 * 30), "high"),
+                >= 0.25 => ((int)(20 + (effectiveCores - 0.25) / 0.55 * 30), "elevated"),
+                _ => ((int)(effectiveCores / 0.25 * 20), "normal"),
+            };
+            indicators.Add(("effective-core-usage", effectiveCores, "cores", score, level));
         }
 
         // Time in GC: 0-5 normal, 5-15 elevated, 15-30 high, 30+ critical.
@@ -692,6 +782,30 @@ public static class TriageClassifier
             indicators.Add(("request-duration-p95", Math.Round(p95Ms, 0), "ms", score, level));
         }
 
+        foreach (var (name, trend) in EnumerateMemoryTrends(evidence))
+        {
+            if (trend.RelativeChangePercent <= 0)
+            {
+                continue;
+            }
+
+            if (!IsMaterialMemoryGrowth(trend))
+            {
+                indicators.Add(($"{name}-growth", trend.RelativeChangePercent, "%", 19, "normal"));
+                continue;
+            }
+
+            var (score, level) = trend.RelativeChangePercent switch
+            {
+                >= 100 => (100, "critical"),
+                >= 50 => ((int)(80 + (trend.RelativeChangePercent - 50) / 50 * 20), "critical"),
+                >= MemoryGrowthRelativeThresholdPercent =>
+                    ((int)(50 + (trend.RelativeChangePercent - MemoryGrowthRelativeThresholdPercent) / 30 * 30), "high"),
+                _ => ((int)Math.Min(49, trend.RelativeChangePercent / MemoryGrowthRelativeThresholdPercent * 50), "normal"),
+            };
+            indicators.Add(($"{name}-growth", trend.RelativeChangePercent, "%", score, level));
+        }
+
         // Sort by score descending and take top N.
         return indicators
             .OrderByDescending(i => i.Score)
@@ -706,4 +820,98 @@ public static class TriageClassifier
             c => c.Provider == "System.Runtime" && c.Name == name);
         return counter?.Value;
     }
+
+    private static TriageCounterTrend? GetCounterTrend(CounterSnapshot snapshot, string name)
+    {
+        if (snapshot.FirstCounters is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        var last = snapshot.Counters.FirstOrDefault(
+            counter => counter.Provider == "System.Runtime" && counter.Name == name);
+        var first = snapshot.FirstCounters.FirstOrDefault(
+            counter => counter.Provider == "System.Runtime" && counter.Name == name);
+        if (first is null || last is null)
+        {
+            return null;
+        }
+
+        var delta = last.Value - first.Value;
+        var denominator = Math.Max(Math.Abs(first.Value), Math.Abs(last.Value));
+        var relativeChangePercent = denominator > 0 ? delta / denominator * 100 : 0;
+        var deltaMegabytes = TryConvertToMegabytes(delta, last.Unit ?? first.Unit);
+        return new TriageCounterTrend(
+            Math.Round(first.Value, 2),
+            Math.Round(last.Value, 2),
+            Math.Round(delta, 2),
+            last.Unit ?? first.Unit,
+            Math.Round(relativeChangePercent, 2),
+            deltaMegabytes is null ? null : Math.Round(deltaMegabytes.Value, 2));
+    }
+
+    private static bool HasMaterialMemoryGrowth(TriageEvidence evidence)
+        => GetMaterialMemoryGrowth(evidence).Count > 0;
+
+    private static List<(string Name, TriageCounterTrend Trend)> GetMaterialMemoryGrowth(TriageEvidence evidence)
+        => EnumerateMemoryTrends(evidence)
+            .Where(static item => IsMaterialMemoryGrowth(item.Trend))
+            .ToList();
+
+    private static bool IsMaterialMemoryGrowth(TriageCounterTrend trend)
+        => trend.RelativeChangePercent >= MemoryGrowthRelativeThresholdPercent
+           && trend.DeltaMegabytes >= MemoryGrowthAbsoluteThresholdMegabytes;
+
+    private static IEnumerable<(string Name, TriageCounterTrend Trend)> EnumerateMemoryTrends(
+        TriageEvidence evidence)
+    {
+        if (evidence.GcHeapSizeTrend is { } heap)
+        {
+            yield return ("gc-heap-size", heap);
+        }
+        if (evidence.LohSizeTrend is { } loh)
+        {
+            yield return ("loh-size", loh);
+        }
+        if (evidence.WorkingSetTrend is { } workingSet)
+        {
+            yield return ("working-set", workingSet);
+        }
+    }
+
+    private static IEnumerable<TriageEvidenceItem> BuildGrowthEvidence(
+        (string Name, TriageCounterTrend Trend) item)
+    {
+        yield return BuildThresholdEvidence(
+            $"{item.Name}-growth",
+            item.Trend.RelativeChangePercent,
+            "%",
+            ">=",
+            MemoryGrowthRelativeThresholdPercent,
+            "The counter's first-to-last relative increase crossed the configured material-growth threshold.");
+        yield return BuildThresholdEvidence(
+            $"{item.Name}-delta",
+            item.Trend.DeltaMegabytes!.Value,
+            "MB",
+            ">=",
+            MemoryGrowthAbsoluteThresholdMegabytes,
+            "The absolute increase crossed the configured noise floor.");
+    }
+
+    private static string FormatTrendSummary((string Name, TriageCounterTrend Trend) item)
+        => $"{item.Name} {item.Trend.FirstValue:F2}->{item.Trend.LastValue:F2}{item.Trend.Unit} " +
+           $"(+{item.Trend.RelativeChangePercent:F1}%, +{item.Trend.DeltaMegabytes:F2} MB)";
+
+    private static double? TryConvertToMegabytes(double value, string? unit)
+        => unit?.Trim().ToUpperInvariant() switch
+        {
+            "B" or "BYTE" or "BYTES" => value / 1_000_000,
+            "KB" => value / 1_000,
+            "KIB" => value * 1_024 / 1_000_000,
+            "MB" => value,
+            "MIB" => value * 1_048_576 / 1_000_000,
+            "GB" => value * 1_000,
+            "GIB" => value * 1_073_741_824 / 1_000_000,
+            _ => null,
+        };
 }

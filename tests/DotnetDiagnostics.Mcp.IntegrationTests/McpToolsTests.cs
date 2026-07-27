@@ -308,6 +308,52 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task TaskAugmentedStructuredFailure_SetsIsErrorAndFailsTask()
+    {
+        await using var client = await ConnectAsync();
+
+        var task = await client.CallToolAsTaskAsync(
+            "collect_sample",
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "not-a-real-kind",
+                ["processId"] = Environment.ProcessId,
+            },
+            new ModelContextProtocol.Protocol.McpTaskMetadata { TimeToLive = TimeSpan.FromMinutes(1) },
+            cancellationToken: CancellationToken.None);
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        ModelContextProtocol.Protocol.McpTask terminal = task;
+        while (DateTime.UtcNow < deadline)
+        {
+            terminal = await client.GetTaskAsync(task.TaskId, cancellationToken: CancellationToken.None);
+            if (terminal.Status is ModelContextProtocol.Protocol.McpTaskStatus.Completed
+                or ModelContextProtocol.Protocol.McpTaskStatus.Failed
+                or ModelContextProtocol.Protocol.McpTaskStatus.Cancelled)
+            {
+                break;
+            }
+
+            await Task.Delay(terminal.PollInterval ?? TimeSpan.FromMilliseconds(200));
+        }
+
+        terminal.Status.Should().Be(ModelContextProtocol.Protocol.McpTaskStatus.Failed);
+
+        var rawResult = await client.GetTaskResultAsync(task.TaskId, cancellationToken: CancellationToken.None);
+        var callToolResult = JsonSerializer.Deserialize<ModelContextProtocol.Protocol.CallToolResult>(
+            rawResult.GetRawText(),
+            DeserializeOptions);
+        callToolResult.Should().NotBeNull();
+        callToolResult!.IsError.Should().BeTrue();
+
+        var envelope = DeserializeEnvelope(callToolResult);
+        envelope.Should().NotBeNull();
+        envelope!.Error.Should().NotBeNull();
+        envelope.Error!.Kind.Should().Be("InvalidArgument");
+        envelope.Summary.Should().Contain("not-a-real-kind");
+    }
+
+    [Fact]
     public async Task ListPrompts_ExposesDiagnosticPlaybooks()
     {
         await using var client = await ConnectAsync();
@@ -713,6 +759,108 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task CollectBatch_CountersAndGc_PopulatesNarrowBoundedGen2MeterEvidence()
+    {
+        const int retainedEventLimit = 200;
+        await using var client = await ConnectAsync();
+        using var driverCts = new CancellationTokenSource();
+        var driver = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(1500), driverCts.Token);
+                while (!driverCts.IsCancellationRequested)
+                {
+                    _ = new byte[128 * 1024];
+                    GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
+                    await Task.Delay(TimeSpan.FromMilliseconds(1), driverCts.Token);
+                }
+            }
+            catch (OperationCanceledException) when (driverCts.IsCancellationRequested)
+            {
+            }
+        });
+
+        ModelContextProtocol.Protocol.CallToolResult result;
+        try
+        {
+            result = await client.CallToolAsync(
+                "collect_batch",
+                new Dictionary<string, object?>
+                {
+                    ["requests"] = new object[]
+                    {
+                        new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
+                        new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "gc" },
+                    },
+                    ["processId"] = Environment.ProcessId,
+                    ["durationSeconds"] = 10,
+                },
+                cancellationToken: CancellationToken.None);
+        }
+        finally
+        {
+            driverCts.Cancel();
+        }
+
+        await driver;
+
+        result.IsError.Should().NotBe(true);
+        var report = DeserializeStructured<CollectBatchReport>(result);
+        report.Should().NotBeNull();
+        report!.Gen2Evidence.Should().NotBeNull();
+        report.Gen2Evidence!.MeterRatePerSecond.Should().NotBeNull();
+        report.Gen2Evidence.MeterProcessCumulative.Should().BeGreaterThan(0);
+        report.Gen2Evidence.GcCollectorWindowCount.Should().BeGreaterThan(retainedEventLimit);
+
+        var gcEntry = report.Results
+            .Single(static entry => entry.Tool == "collect_events" && entry.Kind == "gc");
+        var gcData = gcEntry.Data!.Value.GetProperty("gc");
+        gcData.GetProperty("totalCollections").GetInt32().Should().BeGreaterThan(retainedEventLimit);
+        gcData.GetProperty("droppedEvents").GetInt32().Should().BeGreaterThan(0);
+        var gcQuery = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = gcEntry.Handle,
+                ["view"] = "events",
+                ["topN"] = 250,
+            },
+            cancellationToken: CancellationToken.None);
+
+        gcQuery.IsError.Should().NotBe(true);
+        var gcSnapshot = DeserializeStructured<CollectionQueryResult>(gcQuery);
+        gcSnapshot.Should().NotBeNull();
+        var gcPayload = gcSnapshot!.Payload.Should().BeOfType<JsonElement>().Subject;
+        gcPayload.GetProperty("retained").GetInt32().Should().Be(retainedEventLimit);
+        gcPayload.GetProperty("dropped").GetInt32().Should().BeGreaterThan(0);
+        gcPayload.GetProperty("returned").GetInt32().Should().Be(retainedEventLimit);
+        gcPayload.GetProperty("events").GetArrayLength().Should().Be(retainedEventLimit);
+
+        var countersHandle = report.Results
+            .Single(static entry => entry.Tool == "collect_events" && entry.Kind == "counters")
+            .Handle;
+        countersHandle.Should().NotBeNullOrWhiteSpace();
+        var query = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = countersHandle,
+                ["view"] = "summary",
+            },
+            cancellationToken: CancellationToken.None);
+
+        query.IsError.Should().NotBe(true);
+        var snapshot = DeserializeStructured<CollectionQueryResult>(query);
+        snapshot.Should().NotBeNull();
+        var payload = snapshot!.Payload.Should().BeOfType<JsonElement>().Subject;
+        payload.GetProperty("meterCount").GetInt32().Should()
+            .BeInRange(1, CollectBatchTool.Gen2MeterMaxTimeSeries);
+        payload.GetProperty("meters").EnumerateArray().Should().OnlyContain(meter =>
+            meter.GetProperty("instrument").GetString() == "dotnet.gc.collections");
+    }
+
+    [Fact]
     public async Task CollectBatch_RejectsMethodParamsKind_BeforeAnySessionOpens()
     {
         await using var client = await ConnectAsync();
@@ -729,7 +877,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"InvalidArgument\"");
         text.Should().Contain("method-params");
@@ -753,7 +901,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"InvalidArgument\"");
         text.Should().Contain("duplicate");
@@ -780,7 +928,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"InvalidArgument\"");
         text.Should().Contain("at most 4");
@@ -803,7 +951,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"InvalidArgument\"");
     }
@@ -825,7 +973,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"InvalidArgument\"");
         text.Should().Contain("sweep");
@@ -845,7 +993,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"InvalidArgument\"");
         text.Should().Contain("must not be null");
@@ -1196,8 +1344,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
-        // The envelope itself does not flip IsError (structured-error contract); the
-        // failure is carried in the typed payload's Error.Kind so the LLM can branch.
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull();
@@ -1244,6 +1391,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull("an unknown handle must surface a structured DiagnosticError");
@@ -1364,6 +1512,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull("an unknown handle must surface a structured DiagnosticError");
@@ -1426,6 +1575,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             new Dictionary<string, object?> { ["processId"] = 99999999 },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull("non-existent PID must surface a structured error, not a partial resolvedProcess");
@@ -1512,6 +1662,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             new Dictionary<string, object?> { ["handle"] = "DEADBEEFDEADBEEFDEAD" },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error!.Kind.Should().Be("HandleExpired");
@@ -1608,6 +1759,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error!.Kind.Should().Be("InvalidArgument");
@@ -1689,6 +1841,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error!.Kind.Should().Be("InvalidArgument");
@@ -1803,6 +1956,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull("invalid arguments must surface a structured DiagnosticError");
@@ -1873,6 +2027,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull("durationSeconds < 2 must surface a structured DiagnosticError");

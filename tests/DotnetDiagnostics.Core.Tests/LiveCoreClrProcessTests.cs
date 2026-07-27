@@ -290,6 +290,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
 
         snapshot.Counters.Should().NotBeEmpty();
         snapshot.Counters.Should().Contain(c => c.Provider == "System.Runtime" && c.Name == "cpu-usage");
+        snapshot.ProcessorCount.Should().BeGreaterThan(0);
     }
 
     [Fact(Timeout = 90_000)]

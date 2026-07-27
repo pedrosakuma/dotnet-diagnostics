@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using DotnetDiagnostics.Core;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
@@ -7,9 +8,9 @@ using ModelContextProtocol.Server;
 namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
-/// MCP CallTool filter that catches any unhandled exception from a tool invocation
-/// and converts it to a structured <see cref="CallToolResult"/> with <c>IsError=true</c>
-/// and a text block describing the exception type, message and inner-exception chain.
+/// MCP CallTool filter that marks structured diagnostic failure envelopes with
+/// <c>IsError=true</c>, and converts any unhandled tool exception to an error
+/// <see cref="CallToolResult"/> with a diagnostic text block.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -23,14 +24,13 @@ namespace DotnetDiagnostics.Mcp.Tools;
 /// <para>
 /// The filter sits OUTSIDE the SDK's terminal try/catch (filters wrap the inner handler
 /// while the terminal stage wraps the whole filter pipeline), so it observes exceptions
-/// raised by the tool body before the SDK gets a chance to mask them. The filter only
-/// kicks in when a tool fails to surface its own structured <see cref="DiagnosticResult{T}"/>
-/// — tools that already classify (<c>GuardAttachAsync</c>) keep producing their richer
-/// envelope. Cancellation and protocol exceptions are rethrown so the SDK can perform
-/// the canonical close-up.
+/// raised by the tool body before the SDK gets a chance to mask them. Tools that classify
+/// failures with <see cref="DiagnosticResult{T}"/> keep their structured content and
+/// human-readable summary; the filter only corrects the MCP error bit. Cancellation and
+/// protocol exceptions are rethrown so the SDK can perform the canonical close-up.
 /// </para>
 /// <para>
-/// The error response intentionally carries no <c>StructuredContent</c>: the output
+/// The exception response intentionally carries no <c>StructuredContent</c>: the output
 /// schema is the tool's success-path schema (e.g. <c>LiveHeapInspection</c>), and strict
 /// clients (Copilot CLI, Claude Code) validate <c>structuredContent</c> against it. A
 /// text-only error result honours <c>isError=true</c> without triggering schema
@@ -44,7 +44,8 @@ internal static class ToolErrorSurfaceFilter
         {
             try
             {
-                return await next(request, cancellationToken).ConfigureAwait(false);
+                var result = await next(request, cancellationToken).ConfigureAwait(false);
+                return MarkStructuredFailure(result);
             }
             catch (Exception ex) when (!IsRethrow(ex, cancellationToken))
             {
@@ -66,6 +67,35 @@ internal static class ToolErrorSurfaceFilter
                 };
             }
         };
+
+    /// <summary>
+    /// Sets the MCP error bit when <paramref name="result"/> carries the repository's
+    /// standard structured failure envelope, and returns the same result instance.
+    /// </summary>
+    internal static CallToolResult MarkStructuredFailure(CallToolResult result)
+    {
+        if (IsStructuredFailure(result))
+        {
+            result.IsError = true;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Returns true when a tool produced the repository's standard
+    /// <see cref="DiagnosticResult{T}"/> failure envelope.
+    /// </summary>
+    internal static bool IsStructuredFailure(CallToolResult result)
+    {
+        if (result.StructuredContent is not { ValueKind: JsonValueKind.Object } structured)
+        {
+            return false;
+        }
+
+        return structured.TryGetProperty("error", out var error)
+               && error.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined;
+    }
 
     private static bool IsRethrow(Exception ex, CancellationToken cancellationToken)
         => IsRethrowable(ex, cancellationToken);
@@ -97,5 +127,22 @@ internal static class ToolErrorSurfaceFilter
               .Append(string.IsNullOrWhiteSpace(cur.Message) ? "(no message)" : cur.Message);
         }
         return sb.ToString();
+    }
+}
+
+/// <summary>
+/// Applies structured-failure classification at the tool primitive boundary. MCP task
+/// execution invokes <see cref="McpServerTool.InvokeAsync"/> directly and bypasses request
+/// filters, so this decorator must run before the SDK chooses the task's terminal status.
+/// </summary>
+internal sealed class StructuredErrorMcpServerTool(McpServerTool innerTool)
+    : DelegatingMcpServerTool(innerTool)
+{
+    public override async ValueTask<CallToolResult> InvokeAsync(
+        RequestContext<CallToolRequestParams> request,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await base.InvokeAsync(request, cancellationToken).ConfigureAwait(false);
+        return ToolErrorSurfaceFilter.MarkStructuredFailure(result);
     }
 }

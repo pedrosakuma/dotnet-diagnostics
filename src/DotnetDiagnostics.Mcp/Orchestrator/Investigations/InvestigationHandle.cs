@@ -57,4 +57,5 @@ public sealed record InvestigationHandle(
     // that do not project a bearer identity into the tool call.
     // Hidden from the client-safe AttachSession projection so the LLM cannot
     // enumerate other callers' handles.
-    [property: JsonIgnore] string? OwnerBearerName = null);
+    [property: JsonIgnore] string? OwnerBearerName = null,
+    InvestigationProcessSelector? ProcessSelector = null);

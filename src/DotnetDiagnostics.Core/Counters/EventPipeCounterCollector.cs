@@ -115,6 +115,7 @@ public sealed class EventPipeCounterCollector : ICounterCollector
         var latestMeters = new ConcurrentDictionary<string, MeterInstrumentValue>(StringComparer.Ordinal);
         var notes = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var acceptedMeterSeriesCount = 0;
+        int? targetProcessorCount = null;
 
         var processingTask = Task.Run(() =>
         {
@@ -133,6 +134,17 @@ public sealed class EventPipeCounterCollector : ICounterCollector
                             latestMeters,
                             ref acceptedMeterSeriesCount,
                             notes);
+                        return;
+                    }
+
+                    if (string.Equals(traceEvent.ProviderName, "System.Runtime", StringComparison.Ordinal)
+                        && string.Equals(traceEvent.EventName, "ProcessorCount", StringComparison.Ordinal))
+                    {
+                        var processorCount = PayloadInt32(traceEvent, 0);
+                        if (processorCount > 0)
+                        {
+                            targetProcessorCount = processorCount;
+                        }
                         return;
                     }
 
@@ -194,6 +206,7 @@ public sealed class EventPipeCounterCollector : ICounterCollector
 
         return new CounterSnapshot(processId, startedAt, duration, counters, meterValues, orderedNotes)
         {
+            ProcessorCount = targetProcessorCount,
             FirstCounters = firstCounterValues,
         };
     }

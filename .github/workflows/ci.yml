@@ -198,6 +198,20 @@ jobs:
             **/TestResults.attempt1/**/*.dmp
           if-no-files-found: ignore
 
+  docker-smoke:
+    name: Docker image smoke
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.code == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Wait for healthy image and invoke MCP
+        if: needs.changes.outputs.code == 'true'
+        run: tests/docker/health-smoke.sh
+
   # B5.5 (issue #186): make sure the Helm chart still renders for all three
   # bearer-token shapes (legacy single-bearer, scoped `bearerTokens` list, and
   # both set together during migration). Tiny job — `helm template` + a few

@@ -184,7 +184,7 @@ Per-tool `Summary` semantics:
 
 | Tool | What `Summary` drops inline |
 | --- | --- |
-| `collect_events(kind="counters")` | All non-headline counters (keeps ~14: cpu-usage, working-set, gc-heap-size, gen-2-gc-count, time-in-gc, alloc-rate, threadpool-thread-count, threadpool-queue-length, exception-count, monitor-lock-contention-count + ASP.NET Core requests/failed/current + Kestrel connections-per-sec). **Auto-hints** trigger on elevated CPU, ThreadPool backlog, GC time, allocation + Gen2 activity, and contention. Low CPU + queueing is described as inconclusive unless elevated request latency corroborates waiting/backpressure; it never asserts I/O from counters alone. |
+| `collect_events(kind="counters")` | All non-headline counters (keeps ~14: cpu-usage, working-set, gc-heap-size, gen-2-gc-count, time-in-gc, alloc-rate, threadpool-thread-count, threadpool-queue-length, exception-count, monitor-lock-contention-count + ASP.NET Core requests/failed/current + Kestrel connections-per-sec). The target's one-shot `System.Runtime/ProcessorCount` event is retained separately as `processorCount`. **Auto-hints** trigger on elevated CPU, ThreadPool backlog, GC time, allocation + Gen2 activity, and contention. Low CPU + queueing is described as inconclusive unless elevated request latency corroborates waiting/backpressure; it never asserts I/O from counters alone. |
 | `inspect_process(view="container")` | The `Notes[]` (caveats about cgroup v1 / missing PSI). Cgroup values themselves remain. |
 | `collect_sample(kind="cpu")` | `TopHotspots` truncated to the top 3 (handle keeps `topN`, default 25). |
 | `collect_sample(kind="off_cpu")` | `TopBlockingStacks` truncated to the top 3 (handle keeps `topN`). |
@@ -287,7 +287,12 @@ pre-collected **serial** snapshots — this is **live + simultaneous**.
 Requirements: orchestrator mode (`Orchestrator:Enabled=true`), the `read-counters` **and**
 `orchestrator-attach` scopes, and at least one **Active** investigation handle. Prefer passing
 those handles explicitly via `investigationHandleIds=[...]`; omitting them falls back to the
-legacy session-bound discovery path. Like
+legacy session-bound discovery path. When a Pod exposes multiple .NET processes, set
+`processSelector` on its `attach_to_pod` call. The fan-out resolves that selector through the
+Pod-local `inspect_process(view="list")`, requires exactly one match, and forwards the resolved
+Pod-local PID to `collect_events(kind="counters")`. It never guesses from PID ordering. Missing
+or ambiguous matches remain explicit entries in `data.podErrors` and do not sink healthy replicas.
+Like
 `distributed_trace`, the call always runs **locally on the orchestrator** and is never proxied into a
 single Pod. The result envelope carries a `ReplicaCounters` skew: per-replica `Replicas[]` readings,
 per-metric `Metrics[]` dispersion (min/max/mean/stddev, absolute + relative spread, min/max Pod), the
@@ -296,7 +301,7 @@ in `data.podErrors`; if **every** attached Pod fails, the call returns a `Replic
 error carrying those messages.
 
 ```text
-# after attach_to_pod against each replica:
+# after attach_to_pod(processSelector={managedEntrypointAssemblyName:"MyService"}) against each replica:
 collect_events(kind="replica_counters")(durationSeconds=5)
 ```
 
@@ -455,7 +460,7 @@ Views available per `kind`:
 | `gc-events` | `collect_events(kind="gc")` | `summary` (default), `events`, `pauseHistogram`, `timeline`, `longestPauses`, `byGeneration`, `heap-stats` |
 | `gc-datas` | `collect_events(kind="datas")` | `overview` (default), `tuning` (honours `changesOnly`), `samples`, `gen2` |
 | `event-catalog` | `collect_events(kind="catalog")` | `catalog` (default), `byProvider`, `events` |
-| `activities` | `collect_events(kind="activities")` | `summary` (default), `bySource`, `byOperation`, `activities` |
+| `activities` | `collect_events(kind="activities")` | `summary` (default), `bySource`, `byOperation`, `activities`, `gc-overlay` (requires `gcHandle`) |
 | `event-source` | `collect_events(kind="event_source")` | `summary` (default), `byEventName`, `events` |
 | `log-snapshot` | `collect_events(kind="logs")` | `summary` (default), `byCategory`, `byLevel`, `recent`, `errors` |
 | `jit-snapshot` | `collect_events(kind="jit")` | `summary` (default), `topMethods`, `tierDistribution`, `reJIT` |
@@ -588,8 +593,20 @@ GC `Generation`/`Reason`/`Type`, the `PauseDuration` (GCStart→GCStop elapsed),
 the same rows by pause descending and returns the top `topN` (each keeps its timeline `Index` for
 cross-reference). `byGeneration` reports `Count` + total/mean/max pause per generation bucket
 (`gen0`/`gen1`/`gen2`/`background`); background GCs form their own mutually-exclusive bucket, so
-`gen2` counts non-background gen2 collections only. Note these views describe only the events
-retained on the artifact (the collector caps at `maxEvents`).
+`gen2` counts non-background gen2 collections only. These pause-detail views describe only the
+raw events retained on the artifact (the collector caps at `maxEvents`) and expose
+`retained`/`dropped`. The summary's `totalCollections`, total/max pause, and `generations[]` counts
+continue aggregating after that cap and remain exact for the full collection window.
+
+The activities `gc-overlay` view correlates activity spans only with the raw GC event rows retained
+behind the supplied `gcHandle`. Its `totalGcCollections` and `totalGcPauseMs` remain the exact
+full-window aggregates. Correlation-derived values (`impactedCount`, `totalGcOverlapMs`, and each
+impacted activity's `gcPauseMs` / `gcPausePercent`) are exact only when
+`correlationScope="full-window"`. If the GC collector exceeded `maxEvents`, the result reports
+`retainedGcEvents`, `droppedGcEvents`, `correlationTruncated=true`,
+`correlationScope="retained-prefix"`, and `correlationValuesAreLowerBounds=true`; each returned row
+also sets `gcPauseIsLowerBound=true`. This prevents prefix-only overlap evidence from being confused
+with the separate exact GC totals.
 
 The `heap-stats` view (issue #384) re-projects the per-collection `GCHeapStats` samples retained
 behind the same `gc-events` handle — no new collection. Each sample carries the per-generation heap
@@ -900,7 +917,13 @@ evidence-selected drill-down. The payload explicitly separates:
 - `hypotheses[]` — bounded interpretations with `confidence`, `supportingEvidence`,
   `contradictingEvidence`, and a neutral `nextStep`, ordered by confidence and then the
   strongest supporting observed-signal level.
-- `topIndicators[]` and raw `evidence` — retained for independent interpretation.
+- `topIndicators[]` and raw `evidence` — retained for independent interpretation. CPU evidence
+  keeps the runtime's host-normalized `cpuUsage` and the target runtime's one-shot
+  `System.Runtime/ProcessorCount` event as `logicalProcessorCount`. `effectiveCoreUsage` is derived only
+  from those two target values, so sidecar or CLI quotas cannot change the estimate.
+  `cpuTopologyStatus` is explicitly `unknown` when the target event is unavailable.
+- `evidence.gcHeapSizeTrend`, `lohSizeTrend`, and `workingSetTrend` — first/last values, delta,
+  relative change, and normalized MB delta from the same capture window.
 - `assessment` — `healthy`, `inconclusive`, `degraded`, or `critical`.
 
 ```json
@@ -928,7 +951,16 @@ evidence-selected drill-down. The payload explicitly separates:
 
 Low CPU plus a small queue is deliberately inconclusive. A
 `work.waiting-or-backpressure` hypothesis requires low CPU, queueing, **and** elevated request
-p95 in the same window, and still does not claim I/O.
+p95 in the same window, and still does not claim I/O. It is not emitted when topology-adjusted
+CPU shows approximately one saturated core.
+
+The `cpu.effective-core-consumption` signal crosses at 0.8 estimated cores. Memory growth remains
+shape-based rather than endpoint-size-based: `memory.intra-window-growth` requires at least 20%
+first-to-last growth and at least 1 MB of absolute growth in GC heap, LOH, or working set. Its
+`memory.footprint-growth` hypothesis deliberately does **not** call the shape a leak; repeat a
+longer trend and compare heap snapshots before assigning a retention cause. Memory-growth
+`topIndicators` use the same 20% + 1 MB materiality rule; a high relative change below 1 MB remains
+`normal` rather than contradicting a healthy assessment.
 
 **Compatibility/deprecation:** `verdict`, `secondaryVerdicts`, `severity`, `evidence`, and
 `topIndicators` remain serialized, so existing JSON consumers continue to receive their fields.
@@ -1449,8 +1481,9 @@ process, for the same shared duration window, inside a single call (issue #665 P
 Eliminates the process-exit race of issuing those kinds as separate sequential calls against a
 short-lived process (test hosts, CLI batch jobs, anything that may have already exited by the
 time a second round-trip starts). Each requested entry is dispatched by calling that kind's own
-existing `collect_sample`/`collect_events` entry point directly, so every entry's `data` shape is
-identical to calling that kind directly — see that kind's own section above/below for its payload.
+existing `collect_sample`/`collect_events` entry point directly. The one intentional post-processing
+step is the bounded counters + GC correlation described below; the full standalone artifacts remain
+unchanged behind their handles.
 
 `kind="method-params"` is **not** eligible for batching — it stays a single-purpose
 `collect_sample` call (security-sensitive; requires its own explicit acknowledgement flow).
@@ -1468,12 +1501,44 @@ call `collect_events(kind="sweep")` directly instead.
 | `durationSeconds` | `int` | `10` | Shared collection window for every requested entry. ≥ 1. Individual entries cannot override this in v1 — call the specific tool directly if one kind genuinely needs a different window. |
 
 **Returns:** `CollectBatchReport` — `processId`, `durationSeconds`, and `results` (one
-`CollectBatchEntryResult` per requested entry, in request order). Each entry carries
+`CollectBatchEntryResult` per requested entry, in request order), plus optional `gen2Evidence`
+when both counters and GC were collected. Each entry carries
 `tool`, `kind`, `summary`, `data` (that entry's own payload, serialized generically as a JSON
 value since `collect_sample`/`collect_events` kinds don't share one static C# type — the shape is
-otherwise identical to calling that kind directly), `handle` / `handleExpiresAt` (pass to
+otherwise identical to calling that kind directly except for the bounded correlated counters
+projection below), `handle` / `handleExpiresAt` (pass to
 `query_snapshot` exactly as if the entry had been collected by a standalone call), and `error`
 (populated instead of `data`/`handle` when only that one entry failed).
+
+### Bounded inline counter selection
+
+`collect_batch` never copies the full counter table into a second response field. Counter selection
+is deterministic and bounded:
+
+| Batch contents | Counters guaranteed inline when the provider emitted them |
+|---|---|
+| `counters` without paired `gc`, or paired `gc` with no observed Gen2 collection | The normal headline set used by standalone Summary depth: CPU, working set, GC heap, Gen2 interval count, time in GC, allocation rate, ThreadPool threads/queue, active timers, exceptions, contention, ASP.NET Core request rate/failures/current requests, and Kestrel connection rate. |
+| `counters` + `gc` where the GC collector observed at least one Gen2 collection | The headline set above plus `System.Runtime/gen-2-size`, `loh-size`, and `gc-fragmentation`. The combined list is capped at 18 counters; the handle retains every captured counter. |
+| Any non-counter entry | Its standalone inline payload is unchanged. |
+
+When `counters` and `gc` are paired, the batch dispatcher automatically adds the narrow
+`System.Runtime\dotnet.gc.collections` Meter filter. It does not subscribe to every runtime Meter:
+only that instrument is requested, and retained Meter time series are capped at 8 (enough for the
+bounded generation-tag variants).
+
+`gen2Evidence` prevents values with different scopes from being mistaken for one another:
+
+- `eventCounterIntervalDelta`: the `gen-2-gc-count` increment from the **last 1-second
+  EventCounter reporting interval**;
+- `meterRatePerSecond`: the rate from the narrowly subscribed `dotnet.gc.collections` Gen2 Meter
+  series;
+- `meterProcessCumulative`: the process-lifetime cumulative value from that Meter series;
+- `gcCollectorWindowCount`: GC events observed during this batch's
+  `gcCollectorWindowSeconds` window. This count comes from the GC collector's exact generation
+  aggregate and continues updating after its 200-row raw-event retention cap.
+
+Null Meter fields mean that the target runtime did not publish the requested series during the
+window; they are never inferred from the incompatible EventCounter or GC-window values.
 
 **Partial-failure semantics.** A `collect_batch` call never fails outright just because one
 entry's target exited mid-window — the top-level result stays successful and `results` is always
@@ -1934,7 +1999,7 @@ returns aggregate + per-collection details.
 |---|---|---|---|
 | `processId` | `int` | — | Target process id |
 | `durationSeconds` | `int` | `10` | Window length |
-| `maxEvents` | `int` | `200` | Cap on individual GC events returned |
+| `maxEvents` | `int` | `200` | Cap on retained raw GC event rows and heap-stat samples. Exact totals, total/max pause, and generation counts continue updating after the cap. |
 
 **Long-running pattern:** this tool supports MCP Tasks (`execution.taskSupport:
 "optional"`). Spec clients should use task-augmented `tools/call`; clients that
@@ -1964,9 +2029,17 @@ don't implement Tasks should use the in-request `notifications/progress` +
       "type": "NonConcurrentGC",
       "pauseDuration": "00:00:00.0021000"
     }
-  ]
+  ],
+  "droppedEvents": 0,
+  "droppedHeapStats": 0
 }
 ```
+
+`totalCollections`, `totalPauseTime`, `maxPauseTime`, and `generations[]` cover every paired
+GC start/stop observed in the window, even after `events` reaches `maxEvents`. `events` and
+`heapStats` retain only their first `maxEvents` rows; `droppedEvents` and `droppedHeapStats`
+explicitly report omitted detail. Drilldown pause-detail views expose retained/dropped counts so
+their prefix-only scope is unambiguous.
 
 **Notes:** to capture a full gcdump (heap snapshot), use `collect_process_dump`
 with `dumpType = "WithHeap"` and analyze offline with `dotnet-dump`.
@@ -2960,8 +3033,14 @@ verb (deliberately **not** folded into `list_orchestrator`).
 | `ttlSeconds` | `int?` | `Orchestrator:DefaultInvestigationTtlSeconds` (1800) | Per-investigation TTL |
 | `requirePreparedTarget` | `bool` | `true` | When true, refuses to attach to Pods that don't carry the prepared opt-in label |
 | `allowReuseExistingSession` | `bool` | `true` | When true, returns an existing investigation for the same target instead of injecting a second ephemeral container |
+| `processSelector` | `object?` | `null` | Transport-neutral process identity stored on the handle for `replica_counters`. Set `managedEntrypointAssemblyName` for an exact case-insensitive match and optionally `commandLineContains` to disambiguate multiple instances. |
 
-**Returns:** `AttachSession` (investigation handle + resolved target). Use the
+The selector is resolved inside each Pod after attach; no OS PID is persisted or guessed. A selector
+must match exactly one visible .NET process. Reusing a handle preserves its selector; requesting a
+different selector, or adding one to a selector-less live handle, requires detach + reattach.
+
+**Returns:** `AttachSession` (investigation handle + resolved target, including the stored
+`processSelector`). Use the
 handle explicitly on follow-up orchestrator/fan-out calls
 (`detach_from_pod(handleId=...)`,
 `collect_events(kind="distributed_trace"|"replica_counters", investigationHandleIds=[...])`),
