@@ -794,7 +794,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
                         new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "gc" },
                     },
                     ["processId"] = Environment.ProcessId,
-                    ["durationSeconds"] = 10,
+                    ["durationSeconds"] = 20,
                 },
                 cancellationToken: CancellationToken.None);
         }
@@ -808,7 +808,10 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         result.IsError.Should().NotBe(true);
         var report = DeserializeStructured<CollectBatchReport>(result);
         report.Should().NotBeNull();
-        report!.Gen2Evidence.Should().NotBeNull();
+        report!.Gen2Evidence.Should().NotBeNull(
+            "counters error={0}, gc error={1}",
+            report.Results.FirstOrDefault(e => e.Kind == "counters")?.Error,
+            report.Results.FirstOrDefault(e => e.Kind == "gc")?.Error);
         report.Gen2Evidence!.MeterRatePerSecond.Should().NotBeNull();
         report.Gen2Evidence.MeterProcessCumulative.Should().BeGreaterThan(0);
         report.Gen2Evidence.GcCollectorWindowCount.Should().BeGreaterThan(retainedEventLimit);
