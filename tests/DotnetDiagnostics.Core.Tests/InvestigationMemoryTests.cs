@@ -811,6 +811,128 @@ public class InvestigationMemoryTests
     }
 
     [Fact]
+    public void Compare_SumEventCounterEquivalentPerSecondAndPerMinuteScales_AreEqual()
+    {
+        CounterSnapshot Snapshot(double displayRate, TimeSpan displayScale) => CounterSnapshot(
+        [
+            new CounterValue(
+                "Test.Provider",
+                "requests-per-second",
+                "Requests",
+                displayRate / displayScale.TotalSeconds,
+                CounterKind.Sum,
+                "requests")
+            {
+                IntervalSec = 1,
+                DisplayRateTimeScale = displayScale,
+            },
+        ]);
+        var perSecond = NewExporter().Export(new ExportRequest(
+            Evidence:
+            [
+                new InvestigationEvidenceInput(
+                    "per-second",
+                    "counters",
+                    Snapshot(100, TimeSpan.FromSeconds(1))),
+            ])).Summary;
+        var perMinute = NewExporter().Export(new ExportRequest(
+            Evidence:
+            [
+                new InvestigationEvidenceInput(
+                    "per-minute",
+                    "counters",
+                    Snapshot(6000, TimeSpan.FromMinutes(1))),
+            ])).Summary;
+
+        var diff = new SummaryComparer().Compare(perSecond, perMinute);
+
+        diff.Verdict.Should().Be("no_regression");
+        var rate = diff.KeyMetricDeltas.Should().ContainSingle(delta =>
+            delta.Name.EndsWith("|stat=rate", StringComparison.Ordinal)).Which;
+        rate.BaselineValue.Should().Be(100);
+        rate.CurrentValue.Should().Be(100);
+        rate.Outcome.Should().Be("unchanged");
+        perSecond.Findings.KeyMetricUnits![rate.Name].Should().Be("requests/s");
+        perMinute.Findings.KeyMetricUnits![rate.Name].Should().Be("requests/s");
+    }
+
+    [Fact]
+    public void Compare_SumEventCounterPerMinuteScaleTrueRateDrop_IsRegression()
+    {
+        CounterSnapshot Snapshot(double displayRate, TimeSpan displayScale) => CounterSnapshot(
+        [
+            new CounterValue(
+                "Test.Provider",
+                "requests-per-second",
+                "Requests",
+                displayRate / displayScale.TotalSeconds,
+                CounterKind.Sum,
+                "requests")
+            {
+                IntervalSec = 1,
+                DisplayRateTimeScale = displayScale,
+            },
+        ]);
+        var baseline = NewExporter().Export(new ExportRequest(
+            Evidence:
+            [
+                new InvestigationEvidenceInput(
+                    "per-second",
+                    "counters",
+                    Snapshot(100, TimeSpan.FromSeconds(1))),
+            ])).Summary;
+        var current = NewExporter().Export(new ExportRequest(
+            Evidence:
+            [
+                new InvestigationEvidenceInput(
+                    "per-minute",
+                    "counters",
+                    Snapshot(3000, TimeSpan.FromMinutes(1))),
+            ])).Summary;
+
+        var diff = new SummaryComparer().Compare(baseline, current);
+
+        diff.Verdict.Should().Be("regression_metrics");
+        diff.KeyMetricDeltas.Should().ContainSingle(delta =>
+            delta.Name.EndsWith("|stat=rate", StringComparison.Ordinal)
+            && delta.BaselineValue == 100
+            && delta.CurrentValue == 50
+            && delta.Outcome == "regressed");
+    }
+
+    [Fact]
+    public void Compare_SumEventCounterZeroDisplayScale_IsIncomparable()
+    {
+        CounterSnapshot Snapshot(double increment) => CounterSnapshot(
+        [
+            new CounterValue(
+                "Test.Provider",
+                "requests-per-second",
+                "Requests",
+                increment,
+                CounterKind.Sum,
+                "requests")
+            {
+                IntervalSec = 1,
+                DisplayRateTimeScale = TimeSpan.Zero,
+            },
+        ]);
+        var baseline = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("before", "counters", Snapshot(100))])).Summary;
+        var current = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("after", "counters", Snapshot(200))])).Summary;
+
+        var diff = new SummaryComparer().Compare(baseline, current);
+
+        diff.Verdict.Should().Be("incomparable");
+        diff.KeyMetricDeltas.Should().ContainSingle(delta =>
+            delta.Name.EndsWith("|stat=invalid-rate-metadata", StringComparison.Ordinal)
+            && delta.Outcome == "incomparable");
+        diff.Notes.Should().Contain(note =>
+            note.Contains("invalid interval/rate-scale metadata", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Compare_SumEventCounterWithoutRateMetadata_IsIncomparable()
     {
         var baseline = NewExporter().Export(new ExportRequest(

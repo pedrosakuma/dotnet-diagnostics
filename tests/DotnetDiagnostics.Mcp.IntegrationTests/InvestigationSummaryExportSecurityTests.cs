@@ -86,6 +86,57 @@ public sealed class InvestigationSummaryExportSecurityTests
     }
 
     [Fact]
+    public void Export_UsesPersistedProducerForGatedAndDirectCpuThreadHandles()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var counters = store.RegisterWithMetadata(
+            1234,
+            CollectionHandleKinds.Counters,
+            CounterArtifact(),
+            TimeSpan.FromMinutes(10),
+            producingTool: "collect_events");
+        var gatedCpu = store.RegisterWithMetadata(
+            1234,
+            "cpu-sample",
+            CpuArtifact(),
+            TimeSpan.FromMinutes(10),
+            producingTool: "collect_events");
+        var directCpu = store.RegisterWithMetadata(
+            1234,
+            "cpu-sample",
+            CpuArtifact(),
+            TimeSpan.FromMinutes(10),
+            producingTool: "collect_sample");
+        var gatedThreads = store.RegisterWithMetadata(
+            1234,
+            SamplerUseCases.ThreadSnapshotKind,
+            ArtifactFor(SamplerUseCases.ThreadSnapshotKind),
+            TimeSpan.FromMinutes(10),
+            producingTool: "collect_events");
+        var directThreads = store.RegisterWithMetadata(
+            1234,
+            SamplerUseCases.ThreadSnapshotKind,
+            ArtifactFor(SamplerUseCases.ThreadSnapshotKind),
+            TimeSpan.FromMinutes(10),
+            producingTool: "collect_thread_snapshot");
+        var principal = TestPrincipalAccessors.WithScopes(
+            "investigation-export",
+            "eventpipe",
+            "read-counters",
+            "ptrace");
+
+        Export(store, principal, gatedCpu.Id).Data!.Summary.Evidence!.Single()
+            .SourceTool.Should().Be("collect_events");
+        ExportWithAdditional(store, principal, directCpu.Id, counters.Id)
+            .Summary.Evidence!.Single(item => item.Kind == "cpu-sample")
+            .SourceTool.Should().Be("collect_sample");
+        Export(store, principal, gatedThreads.Id).Data!.Summary.Evidence!.Single()
+            .SourceTool.Should().Be("collect_events");
+        Export(store, principal, directThreads.Id).Data!.Summary.Evidence!.Single()
+            .SourceTool.Should().Be("collect_thread_snapshot");
+    }
+
+    [Fact]
     public void Export_NativeAllocHandleWithCpuTraceArtifact_IsRejected()
     {
         var store = new MemoryDiagnosticHandleStore();
@@ -273,6 +324,23 @@ public sealed class InvestigationSummaryExportSecurityTests
             new NoopTelemetry(),
             principalAccessor,
             handle);
+
+    private static ExportedInvestigationSummary ExportWithAdditional(
+        IDiagnosticHandleStore store,
+        IPrincipalAccessor principalAccessor,
+        string handle,
+        string additionalHandle)
+    {
+        var result = DiagnosticToolInvestigationPlanning.ExportInvestigationSummary(
+            NewExporter(),
+            store,
+            new NoopTelemetry(),
+            principalAccessor,
+            handle,
+            additionalHandles: [additionalHandle]);
+        result.Error.Should().BeNull();
+        return result.Data!;
+    }
 
     private static InvestigationSummaryExporter NewExporter()
         => new(

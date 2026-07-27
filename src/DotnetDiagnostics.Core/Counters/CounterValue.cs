@@ -38,23 +38,21 @@ internal static class CounterValueNormalization
             return false;
         }
 
-        rate = counter.Value * scale.TotalSeconds / intervalSec;
+        rate = counter.Value / intervalSec;
         return double.IsFinite(rate);
     }
 
+    internal static bool HasRateMetadata(CounterValue counter)
+        => counter.IntervalSec.HasValue || counter.DisplayRateTimeScale.HasValue;
+
     internal static string? RateUnit(CounterValue counter)
     {
-        if (counter.Unit is null || counter.DisplayRateTimeScale is not { } scale)
+        if (counter.Unit is null)
         {
-            return counter.Unit;
+            return null;
         }
 
-        if (scale == TimeSpan.FromSeconds(1))
-        {
-            return $"{counter.Unit}/s";
-        }
-
-        return $"{counter.Unit}/{scale:c}";
+        return $"{counter.Unit}/s";
     }
 }
 

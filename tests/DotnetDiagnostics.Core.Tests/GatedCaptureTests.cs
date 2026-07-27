@@ -1,5 +1,11 @@
 using System.Collections.Concurrent;
+using DotnetDiagnostics.Core.Capabilities;
+using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.GatedCapture;
+using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Threads;
+using DotnetDiagnostics.Core.UseCases;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.Core.Tests;
@@ -197,8 +203,146 @@ public sealed class GatedCaptureTests
         ex.Which.Metric.Should().Be(GatedCaptureMetric.Cpu);
     }
 
+    [Theory]
+    [InlineData("cpu-sample")]
+    [InlineData("thread-snapshot")]
+    public async Task GatedUseCase_StampsCollectEventsAsProducingTool(string captureKind)
+    {
+        var store = new MemoryDiagnosticHandleStore();
+
+        var result = await GatedCaptureUseCases.WatchAndCapture(
+            new ImmediateCaptureCollector(),
+            new FixedProcessContextResolver(),
+            store,
+            new FixedCpuSampler(),
+            new FixedThreadInspector(),
+            dumpInspector: null!,
+            dumper: null!,
+            triggerWhen: "cpu>1",
+            captureKind,
+            windowSeconds: 1,
+            maxCaptures: 1,
+            sampleIntervalSeconds: 1,
+            processId: 1234);
+
+        result.Error.Should().BeNull();
+        var handleId = result.Data!.Captures.Should().ContainSingle().Which.Handle;
+        handleId.Should().NotBeNullOrWhiteSpace();
+        store.TryGetWithKind(handleId!)!.Value.Handle.ProducingTool.Should().Be("collect_events");
+    }
+
     private static Task NeverExits(int processId, CancellationToken cancellationToken)
         => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+
+    private sealed class ImmediateCaptureCollector : IThresholdGatedCaptureCollector
+    {
+        public async Task<GatedCaptureResult> WatchAndCaptureAsync(
+            int processId,
+            TriggerPredicate predicate,
+            GatedCaptureKind captureKind,
+            TimeSpan window,
+            int maxCaptures,
+            TimeSpan sampleInterval,
+            Func<GatedCaptureTrigger, CancellationToken, Task<GatedCaptureOutcome>> captureCallback,
+            CancellationToken cancellationToken = default)
+        {
+            var now = DateTimeOffset.UnixEpoch;
+            var outcome = await captureCallback(
+                new GatedCaptureTrigger(processId, 2, now, 0),
+                cancellationToken);
+            return new GatedCaptureResult(
+                processId,
+                "cpu",
+                "cpu-usage",
+                predicate.ToString(),
+                GatedCaptureKinds.Token(captureKind),
+                now,
+                TimeSpan.Zero,
+                window,
+                maxCaptures,
+                1,
+                2,
+                2,
+                2,
+                true,
+                false,
+                false,
+                [
+                    new GatedCaptureRecord(
+                        0,
+                        2,
+                        now,
+                        GatedCaptureKinds.Token(captureKind),
+                        outcome.Summary,
+                        outcome.Handle,
+                        outcome.HandleExpiresAt,
+                        outcome.ArtifactPath,
+                        outcome.Error),
+                ],
+                []);
+        }
+    }
+
+    private sealed class FixedProcessContextResolver : IProcessContextResolver
+    {
+        public Task<ProcessContextResolution> ResolveAsync(
+            int? requestedProcessId,
+            CancellationToken cancellationToken)
+            => Task.FromResult(new ProcessContextResolution(
+                new ProcessContext(
+                    requestedProcessId ?? 1234,
+                    RuntimeFlavor.CoreClr,
+                    CanSampleCpu: true,
+                    CanCollectGcDump: true,
+                    AutoResolved: false,
+                    RuntimeVersion: "10.0.0",
+                    BindingSource: "explicit"),
+                null));
+    }
+
+    private sealed class FixedCpuSampler : ICpuSampler
+    {
+        public Task<CpuSampleResult> SampleAsync(
+            int processId,
+            TimeSpan duration,
+            int topN = 25,
+            SourceResolutionOptions? sourceResolution = null,
+            MethodInstantiationResolutionOptions? methodInstantiationResolution = null,
+            NativeAotSymbolResolutionOptions? nativeAotSymbols = null,
+            bool exportTrace = false,
+            CancellationToken cancellationToken = default)
+        {
+            var startedAt = DateTimeOffset.UnixEpoch;
+            var root = new CallTreeNode(new SampledFrame(string.Empty, "<root>"), 0, 0, []);
+            var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, 0, root);
+            return Task.FromResult(new CpuSampleResult(
+                new CpuSample(processId, startedAt, duration, 0, []),
+                artifact));
+        }
+    }
+
+    private sealed class FixedThreadInspector : IThreadSnapshotInspector
+    {
+        public Task<ThreadSnapshotArtifact> InspectLiveAsync(
+            int processId,
+            ThreadSnapshotOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new ThreadSnapshotArtifact(
+                ThreadSnapshotOrigin.Live,
+                processId,
+                DateTimeOffset.UnixEpoch,
+                TimeSpan.Zero,
+                ".NET",
+                "10.0.0",
+                [],
+                []));
+
+        public Task<ThreadSnapshotArtifact> InspectDumpAsync(
+            string dumpFilePath,
+            ThreadSnapshotOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+    }
 
     /// <summary>Fails immediately, as if the EventPipe session could not be started.</summary>
     private sealed class ThrowingSampler : IGatedMetricSampler

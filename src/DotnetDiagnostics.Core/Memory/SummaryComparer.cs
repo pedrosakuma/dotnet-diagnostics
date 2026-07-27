@@ -288,9 +288,11 @@ public sealed class SummaryComparer : ISummaryComparer
             if (isRawIncrement)
             {
                 deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable));
-                notes.Add(isUnnormalizedIncrement
-                    ? $"Raw EventCounter increment '{name}' has no interval/rate-scale metadata and is incomparable."
-                    : $"Raw EventCounter increment '{name}' is retained as evidence but does not drive the verdict; compare its normalized rate series instead.");
+                notes.Add(InvestigationMetricIdentity.HasInvalidEventCounterRateMetadata(name)
+                    ? $"Raw EventCounter increment '{name}' has invalid interval/rate-scale metadata and is incomparable."
+                    : isUnnormalizedIncrement
+                        ? $"Raw EventCounter increment '{name}' has no interval/rate-scale metadata and is incomparable."
+                        : $"Raw EventCounter increment '{name}' is retained as evidence but does not drive the verdict; compare its normalized rate series instead.");
                 continue;
             }
 

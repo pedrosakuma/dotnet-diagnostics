@@ -246,6 +246,40 @@ public sealed class InvestigationProxyCallToolFilterTests
     }
 
     [Fact]
+    public async Task ProxiedExport_PreservesProducingToolEvidenceFromPod()
+    {
+        var fx = new Fixture(TestPrincipalAccessors.WithScopes(
+            "orchestrator-attach",
+            "investigation-export",
+            "eventpipe"));
+        fx.Binder.Bind("session-export-producer", ActiveHandle.HandleId);
+        fx.Store.Add(ActiveHandle);
+        var upstream = new CallToolResult
+        {
+            Content =
+            [
+                new TextContentBlock
+                {
+                    Text = """{"Summary":{"Evidence":[{"SourceTool":"collect_events"}]}}""",
+                },
+            ],
+        };
+        fx.ProxyClient.Next = (_, _, _) => Task.FromResult(upstream);
+
+        var result = await fx.Invoke(
+            Params("export_investigation_summary", new Dictionary<string, JsonElement>
+            {
+                ["handle"] = JsonSerializer.SerializeToElement("gated-cpu-handle"),
+            }),
+            "session-export-producer");
+
+        result.Should().BeSameAs(upstream);
+        result.Content.OfType<TextContentBlock>().Single().Text.Should()
+            .Contain("\"SourceTool\":\"collect_events\"");
+        fx.LocalInvocations.Should().Be(0);
+    }
+
+    [Fact]
     public async Task TaskAugmentedExport_MissingInvestigationScope_IsRejectedBeforePromotion()
     {
         var fx = new Fixture(TestPrincipalAccessors.WithScopes(

@@ -22,7 +22,8 @@ public sealed record InvestigationEvidenceInput(
     string Handle,
     string Kind,
     object Artifact,
-    string? Origin = null);
+    string? Origin = null,
+    string? ProducingTool = null);
 
 public sealed record ExportRequest(
     string Handle,
@@ -311,7 +312,11 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
                         counter.Provider,
                         counter.Name,
                         counter.Kind,
-                        hasRate ? "increment" : "unnormalized-increment"),
+                        hasRate
+                            ? "increment"
+                            : CounterValueNormalization.HasRateMetadata(counter)
+                                ? "invalid-rate-metadata"
+                                : "unnormalized-increment"),
                     counter.Value,
                     counter.Unit));
                 if (hasRate)
@@ -540,7 +545,7 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
                 input.Handle,
                 input.Kind,
                 input.Origin ?? InferOrigin(input.Artifact),
-                sourceTool,
+                input.ProducingTool ?? sourceTool,
                 sourceKind,
                 observedAt,
                 duration,
@@ -639,7 +644,8 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
     private static bool IsLegacyCpuOnly(IReadOnlyList<InvestigationEvidenceInput> evidence)
         => evidence.Count == 1
             && evidence[0].Kind == "cpu-sample"
-            && evidence[0].Artifact is CpuSampleTraceArtifact;
+            && evidence[0].Artifact is CpuSampleTraceArtifact
+            && evidence[0].ProducingTool is null or "collect_sample";
 
     private static string RenderMarkdown(InvestigationSummary s, string? legacySourceHandle)
     {

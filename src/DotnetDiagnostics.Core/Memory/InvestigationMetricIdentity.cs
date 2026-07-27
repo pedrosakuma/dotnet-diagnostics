@@ -72,12 +72,16 @@ internal static class InvestigationMetricIdentity
         }
 
         var statistic = TryReadComponent(identity, "stat");
-        return statistic is null or "unnormalized-increment";
+        return statistic is null or "unnormalized-increment" or "invalid-rate-metadata";
     }
 
     internal static bool IsNormalizedRawEventCounterIncrement(string identity)
         => IsEventCounterRawIncrement(identity)
             && string.Equals(TryReadComponent(identity, "stat"), "increment", StringComparison.Ordinal);
+
+    internal static bool HasInvalidEventCounterRateMetadata(string identity)
+        => IsEventCounterRawIncrement(identity)
+            && string.Equals(TryReadComponent(identity, "stat"), "invalid-rate-metadata", StringComparison.Ordinal);
 
     internal static bool IsCanonical(string identity)
         => identity.StartsWith("eventcounter|", StringComparison.Ordinal)

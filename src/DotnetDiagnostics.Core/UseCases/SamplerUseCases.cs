@@ -98,13 +98,14 @@ public static class SamplerUseCases
             return WithContext(AttachGuard.ClassifyAttachFailure<CpuSample>("collect_sample", pid, ex), ctx);
         }
 
-        var handle = handles.Register(
+        var handle = handles.RegisterWithMetadata(
             pid,
             "cpu-sample",
             result.Artifact,
             SampleHandleTtl,
             evictWhenProcessExits: false,
-            origin: HandleOrigin.Live);
+            origin: HandleOrigin.Live,
+            producingTool: "collect_sample");
         var signals = CpuSampleSignals.Detect(result.Summary, handle.Id);
 
         var hints = new List<NextActionHint>
@@ -463,13 +464,14 @@ public static class SamplerUseCases
                 snapshot = await inspector.InspectLiveAsync(livePid, opts, cancellationToken).ConfigureAwait(false);
             }
 
-            var handle = handles.Register(
+            var handle = handles.RegisterWithMetadata(
                 snapshot.ProcessId,
                 ThreadSnapshotKind,
                 snapshot,
                 ThreadSnapshotHandleTtl,
                 evictWhenProcessExits: false,
-                origin: snapshot.Origin == ThreadSnapshotOrigin.Live ? HandleOrigin.Live : HandleOrigin.Dump);
+                origin: snapshot.Origin == ThreadSnapshotOrigin.Live ? HandleOrigin.Live : HandleOrigin.Dump,
+                producingTool: "collect_thread_snapshot");
             var origin = snapshot.Origin.ToString().ToLowerInvariant();
             var blocked = snapshot.Threads.Count(t => t.IsLikelyBlocked);
             var contended = snapshot.Locks.Count(l => l.IsContended);

@@ -67,6 +67,22 @@ public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
         TimeSpan ttl,
         bool evictWhenProcessExits = true,
         HandleOrigin? origin = null)
+        => RegisterWithMetadata(
+            processId,
+            kind,
+            artifact,
+            ttl,
+            evictWhenProcessExits,
+            origin);
+
+    public DiagnosticHandle RegisterWithMetadata(
+        int processId,
+        string kind,
+        object artifact,
+        TimeSpan ttl,
+        bool evictWhenProcessExits = true,
+        HandleOrigin? origin = null,
+        string? producingTool = null)
     {
         ArgumentNullException.ThrowIfNull(artifact);
         ArgumentException.ThrowIfNullOrWhiteSpace(kind);
@@ -93,7 +109,11 @@ public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
 
             var id = NewUniqueHandleIdLocked();
             var effectiveOrigin = origin ?? (evictWhenProcessExits ? HandleOrigin.Live : HandleOrigin.Dump);
-            handle = new DiagnosticHandle(id, now.Add(ttl), processId, kind) { Origin = effectiveOrigin };
+            handle = new DiagnosticHandle(id, now.Add(ttl), processId, kind)
+            {
+                Origin = effectiveOrigin,
+                ProducingTool = producingTool,
+            };
             _entries.Add(id, new Entry(handle, artifact, evictWhenProcessExits, _registrationSequence++));
             entryCount = _entries.Count;
         }

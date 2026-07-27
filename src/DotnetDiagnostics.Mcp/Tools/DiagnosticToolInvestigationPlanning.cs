@@ -135,7 +135,8 @@ internal static class DiagnosticToolInvestigationPlanning
                 requestedHandle,
                 lookup.Value.Kind,
                 lookup.Value.Artifact,
-                lookup.Value.Handle.Origin.ToString().ToLowerInvariant()));
+                lookup.Value.Handle.Origin.ToString().ToLowerInvariant(),
+                lookup.Value.Handle.ProducingTool));
         }
 
         if (evidence.Count(static item => item.Kind == "cpu-sample") > 1)
