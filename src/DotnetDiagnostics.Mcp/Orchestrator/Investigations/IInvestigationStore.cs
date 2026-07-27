@@ -58,6 +58,18 @@ public interface IInvestigationStore
     /// </summary>
     InvestigationHandle? FindReusableTarget(string reservationKey);
 
+    /// <summary>
+    /// Returns the most recently registered terminal (<see cref="InvestigationState.Closed"/>,
+    /// <see cref="InvestigationState.Expired"/>, or <see cref="InvestigationState.Failed"/>) handle
+    /// whose <see cref="InvestigationHandle.EphemeralContainerName"/> matches
+    /// <paramref name="ephemeralContainerName"/> for the given pod, or null if none exists.
+    /// Used to reconnect to a stale ephemeral container that is still running after a
+    /// previous <c>detach_from_pod</c> — the bearer token from the terminal handle can be
+    /// reused so no new container patch is needed.
+    /// </summary>
+    InvestigationHandle? FindTerminalHandleByEphemeralName(
+        string podNamespace, string podName, string ephemeralContainerName);
+
     /// <summary>Snapshot of every known handle. Order is unspecified.</summary>
     IReadOnlyCollection<InvestigationHandle> Snapshot();
 }

@@ -35,6 +35,11 @@ public static class OrchestratorErrorKinds
     // without conflating with AttachFailed.
     public const string PortForwardFailed = "PortForwardFailed";
 
+    // Stale ephemeral container from a previous session is still Running in Kubernetes
+    // and blocks reattachment. Surfaces when neither the current in-process store nor
+    // the caller can reconnect to the existing container (e.g. after server restart).
+    public const string EphemeralContainerStale = "EphemeralContainerStale";
+
     // #234 — kubeconfig handle resolution failures surfaced by list_orchestrator /
     // attach_to_pod when the caller supplies kubeconfigHandle=...
     public const string KubeconfigHandleNotFound = "KubeconfigHandleNotFound";

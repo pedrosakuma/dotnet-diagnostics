@@ -532,6 +532,184 @@ public class KubernetesPodAttachOrchestratorTests
         json.Should().NotContain("SECRET_TOKEN_VALUE");
     }
 
+    // ---- stale ephemeral container detection and reuse ----
+
+    [Fact]
+    public async Task AttachAsync_ReusesStaleEphemeralContainer_AfterDetachWithinSameProcess()
+    {
+        // Regression guard for issue #695: after detach_from_pod the ephemeral container
+        // keeps running in Kubernetes (containers are immutable once added). A second
+        // attach to the same pod must reuse the existing container instead of patching a
+        // new one — which would fail with "address already in use" on the shared ProxyPodPort.
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, store, _) = NewOrchestrator(api);
+        var closer = new InvestigationCloser(store, new NoOpProxyClient(), new NoOpPortForwardManager(),
+            new MemoryInvestigationSessionBinder());
+
+        var first = await orch.AttachAsync(NewRequest(), CancellationToken.None);
+        first.State.Should().Be(InvestigationState.Active);
+        api.PatchInvocationCount.Should().Be(1);
+
+        // Simulate detach_from_pod: transition the handle to Closed.
+        await closer.CloseAsync(first.HandleId, InvestigationState.Closed);
+        store.GetById(first.HandleId)!.State.Should().Be(InvestigationState.Closed);
+        // The K8s pod still has the ephemeral container Running (Kubernetes cannot remove it).
+        api.PatchInvocationCount.Should().Be(1); // no extra patch to K8s
+
+        // Reattach: the orchestrator detects the stale Running container and reuses it.
+        var second = await orch.AttachAsync(NewRequest(), CancellationToken.None);
+
+        second.State.Should().Be(InvestigationState.Active);
+        second.HandleId.Should().NotBe(first.HandleId, "reattach creates a distinct handle");
+        second.EphemeralContainerName.Should().Be(first.EphemeralContainerName,
+            "the existing running container is reused — no new container was patched");
+        second.PodLocalBearerToken.Should().Be(first.PodLocalBearerToken,
+            "the running sidecar was started with the old token; reuse must carry it forward");
+        api.PatchInvocationCount.Should().Be(1, "no second K8s ephemeral container patch");
+        store.Snapshot().Should().HaveCount(2, "original Closed handle + new Active handle");
+    }
+
+    [Fact]
+    public async Task AttachAsync_ReusesStaleEphemeral_CarriesDelegationKey()
+    {
+        // The internal scope-delegation key is embedded in the sidecar's environment at
+        // startup. Reusing the running container must carry the same key — generating a
+        // new one would invalidate the sidecar's HMAC verification for delegated calls.
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, store, _) = NewOrchestrator(api);
+        var closer = new InvestigationCloser(store, new NoOpProxyClient(), new NoOpPortForwardManager(),
+            new MemoryInvestigationSessionBinder());
+
+        var first = await orch.AttachAsync(NewRequest(), CancellationToken.None);
+        await closer.CloseAsync(first.HandleId, InvestigationState.Closed);
+
+        var second = await orch.AttachAsync(NewRequest(), CancellationToken.None);
+
+        second.InternalScopeDelegationKey.Should().Be(first.InternalScopeDelegationKey,
+            "delegation key embedded in the running sidecar must be preserved on reattach");
+    }
+
+    [Fact]
+    public async Task AttachAsync_ThrowsEphemeralContainerStale_WhenNoMatchingTerminalHandle()
+    {
+        // After a server restart the in-memory store is empty. If the pod still has a
+        // Running ephemeral container from a previous session, the orchestrator cannot
+        // recover the bearer token and must surface a structured error.
+        var pod = BuildPreparedPod();
+        var prefix = OrchestratorOptions.DefaultEphemeralContainerNamePrefix;
+        pod.Status!.EphemeralContainerStatuses = new List<V1ContainerStatus>
+        {
+            new()
+            {
+                Name = prefix + "staleaabb",
+                Image = "ghcr.io/pedrosakuma/dotnet-diagnostics:0.3.0",
+                ImageID = string.Empty,
+                Ready = false,
+                RestartCount = 0,
+                State = new V1ContainerState { Running = new V1ContainerStateRunning() },
+            },
+        };
+        var api = new StubAttachApi(pod: pod);
+        var (orch, _, _) = NewOrchestrator(api);
+
+        var act = () => orch.AttachAsync(NewRequest(), CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<OrchestratorException>();
+        ex.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.EphemeralContainerStale);
+        ex.Which.Message.Should().Contain(prefix + "staleaabb");
+        api.PatchInvoked.Should().BeFalse("no patch should be attempted when stale state is detected");
+    }
+
+    [Fact]
+    public async Task AttachAsync_ThrowsPermissionDenied_WhenStaleContainerOwnedByDifferentSession()
+    {
+        // A stale container belonging to a different MCP session must not be
+        // commandeered by a new caller — the old token would run under the old session's
+        // identity and the new caller would never own the ephemeral container.
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, store, _) = NewOrchestrator(api);
+        var closer = new InvestigationCloser(store, new NoOpProxyClient(), new NoOpPortForwardManager(),
+            new MemoryInvestigationSessionBinder());
+        var ownerA = PrincipalOwnershipKey.ForOpaqueEntry("session-a");
+        var ownerB = PrincipalOwnershipKey.ForOpaqueEntry("session-b");
+
+        await orch.AttachAsync(NewRequest(ownerPrincipalKey: ownerA), CancellationToken.None);
+        await closer.CloseAsync(store.Snapshot().Single().HandleId, InvestigationState.Closed);
+
+        var act = () => orch.AttachAsync(NewRequest(ownerPrincipalKey: ownerB), CancellationToken.None);
+
+        (await act.Should().ThrowAsync<OrchestratorException>())
+            .Which.ErrorKind.Should().Be(OrchestratorErrorKinds.PermissionDenied);
+        api.PatchInvocationCount.Should().Be(1, "no second K8s patch attempted");
+    }
+
+    [Fact]
+    public async Task AttachAsync_FullLifecycle_AttachDetachReattachDetach()
+    {
+        // End-to-end: attach → detach → reattach (stale reuse) → detach.
+        // Verifies the lifecycle contract: ephemeral containers are immutable in K8s;
+        // the orchestrator reuses the running container after detach to avoid port conflicts.
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, store, _) = NewOrchestrator(api);
+        var closer = new InvestigationCloser(store, new NoOpProxyClient(), new NoOpPortForwardManager(),
+            new MemoryInvestigationSessionBinder());
+
+        // — Phase 1: attach ————————————————————————————————————————————————————————————
+        var h1 = await orch.AttachAsync(NewRequest(), CancellationToken.None);
+        h1.State.Should().Be(InvestigationState.Active);
+        api.PatchInvocationCount.Should().Be(1);
+
+        // — Phase 2: detach ————————————————————————————————————————————————————————————
+        var closeOutcome = await closer.CloseAsync(h1.HandleId, InvestigationState.Closed);
+        closeOutcome.NewState.Should().Be(InvestigationState.Closed);
+        store.GetById(h1.HandleId)!.State.Should().Be(InvestigationState.Closed);
+
+        // — Phase 3: reattach (stale reuse) ———————————————————————————————————————————
+        var h2 = await orch.AttachAsync(NewRequest(), CancellationToken.None);
+        h2.State.Should().Be(InvestigationState.Active);
+        h2.HandleId.Should().NotBe(h1.HandleId);
+        h2.EphemeralContainerName.Should().Be(h1.EphemeralContainerName);
+        h2.PodLocalBearerToken.Should().Be(h1.PodLocalBearerToken);
+        api.PatchInvocationCount.Should().Be(1, "no second K8s patch — stale container was reused");
+        store.Snapshot().Should().HaveCount(2);
+        store.Snapshot().Should().Contain(h => h.State == InvestigationState.Closed);  // h1
+        store.Snapshot().Should().Contain(h => h.State == InvestigationState.Active);  // h2
+
+        // — Phase 4: collect (verify handle is usable) ————————————————————————————————
+        store.GetById(h2.HandleId).Should().NotBeNull();
+        h2.PodLocalBearerToken.Should().NotBeNullOrWhiteSpace(
+            "the bearer token is required for the proxy to authenticate with the sidecar");
+
+        // — Phase 5: detach again ——————————————————————————————————————————————————————
+        var closeOutcome2 = await closer.CloseAsync(h2.HandleId, InvestigationState.Closed);
+        closeOutcome2.NewState.Should().Be(InvestigationState.Closed);
+        store.GetById(h2.HandleId)!.State.Should().Be(InvestigationState.Closed);
+        store.Snapshot().Should().OnlyContain(h => h.State == InvestigationState.Closed);
+    }
+
+    [Fact]
+    public async Task AttachAsync_SkipsStaleDetection_WhenActiveHandleAlreadyExists()
+    {
+        // When a live Active handle exists in the store (e.g. two clients for the same
+        // pod), the stale-detection path must not run — the existing reuse logic handles
+        // it. Regression guard to ensure stale-detection only fires when the store has
+        // no Active/Attaching handle for the target.
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, store, _) = NewOrchestrator(api);
+
+        // Inject a synthetic stale status so the pod looks like it has a previously
+        // detached container. Then verify the orchestrator ignores it because there is
+        // already an Active handle in the store.
+        var first = await orch.AttachAsync(NewRequest(), CancellationToken.None);
+        first.State.Should().Be(InvestigationState.Active);
+
+        // Second attach with an active handle present: must reuse, not stale-detect.
+        var second = await orch.AttachAsync(NewRequest(), CancellationToken.None);
+
+        second.Should().BeSameAs(first);
+        api.PatchInvocationCount.Should().Be(1);
+    }
+
     // ---- helpers ----
 
     private static AttachRequest NewRequest(

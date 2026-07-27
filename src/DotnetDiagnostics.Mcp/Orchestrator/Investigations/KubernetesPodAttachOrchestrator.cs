@@ -124,6 +124,30 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
 
         var now = _timeProvider.GetUtcNow();
         var ttl = TimeSpan.FromSeconds(request.TtlSeconds ?? _options.DefaultInvestigationTtlSeconds);
+
+        // Before reserving a fresh target, scan for stale Running ephemeral containers
+        // from previous sessions. Kubernetes does not allow ephemeral containers to be
+        // removed once added, so after detach_from_pod the sidecar continues listening
+        // on ProxyPodPort inside the pod. A second attach that tries to patch a new
+        // container would fail with "address already in use" on that port.
+        //
+        // When there is NO Active/Attaching handle in the store (normal reattach after
+        // detach), inspect the pod's ephemeralContainerStatuses directly:
+        //   • Matching closed handle with a recoverable token → reuse the running
+        //     container transparently (skip the patch, register a fresh handle with the
+        //     same token/name, transition directly to Active).
+        //   • Running container with our prefix but no recoverable token (e.g. server
+        //     restart) → surface a structured EphemeralContainerStale error so the
+        //     caller knows why reattachment cannot proceed.
+        if (_store.FindReusableTarget($"k8s:{ns}/{request.PodName}/{container.Name}") is null)
+        {
+            var staleReuse = TryFindStaleReuseCandidate(pod, ns, request.PodName, request.OwnerPrincipalKey);
+            if (staleReuse is not null)
+            {
+                return ReviveStaleHandle(staleReuse, request, ns, container.Name, processSelector, now, ttl);
+            }
+        }
+
         var token = GenerateBearerToken();
         var delegationKey = GenerateBearerToken();
         var ephemeralName = BuildEphemeralContainerName();
@@ -151,48 +175,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         // target from both creating an ephemeral container.
         if (!_store.TryReserveTarget(handle, request.AllowReuseExistingSession, out var existing))
         {
-            var reusable = existing!;
-            // H6 / B3 review (issue #164): reuse is owner-aware. A reused handle
-            // is only returned to the caller when the caller owns it. Otherwise
-            // we surface a structured error rather than binding the caller to
-            // another session's investigation (which would let them reach the
-            // pod via the in-process call-tool forward and bypass the HTTP
-            // proxy's ownership check). Un-owned handles (stdio / framework)
-            // remain reusable by anyone.
-            if (!InvestigationOwnership.IsOwnedBy(reusable, request.OwnerPrincipalKey))
-            {
-                _logger.LogInformation(
-                    "Refusing to reuse handle {HandleId} for {Namespace}/{Pod}/{Container}: owned by a different MCP session.",
-                    reusable.HandleId, ns, request.PodName, container.Name);
-                throw new OrchestratorException(
-                    "PermissionDenied",
-                    $"An investigation for {ns}/{request.PodName}/{container.Name} is already active in another MCP session. " +
-                    "Wait for that session to detach, or have its owner share their session id, before attaching here.");
-            }
-
-            if (processSelector is not null)
-            {
-                if (reusable.ProcessSelector is null)
-                {
-                    throw new OrchestratorException(
-                        OrchestratorErrorKinds.InvalidArgument,
-                        $"Investigation {reusable.HandleId} was attached without a process selector; " +
-                        $"detach it before attaching the same Pod with selector ({processSelector.Describe()}).");
-                }
-                else if (!reusable.ProcessSelector.IsEquivalentTo(processSelector))
-                {
-                    throw new OrchestratorException(
-                        OrchestratorErrorKinds.InvalidArgument,
-                        $"Investigation {reusable.HandleId} already has process selector " +
-                        $"({reusable.ProcessSelector.Describe()}); detach it before attaching the same Pod " +
-                        $"with a different selector ({processSelector.Describe()}).");
-                }
-            }
-
-            _logger.LogInformation(
-                "Reusing investigation handle {HandleId} for {Namespace}/{Pod}/{Container} (state={State}).",
-                reusable.HandleId, ns, request.PodName, container.Name, reusable.State);
-            return reusable;
+            return ReuseHandleOrThrow(existing!, request, ns, container.Name, processSelector);
         }
 
         try
@@ -237,6 +220,189 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         _logger.LogInformation(
             "Attached investigation {HandleId} to {Namespace}/{Pod}/{Container} as ephemeral '{EphemeralName}'.",
             active.HandleId, ns, request.PodName, container.Name, ephemeralName);
+        return active;
+    }
+
+    /// <summary>
+    /// Validates ownership and process-selector compatibility on an existing Active/Attaching
+    /// handle returned by <see cref="IInvestigationStore.TryReserveTarget"/> and either
+    /// returns the handle or throws an <see cref="OrchestratorException"/>.
+    /// </summary>
+    private InvestigationHandle ReuseHandleOrThrow(
+        InvestigationHandle reusable,
+        AttachRequest request,
+        string ns,
+        string containerName,
+        InvestigationProcessSelector? processSelector)
+    {
+        // H6 / B3 review (issue #164): reuse is owner-aware. A reused handle is only
+        // returned to the caller when the caller owns it. Otherwise we surface a
+        // structured error rather than binding the caller to another session's
+        // investigation (which would let them reach the pod via the in-process
+        // call-tool forward and bypass the HTTP proxy's ownership check).
+        // Un-owned handles (stdio / framework) remain reusable by anyone.
+        if (!InvestigationOwnership.IsOwnedBy(reusable, request.OwnerPrincipalKey))
+        {
+            _logger.LogInformation(
+                "Refusing to reuse handle {HandleId} for {Namespace}/{Pod}/{Container}: owned by a different MCP session.",
+                reusable.HandleId, ns, request.PodName, containerName);
+            throw new OrchestratorException(
+                OrchestratorErrorKinds.PermissionDenied,
+                $"An investigation for {ns}/{request.PodName}/{containerName} is already active in another MCP session. " +
+                "Wait for that session to detach, or have its owner share their session id, before attaching here.");
+        }
+
+        if (processSelector is not null)
+        {
+            if (reusable.ProcessSelector is null)
+            {
+                throw new OrchestratorException(
+                    OrchestratorErrorKinds.InvalidArgument,
+                    $"Investigation {reusable.HandleId} was attached without a process selector; " +
+                    $"detach it before attaching the same Pod with selector ({processSelector.Describe()}).");
+            }
+            else if (!reusable.ProcessSelector.IsEquivalentTo(processSelector))
+            {
+                throw new OrchestratorException(
+                    OrchestratorErrorKinds.InvalidArgument,
+                    $"Investigation {reusable.HandleId} already has process selector " +
+                    $"({reusable.ProcessSelector.Describe()}); detach it before attaching the same Pod " +
+                    $"with a different selector ({processSelector.Describe()}).");
+            }
+        }
+
+        _logger.LogInformation(
+            "Reusing investigation handle {HandleId} for {Namespace}/{Pod}/{Container} (state={State}).",
+            reusable.HandleId, ns, request.PodName, containerName, reusable.State);
+        return reusable;
+    }
+
+    /// <summary>
+    /// Scans the pod's <c>ephemeralContainerStatuses</c> for a Running container with the
+    /// orchestrator's name prefix that was left behind by a previous detach. Returns the
+    /// matching terminal handle (with its recoverable token) when one is found; throws
+    /// <see cref="OrchestratorErrorKinds.EphemeralContainerStale"/> when a running container
+    /// is found but the token cannot be recovered; returns null when no stale container exists.
+    /// </summary>
+    private InvestigationHandle? TryFindStaleReuseCandidate(
+        V1Pod pod, string ns, string podName, string? callerOwnerKey)
+    {
+        var prefix = _options.EphemeralContainerNamePrefix;
+        var runningStale = pod.Status?.EphemeralContainerStatuses?
+            .Where(s =>
+                s.Name?.StartsWith(prefix, StringComparison.Ordinal) == true &&
+                s.State?.Running is not null)
+            .ToList();
+
+        if (runningStale is null || runningStale.Count == 0)
+        {
+            return null;
+        }
+
+        // Prefer the most recently attached container (highest name suffix sorts last alphabetically,
+        // but we rely on the store's AttachedAt ordering via FindTerminalHandleByEphemeralName).
+        foreach (var status in runningStale)
+        {
+            var closed = _store.FindTerminalHandleByEphemeralName(ns, podName, status.Name!);
+            if (closed is not null)
+            {
+                // Ownership check: the stale container embeds the old session's token; only
+                // the original owner (or an ownerless handle) may reconnect to it.
+                if (!InvestigationOwnership.IsOwnedBy(closed, callerOwnerKey))
+                {
+                    _logger.LogInformation(
+                        "Stale ephemeral container '{EphemeralName}' on {Namespace}/{Pod} belongs to a different MCP session " +
+                        "(previous handle {ClosedHandleId}).",
+                        status.Name, ns, podName, closed.HandleId);
+                    throw new OrchestratorException(
+                        OrchestratorErrorKinds.PermissionDenied,
+                        $"Pod '{ns}/{podName}' has a stale ephemeral diagnostics container '{status.Name}' " +
+                        $"still running from a previous session owned by a different MCP session. " +
+                        "Wait for that container to exit, or ask its owner to detach and restart the pod.");
+                }
+
+                if (closed.PodLocalBearerToken is null)
+                {
+                    // Token was scrubbed or handle is malformed — can't reconnect.
+                    continue;
+                }
+
+                return closed;
+            }
+        }
+
+        // Running container(s) with our prefix exist but no token is recoverable
+        // (server was restarted, handle was evicted, etc.).
+        var names = string.Join(", ", runningStale.Select(s => $"'{s.Name}'"));
+        _logger.LogWarning(
+            "Pod {Namespace}/{Pod} has stale ephemeral container(s) [{Names}] still Running; " +
+            "their tokens are not recoverable in the current server process.",
+            ns, podName, names);
+        throw new OrchestratorException(
+            OrchestratorErrorKinds.EphemeralContainerStale,
+            $"Pod '{ns}/{podName}' has stale ephemeral diagnostics container(s) [{names}] still running " +
+            "from a previous session whose bearer token is no longer recoverable (the server may have restarted). " +
+            "Restart the pod to clear stale containers, or wait for them to exit on their own.");
+    }
+
+    /// <summary>
+    /// Registers a fresh investigation handle that reuses a previously detached ephemeral
+    /// container. The old bearer token (embedded in the running container's environment)
+    /// is carried forward on the new handle so the proxy can authenticate without patching
+    /// a new container — skipping both the K8s patch and the readiness wait.
+    /// </summary>
+    private InvestigationHandle ReviveStaleHandle(
+        InvestigationHandle stale,
+        AttachRequest request,
+        string ns,
+        string containerName,
+        InvestigationProcessSelector? processSelector,
+        DateTimeOffset now,
+        TimeSpan ttl)
+    {
+        var revived = new InvestigationHandle(
+            HandleId: "inv_" + RandomHex(16),
+            Namespace: stale.Namespace,
+            PodName: stale.PodName,
+            TargetContainerName: stale.TargetContainerName,
+            // Carry forward the same ephemeral container name and bearer token: the
+            // running sidecar was started with these values and will only accept the
+            // original token. Generating a fresh token here would cause 401 errors.
+            EphemeralContainerName: stale.EphemeralContainerName,
+            PodLocalBearerToken: stale.PodLocalBearerToken,
+            State: InvestigationState.Attaching,
+            AttachedAt: now,
+            ExpiresAt: now + ttl,
+            OwnerBearerName: request.OwnerBearerName,
+            OwnerPrincipalKey: request.OwnerPrincipalKey,
+            // Reuse the delegation key the sidecar was started with; a new key would
+            // invalidate the sidecar's HMAC verification for delegated tool calls.
+            InternalScopeDelegationKey: stale.InternalScopeDelegationKey,
+            ProcessSelector: processSelector);
+
+        // TryReserveTarget is atomic: if a concurrent attach won the race and already
+        // claimed the slot (Active/Attaching), validate and return their handle instead.
+        if (!_store.TryReserveTarget(revived, request.AllowReuseExistingSession, out var existing))
+        {
+            return ReuseHandleOrThrow(existing!, request, ns, containerName, processSelector);
+        }
+
+        // The container is already Running — transition directly to Active; no patch,
+        // no readiness wait.
+        if (_store is not IInvestigationStoreActivation activation
+            || !activation.TryTransitionToActive(revived.HandleId, out var active)
+            || active is null)
+        {
+            throw new OrchestratorException(
+                OrchestratorErrorKinds.AttachFailed,
+                $"Investigation {revived.HandleId} became inactive while reviving stale container '{stale.EphemeralContainerName}'.");
+        }
+
+        _logger.LogInformation(
+            "Revived investigation {HandleId} on {Namespace}/{Pod}/{Container} by reusing stale ephemeral container " +
+            "'{EphemeralName}' (previous handle {StaleHandleId} was {StaleState}).",
+            active.HandleId, ns, request.PodName, containerName,
+            stale.EphemeralContainerName, stale.HandleId, stale.State);
         return active;
     }
 

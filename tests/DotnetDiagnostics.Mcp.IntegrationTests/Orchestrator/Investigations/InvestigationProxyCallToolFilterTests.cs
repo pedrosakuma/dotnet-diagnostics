@@ -1294,6 +1294,7 @@ public sealed class InvestigationProxyCallToolFilterTests
             return InvestigationTerminalTransition.Transitioned;
         }
         public InvestigationHandle? FindReusableTarget(string reservationKey) => null;
+        public InvestigationHandle? FindTerminalHandleByEphemeralName(string podNamespace, string podName, string ephemeralContainerName) => null;
         public IReadOnlyCollection<InvestigationHandle> Snapshot() => _byId.Values.ToArray();
     }
 

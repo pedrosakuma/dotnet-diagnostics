@@ -34,6 +34,9 @@ public sealed class OrchestratorOptions
     /// <summary>Default Pod label that opts a target into orchestrator discovery.</summary>
     public const string DefaultPreparedLabelKey = "diagnostics.dotnet.io/prepared";
 
+    /// <summary>Default prefix applied to every injected ephemeral container's name.</summary>
+    public const string DefaultEphemeralContainerNamePrefix = "dotnet-dbg-mcp-";
+
     /// <summary>
     /// Master switch. When false (default) the orchestrator tools (<c>list_orchestrator</c>,
     /// <c>attach_to_pod</c>, …) are NOT registered with the MCP server.
@@ -100,7 +103,7 @@ public sealed class OrchestratorOptions
     /// containers (e.g. <c>kubectl debug</c>) when auditing a Pod's <c>ephemeralContainerStatuses</c>.
     /// Default: <c>dotnet-dbg-mcp-</c>.
     /// </summary>
-    public string EphemeralContainerNamePrefix { get; set; } = "dotnet-dbg-mcp-";
+    public string EphemeralContainerNamePrefix { get; set; } = DefaultEphemeralContainerNamePrefix;
 
     /// <summary>
     /// Maximum time to wait for the injected ephemeral container to reach a running
