@@ -151,6 +151,51 @@ public class InvestigationMemoryTests
     }
 
     [Fact]
+    public void HotspotDelta_PreservesOriginalPositionalRecordApi()
+    {
+        var symbol = new SymbolRef("App.dll", "App.Work");
+        var delta = new HotspotDelta(symbol, 10, 20, 10)
+        {
+            BaselineSelfSamples = new SelfSampleBreakdown(1, 2),
+            CurrentSelfSamples = new SelfSampleBreakdown(3, 4),
+        };
+
+        var (deconstructedSymbol, baseline, current, change) = delta;
+        deconstructedSymbol.Should().Be(symbol);
+        baseline.Should().Be(10);
+        current.Should().Be(20);
+        change.Should().Be(10);
+        delta.BaselineSelfSamples.Should().Be(new SelfSampleBreakdown(1, 2));
+        delta.CurrentSelfSamples.Should().Be(new SelfSampleBreakdown(3, 4));
+
+        var copied = delta with { CurrentInclusivePercent = 30 };
+        copied.CurrentInclusivePercent.Should().Be(30);
+        copied.BaselineSelfSamples.Should().Be(delta.BaselineSelfSamples);
+        copied.CurrentSelfSamples.Should().Be(delta.CurrentSelfSamples);
+
+        var constructorParameterTypes = new[]
+        {
+            typeof(SymbolRef),
+            typeof(double?),
+            typeof(double?),
+            typeof(double?),
+        };
+        var constructor = typeof(HotspotDelta).GetConstructor(constructorParameterTypes);
+        constructor.Should().NotBeNull("the original four-argument binary constructor must remain callable");
+        var reflected = constructor!.Invoke([symbol, 1.0, 2.0, 1.0]);
+        reflected.Should().BeOfType<HotspotDelta>()
+            .Which.Symbol.Should().Be(symbol);
+
+        var deconstruct = typeof(HotspotDelta).GetMethod(
+            "Deconstruct",
+            constructorParameterTypes.Select(static type => type.MakeByRefType()).ToArray());
+        deconstruct.Should().NotBeNull("the original four-value Deconstruct member must remain callable");
+        var values = new object?[] { null, null, null, null };
+        deconstruct!.Invoke(delta, values);
+        values.Should().Equal(symbol, 10.0, 20.0, 10.0);
+    }
+
+    [Fact]
     public void Export_JsonRoundtripsIntoSameSummary()
     {
         var artifact = ArtifactFor(("M.dll", "M.A", 10, 10));
@@ -199,6 +244,27 @@ public class InvestigationMemoryTests
             .And.Contain("App.Service.Process")
             .And.Contain("ghcr.io/me/app:v2")
             .And.Contain("https://github.com/x/y/pull/42");
+    }
+
+    [Fact]
+    public void Export_LegacyCpuMarkdown_NoHotspotsRetainsHandleSamplesAndWindow()
+    {
+        const string handle = "legacy```handle\nnot-an-instruction";
+        var artifact = ArtifactFor(totalSamples: 0);
+
+        var exported = NewExporter().Export(new ExportRequest(
+            handle,
+            artifact,
+            Format: SummaryFormat.Markdown));
+
+        exported.Summary.Evidence.Should().BeNull();
+        exported.Summary.Findings.TotalSamples.Should().Be(0);
+        exported.Summary.Findings.Duration.Should().Be(TimeSpan.FromSeconds(10));
+        exported.Rendered.Should().Contain($"Source handle: {MarkdownLiteral(handle)}")
+            .And.Contain("- Samples: `0` over `10s`")
+            .And.Contain($"Capture window start: {MarkdownLiteral(T0.ToString("u"))}")
+            .And.NotContain("```handle")
+            .And.NotContain("| # | Method |");
     }
 
     [Fact]
@@ -672,6 +738,124 @@ public class InvestigationMemoryTests
         unchangedRateDiff.KeyMetricDeltas.Should().ContainSingle(delta =>
             delta.Name.EndsWith("|stat=last", StringComparison.Ordinal)
             && delta.Outcome == "incomparable");
+    }
+
+    [Fact]
+    public void Compare_SumEventCounterSameRateAcrossIntervals_IsUnchanged()
+    {
+        CounterSnapshot Snapshot(double increment, double intervalSeconds) => CounterSnapshot(
+        [
+            new CounterValue(
+                "Test.Provider",
+                "requests-per-second",
+                "Requests",
+                increment,
+                CounterKind.Sum,
+                "requests")
+            {
+                IntervalSec = intervalSeconds,
+                DisplayRateTimeScale = TimeSpan.FromSeconds(1),
+            },
+        ]);
+        var baseline = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("before", "counters", Snapshot(100, 1))])).Summary;
+        var current = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("after", "counters", Snapshot(200, 2))])).Summary;
+
+        var diff = new SummaryComparer().Compare(baseline, current);
+
+        diff.Verdict.Should().Be("no_regression");
+        diff.KeyMetricDeltas.Should().ContainSingle(delta =>
+            delta.Name.EndsWith("|stat=rate", StringComparison.Ordinal)
+            && delta.BaselineValue == 100
+            && delta.CurrentValue == 100
+            && delta.Outcome == "unchanged");
+        diff.KeyMetricDeltas.Should().ContainSingle(delta =>
+            delta.Name.EndsWith("|stat=increment", StringComparison.Ordinal)
+            && delta.BaselineValue == 100
+            && delta.CurrentValue == 200
+            && delta.Outcome == "incomparable");
+    }
+
+    [Fact]
+    public void Compare_SumEventCounterTrueRateDrop_IsRegression()
+    {
+        CounterSnapshot Snapshot(double increment, double intervalSeconds) => CounterSnapshot(
+        [
+            new CounterValue(
+                "Test.Provider",
+                "requests-per-second",
+                "Requests",
+                increment,
+                CounterKind.Sum,
+                "requests")
+            {
+                IntervalSec = intervalSeconds,
+                DisplayRateTimeScale = TimeSpan.FromSeconds(1),
+            },
+        ]);
+        var baseline = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("before", "counters", Snapshot(100, 1))])).Summary;
+        var current = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("after", "counters", Snapshot(100, 2))])).Summary;
+
+        var diff = new SummaryComparer().Compare(baseline, current);
+
+        diff.Verdict.Should().Be("regression_metrics");
+        diff.KeyMetricDeltas.Should().ContainSingle(delta =>
+            delta.Name.EndsWith("|stat=rate", StringComparison.Ordinal)
+            && delta.BaselineValue == 100
+            && delta.CurrentValue == 50
+            && delta.BetterDirection == "higher"
+            && delta.Outcome == "regressed");
+    }
+
+    [Fact]
+    public void Compare_SumEventCounterWithoutRateMetadata_IsIncomparable()
+    {
+        var baseline = NewExporter().Export(new ExportRequest(
+            Evidence:
+            [
+                new InvestigationEvidenceInput(
+                    "before",
+                    "counters",
+                    CounterSnapshot(
+                    [
+                        new CounterValue(
+                            "Test.Provider",
+                            "requests-per-second",
+                            "Requests",
+                            100,
+                            CounterKind.Sum,
+                            "requests"),
+                    ])),
+            ])).Summary;
+        var current = NewExporter().Export(new ExportRequest(
+            Evidence:
+            [
+                new InvestigationEvidenceInput(
+                    "after",
+                    "counters",
+                    CounterSnapshot(
+                    [
+                        new CounterValue(
+                            "Test.Provider",
+                            "requests-per-second",
+                            "Requests",
+                            200,
+                            CounterKind.Sum,
+                            "requests"),
+                    ])),
+            ])).Summary;
+
+        var diff = new SummaryComparer().Compare(baseline, current);
+
+        diff.Verdict.Should().Be("incomparable");
+        diff.KeyMetricDeltas.Should().ContainSingle(delta =>
+            delta.Name.EndsWith("|stat=unnormalized-increment", StringComparison.Ordinal)
+            && delta.Outcome == "incomparable");
+        diff.Notes.Should().Contain(note =>
+            note.Contains("no interval/rate-scale metadata", StringComparison.Ordinal));
     }
 
     [Fact]

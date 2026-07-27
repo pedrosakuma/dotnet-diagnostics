@@ -9,8 +9,13 @@ namespace DotnetDiagnostics.Core.Memory;
 /// </summary>
 internal static class InvestigationMetricIdentity
 {
-    internal static string EventCounter(string provider, string name, Counters.CounterKind kind)
-        => $"eventcounter|provider={Escape(provider)}|name={Escape(name)}|kind={kind.ToString().ToLowerInvariant()}";
+    internal static string EventCounter(
+        string provider,
+        string name,
+        Counters.CounterKind kind,
+        string? statistic = null)
+        => $"eventcounter|provider={Escape(provider)}|name={Escape(name)}|kind={kind.ToString().ToLowerInvariant()}" +
+           (statistic is null ? string.Empty : $"|stat={statistic}");
 
     internal static string Meter(
         string meter,
@@ -53,6 +58,26 @@ internal static class InvestigationMetricIdentity
         var kind = TryReadComponent(identity, "kind");
         return kind?.EndsWith("Counter", StringComparison.OrdinalIgnoreCase) == true;
     }
+
+    internal static bool IsEventCounterRawIncrement(string identity)
+        => identity.StartsWith("eventcounter|", StringComparison.Ordinal)
+            && string.Equals(TryReadComponent(identity, "kind"), "sum", StringComparison.Ordinal)
+            && !string.Equals(TryReadComponent(identity, "stat"), "rate", StringComparison.Ordinal);
+
+    internal static bool IsUnnormalizedEventCounterIncrement(string identity)
+    {
+        if (!IsEventCounterRawIncrement(identity))
+        {
+            return false;
+        }
+
+        var statistic = TryReadComponent(identity, "stat");
+        return statistic is null or "unnormalized-increment";
+    }
+
+    internal static bool IsNormalizedRawEventCounterIncrement(string identity)
+        => IsEventCounterRawIncrement(identity)
+            && string.Equals(TryReadComponent(identity, "stat"), "increment", StringComparison.Ordinal);
 
     internal static bool IsCanonical(string identity)
         => identity.StartsWith("eventcounter|", StringComparison.Ordinal)

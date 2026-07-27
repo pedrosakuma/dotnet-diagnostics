@@ -29,8 +29,28 @@ public sealed class CountersComparableProjector : IComparableProjector
         foreach (var counter in snapshot.Counters)
         {
             var name = $"counter:{counter.Provider}/{counter.Name}";
-            var aggregation = counter.Kind == CounterKind.Sum ? MetricAggregation.Total : MetricAggregation.Point;
-            AddOrReplace(metrics, name, BetterDirection.Neutral, aggregation, counter.Unit, counter.Value);
+            if (counter.Kind == CounterKind.Sum)
+            {
+                if (CounterValueNormalization.TryGetRate(counter, out var rate))
+                {
+                    AddOrReplace(
+                        metrics,
+                        $"{name}/rate",
+                        BetterDirection.Neutral,
+                        MetricAggregation.Rate,
+                        CounterValueNormalization.RateUnit(counter),
+                        rate);
+                }
+                continue;
+            }
+
+            AddOrReplace(
+                metrics,
+                name,
+                BetterDirection.Neutral,
+                MetricAggregation.Point,
+                counter.Unit,
+                counter.Value);
         }
 
         foreach (var meter in snapshot.Meters)

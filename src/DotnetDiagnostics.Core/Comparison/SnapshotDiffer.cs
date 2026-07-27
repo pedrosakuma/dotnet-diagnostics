@@ -199,7 +199,9 @@ public static class SnapshotDiffer
             }
 
             var (key, name) = display[id];
-            var dispersion = mode == JourneyMode.Dispersion ? Dispersion(values) : null;
+            var dispersion = mode == JourneyMode.Dispersion
+                ? Dispersion(values, missingAsZero: true)
+                : null;
             rows.Add(new KeyMatrixRow(key, name, values, deltaAbs, deltaPct, direction, dispersion));
         }
 
@@ -530,24 +532,22 @@ public static class SnapshotDiffer
             return NoOverlap;
         }
 
-        double maxCv;
+        var scalarMaxCv = 0.0;
         if (series.Count > 0)
         {
             var role = HighestRoleOf(series);
-            maxCv = series
+            scalarMaxCv = series
                 .Where(s => s.Definition.Role == role && s.Dispersion is not null)
                 .Select(s => s.Dispersion!.CoefficientOfVariation)
                 .DefaultIfEmpty(0)
                 .Max();
         }
-        else
-        {
-            // Key-set kinds carry no scalar metrics; measure spread across each row's per-capture values.
-            maxCv = keyMatrix
-                .Select(r => r.Dispersion?.CoefficientOfVariation ?? 0)
-                .DefaultIfEmpty(0)
-                .Max();
-        }
+
+        var keyMaxCv = keyMatrix
+            .Select(r => r.Dispersion?.CoefficientOfVariation ?? 0)
+            .DefaultIfEmpty(0)
+            .Max();
+        var maxCv = Math.Max(scalarMaxCv, keyMaxCv);
 
         return maxCv > DispersionCvThreshold ? Dispersed : Uniform;
     }
@@ -660,7 +660,7 @@ public static class SnapshotDiffer
         return allNonPos ? MetricTrend.MonotonicDown : MetricTrend.Converged;
     }
 
-    private static DispersionStats? Dispersion(double?[] values)
+    private static DispersionStats? Dispersion(double?[] values, bool missingAsZero = false)
     {
         var present = new List<(int Index, double Value)>();
         for (var i = 0; i < values.Length; i++)
@@ -668,6 +668,10 @@ public static class SnapshotDiffer
             if (values[i] is double d)
             {
                 present.Add((i, d));
+            }
+            else if (missingAsZero)
+            {
+                present.Add((i, 0));
             }
         }
 

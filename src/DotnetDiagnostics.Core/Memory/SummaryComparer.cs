@@ -35,9 +35,12 @@ public sealed record HotspotDelta(
     SymbolRef Symbol,
     double? BaselineInclusivePercent,
     double? CurrentInclusivePercent,
-    double? InclusiveDeltaPoints,
-    SelfSampleBreakdown? BaselineSelfSamples = null,
-    SelfSampleBreakdown? CurrentSelfSamples = null);
+    double? InclusiveDeltaPoints)
+{
+    public SelfSampleBreakdown? BaselineSelfSamples { get; init; }
+
+    public SelfSampleBreakdown? CurrentSelfSamples { get; init; }
+}
 
 public sealed record KeyMetricDelta(
     string Name,
@@ -85,8 +88,10 @@ public sealed class SummaryComparer : ISummaryComparer
                 h.Symbol,
                 null,
                 h.InclusivePercent,
-                h.InclusivePercent,
-                CurrentSelfSamples: h.SelfSamples))
+                h.InclusivePercent)
+            {
+                CurrentSelfSamples = h.SelfSamples,
+            })
             .OrderByDescending(d => d.CurrentInclusivePercent ?? 0)
             .ToArray();
 
@@ -96,8 +101,10 @@ public sealed class SummaryComparer : ISummaryComparer
                 h.Symbol,
                 h.InclusivePercent,
                 null,
-                -h.InclusivePercent,
-                BaselineSelfSamples: h.SelfSamples))
+                -h.InclusivePercent)
+            {
+                BaselineSelfSamples = h.SelfSamples,
+            })
             .OrderByDescending(d => d.BaselineInclusivePercent ?? 0)
             .ToArray();
 
@@ -111,9 +118,11 @@ public sealed class SummaryComparer : ISummaryComparer
                     kv.Key,
                     b,
                     c,
-                    Math.Round(c - b, 2),
-                    kv.Value.SelfSamples,
-                    currentMap[kv.Key].SelfSamples);
+                    Math.Round(c - b, 2))
+                {
+                    BaselineSelfSamples = kv.Value.SelfSamples,
+                    CurrentSelfSamples = currentMap[kv.Key].SelfSamples,
+                };
             })
             .Where(d => Math.Abs(d.InclusiveDeltaPoints!.Value) >= SignificantChangePoints)
             .OrderByDescending(d => Math.Abs(d.InclusiveDeltaPoints!.Value))
@@ -250,8 +259,12 @@ public sealed class SummaryComparer : ISummaryComparer
             var directionName = NormalizeMetricName(
                 InvestigationMetricIdentity.ComparableName(name));
             var isCumulativeLast = InvestigationMetricIdentity.IsCumulativeMeterLast(name);
+            var isRawIncrement = InvestigationMetricIdentity.IsEventCounterRawIncrement(name);
+            var isUnnormalizedIncrement = isRawIncrement
+                && InvestigationMetricIdentity.IsUnnormalizedEventCounterIncrement(name);
             var direction = default(MetricDirection);
             var hasDirection = !isCumulativeLast
+                && !isRawIncrement
                 && MetricDirections.TryGetValue(directionName, out direction);
             if (!hasBaseline || !hasCurrent)
             {
@@ -269,6 +282,15 @@ public sealed class SummaryComparer : ISummaryComparer
             {
                 deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable));
                 notes.Add($"Cumulative meter total '{name}' is retained as evidence but does not drive the verdict; compare its rate series instead.");
+                continue;
+            }
+
+            if (isRawIncrement)
+            {
+                deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable));
+                notes.Add(isUnnormalizedIncrement
+                    ? $"Raw EventCounter increment '{name}' has no interval/rate-scale metadata and is incomparable."
+                    : $"Raw EventCounter increment '{name}' is retained as evidence but does not drive the verdict; compare its normalized rate series instead.");
                 continue;
             }
 
@@ -299,7 +321,9 @@ public sealed class SummaryComparer : ISummaryComparer
     private static Evidence MetricEvidence(IReadOnlyList<KeyMetricDelta> deltas)
     {
         var verdictDeltas = deltas
-            .Where(static delta => !InvestigationMetricIdentity.IsCumulativeMeterLast(delta.Name))
+            .Where(static delta =>
+                !InvestigationMetricIdentity.IsCumulativeMeterLast(delta.Name)
+                && !InvestigationMetricIdentity.IsNormalizedRawEventCounterIncrement(delta.Name))
             .ToArray();
         if (verdictDeltas.Length == 0)
         {
