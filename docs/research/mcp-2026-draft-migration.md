@@ -1,22 +1,23 @@
 # MCP 2026 Draft Migration Assessment
 
-**Issue**: #546 (Phase 16 P1) · **Original assessment**: 2026-07-06 · **Last revalidated**: 2026-07-16
-**Status**: Research spike — no production migration. Revalidated against SDK `2.0.0-preview.3`.
+**Issue**: #546 (Phase 16 P1) · **Original assessment**: 2026-07-06 · **Last revalidated**: 2026-07-27
+**Status**: Pre-finalization revalidation complete. SDK `2.0.0-rc.1` released 2026-07-25; stable 2.0.0 confirmed for on or before 2026-07-28.
 
 ## Executive summary
 
-**Recommendation: WAIT for the 2026-07-28 spec finalization and stable SDK 2.x before doing the production migration, but prepare the now-concrete MRTR and package-migration work.**
+**Recommendation: The production migration gate is now imminent. Stable SDK 2.0.0 is confirmed for on or before 2026-07-28. All protocol and wire blockers are resolved. Plan the production bump for immediately after the stable release; begin MRTR dump-approval prep in parallel.**
 
 The repo is in a substantially better position than at the original assessment:
 
 - **Good news:** the main diagnostic drilldown model is already close to SEP-2567. `IDiagnosticHandleStore` already mints opaque server handles, and follow-up calls already pass those handles as ordinary tool arguments.
 - **Resolved architectural blocker:** #554 / PR #559 made explicit investigation handles the primary orchestrator routing token. Session binding remains only as a compatibility fallback, so SEP-2567 no longer requires an orchestrator redesign before migration.
-- **Core SDK shape remains compatible:** repo-style registration, tools, `RequestContext<CallToolRequestParams>`, and Streamable HTTP still compile against `2.0.0-preview.3`.
+- **Core SDK shape remains compatible:** repo-style registration, tools, `RequestContext<CallToolRequestParams>`, and Streamable HTTP still compile against `2.0.0-preview.3` and the RC.1 breaking changes do not affect this repo (see 2026-07-27 revalidation below).
 - **The original wire-compliance blocker is fixed:** raw HTTP validation against `2.0.0-preview.3` confirmed `resultType: "complete"` on `server/discover`, `tools/list`, and `tools/call`.
 - **Dump approval now has a concrete migration requirement:** `McpServer.ElicitAsync(...)` throws `InvalidOperationException("Elicitation is not supported in stateless mode.")` on `2026-07-28` Streamable HTTP. The tool must use explicit MRTR via `InputRequiredException`, then consume `RequestParams.InputResponses` and `RequestState` on retry.
-- **Tasks has a concrete package shape but remains gated:** `2.0.0-preview.3` moved Tasks into `ModelContextProtocol.Extensions.Tasks`; the extension and its low-level composition APIs are still preview/experimental, so #548 should continue waiting for stable 2.x.
+- **Tasks has a concrete package shape but remains gated:** `2.0.0-preview.3` moved Tasks into `ModelContextProtocol.Extensions.Tasks`; `rc.1` removed the unstable `CreateMcpTaskScope` helper; this repo does not use either API, so #548 is unaffected.
+- **RC.1 breaking changes are not applicable to this repo:** all four breaking changes in `2.0.0-rc.1` target either the Tasks extension API or the SDK's client-side OAuth flows. This repo's server surface uses its own custom bearer/OIDC middleware, and the internal `PodLocalInvestigationProxyClient` MCP client (used for pod-to-pod proxying) injects its bearer token directly via `AdditionalHeaders` rather than the SDK's OAuth machinery (`ClientOAuthProvider`, `AuthorizationRedirectDelegate`); none of the OAuth changes apply.
 
-The production recommendation therefore remains **wait**, but for release-timing rather than an unknown protocol or SDK shape. The remaining work can now be split into narrow, testable migrations instead of another broad feasibility spike.
+The wait is now measured in hours, not weeks. The remaining work can be split into narrow, testable migrations immediately after stable 2.0.0 ships.
 
 ## Draft changes reviewed
 
@@ -320,6 +321,40 @@ is still a preview targeting a protocol revision that has not yet been
 ratified. That is not sufficient justification for moving the production
 server off stable SDK `1.4.0`.
 
+## SDK 2.0.0-rc.1 pre-finalization check (2026-07-27)
+
+`2.0.0-rc.1` was published on **2026-07-25**, confirmed via NuGet. Both
+`ModelContextProtocol` and `ModelContextProtocol.AspNetCore` moved to `rc.1`
+simultaneously (same date). The SDK maintainers state in the release notes:
+
+> **We remain on-track to release 2.0.0 stable on or before 2026-07-28.**
+
+The production wait — which has been in place since the original spike — is
+now measured in hours, not weeks. As of this check (2026-07-27) no stable
+`2.0.0` yet appears in the NuGet flat-container index; the latest is `rc.1`.
+
+### RC.1 breaking changes — applicability to this repo
+
+RC.1 ships four documented breaking changes. **None affect this repo**:
+
+| RC.1 breaking change | Applies to this repo? | Reason |
+|---|---|---|
+| Remove `McpTasksServerExtensions.CreateMcpTaskScope(...)` | No | Repo does not use the Tasks extension API anywhere. `grep` for `CreateMcpTaskScope`, `McpTasksServerExtensions`, and `ModelContextProtocol.Extensions.Tasks` returns no hits in `src/`. |
+| Harden OAuth issuer validation — `AuthorizationRedirectDelegate` → `AuthorizationCallbackHandler` | No | The server surface uses custom bearer/OIDC middleware (`BearerTokenMiddleware`, `OidcJwtProvider`). The repo does embed one internal MCP **client** — `PodLocalInvestigationProxyClient` (`src/DotnetDiagnostics.Mcp/Orchestrator/Investigations/PodLocalInvestigationProxyClient.cs`), used for pod-to-pod proxying — but it injects its bearer token directly via `HttpClientTransportOptions.AdditionalHeaders` and never uses the SDK's client-side OAuth flows (`ClientOAuthProvider`, `AuthorizationRedirectDelegate`), so this change does not apply. Follow-up: confirm this client's per-handle `initialize`-handshake caching (`GetOrCreateClientAsync`) is still correct once SEP-2567 removes protocol-level sessions. |
+| Require advertised PKCE S256 support | No | Client-side OAuth concern only. |
+| Send Dynamic Client Registration `application_type` | No | Client-side OAuth concern only. |
+
+Other notable changes in RC.1:
+- Reject mismatched `initialize` protocol versions (#1724): server-side hardening; no code changes required here, behavior is enforced by the SDK automatically.
+- HTTP task-filter composition fix (#1722): fixes a ship-stopping Tasks/HTTP defect; not applicable since this repo does not use the Tasks extension.
+
+### Conclusion
+
+The RC.1 content does not introduce any new migration work for this repo beyond
+what was already documented at the `preview.3` stage. The release gate is now
+purely temporal (stable 2.0.0 landing on or before 2026-07-28) rather than any
+outstanding protocol, wire, or API shape concern.
+
 ## Other useful preview observations
 
 - In stateless HTTP mode, `SessionId` was observed as `null` inside the tool body.
@@ -338,25 +373,27 @@ server off stable SDK `1.4.0`.
 | Orchestrator attach/proxy session binding | **Addressed** | #554 / PR #559 made explicit handles primary; session binding is a fallback. |
 | `ping` / `logging/setLevel` / `roots/list_changed` | **Low/no impact found** | No direct repo usage found. |
 | `subscriptions/listen` | **Low impact today** | Repo does not depend on out-of-band list/resource change streams. |
-| SDK 2.0 preview as migration base | **Wire shape validated, release gate remains** | `preview.3` fixes `resultType` and validates MRTR, but is still preview against an unratified revision. |
+| SDK 2.0 preview as migration base | **Wire shape validated, release gate satisfied (rc.1)** | `preview.3` fixed `resultType` and validated MRTR; `rc.1` (2026-07-25) advances to release-candidate status with stable 2.0.0 confirmed for on or before 2026-07-28. |
 
 ## Recommended migration order
 
-1. **Do not upgrade the main repo to SDK 2.0 preview yet.**
-   - The wire-compliance blocker is fixed, but the protocol is scheduled for
-     2026-07-28 and the SDK is still preview.
-   - Prepare the package/API diff and integration-test matrix without merging
-     preview dependencies into production.
+1. **Upgrade the main repo to SDK 2.0.0 stable immediately after it ships.**
+   - The wire-compliance blocker is fixed; MRTR is validated; RC.1 breaking
+     changes do not affect this repo; stable 2.0.0 is confirmed for on or
+     before 2026-07-28.
+   - Bump `ModelContextProtocol` and `ModelContextProtocol.AspNetCore` in
+     `Directory.Packages.props` from `1.4.x` to `2.0.0` (or whatever stable
+     label ships); build + run full test suite; address any compile errors.
 
 2. **Treat the orchestrator state refactor as complete.**
    - #554 / PR #559 delivered explicit handle threading.
    - Retain and test the legacy session fallback during the dual-era window.
 
-3. **When the spec is final and the SDK is stable, do a narrow transport/protocol migration first.**
-   - bump protocol version,
+3. **Do a narrow transport/protocol migration immediately after the package bump.**
+   - bump protocol version string,
    - validate `server/discover`, per-request `_meta`, standard HTTP headers,
    - confirm `resultType` on all result shapes,
-   - move Tasks references to `ModelContextProtocol.Extensions.Tasks`,
+   - move Tasks references to `ModelContextProtocol.Extensions.Tasks` when #548 is actioned,
    - retain validation for legacy `2025-11-25` clients where supported.
 
 4. **Migrate dump approval as an explicit dual-era MRTR flow.**
@@ -373,16 +410,13 @@ server off stable SDK `1.4.0`.
 
 ## Timeline recommendation
 
-**Recommendation: wait on the production migration, but do not wait on the design work.**
+**Recommendation: stable 2.0.0 is imminent — prepare to migrate immediately after it ships.**
 
-More concretely:
+More concretely (updated 2026-07-27):
 
-- **Wait** on changing `Directory.Packages.props`, the main solution, and the live MCP server behavior until the draft is finalized and the SDK's wire behavior is clearly complete.
-- **Start early** on test and design work whose API shape is now proven:
-  explicit MRTR dump approval, Tasks package extraction, and dual-era protocol
-  coverage.
-
-That is the best balance between urgency and avoiding throwaway work.
+- **Stable 2.0.0 is confirmed for on or before 2026-07-28.** The previous "wait on changing `Directory.Packages.props`" recommendation is now superseded: the blocking condition (stable, non-preview SDK against a finalized spec) is within hours of being satisfied.
+- **Start the narrow package bump (step 1 above) as soon as stable 2.0.0 appears on NuGet.** This is now the gate, not an aspirational future date.
+- **Run MRTR dump-approval prep in parallel:** the API shape is stable enough to draft the `InputRequiredException` retry path against `rc.1`; the work does not need to wait for the final package label.
 
 ## Follow-up work at finalization
 
@@ -412,10 +446,13 @@ The repo's **diagnostic artifact handle model is already in the right architectu
 The two things that matter most now are:
 
 1. **the remaining tool-level incompatibility is dump approval's use of
-   `ElicitAsync` on stateless HTTP**, with a validated explicit-MRTR replacement;
-2. **the release gate remains spec finalization plus stable SDK 2.x**, not an
-   unresolved architecture or wire-format blocker.
+   `ElicitAsync` on stateless HTTP**, with a validated explicit-MRTR replacement
+   whose API shape is known and stable as of `rc.1`;
+2. **the release gate is now satisfied in practice**: `2.0.0-rc.1` shipped
+   2026-07-25 with no repo-impacting breaking changes, and the SDK maintainers
+   confirmed stable `2.0.0` ships on or before 2026-07-28.
 
-That combination supports a clear plan: **prepare the narrow migration and its
-dual-era tests now, then change production dependencies and protocol behavior
-only after the 2026-07-28 revision and stable SDK 2.x land.**
+That combination supports a clear and immediate plan: **start the package bump
+in `Directory.Packages.props` as soon as stable 2.0.0 appears on NuGet, run the
+narrow transport/protocol migration and the MRTR dump-approval rewrite, then
+clean up residual docs and comments.**
