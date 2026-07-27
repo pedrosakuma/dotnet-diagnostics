@@ -24,6 +24,14 @@ It still requires the same Linux pod-level prerequisites:
 2. **Shared PID visibility** (`shareProcessNamespace: true`) so the sidecar can enumerate the target process.
 3. **Matching UID/GID (or `fsGroup`)** so the sidecar can open the diagnostic socket.
 
+With `shareProcessNamespace`, Kubernetes' pod sandbox owns namespace PID 1;
+the application container does not. The diagnostics sidecar can therefore
+finish draining an already-started crash-guard collection when the application
+process exits. Plain Docker needs the explicit anchor documented in
+[`../../docs/local-docker-sidecar.md`](../../docs/local-docker-sidecar.md);
+joining the target directly with `--pid=container:<target>` does not have this
+lifecycle property.
+
 See [`sample-sidecar.yaml`](./sample-sidecar.yaml) for the canonical manifest.
 
 ## Central orchestrator quick starts

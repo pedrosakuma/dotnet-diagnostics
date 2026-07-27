@@ -146,7 +146,7 @@ jobs:
       - name: Test (Server integration)
         if: ${{ always() && needs.changes.outputs.code == 'true' }}
         shell: bash
-        run: scripts/ci-test-with-retry.sh server-test-results.trx -- dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --filter "Category!=KindIntegration" --logger "trx;LogFileName=server-test-results.trx" --results-directory TestResults
+        run: scripts/ci-test-with-retry.sh server-test-results.trx -- dotnet test tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj --no-build --configuration Release --blame-hang-timeout 5m --blame-hang-dump-type none --blame-crash --blame-crash-dump-type full --filter "Category!=KindIntegration&Category!=DockerIntegration" --logger "trx;LogFileName=server-test-results.trx" --results-directory TestResults
 
       - name: Verify expected test results
         if: ${{ always() && needs.changes.outputs.code == 'true' }}

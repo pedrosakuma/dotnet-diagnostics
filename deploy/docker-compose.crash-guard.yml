@@ -1,0 +1,60 @@
+name: dotnet-diagnostics-crash-guard
+
+services:
+  # Docker's `pid: service:<target>` ties every joined process to that target's
+  # namespace PID 1. If the target exits, Linux kills the diagnostics sidecar
+  # before it can return crash-guard. This inert anchor owns PID 1 instead.
+  pid-anchor:
+    image: badcode-sample:dev
+    pull_policy: never
+    entrypoint: ["tail", "-f", "/dev/null"]
+
+  target:
+    image: badcode-sample:dev
+    build:
+      context: ..
+      dockerfile: samples/BadCodeSample/Dockerfile
+    pid: "service:pid-anchor"
+    depends_on:
+      pid-anchor:
+        condition: service_started
+    environment:
+      DOTNET_EnableDiagnostics: "1"
+    volumes:
+      - diagnostics-tmp:/tmp
+    ports:
+      - "127.0.0.1:18180:8080"
+
+  diagnostics:
+    image: dotnet-diagnostics-mcp:dev
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        INSTALL_PERF: "false"
+    pid: "service:pid-anchor"
+    depends_on:
+      pid-anchor:
+        condition: service_started
+      target:
+        condition: service_started
+    user: "0:0"
+    cap_add:
+      - SYS_PTRACE
+    environment:
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+      MCP_BEARER_TOKEN: dev-token
+      DOTNET_NOLOGO: "1"
+    volumes:
+      - diagnostics-tmp:/tmp
+    ports:
+      - "127.0.0.1:18887:8080"
+    healthcheck:
+      test: ["CMD", "dotnet", "DotnetDiagnostics.Mcp.dll", "--health-check", "--urls", "http://127.0.0.1:8080"]
+      interval: 2s
+      timeout: 2s
+      start_period: 5s
+      retries: 30
+
+volumes:
+  diagnostics-tmp:
