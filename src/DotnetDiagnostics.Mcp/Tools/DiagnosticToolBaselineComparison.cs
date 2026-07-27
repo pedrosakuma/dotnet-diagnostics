@@ -101,7 +101,7 @@ internal static class DiagnosticToolBaselineComparison
         {
             return DiagnosticResult.Fail<object>(
                 "Mixed comparison schemas are not supported in one compare_to_baseline call.",
-                new DiagnosticError("MixedSchemas", $"schemas='{string.Join(", ", distinctSchemas)}'"),
+                new DiagnosticError("MixedSchemas", "The supplied documents use different comparison schemas.", "MixedSchemaSet"),
                 new NextActionHint("compare_to_baseline", "Compare either InvestigationSummary documents or ComparableSnapshot documents, not both."));
         }
 
@@ -130,7 +130,7 @@ internal static class DiagnosticToolBaselineComparison
                     new NextActionHint("compare_to_baseline", "Pass 2..N ComparableSnapshot JSON documents for a journey comparison.")),
             _ => DiagnosticResult.Fail<object>(
                 "Unsupported comparison schema.",
-                new DiagnosticError("UnsupportedSchema", $"schema='{distinctSchemas[0]}'"),
+                new DiagnosticError("UnsupportedSchema", "The supplied comparison schema is unsupported.", "UnsupportedComparisonSchema"),
                 new NextActionHint("compare_to_baseline", "Re-export snapshots or summaries with the current server version.")),
         };
     }
@@ -156,7 +156,7 @@ internal static class DiagnosticToolBaselineComparison
         {
             return DiagnosticResult.Fail<object>(
                 "Could not parse one of the supplied summary JSON documents.",
-                new DiagnosticError("InvalidSummaryJson", ex.Message),
+                new DiagnosticError("InvalidSummaryJson", "A supplied summary JSON document is malformed or incompatible.", "SummaryDeserializationFailed"),
                 new NextActionHint("export_investigation_summary", "Re-export the baseline and current summaries and try again."));
         }
 
@@ -165,7 +165,7 @@ internal static class DiagnosticToolBaselineComparison
         {
             return DiagnosticResult.Fail<object>(
                 $"Unsupported schema. Expected '{InvestigationSummary.SchemaV1}'.",
-                new DiagnosticError("UnsupportedSchema", $"baseline='{baseline.Schema}' current='{current.Schema}'"),
+                new DiagnosticError("UnsupportedSchema", "One or both supplied summary schemas are unsupported.", "UnsupportedInvestigationSummarySchema"),
                 new NextActionHint("export_investigation_summary", "Re-export both summaries with the current server version."));
         }
 
@@ -243,7 +243,7 @@ internal static class DiagnosticToolBaselineComparison
         {
             return DiagnosticResult.Fail<object>(
                 "Could not parse one of the supplied comparable snapshot JSON documents.",
-                new DiagnosticError("InvalidSnapshotJson", ex.Message),
+                new DiagnosticError("InvalidSnapshotJson", "A supplied comparable snapshot JSON document is malformed or incompatible.", "SnapshotDeserializationFailed"),
                 new NextActionHint("compare_to_baseline", "Re-export the comparable snapshots and try again."));
         }
 
@@ -546,9 +546,9 @@ internal static class DiagnosticToolBaselineComparison
 
             return true;
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            error = ex.Message;
+            error = "JSON is malformed.";
             return false;
         }
     }

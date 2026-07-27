@@ -407,9 +407,10 @@ public class InvestigationMemoryTests
         var reversedError = reversed.Should().Throw<EvidenceMetricConflictException>().Which;
         forwardError.MetricName.Should().Be(QueueMetric);
         reversedError.Message.Should().Be(forwardError.Message);
-        forwardError.Message.Should().Contain("a-handle")
-            .And.Contain("z-handle")
-            .And.Contain("export separately");
+        forwardError.Message.Should().Be("Evidence contains conflicting values for one metric identity.")
+            .And.NotContain(QueueMetric)
+            .And.NotContain("a-handle")
+            .And.NotContain("z-handle");
     }
 
     [Fact]

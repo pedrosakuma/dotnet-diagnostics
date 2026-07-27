@@ -81,51 +81,23 @@ public sealed class EvidenceMetricConflictException : InvalidOperationException
         double firstValue,
         string secondHandle,
         double secondValue)
-        : base(BuildMessage(metricName, firstHandle, firstValue, secondHandle, secondValue))
+        : base("Evidence contains conflicting values for one metric identity.")
     {
         MetricName = metricName;
     }
 
     public string MetricName { get; }
-
-    private static string BuildMessage(
-        string metricName,
-        string firstHandle,
-        double firstValue,
-        string secondHandle,
-        double secondValue)
-    {
-        var first = (Handle: firstHandle, Value: firstValue);
-        var second = (Handle: secondHandle, Value: secondValue);
-        if (string.Compare(first.Handle, second.Handle, StringComparison.Ordinal) > 0)
-        {
-            (first, second) = (second, first);
-        }
-
-        return string.Create(
-            System.Globalization.CultureInfo.InvariantCulture,
-            $"Metric '{metricName}' has conflicting values: handle '{first.Handle}'={first.Value:R}, handle '{second.Handle}'={second.Value:R}. Remove one conflicting handle or export separately.");
-    }
 }
 
 public sealed class InvalidEvidenceMetricException : InvalidOperationException
 {
     public InvalidEvidenceMetricException(string metricIdentity, string handle, double value)
-        : base(
-            $"Metric '{metricIdentity}' from handle '{handle}' has non-finite value " +
-            $"'{NonFiniteName(value)}'. Re-collect the evidence or omit the invalid producer series.")
+        : base("Evidence contains a non-finite metric value.")
     {
         MetricIdentity = metricIdentity;
     }
 
     public string MetricIdentity { get; }
-
-    private static string NonFiniteName(double value)
-        => double.IsNaN(value)
-            ? "NaN"
-            : double.IsPositiveInfinity(value)
-                ? "+Infinity"
-                : "-Infinity";
 }
 
 public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
@@ -290,7 +262,7 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
             ("gc-datas", GcDatasSnapshot datas) => ProjectGcDatas(input, datas),
             ("thread-snapshot", ThreadSnapshotArtifact threads) => ProjectThreads(input, threads),
             _ => throw new ArgumentException(
-                $"Handle '{input.Handle}' has unsupported or mismatched evidence pair kind='{input.Kind}', artifact='{input.Artifact.GetType().Name}'.",
+                "Evidence contains an unsupported or mismatched kind/artifact pair.",
                 nameof(input)),
         };
 
