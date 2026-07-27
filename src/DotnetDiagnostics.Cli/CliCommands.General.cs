@@ -413,6 +413,10 @@ internal static partial class CliCommands
                 case TriageClassifier.ManagedMemoryActivityHypothesis:
                     hints.Add(new NextActionHint("collect", $"{hypothesis.NextStep} Run: collect --kind allocation --pid {pid} --duration 10"));
                     break;
+                case TriageClassifier.MemoryFootprintGrowthHypothesis:
+                    hints.Add(new NextActionHint("inspect", $"{hypothesis.NextStep} Re-run: inspect --view triage --pid {pid} --duration 15"));
+                    hints.Add(new NextActionHint("inspect-heap", $"Capture a managed-heap snapshot without assigning a retention cause: inspect-heap --source gcdump --pid {pid}"));
+                    break;
                 case TriageClassifier.ThreadPoolBacklogHypothesis:
                     hints.Add(new NextActionHint("collect", $"{hypothesis.NextStep} Run: collect --kind threadpool --pid {pid} --duration 10"));
                     break;

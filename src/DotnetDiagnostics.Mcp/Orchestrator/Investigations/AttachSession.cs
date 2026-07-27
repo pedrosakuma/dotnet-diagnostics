@@ -20,7 +20,8 @@ public sealed record AttachSession(
     DateTimeOffset AttachedAt,
     DateTimeOffset ExpiresAt,
     string? FailureReason = null,
-    string? ProxyBaseUrl = null)
+    string? ProxyBaseUrl = null,
+    InvestigationProcessSelector? ProcessSelector = null)
 {
     /// <summary>
     /// Projects an internal handle into the client-safe shape, dropping the bearer token.
@@ -42,6 +43,7 @@ public sealed record AttachSession(
             AttachedAt: handle.AttachedAt,
             ExpiresAt: handle.ExpiresAt,
             FailureReason: handle.FailureReason,
-            ProxyBaseUrl: proxyBaseUrl);
+            ProxyBaseUrl: proxyBaseUrl,
+            ProcessSelector: handle.ProcessSelector);
     }
 }

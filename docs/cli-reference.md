@@ -146,7 +146,7 @@ One-call process inspector exposing three views (`--view` required):
 
 | View | What it does |
 |---|---|
-| `triage` | Collects counters for `--duration` seconds (default 5), reports threshold-backed observed signals separately from evidence-backed hypotheses, and returns neutral drill-down hints. |
+| `triage` | Collects counters for `--duration` seconds (default 5), reports threshold-backed observed signals separately from evidence-backed hypotheses, retains host-normalized CPU plus estimated effective-core consumption, and evaluates in-window GC heap / LOH / working-set growth before returning neutral drill-down hints. |
 | `runtime-config` | Reads the process's effective runtime configuration: GC mode and heap count, ThreadPool worker/IOCP bounds, tiered-compilation flags, filtered runtime env vars, and AppContext switches. |
 | `container` | Reads cgroup/container CPU quota + throttling, memory limits / OOM counters, PSI, pid limits and `oom_score` for the target process. Linux/cgroup-v2-first; returns partial signals plus notes when the host lacks a container envelope or PSI. |
 
@@ -169,6 +169,14 @@ threshold, human output adds a `Signal separation` line: the starvation signal i
 window, while the remaining latency must be checked against workload/SLO expectations. This is a
 CLI rendering clarification only; it does not change the Core triage assessment or infer that a
 latency value is expected without operator context.
+
+Topology-adjusted CPU uses the target's one-shot `System.Runtime/ProcessorCount` event, never the CLI
+process's topology, and emits `cpu.effective-core-consumption` at approximately one busy core even
+when host-normalized CPU is small. `cpuTopologyStatus` is `unknown` when the target event is
+unavailable. Material first-to-last GC heap, LOH, or working-set growth emits
+`memory.intra-window-growth`; the bounded `memory.footprint-growth` hypothesis describes the shape
+without claiming a leak or prescribing a solution. Memory-growth indicators apply the same 20% and
+1 MB materiality floor as the observed signal.
 
 For compatibility, JSON continues to serialize `verdict`, `secondaryVerdicts`, `severity`,
 `evidence`, and `topIndicators`. `verdict` and `secondaryVerdicts` are deprecated for removal in

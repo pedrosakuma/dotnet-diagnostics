@@ -95,7 +95,34 @@ public static class ChildProcessLauncher
             process.BeginErrorReadLine();
         }
 
-        return new LaunchedTarget(process);
+        return new LaunchedTarget(process, GetDiagnosticArtifactDirectories(startInfo));
+    }
+
+    private static string[] GetDiagnosticArtifactDirectories(ProcessStartInfo startInfo)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return Array.Empty<string>();
+        }
+
+        var tempDirectory = startInfo.Environment.TryGetValue("TMPDIR", out var configuredTempDirectory)
+            && !string.IsNullOrWhiteSpace(configuredTempDirectory)
+                ? configuredTempDirectory
+                : "/tmp";
+
+        try
+        {
+            var baseDirectory = string.IsNullOrEmpty(startInfo.WorkingDirectory)
+                ? Environment.CurrentDirectory
+                : Path.GetFullPath(startInfo.WorkingDirectory);
+            return [Path.GetFullPath(tempDirectory, baseDirectory)];
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            // An invalid TMPDIR may stop the runtime from publishing its default endpoint, but it
+            // should not stop process launch. There is no safe directory to inspect during cleanup.
+            return Array.Empty<string>();
+        }
     }
 
     /// <summary>

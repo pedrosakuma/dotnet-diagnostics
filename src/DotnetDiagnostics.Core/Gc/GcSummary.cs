@@ -33,7 +33,11 @@ public sealed record GcHeapStatsSample(
     long PinnedObjectCount,
     long GcHandleCount);
 
-/// <summary>Aggregated GC activity over a window.</summary>
+/// <summary>
+/// Aggregated GC activity over a window. Top-line totals and generation counts remain exact after
+/// the raw event/heap-stat retention caps are reached; <see cref="DroppedEvents"/> and
+/// <see cref="DroppedHeapStats"/> disclose the omitted detail rows.
+/// </summary>
 public sealed record GcSummary(
     int ProcessId,
     DateTimeOffset StartedAt,
@@ -43,4 +47,6 @@ public sealed record GcSummary(
     TimeSpan MaxPauseTime,
     IReadOnlyList<GenerationStats> Generations,
     IReadOnlyList<GcEvent> Events,
-    IReadOnlyList<GcHeapStatsSample>? HeapStats = null);
+    IReadOnlyList<GcHeapStatsSample>? HeapStats = null,
+    int DroppedEvents = 0,
+    int DroppedHeapStats = 0);

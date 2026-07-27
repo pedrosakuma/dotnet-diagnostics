@@ -32,6 +32,8 @@ public sealed class SuspendedTarget : IAsyncDisposable
     /// <summary>Operating-system process id of the launched, suspended target.</summary>
     public int ProcessId { get; }
 
+    internal string DiagnosticPortPath => _portPath;
+
     /// <summary>True once the launched target has exited.</summary>
     public bool HasExited => _owner.HasExited;
 
@@ -59,8 +61,14 @@ public sealed class SuspendedTarget : IAsyncDisposable
         }
 
         _disposed = true;
-        try { await _connector.DisposeAsync().ConfigureAwait(false); } catch (Exception) { }
-        await _owner.DisposeAsync().ConfigureAwait(false);
-        SuspendedColdStartLauncher.TryDeletePort(_portPath);
+        try
+        {
+            try { await _connector.DisposeAsync().ConfigureAwait(false); } catch (Exception) { }
+            await _owner.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            SuspendedColdStartLauncher.TryDeletePort(_portPath);
+        }
     }
 }

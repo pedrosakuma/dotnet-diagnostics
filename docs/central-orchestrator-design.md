@@ -154,11 +154,22 @@ attach_to_pod(
   container?: string = "app",
   ttlSeconds?: int = 1800,
   requirePreparedTarget?: bool = true,
-  allowReuseExistingSession?: bool = true
+  allowReuseExistingSession?: bool = true,
+  processSelector?: {
+    managedEntrypointAssemblyName?: string,
+    commandLineContains?: string
+  }
 )
 ```
 #### Return shape
-`attach_to_pod` returns an `AttachSession` plus the normal `handle` and `handleExpiresAt` fields on the outer envelope. The `data` payload should include the target identity, the ephemeral container name, the state, the expiry, and any warnings. The summary should explicitly tell the user that the returned handle is active and that the **existing** diagnostic tools are now scoped to the attached Pod.
+`attach_to_pod` returns an `AttachSession` plus the normal `handle` and `handleExpiresAt` fields on the outer envelope. The `data` payload should include the target identity, the ephemeral container name, the state, the expiry, the optional process selector, and any warnings. The summary should explicitly tell the user that the returned handle is active and that the **existing** diagnostic tools are now scoped to the attached Pod.
+
+The optional process selector is deliberately transport-neutral: it stores stable process metadata,
+not a Pod-local OS PID. Fleet fan-out features such as
+`collect_events(kind="replica_counters")` resolve it through each Pod's
+`inspect_process(view="list")`, require exactly one match, and then pass that resolved PID to the
+Pod-local collector. Ambiguous or missing matches surface as per-Pod structured errors; the
+orchestrator never guesses from PID ordering.
 #### Error kinds
 - `InvalidArgument`
 - `NamespaceNotAllowed`

@@ -142,6 +142,10 @@ public sealed class KindIntegrationTests
                 ["requirePreparedTarget"] = true,
                 ["allowReuseExistingSession"] = true,
                 ["ttlSeconds"] = 600,
+                ["processSelector"] = new Dictionary<string, object?>
+                {
+                    ["managedEntrypointAssemblyName"] = "CoreClrSample",
+                },
             },
             cancellationToken: ct).ConfigureAwait(false);
 
@@ -151,8 +155,11 @@ public sealed class KindIntegrationTests
         attachEnvelope!.State.Should().Be(InvestigationState.Active,
             $"attach must reach Active (got {attachEnvelope.State}; reason='{attachEnvelope.FailureReason}')");
         attachEnvelope.PodName.Should().Be(chosenPodName);
+        attachEnvelope.ProcessSelector.Should().Be(
+            new InvestigationProcessSelector(ManagedEntrypointAssemblyName: "CoreClrSample"));
         attachEnvelope.ProxyBaseUrl.Should().NotBeNullOrWhiteSpace(
             "an Active handle must publish the orchestrator-relative proxy prefix");
+        var attachedHandles = new List<AttachSession> { attachEnvelope };
 
         var proxyBase = attachEnvelope.ProxyBaseUrl!.TrimStart('/');
         _output.WriteLine($"Attached: handleId={attachEnvelope.HandleId} proxy={attachEnvelope.ProxyBaseUrl}");
@@ -236,6 +243,9 @@ public sealed class KindIntegrationTests
                   || p.ManagedEntrypointAssemblyName == "DotnetDiagnostics.Mcp",
                 "only the target sample and the ephemeral diagnostics MCP itself are " +
                 "expected in the pod's PID namespace");
+            procs.Should().HaveCount(2,
+                "the canonical prepared-pod topology intentionally exposes both the target and " +
+                "the attached diagnostics MCP, so replica fan-out must not rely on lone-process auto-selection");
 
             // ------------------------------------------------------------
             // Step 5: collect a real EventPipe counter window against the
@@ -299,20 +309,132 @@ public sealed class KindIntegrationTests
                         counter.GetProperty("name").GetString() == "cpu-usage"));
 
             // ------------------------------------------------------------
-            // Step 6: detach_from_pod and confirm the handle is no longer
-            // present in the caller's active-investigation view.
+            // Step 6: attach the sibling replica with the same transport-neutral
+            // process selector, then prove replica_counters resolves a distinct
+            // Pod-local PID in each canonical two-process Pod.
             // ------------------------------------------------------------
-            var detachResult = await orchClient.CallToolAsync(
-                "detach_from_pod",
-                new Dictionary<string, object?> { ["handleId"] = attachEnvelope.HandleId },
+            var allPodsResult = await orchClient.CallToolAsync(
+                "list_orchestrator",
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "pods",
+                    ["namespace"] = activation.Namespace,
+                    ["labelSelector"] = "app=p6-sample",
+                    ["preparedOnly"] = true,
+                    ["limit"] = 10,
+                },
                 cancellationToken: ct).ConfigureAwait(false);
 
-            detachResult.IsError.Should().NotBe(true, "detach_from_pod is idempotent and must succeed");
-            var detached = DeserializeStructured<DetachResult>(detachResult);
-            detached.Should().NotBeNull();
-            detached!.Found.Should().BeTrue();
-            detached.NewState.Should().Be(InvestigationState.Closed,
-                "detach_from_pod must transition Active -> Closed");
+            var allPodsEnvelope = DeserializeEnvelope(allPodsResult);
+            allPodsEnvelope!.Error.Should().BeNull();
+            var allPods = allPodsEnvelope.Data.GetProperty("pods").GetProperty("items");
+            allPods.GetArrayLength().Should().Be(2,
+                "the canonical kind topology contains two prepared CoreClrSample replicas");
+
+            foreach (var pod in allPods.EnumerateArray())
+            {
+                var podName = pod.GetProperty("name").GetString()!;
+                if (podName == chosenPodName)
+                {
+                    continue;
+                }
+
+                var siblingAttachResult = await orchClient.CallToolAsync(
+                    "attach_to_pod",
+                    new Dictionary<string, object?>
+                    {
+                        ["namespace"] = activation.Namespace,
+                        ["podName"] = podName,
+                        ["containerName"] = pod.GetProperty("containerName").GetString(),
+                        ["requirePreparedTarget"] = true,
+                        ["allowReuseExistingSession"] = true,
+                        ["ttlSeconds"] = 600,
+                        ["processSelector"] = new Dictionary<string, object?>
+                        {
+                            ["managedEntrypointAssemblyName"] = "CoreClrSample",
+                        },
+                    },
+                    cancellationToken: ct).ConfigureAwait(false);
+                siblingAttachResult.IsError.Should().NotBeTrue("the sibling replica must attach");
+                var sibling = DeserializeStructured<AttachSession>(siblingAttachResult)!;
+                attachedHandles.Add(sibling);
+
+                var siblingReady = false;
+                var siblingReadyDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(60);
+                while (DateTime.UtcNow < siblingReadyDeadline)
+                {
+                    try
+                    {
+                        var probe = await orchClient.CallToolAsync(
+                            "inspect_process",
+                            new Dictionary<string, object?>
+                            {
+                                ["view"] = "list",
+                                ["investigationHandleId"] = sibling.HandleId,
+                            },
+                            cancellationToken: ct).ConfigureAwait(false);
+                        var probeEnvelope = DeserializeResult<InspectProcessReport>(probe);
+                        if (probeEnvelope.Error is null &&
+                            probeEnvelope.Data?.List?.Any(p =>
+                                p.ManagedEntrypointAssemblyName == "CoreClrSample") == true)
+                        {
+                            siblingReady = true;
+                            break;
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _output.WriteLine($"sibling proxy readiness retry: {ex.GetType().Name}: {ex.Message}");
+                    }
+
+                    await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+                }
+
+                siblingReady.Should().BeTrue(
+                    "attach can report Running shortly before the Pod-local MCP listener accepts requests");
+            }
+
+            attachedHandles.Should().HaveCount(2);
+            var replicaResult = await orchClient.CallToolAsync(
+                "collect_events",
+                new Dictionary<string, object?>
+                {
+                    ["kind"] = "replica_counters",
+                    ["investigationHandleIds"] = attachedHandles.Select(h => h.HandleId).ToArray(),
+                    ["durationSeconds"] = 6,
+                    ["intervalSeconds"] = 1,
+                },
+                cancellationToken: ct).ConfigureAwait(false);
+
+            await RecordToolResponseAsync("collect_events(kind=replica_counters)", replicaResult, ct).ConfigureAwait(false);
+            replicaResult.IsError.Should().NotBeTrue(
+                "each stored selector must resolve CoreClrSample rather than the co-located diagnostics MCP");
+            var replicaEnvelope = DeserializeResult<CollectEventsEnvelope>(replicaResult);
+            replicaEnvelope.Error.Should().BeNull(replicaEnvelope.Summary);
+            replicaEnvelope.Data!.PodErrors.Should().BeEmpty();
+            replicaEnvelope.Data.ReplicaCounters.Should().NotBeNull();
+            replicaEnvelope.Data.ReplicaCounters!.PodCount.Should().Be(2);
+            replicaEnvelope.Data.ReplicaCounters.Replicas.Should().OnlyContain(r => r.ProcessId > 0);
+            replicaEnvelope.Data.ReplicaCounters.Replicas.Select(r => r.PodName)
+                .Should().BeEquivalentTo(attachedHandles.Select(h => h.PodName));
+
+            // ------------------------------------------------------------
+            // Step 7: detach both handles and confirm neither remains active.
+            // ------------------------------------------------------------
+            foreach (var attached in attachedHandles)
+            {
+                var detachResult = await orchClient.CallToolAsync(
+                    "detach_from_pod",
+                    new Dictionary<string, object?> { ["handleId"] = attached.HandleId },
+                    cancellationToken: ct).ConfigureAwait(false);
+
+                detachResult.IsError.Should().NotBe(true, "detach_from_pod is idempotent and must succeed");
+                var detached = DeserializeStructured<DetachResult>(detachResult);
+                detached.Should().NotBeNull();
+                detached!.Found.Should().BeTrue();
+                detached.NewState.Should().Be(InvestigationState.Closed,
+                    "detach_from_pod must transition Active -> Closed");
+            }
 
             var activeResult = await orchClient.CallToolAsync(
                 "list_orchestrator",
@@ -328,9 +450,9 @@ public sealed class KindIntegrationTests
             var active = DeserializeStructured<ListOrchestratorResult>(activeResult);
             active.Should().NotBeNull();
             active!.Investigations.Should().NotBeNull();
-            active.Investigations!.Items.Should().NotContain(
-                investigation => investigation.HandleId == attachEnvelope.HandleId,
-                "a detached investigation must no longer appear as active");
+            active.Investigations!.Items.Select(investigation => investigation.HandleId)
+                .Should().NotIntersectWith(attachedHandles.Select(h => h.HandleId),
+                    "detached investigations must no longer appear as active");
         }
         catch
         {
@@ -338,10 +460,13 @@ public sealed class KindIntegrationTests
             // behind the kind cluster's TTL reaper.
             try
             {
-                await orchClient.CallToolAsync(
-                    "detach_from_pod",
-                    new Dictionary<string, object?> { ["handleId"] = attachEnvelope.HandleId },
-                    cancellationToken: CancellationToken.None).ConfigureAwait(false);
+                foreach (var attached in attachedHandles)
+                {
+                    await orchClient.CallToolAsync(
+                        "detach_from_pod",
+                        new Dictionary<string, object?> { ["handleId"] = attached.HandleId },
+                        cancellationToken: CancellationToken.None).ConfigureAwait(false);
+                }
             }
             catch
             {

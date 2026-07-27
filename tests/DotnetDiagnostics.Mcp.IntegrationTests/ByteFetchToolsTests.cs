@@ -55,7 +55,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
             new Dictionary<string, object?> { ["kind"] = "module", ["moduleVersionId"] = GetSampleMvid(), ["processId"] = SampleProcessId },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBeTrue();
+        result.IsError.Should().BeTrue();
         var envelope = DeserializeEnvelope(result);
         envelope.Should().NotBeNull();
         envelope!.Error.Should().NotBeNull();

@@ -155,9 +155,7 @@ public sealed class ToolScopeIntegrationTests
             },
             cancellationToken: CancellationToken.None);
 
-        // Not the outer-filter forbidden envelope (that's IsError=true) — this is collect_batch's
-        // own internal DiagnosticResult.Fail, returned as ordinary structured content.
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"InsufficientScope\"");
         text.Should().Contain("eventpipe");
@@ -195,7 +193,7 @@ public sealed class ToolScopeIntegrationTests
             arguments: new Dictionary<string, object?> { ["view"] = "requests-now", ["processId"] = -1 },
             cancellationToken: CancellationToken.None);
 
-        result.IsError.Should().NotBe(true);
+        result.IsError.Should().BeTrue();
         var text = result.Content.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
         text.Should().Contain("\"kind\":\"Forbidden\"");
         text.Should().Contain("ptrace");
