@@ -95,6 +95,26 @@ public sealed class EvidenceMetricConflictException : InvalidOperationException
     }
 }
 
+public sealed class InvalidEvidenceMetricException : InvalidOperationException
+{
+    public InvalidEvidenceMetricException(string metricIdentity, string handle, double value)
+        : base(
+            $"Metric '{metricIdentity}' from handle '{handle}' has non-finite value " +
+            $"'{NonFiniteName(value)}'. Re-collect the evidence or omit the invalid producer series.")
+    {
+        MetricIdentity = metricIdentity;
+    }
+
+    public string MetricIdentity { get; }
+
+    private static string NonFiniteName(double value)
+        => double.IsNaN(value)
+            ? "NaN"
+            : double.IsPositiveInfinity(value)
+                ? "+Infinity"
+                : "-Infinity";
+}
+
 public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
 {
     private const int MaxEvidenceMetrics = 64;
@@ -157,14 +177,20 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
         var startedAt = projections.Min(static projection => projection.Evidence.ObservedAt);
         var endedAt = projections.Max(static projection => projection.Evidence.ObservedAt + projection.Evidence.Duration);
         var legacyCpuOnly = IsLegacyCpuOnly(request.Evidence);
-        var keyMetrics = legacyCpuOnly ? [] : MergeMetrics(projections);
+        var keyMetrics = legacyCpuOnly ? MetricSelection.Empty : MergeMetrics(projections);
 
         var findings = new InvestigationFindings(
             TotalSamples: totalSamples,
             StartedAt: startedAt,
             Duration: endedAt - startedAt,
             TopHotspots: hotspots,
-            KeyMetrics: keyMetrics.Count == 0 ? null : keyMetrics);
+            KeyMetrics: keyMetrics.Values.Count == 0 ? null : keyMetrics.Values)
+        {
+            KeyMetricUnits = legacyCpuOnly || keyMetrics.Values.Count == 0
+                ? null
+                : keyMetrics.Units,
+            MetricRetention = legacyCpuOnly ? null : keyMetrics.Retention,
+        };
 
         var summary = new InvestigationSummary(
             Schema: InvestigationSummary.SchemaV1,
@@ -244,10 +270,6 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
 
     private static EvidenceProjection ProjectCpu(InvestigationEvidenceInput input, CpuSampleTraceArtifact artifact)
     {
-        var metrics = new Dictionary<string, double>(StringComparer.Ordinal)
-        {
-            ["cpu-samples"] = artifact.TotalSamples,
-        };
         return Projection(
             input,
             artifact.ProcessId,
@@ -255,32 +277,58 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
             "cpu",
             artifact.StartedAt,
             artifact.Duration,
-            metrics,
+            [new MetricCandidate("cpu-samples", artifact.TotalSamples, "samples")],
             []);
     }
 
     private static EvidenceProjection ProjectCounters(InvestigationEvidenceInput input, CounterSnapshot snapshot)
     {
-        var candidates = new List<KeyValuePair<string, double>>();
+        var candidates = new List<MetricCandidate>();
         candidates.AddRange(snapshot.Counters.Select(static counter =>
-            new KeyValuePair<string, double>(counter.Name, counter.Value)));
+            new MetricCandidate(
+                InvestigationMetricIdentity.EventCounter(counter.Provider, counter.Name, counter.Kind),
+                counter.Value,
+                counter.Unit)));
         foreach (var meter in snapshot.Meters)
         {
             if (meter.LastValue is double last)
             {
-                candidates.Add(new KeyValuePair<string, double>(meter.Instrument, last));
+                candidates.Add(new MetricCandidate(
+                    InvestigationMetricIdentity.Meter(
+                        meter.Meter,
+                        meter.Instrument,
+                        meter.Kind,
+                        meter.Tags,
+                        "last"),
+                    last,
+                    meter.Unit));
             }
             if (meter.Rate is double rate)
             {
-                candidates.Add(new KeyValuePair<string, double>($"{meter.Instrument}.rate", rate));
+                candidates.Add(new MetricCandidate(
+                    InvestigationMetricIdentity.Meter(
+                        meter.Meter,
+                        meter.Instrument,
+                        meter.Kind,
+                        meter.Tags,
+                        "rate"),
+                    rate,
+                    meter.Unit));
             }
             if (meter.Histogram is { } histogram)
             {
-                candidates.Add(new KeyValuePair<string, double>($"{meter.Instrument}.p95", histogram.P95));
+                candidates.Add(new MetricCandidate(
+                    InvestigationMetricIdentity.Meter(
+                        meter.Meter,
+                        meter.Instrument,
+                        meter.Kind,
+                        meter.Tags,
+                        "p95"),
+                    histogram.P95,
+                    meter.Unit));
             }
         }
 
-        var metrics = SelectMetrics(candidates);
         var findings = new[]
         {
             new InvestigationEvidenceFinding(
@@ -295,21 +343,24 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
             "counters",
             snapshot.StartedAt,
             snapshot.Duration,
-            metrics,
+            candidates,
             findings);
     }
 
     private static EvidenceProjection ProjectGc(InvestigationEvidenceInput input, GcSummary summary)
     {
-        var metrics = new Dictionary<string, double>(StringComparer.Ordinal)
+        var metrics = new List<MetricCandidate>
         {
-            ["gc-total-collections"] = summary.TotalCollections,
-            ["gc-total-pause-ms"] = summary.TotalPauseTime.TotalMilliseconds,
-            ["gc-max-pause-ms"] = summary.MaxPauseTime.TotalMilliseconds,
+            new("gc-total-collections", summary.TotalCollections, "count"),
+            new("gc-total-pause-ms", summary.TotalPauseTime.TotalMilliseconds, "ms"),
+            new("gc-max-pause-ms", summary.MaxPauseTime.TotalMilliseconds, "ms"),
         };
         foreach (var generation in summary.Generations)
         {
-            metrics[$"gc-gen-{generation.Generation}-collections"] = generation.Count;
+            metrics.Add(new MetricCandidate(
+                $"gc-gen-{generation.Generation}-collections",
+                generation.Count,
+                "count"));
         }
 
         var findings = new[]
@@ -332,16 +383,18 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
 
     private static EvidenceProjection ProjectGcDatas(InvestigationEvidenceInput input, GcDatasSnapshot snapshot)
     {
-        var metrics = new Dictionary<string, double>(StringComparer.Ordinal)
+        var metrics = new List<MetricCandidate>
         {
-            ["gc-datas-samples"] = snapshot.Samples.Count,
-            ["gc-datas-tuning-events"] = snapshot.TuningEvents.Count,
-            ["gc-datas-full-gc-events"] = snapshot.FullGcTuningEvents.Count,
+            new("gc-datas-samples", snapshot.Samples.Count, "count"),
+            new("gc-datas-tuning-events", snapshot.TuningEvents.Count, "count"),
+            new("gc-datas-full-gc-events", snapshot.FullGcTuningEvents.Count, "count"),
         };
         if (snapshot.Samples.Count > 0)
         {
-            metrics["gc-datas-mean-throughput-cost-percent"] =
-                snapshot.Samples.Average(static sample => sample.ThroughputCostPercent);
+            metrics.Add(new MetricCandidate(
+                "gc-datas-mean-throughput-cost-percent",
+                snapshot.Samples.Average(static sample => sample.ThroughputCostPercent),
+                "%"));
         }
 
         var findings = new[]
@@ -365,20 +418,32 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
     private static EvidenceProjection ProjectThreads(InvestigationEvidenceInput input, ThreadSnapshotArtifact snapshot)
     {
         var blocked = snapshot.Threads.Where(static thread => thread.IsLikelyBlocked).ToArray();
-        var metrics = new Dictionary<string, double>(StringComparer.Ordinal)
+        var metrics = new List<MetricCandidate>
         {
-            ["thread-count"] = snapshot.Threads.Count,
-            ["blocked-thread-count"] = blocked.Length,
+            new("thread-count", snapshot.Threads.Count, "count"),
+            new("blocked-thread-count", blocked.Length, "count"),
         };
         if (snapshot.ThreadPool is { } threadPool)
         {
-            metrics["threadpool-queue-length"] = threadPool.Queues.GlobalQueueLength
-                + threadPool.Queues.LocalQueues.Sum(static queue => queue.QueueLength);
-            metrics["threadpool-pending-work-items"] = threadPool.PendingWorkItems;
-            metrics["threadpool-thread-count"] = threadPool.Workers.Current;
+            metrics.Add(new MetricCandidate(
+                "threadpool-queue-length",
+                threadPool.Queues.GlobalQueueLength
+                    + threadPool.Queues.LocalQueues.Sum(static queue => queue.QueueLength),
+                "count"));
+            metrics.Add(new MetricCandidate(
+                "threadpool-pending-work-items",
+                threadPool.PendingWorkItems,
+                "count"));
+            metrics.Add(new MetricCandidate(
+                "threadpool-thread-count",
+                threadPool.Workers.Current,
+                "count"));
             if (threadPool.HillClimbing is { } hillClimbing)
             {
-                metrics["threadpool-throughput"] = hillClimbing.Throughput;
+                metrics.Add(new MetricCandidate(
+                    "threadpool-throughput",
+                    hillClimbing.Throughput,
+                    "operations/s"));
             }
         }
 
@@ -420,9 +485,12 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
         string sourceKind,
         DateTimeOffset observedAt,
         TimeSpan duration,
-        IReadOnlyDictionary<string, double> metrics,
+        IReadOnlyList<MetricCandidate> metrics,
         IReadOnlyList<InvestigationEvidenceFinding> findings)
-        => new(
+    {
+        var selected = SelectMetrics(
+            metrics.Select(metric => new SourcedMetric(metric, input.Handle)));
+        return new EvidenceProjection(
             processId,
             new InvestigationEvidence(
                 input.Handle,
@@ -432,79 +500,84 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
                 sourceKind,
                 observedAt,
                 duration,
-                metrics,
-                findings));
+                selected.Values,
+                findings)
+            {
+                MetricUnits = selected.Units,
+                MetricRetention = selected.Retention,
+            },
+            metrics);
+    }
 
     private static string InferOrigin(object artifact)
         => artifact is ThreadSnapshotArtifact threads
             ? threads.Origin.ToString().ToLowerInvariant()
             : "live";
 
-    private static Dictionary<string, double> SelectMetrics(
-        IEnumerable<KeyValuePair<string, double>> candidates)
+    private static MetricSelection SelectMetrics(IEnumerable<SourcedMetric> candidates)
     {
-        var selected = new Dictionary<string, double>(StringComparer.Ordinal);
+        var distinct = new Dictionary<string, SourcedMetric>(StringComparer.Ordinal);
         foreach (var candidate in candidates
-                     .Where(static candidate => !string.IsNullOrWhiteSpace(candidate.Key))
-                     .OrderBy(static candidate => MetricPriority(candidate.Key))
-                     .ThenBy(static candidate => candidate.Key, StringComparer.Ordinal)
-                     .Take(MaxEvidenceMetrics))
+                     .Where(static candidate => !string.IsNullOrWhiteSpace(candidate.Metric.Identity))
+                     .OrderBy(static candidate => candidate.Metric.Identity, StringComparer.Ordinal)
+                     .ThenBy(static candidate => candidate.Handle, StringComparer.Ordinal)
+                     .ThenBy(static candidate => candidate.Metric.Unit, StringComparer.Ordinal))
         {
-            var key = candidate.Key;
-            var suffix = 2;
-            while (!selected.TryAdd(key, candidate.Value))
+            ValidateFinite(candidate);
+            if (distinct.TryAdd(candidate.Metric.Identity, candidate))
             {
-                key = $"{candidate.Key}#{suffix++}";
+                continue;
             }
-        }
-        return selected;
-    }
 
-    private static int MetricPriority(string name)
-    {
-        var normalized = name.ToLowerInvariant();
-        return normalized.Contains("queue", StringComparison.Ordinal)
-            || normalized.Contains("throughput", StringComparison.Ordinal)
-            || normalized.Contains("request", StringComparison.Ordinal)
-            || normalized.Contains("latency", StringComparison.Ordinal)
-            || normalized.Contains("threadpool", StringComparison.Ordinal)
-            ? 0
-            : normalized.Contains("gc", StringComparison.Ordinal)
-              || normalized.Contains("cpu", StringComparison.Ordinal)
-              || normalized.Contains("working-set", StringComparison.Ordinal)
-                ? 1
-                : 2;
-    }
-
-    private static Dictionary<string, double> MergeMetrics(
-        IReadOnlyList<EvidenceProjection> projections)
-    {
-        var merged = new Dictionary<string, double>(StringComparer.Ordinal);
-        var sources = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var projection in projections)
-        {
-            foreach (var metric in projection.Evidence.Metrics)
+            var previous = distinct[candidate.Metric.Identity];
+            if (!previous.Metric.Value.Equals(candidate.Metric.Value))
             {
-                if (merged.TryAdd(metric.Key, metric.Value))
-                {
-                    sources.Add(metric.Key, projection.Evidence.Handle);
-                    continue;
-                }
-
-                if (merged[metric.Key].Equals(metric.Value))
-                {
-                    continue;
-                }
-
                 throw new EvidenceMetricConflictException(
-                    metric.Key,
-                    sources[metric.Key],
-                    merged[metric.Key],
-                    projection.Evidence.Handle,
-                    metric.Value);
+                    candidate.Metric.Identity,
+                    previous.Handle,
+                    previous.Metric.Value,
+                    candidate.Handle,
+                    candidate.Metric.Value);
             }
         }
-        return merged;
+
+        var retained = distinct.Values
+            .OrderBy(static candidate => candidate.Metric.Identity, StringComparer.Ordinal)
+            .Take(MaxEvidenceMetrics)
+            .ToArray();
+        var values = retained.ToDictionary(
+            static candidate => candidate.Metric.Identity,
+            static candidate => candidate.Metric.Value,
+            StringComparer.Ordinal);
+        var units = retained.ToDictionary(
+            static candidate => candidate.Metric.Identity,
+            static candidate => candidate.Metric.Unit,
+            StringComparer.Ordinal);
+        return new MetricSelection(
+            values,
+            units,
+            new MetricSeriesRetention(
+                distinct.Count,
+                retained.Length,
+                distinct.Count - retained.Length));
+    }
+
+    private static MetricSelection MergeMetrics(
+        IReadOnlyList<EvidenceProjection> projections)
+        => SelectMetrics(
+            projections.SelectMany(static projection =>
+                projection.AllMetrics.Select(metric =>
+                    new SourcedMetric(metric, projection.Evidence.Handle))));
+
+    private static void ValidateFinite(SourcedMetric candidate)
+    {
+        if (!double.IsFinite(candidate.Metric.Value))
+        {
+            throw new InvalidEvidenceMetricException(
+                candidate.Metric.Identity,
+                candidate.Handle,
+                candidate.Metric.Value);
+        }
     }
 
     private static IEnumerable<CallTreeNode> FlattenTree(CallTreeNode root)
@@ -605,6 +678,36 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
             sb.AppendLine();
         }
 
+        if (f.KeyMetrics is { Count: > 0 } metrics)
+        {
+            sb.AppendLine("### Metrics");
+            sb.AppendLine("| Identity | Value | Unit |");
+            sb.AppendLine("|---|---:|---|");
+            foreach (var metric in metrics.OrderBy(static metric => metric.Key, StringComparer.Ordinal))
+            {
+                string? unit = null;
+                _ = f.KeyMetricUnits?.TryGetValue(metric.Key, out unit);
+                sb.Append("| `").Append(EscapeMarkdownCode(metric.Key))
+                    .Append("` | `")
+                    .Append(metric.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture))
+                    .Append("` | `")
+                    .Append(EscapeMarkdownCode(unit ?? "—"))
+                    .AppendLine("` |");
+            }
+
+            if (f.MetricRetention is { } retention)
+            {
+                sb.Append("- Metric retention: `")
+                    .Append(retention.Retained)
+                    .Append("` of `")
+                    .Append(retention.Total)
+                    .Append("` canonical series retained; `")
+                    .Append(retention.Omitted)
+                    .AppendLine("` omitted by deterministic identity ordering.");
+            }
+            sb.AppendLine();
+        }
+
         if (s.Evidence is { Count: > 0 } evidence)
         {
             sb.AppendLine("### Evidence provenance");
@@ -638,5 +741,30 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
         return sb.ToString();
     }
 
-    private sealed record EvidenceProjection(int ProcessId, InvestigationEvidence Evidence);
+    private static string EscapeMarkdownCode(string value)
+        => value.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal)
+            .Replace("|", "\\|", StringComparison.Ordinal)
+            .Replace("`", "\\`", StringComparison.Ordinal);
+
+    private sealed record MetricCandidate(string Identity, double Value, string? Unit);
+
+    private sealed record SourcedMetric(MetricCandidate Metric, string Handle);
+
+    private sealed record MetricSelection(
+        IReadOnlyDictionary<string, double> Values,
+        IReadOnlyDictionary<string, string?> Units,
+        MetricSeriesRetention Retention)
+    {
+        internal static MetricSelection Empty { get; } = new(
+            new Dictionary<string, double>(StringComparer.Ordinal),
+            new Dictionary<string, string?>(StringComparer.Ordinal),
+            new MetricSeriesRetention(0, 0, 0));
+    }
+
+    private sealed record EvidenceProjection(
+        int ProcessId,
+        InvestigationEvidence Evidence,
+        IReadOnlyList<MetricCandidate> AllMetrics);
 }

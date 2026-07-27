@@ -247,7 +247,9 @@ public sealed class SummaryComparer : ISummaryComparer
             var hasBaseline = baselineMetrics.TryGetValue(canonicalName, out var baselineMetric);
             var hasCurrent = currentMetrics.TryGetValue(canonicalName, out var currentMetric);
             var name = hasBaseline ? baselineMetric!.Name : currentMetric!.Name;
-            var hasDirection = MetricDirections.TryGetValue(canonicalName, out var direction);
+            var directionName = NormalizeMetricName(
+                InvestigationMetricIdentity.ComparableName(name));
+            var hasDirection = MetricDirections.TryGetValue(directionName, out var direction);
             if (!hasBaseline || !hasCurrent)
             {
                 deltas.Add(new KeyMetricDelta(
@@ -314,7 +316,9 @@ public sealed class SummaryComparer : ISummaryComparer
 
         foreach (var metric in metrics.OrderBy(static item => item.Key, StringComparer.Ordinal))
         {
-            var canonicalName = NormalizeMetricName(metric.Key);
+            var canonicalName = InvestigationMetricIdentity.IsCanonical(metric.Key)
+                ? metric.Key
+                : NormalizeMetricName(metric.Key);
             if (result.TryAdd(canonicalName, new CanonicalMetric(metric.Key, metric.Value)))
             {
                 continue;

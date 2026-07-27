@@ -57,7 +57,14 @@ public sealed record InvestigationFindings(
     DateTimeOffset StartedAt,
     TimeSpan Duration,
     IReadOnlyList<HotspotSummary> TopHotspots,
-    IReadOnlyDictionary<string, double>? KeyMetrics = null);
+    IReadOnlyDictionary<string, double>? KeyMetrics = null)
+{
+    /// <summary>Units keyed by the same stable identities as <see cref="KeyMetrics"/>.</summary>
+    public IReadOnlyDictionary<string, string?>? KeyMetricUnits { get; init; }
+
+    /// <summary>Exact bounded-selection counts for <see cref="KeyMetrics"/>.</summary>
+    public MetricSeriesRetention? MetricRetention { get; init; }
+}
 
 /// <summary>Portable provenance and projected findings from one diagnostic handle.</summary>
 public sealed record InvestigationEvidence(
@@ -69,7 +76,17 @@ public sealed record InvestigationEvidence(
     DateTimeOffset ObservedAt,
     TimeSpan Duration,
     IReadOnlyDictionary<string, double> Metrics,
-    IReadOnlyList<InvestigationEvidenceFinding> Findings);
+    IReadOnlyList<InvestigationEvidenceFinding> Findings)
+{
+    /// <summary>Units keyed by the same stable identities as <see cref="Metrics"/>.</summary>
+    public IReadOnlyDictionary<string, string?>? MetricUnits { get; init; }
+
+    /// <summary>Exact bounded-selection counts for this evidence artifact.</summary>
+    public MetricSeriesRetention? MetricRetention { get; init; }
+}
+
+/// <summary>Exact metadata for neutral, canonical-identity metric retention.</summary>
+public sealed record MetricSeriesRetention(int Total, int Retained, int Omitted);
 
 /// <summary>A bounded human-readable finding derived from one evidence artifact.</summary>
 public sealed record InvestigationEvidenceFinding(

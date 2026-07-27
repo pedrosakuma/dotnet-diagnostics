@@ -158,6 +158,40 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
     }
 
     [Fact]
+    public async Task PodRoot_ExportNonFiniteMetric_ReturnsStructuredDiagnostic()
+    {
+        await using var factory = CreatePodFactory();
+        await using var client = await ConnectAsync(factory);
+        var store = factory.Services.GetRequiredService<IDiagnosticHandleStore>();
+        var handle = store.Register(
+            1234,
+            CollectionHandleKinds.Counters,
+            new CounterSnapshot(
+                1234,
+                T0,
+                TimeSpan.FromSeconds(1),
+                [new CounterValue(
+                    "System.Runtime",
+                    "threadpool-queue-length",
+                    "Queue",
+                    double.PositiveInfinity,
+                    CounterKind.Mean)],
+                [],
+                []),
+            TimeSpan.FromMinutes(5),
+            origin: HandleOrigin.Live);
+
+        var result = await CallDelegatedAsync(
+            client,
+            "export_investigation_summary",
+            Arguments(new { handle = handle.Id }),
+            ["investigation-export", "read-counters"]);
+
+        ResultText(result).Should().Contain("InvalidEvidenceMetric")
+            .And.Contain("eventcounter|provider=System.Runtime|name=threadpool-queue-length|kind=mean");
+    }
+
+    [Fact]
     public async Task PodCatalog_MarksToolsUnauthorized_WhenDelegationIsRequired()
     {
         await using var factory = CreatePodFactory();

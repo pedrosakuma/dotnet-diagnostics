@@ -173,6 +173,15 @@ internal static class DiagnosticToolInvestigationPlanning
                     "export_investigation_summary",
                     "Remove one handle that reports the conflicting metric, or export the captures separately."));
         }
+        catch (InvalidEvidenceMetricException ex)
+        {
+            return DiagnosticResult.Fail<ExportedInvestigationSummary>(
+                ex.Message,
+                new DiagnosticError("InvalidEvidenceMetric", ex.Message, ex.MetricIdentity),
+                new NextActionHint(
+                    "export_investigation_summary",
+                    "Re-collect the evidence; the producer emitted a non-finite metric value."));
+        }
 
         telemetry.Emit(exported.Summary, string.Join(",", requestedHandles));
 

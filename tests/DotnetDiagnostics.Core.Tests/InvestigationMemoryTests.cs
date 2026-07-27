@@ -12,6 +12,16 @@ namespace DotnetDiagnostics.Core.Tests;
 public class InvestigationMemoryTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 5, 18, 22, 0, 0, TimeSpan.Zero);
+    private static readonly string QueueMetric =
+        InvestigationMetricIdentity.EventCounter(
+            "System.Runtime",
+            "threadpool-queue-length",
+            CounterKind.Mean);
+    private static readonly string ThroughputMetric =
+        InvestigationMetricIdentity.EventCounter(
+            "Microsoft.AspNetCore.Hosting",
+            "requests-per-second",
+            CounterKind.Mean);
 
     private static InvestigationSummaryExporter NewExporter(IProvenanceCollector? prov = null, int seed = 1)
     {
@@ -149,8 +159,8 @@ public class InvestigationMemoryTests
         before.Summary.Findings.TopHotspots.Should().BeEmpty();
         before.Summary.Findings.KeyMetrics.Should().Contain(new Dictionary<string, double>
         {
-            ["threadpool-queue-length"] = 236,
-            ["requests-per-second"] = 0,
+            [QueueMetric] = 236,
+            [ThroughputMetric] = 0,
         });
         before.Summary.Evidence.Should().HaveCount(2);
         before.Summary.Evidence![0].SourceTool.Should().Be("collect_events");
@@ -166,8 +176,8 @@ public class InvestigationMemoryTests
         after.Summary.Findings.TopHotspots.Should().BeEmpty();
         after.Summary.Findings.KeyMetrics.Should().Contain(new Dictionary<string, double>
         {
-            ["threadpool-queue-length"] = 0,
-            ["requests-per-second"] = 50,
+            [QueueMetric] = 0,
+            [ThroughputMetric] = 50,
         });
         after.Summary.PreviousInvestigationId.Should().Be(before.Summary.InvestigationId);
         after.Summary.Evidence.Should().ContainSingle()
@@ -176,9 +186,9 @@ public class InvestigationMemoryTests
         var diff = new SummaryComparer().Compare(before.Summary, after.Summary);
         diff.Verdict.Should().Be("improvement");
         diff.KeyMetricDeltas.Should().Contain(delta =>
-            delta.Name == "threadpool-queue-length" && delta.Outcome == "improved");
+            delta.Name == QueueMetric && delta.Outcome == "improved");
         diff.KeyMetricDeltas.Should().Contain(delta =>
-            delta.Name == "requests-per-second" && delta.Outcome == "improved");
+            delta.Name == ThroughputMetric && delta.Outcome == "improved");
     }
 
     [Fact]
@@ -225,8 +235,8 @@ public class InvestigationMemoryTests
         forward.Rendered.Should().Be(reversed.Rendered);
         forward.Summary.Findings.KeyMetrics.Should().Contain(new Dictionary<string, double>
         {
-            ["threadpool-queue-length"] = 4,
-            ["requests-per-second"] = 25,
+            [QueueMetric] = 4,
+            [ThroughputMetric] = 25,
         });
         forward.Summary.Evidence!.Select(static evidence => evidence.Handle)
             .Should().ContainInOrder("a-handle", "z-handle");
@@ -249,11 +259,191 @@ public class InvestigationMemoryTests
 
         var forwardError = forward.Should().Throw<EvidenceMetricConflictException>().Which;
         var reversedError = reversed.Should().Throw<EvidenceMetricConflictException>().Which;
-        forwardError.MetricName.Should().Be("threadpool-queue-length");
+        forwardError.MetricName.Should().Be(QueueMetric);
         reversedError.Message.Should().Be(forwardError.Message);
         forwardError.Message.Should().Contain("a-handle")
             .And.Contain("z-handle")
             .And.Contain("export separately");
+    }
+
+    [Fact]
+    public void Export_EventCounterIdentity_IncludesEscapedProviderAndName()
+    {
+        var snapshot = CounterSnapshot(
+            counters:
+            [
+                new CounterValue("Provider|A", "same=name", "A", 1, CounterKind.Mean, "items"),
+                new CounterValue("Provider|B", "same=name", "B", 2, CounterKind.Mean, "items"),
+            ]);
+
+        var summary = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("counters", "counters", snapshot)])).Summary;
+
+        summary.Findings.KeyMetrics.Should().ContainKey(
+            "eventcounter|provider=Provider%7CA|name=same%3Dname|kind=mean")
+            .WhoseValue.Should().Be(1);
+        summary.Findings.KeyMetrics.Should().ContainKey(
+            "eventcounter|provider=Provider%7CB|name=same%3Dname|kind=mean")
+            .WhoseValue.Should().Be(2);
+    }
+
+    [Fact]
+    public void Export_MeterIdentity_CanonicalizesTagsAndInputOrder()
+    {
+        var first = MeterSnapshot(
+        [
+            Meter(tags: new Dictionary<string, string?>
+            {
+                ["route"] = "/a",
+                ["status"] = "200",
+            }, value: 1),
+            Meter(tags: new Dictionary<string, string?>
+            {
+                ["status"] = "200",
+                ["route"] = "/b",
+            }, value: 2),
+        ]);
+        var reordered = MeterSnapshot(
+        [
+            Meter(tags: new Dictionary<string, string?>
+            {
+                ["route"] = "/b",
+                ["status"] = "200",
+            }, value: 2),
+            Meter(tags: new Dictionary<string, string?>
+            {
+                ["status"] = "200",
+                ["route"] = "/a",
+            }, value: 1),
+        ]);
+
+        var forward = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("meters", "counters", first)]));
+        var reversed = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("meters", "counters", reordered)]));
+
+        forward.Rendered.Should().Be(reversed.Rendered);
+        forward.Summary.Findings.KeyMetrics.Should().HaveCount(2);
+        forward.Summary.Findings.KeyMetrics!.Keys.Should().Contain(
+            "meter|meter=Test.Meter|instrument=request.duration|kind=Gauge|tags={route=s:%2Fa,status=s:200}|stat=last");
+        forward.Summary.Findings.KeyMetrics.Keys.Should().Contain(
+            "meter|meter=Test.Meter|instrument=request.duration|kind=Gauge|tags={route=s:%2Fb,status=s:200}|stat=last");
+    }
+
+    [Fact]
+    public void Compare_CanonicalMeterTags_RemainDistinctSeries()
+    {
+        var baselineSnapshot = MeterSnapshot(
+        [
+            new MeterInstrumentValue(
+                "Test.Meter",
+                "throughput",
+                "requests/s",
+                "Gauge",
+                new Dictionary<string, string?> { ["route"] = "/a" },
+                LastValue: 1,
+                Rate: null,
+                Histogram: null),
+        ]);
+        var currentSnapshot = MeterSnapshot(
+        [
+            new MeterInstrumentValue(
+                "Test.Meter",
+                "throughput",
+                "requests/s",
+                "Gauge",
+                new Dictionary<string, string?> { ["route"] = "/b" },
+                LastValue: 2,
+                Rate: null,
+                Histogram: null),
+        ]);
+        var baseline = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("baseline", "counters", baselineSnapshot)])).Summary;
+        var current = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("current", "counters", currentSnapshot)])).Summary;
+
+        var diff = new SummaryComparer().Compare(baseline, current);
+
+        diff.Verdict.Should().Be("incomparable");
+        diff.KeyMetricDeltas.Should().HaveCount(2);
+        diff.KeyMetricDeltas.Should().ContainSingle(delta =>
+            delta.BaselineValue == 1 && delta.CurrentValue == null && delta.Outcome == "incomparable");
+        diff.KeyMetricDeltas.Should().ContainSingle(delta =>
+            delta.BaselineValue == null && delta.CurrentValue == 2 && delta.Outcome == "incomparable");
+    }
+
+    [Fact]
+    public void Export_MetricRetention_IsNeutralBoundedAndStableAcrossOrder()
+    {
+        var counters = Enumerable.Range(0, 69)
+            .Select(index => new CounterValue(
+                "Neutral.Provider",
+                $"metric-{index:D3}",
+                $"Metric {index}",
+                index,
+                CounterKind.Mean,
+                "items"))
+            .Append(new CounterValue(
+                "Neutral.Provider",
+                "zzz-queue",
+                "Queue",
+                999,
+                CounterKind.Mean,
+                "items"))
+            .ToArray();
+        var forward = CounterSnapshot(counters);
+        var reversed = CounterSnapshot(counters.Reverse().ToArray());
+
+        var first = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("many", "counters", forward)]));
+        var second = NewExporter().Export(new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("many", "counters", reversed)]));
+
+        first.Rendered.Should().Be(second.Rendered);
+        first.Summary.Findings.KeyMetrics.Should().HaveCount(64);
+        first.Summary.Findings.MetricRetention.Should().Be(new MetricSeriesRetention(70, 64, 6));
+        first.Summary.Evidence.Should().ContainSingle()
+            .Which.MetricRetention.Should().Be(new MetricSeriesRetention(70, 64, 6));
+        first.Summary.Findings.KeyMetrics!.Keys.Should().NotContain(
+            key => key.Contains("zzz-queue", StringComparison.Ordinal),
+            "selection is neutral canonical ordering, not diagnosis-oriented priority");
+    }
+
+    [Fact]
+    public void Export_CounterOnlyMarkdown_RendersJsonMetricValuesUnitsAndRetention()
+    {
+        var snapshot = CounterSnapshot(
+            counters:
+            [
+                new CounterValue(
+                    "Test.Provider",
+                    "jobs|active",
+                    "Active jobs",
+                    42.5,
+                    CounterKind.Mean,
+                    "jobs"),
+            ]);
+
+        AssertJsonMarkdownMetricParity(snapshot);
+    }
+
+    [Fact]
+    public void Export_MeterOnlyMarkdown_RendersJsonMetricValuesUnitsAndRetention()
+    {
+        var snapshot = MeterSnapshot(
+        [
+            new MeterInstrumentValue(
+                "Test.Meter",
+                "requests",
+                "requests",
+                "Counter",
+                new Dictionary<string, string?> { ["region"] = "us|east", ["optional"] = null },
+                LastValue: 12.5,
+                Rate: 2.25,
+                Histogram: null),
+        ]);
+
+        AssertJsonMarkdownMetricParity(snapshot);
     }
 
     [Fact]
@@ -564,6 +754,69 @@ public class InvestigationMemoryTests
             ],
             Meters: [],
             Notes: []);
+
+    private static CounterSnapshot CounterSnapshot(IReadOnlyList<CounterValue> counters)
+        => new(
+            ProcessId: 1234,
+            StartedAt: T0,
+            Duration: TimeSpan.FromSeconds(5),
+            Counters: counters,
+            Meters: [],
+            Notes: []);
+
+    private static CounterSnapshot MeterSnapshot(IReadOnlyList<MeterInstrumentValue> meters)
+        => new(
+            ProcessId: 1234,
+            StartedAt: T0,
+            Duration: TimeSpan.FromSeconds(5),
+            Counters: [],
+            Meters: meters,
+            Notes: []);
+
+    private static MeterInstrumentValue Meter(
+        IReadOnlyDictionary<string, string?> tags,
+        double value)
+        => new(
+            "Test.Meter",
+            "request.duration",
+            "ms",
+            "Gauge",
+            tags,
+            LastValue: value,
+            Rate: null,
+            Histogram: null);
+
+    private static void AssertJsonMarkdownMetricParity(CounterSnapshot snapshot)
+    {
+        var request = new ExportRequest(
+            Evidence: [new InvestigationEvidenceInput("metrics", "counters", snapshot)]);
+        var json = NewExporter().Export(request with { Format = SummaryFormat.Json });
+        var markdown = NewExporter().Export(request with { Format = SummaryFormat.Markdown });
+        var roundTripped = JsonSerializer.Deserialize<InvestigationSummary>(json.Rendered);
+
+        roundTripped.Should().NotBeNull();
+        roundTripped!.Findings.KeyMetrics.Should().BeEquivalentTo(markdown.Summary.Findings.KeyMetrics);
+        roundTripped.Findings.KeyMetricUnits.Should().BeEquivalentTo(markdown.Summary.Findings.KeyMetricUnits);
+        roundTripped.Findings.MetricRetention.Should().Be(markdown.Summary.Findings.MetricRetention);
+        foreach (var metric in markdown.Summary.Findings.KeyMetrics!)
+        {
+            markdown.Rendered.Should().Contain(EscapeMarkdownIdentity(metric.Key))
+                .And.Contain(metric.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+            markdown.Rendered.Should().Contain(
+                markdown.Summary.Findings.KeyMetricUnits![metric.Key] ?? "—");
+        }
+        var retention = markdown.Summary.Findings.MetricRetention!;
+        markdown.Rendered.Should().Contain(
+            $"{retention.Retained}` of `{retention.Total}")
+            .And.Contain($"{retention.Omitted}` omitted");
+    }
+
+    private static string EscapeMarkdownIdentity(string value)
+        => value.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal)
+            .Replace("|", "\\|", StringComparison.Ordinal)
+            .Replace("`", "\\`", StringComparison.Ordinal);
 
     private static ThreadSnapshotArtifact BlockingThreadArtifact(int queueLength, int blockedThreadCount)
     {

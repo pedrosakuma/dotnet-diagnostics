@@ -3126,6 +3126,20 @@ summary deduplicates it deterministically. Conflicting values return
 `EvidenceMetricConflict`; remove one source or export the captures separately
 instead of relying on handle order.
 
+Metric keys are stable series identities, not display names or positional
+`metric#N` aliases. EventCounter identities include provider, counter name, and
+kind. Meter identities include meter, instrument, kind, statistic, and tags;
+tags use ordinal key ordering, null/string type markers, and uppercase UTF-8
+percent encoding for reserved bytes. Selection is diagnosis-neutral: identities
+are ordered ordinally and the first 64 are retained. `MetricRetention` reports
+the exact `Total`, `Retained`, and `Omitted` counts on both aggregate findings
+and each evidence item.
+
+Markdown exports include the same bounded metric identities, values, and units
+as JSON plus the exact retention note. A NaN or infinity from any producer
+returns `InvalidEvidenceMetric` with the safe canonical identity; strict JSON
+serialization is never allowed to fail the tool call.
+
 **Parameters:**
 
 | Name | Type | Default | Description |
@@ -3187,6 +3201,10 @@ Registered lower-is-better names are `threadpool-queue-length`,
 case-insensitive and ignores punctuation. If multiple names in one summary normalize to the same
 key, ordinal name order deterministically selects the retained value and `Notes` reports the
 collision.
+For canonical EventCounter/Meter identities, comparison retains the full
+provider/meter/tag identity for series equality and extracts only the encoded
+counter or instrument/statistic name when applying these legacy direction
+rules.
 
 `HotspotSummary.SelfSamples` preserves the running/waiting split used by this decision. Legacy
 summaries without that split remain readable, but a simultaneous added+removed hotspot with no

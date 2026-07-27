@@ -1599,10 +1599,46 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         exported.Should().NotBeNull();
         exported!.Summary.Findings.TotalSamples.Should().Be(0);
         exported.Summary.Findings.TopHotspots.Should().BeEmpty();
-        exported.Summary.Findings.KeyMetrics.Should().ContainKey("threadpool-queue-length")
+        exported.Summary.Findings.KeyMetrics.Should().ContainKey(
+            "eventcounter|provider=System.Runtime|name=threadpool-queue-length|kind=mean")
             .WhoseValue.Should().Be(0);
         exported.Summary.Evidence.Should().ContainSingle()
             .Which.Handle.Should().Be(handle.Id);
+    }
+
+    [Fact]
+    public async Task ExportInvestigationSummary_NonFiniteCounter_ReturnsStructuredDiagnostic()
+    {
+        var store = _factory.Services.GetRequiredService<IDiagnosticHandleStore>();
+        var handle = store.Register(
+            Environment.ProcessId,
+            CollectionHandleKinds.Counters,
+            new CounterSnapshot(
+                Environment.ProcessId,
+                DateTimeOffset.UnixEpoch,
+                TimeSpan.FromSeconds(1),
+                [new CounterValue(
+                    "System.Runtime",
+                    "threadpool-queue-length",
+                    "Queue",
+                    double.NaN,
+                    CounterKind.Mean)],
+                [],
+                []),
+            TimeSpan.FromMinutes(1));
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "export_investigation_summary",
+            new Dictionary<string, object?> { ["handle"] = handle.Id },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Error.Should().NotBeNull();
+        envelope.Error!.Kind.Should().Be("InvalidEvidenceMetric");
+        envelope.Error.Detail.Should().Be(
+            "eventcounter|provider=System.Runtime|name=threadpool-queue-length|kind=mean");
     }
 
     [Fact]

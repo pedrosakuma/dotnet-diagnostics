@@ -18,6 +18,7 @@ namespace DotnetDiagnostics.Core.Memory;
 [JsonSerializable(typeof(InvestigationEvidence))]
 [JsonSerializable(typeof(InvestigationEvidenceFinding))]
 [JsonSerializable(typeof(InvestigationEvidenceFrame))]
+[JsonSerializable(typeof(MetricSeriesRetention))]
 [JsonSerializable(typeof(HotspotSummary))]
 [JsonSerializable(typeof(CpuSampling.SelfSampleBreakdown))]
 [JsonSerializable(typeof(SymbolRef))]

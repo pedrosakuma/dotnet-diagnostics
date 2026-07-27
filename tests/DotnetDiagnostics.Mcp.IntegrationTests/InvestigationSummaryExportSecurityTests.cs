@@ -28,6 +28,14 @@ public sealed class InvestigationSummaryExportSecurityTests
             { SamplerUseCases.ThreadSnapshotKind, "ptrace" },
         };
 
+    public static TheoryData<double> NonFiniteMetricValues()
+        => new()
+        {
+            double.NaN,
+            double.PositiveInfinity,
+            double.NegativeInfinity,
+        };
+
     [Theory]
     [MemberData(nameof(ScopedEvidenceKinds))]
     public void Export_InvestigationExportAlone_CannotReadUnderlyingHandle(
@@ -230,6 +238,29 @@ public sealed class InvestigationSummaryExportSecurityTests
             .And.Contain("export separately");
         result.Hints.Should().ContainSingle()
             .Which.NextTool.Should().Be("export_investigation_summary");
+    }
+
+    [Theory]
+    [MemberData(nameof(NonFiniteMetricValues))]
+    public void Export_NonFiniteMetric_ReturnsStructuredInvalidEvidenceDiagnostic(double value)
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var handle = store.Register(
+            1234,
+            CollectionHandleKinds.Counters,
+            CounterArtifact(queueLength: value),
+            TimeSpan.FromMinutes(10));
+
+        var result = Export(
+            store,
+            TestPrincipalAccessors.WithScopes("investigation-export", "read-counters"),
+            handle.Id);
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("InvalidEvidenceMetric");
+        result.Error.Detail.Should().Be(
+            "eventcounter|provider=System.Runtime|name=threadpool-queue-length|kind=mean");
+        result.Data.Should().BeNull();
     }
 
     private static DiagnosticResult<ExportedInvestigationSummary> Export(
