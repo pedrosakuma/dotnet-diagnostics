@@ -45,6 +45,12 @@ public sealed record CounterSnapshot(
     IReadOnlyList<string> Notes)
 {
     /// <summary>
+    /// Logical processor count reported once by the target's <c>System.Runtime/ProcessorCount</c>
+    /// EventSource event when the provider is enabled. Null when the event was unavailable.
+    /// </summary>
+    public int? ProcessorCount { get; init; }
+
+    /// <summary>
     /// The first-observed value for each counter present in <see cref="Counters"/> (<see cref="Counters"/>
     /// itself holds the last-observed value per key). Lets the signal-grouping layer (#527) compute an
     /// intra-window delta/trend without a second collection pass. <c>null</c> when the collector didn't

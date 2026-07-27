@@ -442,6 +442,11 @@ internal static class DiagnosticToolProcessInspection
                         new Dictionary<string, object?> { ["processId"] = pid, ["view"] = "memory_trend" }));
                     break;
 
+                case TriageClassifier.MemoryFootprintGrowthHypothesis:
+                    hints.Add(new NextActionHint("inspect_process", hypothesis.NextStep,
+                        new Dictionary<string, object?> { ["processId"] = pid, ["view"] = "memory_trend", ["durationSeconds"] = 10 }));
+                    break;
+
                 case TriageClassifier.ThreadPoolBacklogHypothesis:
                     hints.Add(new NextActionHint("collect_events", hypothesis.NextStep,
                         new Dictionary<string, object?> { ["processId"] = pid, ["kind"] = "threadpool", ["durationSeconds"] = 10 }));
