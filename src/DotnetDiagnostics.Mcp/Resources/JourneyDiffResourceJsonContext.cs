@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core.Comparison;
+using DotnetDiagnostics.Core.Memory;
 
 namespace DotnetDiagnostics.Mcp.Resources;
 
@@ -17,5 +18,6 @@ internal sealed record JourneyDiffResourceErrorPayload(string Kind, string Error
 [JsonSerializable(typeof(DispersionStats))]
 [JsonSerializable(typeof(MetricDefinition))]
 [JsonSerializable(typeof(ComparableKey))]
+[JsonSerializable(typeof(InvestigationEvidenceBoundary))]
 [JsonSerializable(typeof(JourneyDiffResourceErrorPayload))]
 internal sealed partial class JourneyDiffResourceJsonContext : JsonSerializerContext;

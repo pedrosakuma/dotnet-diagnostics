@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core.CpuSampling;
 
 namespace DotnetDiagnostics.Core.Memory;
@@ -19,6 +20,10 @@ public sealed record SummaryDiff(
     IReadOnlyList<HotspotDelta> RemovedHotspots,
     IReadOnlyList<HotspotDelta> ChangedHotspots)
 {
+    [JsonPropertyOrder(-20)]
+    public InvestigationEvidenceBoundary UntrustedDataBoundary { get; init; } =
+        InvestigationEvidenceBoundary.UntrustedComparisonData;
+
     public IReadOnlyList<KeyMetricDelta> KeyMetricDeltas { get; init; } = Array.Empty<KeyMetricDelta>();
 
     public IReadOnlyList<string> Notes { get; init; } = Array.Empty<string>();
@@ -29,7 +34,15 @@ public sealed record ProvenanceDelta(
     bool GitShaChanged,
     bool AssemblyVersionChanged,
     bool ContainerChanged,
-    string Summary);
+    string Summary)
+{
+    public string? BaselineImage { get; init; }
+    public string? CurrentImage { get; init; }
+    public string? BaselineGitSha { get; init; }
+    public string? CurrentGitSha { get; init; }
+    public string? BaselineAssemblyVersion { get; init; }
+    public string? CurrentAssemblyVersion { get; init; }
+}
 
 public sealed record HotspotDelta(
     SymbolRef Symbol,
@@ -47,7 +60,11 @@ public sealed record KeyMetricDelta(
     double? BaselineValue,
     double? CurrentValue,
     string BetterDirection,
-    string Outcome);
+    string Outcome)
+{
+    public string? BaselineUnit { get; init; }
+    public string? CurrentUnit { get; init; }
+}
 
 public sealed class SummaryComparer : ISummaryComparer
 {
@@ -151,13 +168,23 @@ public sealed class SummaryComparer : ISummaryComparer
         var asmVerChanged = !string.Equals(b.Build?.AssemblyVersion, c.Build?.AssemblyVersion, StringComparison.Ordinal);
         var containerChanged = imageChanged;
 
-        var parts = new List<string>();
-        if (imageChanged) parts.Add($"image {b.Container?.Image ?? "(none)"} → {c.Container?.Image ?? "(none)"}");
-        if (gitShaChanged) parts.Add($"git {b.Build?.GitSha ?? "(none)"} → {c.Build?.GitSha ?? "(none)"}");
-        if (asmVerChanged) parts.Add($"version {b.Build?.AssemblyVersion ?? "(none)"} → {c.Build?.AssemblyVersion ?? "(none)"}");
-        var summary = parts.Count == 0 ? "Same build + container" : string.Join("; ", parts);
+        var changedFields = new List<string>();
+        if (imageChanged) changedFields.Add("image");
+        if (gitShaChanged) changedFields.Add("git SHA");
+        if (asmVerChanged) changedFields.Add("assembly version");
+        var summary = changedFields.Count == 0
+            ? "Same build + container"
+            : $"Provenance changed ({string.Join(", ", changedFields)}); raw labels are untrusted fields.";
 
-        return new ProvenanceDelta(imageChanged, gitShaChanged, asmVerChanged, containerChanged, summary);
+        return new ProvenanceDelta(imageChanged, gitShaChanged, asmVerChanged, containerChanged, summary)
+        {
+            BaselineImage = b.Container?.Image,
+            CurrentImage = c.Container?.Image,
+            BaselineGitSha = b.Build?.GitSha,
+            CurrentGitSha = c.Build?.GitSha,
+            BaselineAssemblyVersion = b.Build?.AssemblyVersion,
+            CurrentAssemblyVersion = c.Build?.AssemblyVersion,
+        };
     }
 
     private static string Verdict(
@@ -281,26 +308,38 @@ public sealed class SummaryComparer : ISummaryComparer
                     hasBaseline ? baselineMetric!.Value : null,
                     hasCurrent ? currentMetric!.Value : null,
                     hasDirection ? DirectionName(direction) : "unknown",
-                    Incomparable));
-                notes.Add($"Key metric '{name}' is absent from one summary; it does not drive the verdict.");
+                    Incomparable)
+                {
+                    BaselineUnit = hasBaseline ? baselineMetric!.Unit : null,
+                    CurrentUnit = hasCurrent ? currentMetric!.Unit : null,
+                });
+                notes.Add("A key metric is absent from one summary; the unmatched untrusted label is retained only in KeyMetricDeltas.");
                 continue;
             }
 
             if (isCumulativeLast)
             {
-                deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable));
-                notes.Add($"Cumulative meter total '{name}' is retained as evidence but does not drive the verdict; compare its rate series instead.");
+                deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable)
+                {
+                    BaselineUnit = baselineMetric.Unit,
+                    CurrentUnit = currentMetric.Unit,
+                });
+                notes.Add("A cumulative meter total is retained in untrusted delta fields but does not drive the verdict; its rate series is used instead.");
                 continue;
             }
 
             if (isRawIncrement)
             {
-                deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable));
+                deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable)
+                {
+                    BaselineUnit = baselineMetric.Unit,
+                    CurrentUnit = currentMetric.Unit,
+                });
                 notes.Add(InvestigationMetricIdentity.HasInvalidEventCounterRateMetadata(name)
-                    ? $"Raw EventCounter increment '{name}' has invalid interval/rate-scale metadata and is incomparable."
+                    ? "A raw EventCounter increment has invalid interval/rate-scale metadata and is incomparable; its untrusted label is retained only in KeyMetricDeltas."
                     : isUnnormalizedIncrement
-                        ? $"Raw EventCounter increment '{name}' has no interval/rate-scale metadata and is incomparable."
-                        : $"Raw EventCounter increment '{name}' is retained as evidence but does not drive the verdict; compare its normalized rate series instead.");
+                        ? "A raw EventCounter increment has no interval/rate-scale metadata and is incomparable; its untrusted label is retained only in KeyMetricDeltas."
+                        : "A raw EventCounter increment is retained in untrusted delta fields but does not drive the verdict; its normalized rate series is used instead.");
                 continue;
             }
 
@@ -316,22 +355,28 @@ public sealed class SummaryComparer : ISummaryComparer
                     baselineMetric!.Value,
                     currentMetric!.Value,
                     hasDirection ? DirectionName(direction) : "unknown",
-                    Incomparable));
-                notes.Add(
-                    $"Key metric '{name}' has incompatible units " +
-                    $"'{baselineMetric.Unit ?? "(none)"}' and '{currentMetric.Unit ?? "(none)"}'; it does not drive the verdict.");
+                    Incomparable)
+                {
+                    BaselineUnit = baselineMetric.Unit,
+                    CurrentUnit = currentMetric.Unit,
+                });
+                notes.Add("A key metric has incompatible units and does not drive the verdict; raw metric and unit labels are retained only in KeyMetricDeltas.");
                 continue;
             }
 
             if (conversionNote is not null)
             {
-                notes.Add($"Key metric '{name}' {conversionNote}");
+                notes.Add(conversionNote);
             }
 
             if (!hasDirection)
             {
-                deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable));
-                notes.Add($"Key metric '{name}' has no registered better-direction semantics; its delta is reported but does not drive the verdict.");
+                deltas.Add(new KeyMetricDelta(name, baselineMetric!.Value, currentMetric!.Value, "unknown", Incomparable)
+                {
+                    BaselineUnit = baselineMetric.Unit,
+                    CurrentUnit = currentMetric.Unit,
+                });
+                notes.Add("A key metric has no registered better-direction semantics; its untrusted label and delta are reported but do not drive the verdict.");
                 continue;
             }
 
@@ -346,7 +391,11 @@ public sealed class SummaryComparer : ISummaryComparer
                 baselineMetric!.Value,
                 currentMetric!.Value,
                 DirectionName(direction),
-                outcome));
+                outcome)
+            {
+                BaselineUnit = baselineMetric.Unit,
+                CurrentUnit = currentMetric.Unit,
+            });
         }
 
         return deltas.ToArray();
@@ -399,8 +448,7 @@ public sealed class SummaryComparer : ISummaryComparer
             }
 
             notes.Add(
-                $"{side} key metrics '{result[canonicalName].Name}' and '{metric.Key}' normalize to '{canonicalName}'; " +
-                $"keeping '{result[canonicalName].Name}' deterministically.");
+                $"{side} contains colliding key metric labels after normalization; the ordinal-first untrusted label was retained deterministically.");
         }
 
         return result;
@@ -433,8 +481,7 @@ public sealed class SummaryComparer : ISummaryComparer
         {
             baselineValue /= baselineRate.Seconds;
             currentValue /= currentRate.Seconds;
-            conversionNote =
-                $"units '{baseline.Unit}' and '{current.Unit}' were normalized to '{baselineRate.BaseUnit}/s'.";
+            conversionNote = "Equivalent rate units were normalized to a per-second basis.";
             return true;
         }
 
@@ -443,8 +490,7 @@ public sealed class SummaryComparer : ISummaryComparer
         {
             baselineValue *= baselineSeconds;
             currentValue *= currentSeconds;
-            conversionNote =
-                $"units '{baseline.Unit}' and '{current.Unit}' were normalized to seconds.";
+            conversionNote = "Equivalent duration units were normalized to seconds.";
             return true;
         }
 

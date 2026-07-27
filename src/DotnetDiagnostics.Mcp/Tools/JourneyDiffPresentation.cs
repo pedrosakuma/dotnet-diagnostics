@@ -3,6 +3,7 @@ using System.Text.Json;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Mcp.Resources;
 
 namespace DotnetDiagnostics.Mcp.Tools;
@@ -41,7 +42,12 @@ public sealed record JourneyDiffCompactSummary(
     int TopN,
     string? ResourceUri,
     string? Handle,
-    DateTimeOffset? HandleExpiresAt);
+    DateTimeOffset? HandleExpiresAt)
+{
+    [System.Text.Json.Serialization.JsonPropertyOrder(-20)]
+    public InvestigationEvidenceBoundary UntrustedDataBoundary { get; init; } =
+        InvestigationEvidenceBoundary.UntrustedComparisonData;
+}
 
 internal static class JourneyDiffPresentation
 {
@@ -165,15 +171,10 @@ internal static class JourneyDiffPresentation
                 $"{diff.Mode}: {diff.Verdict} across {diff.Labels.Count} captures");
         }
 
-        var from = LabelAt(diff.Labels, headline.FromIndex);
-        var to = LabelAt(diff.Labels, headline.ToIndex);
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"{headline.Relation}: {headline.Verdict} ({from} → {to})");
+            $"{headline.Relation}: {headline.Verdict} (capture #{headline.FromIndex} → capture #{headline.ToIndex})");
     }
-
-    private static string LabelAt(IReadOnlyList<string> labels, int index)
-        => index >= 0 && index < labels.Count ? labels[index] : index.ToString(CultureInfo.InvariantCulture);
 
     private static MetricSeries[] TopMetricSeries(IReadOnlyList<MetricSeries> series, int topN, JourneyMode mode)
     {

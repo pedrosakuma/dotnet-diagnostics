@@ -315,7 +315,7 @@ public sealed class SnapshotDifferTests
 
         var diff = SnapshotDiffer.Compare(new[] { snapshot, after });
 
-        diff.Notes.Should().Contain(n => n.Contains("Duplicate key"));
+        diff.Notes.Should().Contain(n => n.Contains("duplicate untrusted key", StringComparison.Ordinal));
         // First occurrence kept: 10 -> 5 is an improvement, not 99 -> 5.
         diff.KeyMatrix.Single().Values[0].Should().Be(10);
     }

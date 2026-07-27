@@ -96,7 +96,7 @@ public static class SnapshotDiffer
                 }
                 else if (!string.Equals(defs[kv.Key].Unit, kv.Value.Definition.Unit, StringComparison.Ordinal))
                 {
-                    var note = $"Metric '{kv.Key}' has inconsistent units across captures; comparing raw values.";
+                    const string note = "A metric has inconsistent units across captures; raw values were compared and its labels/units remain inside the untrusted comparison fields.";
                     if (!notes.Contains(note))
                     {
                         notes.Add(note);
@@ -126,7 +126,7 @@ public static class SnapshotDiffer
             }
             else if (values.Any(v => v is null))
             {
-                var note = $"Metric '{name}' is absent from one or more captures.";
+                const string note = "A metric is absent from one or more captures; its label remains inside the untrusted comparison fields.";
                 if (!notes.Contains(note))
                 {
                     notes.Add(note);
@@ -243,7 +243,7 @@ public static class SnapshotDiffer
             var id = KeyMatchId(row.Key);
             if (!map.TryAdd(id, (primary.Value, row.Key, row.DisplayName, primary.Definition.BetterDirection)))
             {
-                var note = $"Duplicate key '{id}' within a capture; keeping first occurrence.";
+                const string note = "A duplicate untrusted key occurred within a capture; the first occurrence was retained.";
                 if (!notes.Contains(note))
                 {
                     notes.Add(note);

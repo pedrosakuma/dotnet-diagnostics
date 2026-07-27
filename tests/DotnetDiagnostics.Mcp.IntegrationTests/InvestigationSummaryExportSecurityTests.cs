@@ -73,10 +73,12 @@ public sealed class InvestigationSummaryExportSecurityTests
 
         result.Error.Should().BeNull();
         result.Data.Should().NotBeNull();
+        result.Data!.UntrustedDataBoundary.Classification.Should().Be("untrusted-target-data");
+        result.Data.Summary.UntrustedDataBoundary.AppliesTo.Should().Contain("all non-boundary fields");
         if (kind == "cpu-sample")
         {
-            result.Data!.Summary.Evidence.Should().BeNull(
-                "CPU-only exports retain the legacy v1 JSON shape");
+            result.Data.Summary.Evidence.Should().BeNull(
+                "CPU-only exports retain the legacy nested Evidence shape while the additive outer and summary boundaries remain");
             return;
         }
 

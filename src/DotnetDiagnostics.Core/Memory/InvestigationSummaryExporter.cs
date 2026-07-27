@@ -66,7 +66,12 @@ public sealed record ExportRequest(
 public sealed record ExportedInvestigationSummary(
     InvestigationSummary Summary,
     SummaryFormat Format,
-    string Rendered);
+    string Rendered)
+{
+    [System.Text.Json.Serialization.JsonPropertyOrder(-20)]
+    public InvestigationEvidenceBoundary UntrustedDataBoundary { get; init; } =
+        InvestigationEvidenceBoundary.UntrustedInvestigationData;
+}
 
 public sealed class EvidenceMetricConflictException : InvalidOperationException
 {
@@ -221,7 +226,7 @@ public sealed class InvestigationSummaryExporter : IInvestigationSummaryExporter
         {
             EvidenceBoundary = legacyCpuOnly
                 ? null
-                : InvestigationEvidenceBoundary.UntrustedTargetData,
+                : InvestigationEvidenceBoundary.UntrustedEvidenceData,
             Evidence = legacyCpuOnly ? null : projections.Select(static projection => projection.Evidence).ToArray(),
         };
 

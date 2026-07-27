@@ -264,7 +264,7 @@ internal static class DiagnosticToolBaselineComparison
             ? "No pairwise headline."
             : string.Create(
                 CultureInfo.InvariantCulture,
-                $"{headline.Relation}: {headline.Verdict} ({diff.Labels[headline.FromIndex]} → {diff.Labels[headline.ToIndex]}).");
+                $"{headline.Relation}: {headline.Verdict} (capture #{headline.FromIndex} → capture #{headline.ToIndex}).");
         var summaryLine = string.Create(
             CultureInfo.InvariantCulture,
             $"Verdict: {diff.Verdict}. {headlineText} Metrics: {diff.MetricSeries.Count}; rows: {diff.KeyMatrix.Count}.");
