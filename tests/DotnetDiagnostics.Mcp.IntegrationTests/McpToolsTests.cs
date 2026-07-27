@@ -18,6 +18,8 @@ using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Threads;
+using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -1745,6 +1747,153 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         envelope.Error!.Kind.Should().Be("InvalidEvidenceMetric");
         envelope.Error.Message.Should().Be("Evidence contains a non-finite metric value.");
         envelope.Error.Detail.Should().Be("NonFiniteMetricValue");
+    }
+
+    [Fact]
+    public async Task ExportAndCompare_SyncOverAsyncBeforeAfter_NonCpuEvidenceShowsImprovement()
+    {
+        // Validates acceptance criterion: sync-over-async diagnosed from queue+blocking-stacks on the
+        // broken side, verified from queue/throughput on the fixed side — no CPU capture on either side.
+        var store = _factory.Services.GetRequiredService<IDiagnosticHandleStore>();
+        const int pid = 9999;
+        var capturedAt = DateTimeOffset.UnixEpoch;
+
+        // ── Broken build ─────────────────────────────────────────────────────────
+        var beforeCountersHandle = store.Register(
+            pid,
+            CollectionHandleKinds.Counters,
+            new CounterSnapshot(
+                pid,
+                capturedAt,
+                TimeSpan.FromSeconds(5),
+                Counters:
+                [
+                    new CounterValue("System.Runtime", "threadpool-queue-length", "Queue", 236, CounterKind.Mean),
+                    new CounterValue("Microsoft.AspNetCore.Hosting", "requests-per-second", "req/s", 0, CounterKind.Mean),
+                ],
+                Meters: [],
+                Notes: []),
+            TimeSpan.FromMinutes(5),
+            evictWhenProcessExits: false);
+
+        var blockingFrames = new ManagedStackFrame[]
+        {
+            new("Managed", "System.Runtime.CompilerServices.TaskAwaiter.GetResult",
+                "System.Runtime.CompilerServices.TaskAwaiter", "System.Private.CoreLib.dll", 0, 0),
+            new("Managed", "System.Threading.ManualResetEventSlim.Wait",
+                "System.Threading.ManualResetEventSlim", "System.Private.CoreLib.dll", 0, 0),
+            new("Managed", "Sample.SyncOverAsyncController.Get",
+                "Sample.SyncOverAsyncController", "Sample.dll", 0, 0),
+        };
+        var beforeThreadsHandle = store.Register(
+            pid,
+            SamplerUseCases.ThreadSnapshotKind,
+            new ThreadSnapshotArtifact(
+                ThreadSnapshotOrigin.Live,
+                pid,
+                capturedAt.AddSeconds(1),
+                TimeSpan.FromMilliseconds(25),
+                ".NET",
+                "10.0.0",
+                Threads: Enumerable.Range(1, 4).Select(i => new ManagedThread(
+                    ManagedThreadId: i,
+                    OSThreadId: (uint)i,
+                    Address: (ulong)i,
+                    State: "Waiting",
+                    IsAlive: true,
+                    IsBackground: true,
+                    IsFinalizer: false,
+                    IsGc: false,
+                    IsThreadpoolWorker: true,
+                    LockCount: 0,
+                    CurrentExceptionType: null,
+                    TopFrameMethod: blockingFrames[0].DisplayName,
+                    Frames: blockingFrames)
+                {
+                    IsLikelyBlocked = true,
+                    InferredWaitReason = "Task",
+                }).ToArray(),
+                Locks: []),
+            TimeSpan.FromMinutes(5),
+            evictWhenProcessExits: false);
+
+        // ── Fixed build ──────────────────────────────────────────────────────────
+        var afterCountersHandle = store.Register(
+            pid,
+            CollectionHandleKinds.Counters,
+            new CounterSnapshot(
+                pid,
+                capturedAt.AddMinutes(30),
+                TimeSpan.FromSeconds(5),
+                Counters:
+                [
+                    new CounterValue("System.Runtime", "threadpool-queue-length", "Queue", 0, CounterKind.Mean),
+                    new CounterValue("Microsoft.AspNetCore.Hosting", "requests-per-second", "req/s", 50, CounterKind.Mean),
+                ],
+                Meters: [],
+                Notes: []),
+            TimeSpan.FromMinutes(5),
+            evictWhenProcessExits: false);
+
+        await using var client = await ConnectAsync();
+
+        // 1. Export the before summary: counters + blocking thread stacks, no CPU capture.
+        var beforeResult = await client.CallToolAsync(
+            "export_investigation_summary",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = beforeCountersHandle.Id,
+                ["additionalHandles"] = new[] { beforeThreadsHandle.Id },
+                ["notes"] = "Sync-over-async suspected from queue growth plus blocking stacks.",
+            },
+            cancellationToken: CancellationToken.None);
+
+        beforeResult.IsError.Should().NotBe(true);
+        var before = DeserializeStructured<ExportedInvestigationSummary>(beforeResult);
+        before.Should().NotBeNull();
+        before!.Summary.Findings.TotalSamples.Should().Be(0, "no CPU evidence on the broken side");
+        before.Summary.Findings.TopHotspots.Should().BeEmpty("no CPU evidence on the broken side");
+        before.Summary.Evidence.Should().HaveCount(2);
+        before.Summary.Evidence!.Should().ContainSingle(e => e.Kind == "counters");
+        before.Summary.Evidence.Should().ContainSingle(e => e.Kind == "thread-snapshot"
+            && e.Findings.Any(f => f.Category == "blocking-stack"));
+
+        // 2. Export the after summary: counters only (no thread snapshot, no CPU) — fixed side.
+        var afterResult = await client.CallToolAsync(
+            "export_investigation_summary",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = afterCountersHandle.Id,
+                ["previousInvestigationId"] = before.Summary.InvestigationId,
+                ["notes"] = "Queue drained and request throughput recovered after the fix.",
+            },
+            cancellationToken: CancellationToken.None);
+
+        afterResult.IsError.Should().NotBe(true);
+        var after = DeserializeStructured<ExportedInvestigationSummary>(afterResult);
+        after.Should().NotBeNull();
+        after!.Summary.Findings.TotalSamples.Should().Be(0, "no CPU evidence on the fixed side either");
+        after.Summary.PreviousInvestigationId.Should().Be(before.Summary.InvestigationId);
+        after.Summary.Evidence.Should().ContainSingle(e => e.Kind == "counters");
+
+        // 3. Compare before and after — verdict must be improvement on queue/throughput.
+        var compareResult = await client.CallToolAsync(
+            "compare_to_baseline",
+            new Dictionary<string, object?>
+            {
+                ["baselineSummaryJson"] = before.Rendered,
+                ["currentSummaryJson"] = after.Rendered,
+            },
+            cancellationToken: CancellationToken.None);
+
+        compareResult.IsError.Should().NotBe(true);
+        var diff = DeserializeStructured<SummaryDiff>(compareResult);
+        diff.Should().NotBeNull();
+        diff!.Verdict.Should().Be("improvement");
+        diff.KeyMetricDeltas.Should().Contain(d =>
+            d.Name.Contains("threadpool-queue-length", StringComparison.Ordinal) && d.Outcome == "improved");
+        diff.KeyMetricDeltas.Should().Contain(d =>
+            d.Name.Contains("requests-per-second", StringComparison.Ordinal) && d.Outcome == "improved");
     }
 
     [Fact]
