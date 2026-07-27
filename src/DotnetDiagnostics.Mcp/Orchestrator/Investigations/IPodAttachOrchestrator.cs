@@ -13,6 +13,7 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// <param name="TtlSeconds">Per-handle TTL override; null uses <c>OrchestratorOptions.DefaultInvestigationTtlSeconds</c>.</param>
 /// <param name="RequirePreparedTarget">When true (default), refuse to attach to an unprepared Pod.</param>
 /// <param name="AllowReuseExistingSession">When true (default), return an existing Active/Attaching handle for the same target instead of patching a second ephemeral container.</param>
+/// <param name="ProcessSelector">Optional transport-neutral process identity resolved inside the attached Pod before replica fan-out.</param>
 /// <param name="OwnerBearerName">Bearer principal name of the caller, stamped onto the minted handle for per-owner authorization. Null produces an un-scoped handle reachable by any authenticated caller (stdio / synthetic-root flows with no projected bearer identity).</param>
 public sealed record AttachRequest(
     string Namespace,
@@ -27,7 +28,8 @@ public sealed record AttachRequest(
     // headers. Null is accepted (stdio / framework without a projected bearer
     // identity) and produces an un-scoped handle reachable by any authenticated
     // caller.
-    string? OwnerBearerName = null);
+    string? OwnerBearerName = null,
+    InvestigationProcessSelector? ProcessSelector = null);
 
 /// <summary>
 /// Two-phase attach: validate the target, patch the ephemeral container, wait for

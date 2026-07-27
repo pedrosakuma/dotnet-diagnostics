@@ -170,6 +170,13 @@ public sealed class OrchestratorTools
         bool requirePreparedTarget = true,
         [Description("When true (default), returns an existing investigation for the same target instead of patching a second ephemeral container.")]
         bool allowReuseExistingSession = true,
+        [Description(
+            "Optional transport-neutral process selector stored on the investigation handle. " +
+            "replica_counters resolves it independently inside each Pod using inspect_process(view='list') " +
+            "and forwards the resulting Pod-local processId to collect_events(kind='counters'). " +
+            "Set managedEntrypointAssemblyName for an exact case-insensitive match; optionally add " +
+            "commandLineContains to disambiguate multiple instances. Ambiguous or missing matches remain per-Pod errors.")]
+        InvestigationProcessSelector? processSelector = null,
         CancellationToken cancellationToken = default)
     {
         var resolvedNamespace = @namespace ?? options.DefaultNamespace ?? string.Empty;
@@ -196,7 +203,8 @@ public sealed class OrchestratorTools
             TtlSeconds: ttlSeconds,
             RequirePreparedTarget: requirePreparedTarget,
             AllowReuseExistingSession: allowReuseExistingSession,
-            OwnerBearerName: principalAccessor.Current?.Name);
+            OwnerBearerName: principalAccessor.Current?.Name,
+            ProcessSelector: processSelector);
 
         InvestigationHandle handle;
         try

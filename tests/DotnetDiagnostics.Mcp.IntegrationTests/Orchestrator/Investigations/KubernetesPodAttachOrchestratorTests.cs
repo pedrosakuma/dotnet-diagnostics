@@ -231,6 +231,70 @@ public class KubernetesPodAttachOrchestratorTests
     }
 
     [Fact]
+    public async Task AttachAsync_StoresNormalizedTransportNeutralProcessSelector()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, store, _) = NewOrchestrator(api);
+        var selector = new InvestigationProcessSelector(
+            ManagedEntrypointAssemblyName: "  CoreClrSample  ",
+            CommandLineContains: "  --p6-target=a ");
+
+        var handle = await orch.AttachAsync(NewRequest(processSelector: selector), CancellationToken.None);
+
+        handle.ProcessSelector.Should().Be(new InvestigationProcessSelector("CoreClrSample", "--p6-target=a"));
+        store.GetById(handle.HandleId)!.ProcessSelector.Should().Be(handle.ProcessSelector);
+    }
+
+    [Fact]
+    public async Task AttachAsync_RejectsAddingSelectorToReusedHandle()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, _, _) = NewOrchestrator(api);
+        var first = await orch.AttachAsync(NewRequest(), CancellationToken.None);
+        var selector = new InvestigationProcessSelector(ManagedEntrypointAssemblyName: "CoreClrSample");
+
+        var act = () => orch.AttachAsync(NewRequest(processSelector: selector), CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<OrchestratorException>();
+        ex.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.InvalidArgument);
+        ex.Which.Message.Should().Contain(first.HandleId);
+        api.PatchInvocationCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task AttachAsync_RejectsDifferentSelectorOnReusedHandle()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, _, _) = NewOrchestrator(api);
+        await orch.AttachAsync(
+            NewRequest(processSelector: new InvestigationProcessSelector("Worker.One")),
+            CancellationToken.None);
+
+        var act = () => orch.AttachAsync(
+            NewRequest(processSelector: new InvestigationProcessSelector("Worker.Two")),
+            CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<OrchestratorException>();
+        ex.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.InvalidArgument);
+        api.PatchInvocationCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task AttachAsync_RejectsEmptyProcessSelector()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, _, _) = NewOrchestrator(api);
+
+        var act = () => orch.AttachAsync(
+            NewRequest(processSelector: new InvestigationProcessSelector(" ", "\t")),
+            CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<OrchestratorException>();
+        ex.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.InvalidArgument);
+        api.PatchInvoked.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task AttachAsync_PatchesAgain_WhenReuseDisabled()
     {
         var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
@@ -330,7 +394,8 @@ public class KubernetesPodAttachOrchestratorTests
             PodLocalBearerToken: "SECRET_TOKEN_VALUE",
             State: InvestigationState.Active,
             AttachedAt: DateTimeOffset.UtcNow,
-            ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30));
+            ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
+            ProcessSelector: new InvestigationProcessSelector("CoreClrSample"));
 
         var json = System.Text.Json.JsonSerializer.Serialize(handle);
 
@@ -350,12 +415,14 @@ public class KubernetesPodAttachOrchestratorTests
             PodLocalBearerToken: "SECRET_TOKEN_VALUE",
             State: InvestigationState.Active,
             AttachedAt: DateTimeOffset.UtcNow,
-            ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30));
+            ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
+            ProcessSelector: new InvestigationProcessSelector("CoreClrSample"));
 
         var session = AttachSession.FromHandle(handle);
         var json = System.Text.Json.JsonSerializer.Serialize(session);
 
         session.HandleId.Should().Be(handle.HandleId);
+        session.ProcessSelector.Should().Be(handle.ProcessSelector);
         json.Should().NotContain("SECRET_TOKEN_VALUE");
     }
 
@@ -365,8 +432,16 @@ public class KubernetesPodAttachOrchestratorTests
         string @namespace = Ns,
         string? containerName = null,
         bool requirePreparedTarget = true,
-        bool allowReuseExistingSession = true)
-        => new(@namespace, Pod, containerName, TtlSeconds: null, requirePreparedTarget, allowReuseExistingSession);
+        bool allowReuseExistingSession = true,
+        InvestigationProcessSelector? processSelector = null)
+        => new(
+            @namespace,
+            Pod,
+            containerName,
+            TtlSeconds: null,
+            requirePreparedTarget,
+            allowReuseExistingSession,
+            ProcessSelector: processSelector);
 
     private static V1Pod BuildPreparedPod()
         => new()
