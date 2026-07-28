@@ -70,6 +70,7 @@ public sealed class OrchestratorObservabilityTests
 
         var attach = await OrchestratorTools.AttachToPod(
             fx.AttachOrchestrator,
+            externalOrchestrator: null!,
             fx.Options,
             fx.Binder,
             fx.Store,
@@ -149,6 +150,7 @@ public sealed class OrchestratorObservabilityTests
 
         var attach = await OrchestratorTools.AttachToPod(
             attachOrchestrator,
+            externalOrchestrator: null!,
             options,
             binder,
             store,

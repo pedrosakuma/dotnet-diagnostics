@@ -136,21 +136,24 @@ public sealed class OrchestratorTools
     [RequireScope("orchestrator-attach")]
     [McpServerTool(
         Name = "attach_to_pod",
-        Title = "Attach a diagnostic ephemeral container to a Pod",
+        Title = "Attach a diagnostics sidecar to a Pod or a configured external MCP profile",
         Destructive = true,
         ReadOnly = false,
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(
-        "Injects a diagnostics ephemeral container into the named Pod, joins the target container's PID namespace, " +
-        "and returns an opaque investigation handle that future tool calls will be able to route through (the " +
-        "transport proxy lands in the next orchestrator slice). The Pod must already be in phase=Running and — " +
-        "by default — must opt in via the prepared label (diagnostics.dotnet.io/prepared=true). " +
-        "Reuses an existing investigation for the same (namespace, pod, container) when one is already attached. " +
-        "Side-effect: ephemeral containers cannot be removed once added; the diagnostics container will remain " +
-        "on the Pod's spec until the Pod is recreated.")]
+        "Two modes: (1) Kubernetes — injects a diagnostics ephemeral container into the named Pod, joins the " +
+        "target container's PID namespace, and returns an opaque investigation handle. The Pod must already be " +
+        "in phase=Running and — by default — must opt in via the prepared label. Side-effect: ephemeral containers " +
+        "cannot be removed once added; the diagnostics container remains on the Pod's spec until the Pod is recreated. " +
+        "(2) External profile — pass profileName (from list_orchestrator(kind='external-profiles')) instead of podName " +
+        "to register a pre-configured external MCP endpoint as an investigation handle. The handle becomes Active only " +
+        "after the transport is successfully initialized. Requires 'orchestrator-attach' scope in both modes; external " +
+        "profile attach additionally requires the explicit 'orchestrator-admin' modifier scope. " +
+        "Reuses an existing investigation for the same target when one is already Active/Attaching.")]
     public static async Task<DiagnosticResult<AttachSession>> AttachToPod(
         IPodAttachOrchestrator orchestrator,
+        IExternalProfileAttachOrchestrator externalOrchestrator,
         OrchestratorOptions options,
         IInvestigationSessionBinder sessionBinder,
         IInvestigationStore store,
@@ -158,27 +161,53 @@ public sealed class OrchestratorTools
         OrchestratorObservability observability,
         McpServer server,
         ILoggerFactory? loggerFactory = null,
-        [Description("Pod namespace. Falls back to the orchestrator's DefaultNamespace when omitted.")]
+        [Description("Pod namespace. Falls back to the orchestrator's DefaultNamespace when omitted. Ignored when profileName is set.")]
         string? @namespace = null,
-        [Description("Pod name. Required.")]
+        [Description("Pod name. Required for Kubernetes attach. Omit when using profileName.")]
         string? podName = null,
-        [Description("Container name inside the Pod. Defaults to the first container in the Pod's spec.")]
+        [Description("Container name inside the Pod. Defaults to the first container in the Pod's spec. Ignored when profileName is set.")]
         string? containerName = null,
         [Description("Per-investigation TTL in seconds. Defaults to Orchestrator:DefaultInvestigationTtlSeconds (1800).")]
         int? ttlSeconds = null,
-        [Description("When true (default), refuses to attach to Pods that don't carry the prepared opt-in label.")]
+        [Description("Kubernetes only: when true (default), refuses to attach to Pods that don't carry the prepared opt-in label.")]
         bool requirePreparedTarget = true,
         [Description("When true (default), returns an existing investigation for the same target instead of patching a second ephemeral container.")]
         bool allowReuseExistingSession = true,
         [Description(
-            "Optional transport-neutral process selector stored on the investigation handle. " +
+            "Kubernetes only: optional transport-neutral process selector stored on the investigation handle. " +
             "replica_counters resolves it independently inside each Pod using inspect_process(view='list') " +
             "and forwards the resulting Pod-local processId to collect_events(kind='counters'). " +
             "Set managedEntrypointAssemblyName for an exact case-insensitive match; optionally add " +
             "commandLineContains to disambiguate multiple instances. Ambiguous or missing matches remain per-Pod errors.")]
         InvestigationProcessSelector? processSelector = null,
+        [Description(
+            "External profile mode: name of an operator-configured external MCP profile " +
+            "(from list_orchestrator(kind='external-profiles')). When set, the tool attaches to the named " +
+            "external MCP endpoint instead of injecting a Kubernetes ephemeral container. " +
+            "Requires the explicit 'orchestrator-admin' modifier scope in addition to 'orchestrator-attach'. " +
+            "Mutually exclusive with podName.")]
+        string? profileName = null,
         CancellationToken cancellationToken = default)
     {
+        // ---- External profile path -----------------------------------------------
+        if (!string.IsNullOrWhiteSpace(profileName))
+        {
+            return await AttachToExternalProfileAsync(
+                externalOrchestrator,
+                options,
+                sessionBinder,
+                store,
+                principalAccessor,
+                observability,
+                server,
+                loggerFactory,
+                profileName,
+                ttlSeconds,
+                allowReuseExistingSession,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        // ---- Kubernetes pod attach path ------------------------------------------
         var resolvedNamespace = @namespace ?? options.DefaultNamespace ?? string.Empty;
         var stopwatch = Stopwatch.StartNew();
         using var activity = observability.StartAttachActivity(resolvedNamespace, podName ?? string.Empty, containerName);
@@ -189,11 +218,13 @@ public sealed class OrchestratorTools
             activity?.SetTag("event.outcome", "failure");
             activity?.SetTag("error.type", reason);
             observability.RecordAttach(principalAccessor.Current, resolvedNamespace, string.Empty, containerName, null, "failure", reason, stopwatch.Elapsed);
-            var ex = new OrchestratorException(reason, "podName is required.");
+            var ex = new OrchestratorException(reason, "Either podName or profileName is required.");
             return DiagnosticResult.Fail<AttachSession>(
                 $"attach_to_pod failed: {ex.Message}",
                 new DiagnosticError(ex.ErrorKind, ex.Message),
-                BuildAttachRecoveryHint(ex.ErrorKind));
+                new NextActionHint(
+                    "list_orchestrator",
+                    "Run list_orchestrator(kind='pods') to find a Pod target, or list_orchestrator(kind='external-profiles') to see configured external profiles."));
         }
 
         var request = new AttachRequest(
@@ -277,6 +308,120 @@ public sealed class OrchestratorTools
                       "Continue presenting the normal orchestrator bearer token — the proxy strips it and injects the per-attach Pod-local bearer upstream automatically."));
     }
 
+    private static async Task<DiagnosticResult<AttachSession>> AttachToExternalProfileAsync(
+        IExternalProfileAttachOrchestrator externalOrchestrator,
+        OrchestratorOptions options,
+        IInvestigationSessionBinder sessionBinder,
+        IInvestigationStore store,
+        IPrincipalAccessor principalAccessor,
+        OrchestratorObservability observability,
+        McpServer server,
+        ILoggerFactory? loggerFactory,
+        string profileName,
+        int? ttlSeconds,
+        bool allowReuseExistingSession,
+        CancellationToken cancellationToken)
+    {
+        // External profile attach requires the explicit 'orchestrator-admin' scope (wildcard tokens
+        // do NOT satisfy HasExplicitScope — this guards against ambient root-token privilege).
+        if (principalAccessor.Current is not null &&
+            !principalAccessor.Current.HasExplicitScope(OrchestratorAdminBypassPolicy.AdminScope))
+        {
+            const string msg = "attach_to_pod(profileName) requires the explicit 'orchestrator-admin' modifier scope. " +
+                               "Wildcard/root bearer tokens do not satisfy this requirement.";
+            observability.RecordAttach(principalAccessor.Current, string.Empty, string.Empty, null, null, "failure", OrchestratorErrorKinds.PermissionDenied, System.TimeSpan.Zero);
+            return DiagnosticResult.Fail<AttachSession>(
+                $"attach_to_pod failed: {msg}",
+                new DiagnosticError(OrchestratorErrorKinds.PermissionDenied, msg),
+                new NextActionHint(
+                    "attach_to_pod",
+                    "Mint a bearer token with the explicit 'orchestrator-admin' modifier scope (see docs/authorization.md#scopes) and retry."));
+        }
+
+        // Feature gate: external MCP profiles must be configured.
+        if (options.ExternalMcpProfiles.Count == 0)
+        {
+            const string msg = "attach_to_pod(profileName) requires at least one entry under Orchestrator:ExternalMcpProfiles. " +
+                               "No profiles are currently configured.";
+            observability.RecordAttach(principalAccessor.Current, string.Empty, string.Empty, null, null, "failure", OrchestratorErrorKinds.ExternalMcpProfileInvalid, System.TimeSpan.Zero);
+            return DiagnosticResult.Fail<AttachSession>(
+                $"attach_to_pod failed: {msg}",
+                new DiagnosticError(OrchestratorErrorKinds.ExternalMcpProfileInvalid, msg),
+                new NextActionHint(
+                    "list_orchestrator",
+                    "Run list_orchestrator(kind='external-profiles') to see the available profiles.",
+                    new Dictionary<string, object?> { ["kind"] = "external-profiles" }));
+        }
+
+        var extRequest = new ExternalProfileAttachRequest(
+            ProfileName: profileName,
+            TtlSeconds: ttlSeconds,
+            AllowReuseExistingSession: allowReuseExistingSession,
+            OwnerBearerName: principalAccessor.Current?.Name,
+            OwnerPrincipalKey: principalAccessor.Current?.OwnershipKey);
+
+        InvestigationHandle handle;
+        try
+        {
+            handle = await externalOrchestrator.AttachAsync(extRequest, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OrchestratorException ex)
+        {
+            observability.RecordAttach(principalAccessor.Current, string.Empty, profileName, null, null, "failure", ex.ErrorKind, System.TimeSpan.Zero);
+            return DiagnosticResult.Fail<AttachSession>(
+                $"attach_to_pod(profileName='{profileName}') failed: {ex.Message}",
+                new DiagnosticError(ex.ErrorKind, ex.Message),
+                BuildExternalAttachRecoveryHint(ex.ErrorKind));
+        }
+
+        InvestigationHandle observedHandle = handle;
+        if (handle.State == InvestigationState.Active)
+        {
+            observedHandle = store.GetById(handle.HandleId) ?? handle;
+            if (observedHandle.State != InvestigationState.Active)
+            {
+                var msg = $"External investigation {handle.HandleId} was closed during attach (observed {observedHandle.State}).";
+                observability.RecordAttach(principalAccessor.Current, string.Empty, profileName, null, handle.HandleId, "failure", OrchestratorErrorKinds.AttachFailed, System.TimeSpan.Zero);
+                return DiagnosticResult.Fail<AttachSession>(
+                    $"attach_to_pod failed: {msg}",
+                    new DiagnosticError(OrchestratorErrorKinds.AttachFailed, msg),
+                    BuildExternalAttachRecoveryHint(OrchestratorErrorKinds.AttachFailed));
+            }
+            var sessionId = TryGetServerSessionId(server);
+            if (!string.IsNullOrEmpty(sessionId))
+            {
+                sessionBinder.Bind(sessionId, handle.HandleId);
+            }
+            else
+            {
+                (loggerFactory ?? NullLoggerFactory.Instance)
+                    .CreateLogger(typeof(OrchestratorTools).FullName!)
+                    .LogDebug(
+                        "attach_to_pod(profileName): McpServer.SessionId unavailable; skipping investigation session binding for handle {HandleId}.",
+                        handle.HandleId);
+            }
+        }
+
+        // External handles route through the proxy filter automatically via the session binding;
+        // no explicit proxy URL rewriting is needed — the filter resolves the handle from the
+        // session binding and calls the external MCP directly.
+        var session = AttachSession.FromHandle(observedHandle, proxyBaseUrl: null);
+        observability.RecordAttach(principalAccessor.Current, string.Empty, profileName, null, session.HandleId, "success", "none", System.TimeSpan.Zero);
+
+        var extSummary = $"External investigation {session.HandleId} {(session.State == InvestigationState.Active ? "active" : session.State.ToString().ToLowerInvariant())} " +
+                         $"for profile '{session.ProfileName}' (expires at {session.ExpiresAt:O}). " +
+                         "Subsequent diagnostic tool calls are automatically routed to the external MCP without URL rewriting.";
+
+        return DiagnosticResult.Ok(
+            session,
+            extSummary,
+            new NextActionHint(
+                "detach_from_pod",
+                session.State == InvestigationState.Active
+                    ? $"Use investigationHandleId='{session.HandleId}' on diagnostic tool calls, or rely on the automatic session binding. Release with detach_from_pod."
+                    : "Investigation is not yet Active. Retry attach_to_pod with the same profileName."));
+    }
+
     private static NextActionHint BuildAttachRecoveryHint(string errorKind) => errorKind switch
     {
         OrchestratorErrorKinds.InvalidArgument => new NextActionHint(
@@ -319,6 +464,27 @@ public sealed class OrchestratorTools
             "Re-run with corrected arguments."),
     };
 
+    private static NextActionHint BuildExternalAttachRecoveryHint(string errorKind) => errorKind switch
+    {
+        OrchestratorErrorKinds.ExternalMcpProfileInvalid => new NextActionHint(
+            "list_orchestrator",
+            "Run list_orchestrator(kind='external-profiles') to see available profile names and retry with a valid profileName.",
+            new Dictionary<string, object?> { ["kind"] = "external-profiles" }),
+        OrchestratorErrorKinds.PermissionDenied => new NextActionHint(
+            "attach_to_pod",
+            "Mint a bearer token with the explicit 'orchestrator-admin' modifier scope and retry."),
+        OrchestratorErrorKinds.ExternalMcpConnectFailed or OrchestratorErrorKinds.ExternalMcpSsrfRejected => new NextActionHint(
+            "attach_to_pod",
+            "Verify the external MCP profile URL is reachable and the SSRF allowlists (AllowedCidrs/AllowedPorts) permit the connection."),
+        OrchestratorErrorKinds.AttachFailed => new NextActionHint(
+            "attach_to_pod",
+            "Retry attach_to_pod with the same profileName."),
+        _ => new NextActionHint(
+            "list_orchestrator",
+            "Run list_orchestrator(kind='external-profiles') to inspect available profiles.",
+            new Dictionary<string, object?> { ["kind"] = "external-profiles" }),
+    };
+
     // Mirror of DiagnosticTools.TryGetServerSessionId. The MCP SDK exposes SessionId only
     // as an internal-ish property; reflecting against the McpServer instance is the same
     // pattern the diagnostic-tools side uses for MCP-task correlation (see
@@ -339,12 +505,14 @@ public sealed class OrchestratorTools
         UseStructuredContent = true)]
     [Description(
         "Closes an investigation produced by attach_to_pod: tears down the cached MCP client, " +
-        "stops the port-forward, unbinds every MCP session still pointed at the handle, and marks " +
+        "stops the port-forward (Kubernetes) or disposes the external transport (external profile), " +
+        "unbinds every MCP session still pointed at the handle, and marks " +
         "the handle as Closed so subsequent tool calls fall back to local execution. " +
         "Idempotent — calling on a missing/already-terminal handle is a no-op and returns Ok. " +
-        "NOTE: the ephemeral diagnostics container CANNOT be removed (Kubernetes constraint); " +
-        "it remains on the Pod's spec until the Pod is recreated. Detach therefore only releases " +
-        "the orchestrator-side transport, it does not roll the Pod back to its original state.")]
+        "NOTE: for Kubernetes investigations, the ephemeral diagnostics container CANNOT be removed " +
+        "(Kubernetes constraint); it remains on the Pod's spec until the Pod is recreated. " +
+        "For external profile investigations, detach releases the transport and credentials without " +
+        "any Pod-side side effects.")]
     public static async Task<DiagnosticResult<DetachResult>> DetachFromPod(
         InvestigationCloser closer,
         IInvestigationSessionBinder sessionBinder,
@@ -421,6 +589,7 @@ public sealed class OrchestratorTools
             UnboundSessionIds: outcome.UnboundSessionIds);
 
         string summary;
+        var isExternalHandle = existing?.ExternalMcp is not null;
         if (!outcome.Found)
         {
             summary = $"detach_from_pod: handle '{resolvedHandleId}' is unknown — no-op (already evicted, never minted, or wrong id).";
@@ -428,6 +597,11 @@ public sealed class OrchestratorTools
         else if (outcome.AlreadyTerminal)
         {
             summary = $"detach_from_pod: handle '{resolvedHandleId}' was already {outcome.PreviousState?.ToString().ToLowerInvariant()}; drained {outcome.UnboundSessionIds.Count} residual session binding(s).";
+        }
+        else if (isExternalHandle)
+        {
+            summary = $"detach_from_pod: external investigation '{resolvedHandleId}' transitioned {outcome.PreviousState?.ToString().ToLowerInvariant()}→closed; " +
+                      $"unbound {outcome.UnboundSessionIds.Count} MCP session(s); external transport released.";
         }
         else
         {
@@ -442,8 +616,9 @@ public sealed class OrchestratorTools
             new NextActionHint(
                 "attach_to_pod",
                 "Subsequent diagnostic tool calls on this client now resolve locally on the orchestrator host. " +
-                "Re-attach with attach_to_pod if you need to continue investigating the same Pod."));
+                "Re-attach with attach_to_pod if you need to continue the investigation."));
     }
+
 
     [RequireScope("orchestrator-attach")]
     [Description(

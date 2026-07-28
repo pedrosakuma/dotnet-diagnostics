@@ -191,7 +191,7 @@ internal static class ToolInvocationScopeResolver
             : ReadCountersScope;
 
     internal static string GetListOrchestratorKindScope(string? kind)
-        => IsDiscriminator(kind, "investigations")
+        => IsDiscriminator(kind, "investigations") || IsDiscriminator(kind, "external-profiles")
             ? OrchestratorAttachScope
             : OrchestratorListScope;
 

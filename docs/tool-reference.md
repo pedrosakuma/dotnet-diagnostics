@@ -835,7 +835,7 @@ unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
 | [`capture_method_bytes`](#capture_method_bytes) | cheap | **yes** | ❌ (use `dotnet-native-mcp.disassemble`) | reads JIT code-heap |
 | `get_bytes(kind="module")` | cheap | **yes** (live module attach) | ❌ (materialize locally, then hand off) | streams PE / PDB bytes over MCP chunks |
 | `get_bytes(kind="dump")` | cheap | no | ❌ (materialize locally, then hand off) | streams dump bytes from `MCP_ARTIFACT_ROOT` |
-| `list_orchestrator(kind=pods\|investigations)` (orchestrator) | cheap | n/a | n/a | `kind=pods` → Kubernetes `pods.list` (scope `orchestrator-list`); `kind=investigations` → in-memory handle snapshot (scope `orchestrator-attach`). **Opt-in**, registered only when `Orchestrator:Enabled=true`. |
+| `list_orchestrator(kind=pods\|investigations\|external-profiles)` (orchestrator) | cheap | n/a | n/a | `kind=pods` → Kubernetes `pods.list` (scope `orchestrator-list`); `kind=investigations` → in-memory handle snapshot (scope `orchestrator-attach`); `kind=external-profiles` → operator-configured external MCP profiles (non-secret metadata, scope `orchestrator-attach`). **Opt-in**, registered only when `Orchestrator:Enabled=true`. |
 
 "Window-bound" means the duration is the dominant cost; the tool will block for
 ~`durationSeconds`.
@@ -2975,6 +2975,7 @@ read-only tool that dispatches on `kind`:
 |---|---|---|---|
 | `pods` | `list_orchestrator(kind="pods")` | `orchestrator-list` | `PodCandidatePage` under `data.pods` |
 | `investigations` | `list_orchestrator(kind="investigations")` | `orchestrator-attach` | `InvestigationListPage` under `data.investigations` |
+| `external-profiles` | — | `orchestrator-attach` | `ExternalProfilePage` under `data.externalProfiles` |
 
 Per-kind parameters are preserved verbatim:
 
@@ -2986,6 +2987,10 @@ Per-kind parameters are preserved verbatim:
   `includeAllSessions` (default `false`; requires
   `Orchestrator:AllowCrossSessionAdmin=true` **or** the bearer's
   `orchestrator-admin` modifier scope).
+- **`kind="external-profiles"`** — no additional parameters. Returns
+  non-secret profile metadata (name, label, description, tags) for each
+  operator-configured `Orchestrator:ExternalMcpProfiles` entry. Credential
+  fields (bearer tokens, client certificates) are never included.
 
 **Result envelope:**
 
@@ -2996,20 +3001,22 @@ Per-kind parameters are preserved verbatim:
   "data": {
     "kind": "pods",                  // discriminator echo
     "pods":            { "items": [...], "nextCursor": null },   // when kind=pods
-    "investigations":  null                                       // null when not selected
+    "investigations":  null,                                      // null when not selected
+    "externalProfiles": null                                      // null when not selected
   }
 }
 ```
 
-Exactly one of `data.pods` / `data.investigations` is populated, matching `data.kind`.
+Exactly one of `data.pods` / `data.investigations` / `data.externalProfiles` is
+populated, matching `data.kind`.
 Errors (unknown `kind`, orchestrator disabled, scope mismatch) surface as the
 standard `DiagnosticError` envelope with kinds `InvalidArgument`,
 `OrchestratorDisabled`, or `PermissionDenied` respectively.
 
 **Authorization.** The MCP scope filter accepts either of `orchestrator-list` /
 `orchestrator-attach`. The tool re-checks scopes per `kind` so a token holding
-only `orchestrator-list` cannot enumerate investigation handles by switching the
-discriminator.
+only `orchestrator-list` cannot enumerate investigation handles or external
+profiles by switching the discriminator.
 
 **Why `attach_to_pod` / `detach_from_pod` are NOT folded in.** Those
 verbs have side-effect boundaries (ephemeral-container injection, handle close,
@@ -3025,41 +3032,53 @@ session unbind) that are distinct from read-only listing. They remain explicit.
 // List active handles for the current bearer identity:
 { "name": "list_orchestrator", "arguments": {
     "kind": "investigations", "includeTerminal": false } }
+
+// List available external MCP profiles (non-secret metadata):
+{ "name": "list_orchestrator", "arguments": {
+    "kind": "external-profiles" } }
 ```
 
 ---
 
 ## `attach_to_pod`
 
-Injects a diagnostic **ephemeral container** into a target Kubernetes Pod so the
-sidecar shares the target's PID namespace and diagnostic IPC socket, then returns
-an opaque investigation handle. This is a side-effecting
-verb (deliberately **not** folded into `list_orchestrator`).
+Attaches the orchestrator to a diagnostic target and returns an opaque investigation
+handle. Two attach modes are supported:
+
+- **Kubernetes Pod mode** (default): injects a diagnostic ephemeral container into
+  a target Pod so the sidecar shares the target's PID namespace and diagnostic IPC
+  socket. This is a side-effecting verb (deliberately **not** folded into `list_orchestrator`).
+- **External profile mode** (`profileName` set): binds to an operator-configured
+  external MCP server listed by `list_orchestrator(kind="external-profiles")`. No
+  ephemeral container is created; the handle routes tool calls through the configured
+  transport. Requires the `orchestrator-admin` explicit scope.
 
 **Parameters:**
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `namespace` | `string?` | `Orchestrator:DefaultNamespace` | Pod namespace |
-| `podName` | `string` | — | Pod name. **Required** |
-| `containerName` | `string?` | first container in the Pod spec | Target container inside the Pod |
+| `namespace` | `string?` | `Orchestrator:DefaultNamespace` | Pod namespace. Ignored when `profileName` is set. |
+| `podName` | `string?` | — | Pod name. Required for Kubernetes attach. Omit when using `profileName`. |
+| `containerName` | `string?` | first container in the Pod spec | Target container inside the Pod. Ignored when `profileName` is set. |
 | `ttlSeconds` | `int?` | `Orchestrator:DefaultInvestigationTtlSeconds` (1800) | Per-investigation TTL |
-| `requirePreparedTarget` | `bool` | `true` | When true, refuses to attach to Pods that don't carry the prepared opt-in label |
+| `requirePreparedTarget` | `bool` | `true` | Kubernetes only: when true, refuses to attach to Pods that don't carry the prepared opt-in label |
 | `allowReuseExistingSession` | `bool` | `true` | When true, returns an existing investigation for the same target instead of injecting a second ephemeral container |
-| `processSelector` | `object?` | `null` | Transport-neutral process identity stored on the handle for `replica_counters`. Set `managedEntrypointAssemblyName` for an exact case-insensitive match and optionally `commandLineContains` to disambiguate multiple instances. |
+| `processSelector` | `object?` | `null` | Kubernetes only: transport-neutral process identity stored on the handle for `replica_counters`. Set `managedEntrypointAssemblyName` for an exact case-insensitive match and optionally `commandLineContains` to disambiguate multiple instances. |
+| `profileName` | `string?` | `null` | External profile mode: name of an operator-configured external MCP profile (from `list_orchestrator(kind="external-profiles")`). When set, Kubernetes parameters are ignored. Requires `orchestrator-admin` scope. |
 
-The selector is resolved inside each Pod after attach; no OS PID is persisted or guessed. A selector
+The Kubernetes selector is resolved inside each Pod after attach; no OS PID is persisted or guessed. A selector
 must match exactly one visible .NET process. Reusing a handle preserves its selector; requesting a
 different selector, or adding one to a selector-less live handle, requires detach + reattach.
 
 **Returns:** `AttachSession` (investigation handle + resolved target, including the stored
-`processSelector`). Use the
+`processSelector` and `profileName` for external-profile handles). Use the
 handle explicitly on follow-up orchestrator/fan-out calls
 (`detach_from_pod(handleId=...)`,
 `collect_events(kind="distributed_trace"|"replica_counters", investigationHandleIds=[...])`),
 or route pod-local diagnostics through the returned proxy URL / `investigationHandleId`
 routing argument. Then release it with
-[`detach_from_pod`](#detach_from_pod). **Scope:** `orchestrator-attach`.
+[`detach_from_pod`](#detach_from_pod). **Scope:** `orchestrator-attach` (plus `orchestrator-admin`
+explicit scope for external profile mode).
 Requires the orchestrator to be enabled; disabled servers return
 `OrchestratorDisabled`.
 
@@ -3068,11 +3087,16 @@ Requires the orchestrator to be enabled; disabled servers return
 ## `detach_from_pod`
 
 Closes an active investigation handle: tears down the cached MCP client, stops
-the port-forward, unbinds every MCP session still pointed at the handle, and
-marks it `Closed` so subsequent tool calls fall back to local execution.
-**NOTE:** the ephemeral diagnostics container **cannot** be removed (a Kubernetes
-constraint) — it stays on the Pod's spec until the Pod is recreated, so detach
-only releases the orchestrator-side transport, it does not roll the Pod back.
+any port-forward or external transport, unbinds every MCP session still pointed
+at the handle, and marks it `Closed` so subsequent tool calls fall back to local
+execution.
+
+- **Kubernetes Pod handles:** the ephemeral diagnostics container **cannot** be
+  removed (a Kubernetes constraint) — it stays on the Pod's spec until the Pod is
+  recreated. Detach only releases the orchestrator-side transport; it does not roll
+  the Pod back.
+- **External profile handles:** the connection to the external MCP server is closed
+  and the credentials/clients are disposed. No remote side-effects are performed.
 
 **Parameters:**
 
