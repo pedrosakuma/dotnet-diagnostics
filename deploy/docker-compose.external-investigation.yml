@@ -1,0 +1,188 @@
+name: dotnet-diagnostics-ext-inv
+
+# External-investigation acceptance topology.
+#
+# Three containers build the diagnostic chain, one orchestrator ties them together:
+#
+#   pid-anchor   — inert PID-namespace owner; tail keeps the namespace alive so a
+#                  target crash does not kill the sidecar before it can return results.
+#   target       — CoreClrSample ASP.NET app; joins the anchor's PID namespace,
+#                  shares /tmp so its diagnostic socket is reachable.
+#   sidecar      — standard diagnostics MCP; joins the same PID namespace + /tmp.
+#                  DOTNET_EnableDiagnostics=0 so the sidecar itself does not publish
+#                  a diagnostic socket; only CoreClrSample's socket is visible, which
+#                  makes process auto-selection deterministic.
+#   central      — orchestrator-mode MCP; has no PID-namespace or volume sharing with
+#                  the target. Configured with the 'sidecar' external-MCP profile so
+#                  attach_to_pod(profileName="sidecar") opens an investigation and all
+#                  subsequent diagnostic tool calls are forwarded through.
+#
+# Port assignments (host-side):
+#   127.0.0.1:18080  — target (CoreClrSample) HTTP
+#   127.0.0.1:18890  — central orchestrator MCP
+#
+# Bearer tokens (see central's Auth:BearerTokens config):
+#   central-dev-token — presented by MCP clients to the central orchestrator
+#   sidecar-dev-token — injected by the central on every upstream call to the sidecar;
+#                       never returned to clients
+#   sidecar-dev-delegation-key — static secret verifying internal scope-delegation
+#                       tokens on tool calls the central proxies to the sidecar; must
+#                       match on both sides (see ExternalMcpProfile.DelegationKey).
+#
+# UID note: sidecar runs as root (user: "0:0") so its UID matches the target, which
+# also runs as root in the default CoreClrSample image. In Kubernetes the recommended
+# approach is to pin both containers to the same non-root UID via securityContext.
+#
+# Capability note: SYS_PTRACE is required on the sidecar for ClrMD-backed tools
+# (collect_thread_snapshot, inspect_heap(source="live"), etc.).
+# EventPipe-only tools (inspect_process, collect_events) do NOT need it.
+#
+# Quick start:
+#   docker compose -f deploy/docker-compose.external-investigation.yml up --build -d --wait
+#
+# Acceptance test:
+#   scripts/test-docker-external-investigation.sh
+#
+# Tear-down:
+#   docker compose -f deploy/docker-compose.external-investigation.yml down -v
+
+services:
+  # ── stable namespace anchor ──────────────────────────────────────────────
+  # Owns PID 1 in the shared namespace. Neither the target nor the sidecar
+  # is PID 1, so a target crash cannot kill the sidecar before it can return
+  # a structured result.
+  pid-anchor:
+    image: coreclr-sample:dev
+    pull_policy: never
+    entrypoint: ["tail", "-f", "/dev/null"]
+    networks:
+      - diagmcp-ext-net
+
+  # ── target application ───────────────────────────────────────────────────
+  target:
+    image: coreclr-sample:dev
+    build:
+      context: ..
+      dockerfile: samples/CoreClrSample/Dockerfile
+    pid: "service:pid-anchor"
+    depends_on:
+      pid-anchor:
+        condition: service_started
+    environment:
+      DOTNET_EnableDiagnostics: "1"
+    volumes:
+      - diagnostics-tmp:/tmp
+    ports:
+      - "127.0.0.1:18080:8080"
+    healthcheck:
+      # No dedicated health endpoint on the sample app; a bare TCP connect to
+      # Kestrel's listening port is enough to prove the process is up and
+      # accepting connections before the sidecar (which depends on this
+      # health check) starts probing for its diagnostic socket.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && exec 3>&-'"]
+      interval: 2s
+      timeout: 2s
+      start_period: 10s
+      retries: 30
+    networks:
+      - diagmcp-ext-net
+
+  # ── sidecar diagnostics MCP ──────────────────────────────────────────────
+  # Shares PID namespace and /tmp with the target so it can see the target's
+  # diagnostic socket. DOTNET_EnableDiagnostics=0 suppresses the sidecar's own
+  # socket so there is exactly one .NET diagnostic process visible; auto-select
+  # resolves to the target deterministically.
+  sidecar:
+    image: dotnet-diagnostics-mcp:dev
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        INSTALL_PERF: "false"
+    pid: "service:pid-anchor"
+    depends_on:
+      pid-anchor:
+        condition: service_started
+      target:
+        condition: service_healthy
+    user: "0:0"
+    cap_add:
+      - SYS_PTRACE
+    environment:
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+      MCP_BEARER_TOKEN: sidecar-dev-token
+      # Static shared secret verifying internal scope-delegation tokens on proxied tool
+      # calls forwarded by the central orchestrator. Must match the central's
+      # Orchestrator__ExternalMcpProfiles__sidecar__DelegationKey below — see
+      # ExternalMcpProfile.DelegationKey / ToolScopeDelegation.cs for why an external
+      # profile needs a static shared value instead of the per-handle key the
+      # Kubernetes attach path injects dynamically.
+      MCP_INTERNAL_SCOPE_DELEGATION_KEY: sidecar-dev-delegation-key
+      DOTNET_EnableDiagnostics: "0"
+      DOTNET_NOLOGO: "1"
+    volumes:
+      - diagnostics-tmp:/tmp
+    healthcheck:
+      test: ["CMD", "dotnet", "DotnetDiagnostics.Mcp.dll", "--health-check", "--urls", "http://127.0.0.1:8080"]
+      interval: 2s
+      timeout: 2s
+      start_period: 10s
+      retries: 30
+    networks:
+      - diagmcp-ext-net
+
+  # ── central orchestrator MCP ─────────────────────────────────────────────
+  # Orchestrator mode only — no shared PID namespace, no shared /tmp.
+  # The 'sidecar' external-MCP profile points at the sidecar service on the
+  # diagmcp-ext-net bridge (subnet 192.168.200.0/24).
+  #
+  # AllowedCidrs must cover the IP Docker assigns to the sidecar container.
+  # Using the docker-compose-defined subnet (192.168.200.0/24) makes this
+  # deterministic without runtime DNS probing.
+  #
+  # AllowedPorts must include the port in the profile Url (8080).
+  central:
+    image: dotnet-diagnostics-mcp:dev
+    depends_on:
+      sidecar:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+      DOTNET_NOLOGO: "1"
+      # Scoped bearer token — root covers all orchestrator + diagnostic tools, but
+      # attach_to_pod(profileName=...) additionally requires the explicit
+      # 'orchestrator-admin' modifier scope (root/wildcard tokens deliberately do
+      # NOT satisfy this — see Security/OrchestratorAdminBypassPolicy.cs), so it
+      # must be granted alongside root for this acceptance flow to attach at all.
+      Auth__BearerTokens__0__Name: central-client
+      Auth__BearerTokens__0__Token: central-dev-token
+      Auth__BearerTokens__0__Scopes__0: root
+      Auth__BearerTokens__0__Scopes__1: orchestrator-admin
+      # Orchestrator settings
+      Orchestrator__Enabled: "true"
+      # External profile: 'sidecar' points at the sidecar service on the bridge network.
+      Orchestrator__ExternalMcpProfiles__sidecar__Url: http://sidecar:8080/mcp
+      Orchestrator__ExternalMcpProfiles__sidecar__BearerToken: sidecar-dev-token
+      Orchestrator__ExternalMcpProfiles__sidecar__DelegationKey: sidecar-dev-delegation-key
+      Orchestrator__ExternalMcpProfiles__sidecar__AllowedCidrs__0: 192.168.200.0/24
+      Orchestrator__ExternalMcpProfiles__sidecar__AllowedPorts__0: "8080"
+    ports:
+      - "127.0.0.1:18890:8080"
+    healthcheck:
+      test: ["CMD", "dotnet", "DotnetDiagnostics.Mcp.dll", "--health-check", "--urls", "http://127.0.0.1:8080"]
+      interval: 2s
+      timeout: 2s
+      start_period: 10s
+      retries: 30
+    networks:
+      - diagmcp-ext-net
+
+networks:
+  diagmcp-ext-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.200.0/24
+
+volumes:
+  diagnostics-tmp:

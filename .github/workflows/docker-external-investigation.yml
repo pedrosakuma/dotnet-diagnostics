@@ -1,0 +1,171 @@
+name: Docker External Investigation
+
+# Opt-in acceptance test for the external-investigation passthrough workflow
+# (issue #712). Builds the topology in
+# deploy/docker-compose.external-investigation.yml (central orchestrator MCP +
+# sidecar diagnostics MCP + CoreClrSample target), waits for all containers to
+# be healthy, then runs DockerExternalInvestigationTests.
+#
+# The test is NOT triggered on every push/PR — only via workflow_dispatch, or
+# automatically when a push/PR touches one of the paths below (the compose
+# topology, the sidecar/orchestrator image, the sample target, the orchestrator
+# proxy/attach code, or the acceptance test itself). This still avoids Docker
+# build overhead on the vast majority of PRs, but note the path list below is
+# deliberately broad (most of `Orchestrator/**`) since that code directly
+# backs the passthrough this test validates — a change there is exactly the
+# case this workflow exists to catch.
+#
+# Branch protection: this workflow is NOT a required check. Add it to the
+# required list only if the team decides to gate on Docker topology acceptance.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/docker-compose.external-investigation.yml'
+      - 'deploy/Dockerfile'
+      - 'samples/CoreClrSample/**'
+      - 'src/DotnetDiagnostics.Mcp/Orchestrator/**'
+      - 'src/DotnetDiagnostics.Mcp/Tools/OrchestratorTools.cs'
+      - 'src/DotnetDiagnostics.Mcp/Tools/InvestigationProxy*'
+      - 'tests/DotnetDiagnostics.Mcp.IntegrationTests/DockerExternalInvestigationTests.cs'
+      - 'scripts/test-docker-external-investigation.sh'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deploy/docker-compose.external-investigation.yml'
+      - 'deploy/Dockerfile'
+      - 'samples/CoreClrSample/**'
+      - 'src/DotnetDiagnostics.Mcp/Orchestrator/**'
+      - 'src/DotnetDiagnostics.Mcp/Tools/OrchestratorTools.cs'
+      - 'src/DotnetDiagnostics.Mcp/Tools/InvestigationProxy*'
+      - 'tests/DotnetDiagnostics.Mcp.IntegrationTests/DockerExternalInvestigationTests.cs'
+      - 'scripts/test-docker-external-investigation.sh'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  docker-external-investigation:
+    name: Docker External Investigation (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-ext-inv-${{ hashFiles('**/Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Restore + build
+        run: |
+          dotnet restore
+          dotnet build --no-restore --configuration Release
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      # Build and cache the diagnostics MCP image.
+      - name: Build dotnet-diagnostics-mcp image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          build-args: |
+            INSTALL_PERF=false
+          tags: dotnet-diagnostics-mcp:dev
+          load: true
+          cache-from: type=gha,scope=ext-inv-mcp
+          cache-to: type=gha,mode=max,scope=ext-inv-mcp
+
+      # Build and cache the CoreClrSample image.
+      - name: Build coreclr-sample image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: samples/CoreClrSample/Dockerfile
+          tags: coreclr-sample:dev
+          load: true
+          cache-from: type=gha,scope=ext-inv-sample
+          cache-to: type=gha,mode=max,scope=ext-inv-sample
+
+      - name: Start compose stack
+        run: |
+          docker compose \
+            --project-name dotnet-diagnostics-ext-inv-ci \
+            --file deploy/docker-compose.external-investigation.yml \
+            up --no-build --detach --wait --wait-timeout 120
+
+      - name: Run external-investigation acceptance test
+        env:
+          DOTNET_DBG_MCP_DOCKER_EXT_INV_TEST: "1"
+        run: |
+          dotnet test \
+            tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj \
+            --no-build --configuration Release \
+            --filter "FullyQualifiedName~DockerExternalInvestigationTests" \
+            --logger "trx;LogFileName=ext-inv-test-results.trx" \
+            --logger "console;verbosity=normal" \
+            --results-directory TestResults
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          {
+            echo "===== central logs ====="
+            docker compose \
+              --project-name dotnet-diagnostics-ext-inv-ci \
+              --file deploy/docker-compose.external-investigation.yml \
+              logs central || true
+            echo "===== sidecar logs ====="
+            docker compose \
+              --project-name dotnet-diagnostics-ext-inv-ci \
+              --file deploy/docker-compose.external-investigation.yml \
+              logs sidecar || true
+            echo "===== target logs ====="
+            docker compose \
+              --project-name dotnet-diagnostics-ext-inv-ci \
+              --file deploy/docker-compose.external-investigation.yml \
+              logs target || true
+          } 2>&1 | tee ext-inv-diagnostics.log
+
+      - name: Tear down compose stack
+        if: always()
+        run: |
+          docker compose \
+            --project-name dotnet-diagnostics-ext-inv-ci \
+            --file deploy/docker-compose.external-investigation.yml \
+            down --volumes --remove-orphans || true
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ext-inv-results
+          path: |
+            TestResults/**/*.trx
+            ext-inv-diagnostics.log
+          if-no-files-found: ignore

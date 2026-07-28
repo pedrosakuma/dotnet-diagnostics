@@ -31,11 +31,26 @@ public sealed class ExternalMcpProfile
     public string Url { get; set; } = string.Empty;
 
     /// <summary>
-    /// ****** injected as <c>Authorization: ******;token&gt;</c> on every
+    /// Bearer token injected as <c>Authorization: Bearer &lt;token&gt;</c> on every
     /// outbound request. Never returned to clients, logs, or errors.
     /// </summary>
     [JsonIgnore]
     public string BearerToken { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Static, operator-configured shared secret used to sign internal scope-delegation
+    /// tokens (docs/authorization.md#scopes) for tool calls proxied through this profile.
+    /// Unlike the Kubernetes attach path — where the orchestrator controls the target pod
+    /// and can inject a freshly-generated per-handle secret via exec at attach time — an
+    /// external MCP endpoint is a standalone server the orchestrator does not control, so
+    /// this key must match the value the target server itself was started with (its
+    /// <c>MCP_INTERNAL_SCOPE_DELEGATION_KEY</c> environment variable). If left unset,
+    /// tool calls proxied through a handle attached to this profile are refused with a
+    /// "delegation unavailable" error rather than sent unsigned. Never serialized into
+    /// any investigation handle, log entry, or error message returned to callers.
+    /// </summary>
+    [JsonIgnore]
+    public string? DelegationKey { get; set; }
 
     /// <summary>
     /// Explicit CIDR blocks the DNS-resolved addresses of <see cref="Url"/> must fall

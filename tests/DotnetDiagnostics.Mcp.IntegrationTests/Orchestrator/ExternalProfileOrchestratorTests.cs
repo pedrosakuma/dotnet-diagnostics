@@ -123,6 +123,34 @@ public sealed class ExternalProfileOrchestratorTests
         // issue #711: Active must only follow a real MCP initialize handshake, not just
         // HttpClient construction.
         fx.Proxy.EnsureInitializedCalled.Should().BeTrue();
+        // The default fixture profile has no DelegationKey configured, so proxied tool
+        // calls through this handle are expected to be refused (see the dedicated
+        // "unavailable" test below) rather than signed with an unshareable random secret.
+        handle.InternalScopeDelegationKey.Should().BeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task AttachAsync_ProfileHasDelegationKey_HandleCarriesTheStaticKey()
+    {
+        // An external MCP endpoint is not controlled by this orchestrator (unlike a
+        // Kubernetes pod, where the orchestrator can inject a fresh per-handle secret via
+        // exec at attach time), so the delegation key must be a static, operator-configured
+        // value shared out-of-band with the external server — never a randomly generated
+        // per-handle secret the far side could never learn.
+        var options = OptionsWithProfile();
+        options.ExternalMcpProfiles["prod-api"].DelegationKey = "shared-delegation-secret";
+        var fx = new OrchestratorFixture(options: options);
+        var sut = fx.CreateAttachOrchestrator();
+        var request = new ExternalProfileAttachRequest(
+            ProfileName: "prod-api",
+            TtlSeconds: null,
+            AllowReuseExistingSession: true,
+            OwnerBearerName: "caller",
+            OwnerPrincipalKey: "caller-key");
+
+        var handle = await sut.AttachAsync(request, CancellationToken.None);
+
+        handle.InternalScopeDelegationKey.Should().Be("shared-delegation-secret");
     }
 
     [Fact]
@@ -513,16 +541,20 @@ public sealed class ExternalProfileOrchestratorTests
         private readonly bool _transportThrows;
         private readonly bool _initThrows;
 
-        public OrchestratorFixture(bool transportThrows = false, bool initThrows = false)
+        public OrchestratorFixture(bool transportThrows = false, bool initThrows = false, OrchestratorOptions? options = null)
         {
             _transportThrows = transportThrows;
             _initThrows = initThrows;
+            if (options is not null)
+            {
+                Options = options;
+            }
         }
 
         public MemoryInvestigationStore Store { get; } = new();
         public StubProxyClient Proxy { get; private set; } = new();
 
-        private OrchestratorOptions Options { get; } = OptionsWithProfile();
+        private OrchestratorOptions Options { get; set; } = OptionsWithProfile();
 
         public ExternalProfileAttachOrchestrator CreateAttachOrchestrator()
         {
