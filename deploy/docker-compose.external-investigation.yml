@@ -139,10 +139,15 @@ services:
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
       DOTNET_NOLOGO: "1"
-      # Scoped bearer token — root scope covers all orchestrator + diagnostic tools.
+      # Scoped bearer token — root covers all orchestrator + diagnostic tools, but
+      # attach_to_pod(profileName=...) additionally requires the explicit
+      # 'orchestrator-admin' modifier scope (root/wildcard tokens deliberately do
+      # NOT satisfy this — see Security/OrchestratorAdminBypassPolicy.cs), so it
+      # must be granted alongside root for this acceptance flow to attach at all.
       Auth__BearerTokens__0__Name: central-client
       Auth__BearerTokens__0__Token: central-dev-token
       Auth__BearerTokens__0__Scopes__0: root
+      Auth__BearerTokens__0__Scopes__1: orchestrator-admin
       # Orchestrator settings
       Orchestrator__Enabled: "true"
       # External profile: 'sidecar' points at the sidecar service on the bridge network.
