@@ -43,6 +43,11 @@ public sealed class InvestigationStoreCompatibilityTests
 
         public InvestigationHandle? FindReusableTarget(string reservationKey) => null;
 
+        public InvestigationHandle? FindTerminalHandleByEphemeralName(
+            string podNamespace,
+            string podName,
+            string ephemeralContainerName) => null;
+
         public IReadOnlyCollection<InvestigationHandle> Snapshot() => [];
     }
 }

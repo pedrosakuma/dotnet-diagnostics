@@ -151,6 +151,30 @@ internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestiga
         }
     }
 
+    public InvestigationHandle? FindTerminalHandleByEphemeralName(
+        string podNamespace, string podName, string ephemeralContainerName)
+    {
+        lock (_gate)
+        {
+            InvestigationHandle? best = null;
+            foreach (var h in _byId.Values)
+            {
+                if (h.State is InvestigationState.Closed or InvestigationState.Expired or InvestigationState.Failed &&
+                    string.Equals(h.Namespace, podNamespace, StringComparison.Ordinal) &&
+                    string.Equals(h.PodName, podName, StringComparison.Ordinal) &&
+                    string.Equals(h.EphemeralContainerName, ephemeralContainerName, StringComparison.Ordinal))
+                {
+                    // Most recently attached wins — it holds the freshest token.
+                    if (best is null || h.AttachedAt > best.AttachedAt)
+                    {
+                        best = h;
+                    }
+                }
+            }
+            return best;
+        }
+    }
+
     public IReadOnlyCollection<InvestigationHandle> Snapshot()
     {
         lock (_gate)

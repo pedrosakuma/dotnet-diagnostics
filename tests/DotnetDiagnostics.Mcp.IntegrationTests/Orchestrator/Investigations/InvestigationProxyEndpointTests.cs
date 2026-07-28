@@ -1538,6 +1538,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             return InvestigationTerminalTransition.Transitioned;
         }
         public InvestigationHandle? FindReusableTarget(string reservationKey) => null;
+        public InvestigationHandle? FindTerminalHandleByEphemeralName(string ns, string pod, string ephemeralContainerName) => null;
         public System.Collections.Generic.IReadOnlyCollection<InvestigationHandle> Snapshot() => _byId.Values.ToArray();
     }
 
