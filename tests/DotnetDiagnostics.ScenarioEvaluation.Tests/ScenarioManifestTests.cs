@@ -12,6 +12,7 @@ public sealed class ScenarioManifestTests
 
         manifests.Select(manifest => manifest.Id).Should().Equal(
             "culture-lookup",
+            "gc-storm",
             "lock-storm",
             "sync-over-async");
         manifests.Should().OnlyContain(manifest => manifest.SchemaVersion == ScenarioManifestLoader.CurrentSchemaVersion);

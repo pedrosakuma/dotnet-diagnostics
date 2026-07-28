@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "id": "gc-storm",
+  "version": "1.0.0",
+  "supportedLivePlatforms": [ "windows", "linux" ],
+  "reportedSymptom": "Tail latency spikes while requests mostly allocate and free memory.",
+  "groundTruth": "Repeated LOH allocations force frequent gen2 collections and sustained GC pause pressure over the observation window.",
+  "workload": {
+    "setup": "Launch a fresh Release BadCodeSample process over loopback.",
+    "activation": "Start repeated GET /loh-alloc?count=200 requests after warmup and keep driving them during the full observation window so multiple gen2 collections can occur.",
+    "cleanup": "Cancel load generation and terminate the sample process tree.",
+    "parameters": {
+      "endpoint": "/loh-alloc",
+      "count": "200",
+      "concurrentRequests": "4"
+    },
+    "warmupMilliseconds": 1200,
+    "observationSeconds": 8
+  },
+  "budget": {
+    "maximumRuntimeSeconds": 15,
+    "maximumEvidenceItems": 40
+  },
+  "expectedEvidence": [
+    {
+      "id": "gen2-counter-elevated",
+      "kind": "counterComparison",
+      "metric": "gen-2-gc-count",
+      "comparison": "greaterThanOrEqual",
+      "threshold": 10
+    },
+    {
+      "id": "loh-size-elevated",
+      "kind": "counterComparison",
+      "metric": "loh-size",
+      "comparison": "greaterThanOrEqual",
+      "threshold": 1000000
+    },
+    {
+      "id": "gen2-share-signal",
+      "kind": "signalBucketMatch",
+      "signal": "gc.gen2-share",
+      "containsAny": [ "gen2" ],
+      "comparison": "greaterThanOrEqual",
+      "threshold": 10
+    },
+    {
+      "id": "loh-growth-signal",
+      "kind": "signalBucketMatch",
+      "signal": "gc.loh-growth",
+      "containsAny": [ "LOH" ],
+      "comparison": "greaterThanOrEqual",
+      "threshold": 1000000
+    }
+  ],
+  "misleadingSignals": [
+    "CPU can look moderate even when pause frequency and LOH growth are driving latency instability."
+  ],
+  "temptingWrongHypotheses": [ "cpu-hot-loop", "thread-wait-contention" ],
+  "acceptableHypotheses": [ "gc-pause-pressure-from-loh-churn" ],
+  "acceptableAttributions": [ "BadCodeSample /loh-alloc large-object allocations" ],
+  "acceptableNextActions": [ "inspect-gc-timeline-and-generation-breakdown" ],
+  "forbiddenConclusions": [ "cpu-hot-loop", "thread-wait-contention", "single-pause-proves-root-cause" ],
+  "requiredCausalityPosture": "multi-signal-gc-correlation"
+}

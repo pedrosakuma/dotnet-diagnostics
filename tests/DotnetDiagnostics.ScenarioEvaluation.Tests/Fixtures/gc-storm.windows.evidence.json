@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "gc-storm",
+  "scenarioVersion": "1.0.0",
+  "trial": 1,
+  "environment": {
+    "os": "windows",
+    "architecture": "x64",
+    "frameworkDescription": ".NET 10.0.10",
+    "runtimeVersion": "10.0.10"
+  },
+  "activation": {
+    "status": "Passed",
+    "failureKind": "None",
+    "detail": "attempts=244; successes=240; requestFailures=0",
+    "durationSeconds": 8.188452
+  },
+  "collection": {
+    "status": "Passed",
+    "failureKind": "None",
+    "detail": null,
+    "durationSeconds": 16
+  },
+  "metrics": [
+    {
+      "name": "alloc-rate",
+      "value": 1751121896,
+      "unit": "B"
+    },
+    {
+      "name": "gc-total-collections",
+      "value": 2145,
+      "unit": "collections"
+    },
+    {
+      "name": "gen-2-gc-count",
+      "value": 512,
+      "unit": null
+    },
+    {
+      "name": "loh-size",
+      "value": 3320512,
+      "unit": "B"
+    },
+    {
+      "name": "time-in-gc",
+      "value": 68,
+      "unit": "%"
+    }
+  ],
+  "signals": [
+    {
+      "signal": "gc.gen2-share",
+      "salience": 1,
+      "buckets": [
+        {
+          "key": "gen2",
+          "magnitude": 2145,
+          "unit": "collections"
+        }
+      ],
+      "nextAction": "query_snapshot"
+    },
+    {
+      "signal": "gc.loh-growth",
+      "salience": 1,
+      "buckets": [
+        {
+          "key": "LOH",
+          "magnitude": 6551552,
+          "unit": "bytes"
+        }
+      ],
+      "nextAction": "query_snapshot"
+    }
+  ],
+  "frames": [],
+  "relations": [],
+  "notes": [
+    "Dropped 1945 GC event(s) due to maxEvents cap.",
+    "Dropped 1945 GCHeapStats sample(s) due to maxEvents cap."
+  ]
+}
