@@ -71,6 +71,16 @@ services:
       - diagnostics-tmp:/tmp
     ports:
       - "127.0.0.1:18080:8080"
+    healthcheck:
+      # No dedicated health endpoint on the sample app; a bare TCP connect to
+      # Kestrel's listening port is enough to prove the process is up and
+      # accepting connections before the sidecar (which depends on this
+      # health check) starts probing for its diagnostic socket.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && exec 3>&-'"]
+      interval: 2s
+      timeout: 2s
+      start_period: 10s
+      retries: 30
     networks:
       - diagmcp-ext-net
 
@@ -91,7 +101,7 @@ services:
       pid-anchor:
         condition: service_started
       target:
-        condition: service_started
+        condition: service_healthy
     user: "0:0"
     cap_add:
       - SYS_PTRACE

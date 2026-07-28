@@ -6,12 +6,14 @@ name: Docker External Investigation
 # sidecar diagnostics MCP + CoreClrSample target), waits for all containers to
 # be healthy, then runs DockerExternalInvestigationTests.
 #
-# The test is NOT triggered on every push/PR to avoid Docker build overhead
-# on every CI run. Trigger it manually or via workflow_dispatch when:
-#   - the external-profile attach/proxy path changes, or
-#   - the compose topology in deploy/docker-compose.external-investigation.yml
-#     changes, or
-#   - the acceptance criteria in issue #712 need to be re-verified.
+# The test is NOT triggered on every push/PR — only via workflow_dispatch, or
+# automatically when a push/PR touches one of the paths below (the compose
+# topology, the sidecar/orchestrator image, the sample target, the orchestrator
+# proxy/attach code, or the acceptance test itself). This still avoids Docker
+# build overhead on the vast majority of PRs, but note the path list below is
+# deliberately broad (most of `Orchestrator/**`) since that code directly
+# backs the passthrough this test validates — a change there is exactly the
+# case this workflow exists to catch.
 #
 # Branch protection: this workflow is NOT a required check. Add it to the
 # required list only if the team decides to gate on Docker topology acceptance.
