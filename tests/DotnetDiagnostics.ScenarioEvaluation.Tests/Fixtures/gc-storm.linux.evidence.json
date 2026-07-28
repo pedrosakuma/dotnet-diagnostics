@@ -55,20 +55,8 @@
       "buckets": [
         {
           "key": "gen2",
-          "magnitude": 2512,
+          "magnitude": 850,
           "unit": "collections"
-        }
-      ],
-      "nextAction": "query_snapshot"
-    },
-    {
-      "signal": "gc.loh-growth",
-      "salience": 1,
-      "buckets": [
-        {
-          "key": "LOH",
-          "magnitude": 7402072,
-          "unit": "bytes"
         }
       ],
       "nextAction": "query_snapshot"
@@ -76,8 +64,5 @@
   ],
   "frames": [],
   "relations": [],
-  "notes": [
-    "Dropped 2312 GC event(s) due to maxEvents cap.",
-    "Dropped 2312 GCHeapStats sample(s) due to maxEvents cap."
-  ]
+  "notes": []
 }

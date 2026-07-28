@@ -318,6 +318,11 @@ public sealed class ScenarioLiveRunner
             var gcTask = new EventPipeGcCollector().CollectAsync(
                 sample.ProcessId,
                 duration,
+                // gc-storm drives a sustained LOH-allocation workload that produces far more
+                // than the collector's 200-sample default across an 8s window; a higher cap
+                // keeps GCHeapStats representative of the full observation window instead of
+                // truncating to only the earliest samples.
+                maxEvents: 4000,
                 cancellationToken: cancellationToken);
             await Task.WhenAll(countersTask, gcTask).ConfigureAwait(false);
             counters = countersTask.Result;

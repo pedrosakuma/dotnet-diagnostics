@@ -43,14 +43,6 @@
       "containsAny": [ "gen2" ],
       "comparison": "greaterThanOrEqual",
       "threshold": 10
-    },
-    {
-      "id": "loh-growth-signal",
-      "kind": "signalBucketMatch",
-      "signal": "gc.loh-growth",
-      "containsAny": [ "LOH" ],
-      "comparison": "greaterThanOrEqual",
-      "threshold": 1000000
     }
   ],
   "misleadingSignals": [
