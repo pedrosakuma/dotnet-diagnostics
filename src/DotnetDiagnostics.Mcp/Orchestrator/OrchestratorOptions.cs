@@ -186,4 +186,13 @@ public sealed class OrchestratorOptions
     /// raise modestly only when bursts are an expected workload shape. Default: 0.
     /// </summary>
     public int RateLimitQueueLimit { get; set; }
+
+    /// <summary>
+    /// Named operator-configured external MCP endpoints (issue #710). Each entry is
+    /// keyed by a profile name and carries the URL, bearer token, CIDR/port allowlists,
+    /// and bounded timeouts that the SSRF-safe transport enforces. Profiles are
+    /// validated at startup; any invalid profile prevents the server from starting.
+    /// Disabled by default (empty dictionary).
+    /// </summary>
+    public Dictionary<string, ExternalMcpProfile> ExternalMcpProfiles { get; } = new(StringComparer.Ordinal);
 }

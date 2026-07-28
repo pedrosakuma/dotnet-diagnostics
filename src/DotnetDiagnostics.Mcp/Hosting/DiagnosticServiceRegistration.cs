@@ -116,6 +116,10 @@ internal static class DiagnosticServiceRegistration
         configuration.GetSection(OrchestratorOptions.SectionName).Bind(options);
         if (!options.Enabled) return false;
 
+        // issue #710 — validate external MCP profiles eagerly at service-registration time
+        // so the server refuses to start on misconfiguration. No partial starts.
+        Orchestrator.Investigations.SsrfSafeExternalMcpTransportManager.ValidateProfiles(options);
+
         services.AddSingleton(options);
         services.AddSingleton<IKubernetesClientFactory, DefaultKubernetesClientFactory>();
         // #234 — kubeconfig handle plumbing. Registered here (orchestrator scope) so the
@@ -138,10 +142,16 @@ internal static class DiagnosticServiceRegistration
         services.AddSingleton<Orchestrator.Investigations.IInvestigationStore, Orchestrator.Investigations.MemoryInvestigationStore>();
         services.AddSingleton<Orchestrator.Investigations.IInvestigationSessionBinder, Orchestrator.Investigations.MemoryInvestigationSessionBinder>();
         services.AddSingleton<Orchestrator.Investigations.KubernetesPortForwardManager>();
-        services.AddSingleton<Orchestrator.Investigations.IInvestigationTransportManager>(
-            sp => sp.GetRequiredService<Orchestrator.Investigations.KubernetesPortForwardManager>());
         services.AddSingleton<Orchestrator.Investigations.IPortForwardManager>(
             sp => sp.GetRequiredService<Orchestrator.Investigations.KubernetesPortForwardManager>());
+        // issue #710: external MCP transport + composite routing. The composite replaces
+        // the previous direct IInvestigationTransportManager → KubernetesPortForwardManager
+        // registration so both K8s and external handles route correctly.
+        services.AddSingleton<Orchestrator.Investigations.SsrfSafeExternalMcpTransportManager>();
+        services.AddSingleton<Orchestrator.Investigations.IInvestigationTransportManager>(sp =>
+            new Orchestrator.Investigations.CompositeInvestigationTransportManager(
+                sp.GetRequiredService<Orchestrator.Investigations.IPortForwardManager>(),
+                sp.GetRequiredService<Orchestrator.Investigations.SsrfSafeExternalMcpTransportManager>()));
         services.AddSingleton<Orchestrator.Investigations.IInvestigationProxyClient, Orchestrator.Investigations.PodLocalInvestigationProxyClient>();
         services.AddSingleton<Orchestrator.Investigations.IPodAttachOrchestrator, Orchestrator.Investigations.KubernetesPodAttachOrchestrator>();
         services.AddSingleton<Orchestrator.Investigations.InvestigationCloser>();
