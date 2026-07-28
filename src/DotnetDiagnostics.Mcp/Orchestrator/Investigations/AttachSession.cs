@@ -21,7 +21,10 @@ public sealed record AttachSession(
     DateTimeOffset ExpiresAt,
     string? FailureReason = null,
     string? ProxyBaseUrl = null,
-    InvestigationProcessSelector? ProcessSelector = null)
+    InvestigationProcessSelector? ProcessSelector = null,
+    // Populated when the investigation targets an operator-configured external MCP
+    // profile (attach_to_pod(profileName=…)). Null for Kubernetes pod-attach handles.
+    string? ProfileName = null)
 {
     /// <summary>
     /// Projects an internal handle into the client-safe shape, dropping the bearer token.
@@ -44,6 +47,7 @@ public sealed record AttachSession(
             ExpiresAt: handle.ExpiresAt,
             FailureReason: handle.FailureReason,
             ProxyBaseUrl: proxyBaseUrl,
-            ProcessSelector: handle.ProcessSelector);
+            ProcessSelector: handle.ProcessSelector,
+            ProfileName: handle.ExternalMcp?.ProfileName);
     }
 }

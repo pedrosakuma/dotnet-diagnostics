@@ -98,6 +98,7 @@ public sealed class InvestigationHandleReaperBackgroundServiceTests
         public List<string> DisposeCalls { get; } = new();
         public Task<CallToolResult> CallToolAsync(InvestigationHandle handle, CallToolRequestParams request, CancellationToken cancellationToken)
             => throw new NotSupportedException();
+        public Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task DisposeForHandleAsync(string handleId) { DisposeCalls.Add(handleId); return Task.CompletedTask; }
     }
 

@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Core;
@@ -14,31 +15,32 @@ namespace DotnetDiagnostics.Mcp.Tools;
 
 /// <summary>
 /// Canonical orchestrator listing surface. The <c>kind</c> discriminator selects Pod
-/// discovery or active-investigation inventory.
+/// discovery, active-investigation inventory, or external profile catalog.
 /// </summary>
 /// <remarks>
 /// <para><c>attach_to_pod</c> / <c>detach_from_pod</c> are deliberately NOT merged —
 /// the orchestrator design treats them as distinct side-effect boundaries.
 /// </para>
 /// <para>Authorization is split by <c>kind</c>: <c>pods</c> keeps the
-/// <c>orchestrator-list</c> scope, while <c>investigations</c> requires the more
-/// privileged <c>orchestrator-attach</c> scope. The MCP filter only sees the
-/// declared <see cref="RequireAnyScopeAttribute"/> union; the per-kind tightening
-/// is enforced inside the tool body so callers cannot use a <c>list</c>-only token
-/// to enumerate investigation handles.</para>
+/// <c>orchestrator-list</c> scope, while <c>investigations</c> and
+/// <c>external-profiles</c> require the more privileged <c>orchestrator-attach</c>
+/// scope. The MCP filter only sees the declared <see cref="RequireAnyScopeAttribute"/>
+/// union; the per-kind tightening is enforced inside the tool body so callers cannot
+/// use a <c>list</c>-only token to enumerate investigation handles or profiles.</para>
 /// </remarks>
 [McpServerToolType]
 public sealed class ListOrchestratorTool
 {
     public const string KindPods = "pods";
     public const string KindInvestigations = "investigations";
+    public const string KindExternalProfiles = "external-profiles";
 
-    private static readonly IReadOnlyList<string> AllowedKinds = new[] { KindPods, KindInvestigations };
+    private static readonly IReadOnlyList<string> AllowedKinds = new[] { KindPods, KindInvestigations, KindExternalProfiles };
 
     [RequireAnyScope("orchestrator-list", "orchestrator-attach")]
     [McpServerTool(
         Name = "list_orchestrator",
-        Title = "List orchestrator entities (Pods or active investigations)",
+        Title = "List orchestrator entities (Pods, active investigations, or external profiles)",
         Destructive = false,
         ReadOnly = true,
         Idempotent = true,
@@ -48,7 +50,9 @@ public sealed class ListOrchestratorTool
         "candidate Pods in allowed namespaces (supports namespace/labelSelector/" +
         "fieldSelector/containerName/preparedOnly/includeNotReady/limit/cursor); pass kind='investigations' " +
         "to enumerate investigation handles minted on behalf of this MCP session (supports " +
-        "includeTerminal/includeAllSessions). Read-only; never injects " +
+        "includeTerminal/includeAllSessions); pass kind='external-profiles' to enumerate operator-configured " +
+        "external MCP profiles available for attach_to_pod(profileName=…) (non-secret metadata only — " +
+        "no bearer tokens). Read-only; never injects " +
         "an ephemeral container and never returns bearer tokens. attach_to_pod / detach_from_pod are " +
         "intentionally NOT folded in — they remain explicit per the orchestrator design.")]
     public static async Task<DiagnosticResult<ListOrchestratorResult>> ListOrchestrator(
@@ -60,7 +64,7 @@ public sealed class ListOrchestratorTool
         IKubeconfigHandleStore kubeconfigStore,
         McpServer? server = null,
         ILoggerFactory? loggerFactory = null,
-        [Description("Discriminator: 'pods' (candidate Pods for attach) or 'investigations' (handles minted by this session). Case-sensitive.")]
+        [Description("Discriminator: 'pods' (candidate Pods for attach), 'investigations' (handles minted by this session), or 'external-profiles' (configured external MCP profiles). Case-sensitive.")]
         string kind = KindPods,
         // ---- kind=pods ---------------------------------------------------------------
         [Description("kind=pods: Kubernetes namespace to list from. When omitted, the orchestrator's DefaultNamespace is used.")]
@@ -146,6 +150,23 @@ public sealed class ListOrchestratorTool
                 return scopeFailure!;
             }
         }
+        else if (canonicalKind == KindExternalProfiles)
+        {
+            if (!ToolDispatchGuards.RequireScope(
+                    principalAccessor.Current,
+                    ToolInvocationScopeResolver.GetListOrchestratorKindScope(canonicalKind),
+                    () => "list_orchestrator(kind=external-profiles) requires the 'orchestrator-attach' scope.",
+                    out DiagnosticResult<ListOrchestratorResult>? scopeFailure,
+                    new NextActionHint(
+                        "list_orchestrator",
+                        "Grant the token 'orchestrator-attach' to list configured external MCP profiles.",
+                        new Dictionary<string, object?> { ["kind"] = KindInvestigations }),
+                    errorKind: OrchestratorErrorKinds.PermissionDenied,
+                    defaultErrorTargetToScope: false))
+            {
+                return scopeFailure!;
+            }
+        }
 
         if (canonicalKind == KindPods)
         {
@@ -189,14 +210,14 @@ public sealed class ListOrchestratorTool
                     cursor,
                     cancellationToken).ConfigureAwait(false);
 
-                return Project(inner, KindPods, page => new ListOrchestratorResult(KindPods, Pods: page, Investigations: null));
+                return Project(inner, KindPods, page => new ListOrchestratorResult(KindPods, Pods: page, Investigations: null, ExternalProfiles: null));
             }
             finally
             {
                 kubeconfigScope?.Dispose();
             }
         }
-        else
+        else if (canonicalKind == KindInvestigations)
         {
             var inner = await OrchestratorTools.ListActiveInvestigations(
                 store,
@@ -208,7 +229,46 @@ public sealed class ListOrchestratorTool
                 includeAllSessions,
                 cancellationToken).ConfigureAwait(false);
 
-            return Project(inner, KindInvestigations, page => new ListOrchestratorResult(KindInvestigations, Pods: null, Investigations: page));
+            return Project(inner, KindInvestigations, page => new ListOrchestratorResult(KindInvestigations, Pods: null, Investigations: page, ExternalProfiles: null));
+        }
+        else
+        {
+            // kind=external-profiles: return non-secret metadata for all configured profiles.
+            var profileItems = options.ExternalMcpProfiles
+                .Select(kv => new ExternalProfileEntry(
+                    Name: kv.Key,
+                    Url: kv.Value.Url,
+                    AllowedCidrs: kv.Value.AllowedCidrs.ToList(),
+                    AllowedPorts: kv.Value.AllowedPorts.ToList(),
+                    ConnectTimeoutSeconds: kv.Value.ConnectTimeoutSeconds,
+                    MaxConcurrency: kv.Value.MaxConcurrency))
+                .OrderBy(e => e.Name, StringComparer.Ordinal)
+                .ToList();
+
+            var profilePage = new ExternalProfilePage(profileItems);
+
+            string summary;
+            if (profileItems.Count == 0)
+            {
+                summary = "list_orchestrator(kind=\"external-profiles\"): no external MCP profiles are configured. " +
+                          "Add entries under Orchestrator:ExternalMcpProfiles in the server configuration, then call " +
+                          "attach_to_pod(profileName=…) to attach.";
+            }
+            else
+            {
+                var names = string.Join(", ", profileItems.Select(p => $"'{p.Name}'"));
+                summary = $"list_orchestrator(kind=\"external-profiles\"): {profileItems.Count} profile(s) configured: {names}. " +
+                          "Call attach_to_pod(profileName=…) to attach to one.";
+            }
+
+            return DiagnosticResult.Ok(
+                new ListOrchestratorResult(KindExternalProfiles, Pods: null, Investigations: null, ExternalProfiles: profilePage),
+                summary,
+                new NextActionHint(
+                    "attach_to_pod",
+                    profileItems.Count == 0
+                        ? "No profiles are configured — ask the operator to add entries under Orchestrator:ExternalMcpProfiles."
+                        : $"Pass one of the listed profileName values to attach_to_pod to open an external investigation."));
         }
     }
 
@@ -228,7 +288,7 @@ public sealed class ListOrchestratorTool
             };
         }
 
-        var data = inner.Data is null ? new ListOrchestratorResult(kind, null, null) : wrap(inner.Data);
+        var data = inner.Data is null ? new ListOrchestratorResult(kind, null, null, null) : wrap(inner.Data);
         return new DiagnosticResult<ListOrchestratorResult>(inner.Summary, inner.Hints, inner.Error)
         {
             Data = data,
@@ -241,11 +301,13 @@ public sealed class ListOrchestratorTool
 
 /// <summary>
 /// Discriminated payload for <see cref="ListOrchestratorTool.ListOrchestrator"/>. Exactly
-/// one of <see cref="Pods"/> / <see cref="Investigations"/> is populated, matching the
-/// requested <see cref="Kind"/>; the other is always <c>null</c> so JSON consumers can
-/// branch without re-running the tool.
+/// one of <see cref="Pods"/> / <see cref="Investigations"/> / <see cref="ExternalProfiles"/>
+/// is populated, matching the requested <see cref="Kind"/>; the others are always
+/// <c>null</c> so JSON consumers can branch without re-running the tool.
 /// </summary>
 public sealed record ListOrchestratorResult(
     string Kind,
     PodCandidatePage? Pods,
-    InvestigationListPage? Investigations);
+    InvestigationListPage? Investigations,
+    ExternalProfilePage? ExternalProfiles);
+

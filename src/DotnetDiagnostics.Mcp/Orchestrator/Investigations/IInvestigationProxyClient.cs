@@ -36,6 +36,19 @@ public interface IInvestigationProxyClient
     Task<CallToolResult> CallToolAsync(InvestigationHandle handle, CallToolRequestParams request, CancellationToken cancellationToken);
 
     /// <summary>
+    /// Eagerly performs (and caches) the MCP <c>initialize</c> handshake for
+    /// <paramref name="handle"/> without forwarding a <c>tools/call</c>. Callers that
+    /// must prove the upstream is reachable and MCP-speaking before advancing a
+    /// handle's lifecycle state (e.g. external profile attach — issue #711) should
+    /// await this instead of deferring to the first <see cref="CallToolAsync"/>. The
+    /// resulting client is cached exactly as it would be after a successful
+    /// <see cref="CallToolAsync"/>, so subsequent calls do not repeat the handshake.
+    /// </summary>
+    /// <param name="handle">The handle to initialize a transport for.</param>
+    /// <param name="cancellationToken">Cancellation tied to the caller's attach request.</param>
+    Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken);
+
+    /// <summary>
     /// Tears down any cached MCP client state for <paramref name="handleId"/>. Invoked
     /// by <c>detach_from_pod</c>, the TTL reaper, and attach-failure paths so the next
     /// attach against the same target cannot reuse a stale transport. Idempotent — must

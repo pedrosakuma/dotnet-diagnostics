@@ -209,6 +209,8 @@ public sealed class InvestigationCloserTests
         public Task<CallToolResult> CallToolAsync(InvestigationHandle handle, CallToolRequestParams request, CancellationToken cancellationToken)
             => throw new NotSupportedException("Not under test here.");
 
+        public Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken) => Task.CompletedTask;
+
         public Task DisposeForHandleAsync(string handleId)
         {
             BeforeDispose?.Invoke();

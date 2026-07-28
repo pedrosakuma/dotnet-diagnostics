@@ -458,6 +458,8 @@ public sealed class ReplicaCounterFanoutTests
             return result;
         }
 
+        public Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken) => Task.CompletedTask;
+
         public Task DisposeForHandleAsync(string handleId) => Task.CompletedTask;
     }
 }

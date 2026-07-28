@@ -357,6 +357,8 @@ public sealed class InvestigationProxyTaskIntegrationTests
             };
         }
 
+        public Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken) => Task.CompletedTask;
+
         public Task DisposeForHandleAsync(string handleId) => Task.CompletedTask;
     }
 

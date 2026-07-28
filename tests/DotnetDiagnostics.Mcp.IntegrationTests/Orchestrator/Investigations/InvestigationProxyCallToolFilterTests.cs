@@ -1317,6 +1317,8 @@ public sealed class InvestigationProxyCallToolFilterTests
         public int DisposeCallCount;
         public string? LastDisposedHandleId;
 
+        public Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken) => Task.CompletedTask;
+
         public Task DisposeForHandleAsync(string handleId)
         {
             Interlocked.Increment(ref DisposeCallCount);

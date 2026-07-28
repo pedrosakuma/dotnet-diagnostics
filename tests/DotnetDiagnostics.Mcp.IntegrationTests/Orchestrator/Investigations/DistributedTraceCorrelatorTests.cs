@@ -321,6 +321,7 @@ public sealed class DistributedTraceCorrelatorTests
             return _byPod[handle.PodName];
         }
 
+        public Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task DisposeForHandleAsync(string handleId) => Task.CompletedTask;
     }
 }

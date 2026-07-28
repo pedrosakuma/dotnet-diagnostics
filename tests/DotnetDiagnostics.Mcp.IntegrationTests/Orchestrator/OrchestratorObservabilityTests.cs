@@ -70,6 +70,7 @@ public sealed class OrchestratorObservabilityTests
 
         var attach = await OrchestratorTools.AttachToPod(
             fx.AttachOrchestrator,
+            externalOrchestrator: null!,
             fx.Options,
             fx.Binder,
             fx.Store,
@@ -149,6 +150,7 @@ public sealed class OrchestratorObservabilityTests
 
         var attach = await OrchestratorTools.AttachToPod(
             attachOrchestrator,
+            externalOrchestrator: null!,
             options,
             binder,
             store,
@@ -343,6 +345,8 @@ public sealed class OrchestratorObservabilityTests
     {
         public Task<CallToolResult> CallToolAsync(InvestigationHandle handle, CallToolRequestParams request, CancellationToken cancellationToken)
             => Task.FromResult(new CallToolResult());
+
+        public Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken) => Task.CompletedTask;
 
         public Task DisposeForHandleAsync(string handleId) => Task.CompletedTask;
     }

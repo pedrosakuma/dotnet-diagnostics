@@ -130,6 +130,26 @@ internal sealed class PodLocalInvestigationProxyClient : IInvestigationProxyClie
     }
 
     /// <summary>
+    /// Eagerly performs (and caches) the MCP <c>initialize</c> handshake for
+    /// <paramref name="handle"/> — see <see cref="IInvestigationProxyClient.EnsureInitializedAsync"/>.
+    /// Shares the same per-handle <see cref="Lazy{T}"/> slot as <see cref="CallToolAsync"/>,
+    /// so a handshake performed here is reused (not repeated) by the first real tool call.
+    /// </summary>
+    public async Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (_closedHandles.ContainsKey(handle.HandleId))
+        {
+            throw new InvalidOperationException(
+                $"Refusing to initialize transport for investigation {handle.HandleId}: " +
+                "the investigation has been closed.");
+        }
+
+        await GetOrCreateClientAsync(handle, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Tears down the cached MCP client for a handle if one exists. Idempotent — safe
     /// to call from <c>detach</c>, the reaper, or attach failure paths. Errors during
     /// disposal are logged and swallowed: a partial close should never bubble back

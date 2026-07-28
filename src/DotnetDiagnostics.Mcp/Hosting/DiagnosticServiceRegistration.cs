@@ -154,6 +154,9 @@ internal static class DiagnosticServiceRegistration
                 sp.GetRequiredService<Orchestrator.Investigations.SsrfSafeExternalMcpTransportManager>()));
         services.AddSingleton<Orchestrator.Investigations.IInvestigationProxyClient, Orchestrator.Investigations.PodLocalInvestigationProxyClient>();
         services.AddSingleton<Orchestrator.Investigations.IPodAttachOrchestrator, Orchestrator.Investigations.KubernetesPodAttachOrchestrator>();
+        // issue #711: external profile attach orchestrator — registers a named external MCP
+        // profile as an investigation handle and initializes the transport before marking Active.
+        services.AddSingleton<Orchestrator.Investigations.IExternalProfileAttachOrchestrator, Orchestrator.Investigations.ExternalProfileAttachOrchestrator>();
         services.AddSingleton<Orchestrator.Investigations.InvestigationCloser>();
         services.AddHostedService<InvestigationHandleReaperBackgroundService>();
         return true;
