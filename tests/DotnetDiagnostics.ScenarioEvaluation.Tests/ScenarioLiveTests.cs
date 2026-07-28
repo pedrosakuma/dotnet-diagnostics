@@ -23,11 +23,23 @@ public sealed class ScenarioLiveTests
         => RunLiveCaptureAsync("culture-lookup");
 
     [Theory(Timeout = 600_000)]
-    [InlineData("sync-over-async")]
-    [InlineData("lock-storm")]
+    [MemberData(nameof(NonCpuLiveScenarios))]
     [Trait("Category", "ScenarioEvaluationLive")]
     public Task LiveCapture_WaitScenarios_SatisfyStructuredEvidenceInvariants(string scenarioId)
         => RunLiveCaptureAsync(scenarioId);
+
+    public static TheoryData<string> NonCpuLiveScenarios()
+    {
+        var data = new TheoryData<string>();
+        foreach (var manifest in ScenarioManifestLoader.LoadAll()
+                     .Where(item => !string.Equals(item.Id, "culture-lookup", StringComparison.Ordinal))
+                     .Where(ScenarioLiveRunner.SupportsCurrentPlatform))
+        {
+            data.Add(manifest.Id);
+        }
+
+        return data;
+    }
 
     private static async Task RunLiveCaptureAsync(string scenarioId)
     {

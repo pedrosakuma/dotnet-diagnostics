@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "gc-storm",
+  "scenarioVersion": "1.0.0",
+  "trial": 1,
+  "environment": {
+    "os": "linux",
+    "architecture": "x64",
+    "frameworkDescription": ".NET 10.0.10",
+    "runtimeVersion": "10.0.10"
+  },
+  "activation": {
+    "status": "Passed",
+    "failureKind": "None",
+    "detail": "attempts=270; successes=266; requestFailures=0",
+    "durationSeconds": 8.130207
+  },
+  "collection": {
+    "status": "Passed",
+    "failureKind": "None",
+    "detail": null,
+    "durationSeconds": 16
+  },
+  "metrics": [
+    {
+      "name": "alloc-rate",
+      "value": 1860366032,
+      "unit": "B"
+    },
+    {
+      "name": "gc-total-collections",
+      "value": 2512,
+      "unit": "collections"
+    },
+    {
+      "name": "gen-2-gc-count",
+      "value": 581,
+      "unit": null
+    },
+    {
+      "name": "loh-size",
+      "value": 3601008,
+      "unit": "B"
+    },
+    {
+      "name": "time-in-gc",
+      "value": 72,
+      "unit": "%"
+    }
+  ],
+  "signals": [
+    {
+      "signal": "gc.gen2-share",
+      "salience": 1,
+      "buckets": [
+        {
+          "key": "gen2",
+          "magnitude": 850,
+          "unit": "collections"
+        }
+      ],
+      "nextAction": "query_snapshot"
+    }
+  ],
+  "frames": [],
+  "relations": [],
+  "notes": []
+}

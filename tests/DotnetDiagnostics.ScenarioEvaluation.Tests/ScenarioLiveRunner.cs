@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Signals;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.TestSupport;
@@ -33,6 +34,7 @@ public sealed class ScenarioLiveRunner
                 "culture-lookup" => await CaptureCultureLookupAsync(manifest, trial, runtimeCts.Token).ConfigureAwait(false),
                 "sync-over-async" => await CaptureSyncOverAsyncAsync(manifest, trial, runtimeCts.Token).ConfigureAwait(false),
                 "lock-storm" => await CaptureLockStormAsync(manifest, trial, runtimeCts.Token).ConfigureAwait(false),
+                "gc-storm" => await CaptureGcStormAsync(manifest, trial, runtimeCts.Token).ConfigureAwait(false),
                 _ => throw new InvalidDataException($"No live driver is registered for scenario '{manifest.Id}'."),
             };
         }
@@ -283,6 +285,92 @@ public sealed class ScenarioLiveRunner
             frames: [],
             NormalizeRelations(snapshot, manifest.Budget.MaximumEvidenceItems),
             (snapshot.Warnings ?? []).OrderBy(note => note, StringComparer.Ordinal).Take(MaxNotes).ToArray());
+    }
+
+    private static async Task<ScenarioEvidence> CaptureGcStormAsync(
+        ScenarioManifest manifest,
+        int trial,
+        CancellationToken cancellationToken)
+    {
+        await using var sample = await StartSampleAsync(manifest).ConfigureAwait(false);
+        using var http = CreateHttpClient(sample.BaseUrl);
+        using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var load = new LoadCounters();
+        var activationWatch = Stopwatch.StartNew();
+        var driver = DriveRepeatedRequestsAsync(
+            http,
+            $"{RequiredParameter(manifest, "endpoint")}?count={RequiredPositiveIntParameter(manifest, "count")}",
+            RequiredPositiveIntParameter(manifest, "concurrentRequests"),
+            TimeSpan.FromMilliseconds(manifest.Workload.WarmupMilliseconds),
+            load,
+            loadCts.Token);
+
+        CounterSnapshot counters;
+        GcSummary gc;
+        try
+        {
+            var duration = TimeSpan.FromSeconds(manifest.Workload.ObservationSeconds);
+            var countersTask = new EventPipeCounterCollector().CollectAsync(
+                sample.ProcessId,
+                duration,
+                intervalSeconds: 1,
+                cancellationToken: cancellationToken);
+            var gcTask = new EventPipeGcCollector().CollectAsync(
+                sample.ProcessId,
+                duration,
+                // gc-storm drives a sustained LOH-allocation workload that produces far more
+                // than the collector's 200-sample default across an 8s window; a higher cap
+                // keeps GCHeapStats representative of the full observation window instead of
+                // truncating to only the earliest samples.
+                maxEvents: 4000,
+                cancellationToken: cancellationToken);
+            await Task.WhenAll(countersTask, gcTask).ConfigureAwait(false);
+            counters = countersTask.Result;
+            gc = gcTask.Result;
+        }
+        catch (Exception exception) when (
+            exception is Microsoft.Diagnostics.NETCore.Client.DiagnosticsClientException
+            or InvalidOperationException
+            or UnauthorizedAccessException)
+        {
+            throw new ScenarioRunException(
+                $"Counter/GC collection failed for '{manifest.Id}'.",
+                ScenarioFailureClassifier.Classify(exception, ScenarioFailureKind.Collection),
+                exception);
+        }
+        finally
+        {
+            await loadCts.CancelAsync().ConfigureAwait(false);
+            await DrainDriverAsync(driver).ConfigureAwait(false);
+        }
+
+        activationWatch.Stop();
+        EnsureActivated(manifest.Id, load);
+        var metrics = SelectCounters(counters, "gen-2-gc-count", "loh-size", "time-in-gc", "alloc-rate")
+            .Append(new ObservedMetric("gc-total-collections", gc.TotalCollections, "collections"))
+            .OrderBy(metric => metric.Name, StringComparer.Ordinal)
+            .ToArray();
+        var signals = NormalizeSignals(
+            manifest,
+            GcSignals.Detect(gc, "replay"),
+            manifest.Budget.MaximumEvidenceItems);
+        var notes = counters.Notes
+            .Concat(CollectGcNotes(gc))
+            .OrderBy(note => note, StringComparer.Ordinal)
+            .Take(MaxNotes)
+            .ToArray();
+
+        return Evidence(
+            manifest,
+            trial,
+            activationWatch.Elapsed,
+            counters.Duration + gc.Duration,
+            load,
+            metrics,
+            signals,
+            frames: [],
+            relations: [],
+            notes);
     }
 
     private static async Task<LiveSampleProcess> StartSampleAsync(ScenarioManifest manifest)
@@ -574,6 +662,19 @@ public sealed class ScenarioLiveRunner
         => OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsLinux() ? "linux" : "unsupported";
 
     private static double RoundSeconds(TimeSpan duration) => Math.Round(duration.TotalSeconds, 6);
+
+    private static IEnumerable<string> CollectGcNotes(GcSummary gc)
+    {
+        if (gc.DroppedEvents > 0)
+        {
+            yield return $"Dropped {gc.DroppedEvents} GC event(s) due to maxEvents cap.";
+        }
+
+        if (gc.DroppedHeapStats > 0)
+        {
+            yield return $"Dropped {gc.DroppedHeapStats} GCHeapStats sample(s) due to maxEvents cap.";
+        }
+    }
 
     private sealed class LoadCounters
     {
