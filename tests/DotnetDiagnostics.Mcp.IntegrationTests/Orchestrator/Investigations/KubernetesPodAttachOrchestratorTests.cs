@@ -42,6 +42,10 @@ public class KubernetesPodAttachOrchestratorTests
         handle.HandleId.Should().StartWith("inv_");
         handle.EphemeralContainerName.Should().StartWith(options.EphemeralContainerNamePrefix);
         handle.Kubernetes!.PodLocalBearerToken.Should().NotBeNullOrWhiteSpace();
+        handle.LastSuccessfulUseAt.Should().BeNull();
+        handle.AttachDeadline.Should().Be(handle.AttachedAt.AddSeconds(options.AttachReadinessTimeoutSeconds));
+        handle.IdleExpiresAt.Should().Be(handle.AttachedAt.AddSeconds(options.DefaultInvestigationTtlSeconds));
+        handle.AbsoluteExpiresAt.Should().Be(handle.AttachedAt.AddSeconds(options.DefaultInvestigationAbsoluteTtlSeconds));
         api.PatchInvoked.Should().BeTrue();
         api.PatchedSpec!.Image.Should().Be(options.EphemeralContainerImage);
         api.PatchedSpec.TargetContainerName.Should().Be(Container);

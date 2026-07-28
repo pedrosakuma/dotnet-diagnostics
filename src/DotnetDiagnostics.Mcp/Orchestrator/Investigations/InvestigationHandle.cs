@@ -56,7 +56,7 @@ public sealed record InvestigationHandle(
     KubernetesInvestigationTarget? Kubernetes,
     InvestigationState State,
     DateTimeOffset AttachedAt,
-    DateTimeOffset ExpiresAt,
+    InvestigationLease Lease,
     string? FailureReason = null,
     // Display-only name of the bearer principal that minted this handle.
     [property: JsonIgnore] string? OwnerBearerName = null,
@@ -73,6 +73,51 @@ public sealed record InvestigationHandle(
     // ExternalMcpProfile. Null for Kubernetes handles.
     ExternalMcpInvestigationTarget? ExternalMcp = null)
 {
+    /// <summary>Deadline for the Attaching → Active transition.</summary>
+    public DateTimeOffset AttachDeadline => Lease.AttachDeadline;
+
+    /// <summary>Requested per-handle idle TTL captured at attach time.</summary>
+    public TimeSpan IdleTtl => Lease.IdleTtl;
+
+    /// <summary>Timestamp of the last successful proxied tool call, if any.</summary>
+    public DateTimeOffset? LastSuccessfulUseAt => Lease.LastSuccessfulUseAt;
+
+    /// <summary>Current idle-expiry deadline, refreshed only after successful proxied calls.</summary>
+    public DateTimeOffset IdleExpiresAt => Lease.IdleExpiresAt;
+
+    /// <summary>Hard wall-clock cap for the handle lifetime.</summary>
+    public DateTimeOffset AbsoluteExpiresAt => Lease.AbsoluteExpiresAt;
+
+    /// <summary>Backward-compatible effective expiry used by summaries and projections.</summary>
+    public DateTimeOffset ExpiresAt => Lease.EffectiveExpiresAt;
+
+    public InvestigationHandle(
+        string HandleId,
+        KubernetesInvestigationTarget? Kubernetes,
+        InvestigationState State,
+        DateTimeOffset AttachedAt,
+        DateTimeOffset ExpiresAt,
+        string? FailureReason = null,
+        string? OwnerBearerName = null,
+        string? OwnerPrincipalKey = null,
+        string? InternalScopeDelegationKey = null,
+        InvestigationProcessSelector? ProcessSelector = null,
+        ExternalMcpInvestigationTarget? ExternalMcp = null)
+        : this(
+            HandleId,
+            Kubernetes,
+            State,
+            AttachedAt,
+            InvestigationLeasePolicy.FromLegacyExpiry(AttachedAt, ExpiresAt),
+            FailureReason,
+            OwnerBearerName,
+            OwnerPrincipalKey,
+            InternalScopeDelegationKey,
+            ProcessSelector,
+            ExternalMcp)
+    {
+    }
+
     /// <summary>
     /// Transport-neutral display label used in logs, error messages, and observability.
     /// For Kubernetes targets this is <c>namespace/pod/container</c>; for external MCP
@@ -121,4 +166,3 @@ public sealed record InvestigationHandle(
     /// </summary>
     public string EphemeralContainerName => Kubernetes?.EphemeralContainerName ?? string.Empty;
 }
-

@@ -362,7 +362,7 @@ public sealed class InvestigationProxyTaskIntegrationTests
         public Task DisposeForHandleAsync(string handleId) => Task.CompletedTask;
     }
 
-    private sealed class TaskInvestigationStore : IInvestigationStore, IInvestigationStoreActivation
+    private sealed class TaskInvestigationStore : IInvestigationStore, IInvestigationStoreActivation, IInvestigationStoreLeaseTouch, IInvestigationStoreExpiry
     {
         private readonly ConcurrentDictionary<string, InvestigationHandle> _handles =
             new(StringComparer.Ordinal);
@@ -396,6 +396,72 @@ public sealed class InvestigationProxyTaskIntegrationTests
 
         public InvestigationHandle? GetById(string handleId)
             => _handles.TryGetValue(handleId, out var handle) ? handle : null;
+
+        public InvestigationLeaseTouchResult TryTouchSuccessfulCall(
+            string handleId,
+            DateTimeOffset successfulCallCompletedAt,
+            out InvestigationHandle? updated)
+        {
+            while (true)
+            {
+                if (!_handles.TryGetValue(handleId, out var current))
+                {
+                    updated = null;
+                    return InvestigationLeaseTouchResult.NotFound;
+                }
+
+                if (current.State != InvestigationState.Active || current.ExpiresAt <= successfulCallCompletedAt)
+                {
+                    updated = current;
+                    return InvestigationLeaseTouchResult.Skipped;
+                }
+
+                updated = current with
+                {
+                    Lease = InvestigationLeasePolicy.RecordSuccessfulUse(current.Lease, successfulCallCompletedAt),
+                };
+                if (_handles.TryUpdate(handleId, updated, current))
+                {
+                    return InvestigationLeaseTouchResult.Touched;
+                }
+            }
+        }
+
+        public InvestigationExpiryTransition TryTransitionToExpiredIfStillExpired(
+            string handleId,
+            DateTimeOffset now,
+            string failureReason,
+            out InvestigationHandle? updated,
+            out InvestigationState? previousState)
+        {
+            while (true)
+            {
+                previousState = null;
+                if (!_handles.TryGetValue(handleId, out var current))
+                {
+                    updated = null;
+                    return InvestigationExpiryTransition.NotFound;
+                }
+
+                previousState = current.State;
+                if (current.State is not (InvestigationState.Active or InvestigationState.Attaching)
+                    || !InvestigationLeasePolicy.IsExpired(current, now))
+                {
+                    updated = current;
+                    return InvestigationExpiryTransition.Skipped;
+                }
+
+                updated = current with
+                {
+                    State = InvestigationState.Expired,
+                    FailureReason = failureReason,
+                };
+                if (_handles.TryUpdate(handleId, updated, current))
+                {
+                    return InvestigationExpiryTransition.Transitioned;
+                }
+            }
+        }
 
         public InvestigationTerminalTransition TryTransitionToTerminal(
             string handleId,

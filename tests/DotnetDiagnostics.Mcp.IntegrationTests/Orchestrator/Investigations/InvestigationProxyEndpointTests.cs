@@ -1507,7 +1507,7 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
         OwnerPrincipalKey: ownerPrincipalKey ?? PrincipalOwnershipKey.ForSynthetic(ownerBearerName),
         InternalScopeDelegationKey: "test-delegation-key");
 
-    private sealed class StubInvestigationStore : IInvestigationStore, IInvestigationStoreActivation
+    private sealed class StubInvestigationStore : IInvestigationStore, IInvestigationStoreActivation, IInvestigationStoreLeaseTouch, IInvestigationStoreExpiry
     {
         private readonly ConcurrentDictionary<string, InvestigationHandle> _byId = new(StringComparer.Ordinal);
         public void Add(InvestigationHandle handle) => _byId[handle.HandleId] = handle;
@@ -1528,6 +1528,66 @@ public class InvestigationProxyEndpointTests : IAsyncLifetime
             return true;
         }
         public InvestigationHandle? GetById(string id) => _byId.TryGetValue(id, out var h) ? h : null;
+        public InvestigationLeaseTouchResult TryTouchSuccessfulCall(
+            string handleId,
+            DateTimeOffset successfulCallCompletedAt,
+            out InvestigationHandle? updated)
+        {
+            while (true)
+            {
+                if (!_byId.TryGetValue(handleId, out var current))
+                {
+                    updated = null;
+                    return InvestigationLeaseTouchResult.NotFound;
+                }
+
+                if (current.State != InvestigationState.Active || current.ExpiresAt <= successfulCallCompletedAt)
+                {
+                    updated = current;
+                    return InvestigationLeaseTouchResult.Skipped;
+                }
+
+                updated = current with
+                {
+                    Lease = InvestigationLeasePolicy.RecordSuccessfulUse(current.Lease, successfulCallCompletedAt),
+                };
+                if (_byId.TryUpdate(handleId, updated, current))
+                {
+                    return InvestigationLeaseTouchResult.Touched;
+                }
+            }
+        }
+        public InvestigationExpiryTransition TryTransitionToExpiredIfStillExpired(
+            string handleId,
+            DateTimeOffset now,
+            string failureReason,
+            out InvestigationHandle? updated,
+            out InvestigationState? previousState)
+        {
+            while (true)
+            {
+                previousState = null;
+                if (!_byId.TryGetValue(handleId, out var current))
+                {
+                    updated = null;
+                    return InvestigationExpiryTransition.NotFound;
+                }
+
+                previousState = current.State;
+                if (current.State is not (InvestigationState.Active or InvestigationState.Attaching)
+                    || !InvestigationLeasePolicy.IsExpired(current, now))
+                {
+                    updated = current;
+                    return InvestigationExpiryTransition.Skipped;
+                }
+
+                updated = current with { State = InvestigationState.Expired, FailureReason = failureReason };
+                if (_byId.TryUpdate(handleId, updated, current))
+                {
+                    return InvestigationExpiryTransition.Transitioned;
+                }
+            }
+        }
         public InvestigationTerminalTransition TryTransitionToTerminal(string handleId, InvestigationState targetState, string? failureReason, out InvestigationState? previousState)
         {
             previousState = null;

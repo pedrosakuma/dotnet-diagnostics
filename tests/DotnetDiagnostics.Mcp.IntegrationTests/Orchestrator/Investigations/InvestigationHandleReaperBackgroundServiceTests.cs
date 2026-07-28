@@ -18,22 +18,35 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests.Orchestrator.Investigations;
 /// </summary>
 public sealed class InvestigationHandleReaperBackgroundServiceTests
 {
-    private static InvestigationHandle Handle(string id, InvestigationState state, DateTimeOffset expiresAt) => new(
+    private static InvestigationHandle Handle(
+        string id,
+        InvestigationState state,
+        DateTimeOffset attachedAt,
+        DateTimeOffset attachDeadline,
+        DateTimeOffset idleExpiresAt,
+        DateTimeOffset absoluteExpiresAt,
+        DateTimeOffset? lastSuccessfulUseAt = null) => new(
             HandleId: id,
             Kubernetes: new KubernetesInvestigationTarget("ns", "pod", "api", "diag", "secret"),
             State: state,
-        AttachedAt: DateTimeOffset.UtcNow.AddMinutes(-10),
-        ExpiresAt: expiresAt);
+            AttachedAt: attachedAt,
+            Lease: new InvestigationLease(
+                IdleTtl: idleExpiresAt > attachedAt ? idleExpiresAt - attachedAt : TimeSpan.Zero,
+                AttachDeadline: attachDeadline,
+                LastSuccessfulUseAt: lastSuccessfulUseAt,
+                IdleExpiresAt: idleExpiresAt,
+                AbsoluteExpiresAt: absoluteExpiresAt));
 
     [Fact]
     public async Task ReapExpiredAsync_TransitionsActiveHandlesPastTtl_ToExpired()
     {
         var fx = new Fixture();
         var now = DateTimeOffset.UtcNow;
-        fx.Store.Add(Handle("expired", InvestigationState.Active, now.AddSeconds(-1)));
-        fx.Store.Add(Handle("fresh", InvestigationState.Active, now.AddMinutes(5)));
-        fx.Store.Add(Handle("stuck-attach", InvestigationState.Attaching, now.AddSeconds(-30)));
-        fx.Store.Add(Handle("already-closed", InvestigationState.Closed, now.AddSeconds(-1)));
+        var attachedAt = now.AddMinutes(-10);
+        fx.Store.Add(Handle("expired", InvestigationState.Active, attachedAt, now.AddMinutes(-9), now.AddSeconds(-1), now.AddHours(6), now.AddMinutes(-1)));
+        fx.Store.Add(Handle("fresh", InvestigationState.Active, attachedAt, now.AddMinutes(-9), now.AddMinutes(5), now.AddHours(6), now.AddMinutes(-1)));
+        fx.Store.Add(Handle("stuck-attach", InvestigationState.Attaching, attachedAt, now.AddSeconds(-30), now.AddMinutes(20), now.AddHours(6)));
+        fx.Store.Add(Handle("already-closed", InvestigationState.Closed, attachedAt, now.AddMinutes(-9), now.AddSeconds(-1), now.AddHours(6)));
 
         var reaped = await fx.Reaper.ReapExpiredAsync(now);
 
@@ -52,15 +65,94 @@ public sealed class InvestigationHandleReaperBackgroundServiceTests
     {
         var fx = new Fixture();
         var now = DateTimeOffset.UtcNow;
-        var ttl = now.AddSeconds(-5);
-        fx.Store.Add(Handle("h", InvestigationState.Active, ttl));
+        var attachedAt = now.AddMinutes(-10);
+        fx.Store.Add(Handle("h", InvestigationState.Active, attachedAt, now.AddMinutes(-9), now.AddSeconds(-5), now.AddHours(6), now.AddMinutes(-2)));
 
         await fx.Reaper.ReapExpiredAsync(now);
 
         var after = fx.Store.GetById("h")!;
         after.State.Should().Be(InvestigationState.Expired);
         after.FailureReason.Should().NotBeNullOrEmpty();
-        after.FailureReason.Should().Contain("TTL expired");
+        after.FailureReason.Should().Contain("Idle lease expired");
+    }
+
+    [Fact]
+    public async Task ReapExpiredAsync_AttachingHandlesUseAttachDeadline_NotIdleExpiry()
+    {
+        var fx = new Fixture();
+        var now = DateTimeOffset.UtcNow;
+        var attachedAt = now.AddMinutes(-2);
+        fx.Store.Add(Handle(
+            "attach-past-deadline",
+            InvestigationState.Attaching,
+            attachedAt,
+            now.AddSeconds(-1),
+            now.AddMinutes(10),
+            now.AddHours(6)));
+        fx.Store.Add(Handle(
+            "attach-future-deadline",
+            InvestigationState.Attaching,
+            attachedAt,
+            now.AddMinutes(1),
+            now.AddSeconds(-1),
+            now.AddHours(6)));
+
+        var reaped = await fx.Reaper.ReapExpiredAsync(now);
+
+        reaped.Should().Be(1);
+        fx.Store.GetById("attach-past-deadline")!.State.Should().Be(InvestigationState.Expired);
+        fx.Store.GetById("attach-future-deadline")!.State.Should().Be(InvestigationState.Attaching);
+    }
+
+    [Fact]
+    public async Task ReapExpiredAsync_ActiveHandlesHonorAbsoluteExpiry()
+    {
+        var fx = new Fixture();
+        var now = DateTimeOffset.UtcNow;
+        var attachedAt = now.AddHours(-7).AddMinutes(-50);
+        fx.Store.Add(Handle(
+            "absolute-expired",
+            InvestigationState.Active,
+            attachedAt,
+            attachedAt.AddMinutes(1),
+            now.AddMinutes(20),
+            now.AddSeconds(-1),
+            now.AddMinutes(-5)));
+
+        var reaped = await fx.Reaper.ReapExpiredAsync(now);
+
+        reaped.Should().Be(1);
+        var expired = fx.Store.GetById("absolute-expired")!;
+        expired.State.Should().Be(InvestigationState.Expired);
+        expired.FailureReason.Should().Contain("Absolute lease expired");
+    }
+
+    [Fact]
+    public async Task ReapExpiredAsync_TouchRace_DoesNotExpireRefreshedHandle()
+    {
+        var attachedAt = new DateTimeOffset(2026, 7, 28, 12, 0, 0, TimeSpan.Zero);
+        var staleSnapshot = Handle(
+            "touch-race",
+            InvestigationState.Active,
+            attachedAt,
+            attachedAt.AddMinutes(1),
+            attachedAt.AddMinutes(30),
+            attachedAt.AddHours(8));
+        var current = staleSnapshot with
+        {
+            Lease = InvestigationLeasePolicy.RecordSuccessfulUse(staleSnapshot.Lease, attachedAt.AddMinutes(29)),
+        };
+        var store = new TouchBeforeExpireStore(staleSnapshot, current);
+        var fx = new Fixture(store);
+        var now = attachedAt.AddMinutes(31);
+
+        var reaped = await fx.Reaper.ReapExpiredAsync(now);
+
+        reaped.Should().Be(0);
+        store.GetById("touch-race")!.State.Should().Be(InvestigationState.Active);
+        store.GetById("touch-race")!.LastSuccessfulUseAt.Should().Be(attachedAt.AddMinutes(29));
+        fx.Proxy.DisposeCalls.Should().BeEmpty();
+        fx.PortForward.CloseCalls.Should().BeEmpty();
     }
 
     [Fact]
@@ -73,14 +165,15 @@ public sealed class InvestigationHandleReaperBackgroundServiceTests
 
     private sealed class Fixture
     {
-        public MemoryInvestigationStore Store { get; } = new();
+        public IInvestigationStore Store { get; }
         public CountingProxy Proxy { get; } = new();
         public CountingPortForward PortForward { get; } = new();
         public MemoryInvestigationSessionBinder Binder { get; } = new();
         public InvestigationHandleReaperBackgroundService Reaper { get; }
 
-        public Fixture()
+        public Fixture(IInvestigationStore? store = null)
         {
+            Store = store ?? new MemoryInvestigationStore();
             var services = new ServiceCollection();
             services.AddMetrics();
             var provider = services.BuildServiceProvider();
@@ -108,5 +201,67 @@ public sealed class InvestigationHandleReaperBackgroundServiceTests
         public Task<System.Net.Http.HttpClient> GetOrCreateClientAsync(InvestigationHandle handle, CancellationToken cancellationToken)
             => throw new NotSupportedException();
         public Task CloseAsync(string handleId) { CloseCalls.Add(handleId); return Task.CompletedTask; }
+    }
+
+    private sealed class TouchBeforeExpireStore : IInvestigationStore, IInvestigationStoreExpiry
+    {
+        private readonly InvestigationHandle _snapshotHandle;
+        private InvestigationHandle _currentHandle;
+        private bool _touched;
+
+        public TouchBeforeExpireStore(InvestigationHandle snapshotHandle, InvestigationHandle currentHandle)
+        {
+            _snapshotHandle = snapshotHandle;
+            _currentHandle = currentHandle;
+        }
+
+        public void Add(InvestigationHandle handle) => throw new NotSupportedException();
+
+        public bool TryReserveTarget(InvestigationHandle newHandle, bool allowReuse, out InvestigationHandle? existing)
+            => throw new NotSupportedException();
+
+        public void Update(InvestigationHandle handle) => _currentHandle = handle;
+
+        public InvestigationTerminalTransition TryTransitionToTerminal(
+            string handleId,
+            InvestigationState targetState,
+            string? failureReason,
+            out InvestigationState? previousState) => throw new NotSupportedException();
+
+        public InvestigationHandle? GetById(string handleId)
+            => string.Equals(handleId, _currentHandle.HandleId, StringComparison.Ordinal) ? _currentHandle : null;
+
+        public InvestigationHandle? FindReusableTarget(string reservationKey) => null;
+
+        public InvestigationHandle? FindTerminalHandleByEphemeralName(
+            string podNamespace,
+            string podName,
+            string ephemeralContainerName) => null;
+
+        public IReadOnlyCollection<InvestigationHandle> Snapshot() => [_snapshotHandle];
+
+        public InvestigationExpiryTransition TryTransitionToExpiredIfStillExpired(
+            string handleId,
+            DateTimeOffset now,
+            string failureReason,
+            out InvestigationHandle? updated,
+            out InvestigationState? previousState)
+        {
+            if (!_touched)
+            {
+                _touched = true;
+                updated = _currentHandle;
+                previousState = _currentHandle.State;
+                return InvestigationLeasePolicy.IsExpired(_currentHandle, now)
+                    ? InvestigationExpiryTransition.Transitioned
+                    : InvestigationExpiryTransition.Skipped;
+            }
+
+            updated = _currentHandle;
+            previousState = _currentHandle.State;
+            return InvestigationLeasePolicy.IsExpired(_currentHandle, now)
+                ? InvestigationExpiryTransition.Transitioned
+                : InvestigationExpiryTransition.Skipped;
+        }
     }
 }

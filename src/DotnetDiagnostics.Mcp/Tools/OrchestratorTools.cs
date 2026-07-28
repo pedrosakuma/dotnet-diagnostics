@@ -167,7 +167,7 @@ public sealed class OrchestratorTools
         string? podName = null,
         [Description("Container name inside the Pod. Defaults to the first container in the Pod's spec. Ignored when profileName is set.")]
         string? containerName = null,
-        [Description("Per-investigation TTL in seconds. Defaults to Orchestrator:DefaultInvestigationTtlSeconds (1800).")]
+        [Description("Per-investigation idle TTL in seconds. Defaults to Orchestrator:DefaultInvestigationTtlSeconds (1800) and is still bounded by the server's 8-hour absolute handle lease.")]
         int? ttlSeconds = null,
         [Description("Kubernetes only: when true (default), refuses to attach to Pods that don't carry the prepared opt-in label.")]
         bool requirePreparedTarget = true,

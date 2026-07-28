@@ -70,7 +70,8 @@ internal static class InvestigationProxyCallToolFilter
         IPrincipalAccessor principalAccessor,
         OrchestratorObservability observability,
         Func<ILogger?> loggerAccessor,
-        Func<RequestContext<CallToolRequestParams>, string?>? sessionIdResolver = null)
+        Func<RequestContext<CallToolRequestParams>, string?>? sessionIdResolver = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(scopeRegistry);
         ArgumentNullException.ThrowIfNull(sessionBinder);
@@ -83,6 +84,7 @@ internal static class InvestigationProxyCallToolFilter
         ArgumentNullException.ThrowIfNull(loggerAccessor);
 
         sessionIdResolver ??= static ctx => TryGetServerSessionId(ctx.Server);
+        timeProvider ??= TimeProvider.System;
 
         return next => (request, cancellationToken) =>
         {
@@ -101,6 +103,7 @@ internal static class InvestigationProxyCallToolFilter
                 loggerAccessor,
                 cancellationToken,
                 policies,
+                timeProvider,
                 taskPromoter: (forward, ct) =>
                 {
                     if (request.MatchedPrimitive is not McpServerTool matchedTool)
@@ -135,9 +138,11 @@ internal static class InvestigationProxyCallToolFilter
         Func<ILogger?> loggerAccessor,
         CancellationToken cancellationToken,
         ToolScopeResolutionPolicies? policies = null,
+        TimeProvider? timeProvider = null,
         Func<Func<CancellationToken, ValueTask<CallToolResult>>, CancellationToken, ValueTask<CallToolResult>>? taskPromoter = null)
     {
         ArgumentNullException.ThrowIfNull(scopeRegistry);
+        timeProvider ??= TimeProvider.System;
         var toolName = requestParams?.Name;
         var sanitizedRequest = InvestigationRoutingArguments.StripRoutingArguments(requestParams);
         if (string.IsNullOrEmpty(toolName) || BypassToolNames.Contains(toolName))
@@ -328,6 +333,13 @@ internal static class InvestigationProxyCallToolFilter
                     currentHandle,
                     delegatedRequest,
                     forwardCancellationToken).ConfigureAwait(false);
+                if (result.IsError != true && investigationStore is IInvestigationStoreLeaseTouch leaseTouchStore)
+                {
+                    leaseTouchStore.TryTouchSuccessfulCall(
+                        currentHandle.HandleId,
+                        timeProvider.GetUtcNow(),
+                        out _);
+                }
                 observability.RecordProxyCall(principalAccessor.Current, currentHandle.HandleId, toolName, result.IsError == true ? "failure" : "success");
                 forwardingActivity?.SetTag("event.outcome", result.IsError == true ? "failure" : "success");
                 return result;

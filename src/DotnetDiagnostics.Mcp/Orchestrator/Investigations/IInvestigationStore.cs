@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
@@ -84,6 +85,32 @@ public interface IInvestigationStoreActivation
 }
 
 /// <summary>
+/// Optional atomic lease-touch capability. Kept separate so existing
+/// <see cref="IInvestigationStore"/> implementations remain binary-compatible.
+/// </summary>
+public interface IInvestigationStoreLeaseTouch
+{
+    InvestigationLeaseTouchResult TryTouchSuccessfulCall(
+        string handleId,
+        DateTimeOffset successfulCallCompletedAt,
+        out InvestigationHandle? updated);
+}
+
+/// <summary>
+/// Optional atomic expiry-transition capability. Kept separate so existing
+/// <see cref="IInvestigationStore"/> implementations remain binary-compatible.
+/// </summary>
+public interface IInvestigationStoreExpiry
+{
+    InvestigationExpiryTransition TryTransitionToExpiredIfStillExpired(
+        string handleId,
+        DateTimeOffset now,
+        string failureReason,
+        out InvestigationHandle? updated,
+        out InvestigationState? previousState);
+}
+
+/// <summary>
 /// Result of <see cref="IInvestigationStore.TryTransitionToTerminal"/>.
 /// </summary>
 public enum InvestigationTerminalTransition
@@ -96,4 +123,41 @@ public enum InvestigationTerminalTransition
 
     /// <summary>The handle existed but was already terminal — no state change applied.</summary>
     AlreadyTerminal,
+}
+
+/// <summary>
+/// Result of <see cref="IInvestigationStoreLeaseTouch.TryTouchSuccessfulCall"/>.
+/// </summary>
+public enum InvestigationLeaseTouchResult
+{
+    /// <summary>The handle id is not (or no longer) registered.</summary>
+    NotFound,
+
+    /// <summary>The active handle was atomically touched and its idle lease was refreshed.</summary>
+    Touched,
+
+    /// <summary>
+    /// The handle existed but was not touchable at commit time (for example it had
+    /// already become Attaching/Closed/Expired/Failed, or its effective lease had
+    /// already elapsed).
+    /// </summary>
+    Skipped,
+}
+
+/// <summary>
+/// Result of <see cref="IInvestigationStoreExpiry.TryTransitionToExpiredIfStillExpired"/>.
+/// </summary>
+public enum InvestigationExpiryTransition
+{
+    /// <summary>The handle id is not (or no longer) registered.</summary>
+    NotFound,
+
+    /// <summary>The handle was still reapable and expired, and was atomically transitioned to Expired.</summary>
+    Transitioned,
+
+    /// <summary>
+    /// The handle existed but was no longer reapable or expired when the store re-checked
+    /// the current state under its concurrency guard.
+    /// </summary>
+    Skipped,
 }

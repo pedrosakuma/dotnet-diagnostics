@@ -124,6 +124,11 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
 
         var now = _timeProvider.GetUtcNow();
         var ttl = TimeSpan.FromSeconds(request.TtlSeconds ?? _options.DefaultInvestigationTtlSeconds);
+        var lease = InvestigationLeasePolicy.Create(
+            now,
+            TimeSpan.FromSeconds(_options.AttachReadinessTimeoutSeconds),
+            ttl,
+            TimeSpan.FromSeconds(_options.DefaultInvestigationAbsoluteTtlSeconds));
 
         // Before reserving a fresh target, scan for stale Running ephemeral containers
         // from previous sessions. Kubernetes does not allow ephemeral containers to be
@@ -163,7 +168,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
                 PodLocalBearerToken: token),
             State: InvestigationState.Attaching,
             AttachedAt: now,
-            ExpiresAt: now + ttl,
+            Lease: lease,
             OwnerBearerName: request.OwnerBearerName,
             OwnerPrincipalKey: request.OwnerPrincipalKey,
             InternalScopeDelegationKey: delegationKey,
@@ -368,7 +373,11 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             Kubernetes: stale.Kubernetes! with { },
             State: InvestigationState.Attaching,
             AttachedAt: now,
-            ExpiresAt: now + ttl,
+            Lease: InvestigationLeasePolicy.Create(
+                now,
+                TimeSpan.FromSeconds(_options.AttachReadinessTimeoutSeconds),
+                ttl,
+                TimeSpan.FromSeconds(_options.DefaultInvestigationAbsoluteTtlSeconds)),
             OwnerBearerName: request.OwnerBearerName,
             OwnerPrincipalKey: request.OwnerPrincipalKey,
             // Reuse the delegation key the sidecar was started with; a new key would

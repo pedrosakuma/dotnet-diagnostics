@@ -161,6 +161,102 @@ public sealed class InvestigationProxyCallToolFilterTests
     }
 
     [Fact]
+    public async Task SuccessfulForward_RefreshesIdleLease()
+    {
+        var fx = new Fixture();
+        var attachedAt = new DateTimeOffset(2026, 7, 28, 22, 0, 0, TimeSpan.Zero);
+        fx.Time.SetUtcNow(attachedAt.AddMinutes(5));
+        var handle = ActiveHandle with
+        {
+            AttachedAt = attachedAt,
+            Lease = InvestigationLeasePolicy.Create(
+                attachedAt,
+                TimeSpan.FromMinutes(1),
+                TimeSpan.FromMinutes(30),
+                TimeSpan.FromHours(8)),
+        };
+
+        fx.Binder.Bind("session-touch", handle.HandleId);
+        fx.Store.Add(handle);
+
+        await fx.Invoke(Params("collect_events", new Dictionary<string, JsonElement>
+        {
+            ["kind"] = JsonSerializer.SerializeToElement("counters"),
+        }), "session-touch");
+
+        var touched = fx.Store.GetById(handle.HandleId)!;
+        touched.LastSuccessfulUseAt.Should().Be(fx.Time.GetUtcNow());
+        touched.IdleExpiresAt.Should().Be(fx.Time.GetUtcNow().AddMinutes(30));
+        touched.ExpiresAt.Should().Be(touched.IdleExpiresAt);
+    }
+
+    [Fact]
+    public async Task FailedForward_DoesNotRefreshIdleLease()
+    {
+        var fx = new Fixture();
+        var attachedAt = new DateTimeOffset(2026, 7, 28, 22, 0, 0, TimeSpan.Zero);
+        fx.Time.SetUtcNow(attachedAt.AddMinutes(5));
+        var handle = ActiveHandle with
+        {
+            AttachedAt = attachedAt,
+            Lease = InvestigationLeasePolicy.Create(
+                attachedAt,
+                TimeSpan.FromMinutes(1),
+                TimeSpan.FromMinutes(30),
+                TimeSpan.FromHours(8)),
+        };
+
+        fx.Binder.Bind("session-no-touch", handle.HandleId);
+        fx.Store.Add(handle);
+        fx.ProxyClient.Next = (_, _, _) => Task.FromResult(new CallToolResult { IsError = true });
+
+        await fx.Invoke(Params("collect_events", new Dictionary<string, JsonElement>
+        {
+            ["kind"] = JsonSerializer.SerializeToElement("counters"),
+        }), "session-no-touch");
+
+        var untouched = fx.Store.GetById(handle.HandleId)!;
+        untouched.LastSuccessfulUseAt.Should().BeNull();
+        untouched.IdleExpiresAt.Should().Be(handle.IdleExpiresAt);
+    }
+
+    [Fact]
+    public async Task SuccessfulForward_RacingDetach_DoesNotResurrectClosedHandle()
+    {
+        var fx = new Fixture();
+        var attachedAt = new DateTimeOffset(2026, 7, 28, 22, 0, 0, TimeSpan.Zero);
+        fx.Time.SetUtcNow(attachedAt.AddMinutes(5));
+        var handle = ActiveHandle with
+        {
+            AttachedAt = attachedAt,
+            Lease = InvestigationLeasePolicy.Create(
+                attachedAt,
+                TimeSpan.FromMinutes(1),
+                TimeSpan.FromMinutes(30),
+                TimeSpan.FromHours(8)),
+        };
+
+        fx.Binder.Bind("session-race", handle.HandleId);
+        fx.Store.Add(handle);
+        fx.ProxyClient.Next = (_, _, _) =>
+        {
+            fx.Store.TryTransitionToTerminal(handle.HandleId, InvestigationState.Closed, failureReason: null, out _);
+            return Task.FromResult(new CallToolResult());
+        };
+
+        var result = await fx.Invoke(Params("collect_events", new Dictionary<string, JsonElement>
+        {
+            ["kind"] = JsonSerializer.SerializeToElement("counters"),
+        }), "session-race");
+
+        result.IsError.Should().NotBeTrue();
+        var closed = fx.Store.GetById(handle.HandleId)!;
+        closed.State.Should().Be(InvestigationState.Closed);
+        closed.LastSuccessfulUseAt.Should().BeNull();
+        closed.IdleExpiresAt.Should().Be(handle.IdleExpiresAt);
+    }
+
+    [Fact]
     public async Task TaskAugmentedForwarding_IsOwnedByOuterSession_AndRunsPodCallWithoutNestedTask()
     {
         var fx = new Fixture();
@@ -1181,6 +1277,7 @@ public sealed class InvestigationProxyCallToolFilterTests
         public OrchestratorOptions Options { get; } = new();
         public ToolScopeResolutionPolicies? Policies { get; set; }
         public OrchestratorObservability Observability { get; }
+        public ManualTimeProvider Time { get; } = new();
         public int LocalInvocations;
         public CallToolRequestParams? LastLocalRequest;
 
@@ -1221,6 +1318,7 @@ public sealed class InvestigationProxyCallToolFilterTests
                 loggerAccessor: () => null,
                 cancellationToken: token,
                 policies: Policies,
+                timeProvider: Time,
                 taskPromoter: taskPromoter);
         }
     }
@@ -1251,7 +1349,7 @@ public sealed class InvestigationProxyCallToolFilterTests
         public IReadOnlyCollection<KeyValuePair<string, string>> Snapshot() => _map.ToArray();
     }
 
-    private sealed class InMemoryInvestigationStore : IInvestigationStore, IInvestigationStoreActivation
+    private sealed class InMemoryInvestigationStore : IInvestigationStore, IInvestigationStoreActivation, IInvestigationStoreLeaseTouch
     {
         private readonly Dictionary<string, InvestigationHandle> _byId = new(StringComparer.Ordinal);
 
@@ -1279,6 +1377,30 @@ public sealed class InvestigationProxyCallToolFilterTests
             return true;
         }
         public InvestigationHandle? GetById(string handleId) => _byId.TryGetValue(handleId, out var h) ? h : null;
+        public InvestigationLeaseTouchResult TryTouchSuccessfulCall(
+            string handleId,
+            DateTimeOffset successfulCallCompletedAt,
+            out InvestigationHandle? updated)
+        {
+            if (!_byId.TryGetValue(handleId, out var current))
+            {
+                updated = null;
+                return InvestigationLeaseTouchResult.NotFound;
+            }
+
+            if (current.State != InvestigationState.Active || current.ExpiresAt <= successfulCallCompletedAt)
+            {
+                updated = current;
+                return InvestigationLeaseTouchResult.Skipped;
+            }
+
+            updated = current with
+            {
+                Lease = InvestigationLeasePolicy.RecordSuccessfulUse(current.Lease, successfulCallCompletedAt),
+            };
+            _byId[handleId] = updated;
+            return InvestigationLeaseTouchResult.Touched;
+        }
         public InvestigationTerminalTransition TryTransitionToTerminal(
             string handleId,
             InvestigationState targetState,
@@ -1296,6 +1418,15 @@ public sealed class InvestigationProxyCallToolFilterTests
         public InvestigationHandle? FindReusableTarget(string reservationKey) => null;
         public InvestigationHandle? FindTerminalHandleByEphemeralName(string podNamespace, string podName, string ephemeralContainerName) => null;
         public IReadOnlyCollection<InvestigationHandle> Snapshot() => _byId.Values.ToArray();
+    }
+
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private DateTimeOffset _utcNow = new(2026, 7, 28, 22, 0, 0, TimeSpan.Zero);
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
+
+        public void SetUtcNow(DateTimeOffset value) => _utcNow = value;
     }
 
     private sealed class FakeProxyClient : IInvestigationProxyClient
