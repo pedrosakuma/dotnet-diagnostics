@@ -21,7 +21,7 @@ name: dotnet-diagnostics-ext-inv
 #   127.0.0.1:18080  — target (CoreClrSample) HTTP
 #   127.0.0.1:18890  — central orchestrator MCP
 #
-# ******
+# Bearer tokens (see central's Auth:BearerTokens config):
 #   central-dev-token — presented by MCP clients to the central orchestrator
 #   sidecar-dev-token — injected by the central on every upstream call to the sidecar;
 #                       never returned to clients

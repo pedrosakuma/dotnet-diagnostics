@@ -53,7 +53,7 @@ public sealed class DockerExternalInvestigationTests
     private const string CentralMcpUrl = "http://127.0.0.1:18890/mcp";
 
     /// <summary>
-    /// ****** for the central MCP, as configured in the compose file
+    /// Bearer token for the central MCP, as configured in the compose file
     /// (<c>Auth__BearerTokens__0__Token=central-dev-token</c>).
     /// </summary>
     private const string CentralBearerToken = "central-dev-token";
@@ -287,7 +287,7 @@ public sealed class DockerExternalInvestigationTests
                 TransportMode = HttpTransportMode.StreamableHttp,
                 AdditionalHeaders = new Dictionary<string, string>
                 {
-                    ["Authorization"] = $"******",
+                    ["Authorization"] = $"Bearer {bearer}",
                 },
             },
             httpClient,

@@ -87,7 +87,7 @@ docker compose -f deploy/docker-compose.external-investigation.yml up --build -d
 
 ```bash
 curl -fsS -X POST http://127.0.0.1:18890/mcp \
-  -H 'Authorization: ******' \
+  -H 'Authorization: Bearer central-dev-token' \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -D central-headers.txt -o central-init.json \
@@ -96,14 +96,14 @@ curl -fsS -X POST http://127.0.0.1:18890/mcp \
 SID=$(grep -i '^mcp-session-id:' central-headers.txt | awk '{print $2}' | tr -d '\r')
 
 curl -fsS -X POST http://127.0.0.1:18890/mcp \
-  -H 'Authorization: ******' \
+  -H 'Authorization: Bearer central-dev-token' \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -H "mcp-session-id: $SID" \
   -d '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'
 
 curl -fsS -X POST http://127.0.0.1:18890/mcp \
-  -H 'Authorization: ******' \
+  -H 'Authorization: Bearer central-dev-token' \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -H "mcp-session-id: $SID" \
@@ -114,7 +114,7 @@ curl -fsS -X POST http://127.0.0.1:18890/mcp \
 
 ```bash
 ATTACH=$(curl -fsS -X POST http://127.0.0.1:18890/mcp \
-  -H 'Authorization: ******' \
+  -H 'Authorization: Bearer central-dev-token' \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -H "mcp-session-id: $SID" \
@@ -129,7 +129,7 @@ print(r['result']['content'][0]['text'])
 
 # inspect_process forwarded to the sidecar
 curl -fsS -X POST http://127.0.0.1:18890/mcp \
-  -H 'Authorization: ******' \
+  -H 'Authorization: Bearer central-dev-token' \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -H "mcp-session-id: $SID" \
@@ -144,7 +144,7 @@ not in the central's namespace.
 ```bash
 # Detach
 curl -fsS -X POST http://127.0.0.1:18890/mcp \
-  -H 'Authorization: ******' \
+  -H 'Authorization: Bearer central-dev-token' \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -H "mcp-session-id: $SID" \
@@ -152,7 +152,7 @@ curl -fsS -X POST http://127.0.0.1:18890/mcp \
 
 # Re-call inspect_process with the stale handle — must return IsError=true
 curl -fsS -X POST http://127.0.0.1:18890/mcp \
-  -H 'Authorization: ******' \
+  -H 'Authorization: Bearer central-dev-token' \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -H "mcp-session-id: $SID" \
