@@ -142,6 +142,9 @@ internal sealed class SsrfSafeExternalMcpTransportManager : IInvestigationTransp
             ConnectTimeout = TimeSpan.FromSeconds(profile.ConnectTimeoutSeconds),
             // Pool lifetime: external endpoints are stable; 5-minute reuse is safe.
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            // Bound concurrent outstanding connections to this endpoint per issue #710's
+            // "bounded ... concurrency" requirement.
+            MaxConnectionsPerServer = profile.MaxConcurrency,
             ConnectCallback = (ctx, ct) => ConnectAsync(ctx, allowedCidrs, allowedPorts, ct),
         };
 
@@ -395,6 +398,13 @@ internal sealed class SsrfSafeExternalMcpTransportManager : IInvestigationTransp
                 throw new InvalidOperationException(
                     $"Orchestrator:ExternalMcpProfiles['{name}'].AllowedPorts is empty. " +
                     "At least one allowed port must be specified.");
+            }
+
+            if (profile.MaxConcurrency < 1)
+            {
+                throw new InvalidOperationException(
+                    $"Orchestrator:ExternalMcpProfiles['{name}'].MaxConcurrency is {profile.MaxConcurrency}. " +
+                    "MaxConcurrency must be at least 1.");
             }
 
             foreach (var portValue in profile.AllowedPorts)
