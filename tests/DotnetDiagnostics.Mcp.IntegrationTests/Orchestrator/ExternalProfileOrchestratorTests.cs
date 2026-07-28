@@ -120,6 +120,32 @@ public sealed class ExternalProfileOrchestratorTests
         handle.ExternalMcp!.ProfileName.Should().Be("prod-api");
         // BearerToken must NOT be accessible on the handle's ExternalMcp.Url (stored separately)
         handle.ExternalMcp.Url.Should().NotBeNull();
+        // issue #711: Active must only follow a real MCP initialize handshake, not just
+        // HttpClient construction.
+        fx.Proxy.EnsureInitializedCalled.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task AttachAsync_McpInitializeFails_MarksHandleFailedAndDisposesTransport()
+    {
+        var fx = new OrchestratorFixture(initThrows: true);
+        var sut = fx.CreateAttachOrchestrator();
+        var request = new ExternalProfileAttachRequest(
+            ProfileName: "prod-api",
+            TtlSeconds: null,
+            AllowReuseExistingSession: true,
+            OwnerBearerName: "caller",
+            OwnerPrincipalKey: "caller-key");
+
+        var ex = await sut.Invoking(o => o.AttachAsync(request, CancellationToken.None))
+            .Should().ThrowAsync<OrchestratorException>();
+        ex.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.ExternalMcpConnectFailed);
+
+        var handles = fx.Store.Snapshot();
+        handles.Should().ContainSingle()
+            .Which.State.Should().Be(InvestigationState.Failed);
+        fx.Proxy.EnsureInitializedCalled.Should().BeTrue();
+        fx.Proxy.DisposeForHandleCalled.Should().BeTrue();
     }
 
     [Fact]
@@ -485,18 +511,24 @@ public sealed class ExternalProfileOrchestratorTests
     private sealed class OrchestratorFixture
     {
         private readonly bool _transportThrows;
+        private readonly bool _initThrows;
 
-        public OrchestratorFixture(bool transportThrows = false)
+        public OrchestratorFixture(bool transportThrows = false, bool initThrows = false)
         {
             _transportThrows = transportThrows;
+            _initThrows = initThrows;
         }
 
         public MemoryInvestigationStore Store { get; } = new();
+        public StubProxyClient Proxy { get; private set; } = new();
 
         private OrchestratorOptions Options { get; } = OptionsWithProfile();
 
-        public ExternalProfileAttachOrchestrator CreateAttachOrchestrator() =>
-            new(Store, new StubTransportManager(_transportThrows), Options, NullLogger<ExternalProfileAttachOrchestrator>.Instance);
+        public ExternalProfileAttachOrchestrator CreateAttachOrchestrator()
+        {
+            Proxy = new StubProxyClient(_initThrows);
+            return new(Store, new StubTransportManager(_transportThrows), Proxy, Options, NullLogger<ExternalProfileAttachOrchestrator>.Instance);
+        }
 
         private static OrchestratorOptions OptionsWithProfile() =>
             ExternalProfileOrchestratorTests.OptionsWithProfile();
@@ -526,6 +558,7 @@ public sealed class ExternalProfileOrchestratorTests
             ExternalOrchestrator = new ExternalProfileAttachOrchestrator(
                 Store,
                 new StubTransportManager(transportThrows),
+                new StubProxyClient(),
                 Options,
                 NullLogger<ExternalProfileAttachOrchestrator>.Instance);
         }
@@ -561,7 +594,45 @@ public sealed class ExternalProfileOrchestratorTests
     {
         public Task<ModelContextProtocol.Protocol.CallToolResult> CallToolAsync(InvestigationHandle handle, ModelContextProtocol.Protocol.CallToolRequestParams request, CancellationToken cancellationToken)
             => Task.FromResult(new ModelContextProtocol.Protocol.CallToolResult());
+        public Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task DisposeForHandleAsync(string handleId) => Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Stub proxy client used to unit-test <see cref="ExternalProfileAttachOrchestrator"/>
+    /// without a real MCP transport. Tracks whether <see cref="EnsureInitializedAsync"/>
+    /// and <see cref="DisposeForHandleAsync"/> were invoked so tests can assert the
+    /// attach orchestrator actually performs (and cleans up after) the handshake.
+    /// </summary>
+    private sealed class StubProxyClient : IInvestigationProxyClient
+    {
+        private readonly bool _initThrows;
+
+        public StubProxyClient(bool initThrows = false) { _initThrows = initThrows; }
+
+        public bool EnsureInitializedCalled { get; private set; }
+        public bool DisposeForHandleCalled { get; private set; }
+
+        public Task<ModelContextProtocol.Protocol.CallToolResult> CallToolAsync(InvestigationHandle handle, ModelContextProtocol.Protocol.CallToolRequestParams request, CancellationToken cancellationToken)
+            => Task.FromResult(new ModelContextProtocol.Protocol.CallToolResult());
+
+        public Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken)
+        {
+            EnsureInitializedCalled = true;
+            if (_initThrows)
+            {
+                throw new OrchestratorException(
+                    OrchestratorErrorKinds.ExternalMcpConnectFailed,
+                    "Stub proxy failed the MCP initialize handshake.");
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task DisposeForHandleAsync(string handleId)
+        {
+            DisposeForHandleCalled = true;
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class NoopPortForward : IPortForwardManager

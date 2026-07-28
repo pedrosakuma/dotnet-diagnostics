@@ -881,6 +881,8 @@ public class KubernetesPodAttachOrchestratorTests
         public Task<ModelContextProtocol.Protocol.CallToolResult> CallToolAsync(InvestigationHandle handle, ModelContextProtocol.Protocol.CallToolRequestParams request, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
+        public Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken) => Task.CompletedTask;
+
         public Task DisposeForHandleAsync(string handleId) => Task.CompletedTask;
     }
 

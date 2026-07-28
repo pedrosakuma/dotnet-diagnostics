@@ -454,6 +454,7 @@ public sealed class OrchestratorToolsP4Tests
     {
         public Task<CallToolResult> CallToolAsync(InvestigationHandle handle, CallToolRequestParams request, CancellationToken cancellationToken)
             => Task.FromResult(new CallToolResult());
+        public Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task DisposeForHandleAsync(string handleId) => Task.CompletedTask;
     }
 

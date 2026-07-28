@@ -18,6 +18,7 @@ internal sealed class ExternalProfileAttachOrchestrator : IExternalProfileAttach
 {
     private readonly IInvestigationStore _store;
     private readonly IInvestigationTransportManager _transportManager;
+    private readonly IInvestigationProxyClient _proxyClient;
     private readonly OrchestratorOptions _options;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<ExternalProfileAttachOrchestrator> _logger;
@@ -25,21 +26,24 @@ internal sealed class ExternalProfileAttachOrchestrator : IExternalProfileAttach
     public ExternalProfileAttachOrchestrator(
         IInvestigationStore store,
         IInvestigationTransportManager transportManager,
+        IInvestigationProxyClient proxyClient,
         OrchestratorOptions options,
         ILogger<ExternalProfileAttachOrchestrator> logger)
-        : this(store, transportManager, options, TimeProvider.System, logger)
+        : this(store, transportManager, proxyClient, options, TimeProvider.System, logger)
     {
     }
 
     internal ExternalProfileAttachOrchestrator(
         IInvestigationStore store,
         IInvestigationTransportManager transportManager,
+        IInvestigationProxyClient proxyClient,
         OrchestratorOptions options,
         TimeProvider timeProvider,
         ILogger<ExternalProfileAttachOrchestrator> logger)
     {
         _store = store;
         _transportManager = transportManager;
+        _proxyClient = proxyClient;
         _options = options;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -101,12 +105,18 @@ internal sealed class ExternalProfileAttachOrchestrator : IExternalProfileAttach
             return existing!;
         }
 
-        // Attempt to initialize the transport. This validates that the profile is
-        // reachable (SSRF check) and builds the HTTP client. The handle transitions to
-        // Active only if this succeeds — any failure marks it Failed.
+        // Attempt to initialize the transport. This builds the SSRF-safe HTTP client
+        // (DNS/CIDR validation happens lazily on first connect, inside the transport's
+        // ConnectCallback). The handle transitions to Active only after that connect
+        // AND a real MCP `initialize` handshake both succeed — any failure marks it
+        // Failed and tears down the half-built transport so a retry starts clean.
         try
         {
             await _transportManager.GetOrCreateClientAsync(handle, cancellationToken).ConfigureAwait(false);
+            // issue #711: prove the endpoint is reachable and actually speaks MCP
+            // before advancing the handle to Active — building the HttpClient above
+            // performs no I/O by itself.
+            await _proxyClient.EnsureInitializedAsync(handle, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -135,14 +145,17 @@ internal sealed class ExternalProfileAttachOrchestrator : IExternalProfileAttach
         return active;
     }
 
-    private Task MarkFailedAsync(InvestigationHandle handle, string reason)
+    private async Task MarkFailedAsync(InvestigationHandle handle, string reason)
     {
         _store.TryTransitionToTerminal(
             handle.HandleId,
             InvestigationState.Failed,
             reason,
             out _);
-        return Task.CompletedTask;
+        // Tear down any half-built transport/MCP client so a subsequent attach for the
+        // same profile does not resume from a transport that never completed handshake.
+        await _proxyClient.DisposeForHandleAsync(handle.HandleId).ConfigureAwait(false);
+        await _transportManager.CloseAsync(handle.HandleId).ConfigureAwait(false);
     }
 
     private static string RandomHex(int byteCount)
