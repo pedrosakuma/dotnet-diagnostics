@@ -9,7 +9,7 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// via a single lock — handle counts are bounded by orchestrator concurrency in
 /// practice, so contention isn't a concern.
 /// </summary>
-internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestigationStoreActivation, IInvestigationStoreLeaseTouch
+internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestigationStoreActivation, IInvestigationStoreLeaseTouch, IInvestigationStoreExpiry
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, InvestigationHandle> _byId = new(StringComparer.Ordinal);
@@ -120,6 +120,43 @@ internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestiga
             };
             _byId[handleId] = updated;
             return InvestigationLeaseTouchResult.Touched;
+        }
+    }
+
+    public InvestigationExpiryTransition TryTransitionToExpiredIfStillExpired(
+        string handleId,
+        DateTimeOffset now,
+        string failureReason,
+        out InvestigationHandle? updated,
+        out InvestigationState? previousState)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(handleId);
+        ArgumentNullException.ThrowIfNull(failureReason);
+
+        lock (_gate)
+        {
+            previousState = null;
+            if (!_byId.TryGetValue(handleId, out var current))
+            {
+                updated = null;
+                return InvestigationExpiryTransition.NotFound;
+            }
+
+            previousState = current.State;
+            if (current.State is not (InvestigationState.Active or InvestigationState.Attaching)
+                || !InvestigationLeasePolicy.IsExpired(current, now))
+            {
+                updated = current;
+                return InvestigationExpiryTransition.Skipped;
+            }
+
+            updated = current with
+            {
+                State = InvestigationState.Expired,
+                FailureReason = failureReason,
+            };
+            _byId[handleId] = updated;
+            return InvestigationExpiryTransition.Transitioned;
         }
     }
 

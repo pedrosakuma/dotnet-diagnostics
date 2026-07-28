@@ -33,6 +33,7 @@ namespace DotnetDiagnostics.Mcp.Hosting;
 public sealed class InvestigationHandleReaperBackgroundService : BackgroundService
 {
     private readonly IInvestigationStore _store;
+    private readonly IInvestigationStoreExpiry _expiringStore;
     private readonly InvestigationCloser _closer;
     private readonly OrchestratorObservability _observability;
     private readonly ILogger<InvestigationHandleReaperBackgroundService> _logger;
@@ -46,6 +47,10 @@ public sealed class InvestigationHandleReaperBackgroundService : BackgroundServi
         TimeSpan? interval = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
+        _expiringStore = store as IInvestigationStoreExpiry
+            ?? throw new ArgumentException(
+                $"{nameof(InvestigationHandleReaperBackgroundService)} requires a store that implements {nameof(IInvestigationStoreExpiry)}.",
+                nameof(store));
         _closer = closer ?? throw new ArgumentNullException(nameof(closer));
         _observability = observability ?? throw new ArgumentNullException(nameof(observability));
         _logger = logger ?? NullLogger<InvestigationHandleReaperBackgroundService>.Instance;
@@ -81,13 +86,25 @@ public sealed class InvestigationHandleReaperBackgroundService : BackgroundServi
             if (!IsReapable(handle.State)) continue;
             if (!InvestigationLeasePolicy.IsExpired(handle, now)) continue;
 
+            var failureReason = InvestigationLeasePolicy.BuildExpirationReason(handle, now);
+            var transition = _expiringStore.TryTransitionToExpiredIfStillExpired(
+                handle.HandleId,
+                now,
+                failureReason,
+                out var expiredHandle,
+                out _);
+            if (transition != InvestigationExpiryTransition.Transitioned)
+            {
+                continue;
+            }
+
             var outcome = await _closer.CloseAsync(
                 handle.HandleId,
                 InvestigationState.Expired,
-                failureReason: InvestigationLeasePolicy.BuildExpirationReason(handle, now))
+                failureReason: failureReason)
                 .ConfigureAwait(false);
 
-            if (outcome.Found && !outcome.AlreadyTerminal)
+            if (outcome.Found)
             {
                 reaped++;
                 _observability.RecordReaperEviction("ttl");
@@ -98,7 +115,7 @@ public sealed class InvestigationHandleReaperBackgroundService : BackgroundServi
                 _observability.RecordDetach(principal: null, handle.HandleId, "ttl", "success");
                 _logger.LogInformation(
                     "Expired investigation {HandleId} ({Target}); unbound {SessionCount} session(s).",
-                    handle.HandleId, handle.TargetDisplayName,
+                    handle.HandleId, expiredHandle?.TargetDisplayName ?? handle.TargetDisplayName,
                     outcome.UnboundSessionIds.Count);
             }
         }

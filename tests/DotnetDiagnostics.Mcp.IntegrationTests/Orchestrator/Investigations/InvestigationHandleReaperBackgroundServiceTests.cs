@@ -128,6 +128,34 @@ public sealed class InvestigationHandleReaperBackgroundServiceTests
     }
 
     [Fact]
+    public async Task ReapExpiredAsync_TouchRace_DoesNotExpireRefreshedHandle()
+    {
+        var attachedAt = new DateTimeOffset(2026, 7, 28, 12, 0, 0, TimeSpan.Zero);
+        var staleSnapshot = Handle(
+            "touch-race",
+            InvestigationState.Active,
+            attachedAt,
+            attachedAt.AddMinutes(1),
+            attachedAt.AddMinutes(30),
+            attachedAt.AddHours(8));
+        var current = staleSnapshot with
+        {
+            Lease = InvestigationLeasePolicy.RecordSuccessfulUse(staleSnapshot.Lease, attachedAt.AddMinutes(29)),
+        };
+        var store = new TouchBeforeExpireStore(staleSnapshot, current);
+        var fx = new Fixture(store);
+        var now = attachedAt.AddMinutes(31);
+
+        var reaped = await fx.Reaper.ReapExpiredAsync(now);
+
+        reaped.Should().Be(0);
+        store.GetById("touch-race")!.State.Should().Be(InvestigationState.Active);
+        store.GetById("touch-race")!.LastSuccessfulUseAt.Should().Be(attachedAt.AddMinutes(29));
+        fx.Proxy.DisposeCalls.Should().BeEmpty();
+        fx.PortForward.CloseCalls.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task ReapExpiredAsync_EmptyStore_IsNoOp()
     {
         var fx = new Fixture();
@@ -137,14 +165,15 @@ public sealed class InvestigationHandleReaperBackgroundServiceTests
 
     private sealed class Fixture
     {
-        public MemoryInvestigationStore Store { get; } = new();
+        public IInvestigationStore Store { get; }
         public CountingProxy Proxy { get; } = new();
         public CountingPortForward PortForward { get; } = new();
         public MemoryInvestigationSessionBinder Binder { get; } = new();
         public InvestigationHandleReaperBackgroundService Reaper { get; }
 
-        public Fixture()
+        public Fixture(IInvestigationStore? store = null)
         {
+            Store = store ?? new MemoryInvestigationStore();
             var services = new ServiceCollection();
             services.AddMetrics();
             var provider = services.BuildServiceProvider();
@@ -172,5 +201,67 @@ public sealed class InvestigationHandleReaperBackgroundServiceTests
         public Task<System.Net.Http.HttpClient> GetOrCreateClientAsync(InvestigationHandle handle, CancellationToken cancellationToken)
             => throw new NotSupportedException();
         public Task CloseAsync(string handleId) { CloseCalls.Add(handleId); return Task.CompletedTask; }
+    }
+
+    private sealed class TouchBeforeExpireStore : IInvestigationStore, IInvestigationStoreExpiry
+    {
+        private readonly InvestigationHandle _snapshotHandle;
+        private InvestigationHandle _currentHandle;
+        private bool _touched;
+
+        public TouchBeforeExpireStore(InvestigationHandle snapshotHandle, InvestigationHandle currentHandle)
+        {
+            _snapshotHandle = snapshotHandle;
+            _currentHandle = currentHandle;
+        }
+
+        public void Add(InvestigationHandle handle) => throw new NotSupportedException();
+
+        public bool TryReserveTarget(InvestigationHandle newHandle, bool allowReuse, out InvestigationHandle? existing)
+            => throw new NotSupportedException();
+
+        public void Update(InvestigationHandle handle) => _currentHandle = handle;
+
+        public InvestigationTerminalTransition TryTransitionToTerminal(
+            string handleId,
+            InvestigationState targetState,
+            string? failureReason,
+            out InvestigationState? previousState) => throw new NotSupportedException();
+
+        public InvestigationHandle? GetById(string handleId)
+            => string.Equals(handleId, _currentHandle.HandleId, StringComparison.Ordinal) ? _currentHandle : null;
+
+        public InvestigationHandle? FindReusableTarget(string reservationKey) => null;
+
+        public InvestigationHandle? FindTerminalHandleByEphemeralName(
+            string podNamespace,
+            string podName,
+            string ephemeralContainerName) => null;
+
+        public IReadOnlyCollection<InvestigationHandle> Snapshot() => [_snapshotHandle];
+
+        public InvestigationExpiryTransition TryTransitionToExpiredIfStillExpired(
+            string handleId,
+            DateTimeOffset now,
+            string failureReason,
+            out InvestigationHandle? updated,
+            out InvestigationState? previousState)
+        {
+            if (!_touched)
+            {
+                _touched = true;
+                updated = _currentHandle;
+                previousState = _currentHandle.State;
+                return InvestigationLeasePolicy.IsExpired(_currentHandle, now)
+                    ? InvestigationExpiryTransition.Transitioned
+                    : InvestigationExpiryTransition.Skipped;
+            }
+
+            updated = _currentHandle;
+            previousState = _currentHandle.State;
+            return InvestigationLeasePolicy.IsExpired(_currentHandle, now)
+                ? InvestigationExpiryTransition.Transitioned
+                : InvestigationExpiryTransition.Skipped;
+        }
     }
 }

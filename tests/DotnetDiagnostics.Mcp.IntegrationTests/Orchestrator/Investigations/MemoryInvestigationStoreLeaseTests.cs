@@ -64,4 +64,41 @@ public sealed class MemoryInvestigationStoreLeaseTests
         updated.LastSuccessfulUseAt.Should().BeNull();
         updated.IdleExpiresAt.Should().Be(handle.IdleExpiresAt);
     }
+
+    [Fact]
+    public void TryTransitionToExpiredIfStillExpired_RechecksCurrentLeaseBeforeTransitioning()
+    {
+        var store = new MemoryInvestigationStore();
+        var attachedAt = new DateTimeOffset(2026, 7, 28, 12, 0, 0, TimeSpan.Zero);
+        var handle = new InvestigationHandle(
+            HandleId: "inv-reaper-race",
+            Kubernetes: new KubernetesInvestigationTarget("ns", "pod", "api", "diag", "pod-bearer"),
+            State: InvestigationState.Active,
+            AttachedAt: attachedAt,
+            Lease: InvestigationLeasePolicy.Create(
+                attachedAt,
+                TimeSpan.FromMinutes(1),
+                TimeSpan.FromMinutes(30),
+                TimeSpan.FromHours(8)),
+            InternalScopeDelegationKey: "delegation");
+        store.Add(handle);
+
+        var now = attachedAt.AddMinutes(31);
+        store.TryTouchSuccessfulCall(handle.HandleId, attachedAt.AddMinutes(29), out var touched)
+            .Should().Be(InvestigationLeaseTouchResult.Touched);
+
+        var result = store.TryTransitionToExpiredIfStillExpired(
+            handle.HandleId,
+            now,
+            "idle expired",
+            out var updated,
+            out var previousState);
+
+        result.Should().Be(InvestigationExpiryTransition.Skipped);
+        previousState.Should().Be(InvestigationState.Active);
+        updated.Should().NotBeNull();
+        updated!.State.Should().Be(InvestigationState.Active);
+        updated.LastSuccessfulUseAt.Should().Be(attachedAt.AddMinutes(29));
+        updated.IdleExpiresAt.Should().Be(attachedAt.AddMinutes(59));
+    }
 }
