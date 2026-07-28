@@ -108,7 +108,7 @@ public sealed class DockerExternalInvestigationTests
 
         var externalProfiles = profilesEnvelope.Data
             .GetProperty("externalProfiles")
-            .GetProperty("profiles");
+            .GetProperty("items");
         externalProfiles.GetArrayLength().Should().BeGreaterThan(0,
             "at least the 'sidecar' profile must be configured");
         var profileNames = new List<string>();
