@@ -11,7 +11,9 @@ public sealed class InvestigationStoreCompatibilityTests
         IInvestigationStore store = new LegacyInvestigationStore();
 
         store.Should().NotBeAssignableTo<IInvestigationStoreActivation>();
+        store.Should().NotBeAssignableTo<IInvestigationStoreLeaseTouch>();
         typeof(IInvestigationStore).GetMethod("TryTransitionToActive").Should().BeNull();
+        typeof(IInvestigationStore).GetMethod("TryTouchSuccessfulCall").Should().BeNull();
     }
 
     private sealed class LegacyInvestigationStore : IInvestigationStore

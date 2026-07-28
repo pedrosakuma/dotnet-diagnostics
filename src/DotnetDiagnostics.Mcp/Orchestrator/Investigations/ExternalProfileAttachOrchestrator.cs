@@ -70,6 +70,11 @@ internal sealed class ExternalProfileAttachOrchestrator : IExternalProfileAttach
 
         var now = _timeProvider.GetUtcNow();
         var ttl = TimeSpan.FromSeconds(request.TtlSeconds ?? _options.DefaultInvestigationTtlSeconds);
+        var lease = InvestigationLeasePolicy.Create(
+            now,
+            TimeSpan.FromSeconds(_options.AttachReadinessTimeoutSeconds),
+            ttl,
+            TimeSpan.FromSeconds(_options.DefaultInvestigationAbsoluteTtlSeconds));
         var handleId = "inv_" + RandomHex(16);
         var reservationKey = $"external:{request.ProfileName}";
 
@@ -90,7 +95,7 @@ internal sealed class ExternalProfileAttachOrchestrator : IExternalProfileAttach
             Kubernetes: null,
             State: InvestigationState.Attaching,
             AttachedAt: now,
-            ExpiresAt: now + ttl,
+            Lease: lease,
             OwnerBearerName: request.OwnerBearerName,
             OwnerPrincipalKey: request.OwnerPrincipalKey,
             InternalScopeDelegationKey: delegationKey,

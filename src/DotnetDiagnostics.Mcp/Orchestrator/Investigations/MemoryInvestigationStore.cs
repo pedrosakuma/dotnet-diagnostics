@@ -9,7 +9,7 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// via a single lock — handle counts are bounded by orchestrator concurrency in
 /// practice, so contention isn't a concern.
 /// </summary>
-internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestigationStoreActivation
+internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestigationStoreActivation, IInvestigationStoreLeaseTouch
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, InvestigationHandle> _byId = new(StringComparer.Ordinal);
@@ -92,6 +92,34 @@ internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestiga
         lock (_gate)
         {
             return _byId.TryGetValue(handleId, out var h) ? h : null;
+        }
+    }
+
+    public InvestigationLeaseTouchResult TryTouchSuccessfulCall(
+        string handleId,
+        DateTimeOffset successfulCallCompletedAt,
+        out InvestigationHandle? updated)
+    {
+        lock (_gate)
+        {
+            if (!_byId.TryGetValue(handleId, out var current))
+            {
+                updated = null;
+                return InvestigationLeaseTouchResult.NotFound;
+            }
+
+            if (current.State != InvestigationState.Active || current.ExpiresAt <= successfulCallCompletedAt)
+            {
+                updated = current;
+                return InvestigationLeaseTouchResult.Skipped;
+            }
+
+            updated = current with
+            {
+                Lease = InvestigationLeasePolicy.RecordSuccessfulUse(current.Lease, successfulCallCompletedAt),
+            };
+            _byId[handleId] = updated;
+            return InvestigationLeaseTouchResult.Touched;
         }
     }
 

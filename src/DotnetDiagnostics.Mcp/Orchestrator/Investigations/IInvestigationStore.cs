@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
@@ -84,6 +85,18 @@ public interface IInvestigationStoreActivation
 }
 
 /// <summary>
+/// Optional atomic lease-touch capability. Kept separate so existing
+/// <see cref="IInvestigationStore"/> implementations remain binary-compatible.
+/// </summary>
+public interface IInvestigationStoreLeaseTouch
+{
+    InvestigationLeaseTouchResult TryTouchSuccessfulCall(
+        string handleId,
+        DateTimeOffset successfulCallCompletedAt,
+        out InvestigationHandle? updated);
+}
+
+/// <summary>
 /// Result of <see cref="IInvestigationStore.TryTransitionToTerminal"/>.
 /// </summary>
 public enum InvestigationTerminalTransition
@@ -96,4 +109,23 @@ public enum InvestigationTerminalTransition
 
     /// <summary>The handle existed but was already terminal — no state change applied.</summary>
     AlreadyTerminal,
+}
+
+/// <summary>
+/// Result of <see cref="IInvestigationStoreLeaseTouch.TryTouchSuccessfulCall"/>.
+/// </summary>
+public enum InvestigationLeaseTouchResult
+{
+    /// <summary>The handle id is not (or no longer) registered.</summary>
+    NotFound,
+
+    /// <summary>The active handle was atomically touched and its idle lease was refreshed.</summary>
+    Touched,
+
+    /// <summary>
+    /// The handle existed but was not touchable at commit time (for example it had
+    /// already become Attaching/Closed/Expired/Failed, or its effective lease had
+    /// already elapsed).
+    /// </summary>
+    Skipped,
 }

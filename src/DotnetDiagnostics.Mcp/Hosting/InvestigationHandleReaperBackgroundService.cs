@@ -13,7 +13,7 @@ namespace DotnetDiagnostics.Mcp.Hosting;
 /// <summary>
 /// TTL reaper for investigation handles produced by <c>attach_to_pod</c>. Periodically
 /// scans <see cref="IInvestigationStore.Snapshot"/> and routes every non-terminal handle
-/// whose <see cref="InvestigationHandle.ExpiresAt"/> is in the past through the shared
+/// whose current lease deadline is in the past through the shared
 /// <see cref="InvestigationCloser"/>, transitioning it to <see cref="InvestigationState.Expired"/>.
 /// </summary>
 /// <remarks>
@@ -70,7 +70,7 @@ public sealed class InvestigationHandleReaperBackgroundService : BackgroundServi
 
     /// <summary>
     /// Visible for tests: walks the store snapshot and closes every non-terminal handle
-    /// whose ExpiresAt is at or before <paramref name="now"/>. Returns the number of
+    /// whose current lease deadline is at or before <paramref name="now"/>. Returns the number of
     /// handles transitioned to <see cref="InvestigationState.Expired"/> on this sweep.
     /// </summary>
     public async Task<int> ReapExpiredAsync(DateTimeOffset now)
@@ -79,12 +79,12 @@ public sealed class InvestigationHandleReaperBackgroundService : BackgroundServi
         foreach (var handle in _store.Snapshot())
         {
             if (!IsReapable(handle.State)) continue;
-            if (handle.ExpiresAt > now) continue;
+            if (!InvestigationLeasePolicy.IsExpired(handle, now)) continue;
 
             var outcome = await _closer.CloseAsync(
                 handle.HandleId,
                 InvestigationState.Expired,
-                failureReason: $"TTL expired at {handle.ExpiresAt:O} (reaper observed at {now:O}).")
+                failureReason: InvestigationLeasePolicy.BuildExpirationReason(handle, now))
                 .ConfigureAwait(false);
 
             if (outcome.Found && !outcome.AlreadyTerminal)

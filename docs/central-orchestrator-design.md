@@ -385,7 +385,7 @@ The handle is owned by the orchestrator and maps in memory to:
 - per-attach Pod-local bearer token,
 - active port-forward or stream state,
 - session status,
-- TTL metadata,
+- TTL metadata (`attachDeadline`, `lastSuccessfulUseAt`, `idleExpiresAt`, `absoluteExpiresAt`),
 - last-used timestamp,
 - and minimal audit fields.
 ### 5.2 Recommended TTL policy
@@ -396,6 +396,14 @@ Phase 1 should keep TTL simple and explicit:
 - minimum allowed TTL request: **5 minutes**,
 - maximum allowed TTL request from caller: clamp to policy.
 That is long enough for a real investigation, short enough to avoid forgotten sessions, and prevents one attach from silently becoming a shadow sidecar.
+
+Implementation note: store the lease as separate timestamps, not one collapsed expiry. At minimum each handle should retain:
+- `attachDeadline` — readiness/activation deadline while state=`attaching`,
+- `lastSuccessfulUseAt` — nullable until the first successful proxied tool call,
+- `idleExpiresAt` — refreshed only after successful proxied calls,
+- `absoluteExpiresAt` — hard cap that no touch may extend past.
+
+The effective user-visible expiry can still be projected as `min(idleExpiresAt, absoluteExpiresAt)`, but the internal state needs all four values so the reaper, list/debug surfaces, and race-safe touch logic can reason about them independently.
 ### 5.3 State machine
 ```text
 attaching -> active -> closed
@@ -433,7 +441,8 @@ This avoids injecting multiple diagnostic ephemeral containers into one Pod when
 ### 5.6 Reaper behavior
 A background reaper should run inside the orchestrator at a small interval, for example every 60 seconds.
 For each session:
-- if state is `active` and idle TTL has elapsed, close it and mark `expired`;
+- if state is `active` and either idle TTL or absolute TTL has elapsed, close it and mark `expired`;
+- if state is `attaching` and `attachDeadline` has elapsed, close it and mark `expired`;
 - if the target Pod no longer exists, mark `closed` with warning `PodGone`;
 - if the proxy dies permanently, mark `closed` or `failed` depending on whether the session had ever become active.
 The reaper does **not** try to clean the target Pod's ephemeral container. That is impossible without deleting or recreating the Pod.

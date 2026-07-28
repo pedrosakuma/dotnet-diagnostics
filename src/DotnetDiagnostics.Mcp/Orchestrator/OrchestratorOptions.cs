@@ -113,11 +113,17 @@ public sealed class OrchestratorOptions
     public int AttachReadinessTimeoutSeconds { get; set; } = 60;
 
     /// <summary>
-    /// Default investigation TTL (seconds) when the caller omits <c>ttlSeconds</c>.
+    /// Default investigation idle TTL (seconds) when the caller omits <c>ttlSeconds</c>.
     /// Tracked on the <see cref="Investigations.InvestigationHandle"/> so the reaper
-    /// (P4) can close idle sessions. Default: 1800 (30 minutes).
+    /// can close idle sessions. Default: 1800 (30 minutes).
     /// </summary>
     public int DefaultInvestigationTtlSeconds { get; set; } = 1800;
+
+    /// <summary>
+    /// Absolute wall-clock cap (seconds) for any investigation handle, regardless of
+    /// successful-use lease refreshes. Default: 28800 (8 hours).
+    /// </summary>
+    public int DefaultInvestigationAbsoluteTtlSeconds { get; set; } = 8 * 60 * 60;
 
     /// <summary>
     /// TCP port the ephemeral diagnostics container listens on inside the target Pod.

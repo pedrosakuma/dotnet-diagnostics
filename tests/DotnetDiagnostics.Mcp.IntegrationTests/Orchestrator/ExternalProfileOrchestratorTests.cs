@@ -120,6 +120,10 @@ public sealed class ExternalProfileOrchestratorTests
         handle.ExternalMcp!.ProfileName.Should().Be("prod-api");
         // BearerToken must NOT be accessible on the handle's ExternalMcp.Url (stored separately)
         handle.ExternalMcp.Url.Should().NotBeNull();
+        handle.LastSuccessfulUseAt.Should().BeNull();
+        handle.AttachDeadline.Should().Be(handle.AttachedAt.AddSeconds(60));
+        handle.IdleExpiresAt.Should().Be(handle.AttachedAt.AddSeconds(600));
+        handle.AbsoluteExpiresAt.Should().Be(handle.AttachedAt.AddHours(8));
         // issue #711: Active must only follow a real MCP initialize handshake, not just
         // HttpClient construction.
         fx.Proxy.EnsureInitializedCalled.Should().BeTrue();

@@ -18,22 +18,35 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests.Orchestrator.Investigations;
 /// </summary>
 public sealed class InvestigationHandleReaperBackgroundServiceTests
 {
-    private static InvestigationHandle Handle(string id, InvestigationState state, DateTimeOffset expiresAt) => new(
+    private static InvestigationHandle Handle(
+        string id,
+        InvestigationState state,
+        DateTimeOffset attachedAt,
+        DateTimeOffset attachDeadline,
+        DateTimeOffset idleExpiresAt,
+        DateTimeOffset absoluteExpiresAt,
+        DateTimeOffset? lastSuccessfulUseAt = null) => new(
             HandleId: id,
             Kubernetes: new KubernetesInvestigationTarget("ns", "pod", "api", "diag", "secret"),
             State: state,
-        AttachedAt: DateTimeOffset.UtcNow.AddMinutes(-10),
-        ExpiresAt: expiresAt);
+            AttachedAt: attachedAt,
+            Lease: new InvestigationLease(
+                IdleTtl: idleExpiresAt > attachedAt ? idleExpiresAt - attachedAt : TimeSpan.Zero,
+                AttachDeadline: attachDeadline,
+                LastSuccessfulUseAt: lastSuccessfulUseAt,
+                IdleExpiresAt: idleExpiresAt,
+                AbsoluteExpiresAt: absoluteExpiresAt));
 
     [Fact]
     public async Task ReapExpiredAsync_TransitionsActiveHandlesPastTtl_ToExpired()
     {
         var fx = new Fixture();
         var now = DateTimeOffset.UtcNow;
-        fx.Store.Add(Handle("expired", InvestigationState.Active, now.AddSeconds(-1)));
-        fx.Store.Add(Handle("fresh", InvestigationState.Active, now.AddMinutes(5)));
-        fx.Store.Add(Handle("stuck-attach", InvestigationState.Attaching, now.AddSeconds(-30)));
-        fx.Store.Add(Handle("already-closed", InvestigationState.Closed, now.AddSeconds(-1)));
+        var attachedAt = now.AddMinutes(-10);
+        fx.Store.Add(Handle("expired", InvestigationState.Active, attachedAt, now.AddMinutes(-9), now.AddSeconds(-1), now.AddHours(6), now.AddMinutes(-1)));
+        fx.Store.Add(Handle("fresh", InvestigationState.Active, attachedAt, now.AddMinutes(-9), now.AddMinutes(5), now.AddHours(6), now.AddMinutes(-1)));
+        fx.Store.Add(Handle("stuck-attach", InvestigationState.Attaching, attachedAt, now.AddSeconds(-30), now.AddMinutes(20), now.AddHours(6)));
+        fx.Store.Add(Handle("already-closed", InvestigationState.Closed, attachedAt, now.AddMinutes(-9), now.AddSeconds(-1), now.AddHours(6)));
 
         var reaped = await fx.Reaper.ReapExpiredAsync(now);
 
@@ -52,15 +65,66 @@ public sealed class InvestigationHandleReaperBackgroundServiceTests
     {
         var fx = new Fixture();
         var now = DateTimeOffset.UtcNow;
-        var ttl = now.AddSeconds(-5);
-        fx.Store.Add(Handle("h", InvestigationState.Active, ttl));
+        var attachedAt = now.AddMinutes(-10);
+        fx.Store.Add(Handle("h", InvestigationState.Active, attachedAt, now.AddMinutes(-9), now.AddSeconds(-5), now.AddHours(6), now.AddMinutes(-2)));
 
         await fx.Reaper.ReapExpiredAsync(now);
 
         var after = fx.Store.GetById("h")!;
         after.State.Should().Be(InvestigationState.Expired);
         after.FailureReason.Should().NotBeNullOrEmpty();
-        after.FailureReason.Should().Contain("TTL expired");
+        after.FailureReason.Should().Contain("Idle lease expired");
+    }
+
+    [Fact]
+    public async Task ReapExpiredAsync_AttachingHandlesUseAttachDeadline_NotIdleExpiry()
+    {
+        var fx = new Fixture();
+        var now = DateTimeOffset.UtcNow;
+        var attachedAt = now.AddMinutes(-2);
+        fx.Store.Add(Handle(
+            "attach-past-deadline",
+            InvestigationState.Attaching,
+            attachedAt,
+            now.AddSeconds(-1),
+            now.AddMinutes(10),
+            now.AddHours(6)));
+        fx.Store.Add(Handle(
+            "attach-future-deadline",
+            InvestigationState.Attaching,
+            attachedAt,
+            now.AddMinutes(1),
+            now.AddSeconds(-1),
+            now.AddHours(6)));
+
+        var reaped = await fx.Reaper.ReapExpiredAsync(now);
+
+        reaped.Should().Be(1);
+        fx.Store.GetById("attach-past-deadline")!.State.Should().Be(InvestigationState.Expired);
+        fx.Store.GetById("attach-future-deadline")!.State.Should().Be(InvestigationState.Attaching);
+    }
+
+    [Fact]
+    public async Task ReapExpiredAsync_ActiveHandlesHonorAbsoluteExpiry()
+    {
+        var fx = new Fixture();
+        var now = DateTimeOffset.UtcNow;
+        var attachedAt = now.AddHours(-7).AddMinutes(-50);
+        fx.Store.Add(Handle(
+            "absolute-expired",
+            InvestigationState.Active,
+            attachedAt,
+            attachedAt.AddMinutes(1),
+            now.AddMinutes(20),
+            now.AddSeconds(-1),
+            now.AddMinutes(-5)));
+
+        var reaped = await fx.Reaper.ReapExpiredAsync(now);
+
+        reaped.Should().Be(1);
+        var expired = fx.Store.GetById("absolute-expired")!;
+        expired.State.Should().Be(InvestigationState.Expired);
+        expired.FailureReason.Should().Contain("Absolute lease expired");
     }
 
     [Fact]
