@@ -25,6 +25,9 @@ name: dotnet-diagnostics-ext-inv
 #   central-dev-token — presented by MCP clients to the central orchestrator
 #   sidecar-dev-token — injected by the central on every upstream call to the sidecar;
 #                       never returned to clients
+#   sidecar-dev-delegation-key — static secret verifying internal scope-delegation
+#                       tokens on tool calls the central proxies to the sidecar; must
+#                       match on both sides (see ExternalMcpProfile.DelegationKey).
 #
 # UID note: sidecar runs as root (user: "0:0") so its UID matches the target, which
 # also runs as root in the default CoreClrSample image. In Kubernetes the recommended
@@ -108,6 +111,13 @@ services:
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
       MCP_BEARER_TOKEN: sidecar-dev-token
+      # Static shared secret verifying internal scope-delegation tokens on proxied tool
+      # calls forwarded by the central orchestrator. Must match the central's
+      # Orchestrator__ExternalMcpProfiles__sidecar__DelegationKey below — see
+      # ExternalMcpProfile.DelegationKey / ToolScopeDelegation.cs for why an external
+      # profile needs a static shared value instead of the per-handle key the
+      # Kubernetes attach path injects dynamically.
+      MCP_INTERNAL_SCOPE_DELEGATION_KEY: sidecar-dev-delegation-key
       DOTNET_EnableDiagnostics: "0"
       DOTNET_NOLOGO: "1"
     volumes:
@@ -153,6 +163,7 @@ services:
       # External profile: 'sidecar' points at the sidecar service on the bridge network.
       Orchestrator__ExternalMcpProfiles__sidecar__Url: http://sidecar:8080/mcp
       Orchestrator__ExternalMcpProfiles__sidecar__BearerToken: sidecar-dev-token
+      Orchestrator__ExternalMcpProfiles__sidecar__DelegationKey: sidecar-dev-delegation-key
       Orchestrator__ExternalMcpProfiles__sidecar__AllowedCidrs__0: 192.168.200.0/24
       Orchestrator__ExternalMcpProfiles__sidecar__AllowedPorts__0: "8080"
     ports:

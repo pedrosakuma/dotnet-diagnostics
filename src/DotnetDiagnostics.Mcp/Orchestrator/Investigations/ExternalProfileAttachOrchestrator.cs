@@ -71,8 +71,19 @@ internal sealed class ExternalProfileAttachOrchestrator : IExternalProfileAttach
         var now = _timeProvider.GetUtcNow();
         var ttl = TimeSpan.FromSeconds(request.TtlSeconds ?? _options.DefaultInvestigationTtlSeconds);
         var handleId = "inv_" + RandomHex(16);
-        var delegationKey = RandomHex(32);
         var reservationKey = $"external:{request.ProfileName}";
+
+        // Unlike the Kubernetes attach path — where the orchestrator controls the target
+        // pod and can inject a freshly-generated per-handle secret into it via exec at
+        // attach time — an external MCP endpoint is a standalone, already-running server
+        // the orchestrator does not control. It can only verify a delegation token against
+        // whatever static secret its own MCP_INTERNAL_SCOPE_DELEGATION_KEY was started
+        // with, so the delegation key here must be the operator-configured, per-profile
+        // static secret (profile.DelegationKey), not a random per-handle value. If the
+        // profile has none configured, proxied tool calls through this handle will be
+        // refused (see InvestigationProxyCallToolFilter's "delegation unavailable" guard)
+        // rather than silently sent unsigned.
+        var delegationKey = string.IsNullOrEmpty(profile.DelegationKey) ? null : profile.DelegationKey;
 
         var handle = new InvestigationHandle(
             HandleId: handleId,

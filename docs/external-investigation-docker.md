@@ -49,10 +49,20 @@ The client calls `attach_to_pod(profileName="sidecar")` on the central MCP. Afte
 |---|---|---|
 | `central-dev-token` | The MCP client (LLM / human / test) | Client headers to central only |
 | `sidecar-dev-token` | The operator (configured in the central) | Central ↔ sidecar only; never returned to the client |
+| `sidecar-dev-delegation-key` | The operator (same static value on both sides) | Central ↔ sidecar only; signs the internal scope-delegation token attached to every proxied tool call |
 
-The central's `Orchestrator:ExternalMcpProfiles:sidecar:BearerToken` is marked `[JsonIgnore]`
-so the sidecar bearer is never serialised into investigation handles, log messages, or error
-responses visible to the caller.
+The central's `Orchestrator:ExternalMcpProfiles:sidecar:BearerToken` and `...:DelegationKey`
+are both marked `[JsonIgnore]` so neither is ever serialised into investigation handles, log
+messages, or error responses visible to the caller.
+
+Unlike `attach_to_pod` against a Kubernetes pod — where the orchestrator controls the target
+and can inject a freshly-generated, per-handle delegation secret into it via exec at attach
+time — an external MCP profile points at a standalone server the orchestrator does not
+control. That server can only verify a delegation token against whatever static secret its own
+`MCP_INTERNAL_SCOPE_DELEGATION_KEY` was started with, so `DelegationKey` must be configured to
+the same value on both sides. If a profile has no `DelegationKey` configured, tool calls
+proxied through a handle attached to it are refused with a “delegation unavailable” error
+rather than forwarded unsigned.
 
 ## Port assignments
 
