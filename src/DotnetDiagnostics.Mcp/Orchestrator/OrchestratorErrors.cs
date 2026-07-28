@@ -44,6 +44,17 @@ public static class OrchestratorErrorKinds
     // attach_to_pod when the caller supplies kubeconfigHandle=...
     public const string KubeconfigHandleNotFound = "KubeconfigHandleNotFound";
     public const string KubeconfigHandleExpired = "KubeconfigHandleExpired";
+
+    // issue #710 — external MCP transport errors.
+    // ExternalMcpSsrfRejected: a DNS answer, IP, port, URL shape, or redirect
+    // violated the SSRF-safe profile allowlists.
+    public const string ExternalMcpSsrfRejected = "ExternalMcpSsrfRejected";
+    // ExternalMcpConnectFailed: transport-level (TCP/TLS) failure reaching the
+    // configured external MCP endpoint after SSRF validation passed.
+    public const string ExternalMcpConnectFailed = "ExternalMcpConnectFailed";
+    // ExternalMcpProfileInvalid: a profile failed startup validation (bad URL, empty
+    // CIDRs/ports, etc.) and the server refused to start.
+    public const string ExternalMcpProfileInvalid = "ExternalMcpProfileInvalid";
 }
 
 /// <summary>

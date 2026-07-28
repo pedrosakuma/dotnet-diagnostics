@@ -22,22 +22,24 @@ public enum InvestigationState
 }
 
 /// <summary>
-/// One opaque investigation produced by <c>attach_to_pod</c>. Owned by an
-/// <c>IInvestigationStore</c>; the orchestrator hands the <see cref="HandleId"/> back to
-/// the client and looks the rest of the state up by id on every subsequent call.
+/// One opaque investigation produced by <c>attach_to_pod</c> or an external MCP
+/// registration. Owned by an <c>IInvestigationStore</c>; the orchestrator hands the
+/// <see cref="HandleId"/> back to the client and looks the rest of the state up by id on
+/// every subsequent call.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Transport-specific metadata lives in provider-typed properties (e.g. <see cref="Kubernetes"/>)
-/// rather than as flat fields on the record. This keeps the core handle, proxy endpoint, and
-/// fan-out paths transport-neutral, and allows a future <c>ExternalMcp</c> target to be
-/// represented without forking the shared proxy infrastructure.
+/// Transport-specific metadata lives in provider-typed properties (<see cref="Kubernetes"/>
+/// for Kubernetes pod-attach handles, <see cref="ExternalMcp"/> for operator-configured
+/// external endpoints) rather than as flat fields on the record. This keeps the core
+/// handle, proxy endpoint, and fan-out paths transport-neutral.
 /// </para>
 /// <para>
 /// The bearer token and independent scope-delegation key are generated per-attach and
 /// embedded into the ephemeral container's environment. The bearer token is kept in
-/// the transport-specific metadata (<see cref="KubernetesInvestigationTarget.PodLocalBearerToken"/>)
-/// and injected by the transport implementation into <see cref="System.Net.Http.HttpClient.DefaultRequestHeaders"/>
+/// the transport-specific metadata (<see cref="KubernetesInvestigationTarget.PodLocalBearerToken"/>
+/// / <see cref="ExternalMcpInvestigationTarget.BearerToken"/>) and injected by the
+/// transport implementation into <see cref="System.Net.Http.HttpClient.DefaultRequestHeaders"/>
 /// — it is never returned to the external client.
 /// This is the "per-attach Pod-local bearer token" mitigation called out in
 /// docs/central-orchestrator-design.md §6.4.
@@ -66,27 +68,36 @@ public sealed record InvestigationHandle(
     [property: JsonIgnore] string? InternalScopeDelegationKey = null,
     // Optional transport-neutral process selector resolved inside the attached Pod before
     // fan-out collectors run.
-    InvestigationProcessSelector? ProcessSelector = null)
+    InvestigationProcessSelector? ProcessSelector = null,
+    // External MCP target metadata for handles registered via an operator-configured
+    // ExternalMcpProfile. Null for Kubernetes handles.
+    ExternalMcpInvestigationTarget? ExternalMcp = null)
 {
     /// <summary>
     /// Transport-neutral display label used in logs, error messages, and observability.
-    /// For Kubernetes targets this is <c>namespace/pod/container</c>; for any target
-    /// without provider-specific metadata it falls back to <see cref="HandleId"/>.
+    /// For Kubernetes targets this is <c>namespace/pod/container</c>; for external MCP
+    /// targets this is <c>external:{profileName}</c>; otherwise falls back to
+    /// <see cref="HandleId"/>.
     /// </summary>
     public string TargetDisplayName => Kubernetes is { } k
         ? $"{k.Namespace}/{k.PodName}/{k.TargetContainerName}"
-        : HandleId;
+        : ExternalMcp is { } ext
+            ? $"external:{ext.ProfileName}"
+            : HandleId;
 
     /// <summary>
     /// Provider-specific deduplication key used by <see cref="IInvestigationStore"/> to
     /// prevent duplicate attachments to the same target. For Kubernetes this is
-    /// <c>k8s:namespace/pod/container</c>; non-Kubernetes handles return an empty string
+    /// <c>k8s:namespace/pod/container</c>; for external MCP targets this is
+    /// <c>external:{profileName}</c>; for all other handles returns an empty string
     /// (no reservation).
     /// </summary>
     [JsonIgnore]
     public string ReservationKey => Kubernetes is { } k
         ? $"k8s:{k.Namespace}/{k.PodName}/{k.TargetContainerName}"
-        : string.Empty;
+        : ExternalMcp is { } ext
+            ? $"external:{ext.ProfileName}"
+            : string.Empty;
 
     // ── Backward-compatible properties ──────────────────────────────────────────────────
     // These delegate to the Kubernetes target so existing callers that read them compile
