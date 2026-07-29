@@ -13,6 +13,15 @@ The external-investigation workflow runs **two** diagnostics-MCP instances:
 
 The client calls `attach_to_pod(profileName="sidecar")` on the central MCP. After the handle becomes Active, all subsequent diagnostic tool calls that carry the returned `investigationHandleId` are forwarded by the central to the sidecar automatically — the client never needs to know the sidecar URL or bearer token.
 
+`CoreClrSample` below is only this repo's own sample target used to prove the
+flow end to end. The topology and every tool call are identical for **any
+containerized .NET app** — substitute your own target container and image
+wherever `CoreClrSample`/`coreclr-sample:dev` appears. The fastest way to stand
+up the sidecar side for an already-running target container of yours is
+`dotnet-diagnostics-cli docker-bootstrap` (see
+[`cli-reference.md`](./cli-reference.md#docker-bootstrap)); the manual Compose
+recipe below remains the reference for understanding every moving part.
+
 ## Architecture diagram
 
 ```

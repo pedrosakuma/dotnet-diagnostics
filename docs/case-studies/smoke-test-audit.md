@@ -522,3 +522,62 @@ terminates the sidecar joined to that PID namespace. That destroys the
 reporting transport precisely when `crash-guard` needs to return its final
 envelope. The runtime exception was visible only in the target container log;
 it is not counted as MCP diagnostic evidence.
+
+## Post-fix re-audit — 2026-07-29
+
+This re-audit rebuilt both local images from the current repository HEAD
+before measuring:
+
+- `dotnet-diagnostics-mcp:dev` → `2026-07-29T14:08:06Z`
+- `badcode-sample:dev` → `2026-07-29T14:08:47Z`
+
+The first `badcode-sample:dev` build reused a stale 2026-07-24 image, so that
+attempt was discarded and repeated with `--no-cache`. Every scenario below ran
+in the **anchored PID-namespace** topology from
+[`local-docker-sidecar.md`](../local-docker-sidecar.md): inert
+`diag-pid-anchor`, target + sidecar joined to the anchor PID namespace, shared
+`/tmp`, and sidecar `--user 0 --cap-add SYS_PTRACE`.
+
+For future re-runs, prefer **pulling** the published MCP server image
+(`ghcr.io/pedrosakuma/dotnet-diagnostics:sha-<shortsha>` or `:edge`) and only
+building `badcode-sample:dev` locally; this run kept the already-completed
+local MCP build because it matched HEAD `a25328e`.
+
+This pass focused on the live scenarios tied directly to the closed UX
+issues. The separate `compare_to_baseline` correction (#692 / PR #715) was not
+re-measured here.
+
+> **`cpu-burn` re-measurement held back.** This run confirmed the triage fix
+> for `cpu-burn` (#697 / PR #718 — no longer reports the process as healthy),
+> but the same run reconfirmed the pre-existing `SHA256` call-tree doc/fixture
+> drift, now tracked as [#742](https://github.com/pedrosakuma/dotnet-diagnostics/issues/742).
+> The full `cpu-burn` row, the external-investigation passthrough validation,
+> and the bearer-token finding below are held out of this publish pending
+> [#741](https://github.com/pedrosakuma/dotnet-diagnostics/issues/741),
+> [#742](https://github.com/pedrosakuma/dotnet-diagnostics/issues/742), and
+> [#743](https://github.com/pedrosakuma/dotnet-diagnostics/issues/743) — they
+> will be re-measured and published once those are fixed.
+
+| Scenario | Steps to root cause | Notes / deltas vs 2026-07-24 | Status |
+|---|---:|---|---|
+| crash (unhandled) | 1 | `collect_events(kind="crash-guard")` now survived target exit and returned inline `System.InvalidOperationException` evidence plus managed frames through `Program.<<Main>$>b__49()` / `g__CrashFixtureMessage|0_36` — the anchored PID namespace fix landed (#691 / PR #717). | pass |
+| leak | 3 | Triage no longer said “healthy”: it emitted `memory.intra-window-growth` / `memory.footprint-growth` with **gc-heap-size 18.37→43.77 MB** and **LOH 16.78→29.36 MB** during the window (#697 / PR #718). `inspect_heap(source="live", includeRetentionPaths=true)` plus one object drilldown still reached `System.Collections.Generic.List<System.Byte[]>._items -> System.Byte[][] -> System.Byte[]`. | pass |
+| loh-alloc | 1 | `collect_batch` now surfaced the decisive evidence inline in one call: **34 Gen2 collections** and **3 LOH/GC-specific counters** (`loh-size`, `gen-2-gc-count`, fragmentation) instead of hiding LOH evidence behind a follow-up drill (#698 / PR #719, #703 / PR #721). | pass |
+| culture-lookup | 2 | Triage now emitted `cpu.effective-core-consumption` (**0.97 cores**) and suggested CPU sampling instead of misrouting toward activities (#697 / PR #718). The follow-up CPU sample’s inline signal directly named `System.Globalization.CompareInfo.IcuGetHashCodeOfString(...)` at **49.1%** self-time, so the diagnosis no longer needed a call-tree drill just to discover the hot method (#703 / PR #721). | pass |
+| sync-over-async (spot-check) | 2 executed | Stronger load reproduced **87 likely blocked** threads, but this quick summary-mode recheck did not cleanly re-derive the old `GetResult` stack group; the original 3-step result remains the better historical measurement. | inconclusive spot-check |
+| lock-storm (spot-check) | 1 | `collect_thread_snapshot(depth="detail")` still showed the sleeping owner inline: `Program+<>c__DisplayClass0_3.<<Main>$>b__47()` under `Thread.Sleep`, with **20 blocked waiters**. | pass |
+| exceptions (spot-check) | 1 | Still attributed all **2,000** events to `System.FormatException` with the repeated `'not-a-number'` parse failure in one call. | pass |
+| slow-http (spot-check) | 1 | Still correlated the full `System.Net.Http` request lifecycle in one call, with `Request/Start` → `ResponseHeaders/Start` spanning about **3.06 s** against `/slow-hang?seconds=3`. | pass |
+
+**UX notes.**
+
+- The crash-guard fix is real: the sidecar stayed alive long enough to return
+  the final envelope after the target exited, which was impossible in the old
+  two-container `--pid=container:<target>` topology.
+- The CPU/memory triage fixes are also real: `cpu-burn` and `culture-lookup`
+  now surface one-core saturation via `effective-core-usage`, and `leak`
+  surfaces bounded intra-window growth instead of a “healthy” verdict.
+- `collect_batch` is materially better for LOH churn now that its bounded inline
+  summary keeps the Gen2 / LOH evidence up front rather than forcing an
+  immediate drilldown for the basic story.
+
