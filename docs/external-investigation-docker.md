@@ -134,6 +134,24 @@ dotnet-diagnostics-cli docker-bootstrap \
   --allow-cidr 172.17.0.1/32
 ```
 
+### Host `/proc` accessibility limitation
+
+`docker-bootstrap` assumes the host can directly read the target container's
+`/proc/<pid>/status` and `/proc/<pid>/root/tmp` paths after `docker inspect`
+reports the container's host PID. That is true on a plain Linux Docker host,
+but it can fail on Docker Desktop's VM-backed daemon, rootless Docker,
+Docker-in-Docker, or other user-namespace / nested-container setups where the
+reported PID is not exposed through the **outer** host `/proc`.
+
+When that happens, the CLI now surfaces a `HostProcNotAccessible` error instead
+of incorrectly reporting the target as simply "not running". The target
+container may still be healthy in `docker ps`; the specific failure is that the
+automatic `/proc/<pid>/root/tmp` bind-mount trick is unavailable on that host.
+
+Fallback: use the manual Compose/shared-volume topology below (the reference
+topology for issue #712), or run `docker-bootstrap` from a plain Linux Docker
+host that can read `/proc/<pid>/root/...` directly.
+
 ### Central-registration limitation
 
 The current public orchestrator surface can **list** external profiles and **attach** to an already

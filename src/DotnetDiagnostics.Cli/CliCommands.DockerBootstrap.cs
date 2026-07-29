@@ -67,10 +67,13 @@ internal static partial class CliCommands
         var procStatusPath = string.Create(CultureInfo.InvariantCulture, $"/proc/{target.State.Pid}/status");
         if (!platform.FileExists(procStatusPath))
         {
-            return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-                $"Target container '{target.DisplayName}' no longer has a readable host /proc status file.",
-                new DiagnosticError("TargetNotRunning", $"Missing {procStatusPath}.")),
-                static (_, _) => { });
+            return await BuildMissingHostProcResultAsync(
+                platform,
+                target,
+                missingPath: procStatusPath,
+                missingPathLabel: "host /proc status file",
+                targetDescription: "status file",
+                cancellationToken).ConfigureAwait(false);
         }
 
         var procStatus = await platform.ReadAllTextAsync(procStatusPath, cancellationToken).ConfigureAwait(false);
@@ -85,10 +88,13 @@ internal static partial class CliCommands
         var tmpMountSource = string.Create(CultureInfo.InvariantCulture, $"/proc/{target.State.Pid}/root/tmp");
         if (!platform.DirectoryExists(tmpMountSource))
         {
-            return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-                $"Target container '{target.DisplayName}' does not expose a readable /tmp path via {tmpMountSource}.",
-                new DiagnosticError("TargetNotRunning", "The target may have exited, or the host denied access to the container rootfs.")),
-                static (_, _) => { });
+            return await BuildMissingHostProcResultAsync(
+                platform,
+                target,
+                missingPath: tmpMountSource,
+                missingPathLabel: "host /proc-mounted /tmp path",
+                targetDescription: "/tmp path",
+                cancellationToken).ConfigureAwait(false);
         }
 
         var hostPort = options.HostPort ?? 18891;
@@ -284,6 +290,72 @@ internal static partial class CliCommands
 
         args.Add(sidecarImage);
         return new DockerCliInvocation("docker", args);
+    }
+
+    private static async Task<CliCommandResult> BuildMissingHostProcResultAsync(
+        IDockerBootstrapPlatform platform,
+        DockerInspectContainer initialTarget,
+        string missingPath,
+        string missingPathLabel,
+        string targetDescription,
+        CancellationToken cancellationToken)
+    {
+        var recheckCommand = new DockerCliInvocation("docker", ["inspect", "--type", "container", initialTarget.DisplayName]);
+        var recheckResult = await platform.RunAsync(recheckCommand, cancellationToken).ConfigureAwait(false);
+        if (recheckResult.ExitCode != 0)
+        {
+            return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                $"Target container '{initialTarget.DisplayName}' stopped responding to docker inspect while resolving host /proc paths.",
+                new DiagnosticError("TargetNotRunning", BuildProcessError(recheckCommand, recheckResult))),
+                static (_, _) => { });
+        }
+
+        DockerInspectContainer recheckedTarget;
+        try
+        {
+            recheckedTarget = ParseInspect(recheckResult.Stdout);
+        }
+        catch (Exception ex)
+        {
+            return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                $"Could not re-parse docker inspect output for '{initialTarget.DisplayName}' while verifying host /proc access.",
+                new DiagnosticError("ExternalDependencyFailed", ex.Message)),
+                static (_, _) => { });
+        }
+
+        if (recheckedTarget.State?.Running != true || recheckedTarget.State.Pid <= 0)
+        {
+            return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                $"Target container '{recheckedTarget.DisplayName}' is no longer running.",
+                new DiagnosticError("TargetNotRunning", "docker inspect no longer reports a running container with a valid host pid.")),
+                static (_, _) => { });
+        }
+
+        if (recheckedTarget.State.Pid != initialTarget.State!.Pid)
+        {
+            return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                $"Target container '{recheckedTarget.DisplayName}' restarted while docker-bootstrap was resolving host /proc paths.",
+                new DiagnosticError(
+                    "TargetNotRunning",
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"docker inspect first reported pid {initialTarget.State.Pid}, then pid {recheckedTarget.State.Pid}. Re-run docker-bootstrap against the current container instance."))),
+                static (_, _) => { });
+        }
+
+        return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+            $"Target container '{recheckedTarget.DisplayName}' is still running, but this host cannot read its {missingPathLabel}.",
+            new DiagnosticError(
+                "HostProcNotAccessible",
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"docker inspect still reports Running=true and Pid={recheckedTarget.State.Pid}, but {missingPath} is not readable from the host. This commonly happens on Docker Desktop, rootless Docker, Docker-in-Docker, or other VM-backed / namespaced Docker hosts where /proc/<pid>/root is not exposed to the outer host namespace.")),
+            new NextActionHint(
+                "docker-bootstrap",
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Re-run docker-bootstrap on a plain Linux Docker host where /proc/<pid>/root is host-readable, or use the manual compose/shared-volume recipe from docs/external-investigation-docker.md instead of the automatic {targetDescription} discovery path."))),
+            static (_, _) => { });
     }
 
     private static async Task<string?> WaitForContainerHealthyAsync(
