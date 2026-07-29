@@ -136,20 +136,21 @@ public sealed class OrchestratorTools
     [RequireScope("orchestrator-attach")]
     [McpServerTool(
         Name = "attach_to_pod",
-        Title = "Attach a diagnostics sidecar to a Pod or a configured external MCP profile",
+        Title = "Attach to an orchestrated target (external Docker/MCP profile or Kubernetes Pod)",
         Destructive = true,
         ReadOnly = false,
         Idempotent = false,
         UseStructuredContent = true)]
     [Description(
-        "Two modes: (1) Kubernetes — injects a diagnostics ephemeral container into the named Pod, joins the " +
-        "target container's PID namespace, and returns an opaque investigation handle. The Pod must already be " +
-        "in phase=Running and — by default — must opt in via the prepared label. Side-effect: ephemeral containers " +
-        "cannot be removed once added; the diagnostics container remains on the Pod's spec until the Pod is recreated. " +
-        "(2) External profile — pass profileName (from list_orchestrator(kind='external-profiles')) instead of podName " +
-        "to register a pre-configured external MCP endpoint as an investigation handle. The handle becomes Active only " +
-        "after the transport is successfully initialized. Requires 'orchestrator-attach' scope in both modes; external " +
-        "profile attach additionally requires the explicit 'orchestrator-admin' modifier scope. " +
+        "Attaches to an orchestrated diagnostic target and returns an opaque investigation handle. Choose one mode: " +
+        "(1) External profile — first call list_orchestrator(kind=\"external-profiles\"), then pass profileName to this " +
+        "existing attach_to_pod tool. Operator-configured profiles can represent external Docker sidecars or other MCP " +
+        "servers; no Kubernetes Pod or ephemeral container is required. The handle becomes Active only after the external " +
+        "transport initializes. (2) Kubernetes Pod — pass podName (and optionally namespace/containerName) to inject a " +
+        "diagnostics ephemeral container and join the target container's PID namespace. The Pod must be Running and, by " +
+        "default, carry the prepared label. Kubernetes ephemeral containers cannot be removed once added. Requires " +
+        "'orchestrator-attach' scope in both modes; external profile attach additionally requires the explicit " +
+        "'orchestrator-admin' modifier scope. The public name attach_to_pod is retained for backward compatibility. " +
         "Reuses an existing investigation for the same target when one is already Active/Attaching.")]
     public static async Task<DiagnosticResult<AttachSession>> AttachToPod(
         IPodAttachOrchestrator orchestrator,
@@ -161,17 +162,17 @@ public sealed class OrchestratorTools
         OrchestratorObservability observability,
         McpServer server,
         ILoggerFactory? loggerFactory = null,
-        [Description("Pod namespace. Falls back to the orchestrator's DefaultNamespace when omitted. Ignored when profileName is set.")]
+        [Description("Kubernetes Pod mode only: Pod namespace. Falls back to the orchestrator's DefaultNamespace when omitted. Do not set for external profile mode.")]
         string? @namespace = null,
-        [Description("Pod name. Required for Kubernetes attach. Omit when using profileName.")]
+        [Description("Kubernetes Pod mode only: Pod name. Required when profileName is not set; omit for external profile mode.")]
         string? podName = null,
-        [Description("Container name inside the Pod. Defaults to the first container in the Pod's spec. Ignored when profileName is set.")]
+        [Description("Kubernetes Pod mode only: container name inside the Pod. Defaults to the first container in the Pod's spec; omit for external profile mode.")]
         string? containerName = null,
-        [Description("Per-investigation idle TTL in seconds. Defaults to Orchestrator:DefaultInvestigationTtlSeconds (1800) and is still bounded by the server's 8-hour absolute handle lease.")]
+        [Description("Both modes: investigation idle TTL in seconds. Defaults to Orchestrator:DefaultInvestigationTtlSeconds (1800) and is still bounded by the server's 8-hour absolute handle lease.")]
         int? ttlSeconds = null,
         [Description("Kubernetes only: when true (default), refuses to attach to Pods that don't carry the prepared opt-in label.")]
         bool requirePreparedTarget = true,
-        [Description("When true (default), returns an existing investigation for the same target instead of patching a second ephemeral container.")]
+        [Description("Both modes: when true (default), returns an existing investigation for the same target instead of opening another transport or injecting a second ephemeral container.")]
         bool allowReuseExistingSession = true,
         [Description(
             "Kubernetes only: optional transport-neutral process selector stored on the investigation handle. " +
@@ -181,9 +182,10 @@ public sealed class OrchestratorTools
             "commandLineContains to disambiguate multiple instances. Ambiguous or missing matches remain per-Pod errors.")]
         InvestigationProcessSelector? processSelector = null,
         [Description(
-            "External profile mode: name of an operator-configured external MCP profile " +
-            "(from list_orchestrator(kind='external-profiles')). When set, the tool attaches to the named " +
-            "external MCP endpoint instead of injecting a Kubernetes ephemeral container. " +
+            "External profile mode (including external Docker sidecars): first call " +
+            "list_orchestrator(kind=\"external-profiles\"), then pass one returned name here; for example, " +
+            "attach_to_pod(profileName=\"sidecar\"). The operator-configured profile selects an external MCP " +
+            "endpoint, so no Kubernetes Pod or ephemeral container is used. " +
             "Requires the explicit 'orchestrator-admin' modifier scope in addition to 'orchestrator-attach'. " +
             "Mutually exclusive with podName.")]
         string? profileName = null,
