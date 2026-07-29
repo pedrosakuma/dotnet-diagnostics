@@ -6,6 +6,7 @@ public static class ScenarioJson
 {
     public const int CurrentEvidenceSchemaVersion = 1;
     public const int CurrentReportSchemaVersion = 1;
+    public const int CurrentTrialArtifactSchemaVersion = 1;
 
     public static ScenarioEvidence ReadEvidence(string path)
     {
@@ -36,6 +37,20 @@ public static class ScenarioJson
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         using var stream = File.Create(path);
         JsonSerializer.Serialize(stream, evidence, ScenarioJsonContext.Default.ScenarioEvidence);
+    }
+
+    public static ScenarioTrialArtifact ReadTrialArtifact(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return JsonSerializer.Deserialize(stream, ScenarioJsonContext.Default.ScenarioTrialArtifact)
+            ?? throw new InvalidDataException($"Scenario trial artifact '{path}' was empty.");
+    }
+
+    public static void WriteTrialArtifact(string path, ScenarioTrialArtifact artifact)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var stream = File.Create(path);
+        JsonSerializer.Serialize(stream, artifact, ScenarioJsonContext.Default.ScenarioTrialArtifact);
     }
 
     public static string SerializeReport(ScenarioEvaluationReport report)

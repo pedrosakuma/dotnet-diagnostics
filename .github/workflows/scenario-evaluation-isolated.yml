@@ -1,0 +1,141 @@
+name: Scenario evaluation (isolated trials)
+
+on:
+  workflow_dispatch:
+    inputs:
+      repetitions:
+        description: Isolated trial repetitions per scenario
+        required: false
+        default: "10"
+      max_crash_retries:
+        description: Retry count for crash-only isolated trials
+        required: false
+        default: "1"
+  schedule:
+    # Nightly at 04:11 UTC, offset from the other manual/nightly diagnostics jobs.
+    - cron: "11 4 * * *"
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  scenario-evaluation:
+    name: ${{ matrix.os }} / ${{ matrix.scenario }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            scenario: sync-over-async
+          - os: ubuntu-latest
+            scenario: lock-storm
+          - os: ubuntu-latest
+            scenario: gc-storm
+          - os: windows-latest
+            scenario: culture-lookup
+          - os: windows-latest
+            scenario: sync-over-async
+          - os: windows-latest
+            scenario: lock-storm
+          - os: windows-latest
+            scenario: gc-storm
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: scenario-eval-${{ runner.os }}-${{ hashFiles('**/Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: |
+            scenario-eval-${{ runner.os }}-
+
+      - name: Restore
+        shell: bash
+        run: dotnet restore
+
+      - name: Build scenario evaluation suite
+        shell: bash
+        run: >-
+          dotnet build tests/DotnetDiagnostics.ScenarioEvaluation.Tests/DotnetDiagnostics.ScenarioEvaluation.Tests.csproj
+          --configuration Release --no-restore
+
+      - name: Run isolated scenario trials
+        id: isolated_run
+        shell: bash
+        run: |
+          set +e
+          bash scripts/run-scenario-evaluation-isolated.sh \
+            --scenario "${{ matrix.scenario }}" \
+            --repetitions "${{ inputs.repetitions || '10' }}" \
+            --max-crash-retries "${{ inputs.max_crash_retries || '1' }}" \
+            --results-root "artifacts/scenario-evaluation/${{ runner.os }}/${{ matrix.scenario }}"
+          runner_exit_code=$?
+          echo "runner_exit_code=$runner_exit_code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Append run summary
+        if: always()
+        shell: bash
+        run: |
+          summary_path="artifacts/scenario-evaluation/${{ runner.os }}/${{ matrix.scenario }}/summary.json"
+          python_bin="$(command -v python3 || command -v python)"
+          "$python_bin" - "$summary_path" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import pathlib
+          import sys
+
+          summary_path = pathlib.Path(sys.argv[1])
+          if not summary_path.is_file():
+              print(f"### {summary_path.parent.name}")
+              print("")
+              print("No summary.json was produced.")
+              raise SystemExit(0)
+
+          summary = json.loads(summary_path.read_text(encoding="utf-8"))
+          print(f"### {summary_path.parent.name}")
+          print("")
+          print(f"- passed: {summary['totals']['passed']}")
+          print(f"- failed: {summary['totals']['failed']}")
+          print(f"- crashed: {summary['totals']['crashed']}")
+          print("")
+          print("| Scenario | Trial | Outcome | Failure kind | Artifact |")
+          print("|---|---:|---|---|---|")
+          for trial in summary["trials"]:
+              artifact = trial["path"].replace("\\", "/")
+              print(
+                  f"| {trial['scenarioId']} | {trial['trial']} | {trial['finalOutcome']} | "
+                  f"{trial['finalFailureKind']} | `{artifact}` |"
+              )
+          PY
+
+      - name: Upload isolated scenario artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scenario-evaluation-${{ runner.os }}-${{ matrix.scenario }}-${{ github.run_attempt }}
+          path: artifacts/scenario-evaluation/${{ runner.os }}/${{ matrix.scenario }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Fail when any isolated trial failed or crashed
+        if: ${{ steps.isolated_run.outputs.runner_exit_code != '0' }}
+        shell: bash
+        run: |
+          echo "One or more isolated trials failed or crashed for ${{ matrix.scenario }} on ${{ runner.os }}." >&2
+          exit 1

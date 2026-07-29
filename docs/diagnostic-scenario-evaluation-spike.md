@@ -162,7 +162,7 @@ Build and replay all committed evidence:
 ```powershell
 dotnet build tests\DotnetDiagnostics.ScenarioEvaluation.Tests\ -c Release
 dotnet test tests\DotnetDiagnostics.ScenarioEvaluation.Tests\ -c Release --no-build `
-  --filter "Category!=ScenarioEvaluationLive"
+  --filter "Category!=ScenarioEvaluationLive&Category!=ScenarioEvaluationIsolated"
 ```
 
 Run the supported one-trial smoke subset:
@@ -185,6 +185,23 @@ On Linux, run one repetition per testhost and set
 `DOTNET_DIAGNOSTICS_SCENARIO_TRIAL_OFFSET` to preserve unique trial numbers.
 Do not put many ClrMD/EventPipe live captures in one process while issue #147
 remains open.
+
+For the authoritative process-isolated path, use the dedicated launcher. It
+runs one `dotnet test` host per trial, persists one per-attempt artifact plus
+one per-trial summary JSON, and records a distinct `crashed` outcome when a
+testhost exits non-zero before emitting a trial artifact:
+
+```bash
+dotnet build DotnetDiagnostics.slnx -c Release
+bash scripts/run-scenario-evaluation-isolated.sh \
+  --scenario sync-over-async \
+  --repetitions 10 \
+  --results-root artifacts/scenario-evaluation-isolated
+```
+
+The manual/nightly workflow
+`.github/workflows/scenario-evaluation-isolated.yml` uses the same launcher
+across the current scenario catalog without adding the suite to per-PR CI.
 
 ## Criterion-by-criterion result
 
