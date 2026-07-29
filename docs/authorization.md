@@ -82,6 +82,11 @@ deliberately.
 A token granted `*` resolves to the union of every **primary** scope (but **not** the
 modifier scopes above). Used by `--stdio` / loopback defaults and the legacy
 `MCP_BEARER_TOKEN` (see [Backward compatibility](#backward-compatibility)).
+That means a legacy/root token still **cannot** satisfy literal modifier checks such as
+`sensitive-heap-read`, `sensitive-parameter-read`, `eventsource-any`,
+`symbols-remote`, `orchestrator-admin`, or `module-bytes-read`, and it also does not
+auto-satisfy any unconditional explicit-scope re-checks such as CPU evidence export's
+`eventpipe` requirement.
 
 ## Default policy by transport
 
@@ -90,6 +95,17 @@ modifier scopes above). Used by `--stdio` / loopback defaults and the legacy
 | **stdio** (`--stdio`) | Synthetic in-memory token with `*` scope. The MCP client is the process owner; no bearer ever crosses a network. |
 | **Loopback HTTP** (`127.0.0.1` / `[::1]`) | Configured `Auth:BearerTokens` if present, else legacy `MCP_BEARER_TOKEN` → `*`. Developer ergonomics; unreachable from outside the host. |
 | **Non-loopback HTTP** | `Auth:BearerTokens` is **required** — each entry must declare a non-empty scope set. Legacy `MCP_BEARER_TOKEN` is accepted but logs a deprecation `Warning`; a future release removes that fallback and refuses to start without scoped bearers. |
+
+Loopback vs non-loopback is chosen from the **server bind address at startup**, not from
+per-request forwarded headers. Docker `-p <host>:8080` / Compose port publishing is
+therefore a **non-loopback** deployment here: the container listens on `0.0.0.0`, and
+the in-container peer address is typically the bridge gateway (for example
+`172.17.0.1`), not `127.0.0.1`. The legacy `MCP_BEARER_TOKEN` still resolves to the
+root pseudo-scope in that topology, but root only covers the primary scopes above. If a
+workflow needs any literal modifier scope or unconditional explicit grant
+(`sensitive-heap-read`, `sensitive-parameter-read`, `module-bytes-read`, CPU evidence
+export's explicit `eventpipe`, etc.), configure `Auth:BearerTokens` and list those
+scopes explicitly.
 
 ### Investigation ownership identity
 
@@ -247,8 +263,8 @@ investigation handle minted by a **different** MCP session requires `orchestrato
 
 | Situation | Behaviour |
 |---|---|
-| Only `MCP_BEARER_TOKEN`, stdio / loopback | Resolves to a synthetic `{ Name: "legacy", Scopes: ["*"] }`. No warning. |
-| Only `MCP_BEARER_TOKEN`, non-loopback | Accepted but logs a deprecation `Warning`; a future release refuses it (use `Auth:BearerTokens`). |
+| Only `MCP_BEARER_TOKEN`, stdio / loopback | Resolves to a synthetic `{ Name: "legacy-root", Scopes: ["root"] }`. This satisfies every **primary** scope, but not literal modifier scopes or unconditional explicit-scope re-checks. No warning. |
+| Only `MCP_BEARER_TOKEN`, non-loopback | Accepted but logs a deprecation `Warning`; it still resolves to the same synthetic `legacy-root` primary-scope wildcard. A future release refuses it (use `Auth:BearerTokens`). |
 | Both `MCP_BEARER_TOKEN` and `Auth:BearerTokens` | The scoped registry wins; the legacy variable is ignored with a `Warning`. |
 
 Two content allowlists remain independent policies (a caller without the matching modifier

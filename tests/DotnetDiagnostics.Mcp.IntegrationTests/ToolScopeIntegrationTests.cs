@@ -497,6 +497,40 @@ public sealed class ToolScopeIntegrationTests
     }
 
     [Fact]
+    public async Task LegacyRootToken_DoesNot_Satisfy_LiteralModifierScopes()
+    {
+        Environment.SetEnvironmentVariable("MCP_BEARER_TOKEN", "legacy-root-secret-modifier");
+        try
+        {
+            await using var factory = new WebApplicationFactory<Program>();
+            await using var client = await ConnectWithTokenAsync(factory, "legacy-root-secret-modifier");
+
+            // includeRetentionPaths adds the literal sensitive-heap-read modifier requirement.
+            // Use an invalid pid so the test stays on the auth boundary and never needs a live target.
+            var result = await client.CallToolAsync(
+                "inspect_heap",
+                arguments: new Dictionary<string, object?>
+                {
+                    ["source"] = "live",
+                    ["processId"] = -1,
+                    ["includeRetentionPaths"] = true,
+                },
+                cancellationToken: CancellationToken.None);
+
+            var (_, envelope) = ParseForbidden(result);
+            envelope.GetProperty("required_scopes").EnumerateArray()
+                .Select(static scope => scope.GetString()).Should().Contain("sensitive-heap-read");
+            envelope.GetProperty("missing_all_of_scopes").EnumerateArray()
+                .Select(static scope => scope.GetString()).Should().ContainSingle()
+                .Which.Should().Be("sensitive-heap-read");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MCP_BEARER_TOKEN", null);
+        }
+    }
+
+    [Fact]
     public async Task AuditLog_OnDeny_DoesNotLeak_BearerValue()
     {
         var logSink = new ListLoggerProvider();
