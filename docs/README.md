@@ -39,6 +39,7 @@ you're using, then reach for the cross-cutting references.
 | [`consumer-install.md`](./consumer-install.md) | Full install walkthrough (global tool, container, self-contained binary, Linux ptrace) |
 | [`client-setup.md`](./client-setup.md) | Connecting to the server from the C# SDK, GUI MCP clients, and `curl` smoke tests |
 | [`local-docker-sidecar.md`](./local-docker-sidecar.md) | Reproducing the K8s sidecar topology locally with an anchored Docker PID namespace + shared `/tmp` |
+| [`external-investigation-docker.md`](./external-investigation-docker.md) | Kubernetes-style `attach_to_pod`/proxy passthrough for a **Docker** sidecar — a central orchestrator MCP forwards diagnostic calls to an operator-configured external MCP profile, so the client never sees the sidecar's URL or bearer token |
 
 ### CLI (`dotnet-diagnostics-cli`)
 

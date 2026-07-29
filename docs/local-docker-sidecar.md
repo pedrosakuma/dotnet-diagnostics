@@ -5,7 +5,18 @@ the whole stack locally before deploying to a cluster.
 
 Two application images, three containers, one shared `/tmp` volume, and one
 shared PID namespace reproduce the relevant Kubernetes building blocks. The
-third container is an inert PID-namespace anchor.
+third container is an inert PID-namespace anchor. `coreclr-sample`/`BadCodeSample`
+below are just this repo's own sample targets — the recipe applies unchanged to
+**your own containerized .NET app** in place of them.
+
+> **Don't want the MCP client to see the sidecar's URL/bearer directly?** This
+> page has the client connect straight to the sidecar. For the Kubernetes-style
+> `attach_to_pod` proxy passthrough instead — a separate central orchestrator MCP
+> forwards diagnostic calls to the sidecar via an operator-configured profile, so
+> the client only ever talks to the central — see
+> [`external-investigation-docker.md`](./external-investigation-docker.md) and the
+> `dotnet-diagnostics-cli docker-bootstrap` command in
+> [`cli-reference.md`](./cli-reference.md#docker-bootstrap).
 
 > **Crash-guard requires the anchor.** The old two-container recipe made the
 > target PID 1 and launched the sidecar with `--pid=container:sample`. Linux
