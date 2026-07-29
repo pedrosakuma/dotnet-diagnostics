@@ -281,15 +281,33 @@ curl -fsS -X POST http://127.0.0.1:18890/mcp \
 The second inspect_process call must return `"isError": true` with a message containing
 "unknown or no longer active".
 
-## Acceptance test
+## Docker-bootstrap acceptance test
 
 ```bash
 scripts/test-docker-external-investigation.sh
 ```
 
-The script starts the compose stack, runs
+The script builds the current checkout, starts a uniquely named CoreClrSample target,
+invokes the built CLI `docker-bootstrap` command as the current non-root user, and starts
+a central MCP using the exact `centralEnvLines` from the CLI's JSON output. It then runs
 `DockerExternalInvestigationTests.ExternalInvestigation_FullPassthroughWorkflow_AttachInspectCollectDetach`,
-and tears everything down on exit. It is gated by the
+which proves profile listing, attach, a routed counters+GC `collect_batch`, detach, and
+post-detach routing rejection through the MCP protocol.
+
+The script also asserts that the bootstrap-created sidecar has no host `/proc` bind mount
+and that its `TMPDIR` matches `/proc/<target-namespace-pid>/root/tmp`. This specifically
+guards the portable daemon-side PID probe fixed by #748/#750. All container/network names
+and host ports are unique per run, and the EXIT trap removes only those resources.
+
+Use already-built Release outputs and local images:
+
+```bash
+DOCKER_EXT_INV_SKIP_BUILD=1 scripts/test-docker-external-investigation.sh
+```
+
+On failure, inspect `TestResults/docker-bootstrap-e2e/` for the bootstrap JSON plus
+target, sidecar, central, and Docker-network logs/inspection output. The GitHub workflow
+uploads this directory as a failure artifact. The test is gated by the
 `DOTNET_DBG_MCP_DOCKER_EXT_INV_TEST=1` environment variable so it is a no-op in
 standard `dotnet test` runs.
 
@@ -299,8 +317,8 @@ standard `dotnet test` runs.
 # Compose project (removes containers + the diagnostics-tmp volume)
 docker compose -f deploy/docker-compose.external-investigation.yml down -v
 
-# Or, if you used the test script (it cleans up on exit automatically):
-# Nothing to do — the trap handler calls `down --volumes` on EXIT.
+# Or, if you used the test script:
+# Nothing to do — its EXIT trap removes its uniquely named containers and network.
 ```
 
 ## SSRF-safety notes

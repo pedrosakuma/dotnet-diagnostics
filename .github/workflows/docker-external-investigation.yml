@@ -1,10 +1,9 @@
 name: Docker External Investigation
 
-# Opt-in acceptance test for the external-investigation passthrough workflow
-# (issue #712). Builds the topology in
-# deploy/docker-compose.external-investigation.yml (central orchestrator MCP +
-# sidecar diagnostics MCP + CoreClrSample target), waits for all containers to
-# be healthy, then runs DockerExternalInvestigationTests.
+# Opt-in acceptance test for the complete docker-bootstrap external-investigation
+# workflow (issues #712/#752). The script starts a target, invokes the CLI built
+# from this checkout as the normal runner user, starts a central MCP from the
+# emitted external-profile config, and exercises attach/collect/detach via MCP.
 #
 # The test is NOT triggered on every push/PR — only via workflow_dispatch, or
 # automatically when a push/PR touches one of the paths below (the compose
@@ -29,6 +28,12 @@ on:
       - 'src/DotnetDiagnostics.Mcp/Orchestrator/**'
       - 'src/DotnetDiagnostics.Mcp/Tools/OrchestratorTools.cs'
       - 'src/DotnetDiagnostics.Mcp/Tools/InvestigationProxy*'
+      - 'src/DotnetDiagnostics.Cli/CliCommands.DockerBootstrap.cs'
+      - 'src/DotnetDiagnostics.Cli/CliCommands.Validation.cs'
+      - 'src/DotnetDiagnostics.Cli/CliOptions.cs'
+      - 'src/DotnetDiagnostics.Cli/CliCommandCatalog.cs'
+      - 'src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj'
+      - 'tests/DotnetDiagnostics.Cli.Tests/CliDockerBootstrapTests.cs'
       - 'tests/DotnetDiagnostics.Mcp.IntegrationTests/DockerExternalInvestigationTests.cs'
       - 'scripts/test-docker-external-investigation.sh'
   pull_request:
@@ -40,6 +45,12 @@ on:
       - 'src/DotnetDiagnostics.Mcp/Orchestrator/**'
       - 'src/DotnetDiagnostics.Mcp/Tools/OrchestratorTools.cs'
       - 'src/DotnetDiagnostics.Mcp/Tools/InvestigationProxy*'
+      - 'src/DotnetDiagnostics.Cli/CliCommands.DockerBootstrap.cs'
+      - 'src/DotnetDiagnostics.Cli/CliCommands.Validation.cs'
+      - 'src/DotnetDiagnostics.Cli/CliOptions.cs'
+      - 'src/DotnetDiagnostics.Cli/CliCommandCatalog.cs'
+      - 'src/DotnetDiagnostics.Cli/DotnetDiagnostics.Cli.csproj'
+      - 'tests/DotnetDiagnostics.Cli.Tests/CliDockerBootstrapTests.cs'
       - 'tests/DotnetDiagnostics.Mcp.IntegrationTests/DockerExternalInvestigationTests.cs'
       - 'scripts/test-docker-external-investigation.sh'
 
@@ -112,60 +123,20 @@ jobs:
           cache-from: type=gha,scope=ext-inv-sample
           cache-to: type=gha,mode=max,scope=ext-inv-sample
 
-      - name: Start compose stack
+      - name: Run docker-bootstrap external-investigation acceptance test
         run: |
-          docker compose \
-            --project-name dotnet-diagnostics-ext-inv-ci \
-            --file deploy/docker-compose.external-investigation.yml \
-            up --no-build --detach --wait --wait-timeout 120
-
-      - name: Run external-investigation acceptance test
-        env:
-          DOTNET_DBG_MCP_DOCKER_EXT_INV_TEST: "1"
-        run: |
-          dotnet test \
-            tests/DotnetDiagnostics.Mcp.IntegrationTests/DotnetDiagnostics.Mcp.IntegrationTests.csproj \
-            --no-build --configuration Release \
-            --filter "FullyQualifiedName~DockerExternalInvestigationTests" \
-            --logger "trx;LogFileName=ext-inv-test-results.trx" \
-            --logger "console;verbosity=normal" \
-            --results-directory TestResults
-
-      - name: Diagnostics on failure
-        if: failure()
-        run: |
-          {
-            echo "===== central logs ====="
-            docker compose \
-              --project-name dotnet-diagnostics-ext-inv-ci \
-              --file deploy/docker-compose.external-investigation.yml \
-              logs central || true
-            echo "===== sidecar logs ====="
-            docker compose \
-              --project-name dotnet-diagnostics-ext-inv-ci \
-              --file deploy/docker-compose.external-investigation.yml \
-              logs sidecar || true
-            echo "===== target logs ====="
-            docker compose \
-              --project-name dotnet-diagnostics-ext-inv-ci \
-              --file deploy/docker-compose.external-investigation.yml \
-              logs target || true
-          } 2>&1 | tee ext-inv-diagnostics.log
-
-      - name: Tear down compose stack
-        if: always()
-        run: |
-          docker compose \
-            --project-name dotnet-diagnostics-ext-inv-ci \
-            --file deploy/docker-compose.external-investigation.yml \
-            down --volumes --remove-orphans || true
+          set -o pipefail
+          test "$(id -u)" -ne 0
+          mkdir -p TestResults
+          DOCKER_EXT_INV_SKIP_BUILD=1 \
+            scripts/test-docker-external-investigation.sh 2>&1 | tee TestResults/docker-bootstrap-e2e-run.log
 
       - name: Upload test artifacts
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ext-inv-results
+          name: docker-bootstrap-e2e-failure
           path: |
-            TestResults/**/*.trx
-            ext-inv-diagnostics.log
+            TestResults/docker-bootstrap-e2e/**
+            TestResults/docker-bootstrap-e2e-run.log
           if-no-files-found: ignore
