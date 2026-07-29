@@ -136,6 +136,7 @@ internal static partial class CliCommands
 
         return options.Command switch
         {
+            "docker-bootstrap" => await DockerBootstrapAsync(options, cancellationToken).ConfigureAwait(false),
             "processes" => Processes(services, options),
             "capabilities" => await CapabilitiesAsync(services, options, cancellationToken).ConfigureAwait(false),
             "doctor" => Doctor(services, options),

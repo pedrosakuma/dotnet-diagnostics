@@ -18,6 +18,7 @@ internal static partial class CliCommands
 
         return options.Command switch
         {
+            "docker-bootstrap" => TryValidateDockerBootstrap(options, out error),
             "collect" => TryValidateCollect(options, out error),
             "inspect" => TryValidateInspect(options, out error),
             "inspect-heap" => TryValidateInspectHeap(options, out error),
@@ -60,13 +61,124 @@ internal static partial class CliCommands
         }
 
         if (string.Equals(options.Command, "session", StringComparison.Ordinal)
-            || string.Equals(options.Command, "completion", StringComparison.Ordinal))
+            || string.Equals(options.Command, "completion", StringComparison.Ordinal)
+            || string.Equals(options.Command, "docker-bootstrap", StringComparison.Ordinal))
         {
             error = $"--watch is not supported by '{options.Command}'.";
             return false;
         }
 
         return true;
+    }
+
+    public static bool TryValidateDockerBootstrap(CliOptions options, out string? error)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(options.TargetContainer))
+        {
+            error = "The 'docker-bootstrap' command requires --target-container <name|id>.";
+            return false;
+        }
+
+        if (options.HostPort is < 1 or > 65535)
+        {
+            error = "--host-port must be between 1 and 65535.";
+            return false;
+        }
+
+        if (options.WaitSeconds is < 1)
+        {
+            error = "--wait must be >= 1.";
+            return false;
+        }
+
+        if (options.ProfileName is not null
+            && !System.Text.RegularExpressions.Regex.IsMatch(options.ProfileName, "^[A-Za-z0-9][A-Za-z0-9_-]*$"))
+        {
+            error = "--profile-name must match ^[A-Za-z0-9][A-Za-z0-9_-]*$ so the emitted env-var keys remain usable.";
+            return false;
+        }
+
+        if (options.SidecarName is not null
+            && !System.Text.RegularExpressions.Regex.IsMatch(options.SidecarName, "^[A-Za-z0-9][A-Za-z0-9_.-]*$"))
+        {
+            error = "--sidecar-name must use Docker container-name characters: letters, digits, '.', '_' or '-'.";
+            return false;
+        }
+
+        Uri? profileUri = null;
+        if (options.ProfileUrl is not null
+            && !Uri.TryCreate(options.ProfileUrl, UriKind.Absolute, out profileUri))
+        {
+            error = $"--profile-url '{options.ProfileUrl}' is not a valid absolute URL.";
+            return false;
+        }
+        else if (options.ProfileUrl is not null)
+        {
+            if (!string.Equals(profileUri!.Scheme, Uri.UriSchemeHttp, StringComparison.Ordinal)
+                && !string.Equals(profileUri.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal))
+            {
+                error = "--profile-url must use http or https.";
+                return false;
+            }
+
+            if (profileUri.AbsolutePath != "/mcp" || !string.IsNullOrEmpty(profileUri.Query) || !string.IsNullOrEmpty(profileUri.Fragment) || !string.IsNullOrEmpty(profileUri.UserInfo))
+            {
+                error = "--profile-url must match the external-profile contract: absolute http/https URL, path exactly /mcp, no query, fragment, or userinfo.";
+                return false;
+            }
+        }
+
+        if (options.AllowedCidrs.Any(static cidr => string.IsNullOrWhiteSpace(cidr)))
+        {
+            error = "--allow-cidr does not accept empty values.";
+            return false;
+        }
+
+        foreach (var cidr in options.AllowedCidrs)
+        {
+            if (!TryValidateCidr(cidr))
+            {
+                error = $"--allow-cidr '{cidr}' is not a valid CIDR block.";
+                return false;
+            }
+        }
+
+        if (options.BootstrapBearerToken is not null && options.BootstrapBearerToken.Length == 0)
+        {
+            error = "--bearer-token does not accept an empty value.";
+            return false;
+        }
+
+        if (options.BootstrapDelegationKey is not null && options.BootstrapDelegationKey.Length == 0)
+        {
+            error = "--delegation-key does not accept an empty value.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryValidateCidr(string cidr)
+    {
+        var slash = cidr.IndexOf('/');
+        if (slash <= 0 || slash == cidr.Length - 1)
+        {
+            return false;
+        }
+
+        var ipPart = cidr[..slash];
+        var prefixPart = cidr[(slash + 1)..];
+        if (!System.Net.IPAddress.TryParse(ipPart, out var ip)
+            || !int.TryParse(prefixPart, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var prefix))
+        {
+            return false;
+        }
+
+        var maxPrefix = ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? 32 : 128;
+        return prefix is >= 0 && prefix <= maxPrefix;
     }
 
     /// <summary>

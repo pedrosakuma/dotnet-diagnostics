@@ -32,6 +32,8 @@ internal static class CliCommandCatalog
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
         "--symptom", "--hypothesis", "--max-tool-calls", "--top-hotspots",
         "--capture-when", "--capture", "--window", "--max-captures", "--command-line-contains",
+        "--target-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url",
+        "--bearer-token", "--delegation-key", "--allow-cidr", "--host-port", "--wait",
     ];
 
     public static readonly IReadOnlyList<string> DepthValues = ["summary", "detail", "raw"];
@@ -103,6 +105,39 @@ Options:
 
     public static readonly IReadOnlyList<CliCommandDescriptor> CommandDescriptors =
     [
+        new(
+            "docker-bootstrap",
+            "Start a Docker sidecar for a running target container and print the matching external-profile config for the central MCP.",
+"""
+docker-bootstrap options:
+      --target-container <name|id>  Required. Running Docker container to diagnose.
+      --sidecar-name <name>         Optional explicit sidecar container name. Default:
+                                    <target>-dotnet-diagnostics.
+      --sidecar-image <ref>         Sidecar image to run (default: dotnet-diagnostics-mcp:dev).
+      --profile-name <name>         External-profile name to emit for the central config.
+                                    Default: sanitized target-container name.
+      --profile-url <url>           Exact URL the central should use for
+                                    Orchestrator:ExternalMcpProfiles:<name>:Url.
+                                    Default: http://127.0.0.1:<host-port>/mcp.
+      --allow-cidr <cidr>           Repeatable CIDR allowlist for the emitted profile. Required
+                                    when --profile-url uses a hostname other than localhost.
+      --host-port <port>            Host port published for the sidecar (default: 18891).
+      --bearer-token <token>        Operator-supplied sidecar bearer token. Default: generated.
+      --delegation-key <secret>     Operator-supplied MCP_INTERNAL_SCOPE_DELEGATION_KEY.
+                                    Default: generated.
+      --wait <seconds>              Health-check wait timeout (default: 90).
+      --no-sys-ptrace               Do not add SYS_PTRACE to the sidecar. Default OFF.
+notes:
+  This command shells out to the local 'docker' CLI. It never gives either MCP server process
+  access to /var/run/docker.sock, and it does not register the profile dynamically with the
+  central — it prints the exact config block/env vars you must add there before attach_to_pod(profileName=...).
+""",
+"""
+  dotnet-diagnostics-cli docker-bootstrap --target-container coreclr-sample
+  dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar --host-port 18892
+  dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-url http://host.docker.internal:18892/mcp --allow-cidr 172.17.0.1/32
+""",
+            ["--target-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url", "--allow-cidr", "--host-port", "--bearer-token", "--delegation-key", "--wait", "--no-sys-ptrace"]),
         new(
             "processes",
             "List attachable .NET processes.",

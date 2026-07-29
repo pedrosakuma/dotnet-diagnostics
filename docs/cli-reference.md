@@ -93,6 +93,55 @@ Exit codes: `0` success (a `dump` preview is also a success), `1` a structured f
 
 ## Commands
 
+### `docker-bootstrap`
+
+Bootstrap a **local Docker sidecar** for an already-running target container, then print the matching
+`Orchestrator:ExternalMcpProfiles:<name>` configuration the central MCP must be restarted with.
+
+> This command still keeps the CLI on the "outside": it shells out to the local `docker` CLI, and it
+> never gives either MCP server process access to `/var/run/docker.sock`.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--target-container` | `string` | required | Running Docker container name or id to diagnose. |
+| `--sidecar-name` | `string?` | `<target>-dotnet-diagnostics` | Explicit Docker container name for the sidecar. |
+| `--sidecar-image` | `string?` | `dotnet-diagnostics-mcp:dev` | Sidecar image reference to run. |
+| `--profile-name` | `string?` | sanitized target name | Profile key emitted under `Orchestrator:ExternalMcpProfiles`. Restricted to `^[A-Za-z0-9][A-Za-z0-9_-]*$` so the env-var form stays usable. |
+| `--profile-url` | `string?` | `http://127.0.0.1:<host-port>/mcp` | Exact URL the **central** will dial for this profile. Must be absolute `http`/`https`, path exactly `/mcp`, no query/fragment/userinfo. |
+| `--allow-cidr` | `string[]` | derived from `--profile-url` when it is an IP literal / `localhost` | Repeatable allowlist entries for `AllowedCidrs`. Required when `--profile-url` uses another hostname (for example `host.docker.internal`). |
+| `--host-port` | `int?` | `18891` | Host port published for the sidecar's internal `8080` listener. |
+| `--bearer-token` | `string?` | generated | Operator-supplied sidecar bearer token. When omitted, the CLI generates a random 32-byte hex value and prints it in the output. |
+| `--delegation-key` | `string?` | generated | Operator-supplied `MCP_INTERNAL_SCOPE_DELEGATION_KEY`. When omitted, the CLI generates a random 32-byte hex value and prints it in the output. |
+| `--wait` | `int?` | `90` | Seconds to wait for the sidecar health check to report `healthy`. |
+| `--no-sys-ptrace` | flag | off | Skip `--cap-add SYS_PTRACE`. Leave this off unless you knowingly want EventPipe-only coverage. |
+
+Implementation details:
+
+- attaches the sidecar to the target with `docker run --pid container:<target> ...`;
+- bind-mounts `/proc/<target-host-pid>/root/tmp` into the sidecar's `/tmp` so the target's diagnostic
+  socket is visible even when the target was not started from a pre-authored compose file;
+- reads the target's effective UID/GID from `/proc/<pid>/status` and mirrors it onto the sidecar's
+  `--user`, matching the diagnostic-socket ownership contract;
+- sets `DOTNET_EnableDiagnostics=0` on the sidecar so the sidecar's own socket is suppressed.
+
+Current limitation: the command **does not** register the profile dynamically against a running central
+MCP, because the public orchestrator surface currently lists and attaches existing external profiles only.
+Instead it prints the exact `Orchestrator__ExternalMcpProfiles__<name>__...` env vars and an equivalent
+`appsettings.json` block for the operator to add before restarting the central.
+
+```bash
+docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
+dotnet-diagnostics-cli docker-bootstrap --target-container api
+
+dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar --host-port 18892
+
+dotnet-diagnostics-cli docker-bootstrap \
+  --target-container api \
+  --host-port 18892 \
+  --profile-url http://host.docker.internal:18892/mcp \
+  --allow-cidr 172.17.0.1/32
+```
+
 ### `processes`
 
 List attachable .NET processes (pid, runtime, OS/arch, entrypoint).

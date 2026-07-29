@@ -14,6 +14,7 @@ public sealed class CliHostTests
 
         exit.Should().Be(0);
         stdout.Should().Contain("dotnet-diagnostics");
+        stdout.Should().Contain("docker-bootstrap");
         stdout.Should().Contain("processes");
         stdout.Should().Contain("capabilities");
         stdout.Should().Contain("collect");

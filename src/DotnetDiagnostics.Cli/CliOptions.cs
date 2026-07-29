@@ -244,6 +244,39 @@ internal sealed record CliOptions
     /// <summary>Top-N hotspots to include in the <c>export-summary</c> output (<c>--top-hotspots</c>). Null applies the default (10).</summary>
     public int? TopHotspots { get; init; }
 
+    /// <summary>Docker container name/id to bootstrap a sidecar against (<c>--target-container</c>).</summary>
+    public string? TargetContainer { get; init; }
+
+    /// <summary>Explicit Docker container name for the sidecar (<c>--sidecar-name</c>).</summary>
+    public string? SidecarName { get; init; }
+
+    /// <summary>Docker image reference for the sidecar (<c>--sidecar-image</c>).</summary>
+    public string? SidecarImage { get; init; }
+
+    /// <summary>External-profile name to print for the central config (<c>--profile-name</c>).</summary>
+    public string? ProfileName { get; init; }
+
+    /// <summary>Exact URL the central should use for <c>Orchestrator:ExternalMcpProfiles:&lt;name&gt;:Url</c> (<c>--profile-url</c>).</summary>
+    public string? ProfileUrl { get; init; }
+
+    /// <summary>Operator-supplied sidecar bearer token override (<c>--bearer-token</c>). When omitted, the CLI generates one.</summary>
+    public string? BootstrapBearerToken { get; init; }
+
+    /// <summary>Operator-supplied scope-delegation shared secret override (<c>--delegation-key</c>). When omitted, the CLI generates one.</summary>
+    public string? BootstrapDelegationKey { get; init; }
+
+    /// <summary>Explicit CIDR allowlist entries for the emitted central profile config (<c>--allow-cidr</c>, repeatable).</summary>
+    public IReadOnlyList<string> AllowedCidrs { get; init; } = Array.Empty<string>();
+
+    /// <summary>Host port published for the sidecar's <c>8080</c> listener (<c>--host-port</c>). Null applies the default (18891).</summary>
+    public int? HostPort { get; init; }
+
+    /// <summary>Maximum seconds to wait for the sidecar health check to report healthy (<c>--wait</c>). Null applies the default (90).</summary>
+    public int? WaitSeconds { get; init; }
+
+    /// <summary>Opt out of <c>SYS_PTRACE</c> on the sidecar (<c>--no-sys-ptrace</c>). Default off.</summary>
+    public bool NoSysPtrace { get; init; }
+
     /// <summary>
     /// Opt-in <c>--launch</c> dev mode (issue #365): re-launch the target as a child of the CLI so
     /// ClrMD live attach is permitted under Yama <c>ptrace_scope=1</c> with zero privilege. The program
@@ -432,6 +465,16 @@ internal sealed record CliOptions
             new StringOptionDescriptor((state, value) => state.Hypothesis = value, "--hypothesis"),
             new IntOptionDescriptor((state, value) => state.MaxToolCalls = value, "--max-tool-calls"),
             new IntOptionDescriptor((state, value) => state.TopHotspots = value, "--top-hotspots"),
+            new StringOptionDescriptor((state, value) => state.TargetContainer = value, "--target-container"),
+            new StringOptionDescriptor((state, value) => state.SidecarName = value, "--sidecar-name"),
+            new StringOptionDescriptor((state, value) => state.SidecarImage = value, "--sidecar-image"),
+            new StringOptionDescriptor((state, value) => state.ProfileName = value, "--profile-name"),
+            new StringOptionDescriptor((state, value) => state.ProfileUrl = value, "--profile-url"),
+            new StringOptionDescriptor((state, value) => state.BootstrapBearerToken = value, "--bearer-token"),
+            new StringOptionDescriptor((state, value) => state.BootstrapDelegationKey = value, "--delegation-key"),
+            new StringOptionDescriptor((state, value) => state.AllowedCidrs.Add(value), "--allow-cidr"),
+            new IntOptionDescriptor((state, value) => state.HostPort = value, "--host-port"),
+            new IntOptionDescriptor((state, value) => state.WaitSeconds = value, "--wait"),
             new IntOptionDescriptor((state, value) => state.TopTypes = value, "--top-types"),
             new IntOptionDescriptor((state, value) => state.RetentionPathLimit = value, "--retention-path-limit"),
             new StringOptionDescriptor((state, value) => state.Providers.Add(value), "--provider"),
@@ -449,6 +492,7 @@ internal sealed record CliOptions
             new FlagOptionDescriptor(state => state.ResolveMethodInstantiations = true, "--resolve-method-instantiations"),
             new LongOptionDescriptor((state, value) => state.NativeAllocSamplePeriod = value, "--native-alloc-sample-period"),
             new IntOptionDescriptor((state, value) => state.MaxFramesPerThread = value, "--max-frames-per-thread"),
+            new FlagOptionDescriptor(state => state.NoSysPtrace = true, "--no-sys-ptrace"),
             new FlagOptionDescriptor(state => state.IncludeRuntimeFrames = true, "--include-runtime-frames"),
             new FlagOptionDescriptor(state => state.IncludeNativeFrames = true, "--include-native-frames"),
             new StringOptionDescriptor((state, value) => state.DumpType = value, "--dump-type"),
@@ -626,6 +670,28 @@ internal sealed record CliOptions
 
         public int? TopHotspots { get; set; }
 
+        public string? TargetContainer { get; set; }
+
+        public string? SidecarName { get; set; }
+
+        public string? SidecarImage { get; set; }
+
+        public string? ProfileName { get; set; }
+
+        public string? ProfileUrl { get; set; }
+
+        public string? BootstrapBearerToken { get; set; }
+
+        public string? BootstrapDelegationKey { get; set; }
+
+        public List<string> AllowedCidrs { get; } = new();
+
+        public int? HostPort { get; set; }
+
+        public int? WaitSeconds { get; set; }
+
+        public bool NoSysPtrace { get; set; }
+
         public bool Launch { get; set; }
 
         public bool SuspendStartup { get; set; }
@@ -704,6 +770,17 @@ internal sealed record CliOptions
                 Hypothesis = Hypothesis,
                 MaxToolCalls = MaxToolCalls,
                 TopHotspots = TopHotspots,
+                TargetContainer = TargetContainer,
+                SidecarName = SidecarName,
+                SidecarImage = SidecarImage,
+                ProfileName = ProfileName,
+                ProfileUrl = ProfileUrl,
+                BootstrapBearerToken = BootstrapBearerToken,
+                BootstrapDelegationKey = BootstrapDelegationKey,
+                AllowedCidrs = AllowedCidrs,
+                HostPort = HostPort,
+                WaitSeconds = WaitSeconds,
+                NoSysPtrace = NoSysPtrace,
                 Launch = Launch,
                 SuspendStartup = SuspendStartup,
                 LaunchArgs = LaunchArgs ?? (IReadOnlyList<string>)Array.Empty<string>(),
