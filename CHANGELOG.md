@@ -2,6 +2,90 @@
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-07-29
+
+Highlights: **External investigations go transport-neutral (issue #704).** The investigation
+proxy model — handles, leases, authorization, snapshot drilldowns — no longer assumes a
+Kubernetes orchestrator sidecar. An operator can now point the server at any SSRF-safe,
+operator-configured external MCP endpoint (including a plain local Docker sidecar spun up with
+a new one-command CLI bootstrap) and get the same proxied tool surface, lease lifecycle, and
+authorization guarantees as the Kubernetes path — validated end-to-end by a real Docker
+acceptance workflow, not just unit coverage.
+
+### Added
+- **Transport-neutral investigation handle and proxy model** (#704, #728) — investigation
+  handles, the proxy call-tool filter, and authorization no longer hard-depend on the Kubernetes
+  orchestrator; the same lifecycle now serves any external MCP transport.
+- **SSRF-safe operator-configured external MCP transport provider** (#729) — operators can
+  register arbitrary external MCP endpoints (e.g. a local Docker sidecar) subject to an
+  allowlist/validation gate, closing the SSRF surface that an unrestricted endpoint would open.
+- **External MCP profiles exposed through the existing tool surface** (#711, #730) — external
+  profiles are discoverable and selectable through the same `inspect_process`/orchestrator tool
+  surface used for Kubernetes pods, with no new tools added.
+- **Docker passthrough acceptance workflow for external investigations** (#712, #733) — a real
+  containerized end-to-end test drives an external MCP profile through a live Docker sidecar in
+  CI, catching integration bugs (shared `DelegationKey` vs. per-handle key, response envelope
+  shape, missing `orchestrator-admin` scope) that unit tests alone had missed.
+- **Idle and absolute lease normalization for investigation handles** (#709, #734) — handles now
+  track `AttachDeadline`, `LastSuccessfulUseAt`, `IdleExpiresAt`, and `AbsoluteExpiresAt`
+  separately via a shared `InvestigationLeasePolicy`, touch on successful calls only, and expire
+  atomically and race-safely under the background reaper.
+- **`docker-bootstrap` CLI subcommand** (#737, #739) — `dotnet-diagnostics-cli docker-bootstrap`
+  launches a local Docker sidecar mirroring the target's UID/GID, generates bearer/DelegationKey
+  secrets, and prints a ready-to-use config block, with best-effort cleanup if startup is
+  cancelled or fails health checks.
+- **`gc-storm` scenario added to the evaluation catalog** (#732) — new GC/LOH evidence fixtures
+  with live-capture support, growing the diagnostic scenario catalog used to exercise the LLM
+  investigation loop.
+- **Advisory prototype for scenario agent-response mapping** (#736, #738) — an additive,
+  non-wired prototype (`AgentResponseInterpreter`) that maps free-text agent responses to
+  scenario hypotheses, with negation-aware suppression and graceful handling of empty input.
+- **Process-isolated nightly/manual scenario evaluation runner** (#735, #740) — a dedicated
+  script and `workflow_dispatch`/schedule-only GitHub Actions workflow runs the scenario
+  catalog in an isolated process per scenario, distinguishing genuine crashes from assertion
+  failures.
+
+### Changed
+- **Structured MCP tool failures now classified as errors** (#714) — structured failure
+  envelopes (including task-augmented tool execution) are now marked `isError=true`, while
+  successful, confirmation-required, and elicitation outcomes are unaffected.
+- **Proxy authorization parity enforced across execution paths** (#722) — a single
+  argument-aware scope resolver now governs local, routed, direct-proxy, task, and batch
+  execution, propagating request-bound caller authorization without forwarding caller
+  credentials or widening scope.
+- **Bounded, prioritized diagnostic response shapes** (#721) — thread, lock, CPU call-tree,
+  signal, and retention projections are now bounded for LLM-oriented responses, with stable
+  cursor pagination preserving omitted evidence.
+- **Triage topology and growth signals are now target-aware** (#718) — triage/sweep/CLI
+  projections use the target runtime's `ProcessorCount` instead of the sidecar/collector's,
+  and report material sustained heap/LOH/working-set growth signals.
+- **Bounded LOH and exact GC evidence surfaced in `collect_batch`** (#719) — paired batch
+  captures now surface bounded LOH/GC evidence inline with explicitly labeled Gen2 scopes.
+- **Baseline hotspot comparison semantics corrected** (#715) — running/waiting hotspot evidence
+  is compared together with symptom metrics, avoiding false `no_change`/`no_regression`
+  classifications on unrelated hotspot turnover.
+- **Replica counter fan-out now selects processes per investigation handle** (#720) — each
+  handle stores a transport-neutral process selector, resolving all replica selectors
+  concurrently and isolating per-pod selector timeouts.
+- **CLI diagnostic output contracts aligned** (#713) — bounded thread-snapshot evidence, `--top`
+  / `--top-types` handling, and one-shot handle limitation messaging are now consistent across
+  query views.
+- **ClrMD bumped to `Microsoft.Diagnostics.Runtime` 4.0.732401** (#683, #688) — includes
+  enabling the new version's lock-free memory-mapped reader for dump-file loads.
+
+### Fixed
+- **Docker health probe uses the server's built-in health-check command** (#706) — replaces the
+  unavailable `wget`-based healthcheck in Docker Compose and local sidecar topologies.
+- **Cold-start Unix reverse diagnostic socket lifecycle hardened** (#716) — overlong socket
+  paths are shortened safely, cold-start launch errors surface actionably instead of throwing,
+  and launcher-owned sockets/FIFOs are cleaned up on cancellation, failure, kill, or exit.
+- **Crash-guard preserved in local Docker topology** (#717) — a stable PID-anchor Compose
+  topology keeps the sidecar alive long enough to return the crash-guard envelope and snapshot
+  handle after the target's PID 1 exits.
+- **Detach→reattach port/token conflict from stale ephemeral containers** (#726).
+- **Flaky attach-limiter test PID collision across test classes** (#684, #687).
+- **Flaky `CollectBatch` Gen2/meter evidence test stabilized** (#724).
+
 ## [0.19.0] — 2026-07-21
 
 Highlights: **Unified ephemeral-process capture (issue #665).** Diagnosing a short-lived process
