@@ -118,17 +118,19 @@ Bootstrap a **local Docker sidecar** for an already-running target container, th
 Implementation details:
 
 - attaches the sidecar to the target with `docker run --pid container:<target> ...`;
-- bind-mounts `/proc/<target-host-pid>/root/tmp` into the sidecar's `/tmp` so the target's diagnostic
-  socket is visible even when the target was not started from a pre-authored compose file;
-- reads the target's effective UID/GID from `/proc/<pid>/status` and mirrors it onto the sidecar's
-  `--user`, matching the diagnostic-socket ownership contract;
+- runs a short-lived probe from the sidecar image with `--pid host`, reads the target's effective
+  UID/GID and inner namespace PID from `/proc/<host-pid>/status`, and mirrors the identity onto the
+  persistent sidecar's `--user`;
+- sets the sidecar's `TMPDIR=/proc/<target-namespace-pid>/root/tmp`, so the target diagnostic socket is visible through the
+  shared PID namespace without a host `/proc` bind mount or pre-authored shared volume;
 - sets `DOTNET_EnableDiagnostics=0` on the sidecar so the sidecar's own socket is suppressed.
 
-Host constraint: this requires the **outer** host to read `/proc/<pid>/status`
-and `/proc/<pid>/root/tmp` for the PID returned by `docker inspect`. On plain
-Linux Docker hosts that works; on Docker Desktop, rootless Docker,
-Docker-in-Docker, or other VM-backed / namespaced setups it can fail even while
-the container is still running. In that case the CLI returns
+Docker constraint: the daemon must allow both `--pid host` for the constrained
+read-only probe and `--pid container:<target>` for the persistent sidecar, and
+the sidecar image must contain `/bin/cat`. The
+client shell does not need access to Linux `/proc`, so Docker Desktop works
+from native Windows PowerShell and WSL2. If the daemon rejects the namespace
+probe while the target remains running, the CLI returns
 `kind=HostProcNotAccessible`; use the manual shared-volume / compose topology
 instead.
 

@@ -131,6 +131,9 @@ notes:
   This command shells out to the local 'docker' CLI. It never gives either MCP server process
   access to /var/run/docker.sock, and it does not register the profile dynamically with the
   central — it prints the exact config block/env vars you must add there before attach_to_pod(profileName=...).
+  The Docker daemon must allow a constrained --pid host probe and joining the target PID namespace.
+  The client shell may run on Linux, native Windows, or WSL2; it does not need direct access to the
+  daemon host's /proc.
 """,
 """
   dotnet-diagnostics-cli docker-bootstrap --target-container coreclr-sample

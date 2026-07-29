@@ -10,13 +10,10 @@ public sealed class CliDockerBootstrapTests
     public async Task DockerBootstrap_BuildsExpectedDockerCommandsAndConfig()
     {
         var fake = new FakeDockerBootstrapPlatform(
-            isLinux: true,
-            fileExists: true,
-            directoryExists: true,
-            procStatus: "Name:\tapp\nUid:\t1234\t1234\t1234\t1234\nGid:\t1234\t1234\t1234\t1234\n",
             commandResults:
             [
                 new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":4321,"Status":"running"}}]""", string.Empty),
+                new CliCommands.DockerCliResult(0, "Name:\tapp\nUid:\t1234\t1234\t1234\t1234\nGid:\t1234\t1234\t1234\t1234\nNSpid:\t4321\t7\n", string.Empty),
                 new CliCommands.DockerCliResult(0, "sidecar-id\n", string.Empty),
                 new CliCommands.DockerCliResult(0, """[{"Id":"sidecar-id","Name":"/api-dotnet-diagnostics","State":{"Running":true,"Pid":5678,"Status":"running","Health":{"Status":"healthy"}}}]""", string.Empty),
             ]);
@@ -31,26 +28,38 @@ public sealed class CliDockerBootstrapTests
         var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
 
         result.IsError.Should().BeFalse();
-        fake.Invocations.Should().HaveCount(3);
+        fake.Invocations.Should().HaveCount(4);
         fake.Invocations[0].Arguments.Should().Equal("inspect", "--type", "container", "api");
-        fake.Invocations[1].Arguments.Should().ContainInOrder(
+        fake.Invocations[1].Arguments.Should().Equal(
+            "run",
+            "--rm",
+            "--network", "none",
+            "--read-only",
+            "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges",
+            "--pid", "host",
+            "--entrypoint", "/bin/cat",
+            "dotnet-diagnostics-mcp:dev",
+            "/proc/4321/status");
+        fake.Invocations[2].Arguments.Should().ContainInOrder(
             "run",
             "-d",
             "--name", "api-dotnet-diagnostics",
             "--pid", "container:api",
             "--user", "1234:1234");
-        fake.Invocations[1].Arguments.Should().Contain("--cap-add");
-        fake.Invocations[1].Arguments.Should().Contain("SYS_PTRACE");
-        fake.Invocations[1].Arguments.Should().Contain("--publish");
-        fake.Invocations[1].Arguments.Should().Contain("127.0.0.1:18892:8080");
-        fake.Invocations[1].Arguments.Should().Contain("--mount");
-        fake.Invocations[1].Arguments.Should().Contain("type=bind,src=/proc/4321/root/tmp,dst=/tmp");
-        fake.Invocations[1].Arguments.Should().Contain("dotnet-diagnostics-mcp:dev");
-        fake.Invocations[2].Arguments.Should().Equal("inspect", "--type", "container", "api-dotnet-diagnostics");
+        fake.Invocations[2].Arguments.Should().Contain("--cap-add");
+        fake.Invocations[2].Arguments.Should().Contain("SYS_PTRACE");
+        fake.Invocations[2].Arguments.Should().Contain("--publish");
+        fake.Invocations[2].Arguments.Should().Contain("127.0.0.1:18892:8080");
+        fake.Invocations[2].Arguments.Should().NotContain("--mount");
+        fake.Invocations[2].Arguments.Should().Contain("TMPDIR=/proc/7/root/tmp");
+        fake.Invocations[2].Arguments.Should().Contain("dotnet-diagnostics-mcp:dev");
+        fake.Invocations[3].Arguments.Should().Equal("inspect", "--type", "container", "api-dotnet-diagnostics");
 
         var envelope = (DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope;
         envelope.Data.Should().NotBeNull();
         envelope.Data!.ProfileName.Should().Be("api");
+        envelope.Data.TargetNamespacePid.Should().Be(7);
         envelope.Data.ProfileUrl.Should().Be("http://127.0.0.1:18892/mcp");
         envelope.Data.AllowedCidrs.Should().Equal("127.0.0.1/32");
         envelope.Data.AllowedPorts.Should().Equal(18892);
@@ -63,10 +72,6 @@ public sealed class CliDockerBootstrapTests
     public async Task DockerBootstrap_ProfileUrlHostnameWithoutAllowCidr_ReturnsUsageErrorEnvelope()
     {
         var fake = new FakeDockerBootstrapPlatform(
-            isLinux: true,
-            fileExists: true,
-            directoryExists: true,
-            procStatus: "Uid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n",
             commandResults:
             [
                 new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":4321,"Status":"running"}}]""", string.Empty),
@@ -90,16 +95,13 @@ public sealed class CliDockerBootstrapTests
     }
 
     [Fact]
-    public async Task DockerBootstrap_MissingHostProcStatusWhileContainerStillRunning_ReturnsHostProcNotAccessible()
+    public async Task DockerBootstrap_ProcStatusProbeFailureWhileContainerStillRunning_ReturnsHostProcNotAccessible()
     {
         var fake = new FakeDockerBootstrapPlatform(
-            isLinux: true,
-            fileExists: false,
-            directoryExists: true,
-            procStatus: string.Empty,
             commandResults:
             [
                 new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":4321,"Status":"running"}}]""", string.Empty),
+                new CliCommands.DockerCliResult(125, string.Empty, "cannot join PID namespace"),
                 new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":4321,"Status":"running"}}]""", string.Empty),
             ]);
 
@@ -113,27 +115,52 @@ public sealed class CliDockerBootstrapTests
         var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
 
         result.IsError.Should().BeTrue();
-        fake.Invocations.Should().HaveCount(2);
-        fake.Invocations[1].Arguments.Should().Equal("inspect", "--type", "container", "api");
+        fake.Invocations.Should().HaveCount(3);
+        fake.Invocations[2].Arguments.Should().Equal("inspect", "--type", "container", "api");
         var envelope = (DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope;
         envelope.Error.Should().NotBeNull();
         envelope.Error!.Kind.Should().Be("HostProcNotAccessible");
-        envelope.Error.Message.Should().Contain("/proc/4321/status");
+        envelope.Error.Message.Should().Contain("transient PID-namespace probe failed");
         result.Human.Should().Contain("still running");
-        envelope.Error.Message.Should().Contain("Docker Desktop");
+        envelope.Error.Message.Should().Contain("cannot join PID namespace");
     }
 
     [Fact]
-    public async Task DockerBootstrap_MissingTmpMountAfterRestart_ReturnsTargetNotRunning()
+    public async Task DockerBootstrap_ProcStatusProbeImageNotFound_ReturnsExternalDependencyFailedNotHostProcNotAccessible()
     {
         var fake = new FakeDockerBootstrapPlatform(
-            isLinux: true,
-            fileExists: true,
-            directoryExists: false,
-            procStatus: "Uid:\t1234\t1234\t1234\t1234\nGid:\t1234\t1234\t1234\t1234\n",
             commandResults:
             [
                 new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":4321,"Status":"running"}}]""", string.Empty),
+                new CliCommands.DockerCliResult(125, string.Empty, "Unable to find image 'dotnet-diagnostics-mcp:dev' locally\ndocker: Error response from daemon: pull access denied for dotnet-diagnostics-mcp, repository does not exist or may require 'docker login'"),
+            ]);
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+
+        var options = CliOptions.Parse(
+            ["docker-bootstrap", "--target-container", "api"],
+            out var error)!;
+        error.Should().BeNull();
+
+        var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        fake.Invocations.Should().HaveCount(2);
+        var envelope = (DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope;
+        envelope.Error.Should().NotBeNull();
+        envelope.Error!.Kind.Should().Be("ExternalDependencyFailed");
+        envelope.Error.Message.Should().Contain("pull access denied");
+        result.Human.Should().Contain("could not be resolved");
+    }
+
+    [Fact]
+    public async Task DockerBootstrap_ProcStatusProbeFailureAfterRestart_ReturnsTargetNotRunning()
+    {
+        var fake = new FakeDockerBootstrapPlatform(
+            commandResults:
+            [
+                new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":4321,"Status":"running"}}]""", string.Empty),
+                new CliCommands.DockerCliResult(125, string.Empty, "cannot join PID namespace"),
                 new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":5432,"Status":"running"}}]""", string.Empty),
             ]);
 
@@ -147,7 +174,7 @@ public sealed class CliDockerBootstrapTests
         var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
 
         result.IsError.Should().BeTrue();
-        fake.Invocations.Should().HaveCount(2);
+        fake.Invocations.Should().HaveCount(3);
         var envelope = (DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope;
         envelope.Error.Should().NotBeNull();
         envelope.Error!.Kind.Should().Be("TargetNotRunning");
@@ -160,10 +187,6 @@ public sealed class CliDockerBootstrapTests
     {
         using var cts = new CancellationTokenSource();
         var fake = new FakeDockerBootstrapPlatform(
-            isLinux: true,
-            fileExists: true,
-            directoryExists: true,
-            procStatus: "Uid:\t1234\t1234\t1234\t1234\nGid:\t1234\t1234\t1234\t1234\n",
             commandResults: [],
             runAsync: (invocation, callIndex, cancellationToken) =>
             {
@@ -174,16 +197,21 @@ public sealed class CliDockerBootstrapTests
 
                 if (callIndex == 1)
                 {
-                    cts.Cancel();
-                    return Task.FromResult(new CliCommands.DockerCliResult(0, "sidecar-id\n", string.Empty));
+                    return Task.FromResult(new CliCommands.DockerCliResult(0, "Uid:\t1234\t1234\t1234\t1234\nGid:\t1234\t1234\t1234\t1234\nNSpid:\t4321\t1\n", string.Empty));
                 }
 
                 if (callIndex == 2)
                 {
-                    return Task.FromCanceled<CliCommands.DockerCliResult>(cancellationToken);
+                    cts.Cancel();
+                    return Task.FromResult(new CliCommands.DockerCliResult(0, "sidecar-id\n", string.Empty));
                 }
 
                 if (callIndex == 3)
+                {
+                    return Task.FromCanceled<CliCommands.DockerCliResult>(cancellationToken);
+                }
+
+                if (callIndex == 4)
                 {
                     return Task.FromResult(new CliCommands.DockerCliResult(0, "api-dotnet-diagnostics\n", string.Empty));
                 }
@@ -202,36 +230,23 @@ public sealed class CliDockerBootstrapTests
             .Should()
             .ThrowAsync<OperationCanceledException>();
 
-        fake.Invocations.Should().HaveCount(4);
-        fake.Invocations[2].Arguments.Should().Equal("inspect", "--type", "container", "api-dotnet-diagnostics");
-        fake.Invocations[3].Arguments.Should().Equal("rm", "-f", "api-dotnet-diagnostics");
+        fake.Invocations.Should().HaveCount(5);
+        fake.Invocations[3].Arguments.Should().Equal("inspect", "--type", "container", "api-dotnet-diagnostics");
+        fake.Invocations[4].Arguments.Should().Equal("rm", "-f", "api-dotnet-diagnostics");
     }
 
     private sealed class FakeDockerBootstrapPlatform : CliCommands.IDockerBootstrapPlatform
     {
         private readonly Queue<CliCommands.DockerCliResult> _results;
-        private readonly bool _fileExists;
-        private readonly bool _directoryExists;
-        private readonly string _procStatus;
         private readonly Func<CliCommands.DockerCliInvocation, int, CancellationToken, Task<CliCommands.DockerCliResult>>? _runAsync;
 
         public FakeDockerBootstrapPlatform(
-            bool isLinux,
-            bool fileExists,
-            bool directoryExists,
-            string procStatus,
             IEnumerable<CliCommands.DockerCliResult> commandResults,
             Func<CliCommands.DockerCliInvocation, int, CancellationToken, Task<CliCommands.DockerCliResult>>? runAsync = null)
         {
-            IsLinux = isLinux;
-            _fileExists = fileExists;
-            _directoryExists = directoryExists;
-            _procStatus = procStatus;
             _results = new Queue<CliCommands.DockerCliResult>(commandResults);
             _runAsync = runAsync;
         }
-
-        public bool IsLinux { get; }
 
         public List<CliCommands.DockerCliInvocation> Invocations { get; } = [];
 
@@ -242,12 +257,5 @@ public sealed class CliDockerBootstrapTests
                 ? _runAsync(invocation, Invocations.Count - 1, cancellationToken)
                 : Task.FromResult(_results.Dequeue());
         }
-
-        public Task<string> ReadAllTextAsync(string path, CancellationToken cancellationToken)
-            => Task.FromResult(_procStatus);
-
-        public bool FileExists(string path) => _fileExists;
-
-        public bool DirectoryExists(string path) => _directoryExists;
     }
 }

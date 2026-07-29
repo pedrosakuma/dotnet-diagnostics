@@ -588,9 +588,11 @@ old generic `TargetNotRunning` misclassification:
 }
 ```
 
-That matched the documented VM-backed `/proc` limitation in
-[`external-investigation-docker.md`](../external-investigation-docker.md#host-proc-accessibility-limitation),
-so it is no longer evidence of a remaining product bug on this host.
+That result identified the outer-host `/proc` dependency that #748 later
+removed. `docker-bootstrap` now probes UID/GID and the target's inner PID from
+a short-lived container in the daemon host PID namespace and points the
+sidecar's `TMPDIR` at `/proc/<target-namespace-pid>/root/tmp`, so neither native
+Windows PowerShell nor WSL2 needs direct access to Docker Desktop's VM `/proc`.
 
 The manual external-profile fallback still validated the actual passthrough path
 end to end against `loh-alloc` in four MCP calls:
