@@ -547,16 +547,12 @@ This pass focused on the live scenarios tied directly to the closed UX
 issues. The separate `compare_to_baseline` correction (#692 / PR #715) was not
 re-measured here.
 
-> **`cpu-burn` re-measurement held back.** This run confirmed the triage fix
-> for `cpu-burn` (#697 / PR #718 — no longer reports the process as healthy),
-> but the same run reconfirmed the pre-existing `SHA256` call-tree doc/fixture
-> drift, now tracked as [#742](https://github.com/pedrosakuma/dotnet-diagnostics/issues/742).
-> The full `cpu-burn` row, the external-investigation passthrough validation,
-> and the bearer-token finding below are held out of this publish pending
-> [#741](https://github.com/pedrosakuma/dotnet-diagnostics/issues/741),
-> [#742](https://github.com/pedrosakuma/dotnet-diagnostics/issues/742), and
-> [#743](https://github.com/pedrosakuma/dotnet-diagnostics/issues/743) — they
-> will be re-measured and published once those are fixed.
+**Date of this update:** 2026-07-29 (final rerun after
+[#741](https://github.com/pedrosakuma/dotnet-diagnostics/issues/741),
+[#742](https://github.com/pedrosakuma/dotnet-diagnostics/issues/742), and
+[#743](https://github.com/pedrosakuma/dotnet-diagnostics/issues/743), using
+the published `ghcr.io/pedrosakuma/dotnet-diagnostics:edge` image for the MCP
+containers and a locally built `badcode-sample:dev` target).
 
 | Scenario | Steps to root cause | Notes / deltas vs 2026-07-24 | Status |
 |---|---:|---|---|
@@ -564,10 +560,73 @@ re-measured here.
 | leak | 3 | Triage no longer said “healthy”: it emitted `memory.intra-window-growth` / `memory.footprint-growth` with **gc-heap-size 18.37→43.77 MB** and **LOH 16.78→29.36 MB** during the window (#697 / PR #718). `inspect_heap(source="live", includeRetentionPaths=true)` plus one object drilldown still reached `System.Collections.Generic.List<System.Byte[]>._items -> System.Byte[][] -> System.Byte[]`. | pass |
 | loh-alloc | 1 | `collect_batch` now surfaced the decisive evidence inline in one call: **34 Gen2 collections** and **3 LOH/GC-specific counters** (`loh-size`, `gen-2-gc-count`, fragmentation) instead of hiding LOH evidence behind a follow-up drill (#698 / PR #719, #703 / PR #721). | pass |
 | culture-lookup | 2 | Triage now emitted `cpu.effective-core-consumption` (**0.97 cores**) and suggested CPU sampling instead of misrouting toward activities (#697 / PR #718). The follow-up CPU sample’s inline signal directly named `System.Globalization.CompareInfo.IcuGetHashCodeOfString(...)` at **49.1%** self-time, so the diagnosis no longer needed a call-tree drill just to discover the hot method (#703 / PR #721). | pass |
+| cpu-burn | 3 | Triage now emitted `cpu.effective-core-consumption` (**1.01 cores**) and routed directly to CPU sampling (#697 / PR #718). The rooted follow-up tree still localized running self-time to `Program+<>c.<<Main>$>b__0_4(...)`; reruns showed crypto child frames only as 0–2 sample noise (`SHA256.HashData(...)`, `Interop+Crypto.HashAlgorithmToEvp(...)`, or none), so [`bad-code-scenarios.md`](../bad-code-scenarios.md) is now accurate to treat the endpoint lambda as the stable signal instead of promising a visible SHA256 leaf (#742 / PR #746). | pass |
 | sync-over-async (spot-check) | 2 executed | Stronger load reproduced **87 likely blocked** threads, but this quick summary-mode recheck did not cleanly re-derive the old `GetResult` stack group; the original 3-step result remains the better historical measurement. | inconclusive spot-check |
 | lock-storm (spot-check) | 1 | `collect_thread_snapshot(depth="detail")` still showed the sleeping owner inline: `Program+<>c__DisplayClass0_3.<<Main>$>b__47()` under `Thread.Sleep`, with **20 blocked waiters**. | pass |
 | exceptions (spot-check) | 1 | Still attributed all **2,000** events to `System.FormatException` with the repeated `'not-a-number'` parse failure in one call. | pass |
 | slow-http (spot-check) | 1 | Still correlated the full `System.Net.Http` request lifecycle in one call, with `Request/Start` → `ResponseHeaders/Start` spanning about **3.06 s** against `/slow-hang?seconds=3`. | pass |
+
+### External-investigation passthrough (issue #704) — validation
+
+This rerun first exercised the recommended operator flow from #737 / PR #739:
+start a standalone `BadCodeSample` container, run
+`dotnet-diagnostics-cli docker-bootstrap --target-container <name>`, restart
+the central MCP with the emitted external-profile config, then
+`list_orchestrator(kind="external-profiles")` → `attach_to_pod(...)`.
+
+On this Docker Desktop host, `docker-bootstrap` still failed before creating a
+sidecar, but now with the new precise result from #743 / PR #745 instead of the
+old generic `TargetNotRunning` misclassification:
+
+```json
+{
+  "summary": "Target container 'extbs-target' is still running, but this host cannot read its host /proc status file.",
+  "error": {
+    "kind": "HostProcNotAccessible",
+    "message": "docker inspect still reports Running=true and Pid=59463, but /proc/59463/status is not readable from the host. This commonly happens on Docker Desktop, rootless Docker, Docker-in-Docker, or other VM-backed / namespaced Docker hosts where /proc/<pid>/root is not exposed to the outer host namespace."
+  }
+}
+```
+
+That matched the documented VM-backed `/proc` limitation in
+[`external-investigation-docker.md`](../external-investigation-docker.md#host-proc-accessibility-limitation),
+so it is no longer evidence of a remaining product bug on this host.
+
+The manual external-profile fallback still validated the actual passthrough path
+end to end against `loh-alloc` in four MCP calls:
+
+1. `list_orchestrator(kind="external-profiles")`
+2. `attach_to_pod(profileName="sidecar")`
+3. `collect_batch(investigationHandleId=..., requests=[counters,gc])`
+4. `detach_from_pod(handleId=...)`
+
+With only the central MCP published on the host, the routed
+`collect_batch` call still returned the decisive LOH signal through the
+central: **39 Gen2 collections**, **1.025 s** total GC pause, **56.0 ms** max
+pause, **7.20 MB** LOH, and **69.1%** GC fragmentation. Compared with the
+direct sidecar `loh-alloc` path, this still costs two extra MCP calls (attach +
+detach) plus one-time operator bootstrap/restart work, but the environment
+failure mode is now clearly diagnosed and correctly documented.
+
+### Notes on the previously held findings
+
+- **Legacy token / loopback scope behavior (#741).** Repeating the published-via-
+  `docker -p` sidecar scenario with only `MCP_BEARER_TOKEN=dev-token` now
+  matched [`authorization.md`](../authorization.md): live heap retention was
+  rejected because the legacy `root` token did **not** satisfy the literal
+  `sensitive-heap-read` modifier scope (`principal 'legacy-root' presented
+  [root]`). Adding explicit `Auth__BearerTokens__0__Scopes__*` entries
+  (`read-counters`, `eventpipe`, `heap-read`, `ptrace`,
+  `sensitive-heap-read`, `dump-write`, `investigation-export`) immediately
+  re-enabled `inspect_heap(source="live", includeRetentionPaths=true)`. Plain
+  CPU `query_snapshot(view="call-tree")` remained allowed in this rerun because
+  it stayed within primary scopes, so the current behavior and docs now line up
+  without a product change.
+- **`cpu-burn` doc drift (#742).** The endpoint lambda remained the decisive
+  rooted hotspot on every rerun; occasional crypto children appeared only as
+  0–2 sample noise and were not stable enough to treat as the investigative
+  fingerprint. The doc fix was therefore the right one: rely on the hot lambda,
+  not on a guaranteed visible `SHA256` leaf.
 
 **UX notes.**
 
@@ -580,4 +639,3 @@ re-measured here.
 - `collect_batch` is materially better for LOH churn now that its bounded inline
   summary keeps the Gen2 / LOH evidence up front rather than forcing an
   immediate drilldown for the basic story.
-
