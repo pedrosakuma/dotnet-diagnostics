@@ -2,7 +2,7 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
 public sealed record AgentResponseMappingRequest(
     string ScenarioId,
-    string FreeTextResponse,
+    string? FreeTextResponse,
     string? EvidenceFixturePath = null);
 
 public sealed record AgentResponseInterpretation(

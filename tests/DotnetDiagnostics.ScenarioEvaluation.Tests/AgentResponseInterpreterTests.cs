@@ -36,6 +36,18 @@ public sealed class AgentResponseInterpreterTests
     }
 
     [Fact]
+    public void AgentResponse_SyncOverAsync_DoesNotMapNegatedCpuBoundToForbiddenHypothesis()
+    {
+        var result = interpreter.Interpret(
+            "sync-over-async",
+            "This likely is sync-over-async: the service is not CPU bound, the ThreadPool queue keeps growing, and GetAwaiter().GetResult is blocking workers.");
+
+        result.Interpretation.HypothesisIds.Should().Contain("threadpool-starvation-from-sync-over-async");
+        result.Interpretation.HypothesisIds.Should().NotContain("cpu-compute-demand");
+        result.Interpretation.ConclusionIds.Should().NotContain("cpu-compute-demand");
+    }
+
+    [Fact]
     public void AgentResponse_LockStorm_MapsContendedMonitorAndSleepingOwnerEvidence()
     {
         var result = interpreter.Interpret(
@@ -74,5 +86,21 @@ public sealed class AgentResponseInterpreterTests
         var result = interpreter.Interpret(scenarioId, response);
 
         result.Uncertainty.Disposition.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void AgentResponse_EmptyOrWhitespaceResponse_DegradesGracefully(string response)
+    {
+        var result = interpreter.Interpret("sync-over-async", response);
+
+        result.EvidenceCitations.Should().BeEmpty();
+        result.Interpretation.EvidenceIds.Should().BeEmpty();
+        result.Interpretation.HypothesisIds.Should().BeEmpty();
+        result.Interpretation.AttributionIds.Should().BeEmpty();
+        result.Interpretation.NextActionIds.Should().BeEmpty();
+        result.Interpretation.CausalityPosture.Should().Be("unmapped");
+        result.Uncertainty.Disposition.Should().Be(AgentResponseUncertaintyDisposition.NoneDetected);
     }
 }

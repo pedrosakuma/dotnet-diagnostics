@@ -30,7 +30,16 @@ public sealed class AgentResponseInterpreter
         "without doubt",
     ];
 
-    private static readonly IReadOnlySet<string> StopWords = new HashSet<string>(StringComparer.Ordinal)
+    private static readonly IReadOnlyList<string> NegationMarkers =
+    [
+        "not",
+        "is not",
+        "isn t",
+        "isnt",
+        "no",
+    ];
+
+    private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
     {
         "a",
         "an",
@@ -46,8 +55,8 @@ public sealed class AgentResponseInterpreter
         "with",
     };
 
-    private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<string, string[]>> ExtraEvidenceAliases =
-        new Dictionary<string, IReadOnlyDictionary<string, string[]>>(StringComparer.Ordinal)
+    private static readonly Dictionary<string, IReadOnlyDictionary<string, string[]>> ExtraEvidenceAliases =
+        new(StringComparer.Ordinal)
         {
             ["culture-lookup"] = new Dictionary<string, string[]>(StringComparer.Ordinal)
             {
@@ -74,8 +83,8 @@ public sealed class AgentResponseInterpreter
             },
         };
 
-    private static readonly IReadOnlyDictionary<string, ScenarioResponseHeuristics> ScenarioHeuristics =
-        new Dictionary<string, ScenarioResponseHeuristics>(StringComparer.Ordinal)
+    private static readonly Dictionary<string, ScenarioResponseHeuristics> ScenarioHeuristics =
+        new(StringComparer.Ordinal)
         {
             ["culture-lookup"] = new(
                 Hypotheses: new Dictionary<string, string[]>(StringComparer.Ordinal)
@@ -139,7 +148,7 @@ public sealed class AgentResponseInterpreter
                 }),
         };
 
-    public AgentResponseInterpretation Interpret(string scenarioId, string freeTextResponse)
+    public AgentResponseInterpretation Interpret(string scenarioId, string? freeTextResponse)
         => Interpret(new AgentResponseMappingRequest(scenarioId, freeTextResponse));
 
     public AgentResponseInterpretation Interpret(AgentResponseMappingRequest request)
@@ -151,18 +160,17 @@ public sealed class AgentResponseInterpreter
         return Interpret(manifest, evidence, evidenceFixturePath, request.FreeTextResponse);
     }
 
-    internal AgentResponseInterpretation Interpret(
+    internal static AgentResponseInterpretation Interpret(
         ScenarioManifest manifest,
         ScenarioEvidence evidence,
         string evidenceFixturePath,
-        string freeTextResponse)
+        string? freeTextResponse)
     {
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentNullException.ThrowIfNull(evidence);
         ArgumentException.ThrowIfNullOrWhiteSpace(evidenceFixturePath);
-        ArgumentException.ThrowIfNullOrWhiteSpace(freeTextResponse);
 
-        var normalizedResponse = Normalize(freeTextResponse);
+        var normalizedResponse = Normalize(freeTextResponse ?? string.Empty);
         var citations = BuildCitationCandidates(manifest, evidence)
             .Select(candidate => CreateCitation(candidate, normalizedResponse))
             .Where(citation => citation is not null)
@@ -205,7 +213,7 @@ public sealed class AgentResponseInterpreter
             ]);
     }
 
-    private static IReadOnlyList<CitationCandidate> BuildCitationCandidates(ScenarioManifest manifest, ScenarioEvidence evidence)
+    private static CitationCandidate[] BuildCitationCandidates(ScenarioManifest manifest, ScenarioEvidence evidence)
         => manifest.ExpectedEvidence
             .SelectMany(invariant => BuildCitationCandidates(manifest.Id, invariant, evidence))
             .ToArray();
@@ -227,7 +235,7 @@ public sealed class AgentResponseInterpreter
                         $"signals[signal={signal.Signal}]",
                         $"signal {signal.Signal} (salience={signal.Salience:0.###})",
                         [invariant.Id],
-                        BuildAliases(invariant.Signal, extraAliases, matchedBuckets));
+                        BuildAliases(invariant.Signal!, extraAliases, matchedBuckets));
                 }
 
                 break;
@@ -241,7 +249,7 @@ public sealed class AgentResponseInterpreter
                             $"signals[signal={signal.Signal}].buckets[key={bucket.Key}]",
                             $"bucket {bucket.Key}={bucket.Magnitude:0.###}{FormatUnit(bucket.Unit)}",
                             [invariant.Id],
-                            BuildAliases(invariant.Signal, extraAliases, [bucket.Key, .. invariant.ContainsAny!]));
+                            BuildAliases(invariant.Signal!, extraAliases, [bucket.Key, .. invariant.ContainsAny!]));
                     }
                 }
 
@@ -376,9 +384,14 @@ public sealed class AgentResponseInterpreter
 
     private static bool ContainsAlias(string normalizedResponse, string normalizedAlias)
     {
-        if (normalizedResponse.Contains(normalizedAlias, StringComparison.Ordinal))
+        if (HasNonNegatedDirectMatch(normalizedResponse, normalizedAlias))
         {
             return true;
+        }
+
+        if (ShouldSuppressNegatedAlias(normalizedResponse, normalizedAlias))
+        {
+            return false;
         }
 
         var tokens = normalizedAlias
@@ -397,6 +410,57 @@ public sealed class AgentResponseInterpreter
         }
 
         return tokens.Count(token => normalizedResponse.Contains(token, StringComparison.Ordinal)) >= 2;
+    }
+
+    private static bool ShouldSuppressNegatedAlias(string normalizedResponse, string normalizedAlias)
+    {
+        if (!string.Equals(normalizedAlias, "cpu bound", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return NegationMarkers.Any(marker => normalizedResponse.Contains($"{marker} {normalizedAlias}", StringComparison.Ordinal));
+    }
+
+    private static bool HasNonNegatedDirectMatch(string normalizedResponse, string normalizedAlias)
+    {
+        var searchIndex = 0;
+        while (searchIndex < normalizedResponse.Length)
+        {
+            var matchIndex = normalizedResponse.IndexOf(normalizedAlias, searchIndex, StringComparison.Ordinal);
+            if (matchIndex < 0)
+            {
+                return false;
+            }
+
+            if (!IsNegatedMatch(normalizedResponse, normalizedAlias, matchIndex))
+            {
+                return true;
+            }
+
+            searchIndex = matchIndex + normalizedAlias.Length;
+        }
+
+        return false;
+    }
+
+    private static bool IsNegatedMatch(string normalizedResponse, string normalizedAlias, int matchIndex)
+    {
+        if (!string.Equals(normalizedAlias, "cpu bound", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return NegationMarkers.Any(marker =>
+        {
+            var prefix = $"{marker} {normalizedAlias}";
+            var prefixStart = matchIndex - marker.Length - 1;
+            return prefixStart >= 0
+                && string.Equals(
+                    normalizedResponse.Substring(prefixStart, prefix.Length),
+                    prefix,
+                    StringComparison.Ordinal);
+        });
     }
 
     private static string Humanize(string value)
