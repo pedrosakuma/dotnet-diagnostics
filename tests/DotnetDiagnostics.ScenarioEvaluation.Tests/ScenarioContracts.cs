@@ -167,5 +167,7 @@ public sealed record ScenarioEvaluationReport(
 [JsonSerializable(typeof(ScenarioManifest))]
 [JsonSerializable(typeof(ScenarioEvidence))]
 [JsonSerializable(typeof(StructuredInterpretation))]
+[JsonSerializable(typeof(AgentResponseMappingRequest))]
+[JsonSerializable(typeof(AgentResponseInterpretation))]
 [JsonSerializable(typeof(ScenarioEvaluationReport))]
 internal sealed partial class ScenarioJsonContext : JsonSerializerContext;

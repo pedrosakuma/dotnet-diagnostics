@@ -21,6 +21,16 @@ public static class ScenarioJson
             ?? throw new InvalidDataException($"Structured interpretation '{path}' was empty.");
     }
 
+    public static AgentResponseMappingRequest ReadAgentResponseRequest(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return JsonSerializer.Deserialize(stream, ScenarioJsonContext.Default.AgentResponseMappingRequest)
+            ?? throw new InvalidDataException($"Agent response request '{path}' was empty.");
+    }
+
+    public static string SerializeAgentResponseInterpretation(AgentResponseInterpretation interpretation)
+        => JsonSerializer.Serialize(interpretation, ScenarioJsonContext.Default.AgentResponseInterpretation);
+
     public static void WriteEvidence(string path, ScenarioEvidence evidence)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
