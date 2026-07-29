@@ -610,6 +610,35 @@ direct sidecar `loh-alloc` path, this still costs two extra MCP calls (attach +
 detach) plus one-time operator bootstrap/restart work, but the environment
 failure mode is now clearly diagnosed and correctly documented.
 
+#### Post-#750 recommended-path confirmation — 2026-07-29
+
+A fresh WSL2 / Docker Desktop rerun from merged commit `a4c7b67` completed the
+full recommended path without the manual fallback. The non-root WSL2 shell ran
+`docker-bootstrap` against a standalone `BadCodeSample`; it discovered host PID
+8521 and namespace PID 1, set `TMPDIR=/proc/1/root/tmp`, started a healthy
+same-UID sidecar with `SYS_PTRACE`, and emitted a Docker command with no
+`/proc` bind mount. A Dockerized central MCP then used the emitted
+`host.docker.internal` URL, bearer token, delegation key, port 28892 allowlist,
+and `192.168.65.254/32` CIDR allowlist.
+
+The external investigation succeeded in **four MCP tool calls** (the
+initialize handshake and operator build/start/bootstrap/restart commands are
+not tool calls):
+
+1. `list_orchestrator(kind="external-profiles")` listed
+   `smoke750-sidecar`.
+2. `attach_to_pod(profileName="smoke750-sidecar")` returned an Active handle.
+3. Routed `collect_batch(investigationHandleId=..., requests=[counters,gc])`
+   against PID 1 observed **33 Gen2 collections**, **1.015 s** total GC pause,
+   **57.5 ms** max pause, **3.80 MB** LOH, and **61.4%** GC fragmentation
+   during `loh-alloc` load.
+4. `detach_from_pod(handleId=...)` transitioned the handle from Active to
+   Closed and released the external transport.
+
+This confirms that #748 / PR #750 removed the Docker Desktop bootstrap blocker
+and that the generated profile works through central attach, routed collection,
+and detach—not only through sidecar health.
+
 ### Notes on the previously held findings
 
 - **Legacy token / loopback scope behavior (#741).** Repeating the published-via-
