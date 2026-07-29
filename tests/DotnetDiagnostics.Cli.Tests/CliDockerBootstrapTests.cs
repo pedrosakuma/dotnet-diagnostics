@@ -90,6 +90,72 @@ public sealed class CliDockerBootstrapTests
     }
 
     [Fact]
+    public async Task DockerBootstrap_MissingHostProcStatusWhileContainerStillRunning_ReturnsHostProcNotAccessible()
+    {
+        var fake = new FakeDockerBootstrapPlatform(
+            isLinux: true,
+            fileExists: false,
+            directoryExists: true,
+            procStatus: string.Empty,
+            commandResults:
+            [
+                new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":4321,"Status":"running"}}]""", string.Empty),
+                new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":4321,"Status":"running"}}]""", string.Empty),
+            ]);
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+
+        var options = CliOptions.Parse(
+            ["docker-bootstrap", "--target-container", "api"],
+            out var error)!;
+        error.Should().BeNull();
+
+        var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        fake.Invocations.Should().HaveCount(2);
+        fake.Invocations[1].Arguments.Should().Equal("inspect", "--type", "container", "api");
+        var envelope = (DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope;
+        envelope.Error.Should().NotBeNull();
+        envelope.Error!.Kind.Should().Be("HostProcNotAccessible");
+        envelope.Error.Message.Should().Contain("/proc/4321/status");
+        result.Human.Should().Contain("still running");
+        envelope.Error.Message.Should().Contain("Docker Desktop");
+    }
+
+    [Fact]
+    public async Task DockerBootstrap_MissingTmpMountAfterRestart_ReturnsTargetNotRunning()
+    {
+        var fake = new FakeDockerBootstrapPlatform(
+            isLinux: true,
+            fileExists: true,
+            directoryExists: false,
+            procStatus: "Uid:\t1234\t1234\t1234\t1234\nGid:\t1234\t1234\t1234\t1234\n",
+            commandResults:
+            [
+                new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":4321,"Status":"running"}}]""", string.Empty),
+                new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":5432,"Status":"running"}}]""", string.Empty),
+            ]);
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+
+        var options = CliOptions.Parse(
+            ["docker-bootstrap", "--target-container", "api"],
+            out var error)!;
+        error.Should().BeNull();
+
+        var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        fake.Invocations.Should().HaveCount(2);
+        var envelope = (DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope;
+        envelope.Error.Should().NotBeNull();
+        envelope.Error!.Kind.Should().Be("TargetNotRunning");
+        envelope.Error.Message.Should().Contain("first reported pid 4321, then pid 5432");
+        result.Human.Should().Contain("restarted");
+    }
+
+    [Fact]
     public async Task DockerBootstrap_CancellationDuringHealthWait_RemovesStartedSidecar()
     {
         using var cts = new CancellationTokenSource();

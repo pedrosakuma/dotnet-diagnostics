@@ -124,6 +124,14 @@ Implementation details:
   `--user`, matching the diagnostic-socket ownership contract;
 - sets `DOTNET_EnableDiagnostics=0` on the sidecar so the sidecar's own socket is suppressed.
 
+Host constraint: this requires the **outer** host to read `/proc/<pid>/status`
+and `/proc/<pid>/root/tmp` for the PID returned by `docker inspect`. On plain
+Linux Docker hosts that works; on Docker Desktop, rootless Docker,
+Docker-in-Docker, or other VM-backed / namespaced setups it can fail even while
+the container is still running. In that case the CLI returns
+`kind=HostProcNotAccessible`; use the manual shared-volume / compose topology
+instead.
+
 Current limitation: the command **does not** register the profile dynamically against a running central
 MCP, because the public orchestrator surface currently lists and attaches existing external profiles only.
 Instead it prints the exact `Orchestrator__ExternalMcpProfiles__<name>__...` env vars and an equivalent
