@@ -24,6 +24,12 @@ public enum ScenarioFailureKind
     Evaluation,
 }
 
+public enum ScenarioTrialArtifactOutcome
+{
+    Passed,
+    Failed,
+}
+
 public enum EvidenceInvariantKind
 {
     SignalPresent,
@@ -160,6 +166,17 @@ public sealed record ScenarioEvaluationReport(
     IReadOnlyList<EvidenceInvariantResult> Evidence,
     InterpretationScore? InterpretationScore);
 
+public sealed record ScenarioTrialArtifact(
+    int SchemaVersion,
+    string ScenarioId,
+    int Trial,
+    int Attempt,
+    ScenarioTrialArtifactOutcome Outcome,
+    ScenarioFailureKind FailureKind,
+    string Detail,
+    ScenarioEvidence? Evidence,
+    ScenarioEvaluationReport? Report);
+
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     WriteIndented = true,
@@ -168,4 +185,5 @@ public sealed record ScenarioEvaluationReport(
 [JsonSerializable(typeof(ScenarioEvidence))]
 [JsonSerializable(typeof(StructuredInterpretation))]
 [JsonSerializable(typeof(ScenarioEvaluationReport))]
+[JsonSerializable(typeof(ScenarioTrialArtifact))]
 internal sealed partial class ScenarioJsonContext : JsonSerializerContext;
