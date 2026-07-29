@@ -5,8 +5,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>DotnetDiagnostics.Cli</RootNamespace>
     <AssemblyName>dotnet-diagnostics</AssemblyName>
+    <DockerBootstrapImageTag Condition="'$(DockerBootstrapImageTag)' == ''">edge</DockerBootstrapImageTag>
     <Description>Standalone one-shot diagnostics CLI for dotnet-diagnostics-mcp. References Core only — no MCP server, HTTP transport, or bearer auth. Attaches to a live .NET process over the diagnostic IPC socket and prints a result table (or the shared DiagnosticResult envelope with --json).</Description>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="DockerBootstrapImageTag" Value="$(DockerBootstrapImageTag)" />
+  </ItemGroup>
 
   <!-- Packaging (issue #288): published to NuGet as a .NET global tool. Consumers install
        with `dotnet tool install -g dotnet-diagnostics-cli` and invoke `dotnet-diagnostics-cli`

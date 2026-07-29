@@ -97,10 +97,7 @@ When the **target container is already running**, the fastest local bootstrap pa
 CLI command below:
 
 ```bash
-# Build the sidecar image once (or pass --sidecar-image to use a different tag)
-docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
-
-# Start a sidecar for an existing target container and print the matching central config
+# An installed release selects its exact matching published GHCR semver tag.
 dotnet-diagnostics-cli docker-bootstrap --target-container <running-target-container>
 ```
 
@@ -119,7 +116,9 @@ What it does:
 
 Defaults:
 
-- sidecar image: `dotnet-diagnostics-mcp:dev`
+- sidecar image: an installed stable or prerelease CLI selects
+  `ghcr.io/pedrosakuma/dotnet-diagnostics:<exact-cli-version>`; a repository/source build selects
+  `ghcr.io/pedrosakuma/dotnet-diagnostics:edge`
 - published sidecar host port: `127.0.0.1:18891 -> 8080`
 - emitted central profile URL: `http://127.0.0.1:18891/mcp`
 - emitted `AllowedCidrs`: `127.0.0.1/32` (or `127.0.0.1/32` + `::1/128` when `--profile-url` uses `localhost`)
@@ -132,6 +131,21 @@ dotnet-diagnostics-cli docker-bootstrap \
   --profile-name api-sidecar \
   --host-port 18892
 ```
+
+For repository development, build the changed MCP image locally and override the published default
+explicitly:
+
+```bash
+docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
+dotnet run --project src/DotnetDiagnostics.Cli -c Release -- \
+  docker-bootstrap \
+  --target-container api \
+  --sidecar-image dotnet-diagnostics-mcp:dev
+```
+
+`--sidecar-image` always wins. Released CLIs never fall back from an unavailable exact version tag
+to `:edge`; Docker reports the pull failure and the CLI returns `kind=ExternalDependencyFailed` with
+the selected image in the error.
 
 If the central MCP reaches the sidecar through a different hostname (for example a Dockerized central
 using `host.docker.internal`), override the URL and CIDR explicitly:

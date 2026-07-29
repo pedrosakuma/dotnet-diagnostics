@@ -105,7 +105,7 @@ Bootstrap a **local Docker sidecar** for an already-running target container, th
 |---|---|---|---|
 | `--target-container` | `string` | required | Running Docker container name or id to diagnose. |
 | `--sidecar-name` | `string?` | `<target>-dotnet-diagnostics` | Explicit Docker container name for the sidecar. |
-| `--sidecar-image` | `string?` | `dotnet-diagnostics-mcp:dev` | Sidecar image reference to run. |
+| `--sidecar-image` | `string?` | version-compatible GHCR image | Explicit sidecar image override. Released CLIs select `ghcr.io/pedrosakuma/dotnet-diagnostics:<cli-version>`; repository/source builds select `:edge`. |
 | `--profile-name` | `string?` | sanitized target name | Profile key emitted under `Orchestrator:ExternalMcpProfiles`. Restricted to `^[A-Za-z0-9][A-Za-z0-9_-]*$` so the env-var form stays usable. |
 | `--profile-url` | `string?` | `http://127.0.0.1:<host-port>/mcp` | Exact URL the **central** will dial for this profile. Must be absolute `http`/`https`, path exactly `/mcp`, no query/fragment/userinfo. |
 | `--allow-cidr` | `string[]` | derived from `--profile-url` when it is an IP literal / `localhost` | Repeatable allowlist entries for `AllowedCidrs`. Required when `--profile-url` uses another hostname (for example `host.docker.internal`). |
@@ -117,6 +117,12 @@ Bootstrap a **local Docker sidecar** for an already-running target container, th
 
 Implementation details:
 
+- embeds the exact release version as the default image tag in official CLI packages and
+  self-contained binaries. Stable and prerelease CLIs therefore select the corresponding exact
+  semver tag published by the container workflow; they never silently fall forward to `:edge`;
+- uses `ghcr.io/pedrosakuma/dotnet-diagnostics:edge` for repository/source builds, whose normal SDK
+  version is not an official release identity. This is a deterministic, useful development default;
+  pass `--sidecar-image dotnet-diagnostics-mcp:dev` when testing local sidecar changes;
 - attaches the sidecar to the target with `docker run --pid container:<target> ...`;
 - runs a short-lived probe from the sidecar image with `--pid host`, reads the target's effective
   UID/GID and inner namespace PID from `/proc/<host-pid>/status`, and mirrors the identity onto the
@@ -140,8 +146,13 @@ Instead it prints the exact `Orchestrator__ExternalMcpProfiles__<name>__...` env
 `appsettings.json` block for the operator to add before restarting the central.
 
 ```bash
-docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
+# Installed release: pulls the exact matching GHCR semver tag when absent locally.
 dotnet-diagnostics-cli docker-bootstrap --target-container api
+
+# Repository development with local MCP changes:
+docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
+dotnet run --project src/DotnetDiagnostics.Cli -c Release -- \
+  docker-bootstrap --target-container api --sidecar-image dotnet-diagnostics-mcp:dev
 
 dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar --host-port 18892
 

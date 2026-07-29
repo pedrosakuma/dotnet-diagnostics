@@ -85,6 +85,7 @@ jobs:
             -c Release \
             -o artifacts/nupkg \
             -p:Version=${{ steps.derive-version.outputs.version }} \
+            -p:DockerBootstrapImageTag=${{ steps.derive-version.outputs.version }} \
             --no-restore
 
       - name: Attest nupkg provenance
@@ -159,6 +160,7 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true \
             -p:PackAsTool=false \
             -p:Version=${{ needs.pack-tool.outputs.version }} \
+            -p:DockerBootstrapImageTag=${{ needs.pack-tool.outputs.version }} \
             -o artifacts/cli/${{ matrix.rid }}
 
       - name: Rename binaries to their command names

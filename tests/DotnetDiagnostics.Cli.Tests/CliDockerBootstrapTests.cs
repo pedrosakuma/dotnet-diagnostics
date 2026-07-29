@@ -39,7 +39,7 @@ public sealed class CliDockerBootstrapTests
             "--security-opt", "no-new-privileges",
             "--pid", "host",
             "--entrypoint", "/bin/cat",
-            "dotnet-diagnostics-mcp:dev",
+            "ghcr.io/pedrosakuma/dotnet-diagnostics:edge",
             "/proc/4321/status");
         fake.Invocations[2].Arguments.Should().ContainInOrder(
             "run",
@@ -53,7 +53,7 @@ public sealed class CliDockerBootstrapTests
         fake.Invocations[2].Arguments.Should().Contain("127.0.0.1:18892:8080");
         fake.Invocations[2].Arguments.Should().NotContain("--mount");
         fake.Invocations[2].Arguments.Should().Contain("TMPDIR=/proc/7/root/tmp");
-        fake.Invocations[2].Arguments.Should().Contain("dotnet-diagnostics-mcp:dev");
+        fake.Invocations[2].Arguments.Should().Contain("ghcr.io/pedrosakuma/dotnet-diagnostics:edge");
         fake.Invocations[3].Arguments.Should().Equal("inspect", "--type", "container", "api-dotnet-diagnostics");
 
         var envelope = (DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope;
@@ -132,7 +132,7 @@ public sealed class CliDockerBootstrapTests
             commandResults:
             [
                 new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":4321,"Status":"running"}}]""", string.Empty),
-                new CliCommands.DockerCliResult(125, string.Empty, "Unable to find image 'dotnet-diagnostics-mcp:dev' locally\ndocker: Error response from daemon: pull access denied for dotnet-diagnostics-mcp, repository does not exist or may require 'docker login'"),
+                new CliCommands.DockerCliResult(125, string.Empty, "Unable to find image 'ghcr.io/pedrosakuma/dotnet-diagnostics:edge' locally\ndocker: Error response from daemon: manifest unknown"),
             ]);
 
         using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
@@ -149,8 +149,35 @@ public sealed class CliDockerBootstrapTests
         var envelope = (DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope;
         envelope.Error.Should().NotBeNull();
         envelope.Error!.Kind.Should().Be("ExternalDependencyFailed");
-        envelope.Error.Message.Should().Contain("pull access denied");
+        envelope.Error.Message.Should().Contain("manifest unknown");
+        envelope.Error.Message.Should().Contain("ghcr.io/pedrosakuma/dotnet-diagnostics:edge");
+        result.Human.Should().Contain("ghcr.io/pedrosakuma/dotnet-diagnostics:edge");
         result.Human.Should().Contain("could not be resolved");
+    }
+
+    [Theory]
+    [InlineData("0.20.0", "ghcr.io/pedrosakuma/dotnet-diagnostics:0.20.0")]
+    [InlineData("0.21.0-rc.1", "ghcr.io/pedrosakuma/dotnet-diagnostics:0.21.0-rc.1")]
+    public void DockerBootstrapImageResolver_ReleasedVersionUsesExactTag(string version, string expected)
+    {
+        DockerBootstrapImageResolver.Resolve(null, version).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void DockerBootstrapImageResolver_DevelopmentBuildUsesEdge(string? embeddedTag)
+    {
+        DockerBootstrapImageResolver.Resolve(null, embeddedTag)
+            .Should().Be("ghcr.io/pedrosakuma/dotnet-diagnostics:edge");
+    }
+
+    [Fact]
+    public void DockerBootstrapImageResolver_ExplicitOverrideAlwaysWins()
+    {
+        DockerBootstrapImageResolver.Resolve("registry.example/diagnostics:custom", "0.20.0")
+            .Should().Be("registry.example/diagnostics:custom");
     }
 
     [Fact]
