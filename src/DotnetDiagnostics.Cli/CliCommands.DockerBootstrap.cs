@@ -290,6 +290,15 @@ internal static partial class CliCommands
                 string.Create(CultureInfo.InvariantCulture, $"/proc/{targetHostPid}/status"),
             ]);
 
+    private static readonly string[] ImageResolutionFailureMarkers =
+    [
+        "unable to find image",
+        "no such image",
+        "manifest unknown",
+        "pull access denied",
+        "repository does not exist",
+    ];
+
     private static async Task<CliCommandResult> BuildProcStatusProbeFailureAsync(
         IDockerBootstrapPlatform platform,
         DockerInspectContainer initialTarget,
@@ -297,6 +306,17 @@ internal static partial class CliCommands
         DockerCliResult probeResult,
         CancellationToken cancellationToken)
     {
+        foreach (var marker in ImageResolutionFailureMarkers)
+        {
+            if (probeResult.Stderr.Contains(marker, StringComparison.OrdinalIgnoreCase))
+            {
+                return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                    "The sidecar image used for the PID-namespace probe could not be resolved.",
+                    new DiagnosticError("ExternalDependencyFailed", BuildProcessError(probeCommand, probeResult))),
+                    static (_, _) => { });
+            }
+        }
+
         var recheckCommand = new DockerCliInvocation("docker", ["inspect", "--type", "container", initialTarget.DisplayName]);
         var recheckResult = await platform.RunAsync(recheckCommand, cancellationToken).ConfigureAwait(false);
         if (recheckResult.ExitCode != 0)

@@ -126,6 +126,34 @@ public sealed class CliDockerBootstrapTests
     }
 
     [Fact]
+    public async Task DockerBootstrap_ProcStatusProbeImageNotFound_ReturnsExternalDependencyFailedNotHostProcNotAccessible()
+    {
+        var fake = new FakeDockerBootstrapPlatform(
+            commandResults:
+            [
+                new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":4321,"Status":"running"}}]""", string.Empty),
+                new CliCommands.DockerCliResult(125, string.Empty, "Unable to find image 'dotnet-diagnostics-mcp:dev' locally\ndocker: Error response from daemon: pull access denied for dotnet-diagnostics-mcp, repository does not exist or may require 'docker login'"),
+            ]);
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+
+        var options = CliOptions.Parse(
+            ["docker-bootstrap", "--target-container", "api"],
+            out var error)!;
+        error.Should().BeNull();
+
+        var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        fake.Invocations.Should().HaveCount(2);
+        var envelope = (DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope;
+        envelope.Error.Should().NotBeNull();
+        envelope.Error!.Kind.Should().Be("ExternalDependencyFailed");
+        envelope.Error.Message.Should().Contain("pull access denied");
+        result.Human.Should().Contain("could not be resolved");
+    }
+
+    [Fact]
     public async Task DockerBootstrap_ProcStatusProbeFailureAfterRestart_ReturnsTargetNotRunning()
     {
         var fake = new FakeDockerBootstrapPlatform(
