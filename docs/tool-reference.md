@@ -2990,7 +2990,9 @@ Per-kind parameters are preserved verbatim:
 - **`kind="external-profiles"`** — no additional parameters. Returns
   non-secret profile metadata (name, label, description, tags) for each
   operator-configured `Orchestrator:ExternalMcpProfiles` entry. Credential
-  fields (bearer tokens, client certificates) are never included.
+  fields (bearer tokens, client certificates) are never included. The result
+  summary and structured next-action hint provide an exact follow-up call such
+  as `attach_to_pod(profileName="sidecar")`.
 
 **Result envelope:**
 
@@ -3036,22 +3038,28 @@ session unbind) that are distinct from read-only listing. They remain explicit.
 // List available external MCP profiles (non-secret metadata):
 { "name": "list_orchestrator", "arguments": {
     "kind": "external-profiles" } }
+
+// Then attach to one returned profile (including an external Docker sidecar):
+{ "name": "attach_to_pod", "arguments": {
+    "profileName": "sidecar" } }
 ```
 
 ---
 
 ## `attach_to_pod`
 
-Attaches the orchestrator to a diagnostic target and returns an opaque investigation
-handle. Two attach modes are supported:
+Attaches to an orchestrated diagnostic target and returns an opaque investigation
+handle. The public name remains `attach_to_pod` for backward compatibility; clients
+should choose one of two transport modes:
 
+- **External profile mode** (`profileName` set): binds to an operator-configured
+  external MCP server listed by `list_orchestrator(kind="external-profiles")`.
+  Profiles can represent external Docker sidecars or other MCP endpoints. No
+  Kubernetes Pod or ephemeral container is required; the handle routes tool calls
+  through the configured transport. Requires the `orchestrator-admin` explicit scope.
 - **Kubernetes Pod mode** (default): injects a diagnostic ephemeral container into
   a target Pod so the sidecar shares the target's PID namespace and diagnostic IPC
   socket. This is a side-effecting verb (deliberately **not** folded into `list_orchestrator`).
-- **External profile mode** (`profileName` set): binds to an operator-configured
-  external MCP server listed by `list_orchestrator(kind="external-profiles")`. No
-  ephemeral container is created; the handle routes tool calls through the configured
-  transport. Requires the `orchestrator-admin` explicit scope.
 
 **Parameters:**
 
@@ -3064,7 +3072,7 @@ handle. Two attach modes are supported:
 | `requirePreparedTarget` | `bool` | `true` | Kubernetes only: when true, refuses to attach to Pods that don't carry the prepared opt-in label |
 | `allowReuseExistingSession` | `bool` | `true` | When true, returns an existing investigation for the same target instead of injecting a second ephemeral container |
 | `processSelector` | `object?` | `null` | Kubernetes only: transport-neutral process identity stored on the handle for `replica_counters`. Set `managedEntrypointAssemblyName` for an exact case-insensitive match and optionally `commandLineContains` to disambiguate multiple instances. |
-| `profileName` | `string?` | `null` | External profile mode: name of an operator-configured external MCP profile (from `list_orchestrator(kind="external-profiles")`). When set, Kubernetes parameters are ignored. Requires `orchestrator-admin` scope. |
+| `profileName` | `string?` | `null` | External profile mode, including external Docker sidecars: first call `list_orchestrator(kind="external-profiles")`, then pass a returned name (for example `attach_to_pod(profileName="sidecar")`). Requires `orchestrator-admin` scope. |
 
 The Kubernetes selector is resolved inside each Pod after attach; no OS PID is persisted or guessed. A selector
 must match exactly one visible .NET process. Reusing a handle preserves its selector; requesting a

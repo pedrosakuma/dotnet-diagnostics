@@ -50,6 +50,35 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
     }
 
     [Fact]
+    public async Task AttachTool_ToolsListAdvertisesExternalDockerProfileFlow()
+    {
+        await using var client = await ConnectAsync();
+        var tools = await client.ListToolsAsync(cancellationToken: CancellationToken.None);
+
+        var attach = tools.Single(tool => tool.Name == "attach_to_pod");
+        attach.Title.Should().StartWith("Attach to an orchestrated target");
+        attach.Title.Should().Contain("external Docker/MCP profile");
+        attach.Description.Should().StartWith("Attaches to an orchestrated diagnostic target");
+        attach.Description.Should().Contain("list_orchestrator(kind=\"external-profiles\")");
+        attach.Description.Should().Contain("existing attach_to_pod tool");
+        attach.Description.Should().Contain("no Kubernetes Pod or ephemeral container is required");
+        attach.Description.Should().Contain("retained for backward compatibility");
+
+        var properties = attach.JsonSchema.GetProperty("properties");
+        var profileDescription = properties.GetProperty("profileName").GetProperty("description").GetString();
+        profileDescription.Should().Contain("external Docker sidecars");
+        profileDescription.Should().Contain("list_orchestrator(kind=\"external-profiles\")");
+        profileDescription.Should().Contain("attach_to_pod(profileName=\"sidecar\")");
+
+        var podDescription = properties.GetProperty("podName").GetProperty("description").GetString();
+        podDescription.Should().StartWith("Kubernetes Pod mode only");
+
+        var list = tools.Single(tool => tool.Name == "list_orchestrator");
+        list.Description.Should().Contain("external Docker/MCP profiles");
+        list.Description.Should().Contain("attach_to_pod(profileName=\"returned-name\")");
+    }
+
+    [Fact]
     public void ProsePartition_PreservesSchemaPropertiesNamedTitleOrDescription()
     {
         var schema = JsonNode.Parse(

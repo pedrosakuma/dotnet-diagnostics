@@ -282,6 +282,29 @@ public sealed class ExternalProfileOrchestratorTests
     }
 
     [Fact]
+    public async Task ListOrchestrator_ExternalProfiles_ReturnsExactAttachNextCall()
+    {
+        var options = OptionsWithProfile(name: "docker-sidecar");
+        var result = await ListOrchestratorTool.ListOrchestrator(
+            inventory: null!,
+            store: null!,
+            options: options,
+            principalAccessor: TestPrincipalAccessors.WithScopes("orchestrator-attach"),
+            kubeconfigContext: null!,
+            kubeconfigStore: null!,
+            kind: ListOrchestratorTool.KindExternalProfiles,
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        result.Summary.Should().Contain("attach_to_pod(profileName=\"docker-sidecar\")");
+        result.Hints.Should().ContainSingle();
+        result.Hints![0].NextTool.Should().Be("attach_to_pod");
+        result.Hints[0].Reason.Should().Contain("attach_to_pod(profileName=\"docker-sidecar\")");
+        result.Hints[0].SuggestedArguments.Should().ContainKey("profileName")
+            .WhoseValue.Should().Be("docker-sidecar");
+    }
+
+    [Fact]
     public async Task ListOrchestrator_ExternalProfiles_EmptyWhenNoProfilesConfigured()
     {
         var options = new OrchestratorOptions { Enabled = true };

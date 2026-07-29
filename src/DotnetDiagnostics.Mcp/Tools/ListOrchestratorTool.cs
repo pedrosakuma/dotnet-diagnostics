@@ -51,7 +51,8 @@ public sealed class ListOrchestratorTool
         "fieldSelector/containerName/preparedOnly/includeNotReady/limit/cursor); pass kind='investigations' " +
         "to enumerate investigation handles minted on behalf of this MCP session (supports " +
         "includeTerminal/includeAllSessions); pass kind='external-profiles' to enumerate operator-configured " +
-        "external MCP profiles available for attach_to_pod(profileName=…) (non-secret metadata only — " +
+        "external Docker/MCP profiles, then attach with the existing attach_to_pod(profileName=\"returned-name\") " +
+        "tool (non-secret metadata only — " +
         "no bearer tokens). Read-only; never injects " +
         "an ephemeral container and never returns bearer tokens. attach_to_pod / detach_from_pod are " +
         "intentionally NOT folded in — they remain explicit per the orchestrator design.")]
@@ -257,10 +258,12 @@ public sealed class ListOrchestratorTool
             else
             {
                 var names = string.Join(", ", profileItems.Select(p => $"'{p.Name}'"));
+                var firstName = profileItems[0].Name;
                 summary = $"list_orchestrator(kind=\"external-profiles\"): {profileItems.Count} profile(s) configured: {names}. " +
-                          "Call attach_to_pod(profileName=…) to attach to one.";
+                          $"Next call: attach_to_pod(profileName=\"{firstName}\") to attach to the first listed external target.";
             }
 
+            var suggestedProfileName = profileItems.FirstOrDefault()?.Name;
             return DiagnosticResult.Ok(
                 new ListOrchestratorResult(KindExternalProfiles, Pods: null, Investigations: null, ExternalProfiles: profilePage),
                 summary,
@@ -268,7 +271,10 @@ public sealed class ListOrchestratorTool
                     "attach_to_pod",
                     profileItems.Count == 0
                         ? "No profiles are configured — ask the operator to add entries under Orchestrator:ExternalMcpProfiles."
-                        : $"Pass one of the listed profileName values to attach_to_pod to open an external investigation."));
+                        : $"Call attach_to_pod(profileName=\"{suggestedProfileName}\") to open an investigation against the first listed external target.",
+                    suggestedProfileName is null
+                        ? null
+                        : new Dictionary<string, object?> { ["profileName"] = suggestedProfileName }));
         }
     }
 
@@ -310,4 +316,3 @@ public sealed record ListOrchestratorResult(
     PodCandidatePage? Pods,
     InvestigationListPage? Investigations,
     ExternalProfilePage? ExternalProfiles);
-
