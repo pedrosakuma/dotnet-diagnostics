@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Changed
+- **`docker-bootstrap` defaults to a version-compatible published GHCR image** (#753) — released
+  stable and prerelease CLIs select their exact matching container tag, repository builds select
+  `:edge`, and `--sidecar-image` remains the explicit local/custom-registry override.
 - **`docker-bootstrap` now works across Docker Desktop's VM boundary** (#748) — replaced
   client-host `/proc/<pid>` reads and bind mounts with a constrained daemon-host PID probe
   plus `TMPDIR=/proc/<target-namespace-pid>/root/tmp`, enabling the automatic path from

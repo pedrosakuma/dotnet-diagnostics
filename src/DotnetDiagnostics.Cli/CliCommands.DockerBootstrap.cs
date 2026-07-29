@@ -59,7 +59,7 @@ internal static partial class CliCommands
         var hostPort = options.HostPort ?? 18891;
         var profileName = options.ProfileName ?? SanitizeProfileName(target.DisplayName);
         var sidecarName = options.SidecarName ?? string.Create(CultureInfo.InvariantCulture, $"{profileName}-dotnet-diagnostics");
-        var sidecarImage = string.IsNullOrWhiteSpace(options.SidecarImage) ? "dotnet-diagnostics-mcp:dev" : options.SidecarImage!;
+        var sidecarImage = DockerBootstrapImageResolver.Resolve(options.SidecarImage);
         var profileUrl = options.ProfileUrl ?? string.Create(CultureInfo.InvariantCulture, $"http://127.0.0.1:{hostPort}/mcp");
         var bearerToken = string.IsNullOrWhiteSpace(options.BootstrapBearerToken) ? GenerateSecretHex() : options.BootstrapBearerToken!;
         var delegationKey = string.IsNullOrWhiteSpace(options.BootstrapDelegationKey) ? GenerateSecretHex() : options.BootstrapDelegationKey!;
@@ -81,6 +81,7 @@ internal static partial class CliCommands
             return await BuildProcStatusProbeFailureAsync(
                 platform,
                 target,
+                sidecarImage,
                 procStatusCommand,
                 procStatusResult,
                 cancellationToken).ConfigureAwait(false);
@@ -302,6 +303,7 @@ internal static partial class CliCommands
     private static async Task<CliCommandResult> BuildProcStatusProbeFailureAsync(
         IDockerBootstrapPlatform platform,
         DockerInspectContainer initialTarget,
+        string sidecarImage,
         DockerCliInvocation probeCommand,
         DockerCliResult probeResult,
         CancellationToken cancellationToken)
@@ -311,7 +313,7 @@ internal static partial class CliCommands
             if (probeResult.Stderr.Contains(marker, StringComparison.OrdinalIgnoreCase))
             {
                 return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-                    "The sidecar image used for the PID-namespace probe could not be resolved.",
+                    $"The selected sidecar image '{sidecarImage}' could not be resolved.",
                     new DiagnosticError("ExternalDependencyFailed", BuildProcessError(probeCommand, probeResult))),
                     static (_, _) => { });
             }

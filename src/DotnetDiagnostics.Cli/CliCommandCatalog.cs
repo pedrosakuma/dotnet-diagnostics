@@ -113,7 +113,8 @@ docker-bootstrap options:
       --target-container <name|id>  Required. Running Docker container to diagnose.
       --sidecar-name <name>         Optional explicit sidecar container name. Default:
                                     <target>-dotnet-diagnostics.
-      --sidecar-image <ref>         Sidecar image to run (default: dotnet-diagnostics-mcp:dev).
+      --sidecar-image <ref>         Sidecar image override. Released CLIs default to the exact
+                                    matching GHCR version tag; source builds default to :edge.
       --profile-name <name>         External-profile name to emit for the central config.
                                     Default: sanitized target-container name.
       --profile-url <url>           Exact URL the central should use for
