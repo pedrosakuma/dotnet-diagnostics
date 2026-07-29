@@ -25,14 +25,6 @@ internal static partial class CliCommands
         }
 
         var platform = DockerBootstrapExecutionContext.Current;
-        if (!platform.IsLinux)
-        {
-            return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-                "docker-bootstrap is currently supported on Linux hosts only.",
-                new DiagnosticError("NotSupported", "The bootstrap mounts /proc/<pid>/root/tmp into the sidecar, which is a Linux-specific host path.")),
-                static (_, _) => { });
-        }
-
         var inspectCommand = new DockerCliInvocation("docker", ["inspect", "--type", "container", options.TargetContainer!]);
         var inspectResult = await platform.RunAsync(inspectCommand, cancellationToken).ConfigureAwait(false);
         if (inspectResult.ExitCode != 0)
@@ -64,42 +56,10 @@ internal static partial class CliCommands
                 static (_, _) => { });
         }
 
-        var procStatusPath = string.Create(CultureInfo.InvariantCulture, $"/proc/{target.State.Pid}/status");
-        if (!platform.FileExists(procStatusPath))
-        {
-            return await BuildMissingHostProcResultAsync(
-                platform,
-                target,
-                missingPath: procStatusPath,
-                missingPathLabel: "host /proc status file",
-                targetDescription: "status file",
-                cancellationToken).ConfigureAwait(false);
-        }
-
-        var procStatus = await platform.ReadAllTextAsync(procStatusPath, cancellationToken).ConfigureAwait(false);
-        if (!TryParseUidGid(procStatus, out var uid, out var gid))
-        {
-            return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-                $"Could not determine the target UID/GID for container '{target.DisplayName}'.",
-                new DiagnosticError("ExternalDependencyFailed", $"Expected Uid/Gid lines in {procStatusPath}.")),
-                static (_, _) => { });
-        }
-
-        var tmpMountSource = string.Create(CultureInfo.InvariantCulture, $"/proc/{target.State.Pid}/root/tmp");
-        if (!platform.DirectoryExists(tmpMountSource))
-        {
-            return await BuildMissingHostProcResultAsync(
-                platform,
-                target,
-                missingPath: tmpMountSource,
-                missingPathLabel: "host /proc-mounted /tmp path",
-                targetDescription: "/tmp path",
-                cancellationToken).ConfigureAwait(false);
-        }
-
         var hostPort = options.HostPort ?? 18891;
         var profileName = options.ProfileName ?? SanitizeProfileName(target.DisplayName);
         var sidecarName = options.SidecarName ?? string.Create(CultureInfo.InvariantCulture, $"{profileName}-dotnet-diagnostics");
+        var sidecarImage = string.IsNullOrWhiteSpace(options.SidecarImage) ? "dotnet-diagnostics-mcp:dev" : options.SidecarImage!;
         var profileUrl = options.ProfileUrl ?? string.Create(CultureInfo.InvariantCulture, $"http://127.0.0.1:{hostPort}/mcp");
         var bearerToken = string.IsNullOrWhiteSpace(options.BootstrapBearerToken) ? GenerateSecretHex() : options.BootstrapBearerToken!;
         var delegationKey = string.IsNullOrWhiteSpace(options.BootstrapDelegationKey) ? GenerateSecretHex() : options.BootstrapDelegationKey!;
@@ -114,19 +74,41 @@ internal static partial class CliCommands
         }
 
         var profileUri = new Uri(profileUrl, UriKind.Absolute);
+        var procStatusCommand = BuildProcStatusProbeCommand(target.State.Pid, sidecarImage);
+        var procStatusResult = await platform.RunAsync(procStatusCommand, cancellationToken).ConfigureAwait(false);
+        if (procStatusResult.ExitCode != 0)
+        {
+            return await BuildProcStatusProbeFailureAsync(
+                platform,
+                target,
+                procStatusCommand,
+                procStatusResult,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!TryParseProcStatus(procStatusResult.Stdout, out var uid, out var gid, out var targetNamespacePid))
+        {
+            return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                $"Could not determine the target UID/GID and namespace PID for container '{target.DisplayName}'.",
+                new DiagnosticError(
+                    "ExternalDependencyFailed",
+                    $"The Docker host-PID probe did not return effective Uid/Gid and NSpid lines. {BuildProcessError(procStatusCommand, procStatusResult)}")),
+                static (_, _) => { });
+        }
+
+        var targetTmpPath = string.Create(CultureInfo.InvariantCulture, $"/proc/{targetNamespacePid}/root/tmp");
         var cleanupCommand = new DockerCliInvocation("docker", ["rm", "-f", sidecarName]);
         var runCommand = BuildDockerRunCommand(
             targetContainer: target.DisplayName,
             sidecarName,
-            sidecarImage: string.IsNullOrWhiteSpace(options.SidecarImage) ? "dotnet-diagnostics-mcp:dev" : options.SidecarImage!,
-            targetPid: target.State.Pid,
+            sidecarImage,
             uid,
             gid,
             hostPort,
             bearerToken,
             delegationKey,
             addSysPtrace: !options.NoSysPtrace,
-            tmpMountSource);
+            targetTmpPath);
 
         var runResult = await platform.RunAsync(runCommand, cancellationToken).ConfigureAwait(false);
         if (runResult.ExitCode != 0)
@@ -171,9 +153,10 @@ internal static partial class CliCommands
             SidecarContainer: sidecarName,
             SidecarImage: runCommand.Arguments[^1],
             TargetPid: target.State.Pid,
+            TargetNamespacePid: targetNamespacePid,
             TargetUid: uid,
             TargetGid: gid,
-            TmpMountSource: tmpMountSource,
+            TargetTmpPath: targetTmpPath,
             HostPort: hostPort,
             SysPtraceEnabled: !options.NoSysPtrace,
             ProfileName: profileName,
@@ -203,10 +186,10 @@ internal static partial class CliCommands
             static (sb, data) =>
             {
                 sb.AppendLine();
-                sb.AppendLine(CultureInfo.InvariantCulture, $"  target        : {data.TargetContainer} (pid {data.TargetPid}, uid:gid {data.TargetUid}:{data.TargetGid})");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  target        : {data.TargetContainer} (host pid {data.TargetPid}, namespace pid {data.TargetNamespacePid}, uid:gid {data.TargetUid}:{data.TargetGid})");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  sidecar       : {data.SidecarContainer}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  image         : {data.SidecarImage}");
-                sb.AppendLine(CultureInfo.InvariantCulture, $"  tmp mount     : {data.TmpMountSource} -> /tmp");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  target tmp    : {data.TargetTmpPath} (via TMPDIR)");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  profile       : {data.ProfileName}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  profile url   : {data.ProfileUrl}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  allowed cidrs : {string.Join(", ", data.AllowedCidrs)}");
@@ -250,14 +233,13 @@ internal static partial class CliCommands
         string targetContainer,
         string sidecarName,
         string sidecarImage,
-        int targetPid,
         int uid,
         int gid,
         int hostPort,
         string bearerToken,
         string delegationKey,
         bool addSysPtrace,
-        string tmpMountSource)
+        string targetTmpPath)
     {
         var args = new List<string>
         {
@@ -266,7 +248,6 @@ internal static partial class CliCommands
             "--name", sidecarName,
             "--pid", string.Create(CultureInfo.InvariantCulture, $"container:{targetContainer}"),
             "--user", string.Create(CultureInfo.InvariantCulture, $"{uid}:{gid}"),
-            "--mount", string.Create(CultureInfo.InvariantCulture, $"type=bind,src={tmpMountSource},dst=/tmp"),
             "--publish", string.Create(CultureInfo.InvariantCulture, $"127.0.0.1:{hostPort}:8080"),
             "--health-cmd", "dotnet DotnetDiagnostics.Mcp.dll --health-check --urls http://127.0.0.1:8080",
             "--health-interval", "2s",
@@ -278,6 +259,7 @@ internal static partial class CliCommands
             "--env", "ASPNETCORE_URLS=http://0.0.0.0:8080",
             "--env", "DOTNET_EnableDiagnostics=0",
             "--env", "DOTNET_NOLOGO=1",
+            "--env", string.Create(CultureInfo.InvariantCulture, $"TMPDIR={targetTmpPath}"),
             "--env", string.Create(CultureInfo.InvariantCulture, $"MCP_BEARER_TOKEN={bearerToken}"),
             "--env", string.Create(CultureInfo.InvariantCulture, $"MCP_INTERNAL_SCOPE_DELEGATION_KEY={delegationKey}"),
         };
@@ -292,12 +274,27 @@ internal static partial class CliCommands
         return new DockerCliInvocation("docker", args);
     }
 
-    private static async Task<CliCommandResult> BuildMissingHostProcResultAsync(
+    private static DockerCliInvocation BuildProcStatusProbeCommand(int targetHostPid, string sidecarImage)
+        => new(
+            "docker",
+            [
+                "run",
+                "--rm",
+                "--network", "none",
+                "--read-only",
+                "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges",
+                "--pid", "host",
+                "--entrypoint", "/bin/cat",
+                sidecarImage,
+                string.Create(CultureInfo.InvariantCulture, $"/proc/{targetHostPid}/status"),
+            ]);
+
+    private static async Task<CliCommandResult> BuildProcStatusProbeFailureAsync(
         IDockerBootstrapPlatform platform,
         DockerInspectContainer initialTarget,
-        string missingPath,
-        string missingPathLabel,
-        string targetDescription,
+        DockerCliInvocation probeCommand,
+        DockerCliResult probeResult,
         CancellationToken cancellationToken)
     {
         var recheckCommand = new DockerCliInvocation("docker", ["inspect", "--type", "container", initialTarget.DisplayName]);
@@ -305,7 +302,7 @@ internal static partial class CliCommands
         if (recheckResult.ExitCode != 0)
         {
             return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-                $"Target container '{initialTarget.DisplayName}' stopped responding to docker inspect while resolving host /proc paths.",
+                $"Target container '{initialTarget.DisplayName}' stopped responding to docker inspect after the PID-namespace probe failed.",
                 new DiagnosticError("TargetNotRunning", BuildProcessError(recheckCommand, recheckResult))),
                 static (_, _) => { });
         }
@@ -318,7 +315,7 @@ internal static partial class CliCommands
         catch (Exception ex)
         {
             return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-                $"Could not re-parse docker inspect output for '{initialTarget.DisplayName}' while verifying host /proc access.",
+                $"Could not re-parse docker inspect output for '{initialTarget.DisplayName}' while verifying the failed PID-namespace probe.",
                 new DiagnosticError("ExternalDependencyFailed", ex.Message)),
                 static (_, _) => { });
         }
@@ -334,7 +331,7 @@ internal static partial class CliCommands
         if (recheckedTarget.State.Pid != initialTarget.State!.Pid)
         {
             return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-                $"Target container '{recheckedTarget.DisplayName}' restarted while docker-bootstrap was resolving host /proc paths.",
+                $"Target container '{recheckedTarget.DisplayName}' restarted while docker-bootstrap was probing its PID namespace.",
                 new DiagnosticError(
                     "TargetNotRunning",
                     string.Create(
@@ -344,17 +341,15 @@ internal static partial class CliCommands
         }
 
         return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-            $"Target container '{recheckedTarget.DisplayName}' is still running, but this host cannot read its {missingPathLabel}.",
+            $"Target container '{recheckedTarget.DisplayName}' is still running, but Docker could not inspect its PID namespace.",
             new DiagnosticError(
                 "HostProcNotAccessible",
                 string.Create(
                     CultureInfo.InvariantCulture,
-                    $"docker inspect still reports Running=true and Pid={recheckedTarget.State.Pid}, but {missingPath} is not readable from the host. This commonly happens on Docker Desktop, rootless Docker, Docker-in-Docker, or other VM-backed / namespaced Docker hosts where /proc/<pid>/root is not exposed to the outer host namespace.")),
+                    $"docker inspect still reports Running=true and Pid={recheckedTarget.State.Pid}, but the transient PID-namespace probe failed. {BuildProcessError(probeCommand, probeResult)}")),
             new NextActionHint(
                 "docker-bootstrap",
-                string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"Re-run docker-bootstrap on a plain Linux Docker host where /proc/<pid>/root is host-readable, or use the manual compose/shared-volume recipe from docs/external-investigation-docker.md instead of the automatic {targetDescription} discovery path."))),
+                "Confirm the sidecar image contains /bin/cat and can join the target container's PID namespace, or use the manual compose/shared-volume recipe from docs/external-investigation-docker.md.")),
             static (_, _) => { });
     }
 
@@ -451,12 +446,14 @@ internal static partial class CliCommands
             ? string.Create(CultureInfo.InvariantCulture, $"{ip}/128")
             : string.Create(CultureInfo.InvariantCulture, $"{ip}/32");
 
-    private static bool TryParseUidGid(string procStatus, out int uid, out int gid)
+    private static bool TryParseProcStatus(string procStatus, out int uid, out int gid, out int namespacePid)
     {
         uid = 0;
         gid = 0;
+        namespacePid = 0;
         var foundUid = false;
         var foundGid = false;
+        var foundNamespacePid = false;
         foreach (var line in procStatus.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             if (line.StartsWith("Uid:", StringComparison.Ordinal))
@@ -475,9 +472,17 @@ internal static partial class CliCommands
                     foundGid = int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out gid);
                 }
             }
+            else if (line.StartsWith("NSpid:", StringComparison.Ordinal))
+            {
+                var parts = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2)
+                {
+                    foundNamespacePid = int.TryParse(parts[^1], NumberStyles.Integer, CultureInfo.InvariantCulture, out namespacePid);
+                }
+            }
         }
 
-        return foundUid && foundGid && uid >= 0 && gid >= 0;
+        return foundUid && foundGid && foundNamespacePid && uid >= 0 && gid >= 0 && namespacePid > 0;
     }
 
     private static string GenerateSecretHex()
@@ -576,9 +581,10 @@ internal static partial class CliCommands
         string SidecarContainer,
         string SidecarImage,
         int TargetPid,
+        int TargetNamespacePid,
         int TargetUid,
         int TargetGid,
-        string TmpMountSource,
+        string TargetTmpPath,
         int HostPort,
         bool SysPtraceEnabled,
         string ProfileName,
@@ -620,15 +626,7 @@ internal static partial class CliCommands
 
     internal interface IDockerBootstrapPlatform
     {
-        bool IsLinux { get; }
-
         Task<DockerCliResult> RunAsync(DockerCliInvocation invocation, CancellationToken cancellationToken);
-
-        Task<string> ReadAllTextAsync(string path, CancellationToken cancellationToken);
-
-        bool FileExists(string path);
-
-        bool DirectoryExists(string path);
     }
 
     private static class DockerBootstrapExecutionContext
@@ -655,8 +653,6 @@ internal static partial class CliCommands
     {
         public static DefaultDockerBootstrapPlatform Instance { get; } = new();
 
-        public bool IsLinux => OperatingSystem.IsLinux();
-
         public async Task<DockerCliResult> RunAsync(DockerCliInvocation invocation, CancellationToken cancellationToken)
         {
             var psi = new ProcessStartInfo(invocation.FileName)
@@ -679,12 +675,6 @@ internal static partial class CliCommands
             return new DockerCliResult(process.ExitCode, await stdoutTask.ConfigureAwait(false), await stderrTask.ConfigureAwait(false));
         }
 
-        public Task<string> ReadAllTextAsync(string path, CancellationToken cancellationToken)
-            => File.ReadAllTextAsync(path, cancellationToken);
-
-        public bool FileExists(string path) => File.Exists(path);
-
-        public bool DirectoryExists(string path) => Directory.Exists(path);
     }
 
     private sealed class DockerInspectContainer

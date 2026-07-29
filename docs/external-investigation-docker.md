@@ -107,10 +107,11 @@ dotnet-diagnostics-cli docker-bootstrap --target-container <running-target-conta
 What it does:
 
 - shells out to the local `docker` CLI — **not** from inside the MCP server process;
-- inspects the target container's host PID, then bind-mounts `/proc/<pid>/root/tmp` into the sidecar
-  so the target diagnostic socket is reachable without pre-authoring a shared Docker volume;
-- reads the target's effective UID/GID from `/proc/<pid>/status` and runs the sidecar with that same
-  `--user`, plus `--cap-add SYS_PTRACE` by default;
+- starts a short-lived probe from the sidecar image in the Docker daemon's host PID namespace, reads
+  the target's effective UID/GID and inner namespace PID from `/proc/<host-pid>/status`, and runs the
+  persistent sidecar with that same `--user`, plus `--cap-add SYS_PTRACE` by default;
+- points the sidecar's `TMPDIR` at `/proc/<target-namespace-pid>/root/tmp`, making the target diagnostic socket reachable
+  through the shared PID namespace without a host `/proc` bind mount or a pre-authored shared volume;
 - sets `DOTNET_EnableDiagnostics=0` on the sidecar so only the target's socket is discoverable;
 - generates (or accepts) a sidecar bearer token and `MCP_INTERNAL_SCOPE_DELEGATION_KEY`, then prints
   the exact `Orchestrator__ExternalMcpProfiles__<name>__...` env vars and an equivalent
@@ -143,23 +144,19 @@ dotnet-diagnostics-cli docker-bootstrap \
   --allow-cidr 172.17.0.1/32
 ```
 
-### Host `/proc` accessibility limitation
+### Docker PID-namespace requirement
 
-`docker-bootstrap` assumes the host can directly read the target container's
-`/proc/<pid>/status` and `/proc/<pid>/root/tmp` paths after `docker inspect`
-reports the container's host PID. That is true on a plain Linux Docker host,
-but it can fail on Docker Desktop's VM-backed daemon, rootless Docker,
-Docker-in-Docker, or other user-namespace / nested-container setups where the
-reported PID is not exposed through the **outer** host `/proc`.
+The automatic path does not read the client shell's `/proc`, so it works when
+the Docker daemon runs behind Docker Desktop and the command is launched from
+native Windows PowerShell or a WSL2 shell. The short-lived UID/GID probe uses
+`--pid host`; the persistent sidecar joins the target with
+`--pid container:<target>`. The probe image must therefore contain `/bin/cat`,
+and the daemon must permit both PID namespace modes.
 
-When that happens, the CLI now surfaces a `HostProcNotAccessible` error instead
-of incorrectly reporting the target as simply "not running". The target
-container may still be healthy in `docker ps`; the specific failure is that the
-automatic `/proc/<pid>/root/tmp` bind-mount trick is unavailable on that host.
-
-Fallback: use the manual Compose/shared-volume topology below (the reference
-topology for issue #712), or run `docker-bootstrap` from a plain Linux Docker
-host that can read `/proc/<pid>/root/...` directly.
+If that probe fails while the target remains running, the CLI returns
+`kind=HostProcNotAccessible` with the failed `docker run` command result.
+Rootless Docker or hardened daemon policies may still reject the namespace
+join. In that case, use the manual Compose/shared-volume topology below.
 
 ### Central-registration limitation
 

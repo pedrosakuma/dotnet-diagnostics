@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+- **`docker-bootstrap` now works across Docker Desktop's VM boundary** (#748) — replaced
+  client-host `/proc/<pid>` reads and bind mounts with a constrained daemon-host PID probe
+  plus `TMPDIR=/proc/<target-namespace-pid>/root/tmp`, enabling the automatic path from
+  native Windows PowerShell and WSL2 while preserving matching socket ownership and
+  anchored/shared PID namespaces.
+
 ## [0.20.0] — 2026-07-29
 
 Highlights: **External investigations go transport-neutral (issue #704).** The investigation
