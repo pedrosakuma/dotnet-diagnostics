@@ -6,7 +6,6 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Core;
-using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
@@ -22,10 +21,10 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 /// workflow (issue #712).
 ///
 /// <para>
-/// Run through <c>scripts/test-docker-external-investigation.sh</c>, which starts
-/// the topology in <c>deploy/docker-compose.external-investigation.yml</c> (central
-/// orchestrator MCP + sidecar diagnostics MCP + CoreClrSample target) and gates the
-/// test via <see cref="EnableEnvVar"/>.
+/// Run through <c>scripts/test-docker-external-investigation.sh</c>, which starts a
+/// CoreClrSample target, invokes the current checkout's CLI <c>docker-bootstrap</c>,
+/// starts the central with the emitted profile configuration, and gates the test via
+/// <see cref="EnableEnvVar"/>.
 /// </para>
 /// <para>
 /// Acceptance criteria exercised:
@@ -34,8 +33,8 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 /// <item><c>attach_to_pod(profileName="sidecar")</c> succeeds and returns an Active handle.</item>
 /// <item><c>inspect_process(view=list)</c> forwarded through the handle returns CoreClrSample
 ///   running inside the sidecar's PID namespace.</item>
-/// <item><c>collect_events(kind=counters)</c> forwarded through the handle succeeds and returns
-///   real System.Runtime EventPipe counter data from the target.</item>
+/// <item><c>collect_batch</c> forwards counters + GC collectors through the handle and returns
+///   real System.Runtime EventPipe evidence from the target.</item>
 /// <item>After <c>detach_from_pod</c>, subsequent forwarded tool calls via the stale handle
 ///   return a structured routing-failure result.</item>
 /// </list>
@@ -45,21 +44,26 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 public sealed class DockerExternalInvestigationTests
 {
     private const string EnableEnvVar = "DOTNET_DBG_MCP_DOCKER_EXT_INV_TEST";
+    private const string CentralUrlEnvVar = "DOTNET_DBG_MCP_DOCKER_EXT_INV_CENTRAL_URL";
+    private const string CentralTokenEnvVar = "DOTNET_DBG_MCP_DOCKER_EXT_INV_CENTRAL_TOKEN";
+    private const string ProfileNameEnvVar = "DOTNET_DBG_MCP_DOCKER_EXT_INV_PROFILE";
+    private const string TargetUrlEnvVar = "DOTNET_DBG_MCP_DOCKER_EXT_INV_TARGET_URL";
 
     /// <summary>
     /// Central orchestrator MCP endpoint (the only endpoint clients connect to).
     /// Published port matches <c>docker-compose.external-investigation.yml</c>.
     /// </summary>
-    private const string CentralMcpUrl = "http://127.0.0.1:18890/mcp";
+    private const string DefaultCentralMcpUrl = "http://127.0.0.1:18890/mcp";
 
     /// <summary>
     /// Bearer token for the central MCP, as configured in the compose file
     /// (<c>Auth__BearerTokens__0__Token=central-dev-token</c>).
     /// </summary>
-    private const string CentralBearerToken = "central-dev-token";
+    private const string DefaultCentralBearerToken = "central-dev-token";
 
     /// <summary>Name of the external-MCP profile configured in the central.</summary>
-    private const string SidecarProfileName = "sidecar";
+    private const string DefaultSidecarProfileName = "sidecar";
+    private const string DefaultTargetUrl = "http://127.0.0.1:18080";
 
     private static readonly JsonSerializerOptions DeserializeOptions = new()
     {
@@ -85,11 +89,15 @@ public sealed class DockerExternalInvestigationTests
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(100));
         var ct = cts.Token;
+        var centralMcpUrl = GetEnvironmentOrDefault(CentralUrlEnvVar, DefaultCentralMcpUrl);
+        var centralBearerToken = GetEnvironmentOrDefault(CentralTokenEnvVar, DefaultCentralBearerToken);
+        var sidecarProfileName = GetEnvironmentOrDefault(ProfileNameEnvVar, DefaultSidecarProfileName);
+        var targetUrl = GetEnvironmentOrDefault(TargetUrlEnvVar, DefaultTargetUrl);
 
         // ── Step 1: connect to the central (orchestrator) MCP ────────────────
-        await using var centralClient = await ConnectAsync(new Uri(CentralMcpUrl), CentralBearerToken, ct)
+        await using var centralClient = await ConnectAsync(new Uri(centralMcpUrl), centralBearerToken, ct)
             .ConfigureAwait(false);
-        _output.WriteLine($"Connected to central orchestrator at {CentralMcpUrl}");
+        _output.WriteLine($"Connected to central orchestrator at {centralMcpUrl}");
 
         // ── Step 2: verify the sidecar profile is registered ─────────────────
         var listProfilesResult = await centralClient.CallToolAsync(
@@ -116,15 +124,15 @@ public sealed class DockerExternalInvestigationTests
         {
             profileNames.Add(p.GetProperty("name").GetString()!);
         }
-        profileNames.Should().Contain(SidecarProfileName,
-            $"the '{SidecarProfileName}' profile must be listed by the central MCP");
+        profileNames.Should().Contain(sidecarProfileName,
+            $"the '{sidecarProfileName}' profile must be listed by the central MCP");
 
         // ── Step 3: attach through the central MCP using the sidecar profile ─
         var attachResult = await centralClient.CallToolAsync(
             "attach_to_pod",
             new Dictionary<string, object?>
             {
-                ["profileName"] = SidecarProfileName,
+                ["profileName"] = sidecarProfileName,
                 ["allowReuseExistingSession"] = false,
                 ["ttlSeconds"] = 300,
             },
@@ -138,11 +146,10 @@ public sealed class DockerExternalInvestigationTests
         session.Should().NotBeNull();
         session!.State.Should().Be(InvestigationState.Active,
             $"handle must be Active after a successful external-profile attach (got {session.State}; reason='{session.FailureReason}')");
-        session.ProfileName.Should().Be(SidecarProfileName);
+        session.ProfileName.Should().Be(sidecarProfileName);
         var handleId = session.HandleId;
         _output.WriteLine($"Attached: handleId={handleId} profile={session.ProfileName} state={session.State}");
 
-        string? snapshotHandle = null;
         try
         {
             // ── Step 4: inspect_process forwarded through the central MCP ─────
@@ -177,39 +184,67 @@ public sealed class DockerExternalInvestigationTests
                 "the sidecar MCP process must not have a visible diagnostic socket " +
                 "(DOTNET_EnableDiagnostics=0 suppresses it)");
 
-            // ── Step 5: collect EventPipe counters forwarded through the handle ─
+            // ── Step 5: collect EventPipe counters + GC through the handle ─────
             // No processId → filter routes to sidecar; sidecar auto-selects CoreClrSample
             // (the only .NET process with an active diagnostic socket, because the sidecar
             // itself has DOTNET_EnableDiagnostics=0).
-            var collectResult = await centralClient.CallToolAsync(
-                "collect_events",
-                new Dictionary<string, object?>
-                {
-                    ["kind"] = "counters",
-                    ["investigationHandleId"] = handleId,
-                    ["durationSeconds"] = 6,
-                    ["providers"] = new[] { "System.Runtime" },
-                    ["intervalSeconds"] = 1,
-                },
-                cancellationToken: ct).ConfigureAwait(false);
+            using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var loadTask = DriveAllocationLoadAsync(new Uri(targetUrl), loadCts.Token);
+            CallToolResult collectResult;
+            try
+            {
+                collectResult = await centralClient.CallToolAsync(
+                    "collect_batch",
+                    new Dictionary<string, object?>
+                    {
+                        ["requests"] = new object[]
+                        {
+                            new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
+                            new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "gc" },
+                        },
+                        ["investigationHandleId"] = handleId,
+                        ["durationSeconds"] = 8,
+                    },
+                    cancellationToken: ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                loadCts.Cancel();
+            }
+
+            await loadTask.ConfigureAwait(false);
 
             collectResult.IsError.Should().NotBe(true,
-                "collect_events(kind=counters) forwarded via handle must succeed");
-            var collectEnvelope = DeserializeResult<CollectEventsEnvelope>(collectResult);
-            collectEnvelope.Error.Should().BeNull(collectEnvelope.Summary);
-            var collected = collectEnvelope.Data;
-            collected.Should().NotBeNull();
-            collected!.Kind.Should().Be("counters");
-            collected.Counters.Should().NotBeNull(
-                "a counters collection must return a CounterSnapshot");
-            collected.Counters!.Counters.Should().Contain(
-                c => c.Provider == "System.Runtime" && c.Name == "cpu-usage",
-                "a six-second window at one-second intervals must observe at least the cpu-usage counter");
+                "collect_batch(counters+gc) forwarded via handle must succeed");
+            var batchEnvelope = DeserializeResult<CollectBatchReport>(collectResult);
+            batchEnvelope.Error.Should().BeNull(batchEnvelope.Summary);
+            var batch = batchEnvelope.Data;
+            batch.Should().NotBeNull();
+            batch!.DurationSeconds.Should().Be(8);
+            batch.Results.Should().HaveCount(2);
 
-            snapshotHandle = collectEnvelope.Handle;
+            var countersEntry = batch.Results.Single(r => r.Tool == "collect_events" && r.Kind == "counters");
+            countersEntry.Error.Should().BeNull();
+            countersEntry.Data.Should().NotBeNull();
+            var countersData = countersEntry.Data!.Value;
+            countersData.GetProperty("kind").GetString().Should().Be("counters");
+            countersData.GetProperty("counters").GetProperty("counters").EnumerateArray()
+                .Should().Contain(c =>
+                    c.GetProperty("provider").GetString() == "System.Runtime"
+                    && c.GetProperty("name").GetString() == "cpu-usage",
+                    "the routed batch must contain a real System.Runtime cpu-usage counter");
+
+            var gcEntry = batch.Results.Single(r => r.Tool == "collect_events" && r.Kind == "gc");
+            gcEntry.Error.Should().BeNull();
+            gcEntry.Data.Should().NotBeNull();
+            var gcData = gcEntry.Data!.Value;
+            gcData.GetProperty("kind").GetString().Should().Be("gc");
+            gcData.GetProperty("gc").GetProperty("totalCollections").GetInt32().Should().BeGreaterThan(0,
+                "allocation load during the shared collection window must produce real GC events");
+
             _output.WriteLine(
-                $"collect_events: pid={collected.Counters.ProcessId} " +
-                $"counters={collected.Counters.Counters.Count} handle={snapshotHandle}");
+                $"collect_batch: pid={batch.ProcessId} countersHandle={countersEntry.Handle} " +
+                $"gcHandle={gcEntry.Handle} totalCollections={gcData.GetProperty("gc").GetProperty("totalCollections").GetInt32()}");
 
             // ── Step 6: detach and verify routing fails ───────────────────────
             var detachResult = await centralClient.CallToolAsync(
@@ -298,6 +333,29 @@ public sealed class DockerExternalInvestigationTests
             clientOptions: null,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
+
+    private static async Task DriveAllocationLoadAsync(Uri targetBaseUri, CancellationToken cancellationToken)
+    {
+        using var client = new HttpClient { BaseAddress = targetBaseUri };
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1500), cancellationToken).ConfigureAwait(false);
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                using var response = await client.GetAsync(
+                    "/render?count=6000",
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private static string GetEnvironmentOrDefault(string name, string fallback)
+        => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value ? value : fallback;
 
     private static DiagnosticResult<T> DeserializeResult<T>(CallToolResult result)
     {
