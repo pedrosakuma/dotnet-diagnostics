@@ -89,25 +89,80 @@ public sealed class CliDockerBootstrapTests
         result.Human.Should().Contain("--allow-cidr");
     }
 
+    [Fact]
+    public async Task DockerBootstrap_CancellationDuringHealthWait_RemovesStartedSidecar()
+    {
+        using var cts = new CancellationTokenSource();
+        var fake = new FakeDockerBootstrapPlatform(
+            isLinux: true,
+            fileExists: true,
+            directoryExists: true,
+            procStatus: "Uid:\t1234\t1234\t1234\t1234\nGid:\t1234\t1234\t1234\t1234\n",
+            commandResults: [],
+            runAsync: (invocation, callIndex, cancellationToken) =>
+            {
+                if (callIndex == 0)
+                {
+                    return Task.FromResult(new CliCommands.DockerCliResult(0, """[{"Id":"target-id","Name":"/api","State":{"Running":true,"Pid":4321,"Status":"running"}}]""", string.Empty));
+                }
+
+                if (callIndex == 1)
+                {
+                    cts.Cancel();
+                    return Task.FromResult(new CliCommands.DockerCliResult(0, "sidecar-id\n", string.Empty));
+                }
+
+                if (callIndex == 2)
+                {
+                    return Task.FromCanceled<CliCommands.DockerCliResult>(cancellationToken);
+                }
+
+                if (callIndex == 3)
+                {
+                    return Task.FromResult(new CliCommands.DockerCliResult(0, "api-dotnet-diagnostics\n", string.Empty));
+                }
+
+                throw new InvalidOperationException($"Unexpected docker invocation #{callIndex}: {invocation.ToDisplayString()}");
+            });
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+
+        var options = CliOptions.Parse(
+            ["docker-bootstrap", "--target-container", "api"],
+            out var error)!;
+        error.Should().BeNull();
+
+        await FluentActions.Awaiting(() => CliCommands.DockerBootstrapAsync(options, cts.Token))
+            .Should()
+            .ThrowAsync<OperationCanceledException>();
+
+        fake.Invocations.Should().HaveCount(4);
+        fake.Invocations[2].Arguments.Should().Equal("inspect", "--type", "container", "api-dotnet-diagnostics");
+        fake.Invocations[3].Arguments.Should().Equal("rm", "-f", "api-dotnet-diagnostics");
+    }
+
     private sealed class FakeDockerBootstrapPlatform : CliCommands.IDockerBootstrapPlatform
     {
         private readonly Queue<CliCommands.DockerCliResult> _results;
         private readonly bool _fileExists;
         private readonly bool _directoryExists;
         private readonly string _procStatus;
+        private readonly Func<CliCommands.DockerCliInvocation, int, CancellationToken, Task<CliCommands.DockerCliResult>>? _runAsync;
 
         public FakeDockerBootstrapPlatform(
             bool isLinux,
             bool fileExists,
             bool directoryExists,
             string procStatus,
-            IEnumerable<CliCommands.DockerCliResult> commandResults)
+            IEnumerable<CliCommands.DockerCliResult> commandResults,
+            Func<CliCommands.DockerCliInvocation, int, CancellationToken, Task<CliCommands.DockerCliResult>>? runAsync = null)
         {
             IsLinux = isLinux;
             _fileExists = fileExists;
             _directoryExists = directoryExists;
             _procStatus = procStatus;
             _results = new Queue<CliCommands.DockerCliResult>(commandResults);
+            _runAsync = runAsync;
         }
 
         public bool IsLinux { get; }
@@ -117,7 +172,9 @@ public sealed class CliDockerBootstrapTests
         public Task<CliCommands.DockerCliResult> RunAsync(CliCommands.DockerCliInvocation invocation, CancellationToken cancellationToken)
         {
             Invocations.Add(invocation);
-            return Task.FromResult(_results.Dequeue());
+            return _runAsync is not null
+                ? _runAsync(invocation, Invocations.Count - 1, cancellationToken)
+                : Task.FromResult(_results.Dequeue());
         }
 
         public Task<string> ReadAllTextAsync(string path, CancellationToken cancellationToken)

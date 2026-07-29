@@ -108,6 +108,7 @@ internal static partial class CliCommands
         }
 
         var profileUri = new Uri(profileUrl, UriKind.Absolute);
+        var cleanupCommand = new DockerCliInvocation("docker", ["rm", "-f", sidecarName]);
         var runCommand = BuildDockerRunCommand(
             targetContainer: target.DisplayName,
             sidecarName,
@@ -131,12 +132,31 @@ internal static partial class CliCommands
         }
 
         var waitSeconds = options.WaitSeconds ?? 90;
-        var health = await WaitForContainerHealthyAsync(platform, sidecarName, TimeSpan.FromSeconds(waitSeconds), cancellationToken).ConfigureAwait(false);
+        string? health;
+        try
+        {
+            health = await WaitForContainerHealthyAsync(platform, sidecarName, TimeSpan.FromSeconds(waitSeconds), cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await CleanupSidecarBestEffortAsync(platform, cleanupCommand).ConfigureAwait(false);
+            throw;
+        }
+
         if (health is not null)
         {
+            var cleanup = await CleanupSidecarBestEffortAsync(platform, cleanupCommand).ConfigureAwait(false);
             return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-                $"Sidecar container '{sidecarName}' did not become healthy.",
-                new DiagnosticError("Timeout", health)),
+                cleanup.Succeeded
+                    ? $"Sidecar container '{sidecarName}' did not become healthy; the bootstrap removed it automatically."
+                    : $"Sidecar container '{sidecarName}' did not become healthy, and automatic cleanup also failed.",
+                new DiagnosticError(
+                    "Timeout",
+                    cleanup.Succeeded
+                        ? health
+                        : string.Create(
+                            CultureInfo.InvariantCulture,
+                            $"{health} Cleanup failure: {cleanup.Message} Run '{cleanupCommand.ToDisplayString()}' manually."))),
                 static (_, _) => { });
         }
 
@@ -158,7 +178,7 @@ internal static partial class CliCommands
             DelegationKey: delegationKey,
             ContainerId: runResult.Stdout.Trim(),
             DockerRunCommand: runCommand.ToDisplayString(),
-            CleanupCommand: new DockerCliInvocation("docker", ["rm", "-f", sidecarName]).ToDisplayString(),
+            CleanupCommand: cleanupCommand.ToDisplayString(),
             CentralEnvLines: BuildCentralEnvLines(profileName, profileUrl, allowedCidrs, profileUri.Port, bearerToken, delegationKey),
             CentralJson: BuildCentralJson(profileName, profileUrl, allowedCidrs, profileUri.Port, bearerToken, delegationKey));
 
@@ -312,6 +332,25 @@ internal static partial class CliCommands
         return string.Create(
             CultureInfo.InvariantCulture,
             $"Timed out after {timeout.TotalSeconds:F0}s waiting for 'docker inspect {sidecarName}' to report State.Health.Status=healthy. Run 'docker inspect {sidecarName}' and 'docker logs {sidecarName}' for details.");
+    }
+
+    private static async Task<DockerCleanupResult> CleanupSidecarBestEffortAsync(
+        IDockerBootstrapPlatform platform,
+        DockerCliInvocation cleanupCommand)
+    {
+        try
+        {
+            var cleanupResult = await platform.RunAsync(cleanupCommand, CancellationToken.None).ConfigureAwait(false);
+            return cleanupResult.ExitCode == 0
+                ? DockerCleanupResult.Success
+                : new DockerCleanupResult(
+                    false,
+                    BuildProcessError(cleanupCommand, cleanupResult));
+        }
+        catch (Exception ex)
+        {
+            return new DockerCleanupResult(false, ex.Message);
+        }
     }
 
     private static IReadOnlyList<string>? ResolveAllowedCidrs(string profileUrl, IReadOnlyList<string> explicitCidrs)
@@ -501,6 +540,11 @@ internal static partial class CliCommands
     }
 
     internal sealed record DockerCliResult(int ExitCode, string Stdout, string Stderr);
+
+    private sealed record DockerCleanupResult(bool Succeeded, string? Message)
+    {
+        public static DockerCleanupResult Success { get; } = new(true, null);
+    }
 
     internal interface IDockerBootstrapPlatform
     {
