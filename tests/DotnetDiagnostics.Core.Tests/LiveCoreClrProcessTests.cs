@@ -1961,7 +1961,8 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         HttpClient http,
         EventPipeCpuSampler sampler,
         string path,
-        TimeSpan sampleDuration)
+        TimeSpan sampleDuration,
+        int? processId = null)
     {
         using var cts = new CancellationTokenSource(sampleDuration + TimeSpan.FromSeconds(4));
         var driver = Task.Run(async () =>
@@ -1982,7 +1983,7 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         }, cts.Token);
 
         var result = await sampler.SampleAsync(
-            Pid,
+            processId ?? Pid,
             sampleDuration,
             topN: 100,
             cancellationToken: CancellationToken.None);
@@ -2877,6 +2878,39 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         callerCallee.Should().NotBeNull("at least one top method should resolve to a single caller-callee focus");
         callerCallee!.Method.Should().Contain(resolvedFilter!);
         (callerCallee.Callers.Count + callerCallee.Callees.Count).Should().BeGreaterThan(0);
+    }
+
+    [Trait("Category", "Flaky")]
+    [SkipOnLinuxCiFact("Quarantined on Linux CI: EventPipe SampleProfiler can crash the host under ubuntu-latest load (tracked in #147). Runnable locally and on Windows CI.", Timeout = 90_000)]
+    public async Task CpuSampler_CpuBurnCallTree_RootsAtEndpointLambda_WithoutRequiringSha256Leaf()
+    {
+        await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
+        using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
+        var sampler = new EventPipeCpuSampler();
+        var sample = await SampleCpuUnderLoadAsync(
+            http,
+            sampler,
+            "/cpu-burn?ms=500",
+            TimeSpan.FromSeconds(5),
+            badSample.ProcessId);
+
+        var handles = new MemoryDiagnosticHandleStore();
+        var handle = handles.Register(badSample.ProcessId, "cpu-sample", sample.Artifact, TimeSpan.FromMinutes(10)).Id;
+
+        var topMethodsResult = await QueryHandleAsync(handles, handle, "top-methods", topN: 100);
+        topMethodsResult.Error.Should().BeNull();
+        var topMethods = topMethodsResult.Data.Should().BeOfType<TopMethodsView>().Subject;
+        var endpointLambda = topMethods.Methods.Should().Contain(method =>
+            method.Module.Contains("BadCodeSample", StringComparison.Ordinal)
+            && method.Method.Contains("<<Main>$>b__", StringComparison.Ordinal),
+            "cpu-burn should still surface a BadCodeSample endpoint lambda in the sampled hotspots").Subject;
+
+        var callTreeResult = await QueryHandleAsync(handles, handle, "call-tree", rootMethodFilter: endpointLambda.Method);
+        callTreeResult.Error.Should().BeNull();
+        var callTree = callTreeResult.Data.Should().BeOfType<CallTreeView>().Subject;
+        callTree.Root.Frame.Module.Should().Contain("BadCodeSample");
+        callTree.Root.Frame.Method.Should().Be(endpointLambda.Method,
+            "re-rooting the bounded call tree should land on the sampled cpu-burn endpoint lambda");
     }
 
     [Fact(Timeout = 90_000)]

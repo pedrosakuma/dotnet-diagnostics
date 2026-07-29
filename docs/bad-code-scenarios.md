@@ -46,7 +46,7 @@ the output.
 
 | # | Symptom | Trigger | Primary tool(s) | Expected signal |
 |---|---|---|---|---|
-| 1 | "CPU pegged at 100% on one core" | `GET /cpu-burn?ms=3000` | `inspect_process(view="triage")`, `collect_sample(kind="cpu")` | triage retains host-normalized `cpu-usage` and the target runtime's `ProcessorCount` event, so `cpu.effective-core-consumption` is salient even when an MCP sidecar has a different CPU quota; sampling identifies the hot frames |
+| 1 | "CPU pegged at 100% on one core" | `GET /cpu-burn?ms=3000` | `inspect_process(view="triage")`, `collect_sample(kind="cpu")` | triage retains host-normalized `cpu-usage` and the target runtime's `ProcessorCount` event, so `cpu.effective-core-consumption` is salient even when an MCP sidecar has a different CPU quota; sampling identifies the hot endpoint lambda even when the managed call tree does not expose the hashing child frame |
 | 2 | "Memory keeps growing" | repeated `GET /leak?mb=4` during `inspect_process(view="triage")` | `inspect_process(view="triage")`, then `inspect_process(view="memory_trend")` / heap comparison | `memory.intra-window-growth` reports transparent first/last GC heap, LOH, and working-set deltas; `memory.footprint-growth` requests longer trend / heap evidence without calling the shape a leak |
 | 3 | "First-chance exception storms in logs" | `GET /exceptions?count=2000` | `collect_events(kind="counters")`, `collect_events(kind="exceptions")` | `exception-count` rate jumps; collector returns 100% `FormatException` ("Input string was not in a correct format") |
 | 4 | "Requests time out under load even though CPU is low" | `GET /sync-over-async?n=40` | `collect_events(kind="counters")`, `collect_sample(kind="cpu")` | `threadpool-queue-length` grows, `threadpool-thread-count` climbs slowly; CPU low; sampled stacks show `GetAwaiter().GetResult` / `Task.Wait` frames |
@@ -75,6 +75,14 @@ memory exhaustion.
 > awaited, non-blocking version with the same parameters, for a live before/after.
 > The full narrated investigation is in
 > [`case-studies/sync-over-async.md`](./case-studies/sync-over-async.md).
+
+> **CPU-burn call-tree note (scenario 1).** `/cpu-burn` really does execute
+> `SHA256.HashData(...)` inside its tight loop in
+> `samples/BadCodeSample/Program.cs`. Current managed
+> `collect_sample(kind="cpu")` call trees, however, may still bottom out at
+> the endpoint lambda rather than surfacing a
+> `System.Security.Cryptography.SHA256` child frame. Treat the hot lambda as
+> the stable observable profiling signature.
 
 > **Runtime-only bug + a fixed variant (scenario 9).** `/culture-lookup` builds a
 > `Dictionary` with `StringComparer.InvariantCultureIgnoreCase`, so every
@@ -117,7 +125,9 @@ A useful system message for the LLM (already encoded in
 
 If a model — even without seeing the source — can:
 
-- explain *why* `/cpu-burn` is hot (SHA256 in a tight loop),
+- localize `/cpu-burn` to its hot endpoint lambda (without expecting a
+  visible `System.Security.Cryptography.SHA256` leaf in the managed call
+  tree),
 - spot the leaking list behind `/leak`,
 - name `FormatException` as the dominant exception type,
 - point at the sync-over-async pattern from sampled stacks,
