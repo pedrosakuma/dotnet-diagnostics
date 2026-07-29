@@ -95,6 +95,235 @@ public sealed class CliDockerBootstrapTests
     }
 
     [Fact]
+    public async Task DockerBootstrap_CentralAware_SelectsSharedNetworkAndDerivesSidecarHostCidr()
+    {
+        var fake = new FakeDockerBootstrapPlatform(
+            commandResults:
+            [
+                new CliCommands.DockerCliResult(0, TargetInspect("""{"target-net":{"IPAddress":"172.30.0.2"}}"""), string.Empty),
+                new CliCommands.DockerCliResult(0, CentralInspect("central-id", """{"alpha-net":{"IPAddress":"172.31.0.2"},"target-net":{"IPAddress":"172.30.0.3"}}"""), string.Empty),
+                new CliCommands.DockerCliResult(0, """[{"Name":"alpha-net","Id":"alpha-id","Driver":"bridge","Scope":"local"},{"Name":"target-net","Id":"target-net-id","Driver":"bridge","Scope":"local"}]""", string.Empty),
+                new CliCommands.DockerCliResult(0, string.Empty, string.Empty),
+                new CliCommands.DockerCliResult(0, ProcStatus(), string.Empty),
+                new CliCommands.DockerCliResult(0, "sidecar-id\n", string.Empty),
+                new CliCommands.DockerCliResult(0, HealthySidecarInspect("""{"target-net":{"IPAddress":"172.30.0.9"}}"""), string.Empty),
+                new CliCommands.DockerCliResult(0, HealthySidecarInspect("""{"target-net":{"IPAddress":"172.30.0.9"}}"""), string.Empty),
+                new CliCommands.DockerCliResult(0, CentralInspect("central-id", """{"alpha-net":{"IPAddress":"172.31.0.2"},"target-net":{"IPAddress":"172.30.0.3"}}"""), string.Empty),
+            ]);
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+        var options = CliOptions.Parse(
+            ["docker-bootstrap", "--target-container", "api", "--central-container", "central"],
+            out var error)!;
+        error.Should().BeNull();
+
+        var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
+
+        result.IsError.Should().BeFalse();
+        var report = ((DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope).Data!;
+        fake.Invocations[2].Arguments.Should().Equal("network", "inspect", "alpha-net", "target-net");
+        fake.Invocations[5].Arguments.Should().ContainInOrder(
+            "--network", "target-net", "--network-alias", report.DockerNetworkAlias!);
+        fake.Invocations[5].Arguments.Should().NotContain("--publish");
+
+        report.Route.Should().Be("docker-network");
+        report.CentralContainer.Should().Be("central");
+        report.DockerNetwork.Should().Be("target-net");
+        report.DockerNetworkAlias.Should().StartWith("ddmcp-").And.HaveLength(30);
+        report.ProfileUrl.Should().Be($"http://{report.DockerNetworkAlias}:8080/mcp");
+        report.AllowedCidrs.Should().Equal("172.30.0.9/32");
+        report.AllowedPorts.Should().Equal(8080);
+        report.HostPortPublished.Should().BeFalse();
+        report.CleanupCommands.Should().Equal(
+            "docker network disconnect --force target-net api-dotnet-diagnostics",
+            "docker rm -f api-dotnet-diagnostics");
+    }
+
+    [Fact]
+    public async Task DockerBootstrap_CentralAwareHostNetworkWithoutExplicitRoute_ReturnsError()
+    {
+        var fake = new FakeDockerBootstrapPlatform(
+            commandResults:
+            [
+                new CliCommands.DockerCliResult(0, TargetInspect("{}"), string.Empty),
+                new CliCommands.DockerCliResult(0, CentralInspect("central-id", "{}", "host"), string.Empty),
+            ]);
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+        var options = CliOptions.Parse(
+            ["docker-bootstrap", "--target-container", "api", "--central-container", "central"],
+            out var parseError)!;
+        parseError.Should().BeNull();
+
+        var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        ((DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope).Error!.Kind
+            .Should().Be("CentralNetworkUnavailable");
+        result.Human.Should().Contain("network=host");
+    }
+
+    [Fact]
+    public async Task DockerBootstrap_CentralAwareStoppedCentralReturnsDedicatedError()
+    {
+        var fake = new FakeDockerBootstrapPlatform(
+            commandResults:
+            [
+                new CliCommands.DockerCliResult(0, TargetInspect("{}"), string.Empty),
+                new CliCommands.DockerCliResult(0, """[{"Id":"central-id","Name":"/central","State":{"Running":false,"Pid":0,"Status":"exited"}}]""", string.Empty),
+            ]);
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+        var options = CliOptions.Parse(
+            ["docker-bootstrap", "--target-container", "api", "--central-container", "central"],
+            out var parseError)!;
+        parseError.Should().BeNull();
+
+        var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        ((DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope).Error!.Kind
+            .Should().Be("CentralNotRunning");
+    }
+
+    [Fact]
+    public async Task DockerBootstrap_CentralAwareRejectsUnsupportedNetworkCandidates()
+    {
+        var fake = new FakeDockerBootstrapPlatform(
+            commandResults:
+            [
+                new CliCommands.DockerCliResult(0, TargetInspect("{}"), string.Empty),
+                new CliCommands.DockerCliResult(0, CentralInspect("central-id", """{"overlay-net":{"IPAddress":"10.0.0.2"}}"""), string.Empty),
+                new CliCommands.DockerCliResult(0, """[{"Name":"overlay-net","Id":"network-id","Driver":"overlay","Scope":"swarm"}]""", string.Empty),
+            ]);
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+        var options = CliOptions.Parse(
+            ["docker-bootstrap", "--target-container", "api", "--central-container", "central"],
+            out var parseError)!;
+        parseError.Should().BeNull();
+
+        var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        result.Human.Should().Contain("no supported local bridge network");
+    }
+
+    [Fact]
+    public async Task DockerBootstrap_CentralAwareNameCollisionDoesNotReplaceContainer()
+    {
+        var fake = new FakeDockerBootstrapPlatform(
+            commandResults:
+            [
+                new CliCommands.DockerCliResult(0, TargetInspect("{}"), string.Empty),
+                new CliCommands.DockerCliResult(0, CentralInspect("central-id", """{"central-net":{"IPAddress":"172.31.0.2"}}"""), string.Empty),
+                new CliCommands.DockerCliResult(0, """[{"Name":"central-net","Id":"network-id","Driver":"bridge","Scope":"local"}]""", string.Empty),
+                new CliCommands.DockerCliResult(0, "existing-id\n", string.Empty),
+            ]);
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+        var options = CliOptions.Parse(
+            ["docker-bootstrap", "--target-container", "api", "--central-container", "central"],
+            out var parseError)!;
+        parseError.Should().BeNull();
+
+        var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        ((DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope).Error!.Kind
+            .Should().Be("NameCollision");
+        fake.Invocations.Should().HaveCount(4);
+    }
+
+    [Fact]
+    public async Task DockerBootstrap_CentralAwareNetworkRunFailureDoesNotRemoveByReusableName()
+    {
+        var fake = new FakeDockerBootstrapPlatform(
+            commandResults:
+            [
+                new CliCommands.DockerCliResult(0, TargetInspect("{}"), string.Empty),
+                new CliCommands.DockerCliResult(0, CentralInspect("central-id", """{"central-net":{"IPAddress":"172.31.0.2"}}"""), string.Empty),
+                new CliCommands.DockerCliResult(0, """[{"Name":"central-net","Id":"network-id","Driver":"bridge","Scope":"local"}]""", string.Empty),
+                new CliCommands.DockerCliResult(0, string.Empty, string.Empty),
+                new CliCommands.DockerCliResult(0, ProcStatus(), string.Empty),
+                new CliCommands.DockerCliResult(125, string.Empty, "failed to create endpoint"),
+            ]);
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+        var options = CliOptions.Parse(
+            ["docker-bootstrap", "--target-container", "api", "--central-container", "central"],
+            out var parseError)!;
+        parseError.Should().BeNull();
+
+        var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        fake.Invocations.Should().HaveCount(6);
+        fake.Invocations.Should().NotContain(invocation => invocation.Arguments.FirstOrDefault() == "rm");
+        result.Human.Should().Contain("docker run failed");
+    }
+
+    [Fact]
+    public async Task DockerBootstrap_CentralAwareExplicitAlternateUrlRequiresHostPort()
+    {
+        var fake = new FakeDockerBootstrapPlatform(
+            commandResults:
+            [
+                new CliCommands.DockerCliResult(0, TargetInspect("{}"), string.Empty),
+                new CliCommands.DockerCliResult(0, CentralInspect("central-id", """{"central-net":{"IPAddress":"172.31.0.2"}}"""), string.Empty),
+            ]);
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+        var options = CliOptions.Parse(
+            [
+                "docker-bootstrap", "--target-container", "api", "--central-container", "central",
+                "--profile-url", "http://host.docker.internal:18891/mcp", "--allow-cidr", "192.168.65.1/32",
+            ],
+            out var parseError)!;
+        parseError.Should().BeNull();
+
+        var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        result.Human.Should().Contain("--host-port");
+    }
+
+    [Fact]
+    public async Task DockerBootstrap_CentralRecreationDuringBootstrapDisconnectsAndRemovesSidecar()
+    {
+        var fake = new FakeDockerBootstrapPlatform(
+            commandResults:
+            [
+                new CliCommands.DockerCliResult(0, TargetInspect("{}"), string.Empty),
+                new CliCommands.DockerCliResult(0, CentralInspect("central-id", """{"central-net":{"IPAddress":"172.31.0.2"}}"""), string.Empty),
+                new CliCommands.DockerCliResult(0, """[{"Name":"central-net","Id":"network-id","Driver":"bridge","Scope":"local"}]""", string.Empty),
+                new CliCommands.DockerCliResult(0, string.Empty, string.Empty),
+                new CliCommands.DockerCliResult(0, ProcStatus(), string.Empty),
+                new CliCommands.DockerCliResult(0, "sidecar-id\n", string.Empty),
+                new CliCommands.DockerCliResult(0, HealthySidecarInspect("""{"central-net":{"IPAddress":"172.31.0.9"}}"""), string.Empty),
+                new CliCommands.DockerCliResult(0, HealthySidecarInspect("""{"central-net":{"IPAddress":"172.31.0.9"}}"""), string.Empty),
+                new CliCommands.DockerCliResult(0, CentralInspect("replacement-id", """{"central-net":{"IPAddress":"172.31.0.3"}}"""), string.Empty),
+                new CliCommands.DockerCliResult(0, string.Empty, string.Empty),
+                new CliCommands.DockerCliResult(0, string.Empty, string.Empty),
+            ]);
+
+        using var _ = CliCommands.PushDockerBootstrapPlatformForCurrentAsyncFlow(fake);
+        var options = CliOptions.Parse(
+            ["docker-bootstrap", "--target-container", "api", "--central-container", "central"],
+            out var parseError)!;
+        parseError.Should().BeNull();
+
+        var result = await CliCommands.DockerBootstrapAsync(options, CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        ((DiagnosticResult<CliCommands.DockerBootstrapReport>)result.Envelope).Error!.Kind
+            .Should().Be("CentralChanged");
+        fake.Invocations[^2].Arguments.Should().Equal(
+            "network", "disconnect", "--force", "central-net", "api-dotnet-diagnostics");
+        fake.Invocations[^1].Arguments.Should().Equal("rm", "-f", "api-dotnet-diagnostics");
+    }
+
+    [Fact]
     public async Task DockerBootstrap_ProcStatusProbeFailureWhileContainerStillRunning_ReturnsHostProcNotAccessible()
     {
         var fake = new FakeDockerBootstrapPlatform(
@@ -285,4 +514,28 @@ public sealed class CliDockerBootstrapTests
                 : Task.FromResult(_results.Dequeue());
         }
     }
+
+    private static string TargetInspect(string networks)
+        => "[{\"Id\":\"target-id\",\"Name\":\"/api\",\"State\":{\"Running\":true,\"Pid\":4321,\"Status\":\"running\"},"
+            + "\"HostConfig\":{\"NetworkMode\":\"default\"},\"NetworkSettings\":{\"Networks\":"
+            + networks
+            + "}}]";
+
+    private static string CentralInspect(string id, string networks, string networkMode = "default")
+        => "[{\"Id\":\"" + id
+            + "\",\"Name\":\"/central\",\"State\":{\"Running\":true,\"Pid\":8765,\"Status\":\"running\"},"
+            + "\"HostConfig\":{\"NetworkMode\":\"" + networkMode
+            + "\"},\"NetworkSettings\":{\"Networks\":"
+            + networks
+            + "}}]";
+
+    private static string HealthySidecarInspect(string networks)
+        => "[{\"Id\":\"sidecar-id\",\"Name\":\"/api-dotnet-diagnostics\","
+            + "\"State\":{\"Running\":true,\"Pid\":5678,\"Status\":\"running\",\"Health\":{\"Status\":\"healthy\"}},"
+            + "\"NetworkSettings\":{\"Networks\":"
+            + networks
+            + "}}]";
+
+    private static string ProcStatus()
+        => "Name:\tapp\nUid:\t1234\t1234\t1234\t1234\nGid:\t1234\t1234\t1234\t1234\nNSpid:\t4321\t7\n";
 }

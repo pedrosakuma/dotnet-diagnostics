@@ -82,6 +82,12 @@ internal static partial class CliCommands
             return false;
         }
 
+        if (options.CentralContainer is not null && string.IsNullOrWhiteSpace(options.CentralContainer))
+        {
+            error = "--central-container does not accept an empty value.";
+            return false;
+        }
+
         if (options.HostPort is < 1 or > 65535)
         {
             error = "--host-port must be between 1 and 65535.";

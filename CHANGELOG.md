@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Changed
+- **`docker-bootstrap` can derive a private route to a Dockerized central MCP** (#754) —
+  `--central-container` inspects central/target networking, selects a deterministic user-defined
+  local bridge, connects the generated sidecar without publishing a host port, emits an internal
+  container-DNS URL, and narrows `AllowedCidrs` to the inspected sidecar `/32` or `/128`.
 - **`docker-bootstrap` defaults to a version-compatible published GHCR image** (#753) — released
   stable and prerelease CLIs select their exact matching container tag, repository builds select
   `:edge`, and `--sidecar-image` remains the explicit local/custom-registry override.

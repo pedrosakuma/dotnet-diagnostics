@@ -25,29 +25,16 @@ internal static partial class CliCommands
         }
 
         var platform = DockerBootstrapExecutionContext.Current;
-        var inspectCommand = new DockerCliInvocation("docker", ["inspect", "--type", "container", options.TargetContainer!]);
-        var inspectResult = await platform.RunAsync(inspectCommand, cancellationToken).ConfigureAwait(false);
-        if (inspectResult.ExitCode != 0)
+        var targetInspection = await InspectContainerAsync(platform, options.TargetContainer!, cancellationToken).ConfigureAwait(false);
+        if (targetInspection.Error is not null)
         {
             return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
                 $"docker inspect failed for target container '{options.TargetContainer}'.",
-                new DiagnosticError("ExternalDependencyFailed", BuildProcessError(inspectCommand, inspectResult))),
+                new DiagnosticError("ExternalDependencyFailed", targetInspection.Error)),
                 static (_, _) => { });
         }
 
-        DockerInspectContainer target;
-        try
-        {
-            target = ParseInspect(inspectResult.Stdout);
-        }
-        catch (Exception ex)
-        {
-            return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-                $"Could not parse docker inspect output for '{options.TargetContainer}'.",
-                new DiagnosticError("ExternalDependencyFailed", ex.Message)),
-                static (_, _) => { });
-        }
-
+        var target = targetInspection.Container!;
         if (target.State?.Running != true || target.State.Pid <= 0)
         {
             return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
@@ -56,24 +43,124 @@ internal static partial class CliCommands
                 static (_, _) => { });
         }
 
-        var hostPort = options.HostPort ?? 18891;
         var profileName = options.ProfileName ?? SanitizeProfileName(target.DisplayName);
         var sidecarName = options.SidecarName ?? string.Create(CultureInfo.InvariantCulture, $"{profileName}-dotnet-diagnostics");
+        var networkAlias = BuildNetworkAlias(sidecarName);
         var sidecarImage = DockerBootstrapImageResolver.Resolve(options.SidecarImage);
-        var profileUrl = options.ProfileUrl ?? string.Create(CultureInfo.InvariantCulture, $"http://127.0.0.1:{hostPort}/mcp");
         var bearerToken = string.IsNullOrWhiteSpace(options.BootstrapBearerToken) ? GenerateSecretHex() : options.BootstrapBearerToken!;
         var delegationKey = string.IsNullOrWhiteSpace(options.BootstrapDelegationKey) ? GenerateSecretHex() : options.BootstrapDelegationKey!;
-        var allowedCidrs = ResolveAllowedCidrs(profileUrl, options.AllowedCidrs);
-        if (allowedCidrs is null)
+
+        DockerInspectContainer? central = null;
+        DockerNetworkPlan? networkPlan = null;
+        var centralAware = options.CentralContainer is not null;
+        var internalProfileOverride = options.ProfileUrl is not null
+            && (IsInternalSidecarUrl(options.ProfileUrl, sidecarName)
+                || IsInternalSidecarUrl(options.ProfileUrl, networkAlias));
+        var useInternalRoute = centralAware && (options.ProfileUrl is null || internalProfileOverride);
+        if (centralAware)
+        {
+            var centralInspection = await InspectContainerAsync(platform, options.CentralContainer!, cancellationToken).ConfigureAwait(false);
+            if (centralInspection.Error is not null)
+            {
+                return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                    $"docker inspect failed for central container '{options.CentralContainer}'.",
+                    new DiagnosticError("ExternalDependencyFailed", centralInspection.Error)),
+                    static (_, _) => { });
+            }
+
+            central = centralInspection.Container!;
+            if (central.State?.Running != true)
+            {
+                return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                    $"Central container '{central.DisplayName}' is not running.",
+                    new DiagnosticError("CentralNotRunning", "docker inspect reported a non-running central container.")),
+                    static (_, _) => { });
+            }
+
+            if (string.Equals(target.Id, central.Id, StringComparison.Ordinal))
+            {
+                return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                    "The target and central container resolve to the same Docker container.",
+                    new DiagnosticError("InvalidArgument", "--central-container must identify a different container from --target-container.")),
+                    static (_, _) => { });
+            }
+
+            if (!useInternalRoute && options.HostPort is null)
+            {
+                return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                    "An explicit non-sidecar --profile-url requires an explicit --host-port in central-aware mode.",
+                    new DiagnosticError("InvalidArgument", "Bootstrap cannot prove how an alternate URL reaches the sidecar unless its host listener is explicitly published.")),
+                    static (_, _) => { });
+            }
+
+            if (useInternalRoute)
+            {
+                var networkResult = await SelectCentralNetworkAsync(platform, target, central, cancellationToken).ConfigureAwait(false);
+                if (networkResult.Error is not null)
+                {
+                    return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                        networkResult.Error,
+                        new DiagnosticError("CentralNetworkUnavailable", networkResult.Detail!)),
+                        static (_, _) => { });
+                }
+
+                networkPlan = networkResult.Plan;
+            }
+        }
+
+        var hostPort = centralAware ? options.HostPort : options.HostPort ?? 18891;
+        var preliminaryProfileUrl = options.ProfileUrl
+            ?? (centralAware
+                ? string.Create(CultureInfo.InvariantCulture, $"http://{networkAlias}:8080/mcp")
+                : string.Create(CultureInfo.InvariantCulture, $"http://127.0.0.1:{hostPort}/mcp"));
+
+        if (centralAware
+            && central?.HostConfig?.NetworkMode != "host"
+            && IsLoopbackHost(new Uri(preliminaryProfileUrl, UriKind.Absolute).Host))
         {
             return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-                $"Could not derive AllowedCidrs for profile URL '{profileUrl}'. Re-run with --allow-cidr <cidr>.",
-                new DiagnosticError("InvalidArgument", "Pass one or more --allow-cidr values when --profile-url uses a non-IP host name."),
-                new NextActionHint("docker-bootstrap", "Re-run docker-bootstrap with --allow-cidr <cidr> matching the central's resolved route to that host.")),
+                $"Profile URL '{preliminaryProfileUrl}' uses loopback from a non-host-network central container.",
+                new DiagnosticError("InvalidArgument", "127.0.0.1/localhost would address the central container itself, not the sidecar.")),
                 static (_, _) => { });
         }
 
-        var profileUri = new Uri(profileUrl, UriKind.Absolute);
+        IReadOnlyList<string>? preliminaryAllowedCidrs = null;
+        if (networkPlan is null)
+        {
+            preliminaryAllowedCidrs = ResolveAllowedCidrs(preliminaryProfileUrl, options.AllowedCidrs);
+            if (preliminaryAllowedCidrs is null)
+            {
+                return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                    $"Could not derive AllowedCidrs for profile URL '{preliminaryProfileUrl}'. Re-run with --allow-cidr <cidr>.",
+                    new DiagnosticError("InvalidArgument", "Pass one or more --allow-cidr values when --profile-url uses a non-IP host name."),
+                    new NextActionHint("docker-bootstrap", "Re-run docker-bootstrap with --allow-cidr <cidr> matching the central's resolved route to that host.")),
+                    static (_, _) => { });
+            }
+        }
+
+        if (centralAware)
+        {
+            var collisionCommand = new DockerCliInvocation(
+                "docker",
+                ["ps", "-a", "--filter", string.Create(CultureInfo.InvariantCulture, $"name=^/{sidecarName}$"), "--format", "{{.ID}}"]);
+            var collisionResult = await platform.RunAsync(collisionCommand, cancellationToken).ConfigureAwait(false);
+            if (collisionResult.ExitCode != 0)
+            {
+                return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                    $"Could not check whether sidecar name '{sidecarName}' is available.",
+                    new DiagnosticError("ExternalDependencyFailed", BuildProcessError(collisionCommand, collisionResult))),
+                    static (_, _) => { });
+            }
+
+            if (!string.IsNullOrWhiteSpace(collisionResult.Stdout))
+            {
+                return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                    $"Docker container name '{sidecarName}' is already in use.",
+                    new DiagnosticError("NameCollision", "Choose a different --sidecar-name or remove the existing container explicitly; bootstrap never replaces it.")),
+                    static (_, _) => { });
+            }
+        }
+
         var procStatusCommand = BuildProcStatusProbeCommand(target.State.Pid, sidecarImage);
         var procStatusResult = await platform.RunAsync(procStatusCommand, cancellationToken).ConfigureAwait(false);
         if (procStatusResult.ExitCode != 0)
@@ -98,7 +185,10 @@ internal static partial class CliCommands
         }
 
         var targetTmpPath = string.Create(CultureInfo.InvariantCulture, $"/proc/{targetNamespacePid}/root/tmp");
-        var cleanupCommand = new DockerCliInvocation("docker", ["rm", "-f", sidecarName]);
+        var removeCommand = new DockerCliInvocation("docker", ["rm", "-f", sidecarName]);
+        var disconnectCommand = networkPlan is null
+            ? null
+            : new DockerCliInvocation("docker", ["network", "disconnect", "--force", networkPlan.Name, sidecarName]);
         var runCommand = BuildDockerRunCommand(
             targetContainer: target.DisplayName,
             sidecarName,
@@ -109,7 +199,9 @@ internal static partial class CliCommands
             bearerToken,
             delegationKey,
             addSysPtrace: !options.NoSysPtrace,
-            targetTmpPath);
+            targetTmpPath,
+            dockerNetwork: networkPlan?.Name,
+            networkAlias);
 
         var runResult = await platform.RunAsync(runCommand, cancellationToken).ConfigureAwait(false);
         if (runResult.ExitCode != 0)
@@ -120,6 +212,8 @@ internal static partial class CliCommands
                 static (_, _) => { });
         }
 
+        var networkConnected = networkPlan is not null;
+
         var waitSeconds = options.WaitSeconds ?? 90;
         string? health;
         try
@@ -128,13 +222,13 @@ internal static partial class CliCommands
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await CleanupSidecarBestEffortAsync(platform, cleanupCommand).ConfigureAwait(false);
+            await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false);
             throw;
         }
 
         if (health is not null)
         {
-            var cleanup = await CleanupSidecarBestEffortAsync(platform, cleanupCommand).ConfigureAwait(false);
+            var cleanup = await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false);
             return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
                 cleanup.Succeeded
                     ? $"Sidecar container '{sidecarName}' did not become healthy; the bootstrap removed it automatically."
@@ -145,12 +239,75 @@ internal static partial class CliCommands
                         ? health
                         : string.Create(
                             CultureInfo.InvariantCulture,
-                            $"{health} Cleanup failure: {cleanup.Message} Run '{cleanupCommand.ToDisplayString()}' manually."))),
+                            $"{health} Cleanup failure: {cleanup.Message} Run '{removeCommand.ToDisplayString()}' manually."))),
                 static (_, _) => { });
         }
 
+        string profileUrl = preliminaryProfileUrl;
+        IReadOnlyList<string>? allowedCidrs;
+        string? sidecarAddress = null;
+        if (networkPlan is not null)
+        {
+            var sidecarInspection = await InspectContainerAsync(platform, sidecarName, cancellationToken).ConfigureAwait(false);
+            if (sidecarInspection.Error is not null
+                || !TryGetNetworkAddress(sidecarInspection.Container, networkPlan.Name, out sidecarAddress))
+            {
+                var cleanup = await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false);
+                var failure = cleanup.Succeeded
+                    ? DiagnosticResult.Fail<DockerBootstrapReport>(
+                        $"Could not resolve sidecar '{sidecarName}' on Docker network '{networkPlan.Name}'; bootstrap cleaned up its resources.",
+                        new DiagnosticError(
+                            "ExternalDependencyFailed",
+                            sidecarInspection.Error ?? "docker inspect did not report an IPv4 or IPv6 address on the selected network."))
+                    : DiagnosticResult.Fail<DockerBootstrapReport>(
+                        $"Could not resolve sidecar '{sidecarName}' on Docker network '{networkPlan.Name}', and cleanup also failed.",
+                        new DiagnosticError(
+                            "ExternalDependencyFailed",
+                            sidecarInspection.Error ?? "docker inspect did not report an IPv4 or IPv6 address on the selected network."),
+                        new NextActionHint("docker-bootstrap", $"Run '{removeCommand.ToDisplayString()}' manually."));
+                return BuildResult(failure, static (_, _) => { });
+            }
+
+            allowedCidrs = options.AllowedCidrs.Count > 0
+                ? [.. options.AllowedCidrs]
+                : [IpToSingleHostCidr(IPAddress.Parse(sidecarAddress))];
+        }
+        else
+        {
+            allowedCidrs = preliminaryAllowedCidrs;
+        }
+        var resolvedAllowedCidrs = allowedCidrs
+            ?? throw new InvalidOperationException("Allowed CIDRs must be resolved before the bootstrap report is built.");
+
+        if (central is not null)
+        {
+            var centralRecheck = await InspectContainerAsync(platform, central.DisplayName, cancellationToken).ConfigureAwait(false);
+            var centralStable = centralRecheck.Error is null
+                && centralRecheck.Container?.State?.Running == true
+                && string.Equals(centralRecheck.Container.Id, central.Id, StringComparison.Ordinal)
+                && (networkPlan is null || centralRecheck.Container.NetworkSettings?.Networks.ContainsKey(networkPlan.Name) == true);
+            if (!centralStable)
+            {
+                await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false);
+                return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                    $"Central container '{central.DisplayName}' restarted, was recreated, stopped, or left the selected network during bootstrap.",
+                    new DiagnosticError("CentralChanged", "Re-run docker-bootstrap against the current central container instance and network attachment.")),
+                    static (_, _) => { });
+            }
+        }
+
+        var profileUri = new Uri(profileUrl, UriKind.Absolute);
+        var cleanupCommands = new List<string>();
+        if (disconnectCommand is not null)
+        {
+            cleanupCommands.Add(disconnectCommand.ToDisplayString());
+        }
+        cleanupCommands.Add(removeCommand.ToDisplayString());
+
         var report = new DockerBootstrapReport(
             TargetContainer: target.DisplayName,
+            CentralContainer: central?.DisplayName,
+            CentralContainerId: central?.Id,
             SidecarContainer: sidecarName,
             SidecarImage: runCommand.Arguments[^1],
             TargetPid: target.State.Pid,
@@ -158,23 +315,30 @@ internal static partial class CliCommands
             TargetUid: uid,
             TargetGid: gid,
             TargetTmpPath: targetTmpPath,
+            Route: networkPlan is not null ? "docker-network" : centralAware ? "explicit" : "host-loopback",
+            DockerNetwork: networkPlan?.Name,
+            DockerNetworkId: networkPlan?.Id,
+            DockerNetworkAlias: networkPlan is null ? null : networkAlias,
+            SidecarNetworkAddress: sidecarAddress,
             HostPort: hostPort,
+            HostPortPublished: hostPort is not null,
             SysPtraceEnabled: !options.NoSysPtrace,
             ProfileName: profileName,
             ProfileUrl: profileUrl,
-            AllowedCidrs: allowedCidrs,
+            AllowedCidrs: resolvedAllowedCidrs,
             AllowedPorts: [profileUri.Port],
             BearerToken: bearerToken,
             DelegationKey: delegationKey,
             ContainerId: runResult.Stdout.Trim(),
             DockerRunCommand: runCommand.ToDisplayString(),
-            CleanupCommand: cleanupCommand.ToDisplayString(),
-            CentralEnvLines: BuildCentralEnvLines(profileName, profileUrl, allowedCidrs, profileUri.Port, bearerToken, delegationKey),
-            CentralJson: BuildCentralJson(profileName, profileUrl, allowedCidrs, profileUri.Port, bearerToken, delegationKey));
+            NetworkConnectedByBootstrap: networkConnected,
+            CleanupCommands: cleanupCommands,
+            CentralEnvLines: BuildCentralEnvLines(profileName, profileUrl, resolvedAllowedCidrs, profileUri.Port, bearerToken, delegationKey),
+            CentralJson: BuildCentralJson(profileName, profileUrl, resolvedAllowedCidrs, profileUri.Port, bearerToken, delegationKey));
 
         var summary = string.Create(
             CultureInfo.InvariantCulture,
-            $"Started sidecar '{report.SidecarContainer}' for target '{report.TargetContainer}' on host port {report.HostPort} and emitted Orchestrator:ExternalMcpProfiles:{report.ProfileName} config.");
+            $"Started sidecar '{report.SidecarContainer}' for target '{report.TargetContainer}' using route '{report.Route}' and emitted Orchestrator:ExternalMcpProfiles:{report.ProfileName} config.");
 
         return BuildResult(DiagnosticResult.Ok(
             report,
@@ -189,8 +353,14 @@ internal static partial class CliCommands
                 sb.AppendLine();
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  target        : {data.TargetContainer} (host pid {data.TargetPid}, namespace pid {data.TargetNamespacePid}, uid:gid {data.TargetUid}:{data.TargetGid})");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  sidecar       : {data.SidecarContainer}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  central       : {data.CentralContainer ?? "(host process / not inspected)"}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  image         : {data.SidecarImage}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  target tmp    : {data.TargetTmpPath} (via TMPDIR)");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  route         : {data.Route}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  docker network: {data.DockerNetwork ?? "(none selected)"}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  network alias : {data.DockerNetworkAlias ?? "(none)"}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  sidecar addr  : {data.SidecarNetworkAddress ?? "(not inspected)"}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  host publish  : {(data.HostPortPublished ? $"127.0.0.1:{data.HostPort}:8080" : "none")}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  profile       : {data.ProfileName}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  profile url   : {data.ProfileUrl}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  allowed cidrs : {string.Join(", ", data.AllowedCidrs)}");
@@ -213,10 +383,138 @@ internal static partial class CliCommands
                 }
 
                 sb.AppendLine("  cleanup:");
-                sb.AppendLine(CultureInfo.InvariantCulture, $"    {data.CleanupCommand}");
+                foreach (var command in data.CleanupCommands)
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"    {command}");
+                }
+                if (data.NetworkConnectedByBootstrap)
+                {
+                    sb.AppendLine("    The disconnect is bootstrap-owned; ignore 'not connected'/'no such container' when repeating cleanup.");
+                }
                 sb.AppendLine("  note:");
                 sb.AppendLine("    This command does not register the profile dynamically. The current central tool surface lists and attaches existing external profiles only, so add the config and restart the central MCP first.");
             });
+    }
+
+    private static async Task<DockerContainerInspection> InspectContainerAsync(
+        IDockerBootstrapPlatform platform,
+        string container,
+        CancellationToken cancellationToken)
+    {
+        var command = new DockerCliInvocation("docker", ["inspect", "--type", "container", container]);
+        var result = await platform.RunAsync(command, cancellationToken).ConfigureAwait(false);
+        if (result.ExitCode != 0)
+        {
+            return new DockerContainerInspection(null, BuildProcessError(command, result));
+        }
+
+        try
+        {
+            return new DockerContainerInspection(ParseInspect(result.Stdout), null);
+        }
+        catch (Exception ex)
+        {
+            return new DockerContainerInspection(null, ex.Message);
+        }
+    }
+
+    private static async Task<DockerNetworkSelection> SelectCentralNetworkAsync(
+        IDockerBootstrapPlatform platform,
+        DockerInspectContainer target,
+        DockerInspectContainer central,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(central.HostConfig?.NetworkMode, "host", StringComparison.OrdinalIgnoreCase))
+        {
+            return new DockerNetworkSelection(
+                null,
+                $"Central container '{central.DisplayName}' uses network=host, so an internal container-DNS route cannot be derived.",
+                "Use an explicit --profile-url, --allow-cidr, and --host-port for this topology, or attach the central to a user-defined bridge network.");
+        }
+
+        var centralNetworks = central.NetworkSettings?.Networks.Keys
+            .Where(static name => !string.Equals(name, "bridge", StringComparison.Ordinal)
+                && !string.Equals(name, "host", StringComparison.Ordinal)
+                && !string.Equals(name, "none", StringComparison.Ordinal))
+            .Order(StringComparer.Ordinal)
+            .ToArray() ?? [];
+        if (centralNetworks.Length == 0)
+        {
+            return new DockerNetworkSelection(
+                null,
+                $"Central container '{central.DisplayName}' has no user-defined Docker network suitable for container DNS.",
+                "Attach the central to a user-defined local bridge network, then re-run docker-bootstrap.");
+        }
+
+        var command = new DockerCliInvocation("docker", ["network", "inspect", .. centralNetworks]);
+        var result = await platform.RunAsync(command, cancellationToken).ConfigureAwait(false);
+        if (result.ExitCode != 0)
+        {
+            return new DockerNetworkSelection(
+                null,
+                $"Could not inspect the central container's Docker networks.",
+                BuildProcessError(command, result));
+        }
+
+        List<DockerInspectNetwork> inspected;
+        try
+        {
+            inspected = JsonSerializer.Deserialize<List<DockerInspectNetwork>>(result.Stdout, InspectJsonOptions) ?? [];
+        }
+        catch (Exception ex)
+        {
+            return new DockerNetworkSelection(null, "Could not parse docker network inspect output.", ex.Message);
+        }
+
+        var targetNetworks = target.NetworkSettings?.Networks.Keys.ToHashSet(StringComparer.Ordinal)
+            ?? new HashSet<string>(StringComparer.Ordinal);
+        var candidate = inspected
+            .Where(static network => string.Equals(network.Driver, "bridge", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(network.Scope, "local", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(network => targetNetworks.Contains(network.Name))
+            .ThenBy(static network => network.Name, StringComparer.Ordinal)
+            .FirstOrDefault();
+        if (candidate is null)
+        {
+            return new DockerNetworkSelection(
+                null,
+                $"Central container '{central.DisplayName}' has no supported local bridge network.",
+                "Only user-defined local bridge networks are selected automatically; overlay, macvlan, and default bridge routes require explicit options.");
+        }
+
+        return new DockerNetworkSelection(
+            new DockerNetworkPlan(candidate.Name, candidate.Id, targetNetworks.Contains(candidate.Name)),
+            null,
+            null);
+    }
+
+    private static bool IsInternalSidecarUrl(string profileUrl, string sidecarName)
+    {
+        var uri = new Uri(profileUrl, UriKind.Absolute);
+        return string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.Ordinal)
+            && string.Equals(uri.Host, sidecarName, StringComparison.OrdinalIgnoreCase)
+            && uri.Port == 8080;
+    }
+
+    private static bool IsLoopbackHost(string host)
+        => string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)
+            || (IPAddress.TryParse(host, out var address) && IPAddress.IsLoopback(address));
+
+    private static bool TryGetNetworkAddress(
+        DockerInspectContainer? container,
+        string networkName,
+        out string address)
+    {
+        address = string.Empty;
+        if (container?.NetworkSettings?.Networks.TryGetValue(networkName, out var endpoint) != true)
+        {
+            return false;
+        }
+
+        address = !string.IsNullOrWhiteSpace(endpoint!.IPAddress)
+            ? endpoint.IPAddress
+            : endpoint.GlobalIPv6Address;
+        return IPAddress.TryParse(address, out _);
     }
 
     private static DockerInspectContainer ParseInspect(string stdout)
@@ -236,11 +534,13 @@ internal static partial class CliCommands
         string sidecarImage,
         int uid,
         int gid,
-        int hostPort,
+        int? hostPort,
         string bearerToken,
         string delegationKey,
         bool addSysPtrace,
-        string targetTmpPath)
+        string targetTmpPath,
+        string? dockerNetwork,
+        string networkAlias)
     {
         var args = new List<string>
         {
@@ -249,7 +549,20 @@ internal static partial class CliCommands
             "--name", sidecarName,
             "--pid", string.Create(CultureInfo.InvariantCulture, $"container:{targetContainer}"),
             "--user", string.Create(CultureInfo.InvariantCulture, $"{uid}:{gid}"),
-            "--publish", string.Create(CultureInfo.InvariantCulture, $"127.0.0.1:{hostPort}:8080"),
+        };
+
+        if (dockerNetwork is not null)
+        {
+            args.AddRange(["--network", dockerNetwork, "--network-alias", networkAlias]);
+        }
+
+        if (hostPort is not null)
+        {
+            args.AddRange(["--publish", string.Create(CultureInfo.InvariantCulture, $"127.0.0.1:{hostPort}:8080")]);
+        }
+
+        args.AddRange(
+        [
             "--health-cmd", "dotnet DotnetDiagnostics.Mcp.dll --health-check --urls http://127.0.0.1:8080",
             "--health-interval", "2s",
             "--health-timeout", "2s",
@@ -263,7 +576,7 @@ internal static partial class CliCommands
             "--env", string.Create(CultureInfo.InvariantCulture, $"TMPDIR={targetTmpPath}"),
             "--env", string.Create(CultureInfo.InvariantCulture, $"MCP_BEARER_TOKEN={bearerToken}"),
             "--env", string.Create(CultureInfo.InvariantCulture, $"MCP_INTERNAL_SCOPE_DELEGATION_KEY={delegationKey}"),
-        };
+        ]);
 
         if (addSysPtrace)
         {
@@ -442,6 +755,33 @@ internal static partial class CliCommands
         }
     }
 
+    private static async Task<DockerCleanupResult> CleanupBootstrapResourcesBestEffortAsync(
+        IDockerBootstrapPlatform platform,
+        DockerCliInvocation? disconnectCommand,
+        DockerCliInvocation removeCommand,
+        bool networkConnected)
+    {
+        var failures = new List<string>();
+        if (networkConnected && disconnectCommand is not null)
+        {
+            var disconnect = await CleanupSidecarBestEffortAsync(platform, disconnectCommand).ConfigureAwait(false);
+            if (!disconnect.Succeeded)
+            {
+                failures.Add(disconnect.Message!);
+            }
+        }
+
+        var remove = await CleanupSidecarBestEffortAsync(platform, removeCommand).ConfigureAwait(false);
+        if (!remove.Succeeded)
+        {
+            failures.Add(remove.Message!);
+        }
+
+        return failures.Count == 0
+            ? DockerCleanupResult.Success
+            : new DockerCleanupResult(false, string.Join(" ", failures));
+    }
+
     private static IReadOnlyList<string>? ResolveAllowedCidrs(string profileUrl, IReadOnlyList<string> explicitCidrs)
     {
         if (explicitCidrs.Count > 0)
@@ -509,6 +849,14 @@ internal static partial class CliCommands
 
     private static string GenerateSecretHex()
         => Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+
+    private static string BuildNetworkAlias(string sidecarName)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(sidecarName));
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"ddmcp-{Convert.ToHexString(hash.AsSpan(0, 12)).ToLowerInvariant()}");
+    }
 
     private static string SanitizeProfileName(string targetContainer)
     {
@@ -600,6 +948,8 @@ internal static partial class CliCommands
 
     internal sealed record DockerBootstrapReport(
         string TargetContainer,
+        string? CentralContainer,
+        string? CentralContainerId,
         string SidecarContainer,
         string SidecarImage,
         int TargetPid,
@@ -607,7 +957,13 @@ internal static partial class CliCommands
         int TargetUid,
         int TargetGid,
         string TargetTmpPath,
-        int HostPort,
+        string Route,
+        string? DockerNetwork,
+        string? DockerNetworkId,
+        string? DockerNetworkAlias,
+        string? SidecarNetworkAddress,
+        int? HostPort,
+        bool HostPortPublished,
         bool SysPtraceEnabled,
         string ProfileName,
         string ProfileUrl,
@@ -617,7 +973,8 @@ internal static partial class CliCommands
         string DelegationKey,
         string ContainerId,
         string DockerRunCommand,
-        string CleanupCommand,
+        bool NetworkConnectedByBootstrap,
+        IReadOnlyList<string> CleanupCommands,
         IReadOnlyList<string> CentralEnvLines,
         string CentralJson);
 
@@ -645,6 +1002,12 @@ internal static partial class CliCommands
     {
         public static DockerCleanupResult Success { get; } = new(true, null);
     }
+
+    private sealed record DockerContainerInspection(DockerInspectContainer? Container, string? Error);
+
+    private sealed record DockerNetworkSelection(DockerNetworkPlan? Plan, string? Error, string? Detail);
+
+    private sealed record DockerNetworkPlan(string Name, string Id, bool SharedWithTarget);
 
     internal interface IDockerBootstrapPlatform
     {
@@ -707,10 +1070,42 @@ internal static partial class CliCommands
 
         public DockerInspectState? State { get; set; }
 
+        public DockerInspectHostConfig? HostConfig { get; set; }
+
+        public DockerInspectNetworkSettings? NetworkSettings { get; set; }
+
         public string DisplayName
             => string.IsNullOrEmpty(Name)
                 ? Id
                 : Name.TrimStart('/');
+    }
+
+    private sealed class DockerInspectHostConfig
+    {
+        public string? NetworkMode { get; set; }
+    }
+
+    private sealed class DockerInspectNetworkSettings
+    {
+        public Dictionary<string, DockerInspectEndpoint> Networks { get; set; } = new(StringComparer.Ordinal);
+    }
+
+    private sealed class DockerInspectEndpoint
+    {
+        public string IPAddress { get; set; } = string.Empty;
+
+        public string GlobalIPv6Address { get; set; } = string.Empty;
+    }
+
+    private sealed class DockerInspectNetwork
+    {
+        public string Name { get; set; } = string.Empty;
+
+        public string Id { get; set; } = string.Empty;
+
+        public string Driver { get; set; } = string.Empty;
+
+        public string Scope { get; set; } = string.Empty;
     }
 
     private sealed class DockerInspectState

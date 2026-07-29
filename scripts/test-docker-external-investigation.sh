@@ -49,7 +49,6 @@ PY
 }
 
 target_port="${DOCKER_EXT_INV_TARGET_PORT:-$(find_free_port)}"
-sidecar_port="${DOCKER_EXT_INV_SIDECAR_PORT:-$(find_free_port)}"
 central_port="${DOCKER_EXT_INV_CENTRAL_PORT:-$(find_free_port)}"
 
 capture_diagnostics() {
@@ -90,7 +89,6 @@ cli_dll="src/DotnetDiagnostics.Cli/bin/Release/net10.0/dotnet-diagnostics.dll"
 }
 
 docker network create "$network_name" >/dev/null
-network_subnet="$(docker network inspect --format '{{(index .IPAM.Config 0).Subnet}}' "$network_name")"
 
 docker run --detach \
   --name "$target_name" \
@@ -106,14 +104,38 @@ for _ in {1..60}; do
 done
 curl --fail --silent "http://127.0.0.1:${target_port}/weatherforecast" >/dev/null
 
+docker run --detach \
+  --name "$central_name" \
+  --network "$network_name" \
+  --publish "127.0.0.1:${central_port}:8080" \
+  --env ASPNETCORE_URLS=http://0.0.0.0:8080 \
+  --env DOTNET_EnableDiagnostics=0 \
+  --env DOTNET_NOLOGO=1 \
+  --env MCP_BEARER_TOKEN="$central_token" \
+  --health-cmd "dotnet DotnetDiagnostics.Mcp.dll --health-check --urls http://127.0.0.1:8080" \
+  --health-interval 2s \
+  --health-timeout 2s \
+  --health-start-period 10s \
+  --health-retries 30 \
+  dotnet-diagnostics-mcp:dev >/dev/null
+
+for _ in {1..90}; do
+  health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$central_name")"
+  [[ "$health" == "healthy" ]] && break
+  [[ "$health" == "unhealthy" ]] && {
+    echo "Initial central MCP became unhealthy." >&2
+    exit 1
+  }
+  sleep 1
+done
+[[ "$(docker inspect --format '{{.State.Health.Status}}' "$central_name")" == "healthy" ]]
+
 dotnet "$cli_dll" docker-bootstrap \
   --target-container "$target_name" \
+  --central-container "$central_name" \
   --sidecar-name "$sidecar_name" \
   --sidecar-image dotnet-diagnostics-mcp:dev \
   --profile-name "$profile_name" \
-  --profile-url "http://${sidecar_name}:8080/mcp" \
-  --allow-cidr "$network_subnet" \
-  --host-port "$sidecar_port" \
   --bearer-token "$sidecar_token" \
   --delegation-key "$delegation_key" \
   --wait 120 \
@@ -127,8 +149,19 @@ with open(sys.argv[1], encoding="utf-8") as source:
     envelope = json.load(source)
 if envelope.get("error") is not None or envelope.get("data") is None:
     raise SystemExit("docker-bootstrap returned an error envelope")
+report = envelope["data"]
+if report["route"] != "docker-network":
+    raise SystemExit(f"expected docker-network route, got {report['route']}")
+if report["dockerNetwork"] is None:
+    raise SystemExit("central-aware bootstrap did not report a selected Docker network")
+if report["profileUrl"] != f"http://{report['dockerNetworkAlias']}:8080/mcp":
+    raise SystemExit(f"unexpected private profile URL: {report['profileUrl']}")
+if report["hostPortPublished"]:
+    raise SystemExit("central-aware bootstrap unnecessarily published a sidecar host port")
+if len(report["allowedCidrs"]) != 1 or not report["allowedCidrs"][0].endswith("/32"):
+    raise SystemExit(f"expected a single sidecar /32 allowlist, got {report['allowedCidrs']}")
 with open(sys.argv[2], "w", encoding="utf-8") as target:
-    for line in envelope["data"]["centralEnvLines"]:
+    for line in report["centralEnvLines"]:
         target.write(f"{line}\n")
 PY
 
@@ -142,8 +175,6 @@ Auth__BearerTokens__0__Token=${central_token}
 Auth__BearerTokens__0__Scopes__0=root
 Auth__BearerTokens__0__Scopes__1=orchestrator-admin
 EOF
-
-docker network connect "$network_name" "$sidecar_name"
 
 python3 - "$sidecar_name" "$bootstrap_json" <<'PY'
 import json
@@ -172,7 +203,14 @@ actual_tmp = next(
 )
 if actual_tmp != expected_tmp:
     raise SystemExit(f"sidecar TMPDIR mismatch: expected {expected_tmp}, got {actual_tmp}")
+if inspection.get("HostConfig", {}).get("PortBindings", {}).get("8080/tcp"):
+    raise SystemExit("central-aware sidecar unexpectedly published port 8080")
+selected_network = report["dockerNetwork"]
+if selected_network not in inspection["NetworkSettings"]["Networks"]:
+    raise SystemExit(f"sidecar is not connected to selected network {selected_network}")
 PY
+
+docker rm -f "$central_name" >/dev/null
 
 docker run --detach \
   --name "$central_name" \

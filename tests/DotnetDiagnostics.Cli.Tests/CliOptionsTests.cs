@@ -26,6 +26,7 @@ public sealed class CliOptionsTests
             {
                 "docker-bootstrap",
                 "--target-container", "api",
+                "--central-container", "central",
                 "--sidecar-name", "api-diag",
                 "--sidecar-image", "dotnet-diagnostics-mcp:test",
                 "--profile-name", "api-sidecar",
@@ -44,6 +45,7 @@ public sealed class CliOptionsTests
         options.Should().NotBeNull();
         options!.Command.Should().Be("docker-bootstrap");
         options.TargetContainer.Should().Be("api");
+        options.CentralContainer.Should().Be("central");
         options.SidecarName.Should().Be("api-diag");
         options.SidecarImage.Should().Be("dotnet-diagnostics-mcp:test");
         options.ProfileName.Should().Be("api-sidecar");
