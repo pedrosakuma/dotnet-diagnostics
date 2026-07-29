@@ -19,6 +19,44 @@ public sealed class CliOptionsTests
     }
 
     [Fact]
+    public void Parse_DockerBootstrapFlags_AreCaptured()
+    {
+        var options = CliOptions.Parse(
+            new[]
+            {
+                "docker-bootstrap",
+                "--target-container", "api",
+                "--sidecar-name", "api-diag",
+                "--sidecar-image", "dotnet-diagnostics-mcp:test",
+                "--profile-name", "api-sidecar",
+                "--profile-url", "http://127.0.0.1:18892/mcp",
+                "--allow-cidr", "127.0.0.1/32",
+                "--allow-cidr", "::1/128",
+                "--host-port", "18892",
+                "--bearer-token", "token-1",
+                "--delegation-key", "key-1",
+                "--wait", "15",
+                "--no-sys-ptrace",
+            },
+            out var error);
+
+        error.Should().BeNull();
+        options.Should().NotBeNull();
+        options!.Command.Should().Be("docker-bootstrap");
+        options.TargetContainer.Should().Be("api");
+        options.SidecarName.Should().Be("api-diag");
+        options.SidecarImage.Should().Be("dotnet-diagnostics-mcp:test");
+        options.ProfileName.Should().Be("api-sidecar");
+        options.ProfileUrl.Should().Be("http://127.0.0.1:18892/mcp");
+        options.AllowedCidrs.Should().Equal("127.0.0.1/32", "::1/128");
+        options.HostPort.Should().Be(18892);
+        options.BootstrapBearerToken.Should().Be("token-1");
+        options.BootstrapDelegationKey.Should().Be("key-1");
+        options.WaitSeconds.Should().Be(15);
+        options.NoSysPtrace.Should().BeTrue();
+    }
+
+    [Fact]
     public void Parse_PidAndJson_AreCaptured()
     {
         var options = CliOptions.Parse(new[] { "capabilities", "--pid", "1234", "--json" }, out var error);

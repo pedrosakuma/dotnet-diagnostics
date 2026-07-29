@@ -82,7 +82,78 @@ rather than forwarded unsigned.
   diagnostic socket in `/tmp`. This ensures exactly one `.NET` process (CoreClrSample) is
   discoverable, so process auto-selection works reliably when no explicit `processId` is passed.
 
+## Recommended quick start: `dotnet-diagnostics-cli docker-bootstrap`
+
+When the **target container is already running**, the fastest local bootstrap path is the standalone
+CLI command below:
+
+```bash
+# Build the sidecar image once (or pass --sidecar-image to use a different tag)
+docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
+
+# Start a sidecar for an existing target container and print the matching central config
+dotnet-diagnostics-cli docker-bootstrap --target-container <running-target-container>
+```
+
+What it does:
+
+- shells out to the local `docker` CLI — **not** from inside the MCP server process;
+- inspects the target container's host PID, then bind-mounts `/proc/<pid>/root/tmp` into the sidecar
+  so the target diagnostic socket is reachable without pre-authoring a shared Docker volume;
+- reads the target's effective UID/GID from `/proc/<pid>/status` and runs the sidecar with that same
+  `--user`, plus `--cap-add SYS_PTRACE` by default;
+- sets `DOTNET_EnableDiagnostics=0` on the sidecar so only the target's socket is discoverable;
+- generates (or accepts) a sidecar bearer token and `MCP_INTERNAL_SCOPE_DELEGATION_KEY`, then prints
+  the exact `Orchestrator__ExternalMcpProfiles__<name>__...` env vars and an equivalent
+  `appsettings.json` block for the central MCP.
+
+Defaults:
+
+- sidecar image: `dotnet-diagnostics-mcp:dev`
+- published sidecar host port: `127.0.0.1:18891 -> 8080`
+- emitted central profile URL: `http://127.0.0.1:18891/mcp`
+- emitted `AllowedCidrs`: `127.0.0.1/32` (or `127.0.0.1/32` + `::1/128` when `--profile-url` uses `localhost`)
+
+Example with an explicit profile name / port:
+
+```bash
+dotnet-diagnostics-cli docker-bootstrap \
+  --target-container api \
+  --profile-name api-sidecar \
+  --host-port 18892
+```
+
+If the central MCP reaches the sidecar through a different hostname (for example a Dockerized central
+using `host.docker.internal`), override the URL and CIDR explicitly:
+
+```bash
+dotnet-diagnostics-cli docker-bootstrap \
+  --target-container api \
+  --host-port 18892 \
+  --profile-url http://host.docker.internal:18892/mcp \
+  --allow-cidr 172.17.0.1/32
+```
+
+### Central-registration limitation
+
+The current public orchestrator surface can **list** external profiles and **attach** to an already
+configured one, but it does not expose a runtime "register profile" mutation. So the bootstrap command
+does **not** auto-register the profile against a live central instance yet. After running the command:
+
+1. add the printed `Orchestrator__ExternalMcpProfiles__<name>__...` keys (or JSON block) to the central,
+2. restart the central MCP,
+3. verify with `list_orchestrator(kind="external-profiles")`,
+4. then call `attach_to_pod(profileName="<name>")`.
+
+This keeps the bootstrap outside the server and preserves the hard constraint that neither the central
+nor the sidecar MCP process ever receives `/var/run/docker.sock`.
+
 ## Build and start
+
+For a from-scratch topology where the target, sidecar, PID-namespace anchor, bridge network, and
+central are all launched together, keep using the compose recipe below. That manual path remains the
+reference for understanding every moving part and for reproducing the exact acceptance topology from
+issue #712.
 
 ```bash
 # Build images (skip with DOCKER_EXT_INV_SKIP_BUILD=1 if already built)
