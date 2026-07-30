@@ -123,6 +123,7 @@ public sealed class TransportSecurityIntegrationTests
             "https",
             ("MCP_TLS_CERTIFICATE_PEM", certificate.ExportCertificatePem()),
             ("MCP_TLS_PRIVATE_KEY_PEM", rsa.ExportPkcs8PrivateKeyPem()),
+            ("ASPNETCORE_HTTP_PORTS", "8080"),
             ("Auth__BearerTokens__0__Name", "tls-test"),
             ("Auth__BearerTokens__0__Token", "tls-test-token"),
             ("Auth__BearerTokens__0__Scopes__0", "read-counters"));

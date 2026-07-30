@@ -109,4 +109,50 @@ public sealed class BindingInspectorTests
         BindingInspector.HasNonLoopbackHttpBinding(Array.Empty<string>(), cfg)
             .Should().Be(expectedCleartext);
     }
+
+    [Fact]
+    public void ExplicitHttpsUrl_IgnoresInheritedHttpPorts()
+    {
+        var cfg = ConfigFrom(new()
+        {
+            ["ASPNETCORE_URLS"] = "https://0.0.0.0:18887",
+            ["ASPNETCORE_HTTP_PORTS"] = "8080",
+        });
+
+        BindingInspector.HasNonLoopbackBinding(Array.Empty<string>(), cfg).Should().BeTrue();
+        BindingInspector.HasNonLoopbackHttpBinding(Array.Empty<string>(), cfg).Should().BeFalse();
+    }
+
+    [Fact]
+    public void KestrelHttpsEndpoint_TakesPrecedenceOverLowerPriorityHttpSettings()
+    {
+        var cfg = ConfigFrom(new()
+        {
+            ["Kestrel:Endpoints:Https:Url"] = "https://0.0.0.0:18887",
+            ["ASPNETCORE_URLS"] = "http://0.0.0.0:5000",
+            ["ASPNETCORE_HTTP_PORTS"] = "8080",
+        });
+
+        BindingInspector.HasNonLoopbackBinding(Array.Empty<string>(), cfg).Should().BeTrue();
+        BindingInspector.HasNonLoopbackHttpBinding(Array.Empty<string>(), cfg).Should().BeFalse();
+    }
+
+    [Fact]
+    public void AppHttpsUrl_IgnoresInheritedHttpPorts()
+    {
+        var cfg = ConfigFrom(new() { ["HTTP_PORTS"] = "8080" });
+        var appUrls = new[] { "https://0.0.0.0:18887" };
+
+        BindingInspector.HasNonLoopbackBinding(appUrls, cfg).Should().BeTrue();
+        BindingInspector.HasNonLoopbackHttpBinding(appUrls, cfg).Should().BeFalse();
+    }
+
+    [Fact]
+    public void HttpPortsFallback_IsCleartextWithoutHigherPriorityConfiguration()
+    {
+        var cfg = ConfigFrom(new() { ["ASPNETCORE_HTTP_PORTS"] = "8080" });
+
+        BindingInspector.HasNonLoopbackBinding(Array.Empty<string>(), cfg).Should().BeTrue();
+        BindingInspector.HasNonLoopbackHttpBinding(Array.Empty<string>(), cfg).Should().BeTrue();
+    }
 }

@@ -26,7 +26,8 @@ internal static class BindingInspector
     /// <summary>Returns <c>true</c> when the host is configured to bind to any
     /// non-loopback address via <c>app.Urls</c>, the <c>urls</c> / <c>ASPNETCORE_URLS</c>
     /// / <c>DOTNET_URLS</c> keys, the port-only env keys (<c>HTTP_PORTS</c> family —
-    /// always wildcard), or <c>Kestrel:Endpoints:*:Url</c>.</summary>
+    /// always wildcard), or <c>Kestrel:Endpoints:*:Url</c>. Kestrel endpoints and
+    /// explicit URLs take precedence over the lower-priority port-only keys.</summary>
     public static bool HasNonLoopbackBinding(WebApplication app, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(app);
@@ -55,11 +56,20 @@ internal static class BindingInspector
         ArgumentNullException.ThrowIfNull(appUrls);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        var candidates = new List<string>(capacity: 8);
+        var kestrelEndpoints = configuration.GetSection("Kestrel:Endpoints")
+            .GetChildren()
+            .Select(static endpoint => endpoint["Url"])
+            .Where(static url => !string.IsNullOrWhiteSpace(url))
+            .Select(static url => url!)
+            .ToArray();
+        if (kestrelEndpoints.Length > 0)
+        {
+            return InspectUrls(kestrelEndpoints);
+        }
 
         if (appUrls.Count > 0)
         {
-            candidates.AddRange(appUrls);
+            return InspectUrls(appUrls);
         }
 
         foreach (var key in UrlConfigKeys)
@@ -67,14 +77,15 @@ internal static class BindingInspector
             var value = configuration[key];
             if (!string.IsNullOrWhiteSpace(value))
             {
-                candidates.AddRange(value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                return InspectUrls(value.Split(
+                    ';',
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
             }
         }
 
         foreach (var key in HttpPortOnlyConfigKeys)
         {
-            var value = configuration[key];
-            if (!string.IsNullOrWhiteSpace(value))
+            if (!string.IsNullOrWhiteSpace(configuration[key]))
             {
                 return new BindingExposure(
                     HasNonLoopbackBinding: true,
@@ -82,26 +93,23 @@ internal static class BindingInspector
             }
         }
 
-        var hasNonLoopbackBinding = false;
         foreach (var key in HttpsPortOnlyConfigKeys)
         {
-            var value = configuration[key];
-            if (!string.IsNullOrWhiteSpace(value))
+            if (!string.IsNullOrWhiteSpace(configuration[key]))
             {
-                hasNonLoopbackBinding = true;
+                return new BindingExposure(
+                    HasNonLoopbackBinding: true,
+                    HasNonLoopbackHttpBinding: false);
             }
         }
 
-        foreach (var endpoint in configuration.GetSection("Kestrel:Endpoints").GetChildren())
-        {
-            var url = endpoint["Url"];
-            if (!string.IsNullOrWhiteSpace(url))
-            {
-                candidates.Add(url);
-            }
-        }
+        return default;
+    }
 
-        foreach (var raw in candidates)
+    private static BindingExposure InspectUrls(IEnumerable<string> urls)
+    {
+        var hasNonLoopbackBinding = false;
+        foreach (var raw in urls)
         {
             var exposure = InspectUrl(raw);
             hasNonLoopbackBinding |= exposure.HasNonLoopbackBinding;
