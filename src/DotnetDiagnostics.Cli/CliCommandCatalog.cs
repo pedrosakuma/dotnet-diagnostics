@@ -132,10 +132,15 @@ docker-bootstrap options:
                                     Default: generated.
       --wait <seconds>              Health-check wait timeout (default: 90).
       --no-sys-ptrace               Do not add SYS_PTRACE to the sidecar. Default OFF.
+      --apply                       Apply the profile to a supported Dockerized central using
+                                    an operator-owned 0600 config file, then restart and health-check it.
+      --replace                     With --apply, replace a conflicting bootstrap-owned profile.
 notes:
   This command shells out to the local 'docker' CLI. It never gives either MCP server process
-  access to /var/run/docker.sock, and it does not register the profile dynamically with the
-  central — it prints the exact config block/env vars you must add there before attach_to_pod(profileName=...).
+  access to /var/run/docker.sock. Without --apply it only prints configuration. With --apply,
+  the central must use a compatible dotnet-diagnostics image; bootstrap writes through docker exec
+  on stdin (secrets are not command arguments), restarts the existing container without recreating it,
+  and waits for health before returning.
   The Docker daemon must allow a constrained --pid host probe and joining the target PID namespace.
   The client shell may run on Linux, native Windows, or WSL2; it does not need direct access to the
   daemon host's /proc.
@@ -143,10 +148,11 @@ notes:
 """
   dotnet-diagnostics-cli docker-bootstrap --target-container coreclr-sample
   dotnet-diagnostics-cli docker-bootstrap --target-container api --central-container diagnostics-central
+  dotnet-diagnostics-cli docker-bootstrap --target-container api --central-container diagnostics-central --apply
   dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar --host-port 18892
   dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-url http://host.docker.internal:18892/mcp --allow-cidr 172.17.0.1/32
 """,
-            ["--target-container", "--central-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url", "--allow-cidr", "--host-port", "--bearer-token", "--delegation-key", "--wait", "--no-sys-ptrace"]),
+            ["--target-container", "--central-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url", "--allow-cidr", "--host-port", "--bearer-token", "--delegation-key", "--wait", "--no-sys-ptrace", "--apply", "--replace"]),
         new(
             "processes",
             "List attachable .NET processes.",

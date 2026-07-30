@@ -3,7 +3,7 @@
 #
 # Docker-bootstrap external-investigation acceptance test (issues #712/#752).
 # Starts a real target, invokes the CLI from this checkout as the current user,
-# starts a central MCP from the bootstrap-emitted profile config, then runs the
+# applies the profile to an already-running central MCP, then runs the
 # protocol-level DockerExternalInvestigationTests acceptance test.
 #
 # Usage:
@@ -35,7 +35,7 @@ sidecar_token="sidecar-${run_id}-token"
 delegation_key="delegation-${run_id}-key"
 artifact_dir="${DOCKER_EXT_INV_ARTIFACT_DIR:-TestResults/docker-bootstrap-e2e}"
 bootstrap_json="$artifact_dir/bootstrap.json"
-central_env="$artifact_dir/central.env"
+idempotent_json="$artifact_dir/bootstrap-idempotent.json"
 
 mkdir -p "$artifact_dir"
 
@@ -111,7 +111,10 @@ docker run --detach \
   --env ASPNETCORE_URLS=http://0.0.0.0:8080 \
   --env DOTNET_EnableDiagnostics=0 \
   --env DOTNET_NOLOGO=1 \
-  --env MCP_BEARER_TOKEN="$central_token" \
+  --env Auth__BearerTokens__0__Name=bootstrap-e2e \
+  --env Auth__BearerTokens__0__Token="$central_token" \
+  --env Auth__BearerTokens__0__Scopes__0=root \
+  --env Auth__BearerTokens__0__Scopes__1=orchestrator-admin \
   --health-cmd "dotnet DotnetDiagnostics.Mcp.dll --health-check --urls http://127.0.0.1:8080" \
   --health-interval 2s \
   --health-timeout 2s \
@@ -138,11 +141,13 @@ dotnet "$cli_dll" docker-bootstrap \
   --profile-name "$profile_name" \
   --bearer-token "$sidecar_token" \
   --delegation-key "$delegation_key" \
+  --apply \
   --wait 120 \
   --json | tee "$bootstrap_json"
 
-python3 - "$bootstrap_json" "$central_env" <<'PY'
+python3 - "$bootstrap_json" <<'PY'
 import json
+import os
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as source:
@@ -160,21 +165,15 @@ if report["hostPortPublished"]:
     raise SystemExit("central-aware bootstrap unnecessarily published a sidecar host port")
 if len(report["allowedCidrs"]) != 1 or not report["allowedCidrs"][0].endswith("/32"):
     raise SystemExit(f"expected a single sidecar /32 allowlist, got {report['allowedCidrs']}")
-with open(sys.argv[2], "w", encoding="utf-8") as target:
-    for line in report["centralEnvLines"]:
-        target.write(f"{line}\n")
+if not report["profileApplied"]:
+    raise SystemExit("docker-bootstrap did not apply the profile")
+if "restarted" not in report["applyAction"]:
+    raise SystemExit(f"expected an explicit central restart action, got {report['applyAction']}")
+if not report["centralProfilePath"].endswith(f"/{report['profileName']}.json"):
+    raise SystemExit(f"unexpected central profile path: {report['centralProfilePath']}")
+if not report["cleanupCommands"] or "docker restart" not in report["cleanupCommands"][0]:
+    raise SystemExit("bootstrap did not emit exact central profile cleanup")
 PY
-
-cat >>"$central_env" <<EOF
-ASPNETCORE_URLS=http://0.0.0.0:8080
-DOTNET_EnableDiagnostics=0
-DOTNET_NOLOGO=1
-Orchestrator__Enabled=true
-Auth__BearerTokens__0__Name=bootstrap-e2e
-Auth__BearerTokens__0__Token=${central_token}
-Auth__BearerTokens__0__Scopes__0=root
-Auth__BearerTokens__0__Scopes__1=orchestrator-admin
-EOF
 
 python3 - "$sidecar_name" "$bootstrap_json" <<'PY'
 import json
@@ -210,32 +209,33 @@ if selected_network not in inspection["NetworkSettings"]["Networks"]:
     raise SystemExit(f"sidecar is not connected to selected network {selected_network}")
 PY
 
-docker rm -f "$central_name" >/dev/null
+central_started_at="$(docker inspect --format '{{.State.StartedAt}}' "$central_name")"
+dotnet "$cli_dll" docker-bootstrap \
+  --target-container "$target_name" \
+  --central-container "$central_name" \
+  --sidecar-name "$sidecar_name" \
+  --sidecar-image dotnet-diagnostics-mcp:dev \
+  --profile-name "$profile_name" \
+  --bearer-token "$sidecar_token" \
+  --delegation-key "$delegation_key" \
+  --apply \
+  --wait 120 \
+  --json >"$idempotent_json"
 
-docker run --detach \
-  --name "$central_name" \
-  --network "$network_name" \
-  --publish "127.0.0.1:${central_port}:8080" \
-  --env-file "$central_env" \
-  --health-cmd "dotnet DotnetDiagnostics.Mcp.dll --health-check --urls http://127.0.0.1:8080" \
-  --health-interval 2s \
-  --health-timeout 2s \
-  --health-start-period 10s \
-  --health-retries 30 \
-  dotnet-diagnostics-mcp:dev >/dev/null
+python3 - "$idempotent_json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    envelope = json.load(source)
+if envelope.get("error") is not None:
+    raise SystemExit(f"idempotent apply failed: {envelope['error']}")
+action = envelope["data"]["applyAction"]
+if "no central restart" not in action:
+    raise SystemExit(f"idempotent apply unexpectedly changed the central: {action}")
+PY
+[[ "$(docker inspect --format '{{.State.StartedAt}}' "$central_name")" == "$central_started_at" ]]
 
-for _ in {1..90}; do
-  health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$central_name")"
-  [[ "$health" == "healthy" ]] && break
-  [[ "$health" == "unhealthy" ]] && {
-    echo "Central MCP became unhealthy." >&2
-    exit 1
-  }
-  sleep 1
-done
-[[ "$(docker inspect --format '{{.State.Health.Status}}' "$central_name")" == "healthy" ]]
-
-python3 - "$central_name" <<'PY'
+python3 - "$central_name" "$bootstrap_json" <<'PY'
 import json
 import subprocess
 import sys
@@ -250,6 +250,14 @@ if any(
     for mount in inspection.get("Mounts", [])
 ):
     raise SystemExit("central MCP must not receive Docker-socket access")
+with open(sys.argv[2], encoding="utf-8") as source:
+    report = json.load(source)["data"]
+mode = subprocess.check_output(
+    ["docker", "exec", sys.argv[1], "stat", "-c", "%a", report["centralProfilePath"]],
+    text=True,
+).strip()
+if mode != "600":
+    raise SystemExit(f"central profile config mode is {mode}, expected 600")
 PY
 
 DOTNET_DBG_MCP_DOCKER_EXT_INV_TEST=1 \
@@ -263,5 +271,15 @@ DOTNET_DBG_MCP_DOCKER_EXT_INV_TARGET_URL="http://127.0.0.1:${target_port}" \
   --logger "trx;LogFileName=docker-bootstrap-e2e.trx" \
   --logger "console;verbosity=normal" \
   --results-directory "$artifact_dir"
+
+profile_path="$(python3 - "$bootstrap_json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    print(json.load(source)["data"]["centralProfilePath"])
+PY
+)"
+docker exec "$central_name" /bin/sh -c "rm -f '$profile_path'"
+docker restart "$central_name" >/dev/null
+docker rm -f "$sidecar_name" >/dev/null
 
 capture_diagnostics

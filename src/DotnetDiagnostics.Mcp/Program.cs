@@ -29,6 +29,7 @@ if (args.Contains("--stdio"))
 }
 
 var builder = WebApplication.CreateBuilder(args);
+DockerBootstrapProfileConfiguration.AddTo(builder.Configuration);
 var oidcJwtAuth = builder.AddOidcJwtAuth();
 
 builder.Logging.AddSimpleConsole(o =>
