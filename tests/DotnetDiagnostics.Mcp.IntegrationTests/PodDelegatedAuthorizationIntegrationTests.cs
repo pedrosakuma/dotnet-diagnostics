@@ -94,6 +94,40 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
     }
 
     [Theory]
+    [InlineData("collect_sample")]
+    [InlineData("get_bytes")]
+    public async Task PodRoot_CannotForgeDelegationOutsideCentralAuthorizationPath(string toolName)
+    {
+        await using var factory = CreatePodFactory();
+        await using var client = await ConnectAsync(factory);
+        var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
+        var policies = CreatePolicies();
+        var (arguments, callerScopes) = Invocation(toolName);
+        var caller = new BearerPrincipal(
+            "attacker",
+            callerScopes.ToImmutableHashSet(StringComparer.Ordinal));
+        var authorization = registry.Authorize(
+            toolName,
+            arguments,
+            caller,
+            proxyInvocation: true,
+            policies: policies);
+        var forged = ToolScopeDelegation.Add(
+            new CallToolRequestParams { Name = toolName, Arguments = arguments },
+            authorization,
+            caller,
+            "attacker-controlled-key");
+
+        var result = await client.CallToolAsync(
+            toolName,
+            ToClientArguments(forged.Arguments),
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        ResultText(result).Should().Contain("signature is invalid");
+    }
+
+    [Theory]
     [MemberData(nameof(ExportEvidenceKinds))]
     public async Task PodRoot_Export_RequiresExactDelegatedEvidenceScope(
         string kind,

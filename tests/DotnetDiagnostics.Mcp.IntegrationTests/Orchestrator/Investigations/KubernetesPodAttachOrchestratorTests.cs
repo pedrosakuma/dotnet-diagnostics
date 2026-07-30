@@ -31,7 +31,8 @@ public class KubernetesPodAttachOrchestratorTests
         var api = new StubAttachApi(
             pod: BuildPreparedPod(),
             ephemeralRunningAfter: 1);
-        var (orch, store, options) = NewOrchestrator(api);
+        var secrets = new RecordingAttachmentSecretManager();
+        var (orch, store, options) = NewOrchestrator(api, secretManager: secrets);
 
         var handle = await orch.AttachAsync(NewRequest(), CancellationToken.None);
 
@@ -49,12 +50,27 @@ public class KubernetesPodAttachOrchestratorTests
         api.PatchInvoked.Should().BeTrue();
         api.PatchedSpec!.Image.Should().Be(options.EphemeralContainerImage);
         api.PatchedSpec.TargetContainerName.Should().Be(Container);
-        api.PatchedSpec.Env.Should().Contain(e => e.Name == "MCP_BEARER_TOKEN" && e.Value == handle.Kubernetes!.PodLocalBearerToken);
+        api.PatchedSpec.Env.Should().NotContain(e =>
+            e.Value == handle.Kubernetes!.PodLocalBearerToken ||
+            e.Value == handle.InternalScopeDelegationKey);
+        api.PatchedSpec.Env.Should().Contain(e =>
+            e.Name == "MCP_BEARER_TOKEN" &&
+            e.Value == null &&
+            e.ValueFrom!.SecretKeyRef!.Name == handle.Kubernetes!.CredentialSecretName &&
+            e.ValueFrom.SecretKeyRef.Key == KubernetesAttachmentSecretManager.BearerTokenKey);
         api.PatchedSpec.Env.Should().Contain(e =>
             e.Name == ToolScopeDelegation.EnvironmentVariableName &&
-            e.Value == handle.InternalScopeDelegationKey);
-        api.PatchedSpec.Env.Should().Contain(e => e.Name == "ASPNETCORE_URLS" && e.Value == $"http://0.0.0.0:{options.ProxyPodPort}");
-        api.PatchedSpec.Args.Should().Equal("--urls", $"http://0.0.0.0:{options.ProxyPodPort}");
+            e.Value == null &&
+            e.ValueFrom!.SecretKeyRef!.Name == handle.Kubernetes!.CredentialSecretName &&
+            e.ValueFrom.SecretKeyRef.Key == KubernetesAttachmentSecretManager.DelegationKeyKey);
+        api.PatchedSpec.Env.Should().Contain(e => e.Name == "ASPNETCORE_URLS" && e.Value == $"http://127.0.0.1:{options.ProxyPodPort}");
+        api.PatchedSpec.Env.Should().ContainSingle(e =>
+            e.Name == KubernetesPodAttachOrchestrator.AllowInsecureHttpEnvironmentVariableName &&
+            e.Value == "true");
+        api.PatchedSpec.Args.Should().Equal("--urls", $"http://127.0.0.1:{options.ProxyPodPort}");
+        secrets.CreatedBearerToken.Should().Be(handle.Kubernetes.PodLocalBearerToken);
+        secrets.CreatedDelegationKey.Should().Be(handle.InternalScopeDelegationKey);
+        secrets.DeletedHandles.Should().Contain(handle.HandleId);
         store.GetById(handle.HandleId).Should().BeSameAs(handle);
     }
 
@@ -67,8 +83,11 @@ public class KubernetesPodAttachOrchestratorTests
 
         await orch.AttachAsync(NewRequest(), CancellationToken.None);
 
-        api.PatchedSpec!.Env.Should().Contain(e => e.Name == "ASPNETCORE_URLS" && e.Value == "http://0.0.0.0:18888");
-        api.PatchedSpec.Args.Should().Equal("--urls", "http://0.0.0.0:18888");
+        api.PatchedSpec!.Env.Should().Contain(e => e.Name == "ASPNETCORE_URLS" && e.Value == "http://127.0.0.1:18888");
+        api.PatchedSpec.Env.Should().ContainSingle(e =>
+            e.Name == KubernetesPodAttachOrchestrator.AllowInsecureHttpEnvironmentVariableName &&
+            e.Value == "true");
+        api.PatchedSpec.Args.Should().Equal("--urls", "http://127.0.0.1:18888");
     }
 
     [Fact]
@@ -536,19 +555,17 @@ public class KubernetesPodAttachOrchestratorTests
         json.Should().NotContain("SECRET_TOKEN_VALUE");
     }
 
-    // ---- stale ephemeral container detection and reuse ----
+    // ---- detached credential rotation ----
 
     [Fact]
-    public async Task AttachAsync_ReusesStaleEphemeralContainer_AfterDetachWithinSameProcess()
+    public async Task AttachAsync_RotatesCredentials_AfterDetachWithinSameProcess()
     {
-        // Regression guard for issue #695: after detach_from_pod the ephemeral container
-        // keeps running in Kubernetes (containers are immutable once added). A second
-        // attach to the same pod must reuse the existing container instead of patching a
-        // new one — which would fail with "address already in use" on the shared ProxyPodPort.
         var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
         var (orch, store, _) = NewOrchestrator(api);
         var closer = new InvestigationCloser(store, new NoOpProxyClient(), new NoOpPortForwardManager(),
-            new MemoryInvestigationSessionBinder());
+            new MemoryInvestigationSessionBinder(),
+            NoOpInvestigationCredentialRevoker.Instance,
+            NoOpKubernetesAttachmentSecretManager.Instance);
 
         var first = await orch.AttachAsync(NewRequest(), CancellationToken.None);
         first.State.Should().Be(InvestigationState.Active);
@@ -557,24 +574,20 @@ public class KubernetesPodAttachOrchestratorTests
         // Simulate detach_from_pod: transition the handle to Closed.
         await closer.CloseAsync(first.HandleId, InvestigationState.Closed);
         store.GetById(first.HandleId)!.State.Should().Be(InvestigationState.Closed);
-        // The K8s pod still has the ephemeral container Running (Kubernetes cannot remove it).
-        api.PatchInvocationCount.Should().Be(1); // no extra patch to K8s
-
-        // Reattach: the orchestrator detects the stale Running container and reuses it.
         var second = await orch.AttachAsync(NewRequest(), CancellationToken.None);
 
         second.State.Should().Be(InvestigationState.Active);
-        second.HandleId.Should().NotBe(first.HandleId, "reattach creates a distinct handle");
-        second.EphemeralContainerName.Should().Be(first.EphemeralContainerName,
-            "the existing running container is reused — no new container was patched");
-        second.Kubernetes!.PodLocalBearerToken.Should().Be(first.Kubernetes!.PodLocalBearerToken,
-            "the running sidecar was started with the old token; reuse must carry it forward");
-        api.PatchInvocationCount.Should().Be(1, "no second K8s ephemeral container patch");
+        second.HandleId.Should().NotBe(first.HandleId);
+        second.EphemeralContainerName.Should().NotBe(first.EphemeralContainerName);
+        second.Kubernetes!.PodLocalBearerToken.Should().NotBe(first.Kubernetes!.PodLocalBearerToken);
+        second.InternalScopeDelegationKey.Should().NotBe(first.InternalScopeDelegationKey);
+        second.Kubernetes.CredentialSecretName.Should().NotBe(first.Kubernetes.CredentialSecretName);
+        api.PatchInvocationCount.Should().Be(2);
         store.Snapshot().Should().HaveCount(2, "original Closed handle + new Active handle");
     }
 
     [Fact]
-    public async Task AttachAsync_ReusesStaleEphemeral_CarriesDelegationKey()
+    public async Task AttachAsync_DoesNotReuseDelegationKeyFromClosedHandle()
     {
         // The internal scope-delegation key is embedded in the sidecar's environment at
         // startup. Reusing the running container must carry the same key — generating a
@@ -582,19 +595,20 @@ public class KubernetesPodAttachOrchestratorTests
         var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
         var (orch, store, _) = NewOrchestrator(api);
         var closer = new InvestigationCloser(store, new NoOpProxyClient(), new NoOpPortForwardManager(),
-            new MemoryInvestigationSessionBinder());
+            new MemoryInvestigationSessionBinder(),
+            NoOpInvestigationCredentialRevoker.Instance,
+            NoOpKubernetesAttachmentSecretManager.Instance);
 
         var first = await orch.AttachAsync(NewRequest(), CancellationToken.None);
         await closer.CloseAsync(first.HandleId, InvestigationState.Closed);
 
         var second = await orch.AttachAsync(NewRequest(), CancellationToken.None);
 
-        second.InternalScopeDelegationKey.Should().Be(first.InternalScopeDelegationKey,
-            "delegation key embedded in the running sidecar must be preserved on reattach");
+        second.InternalScopeDelegationKey.Should().NotBe(first.InternalScopeDelegationKey);
     }
 
     [Fact]
-    public async Task AttachAsync_ThrowsEphemeralContainerStale_WhenNoMatchingTerminalHandle()
+    public async Task AttachAsync_DoesNotAdoptUnknownRunningEphemeralContainer()
     {
         // After a server restart the in-memory store is empty. If the pod still has a
         // Running ephemeral container from a previous session, the orchestrator cannot
@@ -613,19 +627,17 @@ public class KubernetesPodAttachOrchestratorTests
                 State = new V1ContainerState { Running = new V1ContainerStateRunning() },
             },
         };
-        var api = new StubAttachApi(pod: pod);
+        var api = new StubAttachApi(pod: pod, ephemeralRunningAfter: 1);
         var (orch, _, _) = NewOrchestrator(api);
 
-        var act = () => orch.AttachAsync(NewRequest(), CancellationToken.None);
+        var handle = await orch.AttachAsync(NewRequest(), CancellationToken.None);
 
-        var ex = await act.Should().ThrowAsync<OrchestratorException>();
-        ex.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.EphemeralContainerStale);
-        ex.Which.Message.Should().Contain(prefix + "staleaabb");
-        api.PatchInvoked.Should().BeFalse("no patch should be attempted when stale state is detected");
+        handle.EphemeralContainerName.Should().NotBe(prefix + "staleaabb");
+        api.PatchInvocationCount.Should().Be(1);
     }
 
     [Fact]
-    public async Task AttachAsync_ThrowsPermissionDenied_WhenStaleContainerOwnedByDifferentSession()
+    public async Task AttachAsync_AllowsNewOwnerAfterPriorHandleWasClosed()
     {
         // A stale container belonging to a different MCP session must not be
         // commandeered by a new caller — the old token would run under the old session's
@@ -633,30 +645,31 @@ public class KubernetesPodAttachOrchestratorTests
         var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
         var (orch, store, _) = NewOrchestrator(api);
         var closer = new InvestigationCloser(store, new NoOpProxyClient(), new NoOpPortForwardManager(),
-            new MemoryInvestigationSessionBinder());
+            new MemoryInvestigationSessionBinder(),
+            NoOpInvestigationCredentialRevoker.Instance,
+            NoOpKubernetesAttachmentSecretManager.Instance);
         var ownerA = PrincipalOwnershipKey.ForOpaqueEntry("session-a");
         var ownerB = PrincipalOwnershipKey.ForOpaqueEntry("session-b");
 
         await orch.AttachAsync(NewRequest(ownerPrincipalKey: ownerA), CancellationToken.None);
         await closer.CloseAsync(store.Snapshot().Single().HandleId, InvestigationState.Closed);
 
-        var act = () => orch.AttachAsync(NewRequest(ownerPrincipalKey: ownerB), CancellationToken.None);
+        var second = await orch.AttachAsync(NewRequest(ownerPrincipalKey: ownerB), CancellationToken.None);
 
-        (await act.Should().ThrowAsync<OrchestratorException>())
-            .Which.ErrorKind.Should().Be(OrchestratorErrorKinds.PermissionDenied);
-        api.PatchInvocationCount.Should().Be(1, "no second K8s patch attempted");
+        second.OwnerPrincipalKey.Should().Be(ownerB);
+        api.PatchInvocationCount.Should().Be(2);
     }
 
     [Fact]
     public async Task AttachAsync_FullLifecycle_AttachDetachReattachDetach()
     {
-        // End-to-end: attach → detach → reattach (stale reuse) → detach.
-        // Verifies the lifecycle contract: ephemeral containers are immutable in K8s;
-        // the orchestrator reuses the running container after detach to avoid port conflicts.
+        // End-to-end: attach → detach → reattach with fresh credentials → detach.
         var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
         var (orch, store, _) = NewOrchestrator(api);
         var closer = new InvestigationCloser(store, new NoOpProxyClient(), new NoOpPortForwardManager(),
-            new MemoryInvestigationSessionBinder());
+            new MemoryInvestigationSessionBinder(),
+            NoOpInvestigationCredentialRevoker.Instance,
+            NoOpKubernetesAttachmentSecretManager.Instance);
 
         // — Phase 1: attach ————————————————————————————————————————————————————————————
         var h1 = await orch.AttachAsync(NewRequest(), CancellationToken.None);
@@ -668,13 +681,14 @@ public class KubernetesPodAttachOrchestratorTests
         closeOutcome.NewState.Should().Be(InvestigationState.Closed);
         store.GetById(h1.HandleId)!.State.Should().Be(InvestigationState.Closed);
 
-        // — Phase 3: reattach (stale reuse) ———————————————————————————————————————————
+        // — Phase 3: reattach —————————————————————————————————————————————————————————
         var h2 = await orch.AttachAsync(NewRequest(), CancellationToken.None);
         h2.State.Should().Be(InvestigationState.Active);
         h2.HandleId.Should().NotBe(h1.HandleId);
-        h2.EphemeralContainerName.Should().Be(h1.EphemeralContainerName);
-        h2.Kubernetes!.PodLocalBearerToken.Should().Be(h1.Kubernetes!.PodLocalBearerToken);
-        api.PatchInvocationCount.Should().Be(1, "no second K8s patch — stale container was reused");
+        h2.EphemeralContainerName.Should().NotBe(h1.EphemeralContainerName);
+        h2.Kubernetes!.PodLocalBearerToken.Should().NotBe(h1.Kubernetes!.PodLocalBearerToken);
+        h2.InternalScopeDelegationKey.Should().NotBe(h1.InternalScopeDelegationKey);
+        api.PatchInvocationCount.Should().Be(2);
         store.Snapshot().Should().HaveCount(2);
         store.Snapshot().Should().Contain(h => h.State == InvestigationState.Closed);  // h1
         store.Snapshot().Should().Contain(h => h.State == InvestigationState.Active);  // h2
@@ -762,7 +776,8 @@ public class KubernetesPodAttachOrchestratorTests
             StubAttachApi api,
             bool requirePreparedLabel = true,
             int attachTimeoutSeconds = 10,
-            DotnetDiagnostics.Core.Security.SecurityOptions? securityOptions = null)
+            DotnetDiagnostics.Core.Security.SecurityOptions? securityOptions = null,
+            IKubernetesAttachmentSecretManager? secretManager = null)
     {
         var options = new OrchestratorOptions
         {
@@ -779,10 +794,18 @@ public class KubernetesPodAttachOrchestratorTests
             provider.GetRequiredService<System.Diagnostics.Metrics.IMeterFactory>(),
             store,
             new AuditLogWriter(TextWriter.Null));
-        var closer = new InvestigationCloser(store, new NoOpProxyClient(), new NoOpPortForwardManager(), new MemoryInvestigationSessionBinder());
+        secretManager ??= NoOpKubernetesAttachmentSecretManager.Instance;
+        var closer = new InvestigationCloser(
+            store,
+            new NoOpProxyClient(),
+            new NoOpPortForwardManager(),
+            new MemoryInvestigationSessionBinder(),
+            NoOpInvestigationCredentialRevoker.Instance,
+            secretManager);
         var time = new FakeTimeProvider();
         var orch = new KubernetesPodAttachOrchestrator(
             api,
+            secretManager,
             store,
             closer,
             observability,
@@ -799,6 +822,30 @@ public class KubernetesPodAttachOrchestratorTests
         {
             Response = new HttpResponseMessageWrapper(new HttpResponseMessage(code), string.Empty),
         };
+
+    private sealed class RecordingAttachmentSecretManager : IKubernetesAttachmentSecretManager
+    {
+        public string? CreatedBearerToken { get; private set; }
+        public string? CreatedDelegationKey { get; private set; }
+        public List<string> DeletedHandles { get; } = [];
+
+        public Task CreateAsync(
+            InvestigationHandle handle,
+            string bearerToken,
+            string delegationKey,
+            CancellationToken cancellationToken)
+        {
+            CreatedBearerToken = bearerToken;
+            CreatedDelegationKey = delegationKey;
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteAsync(InvestigationHandle handle, CancellationToken cancellationToken)
+        {
+            DeletedHandles.Add(handle.HandleId);
+            return Task.CompletedTask;
+        }
+    }
 
     private sealed class StubAttachApi : IKubernetesPodsApi
     {

@@ -64,9 +64,9 @@ public interface IInvestigationStore
     /// <see cref="InvestigationState.Expired"/>, or <see cref="InvestigationState.Failed"/>) handle
     /// whose <see cref="InvestigationHandle.EphemeralContainerName"/> matches
     /// <paramref name="ephemeralContainerName"/> for the given pod, or null if none exists.
-    /// Used to reconnect to a stale ephemeral container that is still running after a
-    /// previous <c>detach_from_pod</c> — the bearer token from the terminal handle can be
-    /// reused so no new container patch is needed.
+    /// Retained for store compatibility and inventory lookups. Attachment code must not
+    /// adopt a terminal container or reuse its credentials; every reattach creates a new
+    /// container and credential pair.
     /// </summary>
     InvestigationHandle? FindTerminalHandleByEphemeralName(
         string podNamespace, string podName, string ephemeralContainerName);
@@ -82,6 +82,15 @@ public interface IInvestigationStore
 public interface IInvestigationStoreActivation
 {
     bool TryTransitionToActive(string handleId, out InvestigationHandle? active);
+}
+
+/// <summary>
+/// Optional terminal-state credential scrubbing capability. Close paths invoke this
+/// only after Pod-local revocation and transport teardown have consumed the credentials.
+/// </summary>
+public interface IInvestigationStoreCredentialScrubber
+{
+    void ScrubCredentials(string handleId);
 }
 
 /// <summary>

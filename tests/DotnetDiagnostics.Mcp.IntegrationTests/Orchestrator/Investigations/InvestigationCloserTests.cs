@@ -18,7 +18,13 @@ public sealed class InvestigationCloserTests
 {
     private static InvestigationHandle Active(string id = "h-1") => new(
             HandleId: id,
-            Kubernetes: new KubernetesInvestigationTarget("ns", "pod", "api", "diag", "secret"),
+            Kubernetes: new KubernetesInvestigationTarget(
+                "ns",
+                "pod",
+                "api",
+                "diag",
+                "secret",
+                "credential-secret"),
             State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30));
@@ -65,9 +71,14 @@ public sealed class InvestigationCloserTests
         outcome.UnboundSessionIds.Should().BeEquivalentTo(new[] { "session-1", "session-2" });
 
         fx.Store.GetById(h.HandleId)!.State.Should().Be(InvestigationState.Closed);
+        fx.Store.GetById(h.HandleId)!.Kubernetes!.PodLocalBearerToken.Should().BeEmpty();
+        fx.Store.GetById(h.HandleId)!.Kubernetes!.CredentialSecretName.Should().BeNull();
+        fx.Store.GetById(h.HandleId)!.InternalScopeDelegationKey.Should().BeNull();
         fx.Proxy.DisposeCalls.Should().Equal(h.HandleId);
         fx.PortForward.CloseCalls.Should().Equal(h.HandleId);
-        fx.Order.Should().Equal("proxy-dispose", "portforward-close");
+        fx.Revoker.RevokeCalls.Should().Equal(h.HandleId);
+        fx.Secrets.DeleteCalls.Should().Equal(h.HandleId);
+        fx.Order.Should().Equal("credential-revoke", "secret-delete", "proxy-dispose", "portforward-close");
     }
 
     [Fact]
@@ -148,6 +159,22 @@ public sealed class InvestigationCloserTests
     }
 
     [Fact]
+    public async Task CloseAsync_RevocationFailure_IsReportedAndDoesNotSkipCleanup()
+    {
+        var fx = new Fixture();
+        fx.Revoker.ThrowOnRevoke = new InvalidOperationException("pod unavailable");
+        var h = Active();
+        fx.Store.Add(h);
+
+        var outcome = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+
+        outcome.CleanupErrorCount.Should().Be(1);
+        fx.Secrets.DeleteCalls.Should().Equal(h.HandleId);
+        fx.Proxy.DisposeCalls.Should().Equal(h.HandleId);
+        fx.PortForward.CloseCalls.Should().Equal(h.HandleId);
+    }
+
+    [Fact]
     public async Task CloseAsync_ConcurrentDetachAndReaper_TerminalStateIsAtomic()
     {
         // Regression for the medium-severity finding in PR #155 review:
@@ -187,6 +214,8 @@ public sealed class InvestigationCloserTests
         public MemoryInvestigationStore Store { get; } = new();
         public RecordingProxyClient Proxy { get; }
         public RecordingPortForwardManager PortForward { get; }
+        internal RecordingCredentialRevoker Revoker { get; }
+        internal RecordingSecretManager Secrets { get; }
         public MemoryInvestigationSessionBinder Binder { get; } = new();
         public List<string> Order { get; } = new();
         public InvestigationCloser Closer { get; }
@@ -195,7 +224,64 @@ public sealed class InvestigationCloserTests
         {
             Proxy = new RecordingProxyClient(Order);
             PortForward = new RecordingPortForwardManager(Order);
-            Closer = new InvestigationCloser(Store, Proxy, PortForward, Binder);
+            Revoker = new RecordingCredentialRevoker(Order);
+            Secrets = new RecordingSecretManager(Order);
+            Closer = new InvestigationCloser(Store, Proxy, PortForward, Binder, Revoker, Secrets);
+        }
+
+        internal sealed class RecordingCredentialRevoker : IInvestigationCredentialRevoker
+        {
+            private readonly List<string> _order;
+            private readonly HashSet<string> _revoked = new(StringComparer.Ordinal);
+
+            public RecordingCredentialRevoker(List<string> order)
+            {
+                _order = order;
+            }
+
+            public List<string> RevokeCalls { get; } = [];
+            public Exception? ThrowOnRevoke { get; set; }
+
+            public Task RevokeAsync(InvestigationHandle handle, CancellationToken cancellationToken)
+            {
+                if (!_revoked.Add(handle.HandleId))
+                {
+                    return Task.CompletedTask;
+                }
+                _order.Add("credential-revoke");
+                RevokeCalls.Add(handle.HandleId);
+                if (ThrowOnRevoke is not null)
+                {
+                    throw ThrowOnRevoke;
+                }
+                return Task.CompletedTask;
+            }
+        }
+
+        internal sealed class RecordingSecretManager : IKubernetesAttachmentSecretManager
+        {
+            private readonly List<string> _order;
+
+            public RecordingSecretManager(List<string> order)
+            {
+                _order = order;
+            }
+
+            public List<string> DeleteCalls { get; } = [];
+
+            public Task CreateAsync(
+                InvestigationHandle handle,
+                string bearerToken,
+                string delegationKey,
+                CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+
+            public Task DeleteAsync(InvestigationHandle handle, CancellationToken cancellationToken)
+            {
+                _order.Add("secret-delete");
+                DeleteCalls.Add(handle.HandleId);
+                return Task.CompletedTask;
+            }
         }
     }
 

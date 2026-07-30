@@ -36,12 +36,14 @@ public enum InvestigationState
 /// </para>
 /// <para>
 /// The bearer token and independent scope-delegation key are generated per-attach and
-/// embedded into the ephemeral container's environment. The bearer token is kept in
+/// delivered through a short-lived Kubernetes Secret reference. The bearer token is kept in
 /// the transport-specific metadata (<see cref="KubernetesInvestigationTarget.PodLocalBearerToken"/>
 /// / <see cref="ExternalMcpInvestigationTarget.BearerToken"/>) and injected by the
 /// transport implementation into <see cref="System.Net.Http.HttpClient.DefaultRequestHeaders"/>
 /// — it is never returned to the external client.
-/// This is the "per-attach Pod-local bearer token" mitigation called out in
+/// The Secret is deleted as soon as the container reaches Running, while the
+/// process-local credentials are revoked on detach and expire at the absolute lease
+/// deadline. This is the "per-attach Pod-local bearer token" mitigation called out in
 /// docs/central-orchestrator-design.md §6.4.
 /// </para>
 /// <para>

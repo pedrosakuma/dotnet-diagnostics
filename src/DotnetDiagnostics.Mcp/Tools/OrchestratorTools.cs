@@ -506,10 +506,12 @@ public sealed class OrchestratorTools
         Idempotent = true,
         UseStructuredContent = true)]
     [Description(
-        "Closes an investigation produced by attach_to_pod: tears down the cached MCP client, " +
+        "Closes an investigation produced by attach_to_pod: revokes Pod-local credentials and stops " +
+        "the injected process, tears down the cached MCP client, " +
         "stops the port-forward (Kubernetes) or disposes the external transport (external profile), " +
         "unbinds every MCP session still pointed at the handle, and marks " +
         "the handle as Closed so subsequent tool calls fall back to local execution. " +
+        "Returns a cleanup failure instead of claiming success if revocation or teardown fails. " +
         "Idempotent — calling on a missing/already-terminal handle is a no-op and returns Ok. " +
         "NOTE: for Kubernetes investigations, the ephemeral diagnostics container CANNOT be removed " +
         "(Kubernetes constraint); it remains on the Pod's spec until the Pod is recreated. " +
@@ -589,6 +591,19 @@ public sealed class OrchestratorTools
             PreviousState: outcome.PreviousState,
             NewState: outcome.NewState,
             UnboundSessionIds: outcome.UnboundSessionIds);
+
+        if (outcome.CleanupErrorCount > 0)
+        {
+            observability.RecordDetach(principalAccessor.Current, outcome.HandleId, "manual", "failure");
+            return DiagnosticResult.Fail<DetachResult>(
+                summary: $"detach_from_pod: handle '{resolvedHandleId}' was closed locally, but {outcome.CleanupErrorCount} cleanup operation(s) failed.",
+                error: new DiagnosticError(
+                    Kind: "CleanupFailed",
+                    Message: "The orchestrator could not confirm that all Pod-local credentials and resources were revoked.",
+                    Detail: existing?.Kubernetes is null
+                        ? "The external transport was closed locally, but one or more cleanup operations failed. Inspect orchestrator logs."
+                        : $"The port-forward was closed and the handle was disabled, but the Pod-local process may remain usable by a party that already knows its credentials until absolute expiry at {existing.AbsoluteExpiresAt:O}. Inspect orchestrator logs and recreate the Pod for immediate containment."));
+        }
 
         string summary;
         var isExternalHandle = existing?.ExternalMcp is not null;

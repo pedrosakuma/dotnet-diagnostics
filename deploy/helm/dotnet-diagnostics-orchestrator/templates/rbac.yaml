@@ -9,6 +9,10 @@ RBAC is opt-in via `--set rbac.scope=cluster`. `pods/portforward` requires
 both `get` and `create` — Kubernetes uses an HTTP GET that is upgraded to a
 WebSocket (HTTP 101) for the in-process port-forward stream in
 KubernetesPortForwardManager.
+Secrets deliberately receive create/delete only (never get/list/watch): the
+orchestrator creates one immutable per-attachment credential Secret, the
+kubelet resolves its env references, and the orchestrator deletes it as soon
+as the ephemeral container reaches Running.
 */ -}}
 {{- if eq $scope "cluster" }}
 apiVersion: rbac.authorization.k8s.io/v1
@@ -27,6 +31,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods/portforward"]
     verbs: ["get", "create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -60,6 +67,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods/portforward"]
     verbs: ["get", "create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

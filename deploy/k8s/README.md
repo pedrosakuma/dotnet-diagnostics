@@ -122,9 +122,16 @@ verbs: ["update", "patch"]
 apiGroups: [""]
 resources: ["pods/portforward"]
 verbs: ["get", "create"]
+---
+apiGroups: [""]
+resources: ["secrets"]
+verbs: ["create", "delete"]
 ```
 
 Keep `Orchestrator__NamespaceAllowlist__*` aligned with the namespace you grant.
+Do not add `get`, `list`, or `watch` for Secrets: the orchestrator writes one
+immutable per-attachment credential Secret and deletes it after the kubelet
+starts the ephemeral container.
 
 ### TLS for non-loopback binds
 
@@ -152,8 +159,18 @@ It uses the Kubernetes API in-process to:
 
 1. patch `pods/ephemeralcontainers`,
 2. wait for the injected diagnostics container to become Running,
-3. open `pods/portforward` streams to the pod-local MCP listener on `Orchestrator__ProxyPodPort` (default `5130`), and
-4. proxy the existing diagnostics tool surface through that investigation handle.
+3. delete the short-lived credential Secret,
+4. open `pods/portforward` streams to the loopback-only pod-local MCP listener on `Orchestrator__ProxyPodPort` (default `5130`), and
+5. proxy the existing diagnostics tool surface through that investigation handle.
+
+Kubernetes port-forward remains compatible with a `127.0.0.1` listener: the
+kubelet/CRI path enters the Pod network namespace and connects to localhost.
+The MCP port is therefore unavailable through the Pod IP; direct access
+requires the separately privileged `pods/portforward` subresource.
+The generated child alone receives `MCP_ALLOW_INSECURE_HTTP=true` so this
+internal cleartext stream remains compatible with the global transport guard.
+Its listener stays loopback-only; never propagate that override to the central
+Deployment or to an MCP endpoint exposed by Service, ingress, or Pod IP.
 
 That is why the orchestrator itself does **not** need `CAP_SYS_PTRACE`: ptrace-heavy work happens inside the injected per-Pod diagnostics container, not in the central Deployment.
 
@@ -162,6 +179,13 @@ That is why the orchestrator itself does **not** need `CAP_SYS_PTRACE`: ptrace-h
 - **Bearer = privileged diagnostics access.** Treat the orchestrator token as equivalent to shell-like access inside the namespaces it can reach.
 - **Do not expose the Service publicly.** Keep it `ClusterIP`, require an auth proxy or mesh identity at the edge, and prefer mTLS / NetworkPolicies between clients and the orchestrator.
 - **Keep Secrets external when possible.** `MCP_BEARER_TOKEN` should come from a Kubernetes Secret or external secret manager; never bake it into the image.
+- **Pod-local credentials are not stored in the PodSpec.** Automated attach
+  uses per-attachment `secretKeyRef` entries, deletes the Secret after startup,
+  revokes the credentials on detach, and enforces the absolute attachment
+  expiry inside the injected process.
 - **Prepared targets still matter.** The orchestrator still depends on the shared `/tmp` emptyDir + matching UID contract documented in [`CENTRAL-TOPOLOGY.md`](./CENTRAL-TOPOLOGY.md) and [`central-target.yaml`](./central-target.yaml).
 - **Current Linux attach limitation:** the deploy assets package the orchestrator control plane today, but the current `attach_to_pod` implementation does **not yet** inject the target's shared `/tmp` volume mount into its ephemeral diagnostics container. On Linux prepared targets, keep using the manual [`ephemeral-attach.patch.json`](./ephemeral-attach.patch.json) or the always-on sidecar until that follow-up lands in code; otherwise the pod-local MCP server will not see `/tmp/dotnet-diagnostic-*`.
-- **Ephemeral containers persist until pod recreation.** `detach` only closes the orchestrator-side session; operators still restart / recreate the Pod to remove the in-Pod diagnostics container.
+- **Ephemeral container records persist until pod recreation.** `detach`
+  revokes credentials and stops the injected diagnostics process, but
+  Kubernetes retains the terminated ephemeral-container status until the Pod
+  is recreated.

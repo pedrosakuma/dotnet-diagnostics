@@ -4,6 +4,8 @@
 # `pods/portforward` requires both `get` and `create`: the Kubernetes API
 # uses an HTTP GET that upgrades to a WebSocket (HTTP 101) for the
 # in-process port-forward stream in KubernetesPortForwardManager.
+# Secrets are create/delete only: the orchestrator writes one immutable,
+# per-attachment Secret and deletes it after the ephemeral container starts.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -25,6 +27,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods/portforward"]
     verbs: ["get", "create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

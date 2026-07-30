@@ -9,7 +9,12 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// via a single lock — handle counts are bounded by orchestrator concurrency in
 /// practice, so contention isn't a concern.
 /// </summary>
-internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestigationStoreActivation, IInvestigationStoreLeaseTouch, IInvestigationStoreExpiry
+internal sealed class MemoryInvestigationStore :
+    IInvestigationStore,
+    IInvestigationStoreActivation,
+    IInvestigationStoreCredentialScrubber,
+    IInvestigationStoreLeaseTouch,
+    IInvestigationStoreExpiry
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, InvestigationHandle> _byId = new(StringComparer.Ordinal);
@@ -92,6 +97,30 @@ internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestiga
         lock (_gate)
         {
             return _byId.TryGetValue(handleId, out var h) ? h : null;
+        }
+    }
+
+    public void ScrubCredentials(string handleId)
+    {
+        lock (_gate)
+        {
+            if (!_byId.TryGetValue(handleId, out var current) ||
+                current.State is not (InvestigationState.Closed or InvestigationState.Expired or InvestigationState.Failed))
+            {
+                return;
+            }
+
+            _byId[handleId] = current with
+            {
+                Kubernetes = current.Kubernetes is null
+                    ? null
+                    : current.Kubernetes with
+                    {
+                        PodLocalBearerToken = string.Empty,
+                        CredentialSecretName = null,
+                    },
+                InternalScopeDelegationKey = null,
+            };
         }
     }
 

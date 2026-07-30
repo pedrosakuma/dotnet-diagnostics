@@ -56,6 +56,30 @@ public sealed class OrchestratorToolsP4Tests
     }
 
     [Fact]
+    public async Task DetachFromPod_RevocationFailure_IsReportedInsteadOfClaimingSuccess()
+    {
+        var fx = new Fixture();
+        var h = Active();
+        fx.Store.Add(h);
+        var closer = new InvestigationCloser(
+            fx.Store,
+            fx.Proxy,
+            fx.PortForward,
+            fx.Binder,
+            new ThrowingCredentialRevoker(),
+            NoOpKubernetesAttachmentSecretManager.Instance);
+
+        var result = await OrchestratorTools.DetachFromPod(
+            closer, fx.Binder, fx.Store, fx.Options,
+            TestPrincipalAccessors.Root, fx.Observability, server: null!, handleId: h.HandleId);
+
+        result.IsError.Should().BeTrue();
+        result.Error!.Kind.Should().Be("CleanupFailed");
+        result.Error.Detail.Should().Contain("absolute expiry");
+        fx.Store.GetById(h.HandleId)!.State.Should().Be(InvestigationState.Closed);
+    }
+
+    [Fact]
     public async Task DetachFromPod_UnknownHandle_ReturnsOkNoOp()
     {
         var fx = new Fixture();
@@ -446,7 +470,13 @@ public sealed class OrchestratorToolsP4Tests
                 provider.GetRequiredService<System.Diagnostics.Metrics.IMeterFactory>(),
                 Store,
                 new AuditLogWriter(TextWriter.Null));
-            Closer = new InvestigationCloser(Store, Proxy, PortForward, Binder);
+            Closer = new InvestigationCloser(
+                Store,
+                Proxy,
+                PortForward,
+                Binder,
+                NoOpInvestigationCredentialRevoker.Instance,
+                NoOpKubernetesAttachmentSecretManager.Instance);
         }
     }
 
@@ -463,6 +493,12 @@ public sealed class OrchestratorToolsP4Tests
         public Task<System.Net.Http.HttpClient> GetOrCreateClientAsync(InvestigationHandle handle, CancellationToken cancellationToken)
             => Task.FromResult(new System.Net.Http.HttpClient());
         public Task CloseAsync(string handleId) => Task.CompletedTask;
+    }
+
+    private sealed class ThrowingCredentialRevoker : IInvestigationCredentialRevoker
+    {
+        public Task RevokeAsync(InvestigationHandle handle, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("revocation failed");
     }
 
     private sealed class CapturingLoggerFactory : Microsoft.Extensions.Logging.ILoggerFactory

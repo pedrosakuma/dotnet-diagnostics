@@ -20,6 +20,13 @@ Trade-off: the target Pod must be **prepared** in advance so the ephemeral
 container can reach the diagnostic IPC socket. See "Preparing the target"
 below.
 
+> This page's `kubectl patch` walkthrough is the manual break-glass flow.
+> The shipped central orchestrator uses a stricter credential boundary:
+> per-attachment Secrets referenced with `secretKeyRef`, a loopback-only
+> listener reached through in-process Kubernetes port-forward, and explicit
+> credential revocation/process shutdown on detach. See
+> [`../../docs/central-orchestrator-design.md`](../../docs/central-orchestrator-design.md#64-required-mitigations).
+
 ## How it works
 
 1. The target Pod runs the application container as it normally would, with
@@ -154,6 +161,11 @@ Use a `RoleBinding` to grant this to a dedicated `ServiceAccount` that the
 investigation tooling (or a central orchestrator) authenticates as. Treat
 this binding as equivalent to interactive shell access on the target Pod's
 PID namespace.
+
+The automated central orchestrator additionally needs `secrets`
+`create`/`delete`, but deliberately not `get`/`list`/`watch`. Do not copy
+those Secret verbs into a human break-glass role unless that workflow also
+creates the short-lived attachment Secret.
 
 ## What this recipe deliberately does NOT do
 

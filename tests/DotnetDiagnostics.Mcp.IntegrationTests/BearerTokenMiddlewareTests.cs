@@ -51,7 +51,8 @@ public sealed class BearerTokenMiddlewareTests
         ILogger<BearerTokenMiddleware>? logger = null,
         string path = "/mcp",
         OidcJwtAuthOptions? oidcOptions = null,
-        IServiceProvider? requestServices = null)
+        IServiceProvider? requestServices = null,
+        EphemeralAttachmentLifetime? attachmentLifetime = null)
     {
         var nextCalled = false;
         var middleware = new BearerTokenMiddleware(
@@ -59,7 +60,8 @@ public sealed class BearerTokenMiddlewareTests
             resolver,
             oidcOptions ?? OidcJwtAuthOptions.Disabled,
             logger ?? NullLogger<BearerTokenMiddleware>.Instance,
-            new OrchestratorObservabilityOptions());
+            new OrchestratorObservabilityOptions(),
+            attachmentLifetime ?? AttachmentLifetime(expiresAt: null));
 
         var ctx = new DefaultHttpContext();
         ctx.Request.Path = path;
@@ -136,6 +138,51 @@ public sealed class BearerTokenMiddlewareTests
         principal.Should().NotBeNull();
         principal!.Name.Should().Be("ops-viewer");
         principal.HasScope("read-counters").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RevokedEphemeralAttachment_RejectsPreviouslyValidBearer()
+    {
+        var registry = RegistryWith(("pod-root", "pod-token", new[] { BearerPrincipal.RootScope }));
+        var lifetime = AttachmentLifetime(DateTimeOffset.UtcNow.AddMinutes(5));
+        lifetime.Revoke();
+
+        var ctx = await RunAsync(
+            registry,
+            "Bearer pod-token",
+            attachmentLifetime: lifetime);
+
+        ctx.Response.StatusCode.Should().Be(StatusCodes.Status401Unauthorized);
+        ctx.Items["__nextCalled"].Should().Be(false);
+    }
+
+    [Fact]
+    public async Task ExpiredEphemeralAttachment_RejectsPreviouslyValidBearer()
+    {
+        var registry = RegistryWith(("pod-root", "pod-token", new[] { BearerPrincipal.RootScope }));
+        var lifetime = AttachmentLifetime(DateTimeOffset.UtcNow.AddMinutes(-1));
+
+        var ctx = await RunAsync(
+            registry,
+            "Bearer pod-token",
+            attachmentLifetime: lifetime);
+
+        ctx.Response.StatusCode.Should().Be(StatusCodes.Status401Unauthorized);
+        ctx.Items["__nextCalled"].Should().Be(false);
+    }
+
+    private static EphemeralAttachmentLifetime AttachmentLifetime(DateTimeOffset? expiresAt)
+    {
+        var values = new Dictionary<string, string?>();
+        if (expiresAt.HasValue)
+        {
+            values[EphemeralAttachmentLifetime.ExpiryEnvironmentVariableName] =
+                expiresAt.Value.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        }
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
+        return new EphemeralAttachmentLifetime(configuration, TimeProvider.System);
     }
 
     [Fact]

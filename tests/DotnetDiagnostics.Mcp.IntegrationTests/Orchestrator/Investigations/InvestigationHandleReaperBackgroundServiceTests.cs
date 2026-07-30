@@ -181,7 +181,13 @@ public sealed class InvestigationHandleReaperBackgroundServiceTests
                 provider.GetRequiredService<System.Diagnostics.Metrics.IMeterFactory>(),
                 Store,
                 new AuditLogWriter(TextWriter.Null));
-            var closer = new InvestigationCloser(Store, Proxy, PortForward, Binder);
+            var closer = new InvestigationCloser(
+                Store,
+                Proxy,
+                PortForward,
+                Binder,
+                NoOpInvestigationCredentialRevoker.Instance,
+                NoOpKubernetesAttachmentSecretManager.Instance);
             Reaper = new InvestigationHandleReaperBackgroundService(Store, closer, observability);
         }
     }

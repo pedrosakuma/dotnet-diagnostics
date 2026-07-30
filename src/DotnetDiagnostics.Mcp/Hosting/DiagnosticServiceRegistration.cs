@@ -62,6 +62,9 @@ internal static class DiagnosticServiceRegistration
         // is registered by the host-neutral Core entry point (#284). Everything below is the
         // small set of registrations that intentionally stay host-specific.
         services.AddDiagnosticCoreServices(securityOptions, configuredSymbolPath, handleStoreOptions);
+        services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+        services.TryAddSingleton<EphemeralAttachmentLifetime>();
+        services.AddHostedService<EphemeralAttachmentExpiryService>();
 
         // B5.4 / docs/authorization.md#backward-compatibility — once-per-process deprecation warnings when a legacy
         // Diagnostics:Allow* flag is the path that unlocks a sensitive operation for a
@@ -138,6 +141,8 @@ internal static class DiagnosticServiceRegistration
             sp.GetService<AzureDiscoveryOptions>(),
             sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<IKubernetesPodsApi, KubernetesPodsApi>();
+        services.AddSingleton<Orchestrator.Investigations.IKubernetesAttachmentSecretManager,
+            Orchestrator.Investigations.KubernetesAttachmentSecretManager>();
         services.AddSingleton<IPodInventory, KubernetesPodInventory>();
         services.AddSingleton<Orchestrator.Investigations.IInvestigationStore, Orchestrator.Investigations.MemoryInvestigationStore>();
         services.AddSingleton<Orchestrator.Investigations.IInvestigationSessionBinder, Orchestrator.Investigations.MemoryInvestigationSessionBinder>();
@@ -152,6 +157,8 @@ internal static class DiagnosticServiceRegistration
             new Orchestrator.Investigations.CompositeInvestigationTransportManager(
                 sp.GetRequiredService<Orchestrator.Investigations.IPortForwardManager>(),
                 sp.GetRequiredService<Orchestrator.Investigations.SsrfSafeExternalMcpTransportManager>()));
+        services.AddSingleton<Orchestrator.Investigations.IInvestigationCredentialRevoker,
+            Orchestrator.Investigations.KubernetesInvestigationCredentialRevoker>();
         services.AddSingleton<Orchestrator.Investigations.IInvestigationProxyClient, Orchestrator.Investigations.PodLocalInvestigationProxyClient>();
         services.AddSingleton<Orchestrator.Investigations.IPodAttachOrchestrator, Orchestrator.Investigations.KubernetesPodAttachOrchestrator>();
         // issue #711: external profile attach orchestrator — registers a named external MCP

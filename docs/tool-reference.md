@@ -3094,15 +3094,17 @@ Requires the orchestrator to be enabled; disabled servers return
 
 ## `detach_from_pod`
 
-Closes an active investigation handle: tears down the cached MCP client, stops
-any port-forward or external transport, unbinds every MCP session still pointed
-at the handle, and marks it `Closed` so subsequent tool calls fall back to local
-execution.
+Closes an active investigation handle: revokes Pod-local credentials and stops
+the injected process, tears down the cached MCP client and port-forward or
+external transport, unbinds every MCP session still pointed at the handle, and
+marks it `Closed` so subsequent tool calls fall back to local execution.
 
 - **Kubernetes Pod handles:** the ephemeral diagnostics container **cannot** be
   removed (a Kubernetes constraint) — it stays on the Pod's spec until the Pod is
-  recreated. Detach only releases the orchestrator-side transport; it does not roll
-  the Pod back.
+  recreated, but its process is stopped and credentials are revoked. If cleanup
+  cannot be confirmed, detach returns `CleanupFailed` instead of claiming success;
+  recreate the Pod for immediate containment or wait for the attachment's absolute
+  expiry.
 - **External profile handles:** the connection to the external MCP server is closed
   and the credentials/clients are disposed. No remote side-effects are performed.
 

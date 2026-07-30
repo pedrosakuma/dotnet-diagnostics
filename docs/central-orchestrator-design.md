@@ -383,6 +383,8 @@ The handle is owned by the orchestrator and maps in memory to:
 - container name,
 - ephemeral container name,
 - per-attach Pod-local bearer token,
+- per-attach scope-delegation signing key,
+- short-lived Kubernetes credential Secret name,
 - active port-forward or stream state,
 - session status,
 - TTL metadata (`attachDeadline`, `lastSuccessfulUseAt`, `idleExpiresAt`, `absoluteExpiresAt`),
@@ -427,8 +429,10 @@ This needs to be explicit because the Kubernetes behavior is non-obvious.
 It only:
 - marks the investigation closed,
 - stops forwarding new MCP calls for that handle,
+- calls the authenticated Pod-local revocation endpoint, which rejects the
+  bearer immediately and stops the ephemeral diagnostics process,
 - tears down the port-forward or equivalent proxy stream,
-- discards the Pod-local bearer token from orchestrator memory,
+- deletes any residual per-attach credential Secret,
 - and records that the session ended.
 The target Pod will still contain the ephemeral diagnostics container until the Pod is restarted or recreated.
 ### 5.5 Reuse policy
@@ -469,7 +473,12 @@ The issue states the orchestrator's ServiceAccount needs the following RBAC:
 - `pods/ephemeralcontainers` (update/patch)
 - `pods` (get/list/watch)
 - `pods/portforward` (get/create)
-Those are the right minimum verbs for the architecture proposed here.
+- `secrets` (create/delete only)
+
+The Secret verbs are deliberately asymmetric. The orchestrator creates one
+immutable credential Secret per attachment, references it from the ephemeral
+container, and deletes it as soon as Kubernetes reports that container
+Running. It does not need `get`, `list`, `watch`, or `update` on Secrets.
 ### 6.2 Security posture
 The repository already treats diagnostics access as highly privileged. For the orchestrator, that warning becomes stronger:
 > the orchestrator's MCP bearer token is equivalent to shell-like diagnostic
@@ -491,6 +500,10 @@ If `list_orchestrator(kind="pods")` accepts arbitrary selectors, a user can enum
 Because ephemeral containers cannot be removed, investigations can leave a longer-lived diagnostic surface behind if operators do not recreate the Pod.
 #### Threat 5 — audit gaps
 Without logs that tie user, target, and tool call together, the orchestrator becomes a privileged black box.
+#### Threat 6 — readable PodSpec credentials
+Literal `env[].value` entries are returned by `get pod`. A principal with Pod
+read plus port-forward access could otherwise recover both the Pod-local root
+bearer and the HMAC authority used to mint delegated scopes.
 ### 6.4 Required mitigations
 #### Prefer namespace-scoped RBAC when possible
 The least-privilege deployment is still:
@@ -521,6 +534,35 @@ Every fleet-sensitive action should be logged with at least:
 - outcome,
 - and handle id if applicable.
 Heavy collectors should also log enough metadata to answer who captured a dump, on which Pod, and when.
+#### Pod-local endpoint and credential boundary
+The injected server binds to `127.0.0.1`, not the Pod IP. Kubernetes
+port-forward remains compatible because kubelet delegates to the CRI runtime,
+which enters the Pod network namespace and dials the requested port on
+localhost. The orchestrator keeps using its in-process
+`WebSocketNamespacedPodPortForwardAsync` stream; there is no `kubectl`
+subprocess and no direct Pod-network route.
+
+The child receives `MCP_ALLOW_INSECURE_HTTP=true` for compatibility with the
+cleartext transport guard introduced by issue #765. This is a narrowly scoped
+process-local exception, not a global orchestrator setting: the generated
+child still binds only to loopback, and the central server and standalone
+deployments retain the strict encrypted-transport default. Do not copy this
+override to a Service-, ingress-, or Pod-IP-exposed MCP endpoint.
+
+Each attach creates fresh bearer and delegation credentials. The PodSpec
+contains only `secretKeyRef` names/keys, never usable credential literals.
+After the container reaches Running, the immutable Secret is deleted. The
+process rejects the credentials at the handle's absolute expiry even if the
+orchestrator disappears. Normal detach first calls the authenticated internal
+revocation endpoint, then closes the forward. A cleanup failure is surfaced;
+there is no fallback that silently leaves the attachment reusable.
+
+Because the listener is loopback-only, ordinary Pod-network traffic cannot
+reach it, including traffic allowed by a broad NetworkPolicy. A NetworkPolicy
+may still protect the target Pod generally, but it is not the control that
+protects this endpoint. RBAC must reserve `pods/portforward` for the central
+orchestrator and trusted break-glass operators, and workloads must not grant
+`pods/exec` or Secret-read access to ordinary diagnostics callers.
 ### 6.5 Optional defense-in-depth follow-ups
 These are good ideas, but not required to approve the design:
 - separate EventPipe-only and ptrace-capable deployment profiles,
@@ -559,7 +601,11 @@ Allow kubeconfig or exec-credential plugins for development and admin use. That 
 There is also a third, smaller auth boundary inside the design: the orchestrator must authenticate to the Pod-local MCP server it just injected.
 Recommendation:
 - generate a fresh random `MCP_BEARER_TOKEN` per attach,
-- inject it into the ephemeral container env,
+- generate an independent `MCP_INTERNAL_SCOPE_DELEGATION_KEY`,
+- create an immutable per-attachment Kubernetes Secret,
+- inject both through `secretKeyRef` environment sources (never literal
+  `env[].value` fields),
+- delete the Secret immediately after the container reaches Running,
 - keep it only in orchestrator memory,
 - and never expose it back to the external client.
 That gives each attach its own internal credential and avoids reusing the outer orchestrator bearer on the data plane.
@@ -569,7 +615,10 @@ When the outer orchestrator token rotates, new client requests must use the new 
 #### Kubernetes credential rotation
 When projected ServiceAccount tokens rotate, the orchestrator should pick up the new token without restart and new kube API calls should use fresh credentials automatically through the client library.
 #### Pod-local per-attach token rotation
-Do **not** rotate Pod-local bearer tokens mid-session in Phase 1. Each attach gets one token for its lifetime. If the session expires, create a new attach with a new token.
+Do **not** rotate Pod-local bearer tokens mid-session. Each attach gets one
+bearer/key pair for its bounded lifetime. Detach revokes that pair and stops
+the Pod-local process; reattach always injects a new ephemeral container with
+new credentials. Closed/stale containers are never adopted into a new handle.
 ### 7.6 Deployment assets
 P5 ships the first production deployment surface under:
 - [`deploy/k8s/orchestrator/`](../deploy/k8s/orchestrator) for raw manifests + Kustomize overlays,

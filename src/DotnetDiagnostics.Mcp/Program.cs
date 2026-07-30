@@ -172,6 +172,7 @@ app.UseMiddleware<BearerTokenMiddleware>((IPrincipalResolver)registry);
 app.UseRateLimiter();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapEphemeralAttachmentControl();
 app.MapOrchestratorObservability();
 if (orchestratorEnabled)
 {

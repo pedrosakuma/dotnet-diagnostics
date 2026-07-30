@@ -613,7 +613,13 @@ public sealed class ExternalProfileOrchestratorTests
                 provider.GetRequiredService<System.Diagnostics.Metrics.IMeterFactory>(),
                 Store,
                 new AuditLogWriter(TextWriter.Null));
-            Closer = new InvestigationCloser(Store, new NoopProxy(), new NoopPortForward(), Binder);
+            Closer = new InvestigationCloser(
+                Store,
+                new NoopProxy(),
+                new NoopPortForward(),
+                Binder,
+                NoOpInvestigationCredentialRevoker.Instance,
+                NoOpKubernetesAttachmentSecretManager.Instance);
             ExternalOrchestrator = new ExternalProfileAttachOrchestrator(
                 Store,
                 new StubTransportManager(transportThrows),
