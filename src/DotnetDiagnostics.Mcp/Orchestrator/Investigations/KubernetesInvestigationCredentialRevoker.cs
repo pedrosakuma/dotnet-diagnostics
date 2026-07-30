@@ -65,22 +65,57 @@ internal sealed class KubernetesInvestigationCredentialRevoker : IInvestigationC
         InvestigationHandle handle,
         CancellationToken cancellationToken)
     {
-        var client = await _transportManager
-            .GetOrCreateClientAsync(handle, cancellationToken)
-            .ConfigureAwait(false);
-        using var request = new HttpRequestMessage(HttpMethod.Post, EphemeralAttachmentLifetime.RevokePath);
-        using var response = await client
-            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-            .ConfigureAwait(false);
-        if (response.StatusCode != HttpStatusCode.NoContent)
+        try
         {
-            throw new OrchestratorException(
-                OrchestratorErrorKinds.PortForwardFailed,
-                $"Pod-local credential revocation for investigation {handle.HandleId} returned HTTP {(int)response.StatusCode}. " +
-                "The transport will be closed, but detach reports this cleanup failure instead of silently assuming revocation.");
+            var client = await _transportManager
+                .GetOrCreateClientAsync(handle, cancellationToken)
+                .ConfigureAwait(false);
+            using var request = new HttpRequestMessage(HttpMethod.Post, EphemeralAttachmentLifetime.RevokePath);
+            using var response = await client
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+            if (response.StatusCode != HttpStatusCode.NoContent)
+            {
+                throw new OrchestratorException(
+                    OrchestratorErrorKinds.PortForwardFailed,
+                    $"Pod-local credential revocation for investigation {handle.HandleId} returned HTTP {(int)response.StatusCode}. " +
+                    "Detach reports this cleanup failure instead of silently assuming revocation.");
+            }
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            // A prior attempt may have received 204 and stopped the process before
+            // Kubernetes published Terminated. In that state there is no endpoint to
+            // retry, but an observed terminated container is authoritative success.
+            if (await IsContainerTerminatedAsync(handle, cancellationToken).ConfigureAwait(false))
+            {
+                return;
+            }
+            throw;
         }
 
         await WaitForContainerExitAsync(handle, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<bool> IsContainerTerminatedAsync(
+        InvestigationHandle handle,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var target = handle.Kubernetes!;
+            var pod = await _podsApi
+                .ReadPodAsync(target.Namespace, target.PodName, cancellationToken)
+                .ConfigureAwait(false);
+            return pod.Status?.EphemeralContainerStatuses?
+                .FirstOrDefault(candidate =>
+                    string.Equals(candidate.Name, target.EphemeralContainerName, StringComparison.Ordinal))
+                ?.State?.Terminated is not null;
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
     }
 
     private async Task WaitForContainerExitAsync(

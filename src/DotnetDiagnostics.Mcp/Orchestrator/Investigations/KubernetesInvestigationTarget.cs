@@ -21,6 +21,12 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// <see cref="System.Net.Http.HttpClient.DefaultRequestHeaders"/> so proxy endpoints
 /// and MCP tool calls do not need to know the token value.
 /// </para>
+/// <para>
+/// <see cref="CredentialsMayBeInUse"/> is set atomically immediately before the
+/// ephemeral-container patch and cleared after a definitive rejection. A definite
+/// pre-runtime failure can therefore scrub generated plaintext without attempting an
+/// impossible revocation, while ambiguous outcomes fail closed.
+/// </para>
 /// </remarks>
 public sealed record KubernetesInvestigationTarget(
     string Namespace,
@@ -29,4 +35,5 @@ public sealed record KubernetesInvestigationTarget(
     string EphemeralContainerName,
     [property: JsonIgnore] string PodLocalBearerToken,
     string? CredentialSecretName = null,
-    string? PodUid = null);
+    string? PodUid = null,
+    bool CredentialsMayBeInUse = true);

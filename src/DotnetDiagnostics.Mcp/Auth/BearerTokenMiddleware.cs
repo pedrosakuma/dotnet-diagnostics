@@ -59,7 +59,12 @@ internal sealed class BearerTokenMiddleware
             return;
         }
 
-        if (!_attachmentLifetime.IsActive)
+        var isAttachmentRevocation =
+            string.Equals(
+                path.Value,
+                DotnetDiagnostics.Mcp.Hosting.EphemeralAttachmentLifetime.RevokePath,
+                StringComparison.Ordinal);
+        if (!_attachmentLifetime.IsActive && !isAttachmentRevocation)
         {
             _logger.LogWarning(
                 "****** denied: ephemeral attachment credentials are expired or revoked. remoteIp={RemoteIp}",

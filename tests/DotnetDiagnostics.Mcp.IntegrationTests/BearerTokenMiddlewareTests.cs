@@ -157,6 +157,24 @@ public sealed class BearerTokenMiddlewareTests
     }
 
     [Fact]
+    public async Task RevokedEphemeralAttachment_AllowsAuthenticatedIdempotentRevokeRetry()
+    {
+        var registry = RegistryWith(("pod-root", "pod-token", new[] { BearerPrincipal.RootScope }));
+        var lifetime = AttachmentLifetime(DateTimeOffset.UtcNow.AddMinutes(5));
+        lifetime.Revoke();
+
+        var ctx = await RunAsync(
+            registry,
+            "Bearer " + "pod-token",
+            path: EphemeralAttachmentLifetime.RevokePath,
+            attachmentLifetime: lifetime);
+
+        ctx.Response.StatusCode.Should().Be(StatusCodes.Status200OK);
+        ctx.Items["__nextCalled"].Should().Be(true);
+        ctx.GetBearerPrincipal()!.HasScope(BearerPrincipal.RootScope).Should().BeTrue();
+    }
+
+    [Fact]
     public async Task ExpiredEphemeralAttachment_RejectsPreviouslyValidBearer()
     {
         var registry = RegistryWith(("pod-root", "pod-token", new[] { BearerPrincipal.RootScope }));

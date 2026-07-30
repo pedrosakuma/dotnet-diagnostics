@@ -34,13 +34,27 @@ public sealed class KubernetesInvestigationCredentialRevokerTests
         var handler = new RecordingHandler(HttpStatusCode.NotFound);
         var revoker = new KubernetesInvestigationCredentialRevoker(
             new StubTransport(handler),
-            new StubPodsApi(terminated: true),
+            new StubPodsApi(terminated: false),
             TimeProvider.System);
 
         var act = () => revoker.RevokeAsync(Handle(), CancellationToken.None);
 
         (await act.Should().ThrowAsync<OrchestratorException>())
             .Which.ErrorKind.Should().Be(OrchestratorErrorKinds.PortForwardFailed);
+    }
+
+    [Fact]
+    public async Task RevokeAsync_EndpointUnavailableButContainerTerminated_CountsAsSuccess()
+    {
+        var pods = new StubPodsApi(terminated: true);
+        var revoker = new KubernetesInvestigationCredentialRevoker(
+            new StubTransport(new ThrowingHandler()),
+            pods,
+            TimeProvider.System);
+
+        await revoker.RevokeAsync(Handle(), CancellationToken.None);
+
+        pods.ReadCount.Should().Be(1);
     }
 
     [Fact]
@@ -166,6 +180,14 @@ public sealed class KubernetesInvestigationCredentialRevokerTests
             await Release.Task.WaitAsync(cancellationToken);
             return new HttpResponseMessage(HttpStatusCode.NoContent);
         }
+    }
+
+    private sealed class ThrowingHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => throw new HttpRequestException("pod-local process exited");
     }
 
     private sealed class StubPodsApi : IKubernetesPodsApi

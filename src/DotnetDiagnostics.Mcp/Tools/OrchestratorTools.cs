@@ -512,7 +512,8 @@ public sealed class OrchestratorTools
         "unbinds every MCP session still pointed at the handle, and marks " +
         "the handle as Closed so subsequent tool calls fall back to local execution. " +
         "Returns a cleanup failure instead of claiming success if revocation or teardown fails. " +
-        "Idempotent — calling on a missing/already-terminal handle is a no-op and returns Ok. " +
+        "Idempotent — a missing handle is a no-op; an already-terminal handle retries " +
+        "credential cleanup still pending and otherwise returns Ok. " +
         "NOTE: for Kubernetes investigations, the ephemeral diagnostics container CANNOT be removed " +
         "(Kubernetes constraint); it remains on the Pod's spec until the Pod is recreated. " +
         "For external profile investigations, detach releases the transport and credentials without " +
@@ -601,8 +602,8 @@ public sealed class OrchestratorTools
                     Kind: "CleanupFailed",
                     Message: "The orchestrator could not confirm that all Pod-local credentials and resources were revoked.",
                     Detail: existing?.Kubernetes is null
-                        ? "The external transport was closed locally, but one or more cleanup operations failed. Inspect orchestrator logs."
-                        : $"The port-forward was closed and the handle was disabled, but the Pod-local process may remain usable by a party that already knows its credentials until absolute expiry at {existing.AbsoluteExpiresAt:O}. Inspect orchestrator logs and recreate the Pod for immediate containment."));
+                        ? "The handle was disabled, but one or more external transport cleanup operations failed. Inspect orchestrator logs."
+                        : $"The handle was disabled and client sessions were unbound, but cleanup was not fully confirmed. When revocation is pending, the internal port-forward is retained solely for detach/reaper retry; the Pod-local process may remain usable by a party that already knows its credentials until absolute expiry at {existing.AbsoluteExpiresAt:O}. Inspect orchestrator logs and recreate the Pod for immediate containment."));
         }
 
         string summary;

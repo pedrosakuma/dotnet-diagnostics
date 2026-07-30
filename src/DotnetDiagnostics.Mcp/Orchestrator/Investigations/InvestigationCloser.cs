@@ -11,14 +11,18 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// and the TTL reaper (server-initiated eviction). Centralises the order so both
 /// paths flip the handle into a terminal state, revoke Pod-local credentials, delete
 /// residual Secret material, dispose the cached MCP client, close the port-forward
-/// transport, and unbind every MCP session pointed at the handle — in that order.
+/// transport after confirmed revocation, and unbind every MCP session pointed at the
+/// handle — in that order.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Order matters: revocation must traverse the still-live port-forward before the
 /// proxy client and transport are disposed. Secret deletion follows as idempotent
-/// cleanup, then transport teardown collapses half-open streams. Unbinding sessions
-/// last guarantees an in-flight call fails through a structured closed transport.
+/// cleanup. Confirmed steps scrub only the material they no longer need: runtime
+/// plaintext after revocation, Secret metadata after deletion. If revocation fails,
+/// the internal port-forward remains available for a later cleanup retry while the
+/// terminal handle and disposed proxy prevent diagnostic calls. Unbinding sessions
+/// last guarantees callers cannot keep using a cleanup-pending handle.
 /// </para>
 /// <para>
 /// Ephemeral containers cannot be removed once added. Close stops the Pod-local
@@ -105,15 +109,44 @@ public sealed class InvestigationCloser
         // partial prior close (process restart, exception mid-pipeline, racing closer
         // that lost) may have left a port-forward or session binding behind.
         var cleanupErrors = 0;
+        var revocationSucceeded = true;
         if (handle is not null)
         {
-            cleanupErrors += await SafeRevokeCredentialsAsync(handle).ConfigureAwait(false);
-            cleanupErrors += await SafeDeleteSecretAsync(handle).ConfigureAwait(false);
+            if (InvestigationCredentialCleanup.HasRuntimeCredentials(handle))
+            {
+                revocationSucceeded =
+                    !InvestigationCredentialCleanup.RequiresRuntimeRevocation(handle) ||
+                    await SafeRevokeCredentialsAsync(handle).ConfigureAwait(false);
+                if (revocationSucceeded)
+                {
+                    ScrubCredentials(handleId, InvestigationCredentialMaterial.RuntimeCredentials);
+                }
+                else
+                {
+                    cleanupErrors++;
+                }
+            }
+
+            if (InvestigationCredentialCleanup.RequiresSecretDeletion(handle))
+            {
+                var secretDeletionSucceeded =
+                    await SafeDeleteSecretAsync(handle).ConfigureAwait(false);
+                if (secretDeletionSucceeded)
+                {
+                    ScrubCredentials(handleId, InvestigationCredentialMaterial.SecretReference);
+                }
+                else
+                {
+                    cleanupErrors++;
+                }
+            }
         }
         cleanupErrors += await SafeDisposeProxyAsync(handleId).ConfigureAwait(false);
-        cleanupErrors += await SafeClosePortForwardAsync(handleId).ConfigureAwait(false);
+        if (revocationSucceeded)
+        {
+            cleanupErrors += await SafeClosePortForwardAsync(handleId).ConfigureAwait(false);
+        }
         var unbound = _sessionBinder.UnbindAllForHandle(handleId);
-        (_store as IInvestigationStoreCredentialScrubber)?.ScrubCredentials(handleId);
 
         var alreadyTerminal = transition == InvestigationTerminalTransition.AlreadyTerminal;
         return new InvestigationCloseOutcome(
@@ -126,13 +159,19 @@ public sealed class InvestigationCloser
             CleanupErrorCount: cleanupErrors);
     }
 
-    private async Task<int> SafeRevokeCredentialsAsync(InvestigationHandle handle)
+    private void ScrubCredentials(
+        string handleId,
+        InvestigationCredentialMaterial material)
+        => (_store as IInvestigationStoreCredentialScrubber)?
+            .ScrubCredentials(handleId, material);
+
+    private async Task<bool> SafeRevokeCredentialsAsync(InvestigationHandle handle)
     {
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             await _credentialRevoker.RevokeAsync(handle, timeout.Token).ConfigureAwait(false);
-            return 0;
+            return true;
         }
         catch (Exception ex)
         {
@@ -140,17 +179,17 @@ public sealed class InvestigationCloser
                 ex,
                 "Revoking pod-local credentials for handle {HandleId} threw; continuing close pipeline.",
                 handle.HandleId);
-            return 1;
+            return false;
         }
     }
 
-    private async Task<int> SafeDeleteSecretAsync(InvestigationHandle handle)
+    private async Task<bool> SafeDeleteSecretAsync(InvestigationHandle handle)
     {
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             await _secretManager.DeleteAsync(handle, timeout.Token).ConfigureAwait(false);
-            return 0;
+            return true;
         }
         catch (Exception ex)
         {
@@ -158,7 +197,7 @@ public sealed class InvestigationCloser
                 ex,
                 "Deleting attachment credential Secret for handle {HandleId} threw; continuing close pipeline.",
                 handle.HandleId);
-            return 1;
+            return false;
         }
     }
 

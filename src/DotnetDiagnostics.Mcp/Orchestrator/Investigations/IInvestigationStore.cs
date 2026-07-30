@@ -90,7 +90,42 @@ public interface IInvestigationStoreActivation
 /// </summary>
 public interface IInvestigationStoreCredentialScrubber
 {
-    void ScrubCredentials(string handleId);
+    void ScrubCredentials(string handleId, InvestigationCredentialMaterial material);
+}
+
+public interface IInvestigationStoreCredentialDelivery
+{
+    bool TrySetCredentialsMayBeInUse(
+        string handleId,
+        bool mayBeInUse,
+        out InvestigationHandle? updated);
+}
+
+[Flags]
+public enum InvestigationCredentialMaterial
+{
+    None = 0,
+    RuntimeCredentials = 1,
+    SecretReference = 2,
+    All = RuntimeCredentials | SecretReference,
+}
+
+internal static class InvestigationCredentialCleanup
+{
+    public static bool HasRuntimeCredentials(InvestigationHandle handle)
+        => handle.Kubernetes is not null &&
+           (!string.IsNullOrEmpty(handle.Kubernetes.PodLocalBearerToken) ||
+            !string.IsNullOrEmpty(handle.InternalScopeDelegationKey));
+
+    public static bool RequiresRuntimeRevocation(InvestigationHandle handle)
+        => handle.Kubernetes?.CredentialsMayBeInUse == true &&
+           HasRuntimeCredentials(handle);
+
+    public static bool RequiresSecretDeletion(InvestigationHandle handle)
+        => !string.IsNullOrEmpty(handle.Kubernetes?.CredentialSecretName);
+
+    public static bool IsPending(InvestigationHandle handle)
+        => HasRuntimeCredentials(handle) || RequiresSecretDeletion(handle);
 }
 
 /// <summary>

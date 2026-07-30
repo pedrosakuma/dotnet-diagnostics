@@ -3103,8 +3103,8 @@ marks it `Closed` so subsequent tool calls fall back to local execution.
   removed (a Kubernetes constraint) — it stays on the Pod's spec until the Pod is
   recreated, but its process is stopped and credentials are revoked. If cleanup
   cannot be confirmed, detach returns `CleanupFailed` instead of claiming success;
-  recreate the Pod for immediate containment or wait for the attachment's absolute
-  expiry.
+  subsequent detach/reaper passes retry the pending step. Recreate the Pod for
+  immediate containment or wait for the attachment's absolute expiry.
 - **External profile handles:** the connection to the external MCP server is closed
   and the credentials/clients are disposed. No remote side-effects are performed.
 
@@ -3115,7 +3115,8 @@ marks it `Closed` so subsequent tool calls fall back to local execution.
 | `handleId` | `string?` | handle bound to the current session (legacy fallback) | Investigation handle id returned by `attach_to_pod` |
 
 **Returns:** `DetachResult`. **Scope:** `orchestrator-attach`. Idempotent —
-calling on a missing / already-terminal handle is a no-op and returns Ok.
+calling on a missing handle is a no-op; an already-terminal handle retries any
+credential cleanup still pending and otherwise returns Ok.
 
 ---
 

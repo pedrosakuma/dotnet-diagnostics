@@ -159,10 +159,10 @@ public sealed class InvestigationCloserTests
     }
 
     [Fact]
-    public async Task CloseAsync_RevocationFailure_IsReportedAndDoesNotSkipCleanup()
+    public async Task CloseAsync_RevocationFailure_RetainsRuntimeCredentialsAndTransportForRetry()
     {
         var fx = new Fixture();
-        fx.Revoker.ThrowOnRevoke = new InvalidOperationException("pod unavailable");
+        fx.Revoker.FailuresRemaining = 1;
         var h = Active();
         fx.Store.Add(h);
 
@@ -171,7 +171,76 @@ public sealed class InvestigationCloserTests
         outcome.CleanupErrorCount.Should().Be(1);
         fx.Secrets.DeleteCalls.Should().Equal(h.HandleId);
         fx.Proxy.DisposeCalls.Should().Equal(h.HandleId);
+        fx.PortForward.CloseCalls.Should().BeEmpty();
+        var pending = fx.Store.GetById(h.HandleId)!;
+        pending.Kubernetes!.PodLocalBearerToken.Should().Be("secret");
+        pending.InternalScopeDelegationKey.Should().BeNull();
+        pending.Kubernetes.CredentialSecretName.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CloseAsync_TransientRevocationFailure_RetryCompletesAndScrubs()
+    {
+        var fx = new Fixture();
+        fx.Revoker.FailuresRemaining = 1;
+        var h = Active() with { InternalScopeDelegationKey = "delegation" };
+        fx.Store.Add(h);
+
+        var first = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+        var retry = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+
+        first.CleanupErrorCount.Should().Be(1);
+        retry.CleanupErrorCount.Should().Be(0);
+        retry.AlreadyTerminal.Should().BeTrue();
+        fx.Revoker.RevokeCalls.Should().Equal(h.HandleId, h.HandleId);
+        fx.Secrets.DeleteCalls.Should().Equal(h.HandleId);
         fx.PortForward.CloseCalls.Should().Equal(h.HandleId);
+        var cleaned = fx.Store.GetById(h.HandleId)!;
+        cleaned.Kubernetes!.PodLocalBearerToken.Should().BeEmpty();
+        cleaned.InternalScopeDelegationKey.Should().BeNull();
+        cleaned.Kubernetes.CredentialSecretName.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CloseAsync_TransientSecretDeletionFailure_RetainsOnlySecretMetadataForRetry()
+    {
+        var fx = new Fixture();
+        fx.Secrets.FailuresRemaining = 1;
+        var h = Active() with { InternalScopeDelegationKey = "delegation" };
+        fx.Store.Add(h);
+
+        var first = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+
+        first.CleanupErrorCount.Should().Be(1);
+        var pending = fx.Store.GetById(h.HandleId)!;
+        pending.Kubernetes!.PodLocalBearerToken.Should().BeEmpty();
+        pending.InternalScopeDelegationKey.Should().BeNull();
+        pending.Kubernetes.CredentialSecretName.Should().Be("credential-secret");
+        fx.PortForward.CloseCalls.Should().Equal(h.HandleId);
+
+        var retry = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+
+        retry.CleanupErrorCount.Should().Be(0);
+        fx.Revoker.RevokeCalls.Should().Equal(h.HandleId);
+        fx.Secrets.DeleteCalls.Should().Equal(h.HandleId, h.HandleId);
+        fx.Store.GetById(h.HandleId)!.Kubernetes!.CredentialSecretName.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CloseAsync_SecretAlreadyNotFound_CountsAsSuccessAndScrubsFinalMetadata()
+    {
+        var fx = new Fixture();
+        fx.Secrets.NotFoundResponsesRemaining = 1;
+        var h = Active() with { InternalScopeDelegationKey = "delegation" };
+        fx.Store.Add(h);
+
+        var outcome = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+
+        outcome.CleanupErrorCount.Should().Be(0);
+        var cleaned = fx.Store.GetById(h.HandleId)!;
+        cleaned.Kubernetes!.PodLocalBearerToken.Should().BeEmpty();
+        cleaned.InternalScopeDelegationKey.Should().BeNull();
+        cleaned.Kubernetes.CredentialSecretName.Should().BeNull();
     }
 
     [Fact]
@@ -232,7 +301,6 @@ public sealed class InvestigationCloserTests
         internal sealed class RecordingCredentialRevoker : IInvestigationCredentialRevoker
         {
             private readonly List<string> _order;
-            private readonly HashSet<string> _revoked = new(StringComparer.Ordinal);
 
             public RecordingCredentialRevoker(List<string> order)
             {
@@ -240,19 +308,16 @@ public sealed class InvestigationCloserTests
             }
 
             public List<string> RevokeCalls { get; } = [];
-            public Exception? ThrowOnRevoke { get; set; }
+            public int FailuresRemaining { get; set; }
 
             public Task RevokeAsync(InvestigationHandle handle, CancellationToken cancellationToken)
             {
-                if (!_revoked.Add(handle.HandleId))
-                {
-                    return Task.CompletedTask;
-                }
                 _order.Add("credential-revoke");
                 RevokeCalls.Add(handle.HandleId);
-                if (ThrowOnRevoke is not null)
+                if (FailuresRemaining > 0)
                 {
-                    throw ThrowOnRevoke;
+                    FailuresRemaining--;
+                    throw new InvalidOperationException("pod unavailable");
                 }
                 return Task.CompletedTask;
             }
@@ -268,6 +333,8 @@ public sealed class InvestigationCloserTests
             }
 
             public List<string> DeleteCalls { get; } = [];
+            public int FailuresRemaining { get; set; }
+            public int NotFoundResponsesRemaining { get; set; }
 
             public Task CreateAsync(
                 InvestigationHandle handle,
@@ -280,6 +347,16 @@ public sealed class InvestigationCloserTests
             {
                 _order.Add("secret-delete");
                 DeleteCalls.Add(handle.HandleId);
+                if (FailuresRemaining > 0)
+                {
+                    FailuresRemaining--;
+                    throw new InvalidOperationException("Kubernetes API unavailable");
+                }
+                if (NotFoundResponsesRemaining > 0)
+                {
+                    NotFoundResponsesRemaining--;
+                    return Task.CompletedTask;
+                }
                 return Task.CompletedTask;
             }
         }

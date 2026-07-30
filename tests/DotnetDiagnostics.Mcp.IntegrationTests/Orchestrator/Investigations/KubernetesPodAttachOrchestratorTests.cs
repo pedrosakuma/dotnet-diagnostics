@@ -43,6 +43,7 @@ public class KubernetesPodAttachOrchestratorTests
         handle.HandleId.Should().StartWith("inv_");
         handle.EphemeralContainerName.Should().StartWith(options.EphemeralContainerNamePrefix);
         handle.Kubernetes!.PodLocalBearerToken.Should().NotBeNullOrWhiteSpace();
+        handle.Kubernetes.CredentialsMayBeInUse.Should().BeTrue();
         handle.LastSuccessfulUseAt.Should().BeNull();
         handle.AttachDeadline.Should().Be(handle.AttachedAt.AddSeconds(options.AttachReadinessTimeoutSeconds));
         handle.IdleExpiresAt.Should().Be(handle.AttachedAt.AddSeconds(options.DefaultInvestigationTtlSeconds));
@@ -437,13 +438,45 @@ public class KubernetesPodAttachOrchestratorTests
     public async Task AttachAsync_MapsForbiddenPatch_ToPermissionDenied()
     {
         var api = new StubAttachApi(pod: BuildPreparedPod(), patchException: NewHttpEx(HttpStatusCode.Forbidden));
-        var (orch, store, _) = NewOrchestrator(api);
+        var revoker = new RecordingCredentialRevoker();
+        var (orch, store, _) = NewOrchestrator(api, credentialRevoker: revoker);
 
         var act = () => orch.AttachAsync(NewRequest(), CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<OrchestratorException>();
         ex.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.PermissionDenied);
-        store.Snapshot().Should().ContainSingle(h => h.State == InvestigationState.Failed);
+        var failed = store.Snapshot().Should().ContainSingle(h => h.State == InvestigationState.Failed).Which;
+        failed.Kubernetes!.CredentialsMayBeInUse.Should().BeFalse();
+        failed.Kubernetes.PodLocalBearerToken.Should().BeEmpty();
+        failed.InternalScopeDelegationKey.Should().BeNull();
+        failed.Kubernetes.CredentialSecretName.Should().BeNull();
+        revoker.RevokeCalls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AttachAsync_SecretCreateFailure_ScrubsUndeliveredCredentialsWithoutRevocation()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod());
+        var secrets = new RecordingAttachmentSecretManager
+        {
+            CreateException = new InvalidOperationException("secret create failed"),
+        };
+        var revoker = new RecordingCredentialRevoker();
+        var (orch, store, _) = NewOrchestrator(
+            api,
+            secretManager: secrets,
+            credentialRevoker: revoker);
+
+        var act = () => orch.AttachAsync(NewRequest(), CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        var failed = store.Snapshot().Should().ContainSingle().Which;
+        failed.State.Should().Be(InvestigationState.Failed);
+        failed.Kubernetes!.CredentialsMayBeInUse.Should().BeFalse();
+        failed.Kubernetes.PodLocalBearerToken.Should().BeEmpty();
+        failed.InternalScopeDelegationKey.Should().BeNull();
+        failed.Kubernetes.CredentialSecretName.Should().BeNull();
+        revoker.RevokeCalls.Should().BeEmpty();
     }
 
     [Fact]
@@ -464,13 +497,15 @@ public class KubernetesPodAttachOrchestratorTests
         // 500/503 during the ephemeralcontainers patch must NOT be reported as AttachFailed
         // (which the design reserves for an accepted-but-unhealthy ephemeral container).
         var api = new StubAttachApi(pod: BuildPreparedPod(), patchException: NewHttpEx(HttpStatusCode.InternalServerError));
-        var (orch, store, _) = NewOrchestrator(api);
+        var revoker = new RecordingCredentialRevoker();
+        var (orch, store, _) = NewOrchestrator(api, credentialRevoker: revoker);
 
         var act = () => orch.AttachAsync(NewRequest(), CancellationToken.None);
 
         var ex = await act.Should().ThrowAsync<OrchestratorException>();
         ex.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.KubeApiUnavailable);
         store.Snapshot().Should().ContainSingle(h => h.State == InvestigationState.Failed);
+        revoker.RevokeCalls.Should().ContainSingle();
     }
 
     [Fact]
@@ -777,7 +812,8 @@ public class KubernetesPodAttachOrchestratorTests
             bool requirePreparedLabel = true,
             int attachTimeoutSeconds = 10,
             DotnetDiagnostics.Core.Security.SecurityOptions? securityOptions = null,
-            IKubernetesAttachmentSecretManager? secretManager = null)
+            IKubernetesAttachmentSecretManager? secretManager = null,
+            IInvestigationCredentialRevoker? credentialRevoker = null)
     {
         var options = new OrchestratorOptions
         {
@@ -800,7 +836,7 @@ public class KubernetesPodAttachOrchestratorTests
             new NoOpProxyClient(),
             new NoOpPortForwardManager(),
             new MemoryInvestigationSessionBinder(),
-            NoOpInvestigationCredentialRevoker.Instance,
+            credentialRevoker ?? NoOpInvestigationCredentialRevoker.Instance,
             secretManager);
         var time = new FakeTimeProvider();
         var orch = new KubernetesPodAttachOrchestrator(
@@ -828,6 +864,7 @@ public class KubernetesPodAttachOrchestratorTests
         public string? CreatedBearerToken { get; private set; }
         public string? CreatedDelegationKey { get; private set; }
         public List<string> DeletedHandles { get; } = [];
+        public Exception? CreateException { get; init; }
 
         public Task CreateAsync(
             InvestigationHandle handle,
@@ -835,6 +872,10 @@ public class KubernetesPodAttachOrchestratorTests
             string delegationKey,
             CancellationToken cancellationToken)
         {
+            if (CreateException is not null)
+            {
+                throw CreateException;
+            }
             CreatedBearerToken = bearerToken;
             CreatedDelegationKey = delegationKey;
             return Task.CompletedTask;
@@ -843,6 +884,19 @@ public class KubernetesPodAttachOrchestratorTests
         public Task DeleteAsync(InvestigationHandle handle, CancellationToken cancellationToken)
         {
             DeletedHandles.Add(handle.HandleId);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingCredentialRevoker : IInvestigationCredentialRevoker
+    {
+        public List<string> RevokeCalls { get; } = [];
+
+        public Task RevokeAsync(
+            InvestigationHandle handle,
+            CancellationToken cancellationToken)
+        {
+            RevokeCalls.Add(handle.HandleId);
             return Task.CompletedTask;
         }
     }

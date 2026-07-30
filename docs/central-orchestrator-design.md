@@ -431,9 +431,13 @@ It only:
 - stops forwarding new MCP calls for that handle,
 - calls the authenticated Pod-local revocation endpoint, which rejects the
   bearer immediately and stops the ephemeral diagnostics process,
-- tears down the port-forward or equivalent proxy stream,
 - deletes any residual per-attach credential Secret,
+- tears down the port-forward after revocation is confirmed,
 - and records that the session ended.
+If revocation fails, the handle is terminal and client sessions are unbound,
+but the internal port-forward and runtime credentials are retained only for a
+cleanup retry. If Secret deletion alone fails, the revoked bearer/delegation
+plaintext is scrubbed immediately and only the Secret name remains.
 The target Pod will still contain the ephemeral diagnostics container until the Pod is restarted or recreated.
 ### 5.5 Reuse policy
 Phase 1 should prefer **reusing an active handle** for the same `(namespace, pod, container)` when all of the following are true:
@@ -447,6 +451,8 @@ A background reaper should run inside the orchestrator at a small interval, for 
 For each session:
 - if state is `active` and either idle TTL or absolute TTL has elapsed, close it and mark `expired`;
 - if state is `attaching` and `attachDeadline` has elapsed, close it and mark `expired`;
+- if a terminal handle still has cleanup-pending credential material, retry
+  revocation/deletion idempotently and scrub each component after confirmation;
 - if the target Pod no longer exists, mark `closed` with warning `PodGone`;
 - if the proxy dies permanently, mark `closed` or `failed` depending on whether the session had ever become active.
 The reaper does **not** try to clean the target Pod's ephemeral container. That is impossible without deleting or recreating the Pod.
@@ -554,8 +560,25 @@ contains only `secretKeyRef` names/keys, never usable credential literals.
 After the container reaches Running, the immutable Secret is deleted. The
 process rejects the credentials at the handle's absolute expiry even if the
 orchestrator disappears. Normal detach first calls the authenticated internal
-revocation endpoint, then closes the forward. A cleanup failure is surfaced;
-there is no fallback that silently leaves the attachment reusable.
+revocation endpoint, then closes the forward. A cleanup failure is surfaced
+and retried by subsequent detach/reaper passes. Successful revocation scrubs
+the bearer and delegation key immediately; successful deletion (including
+`NotFound`) separately scrubs the Secret name. Failed steps retain only the
+material required to retry, so there is no fallback that silently abandons an
+orphaned Secret or a still-usable attachment.
+
+The handle atomically marks credentials as potentially deliverable immediately
+before issuing the ephemeral-container patch. That mark cannot overwrite a
+concurrent terminal transition. Credentials generated before Secret creation,
+or cleared after a definitive 4xx patch rejection, were never deliverable to a
+runtime, so those plaintext values are scrubbed directly instead of entering
+an impossible revocation retry loop. Cancellations and ambiguous 5xx/transport
+outcomes fail closed and retain the minimum retry material.
+
+The authenticated revocation route is the sole request allowed to reuse the
+attachment bearer after the lifetime has been marked revoked. This makes a
+`204`-accepted revocation retryable while Kubernetes publishes container
+termination; every diagnostic route continues to reject the bearer.
 
 Because the listener is loopback-only, ordinary Pod-network traffic cannot
 reach it, including traffic allowed by a broad NetworkPolicy. A NetworkPolicy

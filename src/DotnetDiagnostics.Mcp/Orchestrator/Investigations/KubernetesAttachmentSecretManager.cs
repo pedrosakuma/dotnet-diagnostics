@@ -15,11 +15,34 @@ internal sealed class KubernetesAttachmentSecretManager : IKubernetesAttachmentS
     internal const string BearerTokenKey = "bearer-token";
     internal const string DelegationKeyKey = "scope-delegation-key";
 
-    private readonly IKubernetesClientFactory _clientFactory;
+    private readonly Func<V1Secret, string, CancellationToken, Task> _createSecretAsync;
+    private readonly Func<string, string, CancellationToken, Task> _deleteSecretAsync;
 
     public KubernetesAttachmentSecretManager(IKubernetesClientFactory clientFactory)
     {
-        _clientFactory = clientFactory;
+        ArgumentNullException.ThrowIfNull(clientFactory);
+        _createSecretAsync = async (secret, namespaceName, cancellationToken) =>
+        {
+            await clientFactory.GetClient().CoreV1.CreateNamespacedSecretAsync(
+                body: secret,
+                namespaceParameter: namespaceName,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        };
+        _deleteSecretAsync = async (name, namespaceName, cancellationToken) =>
+        {
+            await clientFactory.GetClient().CoreV1.DeleteNamespacedSecretAsync(
+                name: name,
+                namespaceParameter: namespaceName,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        };
+    }
+
+    internal KubernetesAttachmentSecretManager(
+        Func<string, string, CancellationToken, Task> deleteSecretAsync)
+    {
+        _createSecretAsync = static (_, _, _) => throw new NotSupportedException();
+        _deleteSecretAsync = deleteSecretAsync
+            ?? throw new ArgumentNullException(nameof(deleteSecretAsync));
     }
 
     public async Task CreateAsync(
@@ -72,10 +95,8 @@ internal sealed class KubernetesAttachmentSecretManager : IKubernetesAttachmentS
             ];
         }
 
-        await _clientFactory.GetClient().CoreV1.CreateNamespacedSecretAsync(
-            body: secret,
-            namespaceParameter: target.Namespace,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+        await _createSecretAsync(secret, target.Namespace, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public async Task DeleteAsync(InvestigationHandle handle, CancellationToken cancellationToken)
@@ -89,10 +110,10 @@ internal sealed class KubernetesAttachmentSecretManager : IKubernetesAttachmentS
 
         try
         {
-            await _clientFactory.GetClient().CoreV1.DeleteNamespacedSecretAsync(
-                name: target.CredentialSecretName,
-                namespaceParameter: target.Namespace,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+            await _deleteSecretAsync(
+                target.CredentialSecretName,
+                target.Namespace,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (HttpOperationException ex) when (ex.Response?.StatusCode == HttpStatusCode.NotFound)
         {

@@ -157,7 +157,8 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
                 EphemeralContainerName: ephemeralName,
                 PodLocalBearerToken: token,
                 CredentialSecretName: credentialSecretName,
-                PodUid: pod.Metadata?.Uid),
+                PodUid: pod.Metadata?.Uid,
+                CredentialsMayBeInUse: false),
             State: InvestigationState.Attaching,
             AttachedAt: now,
             Lease: lease,
@@ -175,6 +176,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             return ReuseHandleOrThrow(existing!, request, ns, container.Name, processSelector);
         }
 
+        var patchAttempted = false;
         try
         {
             await _secretManager
@@ -185,6 +187,8 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
                 container,
                 credentialSecretName,
                 handle.AbsoluteExpiresAt);
+            handle = SetCredentialsMayBeInUse(handle, mayBeInUse: true);
+            patchAttempted = true;
             await PatchEphemeralContainerAsync(ns, request.PodName, spec, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -194,6 +198,10 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         }
         catch (Exception ex)
         {
+            if (patchAttempted && IsDefinitivePatchRejection(ex))
+            {
+                handle = SetCredentialsMayBeInUse(handle, mayBeInUse: false);
+            }
             await MarkFailedAsync(handle, ex.Message).ConfigureAwait(false);
             throw;
         }
@@ -300,6 +308,39 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
 
         return normalized;
     }
+
+    private InvestigationHandle SetCredentialsMayBeInUse(
+        InvestigationHandle handle,
+        bool mayBeInUse)
+    {
+        if (_store is not IInvestigationStoreCredentialDelivery delivery)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(KubernetesPodAttachOrchestrator)} requires a store that implements " +
+                $"{nameof(IInvestigationStoreCredentialDelivery)}.");
+        }
+
+        if (!delivery.TrySetCredentialsMayBeInUse(
+                handle.HandleId,
+                mayBeInUse,
+                out var updated) ||
+            updated is null)
+        {
+            throw new OrchestratorException(
+                OrchestratorErrorKinds.AttachFailed,
+                $"Investigation {handle.HandleId} became inactive before its credential delivery state could be updated.");
+        }
+        return updated;
+    }
+
+    private static bool IsDefinitivePatchRejection(Exception exception)
+        => exception is OrchestratorException
+        {
+            InnerException: HttpOperationException
+            {
+                Response.StatusCode: >= HttpStatusCode.BadRequest and < HttpStatusCode.InternalServerError,
+            },
+        };
 
     private async Task MarkFailedAsync(InvestigationHandle handle, string reason)
     {

@@ -12,6 +12,7 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 internal sealed class MemoryInvestigationStore :
     IInvestigationStore,
     IInvestigationStoreActivation,
+    IInvestigationStoreCredentialDelivery,
     IInvestigationStoreCredentialScrubber,
     IInvestigationStoreLeaseTouch,
     IInvestigationStoreExpiry
@@ -100,7 +101,36 @@ internal sealed class MemoryInvestigationStore :
         }
     }
 
-    public void ScrubCredentials(string handleId)
+    public bool TrySetCredentialsMayBeInUse(
+        string handleId,
+        bool mayBeInUse,
+        out InvestigationHandle? updated)
+    {
+        lock (_gate)
+        {
+            if (!_byId.TryGetValue(handleId, out var current) ||
+                current.Kubernetes is null ||
+                mayBeInUse && current.State != InvestigationState.Attaching)
+            {
+                updated = current;
+                return false;
+            }
+
+            updated = current with
+            {
+                Kubernetes = current.Kubernetes with
+                {
+                    CredentialsMayBeInUse = mayBeInUse,
+                },
+            };
+            _byId[handleId] = updated;
+            return true;
+        }
+    }
+
+    public void ScrubCredentials(
+        string handleId,
+        InvestigationCredentialMaterial material)
     {
         lock (_gate)
         {
@@ -110,16 +140,29 @@ internal sealed class MemoryInvestigationStore :
                 return;
             }
 
+            var scrubRuntime =
+                (material & InvestigationCredentialMaterial.RuntimeCredentials) != 0;
+            var scrubSecret =
+                (material & InvestigationCredentialMaterial.SecretReference) != 0;
             _byId[handleId] = current with
             {
                 Kubernetes = current.Kubernetes is null
                     ? null
                     : current.Kubernetes with
                     {
-                        PodLocalBearerToken = string.Empty,
-                        CredentialSecretName = null,
+                        PodLocalBearerToken = scrubRuntime
+                            ? string.Empty
+                            : current.Kubernetes.PodLocalBearerToken,
+                        CredentialSecretName = scrubSecret
+                            ? null
+                            : current.Kubernetes.CredentialSecretName,
+                        CredentialsMayBeInUse = scrubRuntime
+                            ? false
+                            : current.Kubernetes.CredentialsMayBeInUse,
                     },
-                InternalScopeDelegationKey = null,
+                InternalScopeDelegationKey = scrubRuntime
+                    ? null
+                    : current.InternalScopeDelegationKey,
             };
         }
     }
