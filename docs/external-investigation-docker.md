@@ -112,7 +112,10 @@ What it does:
 - sets `DOTNET_EnableDiagnostics=0` on the sidecar so only the target's socket is discoverable;
 - generates (or accepts) a sidecar bearer token and `MCP_INTERNAL_SCOPE_DELEGATION_KEY`, then prints
   the exact `Orchestrator__ExternalMcpProfiles__<name>__...` env vars and an equivalent
-  `appsettings.json` block for the central MCP.
+  `appsettings.json` block for the central MCP;
+- with `--central-container <name> --apply`, atomically installs that profile in a compatible
+  Dockerized central, restarts the existing container, waits for health, and returns only after the
+  profile is available to `list_orchestrator(kind="external-profiles")`.
 
 Defaults:
 
@@ -172,19 +175,49 @@ If that probe fails while the target remains running, the CLI returns
 Rootless Docker or hardened daemon policies may still reject the namespace
 join. In that case, use the manual Compose/shared-volume topology below.
 
-### Central-registration limitation
+### Automatic central apply
 
-The current public orchestrator surface can **list** external profiles and **attach** to an already
-configured one, but it does not expose a runtime "register profile" mutation. So the bootstrap command
-does **not** auto-register the profile against a live central instance yet. After running the command:
+For the common Dockerized-central topology, use:
 
-1. add the printed `Orchestrator__ExternalMcpProfiles__<name>__...` keys (or JSON block) to the central,
-2. restart the central MCP,
-3. verify with `list_orchestrator(kind="external-profiles")`,
-4. then call `attach_to_pod(profileName="<name>")`.
+```bash
+dotnet-diagnostics-cli docker-bootstrap \
+  --target-container api \
+  --central-container diagnostics-central \
+  --apply
+```
 
-This keeps the bootstrap outside the server and preserves the hard constraint that neither the central
-nor the sidecar MCP process ever receives `/var/run/docker.sock`.
+The operator CLI verifies that the central image supports bootstrap profile files, writes one
+bootstrap-owned file under `/app/.dotnet-diagnostics/bootstrap-profiles/` with mode `0600`, and
+restarts the **existing** container. It never recreates the central, so Docker-owned mounts, ports,
+labels, health check, restart policy, capabilities, security options, and network aliases are not
+reconstructed or lost. Secrets travel on `docker exec -i` stdin, not in its argv. Neither MCP
+container receives `/var/run/docker.sock`.
+
+Applying identical content is a no-op. Different bootstrap-owned content requires `--replace`; an
+unowned file is never overwritten. A failed restart restores the previous file (or removes the new
+one), retries the restart, and removes the newly started sidecar. Human and JSON output include the
+exact cleanup action, which deletes only that profile file, restarts the central, disconnects the
+bootstrap-owned network attachment, and removes that sidecar.
+
+Host-process centrals remain configuration-only: omit `--apply`, use the emitted env/JSON, and restart
+them through their normal supervisor.
+
+#### Design choice and rejected alternatives
+
+- **Selected: operator-owned file plus existing-container restart.** This preserves server startup
+  validation and provenance while avoiding unsafe `docker inspect` reconstruction. Restart behavior
+  and rollback are explicit.
+- **Rejected: recreate the central from partial inspection.** Docker inspect does not provide a safe,
+  lossless round-trip for every mount, port, label, health check, restart policy, security option,
+  capability, and network alias.
+- **Rejected: Docker socket in either MCP.** It expands compromise impact from diagnostics access to
+  host-level container control.
+- **Rejected: mutable MCP registration tool or management endpoint.** It would add privileged mutable
+  server state, authentication/CSRF/SSRF surface, and unclear persistence/rollback. The MCP tool count
+  stays unchanged.
+- **Rejected: file watching alone.** Existing orchestrator tool registration is decided at startup;
+  an explicit restart makes enablement and validation deterministic. A generated command alone was
+  also insufficient because it retained the first-run copy/paste break.
 
 ## Build and start
 
@@ -288,8 +321,8 @@ scripts/test-docker-external-investigation.sh
 ```
 
 The script builds the current checkout, starts a uniquely named CoreClrSample target,
-invokes the built CLI `docker-bootstrap` command as the current non-root user, and starts
-a central MCP using the exact `centralEnvLines` from the CLI's JSON output. It then runs
+invokes the built CLI `docker-bootstrap --apply` command as the current non-root user against
+an already-running central MCP. It then runs
 `DockerExternalInvestigationTests.ExternalInvestigation_FullPassthroughWorkflow_AttachInspectCollectDetach`,
 which proves profile listing, attach, a routed counters+GC `collect_batch`, detach, and
 post-detach routing rejection through the MCP protocol.

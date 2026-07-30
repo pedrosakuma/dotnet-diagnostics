@@ -94,6 +94,8 @@ COPY --from=build /app/cli /app/cli
 # Surface the standalone CLI on PATH under its packaged command name. The apphost
 # is named after the assembly (dotnet-diagnostics); users invoke dotnet-diagnostics-cli.
 RUN ln -s /app/cli/dotnet-diagnostics /usr/local/bin/dotnet-diagnostics-cli
+RUN mkdir -p /app/.dotnet-diagnostics/bootstrap-profiles \
+ && touch /app/.dotnet-diagnostics/bootstrap-profile-support-v1
 RUN chown -R diagnosticsmcp:diagnosticsmcp /app
 USER diagnosticsmcp
 

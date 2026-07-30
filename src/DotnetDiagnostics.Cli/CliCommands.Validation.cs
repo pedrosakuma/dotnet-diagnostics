@@ -88,6 +88,18 @@ internal static partial class CliCommands
             return false;
         }
 
+        if (options.ApplyBootstrapProfile && options.CentralContainer is null)
+        {
+            error = "--apply requires --central-container <name|id>; host-process centrals are not modified automatically.";
+            return false;
+        }
+
+        if (options.ReplaceBootstrapProfile && !options.ApplyBootstrapProfile)
+        {
+            error = "--replace requires --apply.";
+            return false;
+        }
+
         if (options.HostPort is < 1 or > 65535)
         {
             error = "--host-port must be between 1 and 65535.";

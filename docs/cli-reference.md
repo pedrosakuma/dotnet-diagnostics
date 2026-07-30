@@ -95,8 +95,8 @@ Exit codes: `0` success (a `dump` preview is also a success), `1` a structured f
 
 ### `docker-bootstrap`
 
-Bootstrap a **local Docker sidecar** for an already-running target container, then print the matching
-`Orchestrator:ExternalMcpProfiles:<name>` configuration the central MCP must be restarted with.
+Bootstrap a **local Docker sidecar** for an already-running target container. It can either print the
+matching central configuration or apply it to a compatible Dockerized central automatically.
 
 > This command still keeps the CLI on the "outside": it shells out to the local `docker` CLI, and it
 > never gives either MCP server process access to `/var/run/docker.sock`.
@@ -115,6 +115,8 @@ Bootstrap a **local Docker sidecar** for an already-running target container, th
 | `--delegation-key` | `string?` | generated | Operator-supplied `MCP_INTERNAL_SCOPE_DELEGATION_KEY`. When omitted, the CLI generates a random 32-byte hex value and prints it in the output. |
 | `--wait` | `int?` | `90` | Seconds to wait for the sidecar health check to report `healthy`. |
 | `--no-sys-ptrace` | flag | off | Skip `--cap-add SYS_PTRACE`. Leave this off unless you knowingly want EventPipe-only coverage. |
+| `--apply` | flag | off | Require `--central-container`, atomically write a mode-`0600` bootstrap-owned profile file through `docker exec` stdin, restart the existing central container, and wait for health. |
+| `--replace` | flag | off | With `--apply`, replace a different profile only when the existing file carries bootstrap ownership metadata. |
 
 Implementation details:
 
@@ -131,11 +133,15 @@ Implementation details:
   An explicit `--profile-url` and `--allow-cidr` win; a non-sidecar URL also requires explicit
   `--host-port` because bootstrap cannot otherwise prove how it reaches the sidecar. Loopback URLs
   are rejected for a non-host-network central because they address the central itself;
+- with `--apply`, checks an image compatibility marker before starting the sidecar, writes secrets
+  only through redirected stdin (never Docker command arguments), atomically renames the completed
+  mode-`0600` file, and uses `docker restart` rather than reconstructing the container. Mounts,
+  ports, labels, health checks, restart policy, capabilities, security options, and network aliases
+  therefore remain Docker-owned and unchanged. The central loads the file at startup and the CLI
+  waits for its existing health check before reporting success;
 - rejects stopped/recreated central containers during bootstrap, central `network=host` for the
   automatic route, unsupported/default-only networks, sidecar name collisions, and network-connect
-  failures. Multiple candidates are deterministic. Recreating the central *after* bootstrap is
-  expected when applying the emitted environment: keep the same selected Docker network, and the
-  sidecar name/private route remains valid;
+  failures. Multiple candidates are deterministic;
 - reports whether it created the network attachment and prints both bootstrap-owned cleanup actions.
   Cleanup disconnects only the selected attachment and removes only the generated sidecar; repeating
   those commands is safe even when Docker reports that the attachment/container is already absent;
@@ -162,10 +168,12 @@ probe while the target remains running, the CLI returns
 `kind=HostProcNotAccessible`; use the manual shared-volume / compose topology
 instead.
 
-Current limitation: the command **does not** register the profile dynamically against a running central
-MCP, because the public orchestrator surface currently lists and attaches existing external profiles only.
-Instead it prints the exact `Orchestrator__ExternalMcpProfiles__<name>__...` env vars and an equivalent
-`appsettings.json` block for the operator to add before restarting the central.
+Without `--apply`, output remains configuration-only for host-process centrals and operators who manage
+configuration themselves. Automatic apply is intentionally limited to a compatible Dockerized central;
+the CLI fails with `ApplyUnsupported` rather than guessing how to mutate a host process or an unrelated
+image. Identical managed content is a no-op. Different bootstrap-owned content requires `--replace`;
+an unowned file is never overwritten. If restart/health verification fails, the prior file is restored
+(or the new file removed), restart is retried, and the newly created sidecar is cleaned up.
 
 ```bash
 # Installed release: pulls the exact matching GHCR semver tag when absent locally.
@@ -174,7 +182,8 @@ dotnet-diagnostics-cli docker-bootstrap --target-container api
 # Dockerized central: private container-DNS route, no sidecar host port.
 dotnet-diagnostics-cli docker-bootstrap \
   --target-container api \
-  --central-container diagnostics-central
+  --central-container diagnostics-central \
+  --apply
 
 # Repository development with local MCP changes:
 docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .

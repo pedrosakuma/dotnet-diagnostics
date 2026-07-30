@@ -57,6 +57,7 @@ internal static partial class CliCommands
             && (IsInternalSidecarUrl(options.ProfileUrl, sidecarName)
                 || IsInternalSidecarUrl(options.ProfileUrl, networkAlias));
         var useInternalRoute = centralAware && (options.ProfileUrl is null || internalProfileOverride);
+        string? existingSidecarId = null;
         if (centralAware)
         {
             var centralInspection = await InspectContainerAsync(platform, options.CentralContainer!, cancellationToken).ConfigureAwait(false);
@@ -83,6 +84,41 @@ internal static partial class CliCommands
                     "The target and central container resolve to the same Docker container.",
                     new DiagnosticError("InvalidArgument", "--central-container must identify a different container from --target-container.")),
                     static (_, _) => { });
+            }
+
+            if (options.ApplyBootstrapProfile)
+            {
+                var profileEnvironmentPrefix = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Orchestrator__ExternalMcpProfiles__{profileName}__");
+                var hasEnvironmentConflict = central.Config?.Env.Any(
+                    value => value.StartsWith(profileEnvironmentPrefix, StringComparison.OrdinalIgnoreCase)) == true;
+                if (hasEnvironmentConflict && !options.ReplaceBootstrapProfile)
+                {
+                    return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                        $"Central container '{central.DisplayName}' already has environment configuration for profile '{profileName}'. Re-run with --apply --replace only to override it explicitly.",
+                        new DiagnosticError(
+                            "ProfileConflict",
+                            "Environment-owned profiles are never silently shadowed."),
+                        new NextActionHint(
+                            "docker-bootstrap",
+                            "Re-run with --apply --replace only if the bootstrap file should explicitly override that existing profile.")),
+                        static (_, _) => { });
+                }
+
+                var supportCommand = new DockerCliInvocation(
+                    "docker",
+                    ["exec", central.DisplayName, "/bin/sh", "-c", "test -f /app/.dotnet-diagnostics/bootstrap-profile-support-v1"]);
+                var supportResult = await platform.RunAsync(supportCommand, cancellationToken).ConfigureAwait(false);
+                if (supportResult.ExitCode != 0)
+                {
+                    return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                        $"Central container '{central.DisplayName}' does not support docker-bootstrap profile apply.",
+                        new DiagnosticError(
+                            "ApplyUnsupported",
+                            "Use a dotnet-diagnostics central image that contains bootstrap-profile-support-v1, or omit --apply and manage the emitted configuration yourself.")),
+                        static (_, _) => { });
+                }
             }
 
             if (!useInternalRoute && options.HostPort is null)
@@ -154,10 +190,46 @@ internal static partial class CliCommands
 
             if (!string.IsNullOrWhiteSpace(collisionResult.Stdout))
             {
-                return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
-                    $"Docker container name '{sidecarName}' is already in use.",
-                    new DiagnosticError("NameCollision", "Choose a different --sidecar-name or remove the existing container explicitly; bootstrap never replaces it.")),
-                    static (_, _) => { });
+                if (!options.ApplyBootstrapProfile)
+                {
+                    return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                        $"Docker container name '{sidecarName}' is already in use.",
+                        new DiagnosticError("NameCollision", "Choose a different --sidecar-name or remove the existing container explicitly; bootstrap never replaces it.")),
+                        static (_, _) => { });
+                }
+
+                var existingInspection = await InspectContainerAsync(platform, sidecarName, cancellationToken).ConfigureAwait(false);
+                string? existingBearerToken = null;
+                string? existingDelegationKey = null;
+                string? reuseError = null;
+                if (existingInspection.Error is not null
+                    || !TryValidateReusableSidecar(
+                        existingInspection.Container,
+                        target,
+                        sidecarImage,
+                        networkPlan?.Name,
+                        networkPlan is null ? null : networkAlias,
+                        hostPort,
+                        options.BootstrapBearerToken,
+                        options.BootstrapDelegationKey,
+                        out existingBearerToken,
+                        out existingDelegationKey,
+                        out reuseError))
+                {
+                    return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                        $"Existing container '{sidecarName}' cannot be reused safely.",
+                        new DiagnosticError(
+                            "NameCollision",
+                            existingInspection.Error ?? reuseError!),
+                        new NextActionHint(
+                            "docker-bootstrap",
+                            $"Inspect or remove '{sidecarName}' explicitly, then re-run bootstrap. No existing container was modified.")),
+                        static (_, _) => { });
+                }
+
+                existingSidecarId = existingInspection.Container!.Id;
+                bearerToken = existingBearerToken!;
+                delegationKey = existingDelegationKey!;
             }
         }
 
@@ -201,9 +273,13 @@ internal static partial class CliCommands
             addSysPtrace: !options.NoSysPtrace,
             targetTmpPath,
             dockerNetwork: networkPlan?.Name,
-            networkAlias);
+            networkAlias,
+            target.Id);
 
-        var runResult = await platform.RunAsync(runCommand, cancellationToken).ConfigureAwait(false);
+        var sidecarCreated = existingSidecarId is null;
+        var runResult = sidecarCreated
+            ? await platform.RunAsync(runCommand, cancellationToken).ConfigureAwait(false)
+            : new DockerCliResult(0, existingSidecarId!, string.Empty);
         if (runResult.ExitCode != 0)
         {
             return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
@@ -222,16 +298,23 @@ internal static partial class CliCommands
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false);
+            if (sidecarCreated)
+            {
+                await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false);
+            }
             throw;
         }
 
         if (health is not null)
         {
-            var cleanup = await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false);
+            var cleanup = sidecarCreated
+                ? await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false)
+                : DockerCleanupResult.Success;
             return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
                 cleanup.Succeeded
-                    ? $"Sidecar container '{sidecarName}' did not become healthy; the bootstrap removed it automatically."
+                    ? sidecarCreated
+                        ? $"Sidecar container '{sidecarName}' did not become healthy; the bootstrap removed it automatically."
+                        : $"Existing sidecar container '{sidecarName}' did not become healthy; it was left untouched."
                     : $"Sidecar container '{sidecarName}' did not become healthy, and automatic cleanup also failed.",
                 new DiagnosticError(
                     "Timeout",
@@ -246,13 +329,16 @@ internal static partial class CliCommands
         string profileUrl = preliminaryProfileUrl;
         IReadOnlyList<string>? allowedCidrs;
         string? sidecarAddress = null;
+        var resolvedContainerId = runResult.Stdout.Trim();
         if (networkPlan is not null)
         {
             var sidecarInspection = await InspectContainerAsync(platform, sidecarName, cancellationToken).ConfigureAwait(false);
             if (sidecarInspection.Error is not null
                 || !TryGetNetworkAddress(sidecarInspection.Container, networkPlan.Name, out sidecarAddress))
             {
-                var cleanup = await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false);
+                var cleanup = sidecarCreated
+                    ? await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false)
+                    : DockerCleanupResult.Success;
                 var failure = cleanup.Succeeded
                     ? DiagnosticResult.Fail<DockerBootstrapReport>(
                         $"Could not resolve sidecar '{sidecarName}' on Docker network '{networkPlan.Name}'; bootstrap cleaned up its resources.",
@@ -268,6 +354,7 @@ internal static partial class CliCommands
                 return BuildResult(failure, static (_, _) => { });
             }
 
+            resolvedContainerId = sidecarInspection.Container!.Id;
             allowedCidrs = options.AllowedCidrs.Count > 0
                 ? [.. options.AllowedCidrs]
                 : [IpToSingleHostCidr(IPAddress.Parse(sidecarAddress))];
@@ -288,7 +375,10 @@ internal static partial class CliCommands
                 && (networkPlan is null || centralRecheck.Container.NetworkSettings?.Networks.ContainsKey(networkPlan.Name) == true);
             if (!centralStable)
             {
-                await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false);
+                if (sidecarCreated)
+                {
+                    await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false);
+                }
                 return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
                     $"Central container '{central.DisplayName}' restarted, was recreated, stopped, or left the selected network during bootstrap.",
                     new DiagnosticError("CentralChanged", "Re-run docker-bootstrap against the current central container instance and network attachment.")),
@@ -304,6 +394,7 @@ internal static partial class CliCommands
         }
         cleanupCommands.Add(removeCommand.ToDisplayString());
 
+        var centralJson = BuildCentralJson(profileName, profileUrl, resolvedAllowedCidrs, profileUri.Port, bearerToken, delegationKey);
         var report = new DockerBootstrapReport(
             TargetContainer: target.DisplayName,
             CentralContainer: central?.DisplayName,
@@ -329,25 +420,66 @@ internal static partial class CliCommands
             AllowedPorts: [profileUri.Port],
             BearerToken: bearerToken,
             DelegationKey: delegationKey,
-            ContainerId: runResult.Stdout.Trim(),
+            ContainerId: resolvedContainerId,
             DockerRunCommand: runCommand.ToDisplayString(),
             NetworkConnectedByBootstrap: networkConnected,
             CleanupCommands: cleanupCommands,
             CentralEnvLines: BuildCentralEnvLines(profileName, profileUrl, resolvedAllowedCidrs, profileUri.Port, bearerToken, delegationKey),
-            CentralJson: BuildCentralJson(profileName, profileUrl, resolvedAllowedCidrs, profileUri.Port, bearerToken, delegationKey));
+            CentralJson: centralJson,
+            ProfileApplied: false,
+            ApplyAction: null,
+            CentralProfilePath: null);
 
-        var summary = string.Create(
-            CultureInfo.InvariantCulture,
-            $"Started sidecar '{report.SidecarContainer}' for target '{report.TargetContainer}' using route '{report.Route}' and emitted Orchestrator:ExternalMcpProfiles:{report.ProfileName} config.");
+        if (options.ApplyBootstrapProfile)
+        {
+            var applyResult = await ApplyProfileToCentralAsync(
+                platform,
+                central!,
+                report,
+                options.ReplaceBootstrapProfile && sidecarCreated,
+                existingSidecarId is not null,
+                waitSeconds,
+                cancellationToken).ConfigureAwait(false);
+            if (applyResult.Error is not null)
+            {
+                if (sidecarCreated)
+                {
+                    await CleanupBootstrapResourcesBestEffortAsync(platform, disconnectCommand, removeCommand, networkConnected).ConfigureAwait(false);
+                }
+                return BuildResult(DiagnosticResult.Fail<DockerBootstrapReport>(
+                    applyResult.Error,
+                    new DiagnosticError(applyResult.ErrorKind!, applyResult.Detail!),
+                    new NextActionHint("docker-bootstrap", applyResult.Remediation!)),
+                    static (_, _) => { });
+            }
+
+            report = report with
+            {
+                ProfileApplied = true,
+                ApplyAction = applyResult.Action,
+                CentralProfilePath = applyResult.ProfilePath,
+                CleanupCommands =
+                [
+                    applyResult.CleanupCommand!,
+                    .. cleanupCommands,
+                ],
+            };
+        }
+
+        var summary = report.ProfileApplied
+            ? $"Started sidecar '{report.SidecarContainer}', applied profile '{report.ProfileName}' to central '{report.CentralContainer}', and {report.ApplyAction}."
+            : $"Started sidecar '{report.SidecarContainer}' for target '{report.TargetContainer}' using route '{report.Route}' and emitted Orchestrator:ExternalMcpProfiles:{report.ProfileName} config.";
 
         return BuildResult(DiagnosticResult.Ok(
             report,
             summary,
             new NextActionHint(
                 "docker-bootstrap",
-                string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"Add the emitted Orchestrator__ExternalMcpProfiles__{profileName} keys (or JSON block) to the central MCP, restart it, then verify the profile with list_orchestrator(kind='external-profiles') before attach_to_pod(profileName='{profileName}')."))),
+                report.ProfileApplied
+                    ? $"Profile '{profileName}' is loaded. Verify it with list_orchestrator(kind='external-profiles'), then call attach_to_pod(profileName='{profileName}')."
+                    : string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"Add the emitted Orchestrator__ExternalMcpProfiles__{profileName} keys (or JSON block) to the central MCP, restart it, then verify the profile with list_orchestrator(kind='external-profiles') before attach_to_pod(profileName='{profileName}')."))),
             static (sb, data) =>
             {
                 sb.AppendLine();
@@ -366,6 +498,11 @@ internal static partial class CliCommands
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  allowed cidrs : {string.Join(", ", data.AllowedCidrs)}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  allowed ports : {string.Join(", ", data.AllowedPorts)}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  SYS_PTRACE    : {(data.SysPtraceEnabled ? "enabled" : "disabled")}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"  profile apply : {(data.ProfileApplied ? data.ApplyAction : "not requested")}");
+                if (data.CentralProfilePath is not null)
+                {
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"  central file  : {data.CentralProfilePath} (mode 0600)");
+                }
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  bearer token  : {data.BearerToken}");
                 sb.AppendLine(CultureInfo.InvariantCulture, $"  delegation key: {data.DelegationKey}");
                 sb.AppendLine("  docker run:");
@@ -392,9 +529,301 @@ internal static partial class CliCommands
                     sb.AppendLine("    The disconnect is bootstrap-owned; ignore 'not connected'/'no such container' when repeating cleanup.");
                 }
                 sb.AppendLine("  note:");
-                sb.AppendLine("    This command does not register the profile dynamically. The current central tool surface lists and attaches existing external profiles only, so add the config and restart the central MCP first.");
+                sb.AppendLine(data.ProfileApplied
+                    ? "    The operator CLI applied the profile and restarted the existing central container; no Docker socket was mounted and the container was not recreated."
+                    : "    This invocation did not apply the profile. Add the config and restart the central MCP, or re-run with --central-container <name> --apply.");
             });
     }
+
+    private static async Task<CentralProfileApplyResult> ApplyProfileToCentralAsync(
+        IDockerBootstrapPlatform platform,
+        DockerInspectContainer central,
+        DockerBootstrapReport report,
+        bool replace,
+        bool existingSidecarReused,
+        int waitSeconds,
+        CancellationToken cancellationToken)
+    {
+        var profilePath = string.Create(
+            CultureInfo.InvariantCulture,
+            $"/app/.dotnet-diagnostics/bootstrap-profiles/{report.ProfileName}.json");
+        var managedJson = BuildManagedCentralJson(report);
+        var readCommand = new DockerCliInvocation(
+            "docker",
+            ["exec", central.DisplayName, "/bin/sh", "-c", $"if [ -f '{profilePath}' ]; then cat '{profilePath}'; else exit 44; fi"]);
+        var readResult = await platform.RunAsync(readCommand, cancellationToken).ConfigureAwait(false);
+        string? previousJson = null;
+        if (readResult.ExitCode == 0)
+        {
+            previousJson = readResult.Stdout;
+            bool equivalent;
+            try
+            {
+                equivalent = JsonEquivalent(previousJson, managedJson);
+            }
+            catch (JsonException)
+            {
+                return CentralProfileApplyResult.Failure(
+                    "ProfileConflict",
+                    $"Central profile path '{profilePath}' contains malformed JSON and was not modified.",
+                    $"Repair or remove '{profilePath}' explicitly, then re-run bootstrap.");
+            }
+
+            if (equivalent)
+            {
+                return CentralProfileApplyResult.Success(
+                    "found the identical bootstrap-owned profile already loaded; no central restart was needed",
+                    profilePath,
+                    BuildCentralProfileCleanupCommand(central.DisplayName, profilePath));
+            }
+
+            if (!IsBootstrapOwnedProfile(previousJson, report.ProfileName))
+            {
+                return CentralProfileApplyResult.Failure(
+                    "ProfileConflict",
+                    $"Central profile path '{profilePath}' exists but is not owned by docker-bootstrap; it was not modified.",
+                    $"Remove or rename '{profilePath}' explicitly, or omit --apply.");
+            }
+
+            if (!replace)
+            {
+                return CentralProfileApplyResult.Failure(
+                    "ProfileConflict",
+                    $"Bootstrap-owned profile '{report.ProfileName}' already exists with different values.",
+                    existingSidecarReused
+                        ? $"The existing sidecar '{report.SidecarContainer}' was left untouched. Run the emitted cleanup, then re-run bootstrap with the desired values."
+                        : "Re-run with --apply --replace after confirming the existing profile may be replaced.");
+            }
+        }
+        else if (readResult.ExitCode != 44)
+        {
+            return CentralProfileApplyResult.Failure(
+                "ExternalDependencyFailed",
+                $"Could not inspect the central profile file: {BuildProcessError(readCommand, readResult)}",
+                "Check that the central container is running and its /app directory is writable.");
+        }
+
+        var writeResult = await WriteCentralProfileAsync(platform, central.DisplayName, profilePath, managedJson, cancellationToken).ConfigureAwait(false);
+        if (writeResult.Result.ExitCode != 0)
+        {
+            return CentralProfileApplyResult.Failure(
+                "ExternalDependencyFailed",
+                $"Could not atomically write central profile '{profilePath}': {BuildProcessError(writeResult.Command, writeResult.Result)}",
+                "Fix the central container filesystem permissions or omit --apply.");
+        }
+
+        var restartCommand = new DockerCliInvocation("docker", ["restart", central.DisplayName]);
+        var restartResult = await platform.RunAsync(restartCommand, cancellationToken).ConfigureAwait(false);
+        var healthError = restartResult.ExitCode == 0
+            ? await WaitForContainerHealthyAsync(
+                platform,
+                central.DisplayName,
+                TimeSpan.FromSeconds(waitSeconds),
+                cancellationToken).ConfigureAwait(false)
+            : BuildProcessError(restartCommand, restartResult);
+        if (healthError is null)
+        {
+            return CentralProfileApplyResult.Success(
+                previousJson is null
+                    ? "restarted the existing central container and loaded the new profile"
+                    : "restarted the existing central container and replaced the bootstrap-owned profile",
+                profilePath,
+                BuildCentralProfileCleanupCommand(central.DisplayName, profilePath));
+        }
+
+        var rollback = previousJson is null
+            ? await RemoveCentralProfileAsync(platform, central.DisplayName, profilePath).ConfigureAwait(false)
+            : (await WriteCentralProfileAsync(platform, central.DisplayName, profilePath, previousJson, CancellationToken.None).ConfigureAwait(false)).Result;
+        var rollbackRestart = await platform.RunAsync(
+            new DockerCliInvocation("docker", ["restart", central.DisplayName]),
+            CancellationToken.None).ConfigureAwait(false);
+        var rollbackStatus = rollback.ExitCode == 0 && rollbackRestart.ExitCode == 0
+            ? "The previous central profile state was restored."
+            : "Automatic rollback failed; inspect the central container before retrying.";
+        return CentralProfileApplyResult.Failure(
+            "CentralRestartFailed",
+            $"Central restart/health verification failed after profile apply. {rollbackStatus} Failure: {healthError}",
+            BuildCentralProfileCleanupCommand(central.DisplayName, profilePath));
+    }
+
+    private static async Task<(DockerCliInvocation Command, DockerCliResult Result)> WriteCentralProfileAsync(
+        IDockerBootstrapPlatform platform,
+        string centralContainer,
+        string profilePath,
+        string json,
+        CancellationToken cancellationToken)
+    {
+        var directory = profilePath[..profilePath.LastIndexOf('/')];
+        var command = new DockerCliInvocation(
+            "docker",
+            [
+                "exec", "-i", centralContainer, "/bin/sh", "-c",
+                $"set -eu; umask 077; mkdir -p '{directory}'; tmp='{profilePath}.tmp.$$'; trap 'rm -f \"$tmp\"' EXIT; cat > \"$tmp\"; chmod 600 \"$tmp\"; mv -f \"$tmp\" '{profilePath}'; trap - EXIT",
+            ],
+            StandardInput: json);
+        return (command, await platform.RunAsync(command, cancellationToken).ConfigureAwait(false));
+    }
+
+    private static async Task<DockerCliResult> RemoveCentralProfileAsync(
+        IDockerBootstrapPlatform platform,
+        string centralContainer,
+        string profilePath)
+        => await platform.RunAsync(
+            new DockerCliInvocation("docker", ["exec", centralContainer, "/bin/sh", "-c", $"rm -f '{profilePath}'"]),
+            CancellationToken.None).ConfigureAwait(false);
+
+    private static string BuildManagedCentralJson(DockerBootstrapReport report)
+    {
+        using var profile = JsonDocument.Parse(report.CentralJson);
+        var payload = new
+        {
+            DotnetDiagnosticsDockerBootstrap = new
+            {
+                SchemaVersion = 1,
+                ProfileName = report.ProfileName,
+                SidecarContainer = report.SidecarContainer,
+                SidecarContainerId = report.ContainerId,
+            },
+            Orchestrator = new
+            {
+                Enabled = true,
+                ExternalMcpProfiles = profile.RootElement.GetProperty("Orchestrator").GetProperty("ExternalMcpProfiles"),
+            },
+        };
+        return JsonSerializer.Serialize(payload, JsonOptions);
+    }
+
+    private static bool JsonEquivalent(string left, string right)
+    {
+        using var leftDocument = JsonDocument.Parse(left);
+        using var rightDocument = JsonDocument.Parse(right);
+        return JsonElement.DeepEquals(leftDocument.RootElement, rightDocument.RootElement);
+    }
+
+    private static bool IsBootstrapOwnedProfile(string json, string profileName)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var metadata = document.RootElement.GetProperty("DotnetDiagnosticsDockerBootstrap");
+            return metadata.GetProperty("SchemaVersion").GetInt32() == 1
+                && string.Equals(metadata.GetProperty("ProfileName").GetString(), profileName, StringComparison.Ordinal);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryValidateReusableSidecar(
+            DockerInspectContainer? sidecar,
+            DockerInspectContainer target,
+            string expectedImage,
+            string? expectedNetwork,
+            string? expectedNetworkAlias,
+            int? expectedHostPort,
+            string? requestedBearerToken,
+            string? requestedDelegationKey,
+            out string? bearerToken,
+            out string? delegationKey,
+            out string? error)
+        {
+            bearerToken = null;
+            delegationKey = null;
+            error = null;
+
+            if (sidecar?.State?.Running != true)
+            {
+                error = "The existing container is not running.";
+                return false;
+            }
+
+            var config = sidecar.Config;
+            if (config?.Labels.TryGetValue("io.github.pedrosakuma.dotnet-diagnostics.bootstrap", out var owner) != true
+                || !string.Equals(owner, "external-investigation", StringComparison.Ordinal)
+                || config.Labels.TryGetValue("io.github.pedrosakuma.dotnet-diagnostics.target", out var targetName) != true
+                || !string.Equals(targetName, target.DisplayName, StringComparison.Ordinal)
+                || config.Labels.TryGetValue("io.github.pedrosakuma.dotnet-diagnostics.target-id", out var targetId) != true
+                || !string.Equals(targetId, target.Id, StringComparison.Ordinal))
+            {
+                error = "The existing container does not carry matching docker-bootstrap ownership and target labels.";
+                return false;
+            }
+
+            if (expectedNetwork is not null)
+            {
+                if (sidecar.NetworkSettings?.Networks.TryGetValue(expectedNetwork, out var endpoint) != true
+                    || expectedNetworkAlias is null
+                    || endpoint is null
+                    || !endpoint.Aliases.Contains(expectedNetworkAlias, StringComparer.Ordinal))
+                {
+                    error = $"The existing bootstrap sidecar does not have the expected '{expectedNetwork}' network alias.";
+                    return false;
+                }
+            }
+            else if (expectedHostPort is not null)
+            {
+                if (sidecar.HostConfig?.PortBindings.TryGetValue("8080/tcp", out var bindings) != true
+                    || bindings is null
+                    || !bindings.Any(binding => string.Equals(binding.HostPort, expectedHostPort.Value.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)))
+                {
+                    error = $"The existing bootstrap sidecar does not publish 8080/tcp on requested host port {expectedHostPort}.";
+                    return false;
+                }
+            }
+
+            if (!string.Equals(config.Image, expectedImage, StringComparison.Ordinal))
+            {
+                error = $"The existing bootstrap sidecar image does not match requested image '{expectedImage}'.";
+                return false;
+            }
+
+            bearerToken = GetEnvironmentValue(config.Env, "MCP_BEARER_TOKEN");
+            delegationKey = GetEnvironmentValue(config.Env, "MCP_INTERNAL_SCOPE_DELEGATION_KEY");
+            if (string.IsNullOrEmpty(bearerToken) || string.IsNullOrEmpty(delegationKey))
+            {
+                error = "The existing bootstrap sidecar is missing its bearer token or delegation key environment setting.";
+                return false;
+            }
+
+            if (requestedBearerToken is not null
+                && !CryptographicOperations.FixedTimeEquals(
+                    Encoding.UTF8.GetBytes(requestedBearerToken),
+                    Encoding.UTF8.GetBytes(bearerToken)))
+            {
+                error = "The requested bearer token does not match the existing bootstrap sidecar.";
+                return false;
+            }
+
+            if (requestedDelegationKey is not null
+                && !CryptographicOperations.FixedTimeEquals(
+                    Encoding.UTF8.GetBytes(requestedDelegationKey),
+                    Encoding.UTF8.GetBytes(delegationKey)))
+            {
+                error = "The requested delegation key does not match the existing bootstrap sidecar.";
+                return false;
+            }
+
+            return true;
+        }
+
+    private static string? GetEnvironmentValue(IReadOnlyList<string> environment, string name)
+        {
+            var prefix = name + "=";
+            foreach (var value in environment)
+            {
+                if (value.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    return value[prefix.Length..];
+                }
+            }
+
+            return null;
+        }
+    private static string BuildCentralProfileCleanupCommand(string centralContainer, string profilePath)
+        => string.Create(
+            CultureInfo.InvariantCulture,
+            $"docker exec {centralContainer} /bin/sh -c \"rm -f '{profilePath}'\" && docker restart {centralContainer}");
 
     private static async Task<DockerContainerInspection> InspectContainerAsync(
         IDockerBootstrapPlatform platform,
@@ -540,7 +969,8 @@ internal static partial class CliCommands
         bool addSysPtrace,
         string targetTmpPath,
         string? dockerNetwork,
-        string networkAlias)
+        string networkAlias,
+        string targetContainerId)
     {
         var args = new List<string>
         {
@@ -570,6 +1000,7 @@ internal static partial class CliCommands
             "--health-retries", "30",
             "--label", "io.github.pedrosakuma.dotnet-diagnostics.bootstrap=external-investigation",
             "--label", string.Create(CultureInfo.InvariantCulture, $"io.github.pedrosakuma.dotnet-diagnostics.target={targetContainer}"),
+            "--label", string.Create(CultureInfo.InvariantCulture, $"io.github.pedrosakuma.dotnet-diagnostics.target-id={targetContainerId}"),
             "--env", "ASPNETCORE_URLS=http://0.0.0.0:8080",
             "--env", "DOTNET_EnableDiagnostics=0",
             "--env", "DOTNET_NOLOGO=1",
@@ -976,9 +1407,15 @@ internal static partial class CliCommands
         bool NetworkConnectedByBootstrap,
         IReadOnlyList<string> CleanupCommands,
         IReadOnlyList<string> CentralEnvLines,
-        string CentralJson);
+        string CentralJson,
+        bool ProfileApplied,
+        string? ApplyAction,
+        string? CentralProfilePath);
 
-    internal sealed record DockerCliInvocation(string FileName, IReadOnlyList<string> Arguments)
+    internal sealed record DockerCliInvocation(
+        string FileName,
+        IReadOnlyList<string> Arguments,
+        string? StandardInput = null)
     {
         public string ToDisplayString()
             => string.Join(" ", [FileName, .. Arguments.Select(Quote)]);
@@ -1001,6 +1438,22 @@ internal static partial class CliCommands
     private sealed record DockerCleanupResult(bool Succeeded, string? Message)
     {
         public static DockerCleanupResult Success { get; } = new(true, null);
+    }
+
+    private sealed record CentralProfileApplyResult(
+        string? Action,
+        string? ProfilePath,
+        string? CleanupCommand,
+        string? ErrorKind,
+        string? Error,
+        string? Detail,
+        string? Remediation)
+    {
+        public static CentralProfileApplyResult Success(string action, string profilePath, string cleanupCommand)
+            => new(action, profilePath, cleanupCommand, null, null, null, null);
+
+        public static CentralProfileApplyResult Failure(string errorKind, string detail, string remediation)
+            => new(null, null, null, errorKind, detail, detail, remediation);
     }
 
     private sealed record DockerContainerInspection(DockerInspectContainer? Container, string? Error);
@@ -1042,6 +1495,7 @@ internal static partial class CliCommands
         {
             var psi = new ProcessStartInfo(invocation.FileName)
             {
+                RedirectStandardInput = invocation.StandardInput is not null,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -1054,6 +1508,11 @@ internal static partial class CliCommands
 
             using var process = new Process { StartInfo = psi };
             process.Start();
+            if (invocation.StandardInput is not null)
+            {
+                await process.StandardInput.WriteAsync(invocation.StandardInput.AsMemory(), cancellationToken).ConfigureAwait(false);
+                await process.StandardInput.DisposeAsync().ConfigureAwait(false);
+            }
             var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
             var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
@@ -1072,6 +1531,8 @@ internal static partial class CliCommands
 
         public DockerInspectHostConfig? HostConfig { get; set; }
 
+        public DockerInspectConfig? Config { get; set; }
+
         public DockerInspectNetworkSettings? NetworkSettings { get; set; }
 
         public string DisplayName
@@ -1080,9 +1541,25 @@ internal static partial class CliCommands
                 : Name.TrimStart('/');
     }
 
+    private sealed class DockerInspectConfig
+    {
+        public IReadOnlyList<string> Env { get; set; } = Array.Empty<string>();
+
+        public Dictionary<string, string> Labels { get; set; } = new(StringComparer.Ordinal);
+
+        public string Image { get; set; } = string.Empty;
+    }
+
     private sealed class DockerInspectHostConfig
     {
         public string? NetworkMode { get; set; }
+
+        public Dictionary<string, IReadOnlyList<DockerInspectPortBinding>?> PortBindings { get; set; } = new(StringComparer.Ordinal);
+    }
+
+    private sealed class DockerInspectPortBinding
+    {
+        public string HostPort { get; set; } = string.Empty;
     }
 
     private sealed class DockerInspectNetworkSettings
@@ -1095,6 +1572,8 @@ internal static partial class CliCommands
         public string IPAddress { get; set; } = string.Empty;
 
         public string GlobalIPv6Address { get; set; } = string.Empty;
+
+        public IReadOnlyList<string> Aliases { get; set; } = Array.Empty<string>();
     }
 
     private sealed class DockerInspectNetwork

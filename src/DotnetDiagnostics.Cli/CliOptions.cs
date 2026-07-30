@@ -280,6 +280,12 @@ internal sealed record CliOptions
     /// <summary>Opt out of <c>SYS_PTRACE</c> on the sidecar (<c>--no-sys-ptrace</c>). Default off.</summary>
     public bool NoSysPtrace { get; init; }
 
+    /// <summary>Apply the generated profile to a supported Dockerized central and restart it (<c>--apply</c>).</summary>
+    public bool ApplyBootstrapProfile { get; init; }
+
+    /// <summary>Replace an existing bootstrap-owned profile with different values (<c>--replace</c>).</summary>
+    public bool ReplaceBootstrapProfile { get; init; }
+
     /// <summary>
     /// Opt-in <c>--launch</c> dev mode (issue #365): re-launch the target as a child of the CLI so
     /// ClrMD live attach is permitted under Yama <c>ptrace_scope=1</c> with zero privilege. The program
@@ -479,6 +485,8 @@ internal sealed record CliOptions
             new StringOptionDescriptor((state, value) => state.AllowedCidrs.Add(value), "--allow-cidr"),
             new IntOptionDescriptor((state, value) => state.HostPort = value, "--host-port"),
             new IntOptionDescriptor((state, value) => state.WaitSeconds = value, "--wait"),
+            new FlagOptionDescriptor(state => state.ApplyBootstrapProfile = true, "--apply"),
+            new FlagOptionDescriptor(state => state.ReplaceBootstrapProfile = true, "--replace"),
             new IntOptionDescriptor((state, value) => state.TopTypes = value, "--top-types"),
             new IntOptionDescriptor((state, value) => state.RetentionPathLimit = value, "--retention-path-limit"),
             new StringOptionDescriptor((state, value) => state.Providers.Add(value), "--provider"),
@@ -698,6 +706,10 @@ internal sealed record CliOptions
 
         public bool NoSysPtrace { get; set; }
 
+        public bool ApplyBootstrapProfile { get; set; }
+
+        public bool ReplaceBootstrapProfile { get; set; }
+
         public bool Launch { get; set; }
 
         public bool SuspendStartup { get; set; }
@@ -788,6 +800,8 @@ internal sealed record CliOptions
                 HostPort = HostPort,
                 WaitSeconds = WaitSeconds,
                 NoSysPtrace = NoSysPtrace,
+                ApplyBootstrapProfile = ApplyBootstrapProfile,
+                ReplaceBootstrapProfile = ReplaceBootstrapProfile,
                 Launch = Launch,
                 SuspendStartup = SuspendStartup,
                 LaunchArgs = LaunchArgs ?? (IReadOnlyList<string>)Array.Empty<string>(),

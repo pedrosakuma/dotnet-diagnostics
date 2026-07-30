@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Changed
+- **`docker-bootstrap --apply` removes central profile copy/paste** (#755) — a compatible
+  Dockerized central now accepts an operator-owned mode-`0600` profile file through `docker exec`
+  stdin, restarts in place, and is health-checked before success. Apply is idempotent, conflicting
+  bootstrap-owned files require `--replace`, unowned files are never overwritten, rollback restores
+  prior config, and exact cleanup is emitted without Docker-socket access or a new MCP tool.
 - **`docker-bootstrap` can derive a private route to a Dockerized central MCP** (#754) —
   `--central-container` inspects central/target networking, selects a deterministic user-defined
   local bridge, connects the generated sidecar without publishing a host port, emits an internal
