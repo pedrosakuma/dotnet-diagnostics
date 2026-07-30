@@ -517,7 +517,10 @@ public static class CollectionQueryDispatcher
         };
 
         return new CollectionQueryResult(
-            CollectionHandleKinds.LogSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload);
+            CollectionHandleKinds.LogSnapshot, view, snapshot.ProcessId, snapshot.StartedAt, snapshot.Duration, payload)
+        {
+            UntrustedDataBoundary = snapshot.UntrustedDataBoundary,
+        };
     }
 
     private static LogLevelGroup CreateLogLevelGroup(string level, long count, IReadOnlyList<LogEntry> recent, int topN) =>

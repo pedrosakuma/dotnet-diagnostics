@@ -606,13 +606,12 @@ public static class EventCollectionUseCases
                         inlineSnapshot = snapshot with { Recent = Array.Empty<LogEntry>() };
                     }
 
-                    var topCategory = snapshot.ByCategory.Count > 0 ? snapshot.ByCategory[0] : null;
                     var warningPlus = snapshot.EventsByLevelWarning + snapshot.EventsByLevelError + snapshot.EventsByLevelCritical;
                     var summary = snapshot.TotalEvents == 0
                         ? $"No ILogger events captured in {context.DurationSeconds}s. Widen categories or lower minLevel if you expected logs."
                         : (context.Depth == SamplingDepth.Summary && droppedRecent > 0
-                            ? $"Captured {snapshot.TotalEvents} ILogger event(s) over {context.DurationSeconds}s at minLevel={snapshot.MinimumLevel}; warning+={warningPlus}. Top category: {topCategory?.Category} ({topCategory?.Count}). Dropped {droppedRecent} Recent entry(ies) from inline (handle has all)."
-                            : $"Captured {snapshot.TotalEvents} ILogger event(s) over {context.DurationSeconds}s at minLevel={snapshot.MinimumLevel}; warning+={warningPlus}. Top category: {topCategory?.Category} ({topCategory?.Count}).");
+                            ? $"Captured {snapshot.TotalEvents} ILogger event(s) over {context.DurationSeconds}s at minLevel={snapshot.MinimumLevel}; warning+={warningPlus}. Dropped {droppedRecent} Recent entry(ies) from inline (handle has all)."
+                            : $"Captured {snapshot.TotalEvents} ILogger event(s) over {context.DurationSeconds}s at minLevel={snapshot.MinimumLevel}; warning+={warningPlus}.");
 
                     return DiagnosticResult.OkWithHandle(
                         inlineSnapshot,

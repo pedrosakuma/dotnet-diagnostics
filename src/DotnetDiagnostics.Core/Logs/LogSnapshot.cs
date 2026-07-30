@@ -1,3 +1,6 @@
+using System.Text.Json.Serialization;
+using DotnetDiagnostics.Core.Memory;
+
 namespace DotnetDiagnostics.Core.Logs;
 
 public sealed record LogSnapshot(
@@ -16,7 +19,12 @@ public sealed record LogSnapshot(
     IReadOnlyList<LogCategoryGroup> ByCategory,
     IReadOnlyList<LogEntry> Recent,
     bool Truncated,
-    IReadOnlyList<string> Notes);
+    IReadOnlyList<string> Notes)
+{
+    [JsonPropertyOrder(-30)]
+    public InvestigationEvidenceBoundary UntrustedDataBoundary { get; init; } =
+        InvestigationEvidenceBoundary.UntrustedLogData;
+}
 
 public sealed record LogCategoryGroup(string Category, long Count, long ErrorCount, long WarningCount);
 
