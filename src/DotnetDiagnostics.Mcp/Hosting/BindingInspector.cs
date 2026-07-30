@@ -13,15 +13,14 @@ internal static class BindingInspector
     private static readonly string[] UrlConfigKeys =
         { "urls", "ASPNETCORE_URLS", "DOTNET_URLS" };
 
-    // Port-only env keys — Kestrel binds these to wildcard interfaces (every NIC) by
-    // definition. Any non-empty value means a non-loopback listener; we cannot run
-    // them through IsNonLoopbackUrl because Uri.TryCreate("http://*:port") fails to
-    // parse the wildcard host and would otherwise silently slip past the guard.
-    private static readonly string[] PortOnlyConfigKeys =
+    private static readonly string[] HttpPortOnlyConfigKeys =
     {
-        "HTTP_PORTS", "HTTPS_PORTS",
-        "ASPNETCORE_HTTP_PORTS", "ASPNETCORE_HTTPS_PORTS",
-        "DOTNET_HTTP_PORTS", "DOTNET_HTTPS_PORTS",
+        "HTTP_PORTS", "ASPNETCORE_HTTP_PORTS", "DOTNET_HTTP_PORTS",
+    };
+
+    private static readonly string[] HttpsPortOnlyConfigKeys =
+    {
+        "HTTPS_PORTS", "ASPNETCORE_HTTPS_PORTS", "DOTNET_HTTPS_PORTS",
     };
 
     /// <summary>Returns <c>true</c> when the host is configured to bind to any
@@ -37,6 +36,21 @@ internal static class BindingInspector
     /// <summary>Overload that takes the <c>app.Urls</c> collection directly, for unit
     /// tests that cannot construct a real <see cref="WebApplication"/>.</summary>
     public static bool HasNonLoopbackBinding(ICollection<string> appUrls, IConfiguration configuration)
+        => InspectBindings(appUrls, configuration).HasNonLoopbackBinding;
+
+    /// <summary>Returns <c>true</c> when any non-loopback listener uses cleartext
+    /// HTTP. HTTPS listeners and loopback-only HTTP listeners do not match.</summary>
+    public static bool HasNonLoopbackHttpBinding(WebApplication app, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        return HasNonLoopbackHttpBinding(app.Urls, configuration);
+    }
+
+    /// <summary>Collection overload for tests and pre-start policy checks.</summary>
+    public static bool HasNonLoopbackHttpBinding(ICollection<string> appUrls, IConfiguration configuration)
+        => InspectBindings(appUrls, configuration).HasNonLoopbackHttpBinding;
+
+    private static BindingExposure InspectBindings(ICollection<string> appUrls, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(appUrls);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -57,12 +71,24 @@ internal static class BindingInspector
             }
         }
 
-        foreach (var key in PortOnlyConfigKeys)
+        foreach (var key in HttpPortOnlyConfigKeys)
         {
             var value = configuration[key];
             if (!string.IsNullOrWhiteSpace(value))
             {
-                return true;
+                return new BindingExposure(
+                    HasNonLoopbackBinding: true,
+                    HasNonLoopbackHttpBinding: true);
+            }
+        }
+
+        var hasNonLoopbackBinding = false;
+        foreach (var key in HttpsPortOnlyConfigKeys)
+        {
+            var value = configuration[key];
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                hasNonLoopbackBinding = true;
             }
         }
 
@@ -77,44 +103,63 @@ internal static class BindingInspector
 
         foreach (var raw in candidates)
         {
-            if (IsNonLoopbackUrl(raw))
+            var exposure = InspectUrl(raw);
+            hasNonLoopbackBinding |= exposure.HasNonLoopbackBinding;
+            if (exposure.HasNonLoopbackHttpBinding)
             {
-                return true;
+                return new BindingExposure(
+                    HasNonLoopbackBinding: true,
+                    HasNonLoopbackHttpBinding: true);
             }
         }
 
-        return false;
+        return new BindingExposure(
+            hasNonLoopbackBinding,
+            HasNonLoopbackHttpBinding: false);
     }
 
-    public static bool IsNonLoopbackUrl(string raw)
+    public static bool IsNonLoopbackUrl(string raw) => InspectUrl(raw).HasNonLoopbackBinding;
+
+    private static BindingExposure InspectUrl(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
         {
-            return false;
+            return default;
         }
 
         if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri))
         {
-            return false;
+            return default;
         }
 
         var host = uri.Host;
         if (string.IsNullOrEmpty(host))
         {
-            return false;
+            return default;
         }
 
         if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
         {
-            return false;
+            return default;
         }
 
+        bool nonLoopback;
         if (System.Net.IPAddress.TryParse(host, out var ip))
         {
-            return !System.Net.IPAddress.IsLoopback(ip);
+            nonLoopback = !System.Net.IPAddress.IsLoopback(ip);
+        }
+        else
+        {
+            // Wildcards and DNS names both represent a network-visible listener.
+            nonLoopback = true;
         }
 
-        // Hostname that doesn't resolve at parse time (e.g. DNS name) — treat as non-loopback.
-        return true;
+        return new BindingExposure(
+            nonLoopback,
+            nonLoopback && string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase));
     }
+
+    private readonly record struct BindingExposure(
+        bool HasNonLoopbackBinding,
+        bool HasNonLoopbackHttpBinding);
 }

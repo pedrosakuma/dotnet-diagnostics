@@ -69,7 +69,7 @@ public sealed class OidcJwtAuthIntegrationTests
         {
             builder.UseSetting("MCP_OIDC_ISSUER", authority.Issuer);
             builder.UseSetting("MCP_OIDC_AUDIENCE", authority.Audience);
-            builder.UseSetting("ASPNETCORE_URLS", "http://0.0.0.0:5130");
+            builder.UseSetting("ASPNETCORE_URLS", "https://0.0.0.0:5130");
         });
 
         using var client = factory.CreateClient();

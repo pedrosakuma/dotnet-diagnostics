@@ -79,4 +79,34 @@ public sealed class BindingInspectorTests
         var cfg = ConfigFrom(new() { ["urls"] = "http://127.0.0.1:5000;http://0.0.0.0:5001" });
         BindingInspector.HasNonLoopbackBinding(Array.Empty<string>(), cfg).Should().BeTrue();
     }
+
+    [Fact]
+    public void DirectHttps_NonLoopback_IsNotCleartext()
+    {
+        var cfg = ConfigFrom(new() { ["urls"] = "https://0.0.0.0:5000" });
+
+        BindingInspector.HasNonLoopbackBinding(Array.Empty<string>(), cfg).Should().BeTrue();
+        BindingInspector.HasNonLoopbackHttpBinding(Array.Empty<string>(), cfg).Should().BeFalse();
+    }
+
+    [Fact]
+    public void LoopbackHttp_IsNotCleartextNonLoopback()
+    {
+        var cfg = ConfigFrom(new() { ["urls"] = "http://127.0.0.1:5000" });
+
+        BindingInspector.HasNonLoopbackHttpBinding(Array.Empty<string>(), cfg).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("HTTP_PORTS", true)]
+    [InlineData("ASPNETCORE_HTTP_PORTS", true)]
+    [InlineData("HTTPS_PORTS", false)]
+    [InlineData("ASPNETCORE_HTTPS_PORTS", false)]
+    public void PortOnlyKeys_DistinguishCleartext(string key, bool expectedCleartext)
+    {
+        var cfg = ConfigFrom(new() { [key] = "5000" });
+
+        BindingInspector.HasNonLoopbackHttpBinding(Array.Empty<string>(), cfg)
+            .Should().Be(expectedCleartext);
+    }
 }

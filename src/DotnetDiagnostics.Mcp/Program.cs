@@ -32,6 +32,23 @@ var builder = WebApplication.CreateBuilder(args);
 DockerBootstrapProfileConfiguration.AddTo(builder.Configuration);
 var oidcJwtAuth = builder.AddOidcJwtAuth();
 
+System.Security.Cryptography.X509Certificates.X509Certificate2? tlsCertificate;
+try
+{
+    tlsCertificate = PemCertificateLoader.Load(builder.Configuration);
+}
+catch (InvalidOperationException ex)
+{
+    Console.Error.WriteLine($"Refusing to start: {ex.Message}");
+    return 1;
+}
+
+if (tlsCertificate is not null)
+{
+    builder.WebHost.ConfigureKestrel(options =>
+        options.ConfigureHttpsDefaults(https => https.ServerCertificate = tlsCertificate));
+}
+
 builder.Logging.AddSimpleConsole(o =>
 {
     o.IncludeScopes = true;
@@ -106,6 +123,10 @@ builder.Services
 var app = builder.Build();
 loggerFactoryHolder = app.Services.GetRequiredService<ILoggerFactory>();
 servicesHolder = app.Services;
+if (tlsCertificate is not null)
+{
+    app.Lifetime.ApplicationStopped.Register(tlsCertificate.Dispose);
+}
 
 // B5.1 / docs/authorization.md#default-policy-by-transport: scoped bearer auth replaces the previous single-bearer
 // path. The registry is constructed before the app starts handling requests so any
@@ -117,6 +138,46 @@ servicesHolder = app.Services;
 var hasScopedTokens = builder.Configuration.GetSection("Auth:BearerTokens").Exists();
 var hasLegacyToken = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MCP_BEARER_TOKEN"));
 var boundToNonLoopback = BindingInspector.HasNonLoopbackBinding(app, builder.Configuration);
+var cleartextNonLoopback = BindingInspector.HasNonLoopbackHttpBinding(app, builder.Configuration);
+
+TransportSecurityPolicy transportSecurity;
+try
+{
+    transportSecurity = TransportSecurityPolicy.Load(builder.Configuration);
+}
+catch (InvalidOperationException ex)
+{
+    app.Logger.LogCritical(ex, "Refusing to start: trusted-proxy transport configuration is invalid.");
+    return 1;
+}
+
+if (cleartextNonLoopback)
+{
+    if (transportSecurity.AllowInsecureHttp)
+    {
+        app.Logger.LogWarning(
+            "INSECURE DEVELOPMENT OVERRIDE ACTIVE: {Override}=true permits bearer credentials " +
+            "over cleartext non-loopback HTTP. Do not use this setting in production.",
+            TransportSecurityPolicy.AllowInsecureHttpKey);
+    }
+    else if (!transportSecurity.HasTrustedProxies)
+    {
+        app.Logger.LogCritical(
+            "Refusing to start: server is configured for cleartext HTTP on a non-loopback address. " +
+            "Use a direct HTTPS listener, or configure {TrustedProxies} with explicit proxy IPs/CIDRs " +
+            "for trusted TLS termination. For development only, {Override}=true bypasses this guard " +
+            "and emits a prominent warning.",
+            TransportSecurityPolicy.TrustedProxyCidrsKey,
+            TransportSecurityPolicy.AllowInsecureHttpKey);
+        return 1;
+    }
+    else
+    {
+        app.Logger.LogInformation(
+            "Cleartext listener accepted only behind configured trusted TLS proxies. " +
+            "Non-loopback requests must resolve to HTTPS after forwarded-header validation.");
+    }
+}
 
 if (boundToNonLoopback && !hasScopedTokens && !hasLegacyToken && !oidcJwtAuth.IsEnabled)
 {
@@ -165,6 +226,18 @@ else
 // change. We pass it positionally to UseMiddleware because the registry is built
 // post-app.Build (it needs the resolved logger + final config) and DI is locked by
 // then; UseMiddleware<T>(args) matches the registry by constructor parameter type.
+if (transportSecurity.HasTrustedProxies)
+{
+    app.UseForwardedHeaders(transportSecurity.CreateForwardedHeadersOptions());
+}
+
+if (cleartextNonLoopback &&
+    transportSecurity.HasTrustedProxies &&
+    !transportSecurity.AllowInsecureHttp)
+{
+    app.UseMiddleware<HttpsTransportEnforcementMiddleware>();
+}
+
 app.UseMiddleware<BearerTokenMiddleware>((IPrincipalResolver)registry);
 
 // M5: rate limiter middleware runs after bearer-auth so 401-bound traffic still
