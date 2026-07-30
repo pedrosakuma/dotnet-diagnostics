@@ -339,6 +339,15 @@ LLM client host                 │ Kubernetes cluster
                                                                     └─ /app/MyApp.dll lives only here
 ```
 
+The ephemeral pod-local MCP intentionally uses cleartext HTTP only inside the
+Kubernetes API port-forward stream. The orchestrator injects
+`MCP_ALLOW_INSECURE_HTTP=true` into that short-lived child so the general
+non-loopback HTTP startup guard remains strict for standalone deployments.
+This is not permission to expose the child through a Service, ingress, or
+direct pod networking. Issue #764 separately hardens the per-attach credential
+and access boundary; the transport exception here keeps #765 independent of
+that work.
+
 When the LLM passes a `MethodIdentity` from a pod-remote CPU sample to a client-side `dotnet-assembly-mcp`, the MVID is correct but the on-disk bytes are absent → `path_not_found`.
 
 **What still works** in orchestrator mode (these stay inside one server boundary):
