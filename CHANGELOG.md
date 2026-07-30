@@ -2,24 +2,65 @@
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-07-30
+
+Highlights: **Docker external investigations are now a one-command,
+release-ready workflow.** The standalone CLI can bootstrap a compatible
+published sidecar for an already-running .NET container, derive a private route
+to a Dockerized central MCP, apply the generated external profile safely, and
+return only after the central has loaded it. The complete list → attach →
+routed collection → detach path is covered by a real Docker acceptance test.
+
+### Added
+- **Safe central profile apply workflow** (#755, #762) —
+  `docker-bootstrap --central-container <name> --apply` writes an
+  operator-owned, mode-`0600` profile file through stdin, restarts the existing
+  central container in place, and waits for health. Reapplying identical
+  content is a no-op; conflicting bootstrap-owned profiles require
+  `--replace`; restart failures restore the prior file and clean up the newly
+  created sidecar.
+- **Central-aware private Docker networking** (#754, #761) —
+  `--central-container` selects a shared Docker network, assigns a
+  deterministic sidecar DNS alias, derives a narrow sidecar-IP CIDR allowlist,
+  and avoids publishing a sidecar host port by default.
+- **Real CLI bootstrap acceptance coverage** (#752, #760) — CI now runs the
+  built CLI as a normal user against real containers and proves bootstrap →
+  profile listing → attach → routed `collect_batch` → detach → cleanup,
+  including real runtime counters and GC evidence.
+
 ### Changed
-- **`docker-bootstrap --apply` removes central profile copy/paste** (#755) — a compatible
-  Dockerized central now accepts an operator-owned mode-`0600` profile file through `docker exec`
-  stdin, restarts in place, and is health-checked before success. Apply is idempotent, conflicting
-  bootstrap-owned files require `--replace`, unowned files are never overwritten, rollback restores
-  prior config, and exact cleanup is emitted without Docker-socket access or a new MCP tool.
-- **`docker-bootstrap` can derive a private route to a Dockerized central MCP** (#754) —
-  `--central-container` inspects central/target networking, selects a deterministic user-defined
-  local bridge, connects the generated sidecar without publishing a host port, emits an internal
-  container-DNS URL, and narrows `AllowedCidrs` to the inspected sidecar `/32` or `/128`.
-- **`docker-bootstrap` defaults to a version-compatible published GHCR image** (#753) — released
-  stable and prerelease CLIs select their exact matching container tag, repository builds select
-  `:edge`, and `--sidecar-image` remains the explicit local/custom-registry override.
-- **`docker-bootstrap` now works across Docker Desktop's VM boundary** (#748) — replaced
+- **Published version-compatible sidecar image is selected by default** (#753,
+  #758) — released stable and prerelease CLIs use the exact matching GHCR tag,
+  source builds use `:edge`, and `--sidecar-image` remains an explicit
+  override. Released users no longer need to build and tag
+  `dotnet-diagnostics-mcp:dev` before the quick start works.
+- **External-profile attachment is discoverable from MCP metadata** (#756,
+  #759) — `tools/list` now presents `attach_to_pod` as transport-neutral
+  orchestrated-target attachment, leads with the external Docker/MCP profile
+  flow, and returns executable next-call guidance without increasing the
+  17-tool surface or breaking Kubernetes callers.
+
+### Fixed
+- **`docker-bootstrap` now works across Docker Desktop's VM boundary** (#748, #750) — replaced
   client-host `/proc/<pid>` reads and bind mounts with a constrained daemon-host PID probe
   plus `TMPDIR=/proc/<target-namespace-pid>/root/tmp`, enabling the automatic path from
   native Windows PowerShell and WSL2 while preserving matching socket ownership and
   anchored/shared PID namespaces.
+- **Legacy bearer and scenario expectations documented accurately** (#741,
+  #742, #744, #746) — authorization docs now distinguish the legacy `root`
+  pseudo-scope from explicit modifier scopes, and the `cpu-burn` playbook uses
+  the endpoint lambda rather than promising an unstable sampled `SHA256` leaf.
+- **Docker host-process failures are classified precisely** (#743, #745) —
+  the interim host `/proc` failure path reports a distinct actionable error
+  instead of misclassifying a healthy target as stopped; the portable #748
+  implementation then removes that dependency from the supported automatic
+  path.
+
+### Documentation
+- **Post-fix smoke audit completed and published** (#747, #751) — the case
+  study records the repaired crash, CPU, memory, authorization, and
+  external-profile workflows, including the full post-#750 WSL2/Docker Desktop
+  bootstrap → central attach → routed collection → detach confirmation.
 
 ## [0.20.0] — 2026-07-29
 
