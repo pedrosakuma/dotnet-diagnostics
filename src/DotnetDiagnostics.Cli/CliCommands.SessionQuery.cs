@@ -131,8 +131,8 @@ internal static partial class CliCommands
     }
 
     /// <summary>
-    /// JSON used to pretty-print a <see cref="CollectionQueryResult.Payload"/> in the <c>session</c>
-    /// REPL's human render so the user sees the drill-down data without re-typing <c>--json</c>.
+    /// JSON used to pretty-print a complete <see cref="CollectionQueryResult"/> in the <c>session</c>
+    /// REPL's human render so trust-boundary metadata stays adjacent to the drill-down payload.
     /// </summary>
     private static readonly JsonSerializerOptions QueryJsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -246,7 +246,7 @@ internal static partial class CliCommands
             return BuildResult<CollectionQueryResult>(ok, static (sb, qr) =>
             {
                 sb.AppendLine();
-                sb.AppendLine(JsonSerializer.Serialize(qr.Payload, qr.Payload.GetType(), QueryJsonOptions));
+                sb.AppendLine(JsonSerializer.Serialize(qr, QueryJsonOptions));
             });
         }
 
