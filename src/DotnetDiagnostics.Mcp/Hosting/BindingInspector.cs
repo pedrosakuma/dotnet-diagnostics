@@ -135,6 +135,12 @@ internal static class BindingInspector
             return default;
         }
 
+        raw = raw.Trim();
+        if (TryInspectKestrelWildcard(raw, out var wildcardExposure))
+        {
+            return wildcardExposure;
+        }
+
         if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri))
         {
             return default;
@@ -165,6 +171,52 @@ internal static class BindingInspector
         return new BindingExposure(
             nonLoopback,
             nonLoopback && string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool TryInspectKestrelWildcard(
+        string raw,
+        out BindingExposure exposure)
+    {
+        exposure = default;
+
+        var separator = raw.IndexOf("://", StringComparison.Ordinal);
+        if (separator <= 0)
+        {
+            return false;
+        }
+
+        var hostStart = separator + 3;
+        if (hostStart >= raw.Length ||
+            raw[hostStart] is not ('*' or '+'))
+        {
+            return false;
+        }
+
+        var hostEnd = hostStart + 1;
+        if (hostEnd < raw.Length &&
+            raw[hostEnd] is not (':' or '/'))
+        {
+            return false;
+        }
+
+        var scheme = raw.AsSpan(0, separator);
+        if (scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+        {
+            exposure = new BindingExposure(
+                HasNonLoopbackBinding: true,
+                HasNonLoopbackHttpBinding: true);
+            return true;
+        }
+
+        if (scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            exposure = new BindingExposure(
+                HasNonLoopbackBinding: true,
+                HasNonLoopbackHttpBinding: false);
+            return true;
+        }
+
+        return false;
     }
 
     private readonly record struct BindingExposure(

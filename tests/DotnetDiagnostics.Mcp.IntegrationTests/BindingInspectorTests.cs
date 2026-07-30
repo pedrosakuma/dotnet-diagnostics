@@ -155,4 +155,59 @@ public sealed class BindingInspectorTests
         BindingInspector.HasNonLoopbackBinding(Array.Empty<string>(), cfg).Should().BeTrue();
         BindingInspector.HasNonLoopbackHttpBinding(Array.Empty<string>(), cfg).Should().BeTrue();
     }
+
+    [Theory]
+    [InlineData("http://*:5000", true)]
+    [InlineData("http://+:5000", true)]
+    [InlineData("https://*:5000", false)]
+    [InlineData("https://+:5000", false)]
+    public void KestrelWildcardHosts_PreserveTransportScheme(
+        string url,
+        bool expectedCleartext)
+    {
+        var cfg = ConfigFrom(new() { ["urls"] = url });
+
+        BindingInspector.HasNonLoopbackBinding(Array.Empty<string>(), cfg).Should().BeTrue();
+        BindingInspector.HasNonLoopbackHttpBinding(Array.Empty<string>(), cfg)
+            .Should().Be(expectedCleartext);
+    }
+
+    [Theory]
+    [InlineData("urls")]
+    [InlineData("ASPNETCORE_URLS")]
+    [InlineData("DOTNET_URLS")]
+    public void ExplicitUrlConfigurationSources_DetectWildcardHttp(string key)
+    {
+        var cfg = ConfigFrom(new()
+        {
+            [key] = "http://*:5000",
+            ["HTTPS_PORTS"] = "8443",
+        });
+
+        BindingInspector.HasNonLoopbackBinding(Array.Empty<string>(), cfg).Should().BeTrue();
+        BindingInspector.HasNonLoopbackHttpBinding(Array.Empty<string>(), cfg).Should().BeTrue();
+    }
+
+    [Fact]
+    public void KestrelWildcardHttpsEndpoint_OverridesLowerPriorityHttpPorts()
+    {
+        var cfg = ConfigFrom(new()
+        {
+            ["Kestrel:Endpoints:Https:Url"] = "https://+:18887",
+            ["ASPNETCORE_HTTP_PORTS"] = "8080",
+        });
+
+        BindingInspector.HasNonLoopbackBinding(Array.Empty<string>(), cfg).Should().BeTrue();
+        BindingInspector.HasNonLoopbackHttpBinding(Array.Empty<string>(), cfg).Should().BeFalse();
+    }
+
+    [Fact]
+    public void AppWildcardHttpUrl_OverridesLowerPriorityHttpsPorts()
+    {
+        var cfg = ConfigFrom(new() { ["HTTPS_PORTS"] = "8443" });
+        var appUrls = new[] { "http://+:18887" };
+
+        BindingInspector.HasNonLoopbackBinding(appUrls, cfg).Should().BeTrue();
+        BindingInspector.HasNonLoopbackHttpBinding(appUrls, cfg).Should().BeTrue();
+    }
 }

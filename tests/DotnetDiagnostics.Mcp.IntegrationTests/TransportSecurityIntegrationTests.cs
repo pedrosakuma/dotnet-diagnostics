@@ -15,8 +15,11 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 [Collection(nameof(EnvSerial))]
 public sealed class TransportSecurityIntegrationTests
 {
-    [Fact]
-    public async Task CleartextNonLoopback_WithoutExplicitPolicy_IsRejectedAtStartup()
+    [Theory]
+    [InlineData("*")]
+    [InlineData("+")]
+    public async Task CleartextNonLoopback_WithoutExplicitPolicy_IsRejectedAtStartup(
+        string host)
     {
         var serverDll = FindServerDll();
         if (serverDll is null)
@@ -24,7 +27,11 @@ public sealed class TransportSecurityIntegrationTests
             return;
         }
 
-        using var process = StartServer(serverDll, GetAvailablePort());
+        using var process = StartServer(
+            serverDll,
+            GetAvailablePort(),
+            "http",
+            host);
         var stdoutTask = process.StandardOutput.ReadToEndAsync();
         var stderrTask = process.StandardError.ReadToEndAsync();
 
@@ -94,8 +101,10 @@ public sealed class TransportSecurityIntegrationTests
         output.Should().Contain("MCP_ALLOW_INSECURE_HTTP=true");
     }
 
-    [Fact]
-    public async Task DirectTlsPem_StartsHttpsListener()
+    [Theory]
+    [InlineData("*")]
+    [InlineData("+")]
+    public async Task DirectTlsPem_WildcardHost_StartsHttpsListener(string host)
     {
         var serverDll = FindServerDll();
         if (serverDll is null)
@@ -121,6 +130,7 @@ public sealed class TransportSecurityIntegrationTests
             serverDll,
             port,
             "https",
+            host,
             ("MCP_TLS_CERTIFICATE_PEM", certificate.ExportCertificatePem()),
             ("MCP_TLS_PRIVATE_KEY_PEM", rsa.ExportPkcs8PrivateKeyPem()),
             ("ASPNETCORE_HTTP_PORTS", "8080"),
@@ -221,6 +231,14 @@ public sealed class TransportSecurityIntegrationTests
         int port,
         string scheme,
         params (string Name, string Value)[] environment)
+        => StartServer(serverDll, port, scheme, "0.0.0.0", environment);
+
+    private static Process StartServer(
+        string serverDll,
+        int port,
+        string scheme,
+        string host,
+        params (string Name, string Value)[] environment)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -232,7 +250,7 @@ public sealed class TransportSecurityIntegrationTests
         };
         startInfo.ArgumentList.Add(serverDll);
         startInfo.ArgumentList.Add("--urls");
-        startInfo.ArgumentList.Add($"{scheme}://0.0.0.0:{port}");
+        startInfo.ArgumentList.Add($"{scheme}://{host}:{port}");
 
         foreach (var key in new[]
         {
