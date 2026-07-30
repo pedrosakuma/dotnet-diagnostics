@@ -104,12 +104,13 @@ Bootstrap a **local Docker sidecar** for an already-running target container, th
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--target-container` | `string` | required | Running Docker container name or id to diagnose. |
+| `--central-container` | `string?` | none | Running central MCP container name or id. Enables central-aware private routing and inspection. |
 | `--sidecar-name` | `string?` | `<target>-dotnet-diagnostics` | Explicit Docker container name for the sidecar. |
 | `--sidecar-image` | `string?` | version-compatible GHCR image | Explicit sidecar image override. Released CLIs select `ghcr.io/pedrosakuma/dotnet-diagnostics:<cli-version>`; repository/source builds select `:edge`. |
 | `--profile-name` | `string?` | sanitized target name | Profile key emitted under `Orchestrator:ExternalMcpProfiles`. Restricted to `^[A-Za-z0-9][A-Za-z0-9_-]*$` so the env-var form stays usable. |
 | `--profile-url` | `string?` | `http://127.0.0.1:<host-port>/mcp` | Exact URL the **central** will dial for this profile. Must be absolute `http`/`https`, path exactly `/mcp`, no query/fragment/userinfo. |
 | `--allow-cidr` | `string[]` | derived from `--profile-url` when it is an IP literal / `localhost` | Repeatable allowlist entries for `AllowedCidrs`. Required when `--profile-url` uses another hostname (for example `host.docker.internal`). |
-| `--host-port` | `int?` | `18891` | Host port published for the sidecar's internal `8080` listener. |
+| `--host-port` | `int?` | host-central: `18891`; central-aware: none | Host port published for the sidecar's internal `8080` listener. In central-aware mode publication is opt-in. |
 | `--bearer-token` | `string?` | generated | Operator-supplied sidecar bearer token. When omitted, the CLI generates a random 32-byte hex value and prints it in the output. |
 | `--delegation-key` | `string?` | generated | Operator-supplied `MCP_INTERNAL_SCOPE_DELEGATION_KEY`. When omitted, the CLI generates a random 32-byte hex value and prints it in the output. |
 | `--wait` | `int?` | `90` | Seconds to wait for the sidecar health check to report `healthy`. |
@@ -117,6 +118,27 @@ Bootstrap a **local Docker sidecar** for an already-running target container, th
 
 Implementation details:
 
+- with `--central-container`, inspects both containers and the central's networks using the
+  operator-owned Docker CLI. It prefers a user-defined, local bridge network already shared by
+  target and central, then falls back deterministically to the lexicographically first eligible
+  central network. The generated `docker run` attaches the sidecar only to that selected network;
+- emits `http://ddmcp-<sidecar-name-hash>:8080/mcp` using a fixed 30-character network alias
+  (avoiding Docker's 63-character DNS-label limit) and derives `AllowedCidrs` as the resolved
+  sidecar address with a `/32` (or `/128` for IPv6), not the whole bridge subnet. Docker DNS may
+  return another container alias, but the server's DNS-resolution/CIDR gate can connect only to the
+  inspected sidecar address, and the validated IP is used directly to prevent rebinding;
+- publishes no sidecar host port on the automatic route unless `--host-port` is explicitly supplied.
+  An explicit `--profile-url` and `--allow-cidr` win; a non-sidecar URL also requires explicit
+  `--host-port` because bootstrap cannot otherwise prove how it reaches the sidecar. Loopback URLs
+  are rejected for a non-host-network central because they address the central itself;
+- rejects stopped/recreated central containers during bootstrap, central `network=host` for the
+  automatic route, unsupported/default-only networks, sidecar name collisions, and network-connect
+  failures. Multiple candidates are deterministic. Recreating the central *after* bootstrap is
+  expected when applying the emitted environment: keep the same selected Docker network, and the
+  sidecar name/private route remains valid;
+- reports whether it created the network attachment and prints both bootstrap-owned cleanup actions.
+  Cleanup disconnects only the selected attachment and removes only the generated sidecar; repeating
+  those commands is safe even when Docker reports that the attachment/container is already absent;
 - embeds the exact release version as the default image tag in official CLI packages and
   self-contained binaries. Stable and prerelease CLIs therefore select the corresponding exact
   semver tag published by the container workflow; they never silently fall forward to `:edge`;
@@ -148,6 +170,11 @@ Instead it prints the exact `Orchestrator__ExternalMcpProfiles__<name>__...` env
 ```bash
 # Installed release: pulls the exact matching GHCR semver tag when absent locally.
 dotnet-diagnostics-cli docker-bootstrap --target-container api
+
+# Dockerized central: private container-DNS route, no sidecar host port.
+dotnet-diagnostics-cli docker-bootstrap \
+  --target-container api \
+  --central-container diagnostics-central
 
 # Repository development with local MCP changes:
 docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .

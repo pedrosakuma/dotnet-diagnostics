@@ -247,6 +247,9 @@ internal sealed record CliOptions
     /// <summary>Docker container name/id to bootstrap a sidecar against (<c>--target-container</c>).</summary>
     public string? TargetContainer { get; init; }
 
+    /// <summary>Running central MCP container used to derive a private Docker route (<c>--central-container</c>).</summary>
+    public string? CentralContainer { get; init; }
+
     /// <summary>Explicit Docker container name for the sidecar (<c>--sidecar-name</c>).</summary>
     public string? SidecarName { get; init; }
 
@@ -466,6 +469,7 @@ internal sealed record CliOptions
             new IntOptionDescriptor((state, value) => state.MaxToolCalls = value, "--max-tool-calls"),
             new IntOptionDescriptor((state, value) => state.TopHotspots = value, "--top-hotspots"),
             new StringOptionDescriptor((state, value) => state.TargetContainer = value, "--target-container"),
+            new StringOptionDescriptor((state, value) => state.CentralContainer = value, "--central-container"),
             new StringOptionDescriptor((state, value) => state.SidecarName = value, "--sidecar-name"),
             new StringOptionDescriptor((state, value) => state.SidecarImage = value, "--sidecar-image"),
             new StringOptionDescriptor((state, value) => state.ProfileName = value, "--profile-name"),
@@ -672,6 +676,8 @@ internal sealed record CliOptions
 
         public string? TargetContainer { get; set; }
 
+        public string? CentralContainer { get; set; }
+
         public string? SidecarName { get; set; }
 
         public string? SidecarImage { get; set; }
@@ -771,6 +777,7 @@ internal sealed record CliOptions
                 MaxToolCalls = MaxToolCalls,
                 TopHotspots = TopHotspots,
                 TargetContainer = TargetContainer,
+                CentralContainer = CentralContainer,
                 SidecarName = SidecarName,
                 SidecarImage = SidecarImage,
                 ProfileName = ProfileName,

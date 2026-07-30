@@ -32,7 +32,7 @@ internal static class CliCommandCatalog
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
         "--symptom", "--hypothesis", "--max-tool-calls", "--top-hotspots",
         "--capture-when", "--capture", "--window", "--max-captures", "--command-line-contains",
-        "--target-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url",
+        "--target-container", "--central-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url",
         "--bearer-token", "--delegation-key", "--allow-cidr", "--host-port", "--wait",
     ];
 
@@ -111,6 +111,10 @@ Options:
 """
 docker-bootstrap options:
       --target-container <name|id>  Required. Running Docker container to diagnose.
+      --central-container <name|id> Optional running central MCP container. When supplied,
+                                    bootstrap prefers a private user-defined Docker network route,
+                                    derives a sidecar /32 allowlist, and publishes no host port
+                                    unless --host-port is explicit.
       --sidecar-name <name>         Optional explicit sidecar container name. Default:
                                     <target>-dotnet-diagnostics.
       --sidecar-image <ref>         Sidecar image override. Released CLIs default to the exact
@@ -138,10 +142,11 @@ notes:
 """,
 """
   dotnet-diagnostics-cli docker-bootstrap --target-container coreclr-sample
+  dotnet-diagnostics-cli docker-bootstrap --target-container api --central-container diagnostics-central
   dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar --host-port 18892
   dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-url http://host.docker.internal:18892/mcp --allow-cidr 172.17.0.1/32
 """,
-            ["--target-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url", "--allow-cidr", "--host-port", "--bearer-token", "--delegation-key", "--wait", "--no-sys-ptrace"]),
+            ["--target-container", "--central-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url", "--allow-cidr", "--host-port", "--bearer-token", "--delegation-key", "--wait", "--no-sys-ptrace"]),
         new(
             "processes",
             "List attachable .NET processes.",
