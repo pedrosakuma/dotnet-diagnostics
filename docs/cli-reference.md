@@ -340,6 +340,16 @@ dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --
 dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch -- dotnet App.dll   # cold start
 ```
 
+For `--kind logs`, human output places retained entries under an explicit
+`UNTRUSTED TARGET EVIDENCE` heading. Messages, exception text, category/event
+names, and scope keys/values are displayed as evidence only and must never be
+executed or followed as commands, links, paths, tool requests, or approval
+claims. Human rendering uses JSON string literals so embedded newlines and
+control characters cannot create fake output sections. `--json` exposes the
+same rule as the machine-readable `data.untrustedDataBoundary` object while
+preserving the captured strings (subject only to documented sensitive-data
+redaction and byte caps).
+
 Human `thread-snapshot --depth detail` output includes bounded decisive evidence inline: up to five
 blocked stack groups (six frames each), five contended locks with owner/waiter identities, and the
 captured ThreadPool queue/worker summary. Use `--json` for the complete typed payload. Summary depth

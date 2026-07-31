@@ -1,7 +1,9 @@
+using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core.Contention;
 using DotnetDiagnostics.Core.Db;
 using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Logs;
+using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.ThreadPool;
 
 namespace DotnetDiagnostics.Core.Collection;
@@ -23,7 +25,12 @@ public sealed record CollectionQueryResult(
     int ProcessId,
     DateTimeOffset StartedAt,
     TimeSpan Duration,
-    object Payload);
+    object Payload)
+{
+    [JsonPropertyOrder(-30)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public InvestigationEvidenceBoundary? UntrustedDataBoundary { get; init; }
+}
 
 // --- Counters views ---------------------------------------------------------------------------
 
