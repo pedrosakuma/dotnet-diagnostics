@@ -131,6 +131,21 @@ internal static class CliHost
         }
 
         var options = prepared!.Options;
+        var safetyArtifactRoot = ResolveArtifactRoot(options) ?? new EnvironmentArtifactRootProvider().Root;
+        var safetyDisposition = await CliSafetyPreflight.RunAsync(
+            options,
+            handles: null,
+            CliExecutionContext.OneShot,
+            interactive: false,
+            stdin,
+            stdout,
+            stderr,
+            safetyArtifactRoot,
+            cancellationToken).ConfigureAwait(false);
+        if (safetyDisposition != CliSafetyPreflightDisposition.Proceed)
+        {
+            return safetyDisposition == CliSafetyPreflightDisposition.Explained ? 0 : 2;
+        }
 
         // The stateful session REPL builds the host ONCE (shared singletons — the handle store that
         // makes drill-down possible must outlive every command) and reads commands from stdin until
