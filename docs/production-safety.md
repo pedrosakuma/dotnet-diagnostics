@@ -70,6 +70,28 @@ store.
 | parameter values and raw heap/frame values | Prefer no persistence. If persistence is unavoidable, use the shortest case-scoped retention. | Limit to named privileged responders; do not paste values into prompts, tickets, or shared logs without a separate review. | Expire handles and delete exports, transcripts, and derived notes that reproduce the values. |
 | exported summaries | Retain under the incident record policy only after review. | Summaries can reproduce stack/type/method names, exception/request data, operator symptoms, and confidential identifiers even when raw artifacts are omitted. | Delete superseded drafts and remove or re-review summaries before broader sharing. |
 
+## Validated safety smoke flows
+
+Run the repository smokes from the root after changing safety resolution,
+acknowledgement, sidecar bootstrap, routing, or evidence cleanup:
+
+```bash
+# CLI high acknowledgement, external-profile attach, routed EventPipe batch,
+# detach, stale-handle rejection, and resource cleanup.
+scripts/test-docker-external-investigation.sh
+
+# Crash capture, structured recovery result, and sidecar survival.
+scripts/test-docker-crash-guard.sh
+```
+
+Both scripts use isolated Docker resources and clean their containers, networks,
+and volumes on exit. The external-investigation script preserves diagnostics
+under `TestResults/docker-bootstrap-e2e/` only when needed for failure analysis;
+apply the retention and disposal rules above. Kubernetes mutation is validated
+separately by the gated `KindIntegration` workflow because it requires a real
+kind cluster; that test performs a request-bound high-risk challenge/retry and
+asserts that no Pod side effect occurs before acknowledgement.
+
 ## Canonical matrix
 
 Each profile row is a directly registered discriminator or modifier profile.

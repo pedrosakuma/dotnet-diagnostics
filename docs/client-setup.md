@@ -293,6 +293,39 @@ curl -i http://localhost:5000/mcp -H "Authorization: Bearer wrong"
 curl -i http://localhost:5000/mcp -H "Authorization: Bearer $MCP_BEARER_TOKEN"
 ```
 
+### Safety-aware `tools/call` clients
+
+After connectivity is established, inspect each tool's
+`_meta.dotnetDiagnostics.safety` from `tools/list` and the resolved `safety`
+descriptor in `tools/call` results:
+
+- low-risk calls execute directly;
+- moderate calls execute directly and return `safetyWarnings`;
+- high-risk calls stop before side effects and return
+  `safetyApproval.requiredAcknowledgement`;
+- critical calls use MCP elicitation when the client advertises it and otherwise
+  fail closed with an approval preview.
+
+For a high-risk call, preserve the original arguments, copy the complete
+server-returned acknowledgement into the reserved argument, and retry:
+
+```text
+preview = tools/call(name, arguments)
+ack = preview.structuredContent.safetyApproval.requiredAcknowledgement
+
+retryArguments = copy(arguments)
+retryArguments["_dotnetDiagnostics"] = { "acknowledgement": ack }
+result = tools/call(name, retryArguments)
+```
+
+Do not construct, edit, cache, or reuse the acknowledgement. It is bound to the
+operation, concrete arguments, resolved descriptor, and batch children; changing
+the request invalidates it. A bearer token with `root` or `*` scope authorizes
+the tool but does not approve high/critical impact. See
+[`authorization.md`](./authorization.md#per-call-confirmation) for the protocol
+contract and [`production-safety.md`](./production-safety.md) for the canonical
+matrix and evidence-handling policy.
+
 ## Discoverability: how clients surface the server's guidance (#280)
 
 The server talks to the LLM over four channels with very different reliability. Knowing which
