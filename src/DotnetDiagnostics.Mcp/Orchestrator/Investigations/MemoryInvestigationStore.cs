@@ -9,7 +9,13 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// via a single lock — handle counts are bounded by orchestrator concurrency in
 /// practice, so contention isn't a concern.
 /// </summary>
-internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestigationStoreActivation, IInvestigationStoreLeaseTouch, IInvestigationStoreExpiry
+internal sealed class MemoryInvestigationStore :
+    IInvestigationStore,
+    IInvestigationStoreActivation,
+    IInvestigationStoreCredentialDelivery,
+    IInvestigationStoreCredentialScrubber,
+    IInvestigationStoreLeaseTouch,
+    IInvestigationStoreExpiry
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, InvestigationHandle> _byId = new(StringComparer.Ordinal);
@@ -33,16 +39,37 @@ internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestiga
         ArgumentNullException.ThrowIfNull(newHandle);
         lock (_gate)
         {
-            if (allowReuse && !string.IsNullOrEmpty(newHandle.ReservationKey))
+            if (!string.IsNullOrEmpty(newHandle.ReservationKey))
             {
+                InvestigationHandle? reusable = null;
                 foreach (var h in _byId.Values)
                 {
-                    if (h.State is InvestigationState.Active or InvestigationState.Attaching &&
-                        string.Equals(h.ReservationKey, newHandle.ReservationKey, StringComparison.Ordinal))
+                    if (!string.Equals(h.ReservationKey, newHandle.ReservationKey, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    var cleanupPending =
+                        h.State is InvestigationState.Closed or InvestigationState.Expired or InvestigationState.Failed &&
+                        InvestigationCredentialCleanup.IsPending(h);
+                    if (cleanupPending)
                     {
                         existing = h;
                         return false;
                     }
+
+                    if (allowReuse &&
+                        reusable is null &&
+                        h.State is InvestigationState.Active or InvestigationState.Attaching)
+                    {
+                        reusable = h;
+                    }
+                }
+
+                if (reusable is not null)
+                {
+                    existing = reusable;
+                    return false;
                 }
             }
             if (_byId.ContainsKey(newHandle.HandleId))
@@ -92,6 +119,72 @@ internal sealed class MemoryInvestigationStore : IInvestigationStore, IInvestiga
         lock (_gate)
         {
             return _byId.TryGetValue(handleId, out var h) ? h : null;
+        }
+    }
+
+    public bool TrySetCredentialsMayBeInUse(
+        string handleId,
+        bool mayBeInUse,
+        out InvestigationHandle? updated)
+    {
+        lock (_gate)
+        {
+            if (!_byId.TryGetValue(handleId, out var current) ||
+                current.Kubernetes is null ||
+                mayBeInUse && current.State != InvestigationState.Attaching)
+            {
+                updated = current;
+                return false;
+            }
+
+            updated = current with
+            {
+                Kubernetes = current.Kubernetes with
+                {
+                    CredentialsMayBeInUse = mayBeInUse,
+                },
+            };
+            _byId[handleId] = updated;
+            return true;
+        }
+    }
+
+    public void ScrubCredentials(
+        string handleId,
+        InvestigationCredentialMaterial material)
+    {
+        lock (_gate)
+        {
+            if (!_byId.TryGetValue(handleId, out var current) ||
+                current.State is not (InvestigationState.Closed or InvestigationState.Expired or InvestigationState.Failed))
+            {
+                return;
+            }
+
+            var scrubRuntime =
+                (material & InvestigationCredentialMaterial.RuntimeCredentials) != 0;
+            var scrubSecret =
+                (material & InvestigationCredentialMaterial.SecretReference) != 0;
+            _byId[handleId] = current with
+            {
+                Kubernetes = current.Kubernetes is null
+                    ? null
+                    : current.Kubernetes with
+                    {
+                        PodLocalBearerToken = scrubRuntime
+                            ? string.Empty
+                            : current.Kubernetes.PodLocalBearerToken,
+                        CredentialSecretName = scrubSecret
+                            ? null
+                            : current.Kubernetes.CredentialSecretName,
+                        CredentialsMayBeInUse = scrubRuntime
+                            ? false
+                            : current.Kubernetes.CredentialsMayBeInUse,
+                    },
+                InternalScopeDelegationKey = scrubRuntime
+                    ? null
+                    : current.InternalScopeDelegationKey,
+            };
         }
     }
 

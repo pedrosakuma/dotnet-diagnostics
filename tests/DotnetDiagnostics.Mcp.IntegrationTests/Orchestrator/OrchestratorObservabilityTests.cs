@@ -146,7 +146,13 @@ public sealed class OrchestratorObservabilityTests
         options.NamespaceAllowlist.Add("ns-a");
         var attachOrchestrator = new StubAttachOrchestrator(store);
         var proxyClient = new StubProxyClient();
-        var closer = new InvestigationCloser(store, proxyClient, new NoOpPortForwardManager(), binder);
+        var closer = new InvestigationCloser(
+            store,
+            proxyClient,
+            new NoOpPortForwardManager(),
+            binder,
+            NoOpInvestigationCredentialRevoker.Instance,
+            NoOpKubernetesAttachmentSecretManager.Instance);
 
         var attach = await OrchestratorTools.AttachToPod(
             attachOrchestrator,
@@ -263,6 +269,8 @@ public sealed class OrchestratorObservabilityTests
 
             builder.Services.AddRouting();
             builder.Services.AddHttpContextAccessor();
+            builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
+            builder.Services.AddSingleton<EphemeralAttachmentLifetime>();
             builder.Services.AddSingleton<IPrincipalAccessor, HttpContextPrincipalAccessor>();
             builder.Services.AddSingleton<IInvestigationStore, MemoryInvestigationStore>();
             builder.Services.AddSingleton<MemoryInvestigationSessionBinder>();
@@ -272,6 +280,8 @@ public sealed class OrchestratorObservabilityTests
             builder.Services.AddSingleton<NoOpPortForwardManager>();
             builder.Services.AddSingleton<IInvestigationTransportManager>(sp => sp.GetRequiredService<NoOpPortForwardManager>());
             builder.Services.AddSingleton<IPortForwardManager>(sp => sp.GetRequiredService<NoOpPortForwardManager>());
+            builder.Services.AddSingleton<IInvestigationCredentialRevoker>(NoOpInvestigationCredentialRevoker.Instance);
+            builder.Services.AddSingleton<IKubernetesAttachmentSecretManager>(NoOpKubernetesAttachmentSecretManager.Instance);
             builder.Services.AddSingleton<InvestigationCloser>();
             builder.Services.AddSingleton<InvestigationHandleReaperBackgroundService>();
             builder.Services.AddSingleton<StubAttachOrchestrator>();

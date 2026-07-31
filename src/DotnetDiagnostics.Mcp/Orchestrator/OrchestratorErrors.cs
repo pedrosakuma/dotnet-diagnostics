@@ -28,6 +28,7 @@ public static class OrchestratorErrorKinds
     public const string PodNotRunning = "PodNotRunning";
     public const string PodNotPrepared = "PodNotPrepared";
     public const string AttachAlreadyInProgress = "AttachAlreadyInProgress";
+    public const string CredentialCleanupPending = "CredentialCleanupPending";
     public const string AttachFailed = "AttachFailed";
     public const string AttachTimeout = "AttachTimeout";
 

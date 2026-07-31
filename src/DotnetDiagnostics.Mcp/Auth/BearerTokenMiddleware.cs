@@ -31,19 +31,22 @@ internal sealed class BearerTokenMiddleware
     private readonly OidcJwtAuthOptions _oidcJwtAuthOptions;
     private readonly ILogger<BearerTokenMiddleware> _logger;
     private readonly DotnetDiagnostics.Mcp.Hosting.OrchestratorObservabilityOptions _observabilityOptions;
+    private readonly DotnetDiagnostics.Mcp.Hosting.EphemeralAttachmentLifetime _attachmentLifetime;
 
     public BearerTokenMiddleware(
         RequestDelegate next,
         IPrincipalResolver resolver,
         OidcJwtAuthOptions oidcJwtAuthOptions,
         ILogger<BearerTokenMiddleware> logger,
-        DotnetDiagnostics.Mcp.Hosting.OrchestratorObservabilityOptions observabilityOptions)
+        DotnetDiagnostics.Mcp.Hosting.OrchestratorObservabilityOptions observabilityOptions,
+        DotnetDiagnostics.Mcp.Hosting.EphemeralAttachmentLifetime attachmentLifetime)
     {
         _next = next;
         _resolver = resolver;
         _oidcJwtAuthOptions = oidcJwtAuthOptions;
         _logger = logger;
         _observabilityOptions = observabilityOptions;
+        _attachmentLifetime = attachmentLifetime;
     }
 
     public async Task InvokeAsync(HttpContext context)
@@ -53,6 +56,20 @@ internal sealed class BearerTokenMiddleware
             path.StartsWithSegments("/metrics") && (_observabilityOptions.MetricsOpen || !_observabilityOptions.MetricsEnabled))
         {
             await _next(context).ConfigureAwait(false);
+            return;
+        }
+
+        var isAttachmentRevocation =
+            string.Equals(
+                path.Value,
+                DotnetDiagnostics.Mcp.Hosting.EphemeralAttachmentLifetime.RevokePath,
+                StringComparison.Ordinal);
+        if (!_attachmentLifetime.IsActive && !isAttachmentRevocation)
+        {
+            _logger.LogWarning(
+                "****** denied: ephemeral attachment credentials are expired or revoked. remoteIp={RemoteIp}",
+                context.Connection.RemoteIpAddress?.ToString() ?? "unknown");
+            await WriteUnauthorizedAsync(context).ConfigureAwait(false);
             return;
         }
 

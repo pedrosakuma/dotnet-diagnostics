@@ -6,8 +6,8 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// Client-safe projection of an <see cref="InvestigationHandle"/>, returned by the
 /// <c>attach_to_pod</c> MCP tool. Deliberately omits the Pod-local bearer token stored
 /// in <see cref="KubernetesInvestigationTarget.PodLocalBearerToken"/> — that secret is
-/// generated per-attach, embedded in the ephemeral container's environment, and injected
-/// by the investigation transport manager on the server side of the boundary so the
+/// generated per-attach, delivered through a short-lived Kubernetes Secret reference,
+/// and injected by the investigation transport manager on the server side of the boundary so the
 /// external LLM client never sees it. See docs/central-orchestrator-design.md §6.4.
 /// </summary>
 public sealed record AttachSession(

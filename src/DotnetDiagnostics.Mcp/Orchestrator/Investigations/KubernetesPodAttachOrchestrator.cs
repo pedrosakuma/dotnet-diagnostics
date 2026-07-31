@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Mcp.Observability;
+using DotnetDiagnostics.Mcp.Hosting;
 using k8s.Autorest;
 using k8s.Models;
 using Microsoft.Extensions.Logging;
@@ -22,8 +23,11 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// <item>Validate namespace via the existing allowlist policy.</item>
 /// <item>Reuse an in-flight or active handle for the same target when allowed.</item>
 /// <item>Read the Pod to confirm phase=Running, the target container exists, and (when required) it carries the prepared label.</item>
-/// <item>Mint a fresh per-attach bearer token, build a <see cref="V1EphemeralContainer"/> pinned to the target container's PID namespace, and patch the Pod.</item>
+/// <item>Mint fresh per-attach credentials in a short-lived Kubernetes Secret, build a
+/// <see cref="V1EphemeralContainer"/> pinned to the target container's PID namespace,
+/// and patch the Pod with Secret references only.</item>
 /// <item>Register the handle in Attaching state, poll <c>ephemeralContainerStatuses</c> until Running or timeout, transition to Active or Failed accordingly.</item>
+/// <item>Delete the credential Secret after Kubernetes reports the container Running.</item>
 /// </list>
 /// <para>The proxy that makes a returned handle usable as a transport lands in P3b-2.</para>
 /// </remarks>
@@ -32,6 +36,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
     private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(1);
 
     private readonly IKubernetesPodsApi _podsApi;
+    private readonly IKubernetesAttachmentSecretManager _secretManager;
     private readonly IInvestigationStore _store;
     private readonly InvestigationCloser _closer;
     private readonly OrchestratorObservability _observability;
@@ -43,6 +48,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
 
     public KubernetesPodAttachOrchestrator(
         IKubernetesPodsApi podsApi,
+        IKubernetesAttachmentSecretManager secretManager,
         IInvestigationStore store,
         InvestigationCloser closer,
         OrchestratorObservability observability,
@@ -51,6 +57,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         ILogger<KubernetesPodAttachOrchestrator> logger)
         : this(
             podsApi,
+            secretManager,
             store,
             closer,
             observability,
@@ -64,6 +71,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
 
     internal KubernetesPodAttachOrchestrator(
         IKubernetesPodsApi podsApi,
+        IKubernetesAttachmentSecretManager secretManager,
         IInvestigationStore store,
         InvestigationCloser closer,
         OrchestratorObservability observability,
@@ -73,6 +81,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         ILogger<KubernetesPodAttachOrchestrator> logger)
         : this(
             podsApi,
+            secretManager,
             store,
             closer,
             observability,
@@ -86,6 +95,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
 
     internal KubernetesPodAttachOrchestrator(
         IKubernetesPodsApi podsApi,
+        IKubernetesAttachmentSecretManager secretManager,
         IInvestigationStore store,
         InvestigationCloser closer,
         OrchestratorObservability observability,
@@ -96,6 +106,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         ILogger<KubernetesPodAttachOrchestrator> logger)
     {
         _podsApi = podsApi;
+        _secretManager = secretManager;
         _store = store;
         _closer = closer;
         _observability = observability;
@@ -130,33 +141,11 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             ttl,
             TimeSpan.FromSeconds(_options.DefaultInvestigationAbsoluteTtlSeconds));
 
-        // Before reserving a fresh target, scan for stale Running ephemeral containers
-        // from previous sessions. Kubernetes does not allow ephemeral containers to be
-        // removed once added, so after detach_from_pod the sidecar continues listening
-        // on ProxyPodPort inside the pod. A second attach that tries to patch a new
-        // container would fail with "address already in use" on that port.
-        //
-        // When there is NO Active/Attaching handle in the store (normal reattach after
-        // detach), inspect the pod's ephemeralContainerStatuses directly:
-        //   • Matching closed handle with a recoverable token → reuse the running
-        //     container transparently (skip the patch, register a fresh handle with the
-        //     same token/name, transition directly to Active).
-        //   • Running container with our prefix but no recoverable token (e.g. server
-        //     restart) → surface a structured EphemeralContainerStale error so the
-        //     caller knows why reattachment cannot proceed.
-        if (_store.FindReusableTarget($"k8s:{ns}/{request.PodName}/{container.Name}") is null)
-        {
-            var staleReuse = TryFindStaleReuseCandidate(pod, ns, request.PodName, request.OwnerPrincipalKey);
-            if (staleReuse is not null)
-            {
-                return ReviveStaleHandle(staleReuse, request, ns, container.Name, processSelector, now, ttl);
-            }
-        }
-
         var token = GenerateBearerToken();
         var delegationKey = GenerateBearerToken();
         var ephemeralName = BuildEphemeralContainerName();
         var handleId = "inv_" + RandomHex(16);
+        var credentialSecretName = BuildCredentialSecretName();
 
         var handle = new InvestigationHandle(
             HandleId: handleId,
@@ -165,7 +154,10 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
                 PodName: request.PodName,
                 TargetContainerName: container.Name,
                 EphemeralContainerName: ephemeralName,
-                PodLocalBearerToken: token),
+                PodLocalBearerToken: token,
+                CredentialSecretName: credentialSecretName,
+                PodUid: pod.Metadata?.Uid,
+                CredentialsMayBeInUse: false),
             State: InvestigationState.Attaching,
             AttachedAt: now,
             Lease: lease,
@@ -183,9 +175,19 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             return ReuseHandleOrThrow(existing!, request, ns, container.Name, processSelector);
         }
 
+        var patchAttempted = false;
         try
         {
-            var spec = BuildEphemeralContainerSpec(ephemeralName, container, token, delegationKey);
+            await _secretManager
+                .CreateAsync(handle, token, delegationKey, cancellationToken)
+                .ConfigureAwait(false);
+            var spec = BuildEphemeralContainerSpec(
+                ephemeralName,
+                container,
+                credentialSecretName,
+                handle.AbsoluteExpiresAt);
+            handle = SetCredentialsMayBeInUse(handle, mayBeInUse: true);
+            patchAttempted = true;
             await PatchEphemeralContainerAsync(ns, request.PodName, spec, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -195,6 +197,10 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         }
         catch (Exception ex)
         {
+            if (patchAttempted && IsDefinitivePatchRejection(ex))
+            {
+                handle = SetCredentialsMayBeInUse(handle, mayBeInUse: false);
+            }
             await MarkFailedAsync(handle, ex.Message).ConfigureAwait(false);
             throw;
         }
@@ -202,6 +208,7 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         try
         {
             await WaitForEphemeralRunningAsync(ns, request.PodName, ephemeralName, cancellationToken).ConfigureAwait(false);
+            await _secretManager.DeleteAsync(handle, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -240,6 +247,22 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         string containerName,
         InvestigationProcessSelector? processSelector)
     {
+        if (reusable.State is InvestigationState.Closed or InvestigationState.Expired or InvestigationState.Failed &&
+            InvestigationCredentialCleanup.IsPending(reusable))
+        {
+            var ownedByCaller = InvestigationOwnership.IsOwnedBy(reusable, request.OwnerPrincipalKey);
+            _logger.LogInformation(
+                "Refusing to attach to {Namespace}/{Pod}/{Container} while credential cleanup remains pending for handle {HandleId}.",
+                ns, request.PodName, containerName, reusable.HandleId);
+            var retry = ownedByCaller
+                ? $"Retry detach_from_pod with handleId='{reusable.HandleId}', or wait for the cleanup reaper"
+                : "Wait for the owning session or cleanup reaper to finish";
+            throw new OrchestratorException(
+                OrchestratorErrorKinds.CredentialCleanupPending,
+                $"Credential cleanup for a prior investigation on {ns}/{request.PodName}/{containerName} " +
+                $"is still pending. {retry} before attaching again.");
+        }
+
         // H6 / B3 review (issue #164): reuse is owner-aware. A reused handle is only
         // returned to the caller when the caller owns it. Otherwise we surface a
         // structured error rather than binding the caller to another session's
@@ -282,135 +305,6 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         return reusable;
     }
 
-    /// <summary>
-    /// Scans the pod's <c>ephemeralContainerStatuses</c> for a Running container with the
-    /// orchestrator's name prefix that was left behind by a previous detach. Returns the
-    /// matching terminal handle (with its recoverable token) when one is found; throws
-    /// <see cref="OrchestratorErrorKinds.EphemeralContainerStale"/> when a running container
-    /// is found but the token cannot be recovered; returns null when no stale container exists.
-    /// </summary>
-    private InvestigationHandle? TryFindStaleReuseCandidate(
-        V1Pod pod, string ns, string podName, string? callerOwnerKey)
-    {
-        var prefix = _options.EphemeralContainerNamePrefix;
-        var runningStale = pod.Status?.EphemeralContainerStatuses?
-            .Where(s =>
-                s.Name?.StartsWith(prefix, StringComparison.Ordinal) == true &&
-                s.State?.Running is not null)
-            .ToList();
-
-        if (runningStale is null || runningStale.Count == 0)
-        {
-            return null;
-        }
-
-        // Prefer the most recently attached container (highest name suffix sorts last alphabetically,
-        // but we rely on the store's AttachedAt ordering via FindTerminalHandleByEphemeralName).
-        foreach (var status in runningStale)
-        {
-            var closed = _store.FindTerminalHandleByEphemeralName(ns, podName, status.Name!);
-            if (closed is not null)
-            {
-                // Ownership check: the stale container embeds the old session's token; only
-                // the original owner (or an ownerless handle) may reconnect to it.
-                if (!InvestigationOwnership.IsOwnedBy(closed, callerOwnerKey))
-                {
-                    _logger.LogInformation(
-                        "Stale ephemeral container '{EphemeralName}' on {Namespace}/{Pod} belongs to a different MCP session " +
-                        "(previous handle {ClosedHandleId}).",
-                        status.Name, ns, podName, closed.HandleId);
-                    throw new OrchestratorException(
-                        OrchestratorErrorKinds.PermissionDenied,
-                        $"Pod '{ns}/{podName}' has a stale ephemeral diagnostics container '{status.Name}' " +
-                        $"still running from a previous session owned by a different MCP session. " +
-                        "Wait for that container to exit, or ask its owner to detach and restart the pod.");
-                }
-
-                if (closed.Kubernetes?.PodLocalBearerToken is null)
-                {
-                    // Token was scrubbed or handle is malformed — can't reconnect.
-                    continue;
-                }
-
-                return closed;
-            }
-        }
-
-        // Running container(s) with our prefix exist but no token is recoverable
-        // (server was restarted, handle was evicted, etc.).
-        var names = string.Join(", ", runningStale.Select(s => $"'{s.Name}'"));
-        _logger.LogWarning(
-            "Pod {Namespace}/{Pod} has stale ephemeral container(s) [{Names}] still Running; " +
-            "their tokens are not recoverable in the current server process.",
-            ns, podName, names);
-        throw new OrchestratorException(
-            OrchestratorErrorKinds.EphemeralContainerStale,
-            $"Pod '{ns}/{podName}' has stale ephemeral diagnostics container(s) [{names}] still running " +
-            "from a previous session whose bearer token is no longer recoverable (the server may have restarted). " +
-            "Restart the pod to clear stale containers, or wait for them to exit on their own.");
-    }
-
-    /// <summary>
-    /// Registers a fresh investigation handle that reuses a previously detached ephemeral
-    /// container. The old bearer token (embedded in the running container's environment)
-    /// is carried forward on the new handle so the proxy can authenticate without patching
-    /// a new container — skipping both the K8s patch and the readiness wait.
-    /// </summary>
-    private InvestigationHandle ReviveStaleHandle(
-        InvestigationHandle stale,
-        AttachRequest request,
-        string ns,
-        string containerName,
-        InvestigationProcessSelector? processSelector,
-        DateTimeOffset now,
-        TimeSpan ttl)
-    {
-        var revived = new InvestigationHandle(
-            HandleId: "inv_" + RandomHex(16),
-            // Carry forward the same ephemeral container name and bearer token: the
-            // running sidecar was started with these values and will only accept the
-            // original token. Generating a fresh token here would cause 401 errors.
-            Kubernetes: stale.Kubernetes! with { },
-            State: InvestigationState.Attaching,
-            AttachedAt: now,
-            Lease: InvestigationLeasePolicy.Create(
-                now,
-                TimeSpan.FromSeconds(_options.AttachReadinessTimeoutSeconds),
-                ttl,
-                TimeSpan.FromSeconds(_options.DefaultInvestigationAbsoluteTtlSeconds)),
-            OwnerBearerName: request.OwnerBearerName,
-            OwnerPrincipalKey: request.OwnerPrincipalKey,
-            // Reuse the delegation key the sidecar was started with; a new key would
-            // invalidate the sidecar's HMAC verification for delegated tool calls.
-            InternalScopeDelegationKey: stale.InternalScopeDelegationKey,
-            ProcessSelector: processSelector);
-
-        // TryReserveTarget is atomic: if a concurrent attach won the race and already
-        // claimed the slot (Active/Attaching), validate and return their handle instead.
-        if (!_store.TryReserveTarget(revived, request.AllowReuseExistingSession, out var existing))
-        {
-            return ReuseHandleOrThrow(existing!, request, ns, containerName, processSelector);
-        }
-
-        // The container is already Running — transition directly to Active; no patch,
-        // no readiness wait.
-        if (_store is not IInvestigationStoreActivation activation
-            || !activation.TryTransitionToActive(revived.HandleId, out var active)
-            || active is null)
-        {
-            throw new OrchestratorException(
-                OrchestratorErrorKinds.AttachFailed,
-                $"Investigation {revived.HandleId} became inactive while reviving stale container '{stale.EphemeralContainerName}'.");
-        }
-
-        _logger.LogInformation(
-            "Revived investigation {HandleId} on {Namespace}/{Pod}/{Container} by reusing stale ephemeral container " +
-            "'{EphemeralName}' (previous handle {StaleHandleId} was {StaleState}).",
-            active.HandleId, ns, request.PodName, containerName,
-            stale.EphemeralContainerName, stale.HandleId, stale.State);
-        return active;
-    }
-
     private static InvestigationProcessSelector? NormalizeProcessSelector(
         InvestigationProcessSelector? selector)
     {
@@ -429,6 +323,39 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
 
         return normalized;
     }
+
+    private InvestigationHandle SetCredentialsMayBeInUse(
+        InvestigationHandle handle,
+        bool mayBeInUse)
+    {
+        if (_store is not IInvestigationStoreCredentialDelivery delivery)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(KubernetesPodAttachOrchestrator)} requires a store that implements " +
+                $"{nameof(IInvestigationStoreCredentialDelivery)}.");
+        }
+
+        if (!delivery.TrySetCredentialsMayBeInUse(
+                handle.HandleId,
+                mayBeInUse,
+                out var updated) ||
+            updated is null)
+        {
+            throw new OrchestratorException(
+                OrchestratorErrorKinds.AttachFailed,
+                $"Investigation {handle.HandleId} became inactive before its credential delivery state could be updated.");
+        }
+        return updated;
+    }
+
+    private static bool IsDefinitivePatchRejection(Exception exception)
+        => exception is OrchestratorException
+        {
+            InnerException: HttpOperationException
+            {
+                Response.StatusCode: >= HttpStatusCode.BadRequest and < HttpStatusCode.InternalServerError,
+            },
+        };
 
     private async Task MarkFailedAsync(InvestigationHandle handle, string reason)
     {
@@ -529,11 +456,14 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         return _options.EphemeralContainerNamePrefix + RandomHex(4);
     }
 
+    private static string BuildCredentialSecretName()
+        => "dotnet-dbg-credentials-" + RandomHex(8);
+
     private V1EphemeralContainer BuildEphemeralContainerSpec(
         string ephemeralName,
         V1Container target,
-        string token,
-        string delegationKey)
+        string credentialSecretName,
+        DateTimeOffset expiresAt)
     {
         // Inherit the target container's volumeMounts so any prepared shared /tmp
         // emptyDir (or equivalent) shows up under the same path in the ephemeral
@@ -559,39 +489,56 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
             // Required: join the target container's PID namespace so the diagnostic IPC
             // socket at /tmp/dotnet-diagnostic-<pid> is visible.
             TargetContainerName = target.Name,
-            Env = BuildEphemeralEnvironment(token, delegationKey),
+            Env = BuildEphemeralEnvironment(credentialSecretName, expiresAt),
             // The shipped image's appsettings.json pins "Urls" to 127.0.0.1:8787, which
             // outranks ASPNETCORE_URLS in WebApplication.CreateBuilder's configuration
             // precedence. Pass --urls explicitly so the kestrel binding follows the
             // command-line override (highest precedence) and matches ProxyPodPort.
-            Args = new List<string> { "--urls", $"http://0.0.0.0:{_options.ProxyPodPort}" },
+            Args = new List<string> { "--urls", $"http://127.0.0.1:{_options.ProxyPodPort}" },
             VolumeMounts = volumeMounts,
             SecurityContext = securityContext,
             TerminationMessagePolicy = "File",
         };
     }
 
-    private List<V1EnvVar> BuildEphemeralEnvironment(string token, string delegationKey)
+    private List<V1EnvVar> BuildEphemeralEnvironment(
+        string credentialSecretName,
+        DateTimeOffset expiresAt)
     {
         var environment = new List<V1EnvVar>
         {
-            new() { Name = "MCP_BEARER_TOKEN", Value = token },
+            SecretEnvironmentVariable(
+                "MCP_BEARER_TOKEN",
+                credentialSecretName,
+                KubernetesAttachmentSecretManager.BearerTokenKey),
             new()
             {
                 Name = DotnetDiagnostics.Mcp.Security.ToolScopeDelegation.EnvironmentVariableName,
-                Value = delegationKey,
+                ValueFrom = new V1EnvVarSource
+                {
+                    SecretKeyRef = new V1SecretKeySelector
+                    {
+                        Key = KubernetesAttachmentSecretManager.DelegationKeyKey,
+                        Name = credentialSecretName,
+                    },
+                },
             },
-            new() { Name = "ASPNETCORE_URLS", Value = $"http://0.0.0.0:{_options.ProxyPodPort}" },
-            // This child is not an externally exposed deployment: the orchestrator
-            // reaches it only through the Kubernetes API port-forward stream. Keep
-            // the global non-loopback cleartext guard strict and opt out solely for
-            // this internal, short-lived child. Issue #764 separately hardens the
-            // per-attach credentials and access boundary.
+            new() { Name = "ASPNETCORE_URLS", Value = $"http://127.0.0.1:{_options.ProxyPodPort}" },
+            // The global cleartext guard stays strict everywhere else. This
+            // generated child is reached only through Kubernetes port-forward,
+            // remains bound to loopback, and receives the narrow process-local
+            // override required for that internal HTTP transport.
             new()
             {
-                Name = DotnetDiagnostics.Mcp.Hosting.TransportSecurityPolicy.AllowInsecureHttpKey,
+                Name = TransportSecurityPolicy.AllowInsecureHttpKey,
                 Value = bool.TrueString.ToLowerInvariant(),
             },
+            new()
+            {
+                Name = EphemeralAttachmentLifetime.ExpiryEnvironmentVariableName,
+                Value = expiresAt.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+            },
+            new() { Name = "HostOptions__ShutdownTimeout", Value = "00:00:05" },
             new()
             {
                 Name = "Diagnostics__AllowSensitiveHeapValues",
@@ -608,6 +555,23 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         AddArrayEnvironment(environment, "Diagnostics__RedactionPatterns", _securityOptions.RedactionPatterns);
         return environment;
     }
+
+    private static V1EnvVar SecretEnvironmentVariable(
+        string variableName,
+        string secretName,
+        string secretKey)
+        => new()
+        {
+            Name = variableName,
+            ValueFrom = new V1EnvVarSource
+            {
+                SecretKeyRef = new V1SecretKeySelector
+                {
+                    Key = secretKey,
+                    Name = secretName,
+                },
+            },
+        };
 
     private static void AddArrayEnvironment(
         List<V1EnvVar> environment,

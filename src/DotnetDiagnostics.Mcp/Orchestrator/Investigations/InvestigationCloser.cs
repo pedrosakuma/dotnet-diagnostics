@@ -9,23 +9,25 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// <summary>
 /// Shared cleanup pipeline invoked by <c>detach_from_pod</c> (caller-initiated close)
 /// and the TTL reaper (server-initiated eviction). Centralises the order so both
-/// paths flip the handle into a terminal state, dispose the cached MCP client, close
-/// the port-forward transport, and unbind every MCP session pointed at the handle —
-/// in that order — exactly once per handle.
+/// paths flip the handle into a terminal state, revoke Pod-local credentials, delete
+/// residual Secret material, dispose the cached MCP client, close the port-forward
+/// transport after confirmed revocation, and unbind every MCP session pointed at the
+/// handle — in that order.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Order matters: tearing the proxy MCP client down first lets the SDK send its
-/// graceful <c>shutdown</c> over the port-forward before the transport is yanked;
-/// closing the transport second collapses any half-open streams; unbinding sessions
-/// last guarantees that an in-flight call which observed the binding still has a
-/// proxy client to fail through (and the failure is structured rather than a NRE).
+/// Order matters: revocation must traverse the still-live port-forward before the
+/// proxy client and transport are disposed. Secret deletion follows as idempotent
+/// cleanup. Confirmed steps scrub only the material they no longer need: runtime
+/// plaintext after revocation, Secret metadata after deletion. If revocation fails,
+/// the internal port-forward remains available for a later cleanup retry while the
+/// terminal handle and disposed proxy prevent diagnostic calls. Unbinding sessions
+/// last guarantees callers cannot keep using a cleanup-pending handle.
 /// </para>
 /// <para>
-/// Ephemeral containers cannot be removed once added (a Kubernetes constraint, see
-/// <see cref="InvestigationHandle"/>): close is therefore "stop port-forward + tag
-/// terminal", not "delete the diagnostics container". Operators auditing a Pod's
-/// <c>ephemeralContainerStatuses</c> after detach will still see the entry.
+/// Ephemeral containers cannot be removed once added. Close stops the Pod-local
+/// diagnostics process after revoking its credentials, but operators auditing
+/// <c>ephemeralContainerStatuses</c> will still see the terminated entry.
 /// </para>
 /// </remarks>
 public sealed class InvestigationCloser
@@ -34,6 +36,8 @@ public sealed class InvestigationCloser
     private readonly IInvestigationProxyClient _proxyClient;
     private readonly IInvestigationTransportManager _transportManager;
     private readonly IInvestigationSessionBinder _sessionBinder;
+    private readonly IInvestigationCredentialRevoker _credentialRevoker;
+    private readonly IKubernetesAttachmentSecretManager _secretManager;
     private readonly ILogger<InvestigationCloser> _logger;
 
     public InvestigationCloser(
@@ -41,12 +45,16 @@ public sealed class InvestigationCloser
         IInvestigationProxyClient proxyClient,
         IInvestigationTransportManager transportManager,
         IInvestigationSessionBinder sessionBinder,
+        IInvestigationCredentialRevoker credentialRevoker,
+        IKubernetesAttachmentSecretManager secretManager,
         ILogger<InvestigationCloser>? logger = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _proxyClient = proxyClient ?? throw new ArgumentNullException(nameof(proxyClient));
         _transportManager = transportManager ?? throw new ArgumentNullException(nameof(transportManager));
         _sessionBinder = sessionBinder ?? throw new ArgumentNullException(nameof(sessionBinder));
+        _credentialRevoker = credentialRevoker ?? throw new ArgumentNullException(nameof(credentialRevoker));
+        _secretManager = secretManager ?? throw new ArgumentNullException(nameof(secretManager));
         _logger = logger ?? NullLogger<InvestigationCloser>.Instance;
     }
 
@@ -78,6 +86,7 @@ public sealed class InvestigationCloser
                 CleanupErrorCount: 0);
         }
 
+        var handle = _store.GetById(handleId);
         var transition = _store.TryTransitionToTerminal(
             handleId,
             targetState,
@@ -100,8 +109,43 @@ public sealed class InvestigationCloser
         // partial prior close (process restart, exception mid-pipeline, racing closer
         // that lost) may have left a port-forward or session binding behind.
         var cleanupErrors = 0;
+        var revocationSucceeded = true;
+        if (handle is not null)
+        {
+            if (InvestigationCredentialCleanup.HasRuntimeCredentials(handle))
+            {
+                revocationSucceeded =
+                    !InvestigationCredentialCleanup.RequiresRuntimeRevocation(handle) ||
+                    await SafeRevokeCredentialsAsync(handle).ConfigureAwait(false);
+                if (revocationSucceeded)
+                {
+                    ScrubCredentials(handleId, InvestigationCredentialMaterial.RuntimeCredentials);
+                }
+                else
+                {
+                    cleanupErrors++;
+                }
+            }
+
+            if (InvestigationCredentialCleanup.RequiresSecretDeletion(handle))
+            {
+                var secretDeletionSucceeded =
+                    await SafeDeleteSecretAsync(handle).ConfigureAwait(false);
+                if (secretDeletionSucceeded)
+                {
+                    ScrubCredentials(handleId, InvestigationCredentialMaterial.SecretReference);
+                }
+                else
+                {
+                    cleanupErrors++;
+                }
+            }
+        }
         cleanupErrors += await SafeDisposeProxyAsync(handleId).ConfigureAwait(false);
-        cleanupErrors += await SafeClosePortForwardAsync(handleId).ConfigureAwait(false);
+        if (revocationSucceeded)
+        {
+            cleanupErrors += await SafeClosePortForwardAsync(handleId).ConfigureAwait(false);
+        }
         var unbound = _sessionBinder.UnbindAllForHandle(handleId);
 
         var alreadyTerminal = transition == InvestigationTerminalTransition.AlreadyTerminal;
@@ -113,6 +157,48 @@ public sealed class InvestigationCloser
             NewState: alreadyTerminal ? previousState : targetState,
             UnboundSessionIds: unbound,
             CleanupErrorCount: cleanupErrors);
+    }
+
+    private void ScrubCredentials(
+        string handleId,
+        InvestigationCredentialMaterial material)
+        => (_store as IInvestigationStoreCredentialScrubber)?
+            .ScrubCredentials(handleId, material);
+
+    private async Task<bool> SafeRevokeCredentialsAsync(InvestigationHandle handle)
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await _credentialRevoker.RevokeAsync(handle, timeout.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Revoking pod-local credentials for handle {HandleId} threw; continuing close pipeline.",
+                handle.HandleId);
+            return false;
+        }
+    }
+
+    private async Task<bool> SafeDeleteSecretAsync(InvestigationHandle handle)
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await _secretManager.DeleteAsync(handle, timeout.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Deleting attachment credential Secret for handle {HandleId} threw; continuing close pipeline.",
+                handle.HandleId);
+            return false;
+        }
     }
 
     private async Task<int> SafeDisposeProxyAsync(string handleId)

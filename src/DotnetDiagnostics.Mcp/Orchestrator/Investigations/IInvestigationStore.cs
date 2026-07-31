@@ -19,14 +19,13 @@ public interface IInvestigationStore
     void Add(InvestigationHandle handle);
 
     /// <summary>
-    /// Atomically reserves a target tuple in <see cref="InvestigationState.Attaching"/>: if no
-    /// reusable handle for the target exists and reuse is allowed, the supplied <paramref name="newHandle"/>
-    /// is registered and returned via <paramref name="existing"/>=null; if a reusable handle already
-    /// exists and <paramref name="allowReuse"/> is true, it is returned via <paramref name="existing"/>;
-    /// otherwise (reuse disabled and no existing handle), the new handle is registered and
-    /// <paramref name="existing"/>=null is returned.
+    /// Atomically reserves a target tuple in <see cref="InvestigationState.Attaching"/>. An
+    /// Active/Attaching handle blocks the reservation when reuse is allowed. A terminal handle
+    /// whose credential cleanup is still pending always blocks it, regardless of reuse policy,
+    /// until revocation and Secret deletion complete. The blocking handle is returned through
+    /// <paramref name="existing"/>; otherwise the supplied <paramref name="newHandle"/> is registered.
     /// </summary>
-    /// <returns>True when the supplied <paramref name="newHandle"/> was registered; false when an existing handle was reused.</returns>
+    /// <returns>True when the supplied <paramref name="newHandle"/> was registered; false when an existing handle still reserves the target.</returns>
     bool TryReserveTarget(InvestigationHandle newHandle, bool allowReuse, out InvestigationHandle? existing);
 
     /// <summary>Updates an existing handle (e.g. state transition). Throws if the id is unknown.</summary>
@@ -64,9 +63,9 @@ public interface IInvestigationStore
     /// <see cref="InvestigationState.Expired"/>, or <see cref="InvestigationState.Failed"/>) handle
     /// whose <see cref="InvestigationHandle.EphemeralContainerName"/> matches
     /// <paramref name="ephemeralContainerName"/> for the given pod, or null if none exists.
-    /// Used to reconnect to a stale ephemeral container that is still running after a
-    /// previous <c>detach_from_pod</c> — the bearer token from the terminal handle can be
-    /// reused so no new container patch is needed.
+    /// Retained for store compatibility and inventory lookups. Attachment code must not
+    /// adopt a terminal container or reuse its credentials; every reattach creates a new
+    /// container and credential pair.
     /// </summary>
     InvestigationHandle? FindTerminalHandleByEphemeralName(
         string podNamespace, string podName, string ephemeralContainerName);
@@ -82,6 +81,50 @@ public interface IInvestigationStore
 public interface IInvestigationStoreActivation
 {
     bool TryTransitionToActive(string handleId, out InvestigationHandle? active);
+}
+
+/// <summary>
+/// Optional terminal-state credential scrubbing capability. Close paths invoke this
+/// only after Pod-local revocation and transport teardown have consumed the credentials.
+/// </summary>
+public interface IInvestigationStoreCredentialScrubber
+{
+    void ScrubCredentials(string handleId, InvestigationCredentialMaterial material);
+}
+
+public interface IInvestigationStoreCredentialDelivery
+{
+    bool TrySetCredentialsMayBeInUse(
+        string handleId,
+        bool mayBeInUse,
+        out InvestigationHandle? updated);
+}
+
+[Flags]
+public enum InvestigationCredentialMaterial
+{
+    None = 0,
+    RuntimeCredentials = 1,
+    SecretReference = 2,
+    All = RuntimeCredentials | SecretReference,
+}
+
+internal static class InvestigationCredentialCleanup
+{
+    public static bool HasRuntimeCredentials(InvestigationHandle handle)
+        => handle.Kubernetes is not null &&
+           (!string.IsNullOrEmpty(handle.Kubernetes.PodLocalBearerToken) ||
+            !string.IsNullOrEmpty(handle.InternalScopeDelegationKey));
+
+    public static bool RequiresRuntimeRevocation(InvestigationHandle handle)
+        => handle.Kubernetes?.CredentialsMayBeInUse == true &&
+           HasRuntimeCredentials(handle);
+
+    public static bool RequiresSecretDeletion(InvestigationHandle handle)
+        => !string.IsNullOrEmpty(handle.Kubernetes?.CredentialSecretName);
+
+    public static bool IsPending(InvestigationHandle handle)
+        => HasRuntimeCredentials(handle) || RequiresSecretDeletion(handle);
 }
 
 /// <summary>

@@ -264,6 +264,17 @@ The finalized request-bound delegation forwards only the evidence scopes the cal
 explicitly holds. The Pod resolves each handle kind and applies the exact rule above
 before reading the artifact, so its Pod-local root bearer never widens the caller.
 
+The delegation authority is attachment-local. The orchestrator generates an
+independent `MCP_INTERNAL_SCOPE_DELEGATION_KEY`, delivers it with the Pod-local
+root bearer through a short-lived Kubernetes Secret reference, and deletes the
+Secret after startup. Neither usable value appears as a literal in `get pod`.
+Only the central authorization path retains the signing key and can mint the
+30-second, request-bound, one-time delegation. A caller that can port-forward
+to the Pod but cannot pass central authorization has neither the key nor a
+valid delegated invocation; guessed or caller-signed delegations fail HMAC
+verification. Detach revokes the attachment before closing its port-forward,
+and the Pod-local process also rejects both credentials at absolute expiry.
+
 On top of that, specific `(handle origin, view)` pairs require a **modifier** scope: e.g.
 the `retention-paths` view on either a live or a dump heap snapshot requires
 `sensitive-heap-read` (it can transitively expose managed-string contents). Reaching an

@@ -18,7 +18,13 @@ public sealed class InvestigationCloserTests
 {
     private static InvestigationHandle Active(string id = "h-1") => new(
             HandleId: id,
-            Kubernetes: new KubernetesInvestigationTarget("ns", "pod", "api", "diag", "secret"),
+            Kubernetes: new KubernetesInvestigationTarget(
+                "ns",
+                "pod",
+                "api",
+                "diag",
+                "secret",
+                "credential-secret"),
             State: InvestigationState.Active,
         AttachedAt: DateTimeOffset.UtcNow,
         ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30));
@@ -65,9 +71,14 @@ public sealed class InvestigationCloserTests
         outcome.UnboundSessionIds.Should().BeEquivalentTo(new[] { "session-1", "session-2" });
 
         fx.Store.GetById(h.HandleId)!.State.Should().Be(InvestigationState.Closed);
+        fx.Store.GetById(h.HandleId)!.Kubernetes!.PodLocalBearerToken.Should().BeEmpty();
+        fx.Store.GetById(h.HandleId)!.Kubernetes!.CredentialSecretName.Should().BeNull();
+        fx.Store.GetById(h.HandleId)!.InternalScopeDelegationKey.Should().BeNull();
         fx.Proxy.DisposeCalls.Should().Equal(h.HandleId);
         fx.PortForward.CloseCalls.Should().Equal(h.HandleId);
-        fx.Order.Should().Equal("proxy-dispose", "portforward-close");
+        fx.Revoker.RevokeCalls.Should().Equal(h.HandleId);
+        fx.Secrets.DeleteCalls.Should().Equal(h.HandleId);
+        fx.Order.Should().Equal("credential-revoke", "secret-delete", "proxy-dispose", "portforward-close");
     }
 
     [Fact]
@@ -148,6 +159,121 @@ public sealed class InvestigationCloserTests
     }
 
     [Fact]
+    public async Task CloseAsync_RevocationFailure_RetainsRuntimeCredentialsAndTransportForRetry()
+    {
+        var fx = new Fixture();
+        fx.Revoker.FailuresRemaining = 1;
+        var h = Active();
+        fx.Store.Add(h);
+
+        var outcome = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+
+        outcome.CleanupErrorCount.Should().Be(1);
+        fx.Secrets.DeleteCalls.Should().Equal(h.HandleId);
+        fx.Proxy.DisposeCalls.Should().Equal(h.HandleId);
+        fx.PortForward.CloseCalls.Should().BeEmpty();
+        var pending = fx.Store.GetById(h.HandleId)!;
+        pending.Kubernetes!.PodLocalBearerToken.Should().Be("secret");
+        pending.InternalScopeDelegationKey.Should().BeNull();
+        pending.Kubernetes.CredentialSecretName.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CloseAsync_TransientRevocationFailure_BlocksSameTargetUntilRetryCompletes()
+    {
+        var fx = new Fixture();
+        fx.Revoker.FailuresRemaining = 1;
+        var h = Active() with { InternalScopeDelegationKey = "delegation" };
+        fx.Store.Add(h);
+        var replacement = Replacement(h, "h-replacement");
+        var differentTarget = Replacement(h, "h-other-target") with
+        {
+            Kubernetes = h.Kubernetes! with { PodName = "other-pod" },
+        };
+
+        var first = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+        var sameTargetReserved = fx.Store.TryReserveTarget(
+            replacement,
+            allowReuse: false,
+            out var cleanupPending);
+        var differentTargetReserved = fx.Store.TryReserveTarget(
+            differentTarget,
+            allowReuse: false,
+            out var differentTargetExisting);
+        var retry = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+        var reservedAfterCleanup = fx.Store.TryReserveTarget(
+            replacement,
+            allowReuse: false,
+            out var existingAfterCleanup);
+
+        first.CleanupErrorCount.Should().Be(1);
+        sameTargetReserved.Should().BeFalse();
+        cleanupPending!.HandleId.Should().Be(h.HandleId);
+        differentTargetReserved.Should().BeTrue();
+        differentTargetExisting.Should().BeNull();
+        retry.CleanupErrorCount.Should().Be(0);
+        retry.AlreadyTerminal.Should().BeTrue();
+        reservedAfterCleanup.Should().BeTrue();
+        existingAfterCleanup.Should().BeNull();
+        fx.Revoker.RevokeCalls.Should().Equal(h.HandleId, h.HandleId);
+        fx.Secrets.DeleteCalls.Should().Equal(h.HandleId);
+        fx.PortForward.CloseCalls.Should().Equal(h.HandleId);
+        var cleaned = fx.Store.GetById(h.HandleId)!;
+        cleaned.Kubernetes!.PodLocalBearerToken.Should().BeEmpty();
+        cleaned.InternalScopeDelegationKey.Should().BeNull();
+        cleaned.Kubernetes.CredentialSecretName.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CloseAsync_TransientSecretDeletionFailure_BlocksSameTargetUntilRetryCompletes()
+    {
+        var fx = new Fixture();
+        fx.Secrets.FailuresRemaining = 1;
+        var h = Active() with { InternalScopeDelegationKey = "delegation" };
+        fx.Store.Add(h);
+        var replacement = Replacement(h, "h-after-secret-delete");
+
+        var first = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+
+        first.CleanupErrorCount.Should().Be(1);
+        var pending = fx.Store.GetById(h.HandleId)!;
+        pending.Kubernetes!.PodLocalBearerToken.Should().BeEmpty();
+        pending.InternalScopeDelegationKey.Should().BeNull();
+        pending.Kubernetes.CredentialSecretName.Should().Be("credential-secret");
+        fx.PortForward.CloseCalls.Should().Equal(h.HandleId);
+        fx.Store.TryReserveTarget(replacement, allowReuse: false, out var cleanupPending)
+            .Should().BeFalse();
+        cleanupPending!.HandleId.Should().Be(h.HandleId);
+
+        var retry = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+
+        retry.CleanupErrorCount.Should().Be(0);
+        fx.Revoker.RevokeCalls.Should().Equal(h.HandleId);
+        fx.Secrets.DeleteCalls.Should().Equal(h.HandleId, h.HandleId);
+        fx.Store.GetById(h.HandleId)!.Kubernetes!.CredentialSecretName.Should().BeNull();
+        fx.Store.TryReserveTarget(replacement, allowReuse: false, out var existingAfterCleanup)
+            .Should().BeTrue();
+        existingAfterCleanup.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CloseAsync_SecretAlreadyNotFound_CountsAsSuccessAndScrubsFinalMetadata()
+    {
+        var fx = new Fixture();
+        fx.Secrets.NotFoundResponsesRemaining = 1;
+        var h = Active() with { InternalScopeDelegationKey = "delegation" };
+        fx.Store.Add(h);
+
+        var outcome = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+
+        outcome.CleanupErrorCount.Should().Be(0);
+        var cleaned = fx.Store.GetById(h.HandleId)!;
+        cleaned.Kubernetes!.PodLocalBearerToken.Should().BeEmpty();
+        cleaned.InternalScopeDelegationKey.Should().BeNull();
+        cleaned.Kubernetes.CredentialSecretName.Should().BeNull();
+    }
+
+    [Fact]
     public async Task CloseAsync_ConcurrentDetachAndReaper_TerminalStateIsAtomic()
     {
         // Regression for the medium-severity finding in PR #155 review:
@@ -182,11 +308,29 @@ public sealed class InvestigationCloserTests
         final.State.Should().Be(winnerState!.Value);
     }
 
+    private static InvestigationHandle Replacement(InvestigationHandle prior, string handleId)
+        => prior with
+        {
+            HandleId = handleId,
+            Kubernetes = prior.Kubernetes! with
+            {
+                EphemeralContainerName = $"diag-{handleId}",
+                PodLocalBearerToken = $"bearer-{handleId}",
+                CredentialSecretName = $"secret-{handleId}",
+                CredentialsMayBeInUse = false,
+            },
+            State = InvestigationState.Attaching,
+            FailureReason = null,
+            InternalScopeDelegationKey = $"delegation-{handleId}",
+        };
+
     private sealed class Fixture
     {
         public MemoryInvestigationStore Store { get; } = new();
         public RecordingProxyClient Proxy { get; }
         public RecordingPortForwardManager PortForward { get; }
+        internal RecordingCredentialRevoker Revoker { get; }
+        internal RecordingSecretManager Secrets { get; }
         public MemoryInvestigationSessionBinder Binder { get; } = new();
         public List<string> Order { get; } = new();
         public InvestigationCloser Closer { get; }
@@ -195,7 +339,72 @@ public sealed class InvestigationCloserTests
         {
             Proxy = new RecordingProxyClient(Order);
             PortForward = new RecordingPortForwardManager(Order);
-            Closer = new InvestigationCloser(Store, Proxy, PortForward, Binder);
+            Revoker = new RecordingCredentialRevoker(Order);
+            Secrets = new RecordingSecretManager(Order);
+            Closer = new InvestigationCloser(Store, Proxy, PortForward, Binder, Revoker, Secrets);
+        }
+
+        internal sealed class RecordingCredentialRevoker : IInvestigationCredentialRevoker
+        {
+            private readonly List<string> _order;
+
+            public RecordingCredentialRevoker(List<string> order)
+            {
+                _order = order;
+            }
+
+            public List<string> RevokeCalls { get; } = [];
+            public int FailuresRemaining { get; set; }
+
+            public Task RevokeAsync(InvestigationHandle handle, CancellationToken cancellationToken)
+            {
+                _order.Add("credential-revoke");
+                RevokeCalls.Add(handle.HandleId);
+                if (FailuresRemaining > 0)
+                {
+                    FailuresRemaining--;
+                    throw new InvalidOperationException("pod unavailable");
+                }
+                return Task.CompletedTask;
+            }
+        }
+
+        internal sealed class RecordingSecretManager : IKubernetesAttachmentSecretManager
+        {
+            private readonly List<string> _order;
+
+            public RecordingSecretManager(List<string> order)
+            {
+                _order = order;
+            }
+
+            public List<string> DeleteCalls { get; } = [];
+            public int FailuresRemaining { get; set; }
+            public int NotFoundResponsesRemaining { get; set; }
+
+            public Task CreateAsync(
+                InvestigationHandle handle,
+                string bearerToken,
+                string delegationKey,
+                CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+
+            public Task DeleteAsync(InvestigationHandle handle, CancellationToken cancellationToken)
+            {
+                _order.Add("secret-delete");
+                DeleteCalls.Add(handle.HandleId);
+                if (FailuresRemaining > 0)
+                {
+                    FailuresRemaining--;
+                    throw new InvalidOperationException("Kubernetes API unavailable");
+                }
+                if (NotFoundResponsesRemaining > 0)
+                {
+                    NotFoundResponsesRemaining--;
+                    return Task.CompletedTask;
+                }
+                return Task.CompletedTask;
+            }
         }
     }
 

@@ -55,9 +55,10 @@ public sealed class InvestigationHandleReaperBackgroundServiceTests
         fx.Store.GetById("stuck-attach")!.State.Should().Be(InvestigationState.Expired);
         fx.Store.GetById("fresh")!.State.Should().Be(InvestigationState.Active);
         fx.Store.GetById("already-closed")!.State.Should().Be(InvestigationState.Closed);
+        fx.Store.GetById("already-closed")!.Kubernetes!.PodLocalBearerToken.Should().BeEmpty();
 
-        fx.Proxy.DisposeCalls.Should().BeEquivalentTo(new[] { "expired", "stuck-attach" });
-        fx.PortForward.CloseCalls.Should().BeEquivalentTo(new[] { "expired", "stuck-attach" });
+        fx.Proxy.DisposeCalls.Should().BeEquivalentTo(new[] { "expired", "stuck-attach", "already-closed" });
+        fx.PortForward.CloseCalls.Should().BeEquivalentTo(new[] { "expired", "stuck-attach", "already-closed" });
     }
 
     [Fact]
@@ -163,6 +164,43 @@ public sealed class InvestigationHandleReaperBackgroundServiceTests
         reaped.Should().Be(0);
     }
 
+    [Fact]
+    public async Task ReapExpiredAsync_TerminalCleanupPending_RetriesOnceThenBecomesNoOp()
+    {
+        var fx = new Fixture();
+        var now = DateTimeOffset.UtcNow;
+        var handle = Handle(
+            "cleanup-pending",
+            InvestigationState.Expired,
+            now.AddMinutes(-10),
+            now.AddMinutes(-9),
+            now.AddMinutes(-1),
+            now.AddHours(1)) with
+        {
+            InternalScopeDelegationKey = "delegation",
+        };
+        handle = handle with
+        {
+            Kubernetes = handle.Kubernetes! with
+            {
+                CredentialSecretName = "credential-secret",
+            },
+        };
+        fx.Store.Add(handle);
+
+        var first = await fx.Reaper.ReapExpiredAsync(now);
+        var second = await fx.Reaper.ReapExpiredAsync(now.AddSeconds(30));
+
+        first.Should().Be(0);
+        second.Should().Be(0);
+        fx.Proxy.DisposeCalls.Should().Equal(handle.HandleId);
+        fx.PortForward.CloseCalls.Should().Equal(handle.HandleId);
+        var cleaned = fx.Store.GetById(handle.HandleId)!;
+        cleaned.Kubernetes!.PodLocalBearerToken.Should().BeEmpty();
+        cleaned.Kubernetes.CredentialSecretName.Should().BeNull();
+        cleaned.InternalScopeDelegationKey.Should().BeNull();
+    }
+
     private sealed class Fixture
     {
         public IInvestigationStore Store { get; }
@@ -181,7 +219,13 @@ public sealed class InvestigationHandleReaperBackgroundServiceTests
                 provider.GetRequiredService<System.Diagnostics.Metrics.IMeterFactory>(),
                 Store,
                 new AuditLogWriter(TextWriter.Null));
-            var closer = new InvestigationCloser(Store, Proxy, PortForward, Binder);
+            var closer = new InvestigationCloser(
+                Store,
+                Proxy,
+                PortForward,
+                Binder,
+                NoOpInvestigationCredentialRevoker.Instance,
+                NoOpKubernetesAttachmentSecretManager.Instance);
             Reaper = new InvestigationHandleReaperBackgroundService(Store, closer, observability);
         }
     }

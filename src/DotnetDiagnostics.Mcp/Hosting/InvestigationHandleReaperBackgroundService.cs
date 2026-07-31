@@ -83,6 +83,22 @@ public sealed class InvestigationHandleReaperBackgroundService : BackgroundServi
         var reaped = 0;
         foreach (var handle in _store.Snapshot())
         {
+            if (IsTerminal(handle.State))
+            {
+                if (InvestigationCredentialCleanup.IsPending(handle))
+                {
+                    var retry = await _closer.CloseAsync(
+                        handle.HandleId,
+                        handle.State,
+                        handle.FailureReason).ConfigureAwait(false);
+                    if (retry.CleanupErrorCount > 0)
+                    {
+                        _observability.RecordReaperEviction("cleanup-error");
+                    }
+                }
+                continue;
+            }
+
             if (!IsReapable(handle.State)) continue;
             if (!InvestigationLeasePolicy.IsExpired(handle, now)) continue;
 
@@ -124,4 +140,7 @@ public sealed class InvestigationHandleReaperBackgroundService : BackgroundServi
 
     private static bool IsReapable(InvestigationState state)
         => state is InvestigationState.Active or InvestigationState.Attaching;
+
+    private static bool IsTerminal(InvestigationState state)
+        => state is InvestigationState.Closed or InvestigationState.Expired or InvestigationState.Failed;
 }

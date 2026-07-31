@@ -15,11 +15,17 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// <c>ExternalMcp</c> target without forking their logic.
 /// </para>
 /// <para>
-/// <see cref="PodLocalBearerToken"/> is the per-attach bearer token embedded in the
-/// ephemeral container's environment. It is never returned to external callers — the
+/// <see cref="PodLocalBearerToken"/> is the per-attach bearer token delivered through a
+/// short-lived Kubernetes Secret reference. It is never returned to external callers — the
 /// transport layer injects it as the upstream <c>Authorization</c> header via
 /// <see cref="System.Net.Http.HttpClient.DefaultRequestHeaders"/> so proxy endpoints
 /// and MCP tool calls do not need to know the token value.
+/// </para>
+/// <para>
+/// <see cref="CredentialsMayBeInUse"/> is set atomically immediately before the
+/// ephemeral-container patch and cleared after a definitive rejection. A definite
+/// pre-runtime failure can therefore scrub generated plaintext without attempting an
+/// impossible revocation, while ambiguous outcomes fail closed.
 /// </para>
 /// </remarks>
 public sealed record KubernetesInvestigationTarget(
@@ -27,4 +33,7 @@ public sealed record KubernetesInvestigationTarget(
     string PodName,
     string TargetContainerName,
     string EphemeralContainerName,
-    [property: JsonIgnore] string PodLocalBearerToken);
+    [property: JsonIgnore] string PodLocalBearerToken,
+    string? CredentialSecretName = null,
+    string? PodUid = null,
+    bool CredentialsMayBeInUse = true);
