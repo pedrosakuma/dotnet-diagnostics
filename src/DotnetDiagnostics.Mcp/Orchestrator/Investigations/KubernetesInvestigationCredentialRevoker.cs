@@ -7,6 +7,7 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Mcp.Hosting;
+using k8s.Autorest;
 
 namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 
@@ -112,6 +113,14 @@ internal sealed class KubernetesInvestigationCredentialRevoker : IInvestigationC
                     string.Equals(candidate.Name, target.EphemeralContainerName, StringComparison.Ordinal))
                 ?.State?.Terminated is not null;
         }
+        catch (HttpOperationException ex) when (ex.Response?.StatusCode == HttpStatusCode.NotFound)
+        {
+            // The Kubernetes API is authoritative here: if the target Pod no
+            // longer exists, neither its process nor attachment credentials can
+            // remain usable. This is distinct from a 404 returned by the
+            // pod-local revoke endpoint, which remains a protocol failure.
+            return true;
+        }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
             return false;
@@ -126,9 +135,17 @@ internal sealed class KubernetesInvestigationCredentialRevoker : IInvestigationC
         var deadline = _timeProvider.GetUtcNow().AddSeconds(10);
         while (_timeProvider.GetUtcNow() < deadline)
         {
-            var pod = await _podsApi
-                .ReadPodAsync(target.Namespace, target.PodName, cancellationToken)
-                .ConfigureAwait(false);
+            k8s.Models.V1Pod pod;
+            try
+            {
+                pod = await _podsApi
+                    .ReadPodAsync(target.Namespace, target.PodName, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (HttpOperationException ex) when (ex.Response?.StatusCode == HttpStatusCode.NotFound)
+            {
+                return;
+            }
             var status = pod.Status?.EphemeralContainerStatuses?
                 .FirstOrDefault(candidate =>
                     string.Equals(candidate.Name, target.EphemeralContainerName, StringComparison.Ordinal));

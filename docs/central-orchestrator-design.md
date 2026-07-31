@@ -578,7 +578,11 @@ outcomes fail closed and retain the minimum retry material.
 The authenticated revocation route is the sole request allowed to reuse the
 attachment bearer after the lifetime has been marked revoked. This makes a
 `204`-accepted revocation retryable while Kubernetes publishes container
-termination; every diagnostic route continues to reject the bearer.
+termination; every diagnostic route continues to reject the bearer. A
+Kubernetes API `404 NotFound` for the target Pod is also authoritative cleanup
+success because the process and credentials disappeared with the Pod. A `404`
+from the pod-local revoke endpoint remains a protocol failure while the Pod
+still exists.
 
 Because the listener is loopback-only, ordinary Pod-network traffic cannot
 reach it, including traffic allowed by a broad NetworkPolicy. A NetworkPolicy

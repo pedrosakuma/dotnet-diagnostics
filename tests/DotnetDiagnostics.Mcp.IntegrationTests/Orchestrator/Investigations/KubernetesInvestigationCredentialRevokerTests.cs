@@ -5,6 +5,7 @@ using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 using FluentAssertions;
 using k8s;
+using k8s.Autorest;
 using k8s.Models;
 
 namespace DotnetDiagnostics.Mcp.IntegrationTests.Orchestrator.Investigations;
@@ -55,6 +56,51 @@ public sealed class KubernetesInvestigationCredentialRevokerTests
         await revoker.RevokeAsync(Handle(), CancellationToken.None);
 
         pods.ReadCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RevokeAsync_PodLocalNotFoundAndTargetPodNotFound_CountsAsSuccess()
+    {
+        var pods = new StubPodsApi(
+            readException: NewHttpException(HttpStatusCode.NotFound));
+        var revoker = new KubernetesInvestigationCredentialRevoker(
+            new StubTransport(new RecordingHandler(HttpStatusCode.NotFound)),
+            pods,
+            TimeProvider.System);
+
+        await revoker.RevokeAsync(Handle(), CancellationToken.None);
+
+        pods.ReadCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RevokeAsync_TargetPodDisappearsAfterAcceptedRevoke_CountsAsSuccess()
+    {
+        var pods = new StubPodsApi(
+            readException: NewHttpException(HttpStatusCode.NotFound));
+        var revoker = new KubernetesInvestigationCredentialRevoker(
+            new StubTransport(new RecordingHandler(HttpStatusCode.NoContent)),
+            pods,
+            TimeProvider.System);
+
+        await revoker.RevokeAsync(Handle(), CancellationToken.None);
+
+        pods.ReadCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RevokeAsync_NonNotFoundKubernetesFailure_RemainsFailure()
+    {
+        var pods = new StubPodsApi(
+            readException: NewHttpException(HttpStatusCode.ServiceUnavailable));
+        var revoker = new KubernetesInvestigationCredentialRevoker(
+            new StubTransport(new RecordingHandler(HttpStatusCode.NoContent)),
+            pods,
+            TimeProvider.System);
+
+        var act = () => revoker.RevokeAsync(Handle(), CancellationToken.None);
+
+        await act.Should().ThrowAsync<HttpOperationException>();
     }
 
     [Fact]
@@ -118,6 +164,14 @@ public sealed class KubernetesInvestigationCredentialRevokerTests
             AttachedAt: DateTimeOffset.UtcNow,
             ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(5),
             InternalScopeDelegationKey: "delegation-key");
+
+    private static HttpOperationException NewHttpException(HttpStatusCode statusCode)
+        => new($"HTTP {(int)statusCode}")
+        {
+            Response = new HttpResponseMessageWrapper(
+                new HttpResponseMessage(statusCode),
+                string.Empty),
+        };
 
     private sealed class StubTransport : IInvestigationTransportManager
     {
@@ -193,10 +247,14 @@ public sealed class KubernetesInvestigationCredentialRevokerTests
     private sealed class StubPodsApi : IKubernetesPodsApi
     {
         private readonly bool _terminated;
+        private readonly Exception? _readException;
 
-        public StubPodsApi(bool terminated)
+        public StubPodsApi(
+            bool terminated = false,
+            Exception? readException = null)
         {
             _terminated = terminated;
+            _readException = readException;
         }
 
         public int ReadCount { get; private set; }
@@ -207,6 +265,10 @@ public sealed class KubernetesInvestigationCredentialRevokerTests
             CancellationToken cancellationToken)
         {
             ReadCount++;
+            if (_readException is not null)
+            {
+                throw _readException;
+            }
             return Task.FromResult(new V1Pod
             {
                 Status = new V1PodStatus
