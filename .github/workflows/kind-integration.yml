@@ -155,7 +155,17 @@ jobs:
             --set 'orchestrator.labelKeyAllowlist[0]'=diagnostics.dotnet.io/prepared \
             --set 'orchestrator.labelKeyAllowlist[1]'=app \
             --set 'orchestrator.labelKeyAllowlist[2]'=p6-target \
-            --wait --timeout 3m
+            --timeout 3m
+          # Kind acceptance reaches this central MCP only through a localhost
+          # kubectl port-forward. Opt this isolated CI deployment into HTTP
+          # explicitly without changing the production chart defaults.
+          ORCH_DEPLOY=$(kubectl -n "${ORCH_NAMESPACE}" get deploy \
+            -l app.kubernetes.io/instance=dotnet-dbg-mcp \
+            -o jsonpath='{.items[0].metadata.name}')
+          kubectl -n "${ORCH_NAMESPACE}" set env \
+            "deployment/${ORCH_DEPLOY}" MCP_ALLOW_INSECURE_HTTP=true
+          kubectl -n "${ORCH_NAMESPACE}" rollout status \
+            "deployment/${ORCH_DEPLOY}" --timeout=3m
 
       - name: Apply p6 sample manifests
         if: needs.changes.outputs.code == 'true'

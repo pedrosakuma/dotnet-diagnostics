@@ -19,6 +19,14 @@
     {
       "ParameterKey": "BearerTokenSecretArn",
       "ParameterValue": "arn:aws:secretsmanager:us-east-1:123456789012:secret:diag-mcp-bearer-token-XXXXXX"
+    },
+    {
+      "ParameterKey": "TlsCertificateSecretArn",
+      "ParameterValue": "arn:aws:secretsmanager:us-east-1:123456789012:secret:diag-mcp-tls-certificate-XXXXXX"
+    },
+    {
+      "ParameterKey": "TlsPrivateKeySecretArn",
+      "ParameterValue": "arn:aws:secretsmanager:us-east-1:123456789012:secret:diag-mcp-tls-private-key-XXXXXX"
     }
   ]
 }

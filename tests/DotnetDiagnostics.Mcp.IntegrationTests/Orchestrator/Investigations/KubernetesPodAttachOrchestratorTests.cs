@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using DotnetDiagnostics.Mcp.Hosting;
 using DotnetDiagnostics.Mcp.Observability;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
@@ -54,6 +55,9 @@ public class KubernetesPodAttachOrchestratorTests
             e.Name == ToolScopeDelegation.EnvironmentVariableName &&
             e.Value == handle.InternalScopeDelegationKey);
         api.PatchedSpec.Env.Should().Contain(e => e.Name == "ASPNETCORE_URLS" && e.Value == $"http://0.0.0.0:{options.ProxyPodPort}");
+        api.PatchedSpec.Env.Should().Contain(e =>
+            e.Name == TransportSecurityPolicy.AllowInsecureHttpKey &&
+            e.Value == "true");
         api.PatchedSpec.Args.Should().Equal("--urls", $"http://0.0.0.0:{options.ProxyPodPort}");
         store.GetById(handle.HandleId).Should().BeSameAs(handle);
     }
@@ -68,6 +72,9 @@ public class KubernetesPodAttachOrchestratorTests
         await orch.AttachAsync(NewRequest(), CancellationToken.None);
 
         api.PatchedSpec!.Env.Should().Contain(e => e.Name == "ASPNETCORE_URLS" && e.Value == "http://0.0.0.0:18888");
+        api.PatchedSpec.Env.Should().Contain(e =>
+            e.Name == TransportSecurityPolicy.AllowInsecureHttpKey &&
+            e.Value == "true");
         api.PatchedSpec.Args.Should().Equal("--urls", "http://0.0.0.0:18888");
     }
 

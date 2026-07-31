@@ -73,7 +73,7 @@ recipe is operationally simpler.
      the MCP endpoint to the public internet.
 4. **Container images reachable from the task** — your app image plus the
    diagnostics sidecar image (default
-   `ghcr.io/pedrosakuma/dotnet-diagnostics:0.17.0`; mirror to ECR if your
+   `ghcr.io/pedrosakuma/dotnet-diagnostics:0.22.0`; mirror to ECR if your
    account blocks anonymous GHCR pulls).
 5. **A bearer token in AWS Secrets Manager** for the MCP HTTP transport:
    ```bash
@@ -82,15 +82,54 @@ recipe is operationally simpler.
      --name diag-mcp-bearer-token \
      --secret-string "$TOKEN"
    ```
-6. **(For off-CPU sampling) host kernel `perf` access.** The EC2 **host
+   The template injects the value as `Auth__BearerTokens__0__Token` and grants
+   the explicit `BearerTokenAccessProfile` scopes. It does not use the legacy
+   root-scoped `MCP_BEARER_TOKEN`.
+6. **A TLS certificate and private key in Secrets Manager.** The default
+   `TransportMode=tls` loads them directly into Kestrel:
+   ```bash
+   aws secretsmanager create-secret \
+     --name diag-mcp-tls-certificate \
+     --secret-string file://tls.crt
+   aws secretsmanager create-secret \
+     --name diag-mcp-tls-private-key \
+     --secret-string file://tls.key
+   ```
+   The certificate SAN must match the hostname used by MCP clients. Store an
+   unencrypted PEM key because Kestrel receives the key non-interactively; IAM
+   limits both secrets to the task execution role.
+7. **(For off-CPU sampling) host kernel `perf` access.** The EC2 **host
    kernel** gates `perf` tracepoints via `kernel.perf_event_paranoid`. ECS does
    not accept `CAP_PERFMON`, so this host sysctl is the only lever — see the
    next section.
-7. **cfn-lint** for static validation (optional but recommended):
+8. **cfn-lint** for static validation (optional but recommended):
    ```bash
    python3 -m venv ~/.cfnlint && ~/.cfnlint/bin/pip install cfn-lint
    ~/.cfnlint/bin/cfn-lint deploy/aws/ecs-ec2/main.yaml
    ```
+
+## Transport modes
+
+The template intentionally has no silent cleartext production default:
+
+- **`tls` (default)** — Kestrel listens on `https://0.0.0.0:18887` using
+  `TlsCertificateSecretArn` and `TlsPrivateKeySecretArn`. An ALB may use an
+  HTTPS target group to keep the proxy-to-task hop encrypted.
+- **`trusted-proxy`** — use only when a reverse proxy terminates TLS and sends
+  `X-Forwarded-Proto: https`. Set `TrustedProxyCidrs` to the immediate proxy
+  addresses/subnets. For an ALB, the task security group must allow port 18887
+  only from the ALB security group; the CIDR allowlist alone is not peer
+  authentication. Requests from any other source, or without forwarded HTTPS,
+  are rejected before bearer authentication.
+- **`insecure-development`** — restores the former non-loopback HTTP binding
+  by setting `MCP_ALLOW_INSECURE_HTTP=true`. Startup logs
+  `INSECURE DEVELOPMENT OVERRIDE ACTIVE`; never use this mode for production
+  traffic or send a reusable bearer through it.
+
+Existing stacks that used cleartext must select one of the secure modes before
+updating. If a short-lived compatibility window is unavoidable, choose
+`insecure-development` explicitly so the risk is visible in CloudFormation and
+the container logs.
 
 ## Enabling off-CPU sampling on the EC2 host
 
@@ -216,14 +255,17 @@ Once the service is healthy and reachable from your operator network
 {
   "mcpServers": {
     "dotnet-diag-aws-ec2": {
-      "url": "http://<service-endpoint>:18887/mcp",
+      "url": "https://<service-endpoint>:18887/mcp",
       "headers": {
-        "Authorization": "Bearer <value of MCP_BEARER_TOKEN>"
+        "Authorization": "Bearer <value stored in BearerTokenSecretArn>"
       }
     }
   }
 }
 ```
+
+Prefer OIDC/JWT for managed clients; otherwise keep the bearer scoped through
+`BearerTokenAccessProfile` and rotate it through Secrets Manager.
 
 ## Out of scope
 
@@ -240,14 +282,14 @@ Once the service is healthy and reachable from your operator network
 
 ## Production: pin to a digest
 
-The defaults use a released version tag
-(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.17.0`) rather than `:latest`. For
+The defaults use a version tag
+(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.22.0`) rather than `:latest`. For
 production go one step further and pin to a **content-addressable digest** so
 the exact image bytes are immutable across replicas and rollbacks:
 
 ```bash
 docker buildx imagetools inspect \
-  ghcr.io/pedrosakuma/dotnet-diagnostics:0.17.0 \
+  ghcr.io/pedrosakuma/dotnet-diagnostics:0.22.0 \
   --format '{{json .Manifest}}' | jq -r .digest
 # -> sha256:...
 # Use ghcr.io/pedrosakuma/dotnet-diagnostics@sha256:<digest> in your parameters.

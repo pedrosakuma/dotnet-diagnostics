@@ -582,6 +582,16 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
                 Value = delegationKey,
             },
             new() { Name = "ASPNETCORE_URLS", Value = $"http://0.0.0.0:{_options.ProxyPodPort}" },
+            // This child is not an externally exposed deployment: the orchestrator
+            // reaches it only through the Kubernetes API port-forward stream. Keep
+            // the global non-loopback cleartext guard strict and opt out solely for
+            // this internal, short-lived child. Issue #764 separately hardens the
+            // per-attach credentials and access boundary.
+            new()
+            {
+                Name = DotnetDiagnostics.Mcp.Hosting.TransportSecurityPolicy.AllowInsecureHttpKey,
+                Value = bool.TrueString.ToLowerInvariant(),
+            },
             new()
             {
                 Name = "Diagnostics__AllowSensitiveHeapValues",

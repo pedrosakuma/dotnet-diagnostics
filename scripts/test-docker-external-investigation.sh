@@ -104,11 +104,13 @@ for _ in {1..60}; do
 done
 curl --fail --silent "http://127.0.0.1:${target_port}/weatherforecast" >/dev/null
 
+# Isolated acceptance harness: the published endpoint is host-loopback only.
 docker run --detach \
   --name "$central_name" \
   --network "$network_name" \
   --publish "127.0.0.1:${central_port}:8080" \
   --env ASPNETCORE_URLS=http://0.0.0.0:8080 \
+  --env MCP_ALLOW_INSECURE_HTTP=true \
   --env DOTNET_EnableDiagnostics=0 \
   --env DOTNET_NOLOGO=1 \
   --env Auth__BearerTokens__0__Name=bootstrap-e2e \

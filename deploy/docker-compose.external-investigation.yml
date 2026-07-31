@@ -110,6 +110,8 @@ services:
       - SYS_PTRACE
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
+      # Acceptance-only HTTP on an isolated Docker bridge.
+      MCP_ALLOW_INSECURE_HTTP: "true"
       MCP_BEARER_TOKEN: sidecar-dev-token
       # Static shared secret verifying internal scope-delegation tokens on proxied tool
       # calls forwarded by the central orchestrator. Must match the central's
@@ -148,6 +150,8 @@ services:
         condition: service_healthy
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
+      # Acceptance-only HTTP; host publication remains bound to 127.0.0.1.
+      MCP_ALLOW_INSECURE_HTTP: "true"
       DOTNET_NOLOGO: "1"
       # Scoped bearer token — root covers all orchestrator + diagnostic tools, but
       # attach_to_pod(profileName=...) additionally requires the explicit

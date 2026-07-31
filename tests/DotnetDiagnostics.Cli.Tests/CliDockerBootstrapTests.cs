@@ -54,6 +54,7 @@ public sealed class CliDockerBootstrapTests
         fake.Invocations[2].Arguments.Should().Contain("127.0.0.1:18892:8080");
         fake.Invocations[2].Arguments.Should().NotContain("--mount");
         fake.Invocations[2].Arguments.Should().Contain("TMPDIR=/proc/7/root/tmp");
+        fake.Invocations[2].Arguments.Should().Contain("MCP_ALLOW_INSECURE_HTTP=true");
         fake.Invocations[2].Arguments.Should().Contain("ghcr.io/pedrosakuma/dotnet-diagnostics:edge");
         fake.Invocations[3].Arguments.Should().Equal("inspect", "--type", "container", "api-dotnet-diagnostics");
 

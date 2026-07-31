@@ -45,6 +45,8 @@ services:
       - "127.0.0.1:8787:8080"
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
+      # Local developer compose binds the host side to 127.0.0.1 only.
+      MCP_ALLOW_INSECURE_HTTP: "true"
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-}
       DOTNET_NOLOGO: "1"
     # Required for ClrMD-backed paths (collect_thread_snapshot,

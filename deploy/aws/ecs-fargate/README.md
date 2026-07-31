@@ -47,7 +47,7 @@ For Kubernetes on EKS (or any other cluster), use the generic recipes under
    - Your application image (any registry the task role/execution role can
      pull from; ECR is the simplest path).
    - The diagnostics sidecar image — by default
-     `ghcr.io/pedrosakuma/dotnet-diagnostics:0.17.0`. If your account
+     `ghcr.io/pedrosakuma/dotnet-diagnostics:0.22.0`. If your account
      blocks anonymous GHCR pulls, mirror it to ECR first.
 5. **A bearer token in AWS Secrets Manager** for the MCP HTTP transport:
    ```bash
@@ -56,13 +56,50 @@ For Kubernetes on EKS (or any other cluster), use the generic recipes under
      --name diag-mcp-bearer-token \
      --secret-string "$TOKEN"
    ```
-   The template injects this secret into the diag container as
-   `MCP_BEARER_TOKEN`.
-6. **cfn-lint** for static validation (optional but recommended):
+   The template injects the value as `Auth__BearerTokens__0__Token` and grants
+   the explicit `BearerTokenAccessProfile` scopes. It does not use the legacy
+   root-scoped `MCP_BEARER_TOKEN`.
+6. **A TLS certificate and private key in Secrets Manager.** The default
+   `TransportMode=tls` loads them directly into Kestrel:
+   ```bash
+   aws secretsmanager create-secret \
+     --name diag-mcp-tls-certificate \
+     --secret-string file://tls.crt
+   aws secretsmanager create-secret \
+     --name diag-mcp-tls-private-key \
+     --secret-string file://tls.key
+   ```
+   The certificate SAN must match the hostname used by MCP clients. Store an
+   unencrypted PEM key because Kestrel receives the key non-interactively; IAM
+   limits both secrets to the task execution role.
+7. **cfn-lint** for static validation (optional but recommended):
    ```bash
    python3 -m venv ~/.cfnlint && ~/.cfnlint/bin/pip install cfn-lint
    ~/.cfnlint/bin/cfn-lint deploy/aws/ecs-fargate/main.yaml
    ```
+
+## Transport modes
+
+The template intentionally has no silent cleartext production default:
+
+- **`tls` (default)** — Kestrel listens on `https://0.0.0.0:18887` using
+  `TlsCertificateSecretArn` and `TlsPrivateKeySecretArn`. An ALB may use an
+  HTTPS target group to keep the proxy-to-task hop encrypted.
+- **`trusted-proxy`** — use only when a reverse proxy terminates TLS and sends
+  `X-Forwarded-Proto: https`. Set `TrustedProxyCidrs` to the immediate proxy
+  addresses/subnets. For an ALB, the task security group must allow port 18887
+  only from the ALB security group; the CIDR allowlist alone is not peer
+  authentication. Requests from any other source, or without forwarded HTTPS,
+  are rejected before bearer authentication.
+- **`insecure-development`** — restores the former non-loopback HTTP binding
+  by setting `MCP_ALLOW_INSECURE_HTTP=true`. Startup logs
+  `INSECURE DEVELOPMENT OVERRIDE ACTIVE`; never use this mode for production
+  traffic or send a reusable bearer through it.
+
+Existing stacks that used cleartext must select one of the secure modes before
+updating. If a short-lived compatibility window is unavoidable, choose
+`insecure-development` explicitly so the risk is visible in CloudFormation and
+the container logs.
 
 ## UID matching (read this first)
 
@@ -171,9 +208,9 @@ Once the service is healthy and reachable from your operator network
 {
   "mcpServers": {
     "dotnet-diag-aws": {
-      "url": "http://<service-endpoint>:18887/mcp",
+      "url": "https://<service-endpoint>:18887/mcp",
       "headers": {
-        "Authorization": "Bearer <value of MCP_BEARER_TOKEN>"
+        "Authorization": "Bearer <value stored in BearerTokenSecretArn>"
       }
     }
   }
@@ -181,8 +218,9 @@ Once the service is healthy and reachable from your operator network
 ```
 
 For Claude Code / Copilot CLI / Cursor, replace `<service-endpoint>` with
-whatever address resolves to the task ENI (commonly an internal ALB DNS name
-or a `localhost` port set up via `aws ssm start-session` port forwarding).
+the certificate hostname resolving to the task ENI or internal ALB. Prefer
+OIDC/JWT for managed clients; otherwise keep the bearer scoped through
+`BearerTokenAccessProfile` and rotate it through Secrets Manager.
 
 ## Out of scope
 
@@ -203,8 +241,8 @@ or a `localhost` port set up via `aws ssm start-session` port forwarding).
 
 ## Production: pin to a digest
 
-The defaults above use a released version tag
-(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.17.0`) rather than `:latest`, so a
+The defaults above use a version tag
+(`ghcr.io/pedrosakuma/dotnet-diagnostics:0.22.0`) rather than `:latest`, so a
 new upstream push cannot silently re-deploy under your stack. For production
 workloads go one step further and pin to a **content-addressable digest** so the
 exact image bytes are immutable across replicas, rollbacks, and pull retries:
@@ -212,7 +250,7 @@ exact image bytes are immutable across replicas, rollbacks, and pull retries:
 ```bash
 # Resolve the current digest for the version tag you trust:
 docker buildx imagetools inspect \
-  ghcr.io/pedrosakuma/dotnet-diagnostics:0.17.0 \
+  ghcr.io/pedrosakuma/dotnet-diagnostics:0.22.0 \
   --format '{{json .Manifest}}' | jq -r .digest
 # -> sha256:...
 

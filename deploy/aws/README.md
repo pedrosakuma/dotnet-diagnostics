@@ -8,8 +8,8 @@ runtime's diagnostic IPC socket (created in `/tmp`), so the target app needs
 
 | Recipe | Target host | Multi-container model | External MCP ingress? |
 |---|---|---|---|
-| [`ecs-fargate/`](ecs-fargate/) | ECS on Fargate (1.4.0+) | One task, two containers, shared task-scoped volume on `/tmp` | No — reach via internal ALB or `aws ssm start-session` port forward |
-| [`ecs-ec2/`](ecs-ec2/) | ECS on EC2 (Linux) | One task, two containers, shared task-scoped volume on `/tmp` | No — reach via internal ALB or `aws ssm start-session` port forward |
+| [`ecs-fargate/`](ecs-fargate/) | ECS on Fargate (1.4.0+) | One task, two containers, shared task-scoped volume on `/tmp` | HTTPS by default; direct Kestrel TLS or an explicitly trusted TLS-terminating proxy |
+| [`ecs-ec2/`](ecs-ec2/) | ECS on EC2 (Linux) | One task, two containers, shared task-scoped volume on `/tmp` | HTTPS by default; direct Kestrel TLS or an explicitly trusted TLS-terminating proxy |
 
 For Kubernetes on EKS (or any other cluster), use the generic recipes under
 [`../k8s/`](../k8s/) instead. For Azure-managed container hosts, see
@@ -29,6 +29,14 @@ For Kubernetes on EKS (or any other cluster), use the generic recipes under
   (`collect_sample(kind="off_cpu")`) works because you control the EC2 host
   kernel (`kernel.perf_event_paranoid=-1`) — a knob Fargate does not expose.
   Bring your own EC2 cluster capacity.
+
+Both templates default to `TransportMode=tls`, load a PEM certificate/private
+key from Secrets Manager, and bind Kestrel to HTTPS. They also configure the
+opaque bearer as an explicit scoped token rather than the legacy root token.
+`trusted-proxy` mode supports an ALB or other TLS terminator, but only when its
+source IPs/CIDRs are allowlisted and the task security group admits traffic
+only from that proxy. `insecure-development` is the sole cleartext escape hatch
+and produces a prominent server warning.
 
 ## Future additions
 
