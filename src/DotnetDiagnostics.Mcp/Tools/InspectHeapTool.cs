@@ -4,6 +4,7 @@ using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Tools.Dispatch;
 using DotnetDiagnostics.Mcp.Diagnostics;
 using DotnetDiagnostics.Mcp.Security;
@@ -30,12 +31,13 @@ namespace DotnetDiagnostics.Mcp.Tools;
 [McpServerToolType]
 public sealed class InspectHeapTool
 {
-    internal const string ToolName = "inspect_heap";
-    internal const string SourceLive = "live";
-    internal const string SourceDump = "dump";
-    internal const string SourceGcDump = "gcdump";
+    internal const string ToolName = DiagnosticOperationCatalog.InspectHeap;
+    internal const string SourceLive = DiagnosticOperationCatalog.HeapSources.Live;
+    internal const string SourceDump = DiagnosticOperationCatalog.HeapSources.Dump;
+    internal const string SourceGcDump = DiagnosticOperationCatalog.HeapSources.GcDump;
 
-    private static readonly IReadOnlyList<string> AllowedSources = new[] { SourceLive, SourceDump, SourceGcDump };
+    internal static readonly IReadOnlyList<string> AllowedSources =
+        DiagnosticOperationCatalog.HeapSources.All;
 
     // Static gate is `heap-read` only — the minimum scope shared by both backends.
     // `source="live"` additionally requires `ptrace` at runtime (see below) so that

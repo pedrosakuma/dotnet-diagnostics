@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Tools.Dispatch;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 using DotnetDiagnostics.Mcp.Security;
@@ -31,15 +32,16 @@ namespace DotnetDiagnostics.Mcp.Tools;
 [McpServerToolType]
 public sealed class ListOrchestratorTool
 {
-    public const string KindPods = "pods";
-    public const string KindInvestigations = "investigations";
-    public const string KindExternalProfiles = "external-profiles";
+    public const string KindPods = DiagnosticOperationCatalog.ListOrchestratorKinds.Pods;
+    public const string KindInvestigations = DiagnosticOperationCatalog.ListOrchestratorKinds.Investigations;
+    public const string KindExternalProfiles = DiagnosticOperationCatalog.ListOrchestratorKinds.ExternalProfiles;
 
-    private static readonly IReadOnlyList<string> AllowedKinds = new[] { KindPods, KindInvestigations, KindExternalProfiles };
+    internal static readonly IReadOnlyList<string> AllowedKinds =
+        DiagnosticOperationCatalog.ListOrchestratorKinds.All;
 
     [RequireAnyScope("orchestrator-list", "orchestrator-attach")]
     [McpServerTool(
-        Name = "list_orchestrator",
+        Name = DiagnosticOperationCatalog.ListOrchestrator,
         Title = "List orchestrator entities (Pods, active investigations, or external profiles)",
         Destructive = false,
         ReadOnly = true,

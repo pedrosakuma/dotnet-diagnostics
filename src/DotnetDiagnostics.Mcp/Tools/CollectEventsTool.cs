@@ -22,6 +22,7 @@ using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.ReplicaCounters;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Threads;
@@ -59,33 +60,12 @@ public sealed partial class CollectEventsTool
     /// <summary>Allowed values for the <c>kind</c> discriminator. Order is preserved when
     /// rendered by <see cref="DiscriminatorDispatch"/> in failure envelopes so the LLM sees a
     /// stable hint list.</summary>
-    internal static readonly IReadOnlyList<string> AllowedKinds = new[]
-    {
-        "counters",
-        "exceptions",
-        "crash-guard",
-        "gc",
-        "datas",
-        "catalog",
-        "event_source",
-        "activities",
-        "logs",
-        "jit",
-        "threadpool",
-        "contention",
-        "db",
-        "kestrel",
-        "networking",
-        "requests",
-        "startup",
-        "sweep",
-        "distributed_trace",
-        "replica_counters",
-    };
+    internal static readonly IReadOnlyList<string> AllowedKinds =
+        DiagnosticOperationCatalog.CollectEventsKinds.All;
 
     [RequireAnyScope("read-counters", "eventpipe")]
     [McpServerTool(
-        Name = "collect_events",
+        Name = DiagnosticOperationCatalog.CollectEvents,
         Title = "Collect EventPipe events (counters | exceptions | crash-guard | gc | datas | catalog | event_source | activities | logs | jit | threadpool | contention | db | kestrel | networking | requests | startup | sweep | distributed_trace | replica_counters)",
         Destructive = false,
         // Not read-only: the threshold-gated capture path (triggerWhen + captureKind="dump") can write

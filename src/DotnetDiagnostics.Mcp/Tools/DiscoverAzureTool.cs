@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Tools.Dispatch;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Mcp.Azure;
 using DotnetDiagnostics.Mcp.Azure.Discovery;
 using DotnetDiagnostics.Mcp.Security;
@@ -30,9 +31,9 @@ namespace DotnetDiagnostics.Mcp.Tools;
 [McpServerToolType]
 public sealed class DiscoverAzureTool
 {
-    public const string KindWebApps = "webapps";
-    public const string KindContainerApps = "containerapps";
-    public const string KindAksClusters = "aksclusters";
+    public const string KindWebApps = DiagnosticOperationCatalog.DiscoverAzureKinds.WebApps;
+    public const string KindContainerApps = DiagnosticOperationCatalog.DiscoverAzureKinds.ContainerApps;
+    public const string KindAksClusters = DiagnosticOperationCatalog.DiscoverAzureKinds.AksClusters;
 
     /// <summary>Required scope for this tool. Distinct from the orchestrator scopes
     /// because Azure ARM credentials are a different trust domain.</summary>
@@ -44,12 +45,12 @@ public sealed class DiscoverAzureTool
 
     private const int DefaultLimit = 100;
 
-    private static readonly IReadOnlyList<string> AllowedKinds =
-        new[] { KindWebApps, KindContainerApps, KindAksClusters };
+    internal static readonly IReadOnlyList<string> AllowedKinds =
+        DiagnosticOperationCatalog.DiscoverAzureKinds.All;
 
     [RequireScope(Scope)]
     [McpServerTool(
-        Name = "discover_azure",
+        Name = DiagnosticOperationCatalog.DiscoverAzure,
         Title = "Discover .NET workload candidates in an Azure subscription",
         Destructive = false,
         ReadOnly = true,

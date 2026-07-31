@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using DotnetDiagnostics.Core;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Mcp.Observability;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
@@ -135,7 +136,7 @@ public sealed class OrchestratorTools
 
     [RequireScope("orchestrator-attach")]
     [McpServerTool(
-        Name = "attach_to_pod",
+        Name = DiagnosticOperationCatalog.AttachToPod,
         Title = "Attach to an orchestrated target (external Docker/MCP profile or Kubernetes Pod)",
         Destructive = true,
         ReadOnly = false,
@@ -502,7 +503,7 @@ public sealed class OrchestratorTools
 
     [RequireScope("orchestrator-attach")]
     [McpServerTool(
-        Name = "detach_from_pod",
+        Name = DiagnosticOperationCatalog.DetachFromPod,
         Title = "Close an active investigation handle",
         Destructive = true,
         ReadOnly = false,

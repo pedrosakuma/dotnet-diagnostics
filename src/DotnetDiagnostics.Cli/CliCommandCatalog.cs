@@ -1,3 +1,5 @@
+using DotnetDiagnostics.Core.Safety;
+
 namespace DotnetDiagnostics.Cli;
 
 internal sealed record CliCommandDescriptor(
@@ -39,9 +41,9 @@ internal static class CliCommandCatalog
     public static readonly IReadOnlyList<string> DepthValues = ["summary", "detail", "raw"];
     public static readonly IReadOnlyList<string> CompareModes = ["trend", "dispersion"];
 
-    public static readonly IReadOnlyList<string> HeapSources = ["live", "dump", "gcdump"];
-    public static readonly IReadOnlyList<string> InspectViews = ["triage", "runtime-config", "container"];
-    public static readonly IReadOnlyList<string> ByteKinds = ["module", "dump", "trace"];
+    public static readonly IReadOnlyList<string> HeapSources = DiagnosticOperationCatalog.HeapSources.All;
+    public static readonly IReadOnlyList<string> InspectViews = DiagnosticOperationCatalog.InspectProcessViews.Cli;
+    public static readonly IReadOnlyList<string> ByteKinds = DiagnosticOperationCatalog.ByteKinds.Cli;
     public static readonly IReadOnlyList<string> ByteAssets = ["pe", "pdb"];
     public static readonly IReadOnlyList<string> DumpTypes = ["Mini", "Triage", "WithHeap", "Full"];
 
@@ -57,32 +59,7 @@ internal static class CliCommandCatalog
     ];
 
     public static readonly IReadOnlyList<string> CollectKinds =
-    [
-        "counters",
-        "exceptions",
-        "crash-guard",
-        "gc",
-        "datas",
-        "catalog",
-        "event_source",
-        "activities",
-        "logs",
-        "jit",
-        "threadpool",
-        "contention",
-        "db",
-        "kestrel",
-        "networking",
-        "requests",
-        "startup",
-        "sweep",
-        "cpu",
-        "off_cpu",
-        "off-cpu",
-        "allocation",
-        "native-alloc",
-        "thread-snapshot",
-    ];
+        DiagnosticOperationCatalog.CliCollectKinds;
 
     public const string GlobalOptionsHelpText =
 """
