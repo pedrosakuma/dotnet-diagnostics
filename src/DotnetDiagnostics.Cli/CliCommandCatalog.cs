@@ -132,11 +132,11 @@ notes:
   daemon host's /proc.
 """,
 """
-  dotnet-diagnostics-cli docker-bootstrap --target-container coreclr-sample
-  dotnet-diagnostics-cli docker-bootstrap --target-container api --central-container diagnostics-central
-  dotnet-diagnostics-cli docker-bootstrap --target-container api --central-container diagnostics-central --apply
-  dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar --host-port 18892
-  dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-url http://host.docker.internal:18892/mcp --allow-cidr 172.17.0.1/32
+  dotnet-diagnostics-cli docker-bootstrap --target-container coreclr-sample --acknowledge-risk high
+  dotnet-diagnostics-cli docker-bootstrap --target-container api --central-container diagnostics-central --acknowledge-risk high
+  dotnet-diagnostics-cli docker-bootstrap --target-container api --central-container diagnostics-central --apply --acknowledge-risk high
+  dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar --host-port 18892 --acknowledge-risk high
+  dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-url http://host.docker.internal:18892/mcp --allow-cidr 172.17.0.1/32 --acknowledge-risk high
 """,
             ["--target-container", "--central-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url", "--allow-cidr", "--host-port", "--bearer-token", "--delegation-key", "--wait", "--no-sys-ptrace", "--apply", "--replace"]),
         new(
@@ -231,10 +231,10 @@ collect options:
   dotnet-diagnostics-cli collect --kind counters --pid MyApp --watch 2
   dotnet-diagnostics-cli collect --kind counters --pid MyApp --capture-when 'cpu>85' --capture cpu-sample --window 60
   dotnet-diagnostics-cli collect --kind cpu --pid 1234 --top 20 --export-trace
-  dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --symbol-path /symbols
+  dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --symbol-path /symbols --acknowledge-risk high
   dotnet-diagnostics-cli collect --kind allocation --pid 1234 --top 15
-  dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500
-  dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128
+  dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500 --acknowledge-risk high
+  dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128 --acknowledge-risk high
   dotnet-diagnostics-cli collect --kind datas --pid 1234 --save ./before.json
   dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
   dotnet-diagnostics-cli collect --kind requests --pid MyApp --duration 5 --threshold 2000  # in-flight requests
@@ -314,9 +314,9 @@ inspect-heap options:
                                 (fetch later with get-bytes --kind trace).
 """,
 """
-  dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
+  dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30 --acknowledge-risk high
   dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
-  dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234   # EventPipe, no ptrace, prod-safe
+  dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234 --acknowledge-risk high   # induced GC, no ptrace
   dotnet-diagnostics-cli inspect-heap --launch --acknowledge-risk high -- dotnet App.dll   # ptrace_scope=1, no privilege
 """,
             [
@@ -416,9 +416,9 @@ get-bytes options:
       --dump-file <path>        --kind dump|trace: path to the source .dmp / .nettrace to copy out.
 """,
 """
-  dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll
-  dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
-  dotnet-diagnostics-cli get-bytes --kind trace --dump-file ./cpu.nettrace --out ./cpu.copy.nettrace
+  dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll --acknowledge-risk critical
+  dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp --acknowledge-risk critical
+  dotnet-diagnostics-cli get-bytes --kind trace --dump-file ./cpu.nettrace --out ./cpu.copy.nettrace --acknowledge-risk critical
 """,
             ["--kind", "--out", "--mvid", "--asset", "--dump-file"]),
         new(

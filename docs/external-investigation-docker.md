@@ -98,7 +98,8 @@ CLI command below:
 
 ```bash
 # An installed release selects its exact matching published GHCR semver tag.
-dotnet-diagnostics-cli docker-bootstrap --target-container <running-target-container>
+dotnet-diagnostics-cli docker-bootstrap --target-container <running-target-container> \
+  --acknowledge-risk high
 ```
 
 What it does:
@@ -132,7 +133,8 @@ Example with an explicit profile name / port:
 dotnet-diagnostics-cli docker-bootstrap \
   --target-container api \
   --profile-name api-sidecar \
-  --host-port 18892
+  --host-port 18892 \
+  --acknowledge-risk high
 ```
 
 For repository development, build the changed MCP image locally and override the published default
@@ -143,7 +145,8 @@ docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
 dotnet run --project src/DotnetDiagnostics.Cli -c Release -- \
   docker-bootstrap \
   --target-container api \
-  --sidecar-image dotnet-diagnostics-mcp:dev
+  --sidecar-image dotnet-diagnostics-mcp:dev \
+  --acknowledge-risk high
 ```
 
 `--sidecar-image` always wins. Released CLIs never fall back from an unavailable exact version tag
@@ -158,7 +161,8 @@ dotnet-diagnostics-cli docker-bootstrap \
   --target-container api \
   --host-port 18892 \
   --profile-url http://host.docker.internal:18892/mcp \
-  --allow-cidr 172.17.0.1/32
+  --allow-cidr 172.17.0.1/32 \
+  --acknowledge-risk high
 ```
 
 ### Docker PID-namespace requirement
@@ -183,7 +187,8 @@ For the common Dockerized-central topology, use:
 dotnet-diagnostics-cli docker-bootstrap \
   --target-container api \
   --central-container diagnostics-central \
-  --apply
+  --apply \
+  --acknowledge-risk high
 ```
 
 The operator CLI verifies that the central image supports bootstrap profile files, writes one

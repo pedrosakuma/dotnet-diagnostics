@@ -219,26 +219,30 @@ an unowned file is never overwritten. If restart/health verification fails, the 
 
 ```bash
 # Installed release: pulls the exact matching GHCR semver tag when absent locally.
-dotnet-diagnostics-cli docker-bootstrap --target-container api
+dotnet-diagnostics-cli docker-bootstrap --target-container api --acknowledge-risk high
 
 # Dockerized central: private container-DNS route, no sidecar host port.
 dotnet-diagnostics-cli docker-bootstrap \
   --target-container api \
   --central-container diagnostics-central \
-  --apply
+  --apply \
+  --acknowledge-risk high
 
 # Repository development with local MCP changes:
 docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
 dotnet run --project src/DotnetDiagnostics.Cli -c Release -- \
-  docker-bootstrap --target-container api --sidecar-image dotnet-diagnostics-mcp:dev
+  docker-bootstrap --target-container api --sidecar-image dotnet-diagnostics-mcp:dev \
+  --acknowledge-risk high
 
-dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar --host-port 18892
+dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar \
+  --host-port 18892 --acknowledge-risk high
 
 dotnet-diagnostics-cli docker-bootstrap \
   --target-container api \
   --host-port 18892 \
   --profile-url http://host.docker.internal:18892/mcp \
-  --allow-cidr 172.17.0.1/32
+  --allow-cidr 172.17.0.1/32 \
+  --acknowledge-risk high
 ```
 
 ### `processes`
@@ -372,9 +376,9 @@ dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-whe
 dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-when 'rssMb>2000' --capture dump --window 120 --confirm --acknowledge-risk critical
 dotnet-diagnostics-cli collect --kind cpu --pid 1234 --top 20 --export-trace
 dotnet-diagnostics-cli collect --kind allocation --pid 1234 --top 15
-dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --symbol-path /symbols
-dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500
-dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128
+dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --symbol-path /symbols --acknowledge-risk high
+dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500 --acknowledge-risk high
+dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128 --acknowledge-risk high
 dotnet-diagnostics-cli collect --kind thread-snapshot --dump-file ./app.dmp
 dotnet-diagnostics-cli collect --kind datas --pid 1234 --duration 30 --save ./before.json
 dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
@@ -419,13 +423,13 @@ dotnet-diagnostics-cli collect --kind cpu --pid 1234 --top 20 --export-trace
 dotnet-diagnostics-cli collect --kind allocation --pid 1234 --top 15 --json
 
 # Off-CPU blocking stacks:
-dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10
+dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --acknowledge-risk high
 
 # Native allocation hotspots (calls, not bytes):
-dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500
+dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500 --acknowledge-risk high
 
 # Live or dump-based thread snapshot:
-dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128
+dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128 --acknowledge-risk high
 dotnet-diagnostics-cli collect --kind thread-snapshot --dump-file ./app.dmp --include-runtime-frames
 ```
 
@@ -491,10 +495,10 @@ Walk the managed heap of a live process or a `.dmp`.
 | `--export-trace` | `--source gcdump`: keep the raw `.nettrace` under the artifact root and print its relative path (default off — the trace is deleted after parsing). Fetch it later with `get-bytes --kind trace`. |
 
 ```bash
-dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
+dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30 --acknowledge-risk high
 dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
-dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234   # EventPipe, no ptrace, prod-safe
-dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234 --export-trace  # keep raw .nettrace
+dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234 --acknowledge-risk high   # induced GC, no ptrace
+dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234 --export-trace --acknowledge-risk high  # keep raw .nettrace
 dotnet-diagnostics-cli inspect-heap --launch --acknowledge-risk high -- dotnet App.dll   # ptrace_scope=1, no privilege
 ```
 
@@ -539,9 +543,9 @@ Materialise a module (PE/PDB), a dump file, or a raw `.nettrace` to disk.
 | `--dump-file <path>` | `--kind dump\|trace`: path to the source `.dmp` / `.nettrace` to copy out. |
 
 ```bash
-dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll
-dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
-dotnet-diagnostics-cli get-bytes --kind trace --dump-file ./cpu.nettrace --out ./cpu.copy.nettrace
+dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll --acknowledge-risk critical
+dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp --acknowledge-risk critical
+dotnet-diagnostics-cli get-bytes --kind trace --dump-file ./cpu.nettrace --out ./cpu.copy.nettrace --acknowledge-risk critical
 ```
 
 ### `compare`

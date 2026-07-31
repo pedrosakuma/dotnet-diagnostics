@@ -1,5 +1,7 @@
 using DotnetDiagnostics.Cli;
+using DotnetDiagnostics.Core.Safety;
 using FluentAssertions;
+using System.Text;
 
 namespace DotnetDiagnostics.Cli.Tests;
 
@@ -107,5 +109,94 @@ public sealed class CliDocParityTests
         help.Should().Contain("Inferred deadlock cycle candidates");
         help.Should().Contain("per-edge source/confidence");
         help.Should().NotContain("List all threads");
+    }
+
+    [Fact]
+    public void GeneratedOneShotExamples_AcknowledgeHighAndCriticalRisk()
+    {
+        foreach (var descriptor in CliCommandCatalog.CommandDescriptors)
+        {
+            foreach (var line in descriptor.Examples.Split('\n'))
+            {
+                var trimmed = line.Trim();
+                if (!trimmed.StartsWith("dotnet-diagnostics-cli ", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var tokens = TokenizeShellExample(trimmed);
+                var options = CliOptions.Parse(tokens.Skip(1).ToArray(), out var error);
+                options.Should().NotBeNull(
+                    $"generated example '{trimmed}' must parse: {error}");
+
+                if (options!.ExplainRisk
+                    || options.Command == "query"
+                    || (options.Command == "dump" && !options.Confirm))
+                {
+                    continue;
+                }
+
+                var safety = CliInvocationSafety.ResolveForPreflight(
+                    CliInvocationSafety.CreateRequest(options));
+                if (safety.RiskLevel < InvocationRiskLevel.High)
+                {
+                    continue;
+                }
+
+                options.AcknowledgeRisk.Should().Be(
+                    safety.RiskLevel.ToString().ToLowerInvariant(),
+                    $"generated {safety.RiskLevel} example '{trimmed}' must deliberately acknowledge its exact risk");
+            }
+        }
+    }
+
+    private static IReadOnlyList<string> TokenizeShellExample(string line)
+    {
+        var tokens = new List<string>();
+        var current = new StringBuilder();
+        char? quote = null;
+
+        foreach (var character in line)
+        {
+            if (quote is null && character == '#')
+            {
+                break;
+            }
+
+            if (character is '\'' or '"')
+            {
+                if (quote == character)
+                {
+                    quote = null;
+                    continue;
+                }
+
+                if (quote is null)
+                {
+                    quote = character;
+                    continue;
+                }
+            }
+
+            if (quote is null && char.IsWhiteSpace(character))
+            {
+                if (current.Length > 0)
+                {
+                    tokens.Add(current.ToString());
+                    current.Clear();
+                }
+
+                continue;
+            }
+
+            current.Append(character);
+        }
+
+        if (current.Length > 0)
+        {
+            tokens.Add(current.ToString());
+        }
+
+        return tokens;
     }
 }

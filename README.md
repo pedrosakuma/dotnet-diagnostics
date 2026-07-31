@@ -147,10 +147,11 @@ dotnet tool install -g dotnet-diagnostics-cli
 # One-shot
 dotnet-diagnostics-cli processes
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
-dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
+dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30 --acknowledge-risk high
 
 # Inside the sidecar container (image bundles the CLI):
-kubectl exec -it <pod> -c diagnostics-mcp -- dotnet-diagnostics-cli inspect-heap --pid 1
+kubectl exec -it <pod> -c diagnostics-mcp -- \
+  dotnet-diagnostics-cli inspect-heap --pid 1 --acknowledge-risk high
 ```
 
 A stateful `session` REPL keeps collected handles queryable across commands so you can drill in
