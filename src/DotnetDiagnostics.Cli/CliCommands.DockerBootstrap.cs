@@ -1002,6 +1002,10 @@ internal static partial class CliCommands
             "--label", string.Create(CultureInfo.InvariantCulture, $"io.github.pedrosakuma.dotnet-diagnostics.target={targetContainer}"),
             "--label", string.Create(CultureInfo.InvariantCulture, $"io.github.pedrosakuma.dotnet-diagnostics.target-id={targetContainerId}"),
             "--env", "ASPNETCORE_URLS=http://0.0.0.0:8080",
+            // docker-bootstrap publishes only to host loopback or an explicitly
+            // selected private Docker network. Keep the global guard strict and
+            // opt this local, operator-created investigation sidecar into HTTP.
+            "--env", "MCP_ALLOW_INSECURE_HTTP=true",
             "--env", "DOTNET_EnableDiagnostics=0",
             "--env", "DOTNET_NOLOGO=1",
             "--env", string.Create(CultureInfo.InvariantCulture, $"TMPDIR={targetTmpPath}"),
