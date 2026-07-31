@@ -72,6 +72,9 @@ declares:
 ```jsonc
 {
   "targetContainerName": "app",      // shares PID namespace with the app
+  "env": [
+    { "name": "ASPNETCORE_URLS", "value": "http://127.0.0.1:8787" }
+  ],                                  // loopback-only; reached via port-forward
   "volumeMounts": [
     { "name": "diag-tmp", "mountPath": "/tmp" }   // same socket path
   ],
@@ -80,6 +83,15 @@ declares:
   }
 }
 ```
+
+The reference patch deliberately binds the MCP listener to Pod loopback. Use
+it through `kubectl port-forward` as shown below; do not expose this HTTP
+listener through a Service or ingress. If the listener must bind a
+non-loopback address, configure direct HTTPS or a trusted TLS-terminating proxy
+as documented in [`../../docs/authorization.md`](../../docs/authorization.md#default-policy-by-transport).
+`MCP_ALLOW_INSECURE_HTTP=true` is a development-only, manually chosen escape
+hatch that emits a prominent warning and is intentionally absent from the
+production patch.
 
 Wait for the ephemeral container to be Running:
 
@@ -94,9 +106,9 @@ Then expose the MCP endpoint to the local workstation:
 kubectl -n diagnosticsmcp-central port-forward pod/"$POD" 8787:8787
 ```
 
-The MCP server is now reachable at `http://localhost:8787/mcp`. Use the
-bearer token from the patch (`devtoken` in the sample; rotate via the
-patch's `env` for real deployments).
+The MCP server is now reachable at `http://localhost:8787/mcp` through the
+Kubernetes API port-forward. Use the bearer token from the patch (`devtoken`
+in the sample; rotate via the patch's `env` for real deployments).
 
 ## End-to-end smoke test
 

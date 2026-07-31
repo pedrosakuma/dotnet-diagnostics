@@ -10,7 +10,10 @@ This folder now contains both Kubernetes deployment models shipped by the repo:
 - [`sample-sidecar.yaml`](./sample-sidecar.yaml) — Namespace, Secret, Deployment with **target app + diagnosticsmcp sidecar**, and a ClusterIP Service. Best when investigations are frequent.
 - [`projected-token-auth.yaml`](./projected-token-auth.yaml) — sidecar variant that authenticates an in-cluster client with a **projected ServiceAccount token** validated over OIDC/JWT (secret-less; the static bearer remains a break-glass option). See [`../../docs/client-setup.md`](../../docs/client-setup.md#kubernetes--projected-serviceaccount-token-in-cluster-client--sidecar) and [`../../docs/authorization.md`](../../docs/authorization.md#oidc--jwt-issuers-claims--scopes).
 - [`central-target.yaml`](./central-target.yaml) — prepared target Deployment **without** a sidecar; used by the on-demand and orchestrator flows.
-- [`ephemeral-attach.patch.json`](./ephemeral-attach.patch.json) — raw `pods/ephemeralcontainers` patch for manual on-demand attach.
+- [`ephemeral-attach.patch.json`](./ephemeral-attach.patch.json) — raw
+  `pods/ephemeralcontainers` patch for manual on-demand attach. Its MCP
+  listener is loopback-only and must be reached through `kubectl port-forward`;
+  non-loopback deployments require TLS or an explicitly trusted TLS proxy.
 - [`CENTRAL-TOPOLOGY.md`](./CENTRAL-TOPOLOGY.md) — operator-driven on-demand recipe and background on prepared targets.
 - [`orchestrator/`](./orchestrator) — raw RBAC / Secret / Deployment / Service manifests plus Kustomize overlays for the central orchestrator.
 - [`../helm/README.md`](../helm/README.md) — Helm install path for the same orchestrator surface.
