@@ -570,7 +570,7 @@ containers and a locally built `badcode-sample:dev` target).
 
 This rerun first exercised the recommended operator flow from #737 / PR #739:
 start a standalone `BadCodeSample` container, run
-`dotnet-diagnostics-cli docker-bootstrap --target-container <name>`, restart
+`dotnet-diagnostics-cli docker-bootstrap --target-container <name> --acknowledge-risk high`, restart
 the central MCP with the emitted external-profile config, then
 `list_orchestrator(kind="external-profiles")` → `attach_to_pod(...)`.
 

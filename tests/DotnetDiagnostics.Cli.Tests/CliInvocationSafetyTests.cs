@@ -116,4 +116,53 @@ public sealed class CliInvocationSafetyTests
         CliInvocationSafety.Resolve(options)
             .RiskLevel.Should().Be(InvocationRiskLevel.Critical);
     }
+
+    [Fact]
+    public void RepresentativeCliAndMcpRequests_ResolveIdenticalDescriptors()
+    {
+        var cases = new[]
+        {
+            (
+                new CliOptions { Command = "processes" },
+                InvocationSafetyRequest.Create(
+                    DiagnosticOperationCatalog.InspectProcess,
+                    ("view", DiagnosticOperationCatalog.InspectProcessViews.List))),
+            (
+                new CliOptions { Command = "collect", Kind = "exceptions" },
+                InvocationSafetyRequest.Create(
+                    DiagnosticOperationCatalog.CollectEvents,
+                    ("kind", DiagnosticOperationCatalog.CollectEventsKinds.Exceptions))),
+            (
+                new CliOptions { Command = "inspect-heap", Sources = ["live"] },
+                InvocationSafetyRequest.Create(
+                    DiagnosticOperationCatalog.InspectHeap,
+                    ("source", DiagnosticOperationCatalog.HeapSources.Live))),
+            (
+                new CliOptions { Command = "dump" },
+                InvocationSafetyRequest.Create(DiagnosticOperationCatalog.CollectProcessDump)),
+        };
+
+        foreach (var (cli, mcp) in cases)
+        {
+            CliInvocationSafety.Resolve(cli).Should().Be(
+                InvocationSafetyResolver.Resolve(mcp),
+                $"CLI command '{cli.Command}' must use the same Core descriptor as its MCP equivalent");
+        }
+    }
+
+    [Fact]
+    public void Preflight_UnknownConditionalValue_UsesMaximumSafety()
+    {
+        var request = CliInvocationSafety.CreateRequest(new CliOptions
+        {
+            Command = "query",
+            Handle = "unknown",
+            View = "future-view",
+        });
+
+        var safety = CliInvocationSafety.ResolveForPreflight(request);
+
+        safety.Should().Be(InvocationSafetyRegistry.Get(DiagnosticOperationCatalog.QuerySnapshot).MaximumSafety);
+        safety.RiskLevel.Should().Be(InvocationRiskLevel.Critical);
+    }
 }

@@ -31,6 +31,12 @@ internal sealed record CliOptions
     /// <summary>Emit the raw <see cref="DotnetDiagnostics.Core.DiagnosticResult{T}"/> envelope as JSON (<c>--json</c>).</summary>
     public bool Json { get; init; }
 
+    /// <summary>Explain the resolved Core safety descriptor without executing the command (<c>--explain-risk</c>).</summary>
+    public bool ExplainRisk { get; init; }
+
+    /// <summary>Exact resolved risk level acknowledged by a non-interactive caller (<c>--acknowledge-risk high|critical</c>).</summary>
+    public string? AcknowledgeRisk { get; init; }
+
     /// <summary>Comparable snapshot/diff destination path (<c>--save</c>) for <c>collect</c> / <c>compare</c>.</summary>
     public string? SavePath { get; init; }
 
@@ -448,6 +454,8 @@ internal sealed record CliOptions
         {
             new FlagOptionDescriptor(state => state.Help = true, "--help", "-h"),
             new FlagOptionDescriptor(state => state.Json = true, "--json"),
+            new FlagOptionDescriptor(state => state.ExplainRisk = true, "--explain-risk"),
+            new StringOptionDescriptor((state, value) => state.AcknowledgeRisk = value, "--acknowledge-risk"),
             new StringOptionDescriptor((state, value) => state.SavePath = value, "--save"),
             new FlagOptionDescriptor(state => state.UnsafeProvider = true, "--unsafe-provider"),
             new FlagOptionDescriptor(state => state.ExportTrace = true, "--export-trace"),
@@ -553,6 +561,10 @@ internal sealed record CliOptions
         public string? CommandLineContains { get; set; }
 
         public bool Json { get; set; }
+
+        public bool ExplainRisk { get; set; }
+
+        public string? AcknowledgeRisk { get; set; }
 
         public string? SavePath { get; set; }
 
@@ -724,6 +736,8 @@ internal sealed record CliOptions
                 PidName = PidName,
                 CommandLineContains = CommandLineContains,
                 Json = Json,
+                ExplainRisk = ExplainRisk,
+                AcknowledgeRisk = AcknowledgeRisk,
                 SavePath = SavePath,
                 ComparePaths = ComparePaths,
                 CompletionShell = CompletionShell,

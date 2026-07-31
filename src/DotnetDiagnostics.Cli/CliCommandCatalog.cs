@@ -18,6 +18,8 @@ internal static class CliCommandCatalog
         "-p",
         "--pid",
         "--json",
+        "--explain-risk",
+        "--acknowledge-risk",
         "--launch",
         "-h",
         "--help",
@@ -36,10 +38,12 @@ internal static class CliCommandCatalog
         "--capture-when", "--capture", "--window", "--max-captures", "--command-line-contains",
         "--target-container", "--central-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url",
         "--bearer-token", "--delegation-key", "--allow-cidr", "--host-port", "--wait",
+        "--acknowledge-risk",
     ];
 
     public static readonly IReadOnlyList<string> DepthValues = ["summary", "detail", "raw"];
     public static readonly IReadOnlyList<string> CompareModes = ["trend", "dispersion"];
+    public static readonly IReadOnlyList<string> AcknowledgementValues = ["high", "critical"];
 
     public static readonly IReadOnlyList<string> HeapSources = DiagnosticOperationCatalog.HeapSources.All;
     public static readonly IReadOnlyList<string> InspectViews = DiagnosticOperationCatalog.InspectProcessViews.Cli;
@@ -67,11 +71,16 @@ Options:
   -p, --pid <pid|name>          Target OS process id, or visible .NET process name/prefix
                                 (auto-resolved when only one is visible).
       --json                    Emit the raw DiagnosticResult envelope as JSON.
+      --explain-risk            Print the resolved Core safety descriptor without executing.
+      --acknowledge-risk <level>
+                                Non-interactive acknowledgement for high/critical operations.
+                                The value must exactly match the resolved level: high or critical.
       --launch -- <app> [args]  Dev mode: launch <app> as a child of the CLI so live attach
                                 (inspect-heap --source live, dump) works under ptrace_scope=1 with
                                 no privilege. Supported by capabilities/collect/dump/inspect-heap/
                                 get-bytes and 'session'. The child is terminated on exit. Launch the
-                                app directly ('dotnet App.dll'), not via 'dotnet run'.
+                                app directly ('dotnet App.dll'), not via 'dotnet run'. Put the exact
+                                --acknowledge-risk value before the '--' delimiter.
       --suspend-startup         Cold-start capture for 'collect --kind startup' (with --launch):
                                 launch the target suspended on a reverse-connect DOTNET_DiagnosticPorts
                                 port, arm EventPipe before any managed code runs, then resume — capturing
@@ -123,11 +132,11 @@ notes:
   daemon host's /proc.
 """,
 """
-  dotnet-diagnostics-cli docker-bootstrap --target-container coreclr-sample
-  dotnet-diagnostics-cli docker-bootstrap --target-container api --central-container diagnostics-central
-  dotnet-diagnostics-cli docker-bootstrap --target-container api --central-container diagnostics-central --apply
-  dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar --host-port 18892
-  dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-url http://host.docker.internal:18892/mcp --allow-cidr 172.17.0.1/32
+  dotnet-diagnostics-cli docker-bootstrap --target-container coreclr-sample --acknowledge-risk high
+  dotnet-diagnostics-cli docker-bootstrap --target-container api --central-container diagnostics-central --acknowledge-risk high
+  dotnet-diagnostics-cli docker-bootstrap --target-container api --central-container diagnostics-central --apply --acknowledge-risk high
+  dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar --host-port 18892 --acknowledge-risk high
+  dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-url http://host.docker.internal:18892/mcp --allow-cidr 172.17.0.1/32 --acknowledge-risk high
 """,
             ["--target-container", "--central-container", "--sidecar-name", "--sidecar-image", "--profile-name", "--profile-url", "--allow-cidr", "--host-port", "--bearer-token", "--delegation-key", "--wait", "--no-sys-ptrace", "--apply", "--replace"]),
         new(
@@ -222,14 +231,14 @@ collect options:
   dotnet-diagnostics-cli collect --kind counters --pid MyApp --watch 2
   dotnet-diagnostics-cli collect --kind counters --pid MyApp --capture-when 'cpu>85' --capture cpu-sample --window 60
   dotnet-diagnostics-cli collect --kind cpu --pid 1234 --top 20 --export-trace
-  dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --symbol-path /symbols
+  dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --symbol-path /symbols --acknowledge-risk high
   dotnet-diagnostics-cli collect --kind allocation --pid 1234 --top 15
-  dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500
-  dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128
+  dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500 --acknowledge-risk high
+  dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128 --acknowledge-risk high
   dotnet-diagnostics-cli collect --kind datas --pid 1234 --save ./before.json
   dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
   dotnet-diagnostics-cli collect --kind requests --pid MyApp --duration 5 --threshold 2000  # in-flight requests
-  dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch -- dotnet App.dll  # cold start
+  dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch --acknowledge-risk high -- dotnet App.dll  # cold start
 """,
             [
                 "--kind",
@@ -305,10 +314,10 @@ inspect-heap options:
                                 (fetch later with get-bytes --kind trace).
 """,
 """
-  dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
+  dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30 --acknowledge-risk high
   dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
-  dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234   # EventPipe, no ptrace, prod-safe
-  dotnet-diagnostics-cli inspect-heap --launch -- dotnet App.dll   # ptrace_scope=1, no privilege
+  dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234 --acknowledge-risk high   # induced GC, no ptrace
+  dotnet-diagnostics-cli inspect-heap --launch --acknowledge-risk high -- dotnet App.dll   # ptrace_scope=1, no privilege
 """,
             [
                 "--source",
@@ -330,11 +339,13 @@ dump options:
       --dump-type <type>        Mini (default), Triage, WithHeap or Full.
       --out <dir>               Directory to write the dump into (default: temp artifact root).
       --confirm                 Required to actually write; without it a preview is returned.
+                                One-shot/non-interactive execution also requires
+                                --acknowledge-risk critical. Interactive sessions prompt once.
   Scripting: a preview (run without --confirm) is a success and exits 0. To tell a preview apart
   from a written dump, parse --json: data.kind == "confirmation_required" (preview) versus
   data.kind == "dump_written" (a dump was written to disk).
 """,
-            "  dotnet-diagnostics-cli dump --pid 1234 --dump-type WithHeap --out ./dumps --confirm",
+            "  dotnet-diagnostics-cli dump --pid 1234 --dump-type WithHeap --out ./dumps --confirm --acknowledge-risk critical",
             ["--dump-type", "--out", "--confirm"]),
         new(
             "query",
@@ -405,9 +416,9 @@ get-bytes options:
       --dump-file <path>        --kind dump|trace: path to the source .dmp / .nettrace to copy out.
 """,
 """
-  dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll
-  dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
-  dotnet-diagnostics-cli get-bytes --kind trace --dump-file ./cpu.nettrace --out ./cpu.copy.nettrace
+  dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll --acknowledge-risk critical
+  dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp --acknowledge-risk critical
+  dotnet-diagnostics-cli get-bytes --kind trace --dump-file ./cpu.nettrace --out ./cpu.copy.nettrace --acknowledge-risk critical
 """,
             ["--kind", "--out", "--mvid", "--asset", "--dump-file"]),
         new(
@@ -483,7 +494,7 @@ session notes:
   diag> query --handle <id> --view frame-vars --thread-id 7
   diag> exit
 
-  dotnet-diagnostics-cli session --launch -- dotnet App.dll   # binds the launched child for the session
+  dotnet-diagnostics-cli session --launch --acknowledge-risk high -- dotnet App.dll   # binds the launched child for the session
 """,
             []),
         new(

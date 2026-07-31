@@ -38,10 +38,11 @@ dotnet-diagnostics-cli capabilities --pid 1234
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
 
 # Walk the managed heap (top retained types)
-dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
+dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30 --acknowledge-risk high
 
-# Write a heap dump to disk (preview without --confirm)
-dotnet-diagnostics-cli dump --pid 1234 --dump-type WithHeap --out ./dumps --confirm
+# Write a heap dump to disk
+dotnet-diagnostics-cli dump --pid 1234 --dump-type WithHeap --out ./dumps \
+  --confirm --acknowledge-risk critical
 ```
 
 `--pid` is optional — it is auto-resolved when exactly one .NET process is visible. Pass `--json` on any

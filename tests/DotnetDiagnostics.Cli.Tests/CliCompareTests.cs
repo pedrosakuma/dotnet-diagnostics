@@ -82,7 +82,7 @@ public sealed class CliCompareTests : IDisposable
         var (exit, stdout, stderr) = await RunAsync("compare", before, after);
 
         exit.Should().Be(0);
-        stderr.Should().BeEmpty();
+        stderr.Should().Contain("SAFETY warning [moderate] compare:");
         stdout.Should().Contain("compare: gc-datas Trend before→after verdict=regression");
         stdout.Should().Contain("headline: first→last regression");
         stdout.Should().Contain("heapCountChanges");
@@ -99,7 +99,7 @@ public sealed class CliCompareTests : IDisposable
         var (exit, stdout, stderr) = await RunAsync("compare", before, middle, final, "--save", output);
 
         exit.Should().Be(0);
-        stderr.Should().BeEmpty();
+        stderr.Should().Contain("SAFETY warning [moderate] compare:");
         stdout.Should().Contain("before→final verdict=regression");
         stdout.Should().Contain("trend MonotonicUp");
         File.Exists(output).Should().BeTrue();
@@ -120,7 +120,7 @@ public sealed class CliCompareTests : IDisposable
         var (exit, stdout, stderr) = await RunAsync("compare", "--mode", "dispersion", pod0, pod1, pod2);
 
         exit.Should().Be(0);
-        stderr.Should().BeEmpty();
+        stderr.Should().Contain("SAFETY warning [moderate] compare:");
         stdout.Should().Contain("compare: gc-datas Dispersion pod0→pod2 verdict=dispersed");
         stdout.Should().Contain("outlier: cv");
     }

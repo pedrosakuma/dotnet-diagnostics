@@ -75,12 +75,54 @@ These apply to every command:
 |---|---|
 | `-p, --pid <pid\|name>` | Target OS process id, or a case-insensitive prefix of the visible .NET process entrypoint/name. Purely numeric values are always treated as literal PIDs. **Auto-resolved** when exactly one .NET process is visible and `--pid` is omitted. |
 | `--json` | Emit the raw `DiagnosticResult<T>` envelope as JSON instead of the human table. JSON is never colorized. |
-| `--launch -- <app> [args]` | **Dev mode.** Launch `<app>` as a child of the CLI so live attach works under `kernel.yama.ptrace_scope=1` with no privilege — see the [Linux note](#linux-ptrace-note). Supported by `capabilities`, `collect`, `dump`, `inspect`, `inspect-heap` (live), `get-bytes` (module) and `session`. Mutually exclusive with `--pid`; the child is terminated on exit. |
+| `--explain-risk` | Print the resolved Core safety descriptor and exit without executing the command. With `--json`, emits a machine-readable safety explanation. |
+| `--acknowledge-risk <high\|critical>` | Deliberately authorize a high/critical operation in one-shot or other non-interactive use. The value must exactly match the resolved level. |
+| `--launch -- <app> [args]` | **Dev mode.** Launch `<app>` as a child of the CLI so live attach works under `kernel.yama.ptrace_scope=1` with no privilege — see the [Linux note](#linux-ptrace-note). Supported by `capabilities`, `collect`, `dump`, `inspect`, `inspect-heap` (live), `get-bytes` (module) and `session`. Mutually exclusive with `--pid`; the child is terminated on exit. Because process launch/termination is high risk, place the exact resolved `--acknowledge-risk` before the `--` delimiter. |
 | `--suspend-startup` | **Cold-start capture (#446).** With `--launch`, launches the target *suspended* on a reverse-connect `DOTNET_DiagnosticPorts=…,suspend` port, arms the EventPipe session **before any managed code runs**, then resumes — capturing non-replayed DependencyInjection call-site activity that an attach after startup misses, plus any loader events emitted by the runtime provider. Applies to `collect --kind startup`. The MCP equivalent is gated `collect_events(kind="startup", launch=...)` over stdio. Default off. |
 | `-h, --help` | Show the global usage screen, or a focused screen for `<command> --help`. |
 
 Exit codes: `0` success (a `dump` preview is also a success), `1` a structured failure envelope
-(e.g. `NotSupported`, `PermissionDenied`), `2` a usage / validation error.
+(e.g. `NotSupported`, `PermissionDenied`), `2` a usage / validation or safety-acknowledgement error.
+
+## Safety preflight
+
+The CLI and MCP server resolve the same descriptor from the Core safety registry. The CLI applies it
+before launch, attach, capture, export, or mutation:
+
+- **low** — executes without extra output;
+- **moderate** — prints one concise `SAFETY warning [moderate] ...` line to `stderr`, then executes;
+- **high / critical** — prints `reason`, `targetImpact`, `dataExposure`, `sideEffects`, and the artifact
+  path when applicable. A real interactive `session` asks the operator to type the exact level. One-shot
+  commands and sessions whose stdin is redirected never prompt and require
+  `--acknowledge-risk <exact-level>`.
+
+All warnings and acknowledgement failures go to `stderr`; `stdout` remains valid JSON under `--json`.
+Prompts contain only the canonical descriptor and destination path, not provider values, symptoms,
+credentials, target payloads, or other command data.
+
+Use `--explain-risk` to inspect the resolved descriptor without executing:
+
+```bash
+dotnet-diagnostics-cli inspect-heap --source live --pid 1234 --explain-risk
+dotnet-diagnostics-cli dump --pid 1234 --out ./dumps --confirm --explain-risk --json
+```
+
+Stable CI/non-interactive pattern:
+
+```bash
+# Inspect first; "executed" is false.
+dotnet-diagnostics-cli collect --kind exceptions --pid 1234 --explain-risk --json
+
+# The acknowledgement is deliberately pinned to the currently resolved level.
+dotnet-diagnostics-cli inspect-heap --source live --pid 1234 \
+  --acknowledge-risk high --json > heap.json
+
+dotnet-diagnostics-cli dump --pid 1234 --out ./dumps --confirm \
+  --acknowledge-risk critical --json > dump.json
+```
+
+If a future option changes the resolved level, an old acknowledgement does not silently authorize the
+new operation: the CLI exits `2` before execution and tells the caller which level is required.
 
 > **Progress.** Long one-shot collections (`collect`, `inspect-heap`, `dump`) print an elapsed-time
 > spinner to stderr while they run, on an interactive terminal only. It is suppressed under `--json`
@@ -177,26 +219,30 @@ an unowned file is never overwritten. If restart/health verification fails, the 
 
 ```bash
 # Installed release: pulls the exact matching GHCR semver tag when absent locally.
-dotnet-diagnostics-cli docker-bootstrap --target-container api
+dotnet-diagnostics-cli docker-bootstrap --target-container api --acknowledge-risk high
 
 # Dockerized central: private container-DNS route, no sidecar host port.
 dotnet-diagnostics-cli docker-bootstrap \
   --target-container api \
   --central-container diagnostics-central \
-  --apply
+  --apply \
+  --acknowledge-risk high
 
 # Repository development with local MCP changes:
 docker build -t dotnet-diagnostics-mcp:dev -f deploy/Dockerfile .
 dotnet run --project src/DotnetDiagnostics.Cli -c Release -- \
-  docker-bootstrap --target-container api --sidecar-image dotnet-diagnostics-mcp:dev
+  docker-bootstrap --target-container api --sidecar-image dotnet-diagnostics-mcp:dev \
+  --acknowledge-risk high
 
-dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar --host-port 18892
+dotnet-diagnostics-cli docker-bootstrap --target-container api --profile-name api-sidecar \
+  --host-port 18892 --acknowledge-risk high
 
 dotnet-diagnostics-cli docker-bootstrap \
   --target-container api \
   --host-port 18892 \
   --profile-url http://host.docker.internal:18892/mcp \
-  --allow-cidr 172.17.0.1/32
+  --allow-cidr 172.17.0.1/32 \
+  --acknowledge-risk high
 ```
 
 ### `processes`
@@ -327,17 +373,17 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 dotnet-diagnostics-cli collect --kind counters --pid 1234 --duration 5
 dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --watch 2
 dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-when 'cpu>85' --capture cpu-sample --window 60
-dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-when 'rssMb>2000' --capture dump --window 120 --confirm
+dotnet-diagnostics-cli collect --kind counters --pid CoreClrSample --capture-when 'rssMb>2000' --capture dump --window 120 --confirm --acknowledge-risk critical
 dotnet-diagnostics-cli collect --kind cpu --pid 1234 --top 20 --export-trace
 dotnet-diagnostics-cli collect --kind allocation --pid 1234 --top 15
-dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --symbol-path /symbols
-dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500
-dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128
+dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --symbol-path /symbols --acknowledge-risk high
+dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500 --acknowledge-risk high
+dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128 --acknowledge-risk high
 dotnet-diagnostics-cli collect --kind thread-snapshot --dump-file ./app.dmp
 dotnet-diagnostics-cli collect --kind datas --pid 1234 --duration 30 --save ./before.json
 dotnet-diagnostics-cli collect --kind catalog --pid 1234 --json
 dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
-dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch -- dotnet App.dll   # cold start
+dotnet-diagnostics-cli collect --kind startup --suspend-startup --launch --acknowledge-risk high -- dotnet App.dll   # cold start
 ```
 
 For `--kind logs`, human output places retained entries under an explicit
@@ -377,13 +423,13 @@ dotnet-diagnostics-cli collect --kind cpu --pid 1234 --top 20 --export-trace
 dotnet-diagnostics-cli collect --kind allocation --pid 1234 --top 15 --json
 
 # Off-CPU blocking stacks:
-dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10
+dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --acknowledge-risk high
 
 # Native allocation hotspots (calls, not bytes):
-dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500
+dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500 --acknowledge-risk high
 
 # Live or dump-based thread snapshot:
-dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128
+dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128 --acknowledge-risk high
 dotnet-diagnostics-cli collect --kind thread-snapshot --dump-file ./app.dmp --include-runtime-frames
 ```
 
@@ -405,7 +451,7 @@ dotnet-diagnostics-cli collect --kind thread-snapshot --dump-file ./app.dmp --in
 > of DebugDiag `collect`) — **not** a daemon. It polls one `System.Runtime` EventCounter (`rssMb`=`working-set`,
 > `threadCount`=`threadpool-thread-count`) every `--watch` seconds (default 2) for at most `--window`
 > seconds and captures `--capture` up to `--max-captures` times the moment the predicate trips, then
-> returns. `--capture dump` requires `--confirm` and writes the dump to disk (the path is in the
+> returns. `--capture dump` requires `--confirm` plus critical-risk acknowledgement and writes the dump to disk (the path is in the
 > result). For `cpu-sample` / `heap` / `thread-snapshot`, the result records carry headline capture
 > stats plus a drilldown handle. That handle is only reachable by a later `query` **within the same
 > `session`** (the in-memory handle store is disposed when a one-shot command exits) — run gated
@@ -449,11 +495,11 @@ Walk the managed heap of a live process or a `.dmp`.
 | `--export-trace` | `--source gcdump`: keep the raw `.nettrace` under the artifact root and print its relative path (default off — the trace is deleted after parsing). Fetch it later with `get-bytes --kind trace`. |
 
 ```bash
-dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30
+dotnet-diagnostics-cli inspect-heap --pid 1234 --top-types 30 --acknowledge-risk high
 dotnet-diagnostics-cli inspect-heap --source dump --dump-file ./app.dmp
-dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234   # EventPipe, no ptrace, prod-safe
-dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234 --export-trace  # keep raw .nettrace
-dotnet-diagnostics-cli inspect-heap --launch -- dotnet App.dll   # ptrace_scope=1, no privilege
+dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234 --acknowledge-risk high   # induced GC, no ptrace
+dotnet-diagnostics-cli inspect-heap --source gcdump --pid 1234 --export-trace --acknowledge-risk high  # keep raw .nettrace
+dotnet-diagnostics-cli inspect-heap --launch --acknowledge-risk high -- dotnet App.dll   # ptrace_scope=1, no privilege
 ```
 
 `--source live` attaches via `ptrace(2)` — see the [Linux note](#linux-ptrace-note), which also
@@ -461,24 +507,28 @@ documents the `--launch` zero-privilege dev mode.
 
 ### `dump`
 
-Write a process dump to disk. Requires `--confirm`; without it a **preview** is returned (and still
-exits 0).
+Write a process dump to disk. Without `--confirm`, a **preview** is returned (and still exits 0);
+because no dump is written, the preview does not require risk acknowledgement. Actual execution
+requires both `--confirm` and critical-risk approval.
 
 | Option | Meaning |
 |---|---|
 | `--dump-type <type>` | `Mini` (default), `Triage`, `WithHeap`, `Full`. |
 | `--out <dir>` | Directory to write into (default: temp artifact root). |
-| `--confirm` | Required to actually write. |
+| `--confirm` | Required to actually write. In one-shot/non-interactive use, combine it with `--acknowledge-risk critical`. In an interactive `session`, it enables the single safety prompt; there is no second dump-specific prompt. |
 
 ```bash
-dotnet-diagnostics-cli dump --pid 1234 --dump-type WithHeap --out ./dumps --confirm
+dotnet-diagnostics-cli dump --pid 1234 --dump-type WithHeap --out ./dumps \
+  --confirm --acknowledge-risk critical
 ```
 
 > **Scripting.** Parse `--json` to tell a preview apart from a written dump:
 > `data.kind == "confirmation_required"` (preview) vs `data.kind == "dump_written"`.
 >
 > The preview discloses the resolved artifact directory the dump *would* be written to
-> (`would write to : <dir>`) so you can confirm the destination before re-running with `--confirm`.
+> (`would write to : <dir>`) so you can confirm the destination before re-running with `--confirm`
+> and `--acknowledge-risk critical`. In an interactive `session`, use `--confirm` and type `critical`
+> at the safety prompt.
 
 ### `get-bytes`
 
@@ -493,9 +543,9 @@ Materialise a module (PE/PDB), a dump file, or a raw `.nettrace` to disk.
 | `--dump-file <path>` | `--kind dump\|trace`: path to the source `.dmp` / `.nettrace` to copy out. |
 
 ```bash
-dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll
-dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp
-dotnet-diagnostics-cli get-bytes --kind trace --dump-file ./cpu.nettrace --out ./cpu.copy.nettrace
+dotnet-diagnostics-cli get-bytes --kind module --pid 1234 --mvid <guid> --out ./app.dll --acknowledge-risk critical
+dotnet-diagnostics-cli get-bytes --kind dump --dump-file ./app.dmp --out ./copy.dmp --acknowledge-risk critical
+dotnet-diagnostics-cli get-bytes --kind trace --dump-file ./cpu.nettrace --out ./cpu.copy.nettrace --acknowledge-risk critical
 ```
 
 ### `compare`
@@ -630,7 +680,7 @@ diag(pid 1234)> compare before.json after.json
 diag(pid 1234)> exit
 ```
 
-Starting with `session --launch -- dotnet App.dll` spawns the target as a child, binds its pid for the
+Starting with `session --launch --acknowledge-risk high -- dotnet App.dll` spawns the target as a child, binds its pid for the
 whole session (so live attach works under `ptrace_scope=1` with no privilege), and kills it on exit.
 `--launch` is a startup-only flag — it cannot be repeated per-command inside the REPL. The bound pid is
 also **fixed for the session's lifetime** (issue #659): since the zero-privilege attach and the child's
@@ -845,8 +895,8 @@ Debian/Ubuntu/WSL the default `kernel.yama.ptrace_scope=1` blocks same-UID peer 
   change and no capability:
 
   ```bash
-  dotnet-diagnostics-cli inspect-heap --launch -- dotnet App.dll
-  dotnet-diagnostics-cli session --launch -- dotnet App.dll   # binds the child for the whole session
+  dotnet-diagnostics-cli inspect-heap --launch --acknowledge-risk high -- dotnet App.dll
+  dotnet-diagnostics-cli session --launch --acknowledge-risk high -- dotnet App.dll   # binds the child for the whole session
   ```
 
   Launch the app **directly** (`dotnet App.dll` or a published apphost), not via `dotnet run` (which
