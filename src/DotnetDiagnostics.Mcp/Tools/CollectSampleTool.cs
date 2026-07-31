@@ -8,6 +8,7 @@ using DotnetDiagnostics.Core.NativeAlloc;
 using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Tools.Dispatch;
 using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Security;
@@ -32,23 +33,17 @@ namespace DotnetDiagnostics.Mcp.Tools;
 [McpServerToolType]
 public sealed class CollectSampleTool
 {
-    internal const string ToolName = "collect_sample";
-    internal const string KindCpu = "cpu";
-    internal const string KindOffCpu = "off_cpu";
-    internal const string KindAllocation = "allocation";
-    internal const string KindNativeAlloc = "native-alloc";
-    internal const string KindMethodParams = "method-params";
+    internal const string ToolName = DiagnosticOperationCatalog.CollectSample;
+    internal const string KindCpu = DiagnosticOperationCatalog.CollectSampleKinds.Cpu;
+    internal const string KindOffCpu = DiagnosticOperationCatalog.CollectSampleKinds.OffCpu;
+    internal const string KindAllocation = DiagnosticOperationCatalog.CollectSampleKinds.Allocation;
+    internal const string KindNativeAlloc = DiagnosticOperationCatalog.CollectSampleKinds.NativeAlloc;
+    internal const string KindMethodParams = DiagnosticOperationCatalog.CollectSampleKinds.MethodParameters;
 
     /// <summary>Allowed values for the <c>kind</c> discriminator. Order is preserved when
     /// rendered by <see cref="DiscriminatorDispatch"/> in failure envelopes.</summary>
-    internal static readonly IReadOnlyList<string> AllowedKinds = new[]
-    {
-        KindCpu,
-        KindOffCpu,
-        KindAllocation,
-        KindNativeAlloc,
-        KindMethodParams,
-    };
+    internal static readonly IReadOnlyList<string> AllowedKinds =
+        DiagnosticOperationCatalog.CollectSampleKinds.All;
 
     [RequireScope("eventpipe")]
     [McpServerTool(

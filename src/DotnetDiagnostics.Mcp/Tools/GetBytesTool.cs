@@ -4,6 +4,7 @@ using DotnetDiagnostics.Core.Artifacts;
 using DotnetDiagnostics.Core.Bytes;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Tools.Dispatch;
 using DotnetDiagnostics.Mcp.Security;
 using Microsoft.Extensions.Logging;
@@ -26,16 +27,17 @@ namespace DotnetDiagnostics.Mcp.Tools;
 [McpServerToolType]
 public sealed class GetBytesTool
 {
-    internal const string ToolName = "get_bytes";
-    internal const string KindModule = "module";
-    internal const string KindDump = "dump";
-    internal const string KindTrace = "trace";
-    internal const string KindList = "list";
-    internal const string KindDelete = "delete";
+    internal const string ToolName = DiagnosticOperationCatalog.GetBytes;
+    internal const string KindModule = DiagnosticOperationCatalog.ByteKinds.Module;
+    internal const string KindDump = DiagnosticOperationCatalog.ByteKinds.Dump;
+    internal const string KindTrace = DiagnosticOperationCatalog.ByteKinds.Trace;
+    internal const string KindList = DiagnosticOperationCatalog.ByteKinds.List;
+    internal const string KindDelete = DiagnosticOperationCatalog.ByteKinds.Delete;
 
     internal const string DeleteArtifactScope = ToolInvocationScopeResolver.DeleteArtifactScope;
 
-    internal static readonly IReadOnlyList<string> AllowedKinds = new[] { KindModule, KindDump, KindTrace, KindList, KindDelete };
+    internal static readonly IReadOnlyList<string> AllowedKinds =
+        DiagnosticOperationCatalog.ByteKinds.All;
 
     [RequireScope("module-bytes-read")]
     [McpServerTool(

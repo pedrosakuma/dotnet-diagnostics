@@ -23,6 +23,7 @@ using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Threads;
@@ -64,9 +65,9 @@ namespace DotnetDiagnostics.Mcp.Tools;
 [McpServerToolType]
 public sealed class CollectBatchTool
 {
-    internal const string ToolName = "collect_batch";
-    internal const string ToolCollectSample = "collect_sample";
-    internal const string ToolCollectEvents = "collect_events";
+    internal const string ToolName = DiagnosticOperationCatalog.CollectBatch;
+    internal const string ToolCollectSample = DiagnosticOperationCatalog.CollectSample;
+    internal const string ToolCollectEvents = DiagnosticOperationCatalog.CollectEvents;
     internal const string Gen2MeterSpec = @"System.Runtime\dotnet.gc.collections";
     internal const int Gen2MeterMaxTimeSeries = 8;
     private const string KindSweep = "sweep";
@@ -78,7 +79,8 @@ public sealed class CollectBatchTool
     /// <c>method-params</c> is excluded from batching entirely (see <see cref="ValidateEntries"/>),
     /// so this is the only scope any collect_sample entry can ever need here.
     /// </summary>
-    internal static readonly IReadOnlyList<string> AllowedTools = new[] { ToolCollectSample, ToolCollectEvents };
+    internal static readonly IReadOnlyList<string> AllowedTools =
+        DiagnosticOperationCatalog.CollectBatchTools.All;
 
     /// <summary>Bound on concurrent EventPipe/ETW sessions a single call may open against one
     /// process (resource-boundedness discipline, docs/resource-boundedness.md).</summary>

@@ -7,6 +7,7 @@ using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.MethodParameters;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Symbols;
 using DotnetDiagnostics.Core.Threads;
@@ -25,8 +26,8 @@ public sealed partial class QuerySnapshotTool
             [DiagnosticTools.HeapSnapshotKind] = HandleHeapSnapshotAsync,
             [DiagnosticTools.ThreadSnapshotKind] = HandleThreadSnapshotAsync,
             [DiagnosticTools.OffCpuHandleKind] = HandleOffCpuSnapshotAsync,
-            ["cpu-sample"] = HandleCpuSampleAsync,
-            ["allocation-sample"] = HandleCpuSampleAsync,
+            [DiagnosticOperationCatalog.QuerySnapshotHandleKinds.CpuSample] = HandleCpuSampleAsync,
+            [DiagnosticOperationCatalog.QuerySnapshotHandleKinds.AllocationSample] = HandleCpuSampleAsync,
             [DiagnosticTools.NativeAllocHandleKind] = HandleCpuSampleAsync,
             [CollectionHandleKinds.Counters] = HandleCountersCollectionAsync,
             [CollectionHandleKinds.EventCatalog] = HandleEventCatalogAsync,

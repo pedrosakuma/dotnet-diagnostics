@@ -8,6 +8,7 @@ using DotnetDiagnostics.Core.Counters;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Preflight;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Tools.Dispatch;
 using DotnetDiagnostics.Core.Triage;
 using DotnetDiagnostics.Mcp.Security;
@@ -51,52 +52,41 @@ namespace DotnetDiagnostics.Mcp.Tools;
 public sealed class InspectProcessTool
 {
     /// <summary>List every .NET process visible to the diagnostic IPC. Does not require <c>processId</c>.</summary>
-    public const string ListView = "list";
+    public const string ListView = DiagnosticOperationCatalog.InspectProcessViews.List;
 
     /// <summary>Fetch metadata for one .NET process. Auto-resolves <c>processId</c> when omitted.</summary>
-    public const string InfoView = "info";
+    public const string InfoView = DiagnosticOperationCatalog.InspectProcessViews.Info;
 
     /// <summary>Probe a target's diagnostic capability matrix (CoreCLR vs NativeAOT, CPU sampling, gcdump).</summary>
-    public const string CapabilitiesView = "capabilities";
+    public const string CapabilitiesView = DiagnosticOperationCatalog.InspectProcessViews.Capabilities;
 
     /// <summary>Read Linux cgroup v2 container signals (CPU throttling, memory, PSI, OOM kills).</summary>
-    public const string ContainerView = "container";
+    public const string ContainerView = DiagnosticOperationCatalog.InspectProcessViews.Container;
 
     /// <summary>Sample OS-level memory growth over a configurable window. Works on any OS process.</summary>
-    public const string MemoryTrendView = "memory_trend";
+    public const string MemoryTrendView = DiagnosticOperationCatalog.InspectProcessViews.MemoryTrend;
 
     /// <summary>Inspect GC / ThreadPool / tiered-comp settings, filtered env vars and AppContext switches.</summary>
-    public const string RuntimeConfigView = "runtime-config";
+    public const string RuntimeConfigView = DiagnosticOperationCatalog.InspectProcessViews.RuntimeConfig;
 
     /// <summary>Inspect FD / handle / socket state, optionally over a short trend window.</summary>
-    public const string ResourcesView = "resources";
+    public const string ResourcesView = DiagnosticOperationCatalog.InspectProcessViews.Resources;
 
     /// <summary>Capture in-flight ASP.NET Core requests and enrich them with the current thread stack.</summary>
-    public const string RequestsNowView = "requests-now";
+    public const string RequestsNowView = DiagnosticOperationCatalog.InspectProcessViews.RequestsNow;
 
     /// <summary>Fast triage: collect counters, separate observed signals from hypotheses, and return drill-down hints.</summary>
-    public const string TriageView = "triage";
+    public const string TriageView = DiagnosticOperationCatalog.InspectProcessViews.Triage;
 
     /// <summary>Phase 13 environment self-diagnosis: target-optional, remediation-first readiness checks (UID, ptrace, perf).</summary>
-    public const string PreflightView = "preflight";
+    public const string PreflightView = DiagnosticOperationCatalog.InspectProcessViews.Preflight;
 
-    private static readonly IReadOnlyList<string> AllowedViews = new[]
-    {
-        ListView,
-        InfoView,
-        CapabilitiesView,
-        ContainerView,
-        MemoryTrendView,
-        RuntimeConfigView,
-        ResourcesView,
-        RequestsNowView,
-        TriageView,
-        PreflightView,
-    };
+    internal static readonly IReadOnlyList<string> AllowedViews =
+        DiagnosticOperationCatalog.InspectProcessViews.All;
 
     [RequireAnyScope("read-counters", "ptrace")]
     [McpServerTool(
-        Name = "inspect_process",
+        Name = DiagnosticOperationCatalog.InspectProcess,
         Title = "Inspect a .NET process — slow app? high CPU/latency? memory growing? start with view=triage",
         Destructive = false,
         ReadOnly = true,

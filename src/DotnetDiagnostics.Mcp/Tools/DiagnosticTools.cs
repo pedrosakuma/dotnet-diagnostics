@@ -31,6 +31,7 @@ using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.Preflight;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Startup;
 using DotnetDiagnostics.Core.ThreadPool;
 using DotnetDiagnostics.Core.Threads;
@@ -927,7 +928,7 @@ public sealed class DiagnosticTools
 
     [RequireScope("dump-write", "ptrace")]
     [McpServerTool(
-        Name = "collect_process_dump",
+        Name = DiagnosticOperationCatalog.CollectProcessDump,
         Title = "Write process dump",
         Destructive = true,
         ReadOnly = false,
@@ -1134,7 +1135,7 @@ public sealed class DiagnosticTools
 
     [RequireScope("ptrace")]
     [McpServerTool(
-        Name = "collect_thread_snapshot",
+        Name = DiagnosticOperationCatalog.CollectThreadSnapshot,
         Title = "Capture managed threads + locks from a live process or dump",
         Destructive = false,
         ReadOnly = true,
@@ -1188,7 +1189,7 @@ public sealed class DiagnosticTools
 
     [RequireScope("ptrace")]
     [McpServerTool(
-        Name = "capture_method_bytes",
+        Name = DiagnosticOperationCatalog.CaptureMethodBytes,
         Title = "Capture JIT-emitted native code for a managed method",
         Destructive = false,
         ReadOnly = true,
@@ -1360,7 +1361,7 @@ public sealed class DiagnosticTools
 
     [RequireScope("investigation-export")]
     [McpServerTool(
-        Name = "start_investigation",
+        Name = DiagnosticOperationCatalog.StartInvestigation,
         Title = "Plan a .NET performance investigation (decision tree)",
         Destructive = false,
         ReadOnly = true,
@@ -1405,7 +1406,7 @@ public sealed class DiagnosticTools
 
     [RequireScope("investigation-export")]
     [McpServerTool(
-        Name = "export_investigation_summary",
+        Name = DiagnosticOperationCatalog.ExportInvestigationSummary,
         Title = "Export portable investigation summary",
         Destructive = false,
         ReadOnly = true,
@@ -1461,7 +1462,7 @@ public sealed class DiagnosticTools
 
     [RequireScope("investigation-export")]
     [McpServerTool(
-        Name = "compare_to_baseline",
+        Name = DiagnosticOperationCatalog.CompareToBaseline,
         Title = "Compare investigation summary to baseline",
         Destructive = false,
         ReadOnly = true,

@@ -11,6 +11,7 @@ using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.MethodParameters;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Symbols;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.UseCases;
@@ -45,7 +46,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 [McpServerToolType]
 public sealed partial class QuerySnapshotTool
 {
-    internal const string ToolName = "query_snapshot";
+    internal const string ToolName = DiagnosticOperationCatalog.QuerySnapshot;
 
     // View constants accepted for the cpu-sample / allocation-sample handle kinds.
     // CPU/allocation handles historically exposed one call-tree projection. The canonical
