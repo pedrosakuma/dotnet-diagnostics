@@ -91,7 +91,7 @@ public sealed class McpInvocationSafetyTests : IClassFixture<McpInvocationSafety
     }
 
     [Fact]
-    public async Task HighCall_MissingOrWrongAcknowledgement_FailsBeforeInvocation_ThenExactPreviewPasses()
+    public async Task HighCalls_MissingOrWrongAcknowledgement_FailBeforeInvocation_ThenExactPreviewPasses()
     {
         await using var client = await ConnectAsync();
         var baseArguments = new Dictionary<string, object?>
@@ -137,6 +137,51 @@ public sealed class McpInvocationSafetyTests : IClassFixture<McpInvocationSafety
         Structured(acknowledged).GetProperty("safety").GetProperty("riskLevel").GetString().Should().Be("high");
         Structured(acknowledged).GetProperty("error").GetProperty("kind").GetString()
             .Should().NotBe("SafetyAcknowledgementRequired");
+
+        var attachInvocations = 0;
+        var attachParameters = new CallToolRequestParams
+        {
+            Name = DiagnosticOperationCatalog.AttachToPod,
+            Arguments = new Dictionary<string, JsonElement>
+            {
+                ["namespace"] = JsonSerializer.SerializeToElement("diagnostics"),
+                ["podName"] = JsonSerializer.SerializeToElement("api-0"),
+                ["requirePreparedTarget"] = JsonSerializer.SerializeToElement(true),
+            },
+        };
+        var attachPreview = await McpInvocationSafetyFilter.InvokeAsync(
+            attachParameters,
+            server: null,
+            handles: null,
+            _ =>
+            {
+                attachInvocations++;
+                return ValueTask.FromResult(new CallToolResult());
+            },
+            logger: null,
+            CancellationToken.None);
+
+        attachInvocations.Should().Be(0, "a Kubernetes attach must not start before acknowledgement");
+        ApprovalStatus(attachPreview).Should().Be("acknowledgement-required");
+        Structured(attachPreview).GetProperty("safety").GetProperty("riskLevel").GetString().Should().Be("high");
+
+        attachParameters.Arguments[McpInvocationSafetyFilter.ReservedArgumentName] =
+            JsonSerializer.SerializeToElement(AcknowledgementFrom(attachPreview));
+        var attached = await McpInvocationSafetyFilter.InvokeAsync(
+            attachParameters,
+            server: null,
+            handles: null,
+            _ =>
+            {
+                attachInvocations++;
+                return ValueTask.FromResult(new CallToolResult());
+            },
+            logger: null,
+            CancellationToken.None);
+
+        attachInvocations.Should().Be(1, "the exact request-bound acknowledgement authorizes one invocation");
+        attachParameters.Arguments.Should().NotContainKey(McpInvocationSafetyFilter.ReservedArgumentName);
+        attached.IsError.Should().NotBeTrue();
     }
 
     [Fact]
