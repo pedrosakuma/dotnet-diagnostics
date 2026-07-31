@@ -90,10 +90,11 @@ internal static partial class CliCommands
                 services.GetRequiredService<IEventCatalogCollector>(), resolver, handles,
                 pid, duration, NullIfEmptyList(options.Providers), options.MaxEvents ?? 200, depth, cancellationToken).ConfigureAwait(false)),
 
-            "logs" => Wrap(options, await EventCollectionUseCases.CollectLogs(
+            "logs" => BuildResultWithComparableSave(options, await EventCollectionUseCases.CollectLogs(
                 services.GetRequiredService<ILogCollector>(), resolver, handles,
                 pid, duration, NullIfEmptyList(options.Categories), options.MinLevel ?? "Information",
-                options.MaxEvents ?? 500, 4096, depth, cancellationToken).ConfigureAwait(false)),
+                options.MaxEvents ?? 500, 4096, depth, cancellationToken).ConfigureAwait(false),
+                RenderLogEvidence),
 
             "jit" => Wrap(options, await EventCollectionUseCases.CollectJit(
                 services.GetRequiredService<IJitCollector>(), resolver, handles,
