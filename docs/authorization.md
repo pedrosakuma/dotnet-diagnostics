@@ -94,7 +94,9 @@ auto-satisfy any unconditional explicit-scope re-checks such as CPU evidence exp
 |---|---|
 | **stdio** (`--stdio`) | Synthetic in-memory token with `*` scope. The MCP client is the process owner; no bearer ever crosses a network. |
 | **Loopback HTTP** (`127.0.0.1` / `[::1]`) | Configured `Auth:BearerTokens` if present, else legacy `MCP_BEARER_TOKEN` → `*`. Developer ergonomics; unreachable from outside the host. |
-| **Non-loopback HTTP** | `Auth:BearerTokens` is **required** — each entry must declare a non-empty scope set. Legacy `MCP_BEARER_TOKEN` is accepted but logs a deprecation `Warning`; a future release removes that fallback and refuses to start without scoped bearers. |
+| **Non-loopback HTTPS** | `Auth:BearerTokens` or OIDC is required. Legacy `MCP_BEARER_TOKEN` is accepted with a deprecation warning, but scoped bearer or OIDC is preferred. |
+| **Non-loopback HTTP behind trusted TLS proxy** | Requires explicit `MCP_TRUSTED_PROXY_CIDRS`. Only `X-Forwarded-Proto` from those immediate proxy IPs/networks is honored, and non-loopback requests that do not resolve to HTTPS are rejected before authentication. |
+| **Other non-loopback HTTP** | Refused at startup. `MCP_ALLOW_INSECURE_HTTP=true` is an explicitly unsafe development-only escape hatch and emits a prominent warning. |
 
 Loopback vs non-loopback is chosen from the **server bind address at startup**, not from
 per-request forwarded headers. Docker `-p <host>:8080` / Compose port publishing is
@@ -106,6 +108,14 @@ workflow needs any literal modifier scope or unconditional explicit grant
 (`sensitive-heap-read`, `sensitive-parameter-read`, `module-bytes-read`, CPU evidence
 export's explicit `eventpipe`, etc.), configure `Auth:BearerTokens` and list those
 scopes explicitly.
+
+For direct Kestrel TLS in container platforms that inject secrets as environment
+variables, set both `MCP_TLS_CERTIFICATE_PEM` and `MCP_TLS_PRIVATE_KEY_PEM`; the
+certificate and unencrypted private key are loaded in memory and must match. For TLS
+termination at a reverse proxy, list only the immediate proxy IPs/CIDRs in
+`MCP_TRUSTED_PROXY_CIDRS` (comma or semicolon separated) and also restrict network
+ingress to that proxy. The allowlist is deliberately never inferred from
+`X-Forwarded-*` headers.
 
 ### Investigation ownership identity
 

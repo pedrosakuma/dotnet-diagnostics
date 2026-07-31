@@ -13,21 +13,21 @@ internal static class BindingInspector
     private static readonly string[] UrlConfigKeys =
         { "urls", "ASPNETCORE_URLS", "DOTNET_URLS" };
 
-    // Port-only env keys — Kestrel binds these to wildcard interfaces (every NIC) by
-    // definition. Any non-empty value means a non-loopback listener; we cannot run
-    // them through IsNonLoopbackUrl because Uri.TryCreate("http://*:port") fails to
-    // parse the wildcard host and would otherwise silently slip past the guard.
-    private static readonly string[] PortOnlyConfigKeys =
+    private static readonly string[] HttpPortOnlyConfigKeys =
     {
-        "HTTP_PORTS", "HTTPS_PORTS",
-        "ASPNETCORE_HTTP_PORTS", "ASPNETCORE_HTTPS_PORTS",
-        "DOTNET_HTTP_PORTS", "DOTNET_HTTPS_PORTS",
+        "HTTP_PORTS", "ASPNETCORE_HTTP_PORTS", "DOTNET_HTTP_PORTS",
+    };
+
+    private static readonly string[] HttpsPortOnlyConfigKeys =
+    {
+        "HTTPS_PORTS", "ASPNETCORE_HTTPS_PORTS", "DOTNET_HTTPS_PORTS",
     };
 
     /// <summary>Returns <c>true</c> when the host is configured to bind to any
     /// non-loopback address via <c>app.Urls</c>, the <c>urls</c> / <c>ASPNETCORE_URLS</c>
     /// / <c>DOTNET_URLS</c> keys, the port-only env keys (<c>HTTP_PORTS</c> family —
-    /// always wildcard), or <c>Kestrel:Endpoints:*:Url</c>.</summary>
+    /// always wildcard), or <c>Kestrel:Endpoints:*:Url</c>. Kestrel endpoints and
+    /// explicit URLs take precedence over the lower-priority port-only keys.</summary>
     public static bool HasNonLoopbackBinding(WebApplication app, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(app);
@@ -37,15 +37,39 @@ internal static class BindingInspector
     /// <summary>Overload that takes the <c>app.Urls</c> collection directly, for unit
     /// tests that cannot construct a real <see cref="WebApplication"/>.</summary>
     public static bool HasNonLoopbackBinding(ICollection<string> appUrls, IConfiguration configuration)
+        => InspectBindings(appUrls, configuration).HasNonLoopbackBinding;
+
+    /// <summary>Returns <c>true</c> when any non-loopback listener uses cleartext
+    /// HTTP. HTTPS listeners and loopback-only HTTP listeners do not match.</summary>
+    public static bool HasNonLoopbackHttpBinding(WebApplication app, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        return HasNonLoopbackHttpBinding(app.Urls, configuration);
+    }
+
+    /// <summary>Collection overload for tests and pre-start policy checks.</summary>
+    public static bool HasNonLoopbackHttpBinding(ICollection<string> appUrls, IConfiguration configuration)
+        => InspectBindings(appUrls, configuration).HasNonLoopbackHttpBinding;
+
+    private static BindingExposure InspectBindings(ICollection<string> appUrls, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(appUrls);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        var candidates = new List<string>(capacity: 8);
+        var kestrelEndpoints = configuration.GetSection("Kestrel:Endpoints")
+            .GetChildren()
+            .Select(static endpoint => endpoint["Url"])
+            .Where(static url => !string.IsNullOrWhiteSpace(url))
+            .Select(static url => url!)
+            .ToArray();
+        if (kestrelEndpoints.Length > 0)
+        {
+            return InspectUrls(kestrelEndpoints);
+        }
 
         if (appUrls.Count > 0)
         {
-            candidates.AddRange(appUrls);
+            return InspectUrls(appUrls);
         }
 
         foreach (var key in UrlConfigKeys)
@@ -53,68 +77,149 @@ internal static class BindingInspector
             var value = configuration[key];
             if (!string.IsNullOrWhiteSpace(value))
             {
-                candidates.AddRange(value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                return InspectUrls(value.Split(
+                    ';',
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
             }
         }
 
-        foreach (var key in PortOnlyConfigKeys)
+        foreach (var key in HttpPortOnlyConfigKeys)
         {
-            var value = configuration[key];
-            if (!string.IsNullOrWhiteSpace(value))
+            if (!string.IsNullOrWhiteSpace(configuration[key]))
             {
-                return true;
+                return new BindingExposure(
+                    HasNonLoopbackBinding: true,
+                    HasNonLoopbackHttpBinding: true);
             }
         }
 
-        foreach (var endpoint in configuration.GetSection("Kestrel:Endpoints").GetChildren())
+        foreach (var key in HttpsPortOnlyConfigKeys)
         {
-            var url = endpoint["Url"];
-            if (!string.IsNullOrWhiteSpace(url))
+            if (!string.IsNullOrWhiteSpace(configuration[key]))
             {
-                candidates.Add(url);
+                return new BindingExposure(
+                    HasNonLoopbackBinding: true,
+                    HasNonLoopbackHttpBinding: false);
             }
         }
 
-        foreach (var raw in candidates)
-        {
-            if (IsNonLoopbackUrl(raw))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return default;
     }
 
-    public static bool IsNonLoopbackUrl(string raw)
+    private static BindingExposure InspectUrls(IEnumerable<string> urls)
+    {
+        var hasNonLoopbackBinding = false;
+        foreach (var raw in urls)
+        {
+            var exposure = InspectUrl(raw);
+            hasNonLoopbackBinding |= exposure.HasNonLoopbackBinding;
+            if (exposure.HasNonLoopbackHttpBinding)
+            {
+                return new BindingExposure(
+                    HasNonLoopbackBinding: true,
+                    HasNonLoopbackHttpBinding: true);
+            }
+        }
+
+        return new BindingExposure(
+            hasNonLoopbackBinding,
+            HasNonLoopbackHttpBinding: false);
+    }
+
+    public static bool IsNonLoopbackUrl(string raw) => InspectUrl(raw).HasNonLoopbackBinding;
+
+    private static BindingExposure InspectUrl(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
         {
-            return false;
+            return default;
+        }
+
+        raw = raw.Trim();
+        if (TryInspectKestrelWildcard(raw, out var wildcardExposure))
+        {
+            return wildcardExposure;
         }
 
         if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri))
         {
-            return false;
+            return default;
         }
 
         var host = uri.Host;
         if (string.IsNullOrEmpty(host))
         {
-            return false;
+            return default;
         }
 
         if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
         {
+            return default;
+        }
+
+        bool nonLoopback;
+        if (System.Net.IPAddress.TryParse(host, out var ip))
+        {
+            nonLoopback = !System.Net.IPAddress.IsLoopback(ip);
+        }
+        else
+        {
+            // Wildcards and DNS names both represent a network-visible listener.
+            nonLoopback = true;
+        }
+
+        return new BindingExposure(
+            nonLoopback,
+            nonLoopback && string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool TryInspectKestrelWildcard(
+        string raw,
+        out BindingExposure exposure)
+    {
+        exposure = default;
+
+        var separator = raw.IndexOf("://", StringComparison.Ordinal);
+        if (separator <= 0)
+        {
             return false;
         }
 
-        if (System.Net.IPAddress.TryParse(host, out var ip))
+        var hostStart = separator + 3;
+        if (hostStart >= raw.Length ||
+            raw[hostStart] is not ('*' or '+'))
         {
-            return !System.Net.IPAddress.IsLoopback(ip);
+            return false;
         }
 
-        // Hostname that doesn't resolve at parse time (e.g. DNS name) — treat as non-loopback.
-        return true;
+        var hostEnd = hostStart + 1;
+        if (hostEnd < raw.Length &&
+            raw[hostEnd] is not (':' or '/'))
+        {
+            return false;
+        }
+
+        var scheme = raw.AsSpan(0, separator);
+        if (scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+        {
+            exposure = new BindingExposure(
+                HasNonLoopbackBinding: true,
+                HasNonLoopbackHttpBinding: true);
+            return true;
+        }
+
+        if (scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            exposure = new BindingExposure(
+                HasNonLoopbackBinding: true,
+                HasNonLoopbackHttpBinding: false);
+            return true;
+        }
+
+        return false;
     }
+
+    private readonly record struct BindingExposure(
+        bool HasNonLoopbackBinding,
+        bool HasNonLoopbackHttpBinding);
 }

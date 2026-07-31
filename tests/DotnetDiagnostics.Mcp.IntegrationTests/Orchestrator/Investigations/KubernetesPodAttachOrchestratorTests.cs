@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using DotnetDiagnostics.Mcp.Hosting;
 using DotnetDiagnostics.Mcp.Observability;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
@@ -66,7 +67,7 @@ public class KubernetesPodAttachOrchestratorTests
             e.ValueFrom.SecretKeyRef.Key == KubernetesAttachmentSecretManager.DelegationKeyKey);
         api.PatchedSpec.Env.Should().Contain(e => e.Name == "ASPNETCORE_URLS" && e.Value == $"http://127.0.0.1:{options.ProxyPodPort}");
         api.PatchedSpec.Env.Should().ContainSingle(e =>
-            e.Name == KubernetesPodAttachOrchestrator.AllowInsecureHttpEnvironmentVariableName &&
+            e.Name == TransportSecurityPolicy.AllowInsecureHttpKey &&
             e.Value == "true");
         api.PatchedSpec.Args.Should().Equal("--urls", $"http://127.0.0.1:{options.ProxyPodPort}");
         secrets.CreatedBearerToken.Should().Be(handle.Kubernetes.PodLocalBearerToken);
@@ -86,7 +87,7 @@ public class KubernetesPodAttachOrchestratorTests
 
         api.PatchedSpec!.Env.Should().Contain(e => e.Name == "ASPNETCORE_URLS" && e.Value == "http://127.0.0.1:18888");
         api.PatchedSpec.Env.Should().ContainSingle(e =>
-            e.Name == KubernetesPodAttachOrchestrator.AllowInsecureHttpEnvironmentVariableName &&
+            e.Name == TransportSecurityPolicy.AllowInsecureHttpKey &&
             e.Value == "true");
         api.PatchedSpec.Args.Should().Equal("--urls", "http://127.0.0.1:18888");
     }

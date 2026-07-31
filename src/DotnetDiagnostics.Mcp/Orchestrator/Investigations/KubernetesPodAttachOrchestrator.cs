@@ -33,7 +33,6 @@ namespace DotnetDiagnostics.Mcp.Orchestrator.Investigations;
 /// </remarks>
 internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
 {
-    internal const string AllowInsecureHttpEnvironmentVariableName = "MCP_ALLOW_INSECURE_HTTP";
     private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(1);
 
     private readonly IKubernetesPodsApi _podsApi;
@@ -509,14 +508,14 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
                 },
             },
             new() { Name = "ASPNETCORE_URLS", Value = $"http://127.0.0.1:{_options.ProxyPodPort}" },
-            // Issue #765 rejects cleartext HTTP unless explicitly opted in. Scope
-            // that exception to this generated child only: its listener remains
-            // loopback-only and is reached solely through Kubernetes port-forward.
-            // The central server and standalone deployments retain the strict default.
+            // The global cleartext guard stays strict everywhere else. This
+            // generated child is reached only through Kubernetes port-forward,
+            // remains bound to loopback, and receives the narrow process-local
+            // override required for that internal HTTP transport.
             new()
             {
-                Name = AllowInsecureHttpEnvironmentVariableName,
-                Value = "true",
+                Name = TransportSecurityPolicy.AllowInsecureHttpKey,
+                Value = bool.TrueString.ToLowerInvariant(),
             },
             new()
             {

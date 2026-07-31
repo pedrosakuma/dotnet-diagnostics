@@ -55,9 +55,9 @@ Parameters:
 
   DiagImage:
     Type: String
-    Default: ghcr.io/pedrosakuma/dotnet-diagnostics:0.17.0
+    Default: ghcr.io/pedrosakuma/dotnet-diagnostics:0.22.0
     Description: >-
-      Container image URI for the diagnostics MCP sidecar. Pinned to a released
+      Container image URI for the diagnostics MCP sidecar. Pinned to a
       version tag rather than :latest to keep stack updates deterministic. For
       production prefer a digest pin (image@sha256:...) — see the README.
 
@@ -65,6 +65,42 @@ Parameters:
     Type: Number
     Default: 18887
     Description: TCP port the diagnostics MCP container listens on (matches ASPNETCORE_URLS).
+
+  TransportMode:
+    Type: String
+    Default: tls
+    AllowedValues: [tls, trusted-proxy, insecure-development]
+    Description: >
+      Transport policy for the MCP endpoint. tls (default) terminates HTTPS in
+      Kestrel using the PEM secrets below. trusted-proxy accepts HTTP only from
+      explicitly configured proxy CIDRs and requires trusted
+      X-Forwarded-Proto=https. insecure-development restores legacy cleartext
+      behavior with a prominent runtime warning and must not be used in production.
+
+  TlsCertificateSecretArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:aws[a-zA-Z-]*:secretsmanager:[^:]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$"
+    Description: >
+      Base ARN of a plain-text Secrets Manager secret containing the PEM
+      server certificate. Required when TransportMode=tls.
+
+  TlsPrivateKeySecretArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:aws[a-zA-Z-]*:secretsmanager:[^:]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$"
+    Description: >
+      Base ARN of a plain-text Secrets Manager secret containing the matching
+      unencrypted PEM private key. Required when TransportMode=tls.
+
+  TrustedProxyCidrs:
+    Type: String
+    Default: ""
+    Description: >
+      Comma- or semicolon-separated proxy IPs/CIDRs trusted to supply
+      X-Forwarded-Proto. Required when TransportMode=trusted-proxy. Restrict the
+      task security group to the same proxy (for an ALB, allow only its security
+      group) so other clients in these networks cannot spoof forwarded headers.
 
   BearerTokenSecretArn:
     Type: String
@@ -81,9 +117,19 @@ Parameters:
     Default: ""
     Description: >
       Optional JSON key inside the Secrets Manager secret. When non-empty,
-      the diag container's MCP_BEARER_TOKEN is sourced from
+      the diag container's scoped bearer token value is sourced from
       "<BearerTokenSecretArn>:<BearerTokenSecretJsonKey>::" while the IAM
       policy stays on the base secret ARN. Leave empty for a plain-text secret.
+
+  BearerTokenAccessProfile:
+    Type: String
+    Default: full-diagnostics
+    AllowedValues: [read-only, diagnostics, full-diagnostics]
+    Description: >
+      Scoped bearer profile. read-only grants read-counters; diagnostics also
+      grants eventpipe, heap-read, ptrace, and investigation-export;
+      full-diagnostics additionally grants dump-write. No profile grants root
+      or sensitive modifier scopes.
 
   TaskCpu:
     Type: String
@@ -131,11 +177,30 @@ Parameters:
       LaunchType: EC2 and requires container instances that are already
       registered to the cluster.
 
+Rules:
+  TlsSecretsRequired:
+    RuleCondition: !Equals [!Ref TransportMode, tls]
+    Assertions:
+      - Assert: !And
+          - !Not [!Equals [!Ref TlsCertificateSecretArn, ""]]
+          - !Not [!Equals [!Ref TlsPrivateKeySecretArn, ""]]
+        AssertDescription: TransportMode=tls requires both TLS secret ARNs.
+  TrustedProxyCidrsRequired:
+    RuleCondition: !Equals [!Ref TransportMode, trusted-proxy]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref TrustedProxyCidrs, ""]]
+        AssertDescription: TransportMode=trusted-proxy requires TrustedProxyCidrs.
+
 Conditions:
   HasAppCommand: !Not [!Equals [!Join ["", !Ref AppCommand], ""]]
   EcsExecEnabled: !Equals [!Ref EnableEcsExec, "true"]
   HasSecretJsonKey: !Not [!Equals [!Ref BearerTokenSecretJsonKey, ""]]
   UseCapacityProvider: !Not [!Equals [!Ref CapacityProviderName, ""]]
+  UseDirectTls: !Equals [!Ref TransportMode, tls]
+  UseTrustedProxy: !Equals [!Ref TransportMode, trusted-proxy]
+  UseInsecureDevelopment: !Equals [!Ref TransportMode, insecure-development]
+  DiagnosticsBearerProfile: !Not [!Equals [!Ref BearerTokenAccessProfile, read-only]]
+  DumpBearerProfile: !Equals [!Ref BearerTokenAccessProfile, full-diagnostics]
 
 Resources:
   LogGroup:
@@ -163,7 +228,10 @@ Resources:
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
-                Resource: !Ref BearerTokenSecretArn
+                Resource:
+                  - !Ref BearerTokenSecretArn
+                  - !If [UseDirectTls, !Ref TlsCertificateSecretArn, !Ref "AWS::NoValue"]
+                  - !If [UseDirectTls, !Ref TlsPrivateKeySecretArn, !Ref "AWS::NoValue"]
 
   TaskRole:
     Type: AWS::IAM::Role
@@ -236,13 +304,65 @@ Resources:
               Protocol: tcp
           Environment:
             - Name: ASPNETCORE_URLS
-              Value: !Sub http://0.0.0.0:${DiagPort}
+              Value: !If
+                - UseDirectTls
+                - !Sub https://0.0.0.0:${DiagPort}
+                - !Sub http://0.0.0.0:${DiagPort}
+            - Name: Auth__BearerTokens__0__Name
+              Value: ecs-operator
+            - Name: Auth__BearerTokens__0__Scopes__0
+              Value: read-counters
+            - !If
+              - DiagnosticsBearerProfile
+              - Name: Auth__BearerTokens__0__Scopes__1
+                Value: eventpipe
+              - !Ref "AWS::NoValue"
+            - !If
+              - DiagnosticsBearerProfile
+              - Name: Auth__BearerTokens__0__Scopes__2
+                Value: heap-read
+              - !Ref "AWS::NoValue"
+            - !If
+              - DiagnosticsBearerProfile
+              - Name: Auth__BearerTokens__0__Scopes__3
+                Value: ptrace
+              - !Ref "AWS::NoValue"
+            - !If
+              - DiagnosticsBearerProfile
+              - Name: Auth__BearerTokens__0__Scopes__4
+                Value: investigation-export
+              - !Ref "AWS::NoValue"
+            - !If
+              - DumpBearerProfile
+              - Name: Auth__BearerTokens__0__Scopes__5
+                Value: dump-write
+              - !Ref "AWS::NoValue"
+            - !If
+              - UseTrustedProxy
+              - Name: MCP_TRUSTED_PROXY_CIDRS
+                Value: !Ref TrustedProxyCidrs
+              - !Ref "AWS::NoValue"
+            - !If
+              - UseInsecureDevelopment
+              - Name: MCP_ALLOW_INSECURE_HTTP
+                Value: "true"
+              - !Ref "AWS::NoValue"
           Secrets:
-            - Name: MCP_BEARER_TOKEN
+            - Name: Auth__BearerTokens__0__Token
               ValueFrom: !If
                 - HasSecretJsonKey
                 - !Sub "${BearerTokenSecretArn}:${BearerTokenSecretJsonKey}::"
                 - !Ref BearerTokenSecretArn
+            - !If
+              - UseDirectTls
+              - Name: MCP_TLS_CERTIFICATE_PEM
+                ValueFrom: !Ref TlsCertificateSecretArn
+              - !Ref "AWS::NoValue"
+            - !If
+              - UseDirectTls
+              - Name: MCP_TLS_PRIVATE_KEY_PEM
+                ValueFrom: !Ref TlsPrivateKeySecretArn
+              - !Ref "AWS::NoValue"
           MountPoints:
             - SourceVolume: diag-tmp
               ContainerPath: /tmp
