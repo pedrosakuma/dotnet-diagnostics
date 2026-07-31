@@ -7,6 +7,7 @@ using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.Security;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.UseCases;
 using DotnetDiagnostics.Mcp.Hosting;
@@ -251,6 +252,20 @@ public sealed class PodDelegatedAuthorizationIntegrationTests
         var registry = ToolScopeRegistry.Build(PodLocalToolSurfaces.Proxyable);
         var policies = CreatePolicies();
         var (arguments, callerScopes) = Invocation("collect_sample");
+        var safety = InvocationSafetyResolver.Resolve(InvocationSafetyRequest.Create(
+            DiagnosticOperationCatalog.CollectSample,
+            ("kind", DiagnosticOperationCatalog.CollectSampleKinds.MethodParameters),
+            ("includeSensitiveValues", true)));
+        arguments["_dotnetDiagnostics"] = JsonSerializer.SerializeToElement(new
+        {
+            acknowledgement = new
+            {
+                operation = DiagnosticOperationCatalog.CollectSample,
+                arguments,
+                safety,
+                childSafety = Array.Empty<InvocationSafetyChildDescriptor>(),
+            },
+        });
         var caller = new BearerPrincipal(
             "central-task-caller",
             callerScopes.ToImmutableHashSet(StringComparer.Ordinal));

@@ -1,6 +1,9 @@
 using System.Text;
 using System.Text.Json;
 using DotnetDiagnostics.Core;
+using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.Safety;
+using DotnetDiagnostics.Mcp.Safety;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -135,7 +138,9 @@ internal static class ToolErrorSurfaceFilter
 /// execution invokes <see cref="McpServerTool.InvokeAsync"/> directly and bypasses request
 /// filters, so this decorator must run before the SDK chooses the task's terminal status.
 /// </summary>
-internal sealed class StructuredErrorMcpServerTool(McpServerTool innerTool)
+internal sealed class StructuredErrorMcpServerTool(
+    McpServerTool innerTool,
+    IDiagnosticHandleStore? handles)
     : DelegatingMcpServerTool(innerTool)
 {
     public override async ValueTask<CallToolResult> InvokeAsync(
@@ -143,6 +148,29 @@ internal sealed class StructuredErrorMcpServerTool(McpServerTool innerTool)
         CancellationToken cancellationToken = default)
     {
         var result = await base.InvokeAsync(request, cancellationToken).ConfigureAwait(false);
-        return ToolErrorSurfaceFilter.MarkStructuredFailure(result);
+        result = ToolErrorSurfaceFilter.MarkStructuredFailure(result);
+
+        var parameters = request.Params;
+        if (parameters is null
+            || !InvocationSafetyRegistry.TryGet(parameters.Name, out _))
+        {
+            return result;
+        }
+
+        try
+        {
+            var assessment = McpInvocationSafety.ResolveAssessment(
+                parameters.Name,
+                parameters.Arguments,
+                handles);
+            return McpInvocationSafetyFilter.Decorate(result, assessment);
+        }
+        catch (InvocationSafetyResolutionException)
+        {
+            // The request filter resolves and fails closed before normal/task scheduling.
+            // This decorator exists to annotate the task terminal result; never mask an
+            // already-produced tool result if a direct internal invocation skipped filters.
+            return result;
+        }
     }
 }

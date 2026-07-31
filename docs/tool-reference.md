@@ -34,6 +34,45 @@ Every structured tool response is a `DiagnosticResult<T>` envelope with:
 - `handle` / `handleExpiresAt` / `handleExpiresInSeconds`: present when the
   tool minted a drilldown handle. `handleExpiresInSeconds` is computed when the
   response is serialized and is floored at `0` after expiry.
+- `safety`: the server-resolved descriptor for the concrete invocation
+  (`riskLevel`, `targetImpact`, `dataExposure`, `sideEffects`,
+  `approvalPolicy`, `reason`, `mitigations`).
+- `safetyWarnings`: present for moderate-risk calls; these calls remain
+  automatable. Low-risk calls omit warnings and never prompt.
+- `safetyApproval`: present only when execution stopped before side effects.
+  High-risk calls return the exact request-bound acknowledgement required for
+  a retry (operation, arguments, resolved descriptor, and child descriptors).
+  Critical calls use MCP elicitation when supported and otherwise return the
+  same fail-closed fallback preview.
+- `childSafety`: present for composite calls such as `collect_batch`; the parent
+  descriptor is the merged maximum and every child remains visible.
+
+### Invocation safety and acknowledgement
+
+`tools/list` adds `_meta.dotnetDiagnostics.safety` (the tool's static maximum
+descriptor) and `hasConditionalSafety`. Authorization and safety are independent:
+a bearer scope, including root/`*`, never acknowledges operational impact.
+
+For a high-risk preview, retry with the exact server-returned descriptor:
+
+```json
+{
+  "_dotnetDiagnostics": {
+    "acknowledgement": {
+      "...": "copy safetyApproval.requiredAcknowledgement exactly"
+    }
+  }
+}
+```
+
+The reserved argument is removed before SDK binding and tool invocation. The
+server always recomputes safety from the actual arguments and handle store, so a
+client cannot lower risk by supplying its own descriptor. No opaque token is
+used; the acknowledgement includes the concrete operation and arguments plus
+the resolved descriptor/children, so changing the request invalidates it rather
+than turning it into a reusable generic confirmation.
+`collect_process_dump` keeps its established native elicitation plus
+`confirm=true` fallback contract.
 
 ### Signal-grouping layer
 

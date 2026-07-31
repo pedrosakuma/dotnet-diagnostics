@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace DotnetDiagnostics.Core.Safety;
@@ -193,6 +194,39 @@ public sealed record InvocationSafetyDescriptor(
     [property: JsonPropertyName("approvalPolicy")] InvocationApprovalPolicy ApprovalPolicy,
     [property: JsonPropertyName("reason")] string Reason,
     [property: JsonPropertyName("mitigations")] ImmutableArray<string> Mitigations);
+
+public sealed record InvocationSafetyChildDescriptor(
+    [property: JsonPropertyName("operation")] string Operation,
+    [property: JsonPropertyName("arguments")] ImmutableDictionary<string, string> Arguments,
+    [property: JsonPropertyName("safety")] InvocationSafetyDescriptor Safety);
+
+public sealed record InvocationSafetyAcknowledgement(
+    [property: JsonPropertyName("operation")] string Operation,
+    [property: JsonPropertyName("arguments")] JsonElement Arguments,
+    [property: JsonPropertyName("safety")] InvocationSafetyDescriptor Safety,
+    [property: JsonPropertyName("childSafety")] ImmutableArray<InvocationSafetyChildDescriptor> ChildSafety);
+
+[JsonConverter(typeof(JsonStringEnumConverter<InvocationSafetyApprovalStatus>))]
+public enum InvocationSafetyApprovalStatus
+{
+    [JsonStringEnumMemberName("acknowledgement-required")]
+    AcknowledgementRequired,
+
+    [JsonStringEnumMemberName("human-approval-required")]
+    HumanApprovalRequired,
+
+    [JsonStringEnumMemberName("declined")]
+    Declined,
+
+    [JsonStringEnumMemberName("failed")]
+    Failed,
+}
+
+public sealed record InvocationSafetyApproval(
+    [property: JsonPropertyName("status")] InvocationSafetyApprovalStatus Status,
+    [property: JsonPropertyName("message")] string Message,
+    [property: JsonPropertyName("acknowledgementArgument")] string? AcknowledgementArgument = null,
+    [property: JsonPropertyName("requiredAcknowledgement")] InvocationSafetyAcknowledgement? RequiredAcknowledgement = null);
 
 public sealed record InvocationSafetyProfile(
     [property: JsonPropertyName("id")] string Id,

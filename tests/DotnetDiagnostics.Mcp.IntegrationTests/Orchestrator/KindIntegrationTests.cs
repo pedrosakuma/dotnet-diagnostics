@@ -132,22 +132,23 @@ public sealed class KindIntegrationTests
         // ----------------------------------------------------------------
         // Step 3: attach_to_pod against the chosen replica.
         // ----------------------------------------------------------------
-        var attachResult = await orchClient.CallToolAsync(
-            "attach_to_pod",
-            new Dictionary<string, object?>
+        var attachArguments = new Dictionary<string, object?>
+        {
+            ["namespace"] = activation.Namespace,
+            ["podName"] = chosenPodName,
+            ["containerName"] = chosenContainer,
+            ["requirePreparedTarget"] = true,
+            ["allowReuseExistingSession"] = true,
+            ["ttlSeconds"] = 600,
+            ["processSelector"] = new Dictionary<string, object?>
             {
-                ["namespace"] = activation.Namespace,
-                ["podName"] = chosenPodName,
-                ["containerName"] = chosenContainer,
-                ["requirePreparedTarget"] = true,
-                ["allowReuseExistingSession"] = true,
-                ["ttlSeconds"] = 600,
-                ["processSelector"] = new Dictionary<string, object?>
-                {
-                    ["managedEntrypointAssemblyName"] = "CoreClrSample",
-                },
+                ["managedEntrypointAssemblyName"] = "CoreClrSample",
             },
-            cancellationToken: ct).ConfigureAwait(false);
+        };
+        var attachResult = await AttachWithSafetyAcknowledgementAsync(
+            orchClient,
+            attachArguments,
+            ct).ConfigureAwait(false);
 
         attachResult.IsError.Should().NotBe(true, "attach_to_pod must succeed against a prepared replica");
         var attachEnvelope = DeserializeStructured<AttachSession>(attachResult);
@@ -339,8 +340,8 @@ public sealed class KindIntegrationTests
                     continue;
                 }
 
-                var siblingAttachResult = await orchClient.CallToolAsync(
-                    "attach_to_pod",
+                var siblingAttachResult = await AttachWithSafetyAcknowledgementAsync(
+                    orchClient,
                     new Dictionary<string, object?>
                     {
                         ["namespace"] = activation.Namespace,
@@ -354,7 +355,7 @@ public sealed class KindIntegrationTests
                             ["managedEntrypointAssemblyName"] = "CoreClrSample",
                         },
                     },
-                    cancellationToken: ct).ConfigureAwait(false);
+                    ct).ConfigureAwait(false);
                 siblingAttachResult.IsError.Should().NotBeTrue("the sibling replica must attach");
                 var sibling = DeserializeStructured<AttachSession>(siblingAttachResult)!;
                 attachedHandles.Add(sibling);
@@ -538,6 +539,44 @@ public sealed class KindIntegrationTests
 
         return await McpClient.CreateAsync(transport, clientOptions: null, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private static async Task<ModelContextProtocol.Protocol.CallToolResult> AttachWithSafetyAcknowledgementAsync(
+        McpClient client,
+        IReadOnlyDictionary<string, object?> arguments,
+        CancellationToken cancellationToken)
+    {
+        var preview = await client.CallToolAsync(
+            "attach_to_pod",
+            arguments,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        preview.IsError.Should().NotBeTrue("the high-risk attach preview must return a structured safety challenge");
+        preview.StructuredContent.Should().NotBeNull("attach_to_pod must expose its resolved safety challenge");
+        var root = preview.StructuredContent!.Value;
+        var approval = root.GetProperty("safetyApproval");
+        approval.GetProperty("status").GetString().Should().Be("acknowledgement-required");
+        var acknowledgement = approval.GetProperty("requiredAcknowledgement");
+        acknowledgement.GetProperty("operation").GetString().Should().Be("attach_to_pod");
+        acknowledgement.GetProperty("safety").GetProperty("riskLevel").GetString().Should().Be("high");
+
+        var boundArguments = acknowledgement.GetProperty("arguments");
+        boundArguments.GetProperty("namespace").GetString()
+            .Should().Be((string?)arguments["namespace"]);
+        boundArguments.GetProperty("podName").GetString()
+            .Should().Be((string?)arguments["podName"]);
+
+        var acknowledgedArguments = new Dictionary<string, object?>(arguments)
+        {
+            ["_dotnetDiagnostics"] = new Dictionary<string, object?>
+            {
+                ["acknowledgement"] = acknowledgement.Clone(),
+            },
+        };
+        return await client.CallToolAsync(
+            "attach_to_pod",
+            acknowledgedArguments,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private static readonly JsonSerializerOptions DeserializeOptions = new()
