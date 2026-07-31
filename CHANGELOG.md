@@ -345,8 +345,9 @@ surface.
   surface leaking types between two snapshots (#475).
 - **gcroot/object views over dumps** — `query_snapshot(view="gcroot"|"object")` answers
   retention questions over dump-origin heap snapshots (#476).
-- **`inspect_heap(source="gcdump")`** — production-safe heap snapshot via gcdump
-  (CoreCLR), registered in the shared handle store for parameterized drilldown (#453).
+- **`inspect_heap(source="gcdump")`** — EventPipe heap snapshot that induces a managed
+  GC and exposes aggregate heap type metadata (CoreCLR), registered in the shared handle
+  store for parameterized drilldown (#453).
 - **ALC leak heap drilldown** — surfaces AssemblyLoadContext leaks (#422); timer-leak and
   native-vs-managed memory split views (#421).
 - **`collect_sample` native-alloc sampling on Windows (ETW)** — Phase 15 C1 native

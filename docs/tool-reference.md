@@ -53,6 +53,12 @@ Every structured tool response is a `DiagnosticResult<T>` envelope with:
 descriptor) and `hasConditionalSafety`. Authorization and safety are independent:
 a bearer scope, including root/`*`, never acknowledges operational impact.
 
+The canonical production matrix is
+[`production-safety.md`](./production-safety.md), generated from the shared Core
+safety registry. Its `observe`, `investigate`, and `privileged-response`
+profiles describe operational policy; concrete MCP calls still resolve their
+own descriptor and approval requirement.
+
 For a high-risk preview, retry with the exact server-returned descriptor:
 
 ```json
@@ -257,7 +263,7 @@ retained `Activities[]` inline (bounded by `maxActivities`) and relies on
 
 `collect_events(kind="sweep")` is the recommended **first** call when triaging an unfamiliar
 process. Instead of issuing five sequential collections (~25–40 s), it fans out the five
-EventPipe-safe collectors — `counters`, `gc`, `exceptions`, `threadpool` and `resource` — **concurrently**
+bounded EventPipe collectors — `counters`, `gc`, `exceptions`, `threadpool` and `resource` — **concurrently**
 in a single round-trip and returns one consolidated envelope:
 
 - `data.sweep.triage` — `modelVersion=2`, neutral assessment/severity, observed signals, evidence-backed hypotheses, ranked indicators, and deprecated verdict compatibility fields.
@@ -455,7 +461,7 @@ discover them via `prompts/list` and request a specific one via `prompts/get`.
 | `diagnose-5xx-errors` | "We're seeing 5xxs in production" | none (`processId?`, `symptom?`) |
 | `diagnose-slow-outbound-http` | "Slow outbound HTTP calls" | none (`processId?`, `durationSeconds?`, `symptom?`) |
 | `triage-nativeaot` | "Is this a NativeAOT app?" | none (`processId?`) |
-| `diagnose-safely-in-prod` | "Safest investigation in production" | none (`processId?`) |
+| `diagnose-safely-in-prod` | "Lowest-impact initial production observation" | none (`processId?`) |
 
 Every prompt returns a single `user`-role message whose content is annotated
 with `audience: ["assistant"]` so MCP clients that distinguish user-facing
@@ -695,8 +701,8 @@ live pid) and classifies one or more addresses passed via `address` (comma-separ
 `0x`-hex) into `module` (with `module`, `rva`, `buildId`), `managed` (with a `MethodIdentity`
 handoff), `mapped-non-module` (readable but outside any loaded module — JIT stub / anonymous map),
 or `unmapped-or-not-captured` (a freed hole or a region the dump did not capture). Numeric fields
-are rendered as hex strings and `Display` is always safe to show verbatim — the diagnostics surface
-never returns a bare pointer. Native/unresolved frames on every thread snapshot are enriched the
+are rendered as hex strings and `Display` never returns a bare pointer. It remains
+target-derived evidence and must be handled under the production data policy. Native/unresolved frames on every thread snapshot are enriched the
 same way at capture time (`AddressKind` / `Rva` / `BuildId` on each frame, `DisplayName` becomes
 `module+0x<rva>` or `<unmapped-or-not-captured 0x…>`). Hand the `(buildId, rva)` to
 `dotnet-native-mcp` for symbolication. For **live-origin** thread snapshots, this specific view
@@ -869,7 +875,7 @@ unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
 | [`collect_events(kind="event_source")`](#collect_events(kind="event_source")) | window-bound | no | ⚠️ provider must be embedded at publish | EventPipe session |
 | `collect_thread_snapshot` / `query_snapshot` | seconds | no | ✅ via `linux-native-stack` / `etw-native-stack` | ptrace attach (Linux) / kernel logger (Windows) |
 | `inspect_heap(source="live"|"dump")` / `query_snapshot` | seconds | **yes** | ❌ | ClrMD walks managed heap (heap drilldown values metadata-only by default — see [Security gates](#security-gates-b4)) |
-| `inspect_heap(source="gcdump")` | seconds | no (EventPipe, no ptrace) | ❌ | Induced GC heap snapshot over EventPipe — **production-safe**, no dump file; per-type byte/instance totals only (ClrMD-only views empty) |
+| `inspect_heap(source="gcdump")` | seconds | no (EventPipe, no ptrace) | ❌ | Induced-GC heap snapshot over EventPipe; no dump file, but it induces a GC and exposes heap type metadata. Consult the resolved descriptor/canonical matrix before execution. Per-type byte/instance totals only (ClrMD-only views empty). |
 | [`collect_process_dump`](#collect_process_dump) | seconds–minutes | no | ✅ (native dump) | **writes a dump file to disk** |
 | [`capture_method_bytes`](#capture_method_bytes) | cheap | **yes** | ❌ (use `dotnet-native-mcp.disassemble`) | reads JIT code-heap |
 | `get_bytes(kind="module")` | cheap | **yes** (live module attach) | ❌ (materialize locally, then hand off) | streams PE / PDB bytes over MCP chunks |
@@ -2498,8 +2504,9 @@ The collector subscribes to the `Microsoft.AspNetCore.Hosting HttpRequestIn`
 Activity start/stop pairs through the `Microsoft-Diagnostics-DiagnosticSource`
 EventPipe bridge; a request observed as *started* but never *stopped* within the
 window is reported as in-flight, with `elapsedMs` measured from its start to the
-moment the window closed. It is **pure EventPipe — no `ptrace`** — so it is safe
-to run against a hung production process.
+moment the window closed. It uses EventPipe without `ptrace`, but request paths,
+trace identifiers, and related payloads remain potentially sensitive and the
+collection adds bounded runtime overhead.
 
 **Parameters:**
 
@@ -2529,7 +2536,8 @@ to run against a hung production process.
 - For the **live thread stack** behind a stuck request (what line it is blocked
   on), follow up with [`inspect_process(view="requests-now")`](#inspect_process(view="requests-now")),
   which adds ClrMD-backed stacks and **requires the `ptrace` scope**. This kind
-  is the prod-safe, attach-free counterpart.
+  is the EventPipe-only, attach-free counterpart; it is still classified by its
+  resolved payload exposure and runtime overhead.
 
 ---
 
@@ -2594,7 +2602,7 @@ through [`query_snapshot`](#query_snapshot) without re-walking the heap.
 |---|---|---|---|
 | `live` | ClrMD attach to a running process | needs `CAP_SYS_PTRACE` on Linux | suspends the target for the walk |
 | `dump` | Offline walk of a captured `.dmp` | neither | `dumpFilePath` required |
-| `gcdump` | GC heap snapshot over EventPipe | neither — **production-safe** | CoreCLR only; NativeAOT returns a friendly `NotSupported` (issue #471) |
+| `gcdump` | GC heap snapshot over EventPipe | neither; induces a managed GC and requires the resolved safety preflight | CoreCLR only; NativeAOT returns a friendly `NotSupported` (issue #471) |
 
 **Parameters:**
 
@@ -3306,7 +3314,7 @@ and each evidence item.
 
 Markdown exports include the same bounded metric identities, values, and units
 as JSON plus the exact retention note. A NaN or infinity from any producer
-returns `InvalidEvidenceMetric` with the safe canonical identity; strict JSON
+returns `InvalidEvidenceMetric` with the validated canonical identity; strict JSON
 serialization is never allowed to fail the tool call.
 
 **Parameters:**
