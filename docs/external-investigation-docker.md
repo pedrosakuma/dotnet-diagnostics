@@ -207,6 +207,23 @@ bootstrap-owned network attachment, and removes that sidecar.
 Host-process centrals remain configuration-only: omit `--apply`, use the emitted env/JSON, and restart
 them through their normal supervisor.
 
+### Safety behavior in this workflow
+
+The concrete steps intentionally resolve to different safety levels:
+
+| Step | Resolved behavior |
+|---|---|
+| CLI `docker-bootstrap --apply` | High: starts a privileged sidecar, writes a central profile, and restarts the existing central container. Non-interactive use requires `--acknowledge-risk high`. |
+| MCP `attach_to_pod(profileName="...")` | Moderate: opens an operator-configured outbound MCP session and returns `safetyWarnings`; it does not mutate a Kubernetes Pod. |
+| MCP `collect_batch` with counters + GC events | Moderate: EventPipe overhead and target-derived metadata are reported in `safetyWarnings`; payloads can still contain confidential names or identifiers. |
+| MCP `detach_from_pod` | Moderate: closes the routed investigation session and returns a warning rather than requiring acknowledgement. |
+
+Do not generalize the external-profile result to Kubernetes. A Kubernetes
+`attach_to_pod(namespace=..., podName=...)` can inject or mutate deployment
+state, resolves high, and requires the exact request-bound
+`safetyApproval.requiredAcknowledgement` challenge/retry described in
+[`client-setup.md`](./client-setup.md#safety-aware-toolscall-clients).
+
 #### Design choice and rejected alternatives
 
 - **Selected: operator-owned file plus existing-container restart.** This preserves server startup
@@ -348,6 +365,16 @@ target, sidecar, central, and Docker-network logs/inspection output. The GitHub 
 uploads this directory as a failure artifact. The test is gated by the
 `DOTNET_DBG_MCP_DOCKER_EXT_INV_TEST=1` environment variable so it is a no-op in
 standard `dotnet test` runs.
+
+The acceptance test verifies explicit CLI high acknowledgement, moderate
+external-profile attach, moderate routed EventPipe collection, detach, and
+stale-handle rejection. It never uses a global acknowledgement bypass.
+
+Treat `TestResults/docker-bootstrap-e2e/` as incident evidence: it can contain
+target logs, inspection metadata, tokens generated for the isolated test, and
+target-derived diagnostic output. Restrict access and delete it after the
+run's evidence is no longer needed, whether the run succeeded or failed; see
+[`production-safety.md`](./production-safety.md#retention-access-and-disposal).
 
 ## Tear-down and cleanup
 
