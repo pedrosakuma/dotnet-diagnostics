@@ -85,12 +85,14 @@ scripts/test-docker-crash-guard.sh
 ```
 
 Both scripts use isolated Docker resources and clean their containers, networks,
-and volumes on exit. The external-investigation script preserves diagnostics
-under `TestResults/docker-bootstrap-e2e/` only when needed for failure analysis;
-apply the retention and disposal rules above. Kubernetes mutation is validated
-separately by the gated `KindIntegration` workflow because it requires a real
-kind cluster; that test performs a request-bound high-risk challenge/retry and
-asserts that no Pod side effect occurs before acknowledgement.
+and volumes on exit. The external-investigation script writes bootstrap JSON,
+TRX output, and final container/network diagnostics under
+`TestResults/docker-bootstrap-e2e/` on successful and failed runs. Restrict
+access and delete that directory after its evidence is no longer needed.
+Kubernetes mutation is validated separately by the gated `KindIntegration`
+workflow because it requires a real kind cluster; that test performs the
+request-bound high-risk challenge/retry. Lower-level safety-filter tests assert
+that the tool invocation does not run before a valid acknowledgement.
 
 ## Canonical matrix
 
