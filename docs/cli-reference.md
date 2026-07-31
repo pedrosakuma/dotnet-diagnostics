@@ -89,6 +89,11 @@ Exit codes: `0` success (a `dump` preview is also a success), `1` a structured f
 The CLI and MCP server resolve the same descriptor from the Core safety registry. The CLI applies it
 before launch, attach, capture, export, or mutation:
 
+The canonical generated matrix and production operating profiles are in
+[`production-safety.md`](./production-safety.md). The `observe`, `investigate`,
+and `privileged-response` profiles do not override the shared Core safety
+registry; every CLI invocation still resolves its concrete descriptor.
+
 - **low** — executes without extra output;
 - **moderate** — prints one concise `SAFETY warning [moderate] ...` line to `stderr`, then executes;
 - **high / critical** — prints `reason`, `targetImpact`, `dataExposure`, `sideEffects`, and the artifact
@@ -186,7 +191,7 @@ Implementation details:
   failures. Multiple candidates are deterministic;
 - reports whether it created the network attachment and prints both bootstrap-owned cleanup actions.
   Cleanup disconnects only the selected attachment and removes only the generated sidecar; repeating
-  those commands is safe even when Docker reports that the attachment/container is already absent;
+  those commands is idempotent even when Docker reports that the attachment/container is already absent;
 - embeds the exact release version as the default image tag in official CLI packages and
   self-contained binaries. Stable and prerelease CLIs therefore select the corresponding exact
   semver tag published by the container workflow; they never silently fall forward to `:edge`;
@@ -483,7 +488,7 @@ Walk the managed heap of a live process or a `.dmp`.
 
 | Option | Meaning |
 |---|---|
-| `--source <live\|dump\|gcdump>` | Snapshot source. Inferred: `dump` when `--dump-file` is set, else `live`. `gcdump` triggers an induced GC heap snapshot over EventPipe — no ptrace, no dump file, production-safe — but only per-type byte/instance totals (ClrMD-only views stay empty). |
+| `--source <live\|dump\|gcdump>` | Snapshot source. Inferred: `dump` when `--dump-file` is set, else `live`. `gcdump` triggers an induced GC heap snapshot over EventPipe — no ptrace or dump file, but it induces a GC and exposes heap type metadata, so use the resolved safety preflight/canonical matrix — and returns only per-type byte/instance totals (ClrMD-only views stay empty). |
 | `--dump-file <path>` | `--source dump`: path to a previously-captured `.dmp`. |
 | `--top-types <int>` | Top-N type count (default 20). |
 | `--include-retention-paths` | Walk a short GC retention chain for the top types. |

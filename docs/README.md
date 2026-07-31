@@ -24,6 +24,7 @@ you're using, then reach for the cross-cutting references.
 
 | File | What it covers |
 |---|---|
+| [`production-safety.md`](./production-safety.md) | Canonical generated operation/discriminator/modifier safety matrix, production profiles, EventPipe exposure boundary, and evidence retention/access/disposal expectations |
 | [`output-examples.md`](./output-examples.md) | **What each capture actually returns** — real, trimmed output per family (counters, gc, exceptions, threadpool, contention, cpu, allocation), stamped per release |
 | [`investigation-playbooks.md`](./investigation-playbooks.md) | Step-by-step recipes for common symptoms (slow, leaking, 5xx, slow HTTP, NativeAOT) |
 | [`bad-code-scenarios.md`](./bad-code-scenarios.md) | The anti-patterns in `samples/BadCodeSample/` and the investigation flow each one exercises |

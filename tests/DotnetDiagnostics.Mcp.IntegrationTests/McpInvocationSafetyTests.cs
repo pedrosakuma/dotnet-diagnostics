@@ -40,6 +40,14 @@ public sealed class McpInvocationSafetyTests : IClassFixture<McpInvocationSafety
                 .Should().BeOneOf("low", "moderate", "high", "critical");
             diagnostics["hasConditionalSafety"].Should().NotBeNull();
             tool.Description.Should().Contain("_meta.dotnetDiagnostics.safety");
+
+            var registration = InvocationSafetyRegistry.Get(tool.Name);
+            diagnostics["safety"]!.Deserialize<InvocationSafetyDescriptor>()
+                .Should().BeEquivalentTo(
+                    registration.MaximumSafety,
+                    options => options.WithStrictOrdering());
+            diagnostics["hasConditionalSafety"]!.GetValue<bool>()
+                .Should().Be(registration.HasConditionalSafety);
         }
 
         var low = tools.Single(static tool => tool.Name == DiagnosticOperationCatalog.StartInvestigation);

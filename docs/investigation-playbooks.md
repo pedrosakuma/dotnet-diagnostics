@@ -21,7 +21,7 @@ a symptom and walks through the tool calls in order.
 
 ### Step 0 — Cold-start sweep (one call, parallel)
 Before stepping through vitals manually, run `collect_events(kind="sweep")`. It fans out the
-five EventPipe-safe collectors (counters + gc + exceptions + threadpool + resource) **concurrently**
+five bounded EventPipe collectors (counters + gc + exceptions + threadpool + resource) **concurrently**
 in ~6 s and returns observed signals, bounded hypotheses, each sub-summary, and per-collector
 drill-down handles in `data.sweep.handles`. Follow the highest-ranked hypothesis hint (and
 `data.sweep.handles[...]` for `query_snapshot`) instead of re-collecting. When assessment is
