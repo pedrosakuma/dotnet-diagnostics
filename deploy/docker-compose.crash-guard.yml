@@ -43,6 +43,8 @@ services:
       - SYS_PTRACE
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
+      # Local crash-guard harness; the published endpoint is host-loopback only.
+      MCP_ALLOW_INSECURE_HTTP: "true"
       MCP_BEARER_TOKEN: dev-token
       DOTNET_NOLOGO: "1"
     volumes:

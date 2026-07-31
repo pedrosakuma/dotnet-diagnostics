@@ -16,9 +16,12 @@ docker build \
   --file deploy/Dockerfile \
   .
 
+# The smoke publishes only to host loopback and intentionally exercises the
+# image's HTTP health path rather than production TLS configuration.
 docker run --detach \
   --name "$container" \
   --env "MCP_BEARER_TOKEN=$token" \
+  --env "MCP_ALLOW_INSECURE_HTTP=true" \
   --publish 127.0.0.1::8080 \
   "$image" >/dev/null
 
