@@ -25,13 +25,26 @@ public sealed class StructuredToolErrorProtocolTests
         await using var factory = new PermissionDeniedFactory();
         await using var client = await ConnectAsync(factory);
 
+        var arguments = new Dictionary<string, object?>
+        {
+            ["source"] = "live",
+            ["processId"] = Environment.ProcessId,
+        };
+        var preview = await client.CallToolAsync(
+            "inspect_heap",
+            arguments,
+            cancellationToken: CancellationToken.None);
+        var acknowledgement = preview.StructuredContent!.Value
+            .GetProperty("safetyApproval")
+            .GetProperty("requiredAcknowledgement");
+        arguments["_dotnetDiagnostics"] = new Dictionary<string, object?>
+            {
+                ["acknowledgement"] = JsonSerializer.Deserialize<JsonElement>(acknowledgement.GetRawText()),
+            };
+
         var result = await client.CallToolAsync(
             "inspect_heap",
-            new Dictionary<string, object?>
-            {
-                ["source"] = "live",
-                ["processId"] = Environment.ProcessId,
-            },
+            arguments,
             cancellationToken: CancellationToken.None);
 
         result.IsError.Should().BeTrue();

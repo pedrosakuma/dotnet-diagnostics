@@ -227,7 +227,30 @@ rejected with the `401 {"kind":"unauthenticated"}` envelope. Provider-by-provide
 workload-identity recipes (Azure Workload Identity, AWS IRSA, GCP WIF, Kubernetes projected
 SA) live in [`docs/client-setup.md`](./client-setup.md#managed--workload-identity-recipes-http-transport).
 
-## Per-call confirmation
+<a id="per-call-confirmation"></a>
+## Per-call safety acknowledgement and approval
+
+Authorization answers whether a principal may call a tool; invocation safety
+answers what that concrete call may do. `tools/list` exposes the static maximum
+under `_meta.dotnetDiagnostics.safety` plus `hasConditionalSafety`. Structured
+results and pre-execution previews carry the server-resolved `safety` descriptor.
+
+- **Low:** no prompt and no generic confirmation argument.
+- **Moderate:** executes automatically and returns `safetyWarnings`.
+- **High:** executes only when
+  `_dotnetDiagnostics.acknowledgement` exactly matches the
+  request-bound `safetyApproval.requiredAcknowledgement` returned by the preview
+  (operation, concrete arguments, descriptor, and child descriptors).
+- **Critical:** uses native MCP elicitation when advertised. A decline or failed
+  elicitation writes/attaches/exports nothing and cannot be bypassed by the
+  reserved acknowledgement. Without elicitation, the exact-descriptor fallback
+  is fail-closed.
+
+The server removes `_dotnetDiagnostics` before tool binding, recomputes the
+descriptor from the actual arguments and authoritative handle store, and never
+trusts a client-supplied descriptor as classification. Root/`*` scopes do not
+approve high or critical calls. `collect_batch` inherits its highest-risk child
+and returns every child descriptor in `childSafety`.
 
 `collect_process_dump` requires explicit **human approval** on top of its
 `dump-write` + `ptrace` scopes (defense in depth — a dump is irreversible and unbounded).
@@ -246,8 +269,10 @@ Approval is obtained one of two ways, capability-gated per client:
   `{ "kind": "confirmation_required", targetPid, dumpType, outputDirectory }` envelope and
   writes nothing — no attach, no `createdump`.
 
-No other tool takes `confirm` or elicits approval: adding it to read-only tools would train
-callers to set it reflexively and destroy its signal.
+No other tool takes `confirm`. Other critical operations use the shared safety
+elicitation gate rather than adding a generic boolean to every signature; this
+keeps low-risk observation prompt-free and avoids training callers to approve
+reflexively.
 
 ## Drilldown over handles
 

@@ -279,6 +279,13 @@ internal static class DiagnosticServiceRegistration
                         BuildInvestigationResourceFilter(servicesAccessor, loggerFactoryAccessor));
                 }
 
+                // Run after proxy routing in the filter chain: locally executed calls are
+                // resolved/gated here, while proxied calls carry the reserved acknowledgement
+                // intact to the pod-local server, which performs the same gate against its
+                // authoritative handle store before binding.
+                options.Filters.Request.CallToolFilters.Add(
+                    BuildInvocationSafetyFilter(servicesAccessor, loggerFactoryAccessor));
+
                 // Filters wrap last-in-first-out. Register the error surface last so it observes
                 // local tools, authorization short-circuits, and orchestrator proxy results alike.
                 options.Filters.Request.CallToolFilters.Add(
@@ -358,7 +365,9 @@ internal static class DiagnosticServiceRegistration
 
             services[i] = ServiceDescriptor.Describe(
                 typeof(McpServerTool),
-                serviceProvider => new StructuredErrorMcpServerTool((McpServerTool)factory(serviceProvider)),
+                serviceProvider => new StructuredErrorMcpServerTool(
+                    (McpServerTool)factory(serviceProvider),
+                    serviceProvider.GetService<IDiagnosticHandleStore>()),
                 descriptor.Lifetime);
         }
     }
@@ -381,6 +390,13 @@ internal static class DiagnosticServiceRegistration
             () => servicesAccessor?.Invoke()?.GetService<Security.IPrincipalAccessor>(),
             () => servicesAccessor?.Invoke(),
             () => loggerFactoryAccessor()?.CreateLogger(typeof(Security.ToolScopeAuthorizationFilter).FullName!));
+
+    private static ModelContextProtocol.Server.McpRequestFilter<CallToolRequestParams, CallToolResult> BuildInvocationSafetyFilter(
+        Func<IServiceProvider?>? servicesAccessor,
+        Func<ILoggerFactory?> loggerFactoryAccessor)
+        => Safety.McpInvocationSafetyFilter.Create(
+            () => servicesAccessor?.Invoke()?.GetService<IDiagnosticHandleStore>(),
+            () => loggerFactoryAccessor()?.CreateLogger(typeof(Safety.McpInvocationSafetyFilter).FullName!));
 
     private static ModelContextProtocol.Server.McpRequestFilter<CallToolRequestParams, CallToolResult> BuildInvestigationProxyFilter(
         Security.ToolScopeRegistry scopeRegistry,
@@ -482,12 +498,17 @@ internal static class DiagnosticServiceRegistration
 
         Always prefer the shortest collection window that answers the question
         (`durationSeconds`) and bound result lists (`topN`, `maxRecent`, `maxEvents`)
-        to keep responses small. Tools are read-only except `collect_process_dump`,
-        which writes a dump file to disk and is marked Destructive.
+        to keep responses small. Before escalating, inspect each tool's
+        `_meta.dotnetDiagnostics.safety`; conditional tools return the resolved `safety`
+        descriptor in every structured result or approval preview. Low-risk calls remain
+        prompt-free, moderate calls return `safetyWarnings`, high-risk calls require the
+        exact descriptor acknowledgement returned by the preview, and critical calls use
+        native MCP elicitation when the client supports it.
 
-        This server requests Elicitation only for the destructive `collect_process_dump`
-        approval gate (a human approves writing the dump). Every other tool ships with
-        sensible defaults for every parameter and never elicits. `processId` is optional —
+        `collect_process_dump` preserves its PID/path-specific elicitation and `confirm=true`
+        fallback contract. Other critical operations use the shared resolved-safety
+        elicitation gate; a human decline cannot be bypassed by a reserved acknowledgement.
+        `processId` is optional —
         omit it to auto-select the lone reachable .NET process, or pass an explicit pid from
         `inspect_process(view="list")` when several are visible. Pick a default and re-run
         with refined arguments if the first attempt is too noisy or too sparse — the

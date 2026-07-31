@@ -13,6 +13,7 @@ using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 
 namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
@@ -568,7 +569,8 @@ public sealed class DepthContractTests : IClassFixture<McpToolsTests.AuthedFacto
     {
         await using var client = await ConnectAsync();
 
-        var summaryRaw = await client.CallToolAsync(
+        var summaryRaw = await CallWithSafetyAsync(
+            client,
             "collect_thread_snapshot",
             new Dictionary<string, object?>
             {
@@ -577,7 +579,8 @@ public sealed class DepthContractTests : IClassFixture<McpToolsTests.AuthedFacto
                 ["depth"] = "Summary",
             },
             cancellationToken: CancellationToken.None);
-        var detailRaw = await client.CallToolAsync(
+        var detailRaw = await CallWithSafetyAsync(
+            client,
             "collect_thread_snapshot",
             new Dictionary<string, object?>
             {
@@ -613,6 +616,30 @@ public sealed class DepthContractTests : IClassFixture<McpToolsTests.AuthedFacto
         detail!.View.Should().Be("threads-summary");
         detail.Threads!.Count.Should().BeGreaterThanOrEqualTo(summary.Threads.Count);
         detail.Threads.Should().OnlyContain(thread => thread.Frames.Count <= ThreadSnapshotProjection.DetailFrameLimit);
+    }
+
+    private static async Task<CallToolResult> CallWithSafetyAsync(
+        McpClient client,
+        string toolName,
+        IReadOnlyDictionary<string, object?> arguments,
+        CancellationToken cancellationToken)
+    {
+        var preview = await client.CallToolAsync(toolName, arguments, cancellationToken: cancellationToken);
+        if (preview.StructuredContent is not { ValueKind: JsonValueKind.Object } structured
+            || !structured.TryGetProperty("safetyApproval", out var approval)
+            || !approval.TryGetProperty("requiredAcknowledgement", out var acknowledgement))
+        {
+            return preview;
+        }
+
+        var acknowledged = new Dictionary<string, object?>(arguments)
+        {
+            ["_dotnetDiagnostics"] = new Dictionary<string, object?>
+            {
+                ["acknowledgement"] = JsonSerializer.Deserialize<JsonElement>(acknowledgement.GetRawText()),
+            },
+        };
+        return await client.CallToolAsync(toolName, acknowledged, cancellationToken: cancellationToken);
     }
 
     private async Task<McpClient> ConnectAsync(WebApplicationFactory<DotnetDiagnostics.Mcp.Program>? factory = null)

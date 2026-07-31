@@ -11,11 +11,30 @@ namespace DotnetDiagnostics.Mcp.Safety;
 /// </summary>
 internal static class McpInvocationSafety
 {
+    internal sealed record Assessment(
+        InvocationSafetyDescriptor Safety,
+        IReadOnlyList<InvocationSafetyChildDescriptor> Children);
+
     internal static InvocationSafetyDescriptor Resolve(
         string toolName,
         IDictionary<string, JsonElement>? arguments,
         IDiagnosticHandleStore? handles = null)
-        => InvocationSafetyResolver.Resolve(CreateRequest(toolName, arguments, handles));
+        => ResolveAssessment(toolName, arguments, handles).Safety;
+
+    internal static Assessment ResolveAssessment(
+        string toolName,
+        IDictionary<string, JsonElement>? arguments,
+        IDiagnosticHandleStore? handles = null)
+    {
+        var request = CreateRequest(toolName, arguments, handles);
+        var children = request.Children
+            .Select(static child => new InvocationSafetyChildDescriptor(
+                child.Operation,
+                child.Arguments,
+                InvocationSafetyResolver.Resolve(child)))
+            .ToArray();
+        return new Assessment(InvocationSafetyResolver.Resolve(request), children);
+    }
 
     internal static InvocationSafetyRequest CreateRequest(
         string toolName,
@@ -36,15 +55,48 @@ internal static class McpInvocationSafety
             {
                 if (child.ValueKind != JsonValueKind.Object)
                 {
-                    continue;
+                    throw new InvocationSafetyResolutionException(
+                        toolName,
+                        "collect_batch contains a non-object child; defer to tool validation.");
                 }
 
                 var operation = GetString(child, "tool");
                 var kind = GetString(child, "kind");
-                if (operation is not null)
+                if (operation is null || kind is null)
                 {
-                    children.Add(InvocationSafetyRequest.Create(operation, ("kind", kind)));
+                    throw new InvocationSafetyResolutionException(
+                        toolName,
+                        "collect_batch contains a child without tool/kind; defer to tool validation.");
                 }
+
+                var valid = operation switch
+                {
+                    DiagnosticOperationCatalog.CollectSample =>
+                        DiagnosticOperationCatalog.CollectSampleKinds.All.Contains(
+                            kind,
+                            StringComparer.OrdinalIgnoreCase)
+                        && !string.Equals(
+                            kind,
+                            DiagnosticOperationCatalog.CollectSampleKinds.MethodParameters,
+                            StringComparison.OrdinalIgnoreCase),
+                    DiagnosticOperationCatalog.CollectEvents =>
+                        DiagnosticOperationCatalog.CollectEventsKinds.All.Contains(
+                            kind,
+                            StringComparer.OrdinalIgnoreCase)
+                        && !string.Equals(
+                            kind,
+                            DiagnosticOperationCatalog.CollectEventsKinds.Sweep,
+                            StringComparison.OrdinalIgnoreCase),
+                    _ => false,
+                };
+                if (!valid)
+                {
+                    throw new InvocationSafetyResolutionException(
+                        toolName,
+                        $"collect_batch child '{operation}/{kind}' is not eligible; defer to tool validation.");
+                }
+
+                children.Add(InvocationSafetyRequest.Create(operation, ("kind", kind)));
             }
         }
 

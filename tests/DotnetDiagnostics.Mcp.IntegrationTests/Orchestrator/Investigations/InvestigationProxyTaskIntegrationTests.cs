@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Mcp.Orchestrator;
 using DotnetDiagnostics.Mcp.Orchestrator.Investigations;
+using DotnetDiagnostics.Mcp.Safety;
 using DotnetDiagnostics.Mcp.Security;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
@@ -195,7 +197,8 @@ public sealed class InvestigationProxyTaskIntegrationTests
     }
 
     private static Dictionary<string, object?> MethodParameterArguments()
-        => new(StringComparer.Ordinal)
+    {
+        var arguments = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["kind"] = "method-params",
             ["methodFilters"] = new[] { "Example.Type::Method" },
@@ -204,6 +207,24 @@ public sealed class InvestigationProxyTaskIntegrationTests
             ["durationSeconds"] = 1,
             [InvestigationRoutingArguments.InvestigationHandleIdArgument] = TaskProxyFactory.HandleId,
         };
+        var safety = InvocationSafetyResolver.Resolve(InvocationSafetyRequest.Create(
+            DiagnosticOperationCatalog.CollectSample,
+            ("kind", DiagnosticOperationCatalog.CollectSampleKinds.MethodParameters),
+            ("includeSensitiveValues", true)));
+        var acknowledgedArguments = new Dictionary<string, object?>(arguments, StringComparer.Ordinal);
+        acknowledgedArguments.Remove(InvestigationRoutingArguments.InvestigationHandleIdArgument);
+        arguments["_dotnetDiagnostics"] = new Dictionary<string, object?>
+        {
+            ["acknowledgement"] = new
+            {
+                operation = DiagnosticOperationCatalog.CollectSample,
+                arguments = acknowledgedArguments,
+                safety,
+                childSafety = Array.Empty<InvocationSafetyChildDescriptor>(),
+            },
+        };
+        return arguments;
+    }
 
     private static Dictionary<string, object?> ExportArguments()
         => new(StringComparer.Ordinal)
@@ -333,28 +354,39 @@ public sealed class InvestigationProxyTaskIntegrationTests
                 LastDelegatedScopes = delegatedPrincipal!.Scopes;
             }
 
-            Interlocked.Increment(ref CallCount);
-            LastPrincipalName = principal.Name;
-            LastRequest = request;
-            CallStarted.TrySetResult();
-
-            if (BlockNextCall)
+            async ValueTask<CallToolResult> ExecuteAsync(CancellationToken executionCancellationToken)
             {
-                try
+                Interlocked.Increment(ref CallCount);
+                LastPrincipalName = principal.Name;
+                LastRequest = request;
+                CallStarted.TrySetResult();
+
+                if (BlockNextCall)
                 {
-                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    try
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, executionCancellationToken);
+                    }
+                    catch (OperationCanceledException) when (executionCancellationToken.IsCancellationRequested)
+                    {
+                        CallCancelled.TrySetResult();
+                        throw;
+                    }
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+
+                return new CallToolResult
                 {
-                    CallCancelled.TrySetResult();
-                    throw;
-                }
+                    Content = [new TextContentBlock { Text = "pod-call-completed" }],
+                };
             }
 
-            return new CallToolResult
-            {
-                Content = [new TextContentBlock { Text = "pod-call-completed" }],
-            };
+            return await McpInvocationSafetyFilter.InvokeAsync(
+                request,
+                server: null,
+                handles: null,
+                ExecuteAsync,
+                logger: null,
+                cancellationToken);
         }
 
         public Task EnsureInitializedAsync(InvestigationHandle handle, CancellationToken cancellationToken) => Task.CompletedTask;

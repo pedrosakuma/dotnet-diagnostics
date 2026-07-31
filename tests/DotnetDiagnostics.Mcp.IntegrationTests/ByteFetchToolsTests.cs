@@ -31,7 +31,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         await using var client = await ConnectWithTokenAsync(factory, "scope-miss-token");
 
         var mvid = GetSampleMvid();
-        var result = await client.CallToolAsync(
+        var result = await CallWithSafetyAsync(client,
             "get_bytes",
             new Dictionary<string, object?> { ["kind"] = "module", ["moduleVersionId"] = mvid, ["processId"] = SampleProcessId },
             cancellationToken: CancellationToken.None);
@@ -50,7 +50,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         await using var factory = CreateFactory(("root-only", "root-token", new[] { "*" }));
         await using var client = await ConnectWithTokenAsync(factory, "root-token");
 
-        var result = await client.CallToolAsync(
+        var result = await CallWithSafetyAsync(client,
             "get_bytes",
             new Dictionary<string, object?> { ["kind"] = "module", ["moduleVersionId"] = GetSampleMvid(), ["processId"] = SampleProcessId },
             cancellationToken: CancellationToken.None);
@@ -69,7 +69,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         await using var factory = CreateFactory(("module-reader", "module-token", new[] { "module-bytes-read" }));
         await using var client = await ConnectWithTokenAsync(factory, "module-token");
 
-        var result = await client.CallToolAsync(
+        var result = await CallWithSafetyAsync(client,
             "get_bytes",
             new Dictionary<string, object?> { ["kind"] = "module", ["moduleVersionId"] = GetSampleMvid(), ["processId"] = SampleProcessId, ["maxBytes"] = 512 },
             cancellationToken: CancellationToken.None);
@@ -90,7 +90,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         await using var factory = CreateFactory(("module-reader", "dump-token", new[] { "module-bytes-read" }));
         await using var client = await ConnectWithTokenAsync(factory, "dump-token");
 
-        var result = await client.CallToolAsync(
+        var result = await CallWithSafetyAsync(client,
             "get_bytes",
             new Dictionary<string, object?> { ["kind"] = "dump", ["dumpFilePath"] = "../escape.dmp" },
             cancellationToken: CancellationToken.None);
@@ -119,7 +119,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         string? sha256 = null;
         while (true)
         {
-            var chunkResult = await client.CallToolAsync(
+            var chunkResult = await CallWithSafetyAsync(client,
                 "get_bytes",
                 new Dictionary<string, object?>
                 {
@@ -157,7 +157,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         await using var factory = CreateFactory(("module-reader", "trace-token", new[] { "module-bytes-read" }));
         await using var client = await ConnectWithTokenAsync(factory, "trace-token");
 
-        var result = await client.CallToolAsync(
+        var result = await CallWithSafetyAsync(client,
             "get_bytes",
             new Dictionary<string, object?> { ["kind"] = "trace", ["traceFilePath"] = "../escape.nettrace" },
             cancellationToken: CancellationToken.None);
@@ -187,7 +187,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         string? kind = null;
         while (true)
         {
-            var chunkResult = await client.CallToolAsync(
+            var chunkResult = await CallWithSafetyAsync(client,
                 "get_bytes",
                 new Dictionary<string, object?>
                 {
@@ -227,7 +227,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         await using var factory = CreateFactory(("root-only", "trace-root-token", new[] { "*" }));
         await using var client = await ConnectWithTokenAsync(factory, "trace-root-token");
 
-        var result = await client.CallToolAsync(
+        var result = await CallWithSafetyAsync(client,
             "get_bytes",
             new Dictionary<string, object?> { ["kind"] = "trace", ["traceFilePath"] = "x.nettrace" },
             cancellationToken: CancellationToken.None);
@@ -252,7 +252,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         await using var factory = CreateFactory(("module-reader", "ceiling-token", new[] { "module-bytes-read" }));
         await using var client = await ConnectWithTokenAsync(factory, "ceiling-token");
 
-        var result = await client.CallToolAsync(
+        var result = await CallWithSafetyAsync(client,
             "get_bytes",
             new Dictionary<string, object?> { ["kind"] = "dump", ["dumpFilePath"] = dumpPath },
             cancellationToken: CancellationToken.None);
@@ -276,7 +276,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         await using var factory = CreateFactory(("module-reader", "list-token", new[] { "module-bytes-read" }));
         await using var client = await ConnectWithTokenAsync(factory, "list-token");
 
-        var result = await client.CallToolAsync(
+        var result = await CallWithSafetyAsync(client,
             "get_bytes",
             new Dictionary<string, object?> { ["kind"] = "list" },
             cancellationToken: CancellationToken.None);
@@ -298,7 +298,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         await using var factory = CreateFactory(("deleter", "del-token", new[] { "module-bytes-read", "delete-artifact" }));
         await using var client = await ConnectWithTokenAsync(factory, "del-token");
 
-        var result = await client.CallToolAsync(
+        var result = await CallWithSafetyAsync(client,
             "get_bytes",
             new Dictionary<string, object?> { ["kind"] = "delete", ["artifactPath"] = "trash.dmp" },
             cancellationToken: CancellationToken.None);
@@ -320,7 +320,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         await using var factory = CreateFactory(("reader", "noscope-token", new[] { "module-bytes-read" }));
         await using var client = await ConnectWithTokenAsync(factory, "noscope-token");
 
-        var result = await client.CallToolAsync(
+        var result = await CallWithSafetyAsync(client,
             "get_bytes",
             new Dictionary<string, object?> { ["kind"] = "delete", ["artifactPath"] = "keep.dmp" },
             cancellationToken: CancellationToken.None);
@@ -339,7 +339,7 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
         await using var factory = CreateFactory(("deleter", "trav-token", new[] { "module-bytes-read", "delete-artifact" }));
         await using var client = await ConnectWithTokenAsync(factory, "trav-token");
 
-        var result = await client.CallToolAsync(
+        var result = await CallWithSafetyAsync(client,
             "get_bytes",
             new Dictionary<string, object?> { ["kind"] = "delete", ["artifactPath"] = "../escape.dmp" },
             cancellationToken: CancellationToken.None);
@@ -403,6 +403,33 @@ public sealed class ByteFetchToolsTests : IAsyncLifetime
             httpClient,
             ownsHttpClient: true);
         return await McpClient.CreateAsync(transport, cancellationToken: CancellationToken.None);
+    }
+
+    private static async Task<CallToolResult> CallWithSafetyAsync(
+        McpClient client,
+        string toolName,
+        IReadOnlyDictionary<string, object?> arguments,
+        CancellationToken cancellationToken)
+    {
+        var result = await client.CallToolAsync(toolName, arguments, cancellationToken: cancellationToken);
+        if (result.StructuredContent is not { ValueKind: JsonValueKind.Object } structured
+            || !structured.TryGetProperty("safetyApproval", out var approval)
+            || !approval.TryGetProperty("requiredAcknowledgement", out var acknowledgement))
+        {
+            return result;
+        }
+
+        var acknowledgedArguments = new Dictionary<string, object?>(arguments)
+        {
+            ["_dotnetDiagnostics"] = new Dictionary<string, object?>
+            {
+                ["acknowledgement"] = JsonSerializer.Deserialize<JsonElement>(acknowledgement.GetRawText()),
+            },
+        };
+        return await client.CallToolAsync(
+            toolName,
+            acknowledgedArguments,
+            cancellationToken: cancellationToken);
     }
 
     private static (string Summary, JsonElement Envelope) ParseForbidden(CallToolResult result)
