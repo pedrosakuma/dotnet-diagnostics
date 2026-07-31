@@ -373,7 +373,7 @@ stale-handle rejection. It never uses a global acknowledgement bypass.
 Treat `TestResults/docker-bootstrap-e2e/` as incident evidence: it can contain
 target logs, inspection metadata, tokens generated for the isolated test, and
 target-derived diagnostic output. Restrict access and delete it after the
-failure is resolved; see
+run's evidence is no longer needed, whether the run succeeded or failed; see
 [`production-safety.md`](./production-safety.md#retention-access-and-disposal).
 
 ## Tear-down and cleanup
