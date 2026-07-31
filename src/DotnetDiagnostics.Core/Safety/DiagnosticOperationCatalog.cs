@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Dump;
@@ -252,9 +253,9 @@ public static class DiagnosticOperationCatalog
         public const string ObjectSize = "objsize";
         public const string DuplicateStrings = "duplicate-strings";
 
-        public static IReadOnlyList<string> All { get; } = BuildQuerySnapshotViews();
+        public static ImmutableArray<string> All { get; } = BuildQuerySnapshotViews();
 
-        private static List<string> BuildQuerySnapshotViews()
+        private static ImmutableArray<string> BuildQuerySnapshotViews()
         {
             var views = new List<string>();
 
@@ -291,7 +292,7 @@ public static class DiagnosticOperationCatalog
                 Add(CollectionQueryDispatcher.ViewsFor(kind));
             }
 
-            return views;
+            return views.ToImmutableArray();
 
             void Add(IEnumerable<string> candidates)
             {

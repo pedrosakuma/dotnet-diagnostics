@@ -109,16 +109,29 @@ public sealed class InvocationSafetyParityTests
     [Fact]
     public void QuerySnapshotHandleKinds_ResolveTheArtifactSpecificExposure()
     {
+        var handles = new MemoryDiagnosticHandleStore();
+        var countersHandle = handles.Register(
+            123,
+            "counters",
+            new object(),
+            TimeSpan.FromMinutes(1),
+            evictWhenProcessExits: false);
+        var parametersHandle = handles.Register(
+            123,
+            "method-params-capture",
+            new object(),
+            TimeSpan.FromMinutes(1),
+            evictWhenProcessExits: false);
         var counters = McpInvocationSafety.Resolve(
             DiagnosticOperationCatalog.QuerySnapshot,
-            DeserializeArguments("""{ "view": "summary", "handleKind": "counters" }"""));
+            DeserializeArguments(
+                $$"""{ "handle": "{{countersHandle.Id}}", "view": "summary" }"""),
+            handles);
         var parameters = McpInvocationSafety.Resolve(
             DiagnosticOperationCatalog.QuerySnapshot,
             DeserializeArguments(
-                """{ "view": "events", "handleKind": "method-params-capture" }"""));
-        var unknown = () => McpInvocationSafety.Resolve(
-            DiagnosticOperationCatalog.QuerySnapshot,
-            DeserializeArguments("""{ "view": "summary", "handleKind": "future-kind" }"""));
+                $$"""{ "handle": "{{parametersHandle.Id}}", "view": "events" }"""),
+            handles);
 
         counters.RiskLevel.Should().Be(InvocationRiskLevel.Low);
         counters.DataExposure.Should().Equal(DataExposure.AggregatedMetrics);
@@ -127,7 +140,6 @@ public sealed class InvocationSafetyParityTests
         parameters.DataExposure.Should().Contain(DataExposure.ParameterValues);
         parameters.DataExposure.Should().Contain(DataExposure.PossiblePii);
         parameters.DataExposure.Should().Contain(DataExposure.PossibleConfidentialData);
-        unknown.Should().Throw<InvocationSafetyResolutionException>();
     }
 
     [Fact]
@@ -156,6 +168,56 @@ public sealed class InvocationSafetyParityTests
         safety.RiskLevel.Should().Be(InvocationRiskLevel.Moderate);
         safety.DataExposure.Should().Contain(DataExposure.StackNames);
         safety.DataExposure.Should().NotContain(DataExposure.ParameterValues);
+    }
+
+    [Fact]
+    public void McpNormalizer_IgnoresSpoofedHandleKindAndUsesStoreKind()
+    {
+        var handles = new MemoryDiagnosticHandleStore();
+        var handle = handles.Register(
+            123,
+            "method-params-capture",
+            new object(),
+            TimeSpan.FromMinutes(1),
+            evictWhenProcessExits: false);
+        var arguments = DeserializeArguments(
+            $$"""
+            {
+              "handle": "{{handle.Id}}",
+              "view": "events",
+              "handleKind": "counters"
+            }
+            """);
+
+        var safety = McpInvocationSafety.Resolve(
+            DiagnosticOperationCatalog.QuerySnapshot,
+            arguments,
+            handles);
+
+        safety.RiskLevel.Should().Be(InvocationRiskLevel.Critical);
+        safety.DataExposure.Should().Contain(DataExposure.ParameterValues);
+    }
+
+    [Fact]
+    public void McpNormalizer_LookupFailureIgnoresSpoofAndFailsClosed()
+    {
+        var arguments = DeserializeArguments(
+            """
+            {
+              "handle": "missing-handle",
+              "view": "summary",
+              "handleKind": "counters"
+            }
+            """);
+
+        var safety = McpInvocationSafety.Resolve(
+            DiagnosticOperationCatalog.QuerySnapshot,
+            arguments,
+            new MemoryDiagnosticHandleStore());
+
+        safety.Should().Be(InvocationSafetyRegistry.Get(
+            DiagnosticOperationCatalog.QuerySnapshot).MaximumSafety);
+        safety.RiskLevel.Should().Be(InvocationRiskLevel.Critical);
     }
 
     private static Dictionary<string, JsonElement> DeserializeArguments(string json)

@@ -67,6 +67,19 @@ public sealed class InvocationSafetyResolverTests
     }
 
     [Fact]
+    public void QuerySnapshotViews_AreImmutableAndMatchRegistryCoverage()
+    {
+        var views = DiagnosticOperationCatalog.QuerySnapshotViews.All;
+        var mutableView = (IList<string>)views;
+        var mutate = () => mutableView.Add("future-mutated-view");
+
+        mutableView.IsReadOnly.Should().BeTrue();
+        mutate.Should().Throw<NotSupportedException>();
+        InvocationSafetyRegistry.Get(DiagnosticOperationCatalog.QuerySnapshot)
+            .DiscriminatorValues.Should().Equal(views);
+    }
+
+    [Fact]
     public void UnknownOpaqueHandleKind_UsesMaximumSafetyEnvelope()
     {
         var safety = Resolve(

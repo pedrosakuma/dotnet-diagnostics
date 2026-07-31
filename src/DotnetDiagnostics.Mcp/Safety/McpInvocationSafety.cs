@@ -23,7 +23,7 @@ internal static class McpInvocationSafety
         IDiagnosticHandleStore? handles = null)
     {
         var normalized = NormalizeArguments(arguments).ToList();
-        AddQueryHandleKind(toolName, arguments, handles, normalized);
+        NormalizeQueryHandleKind(toolName, arguments, handles, normalized);
         if (!string.Equals(toolName, DiagnosticOperationCatalog.CollectBatch, StringComparison.Ordinal))
         {
             return new InvocationSafetyRequest(toolName, normalized);
@@ -51,23 +51,28 @@ internal static class McpInvocationSafety
         return new InvocationSafetyRequest(toolName, normalized, children);
     }
 
-    private static void AddQueryHandleKind(
+    private static void NormalizeQueryHandleKind(
         string toolName,
         IDictionary<string, JsonElement>? arguments,
         IDiagnosticHandleStore? handles,
         List<KeyValuePair<string, string?>> normalized)
     {
-        if (handles is null
-            || !string.Equals(toolName, DiagnosticOperationCatalog.QuerySnapshot, StringComparison.Ordinal)
-            || normalized.Any(static pair =>
-                string.Equals(pair.Key, "handleKind", StringComparison.OrdinalIgnoreCase))
-            || !TryGet(arguments, "handle", out var handleElement)
-            || handleElement.ValueKind != JsonValueKind.String
-            || handleElement.GetString() is not { Length: > 0 } handle)
+        if (!string.Equals(toolName, DiagnosticOperationCatalog.QuerySnapshot, StringComparison.Ordinal))
         {
             return;
         }
 
+        normalized.RemoveAll(static pair =>
+            string.Equals(pair.Key, "handleKind", StringComparison.OrdinalIgnoreCase));
+        if (handles is null
+            || !TryGet(arguments, "handle", out var handleElement)
+            || handleElement.ValueKind != JsonValueKind.String
+            || string.IsNullOrWhiteSpace(handleElement.GetString()))
+        {
+            return;
+        }
+
+        var handle = handleElement.GetString()!.Trim();
         if (handles.LookupWithKind(handle).Lookup is { } lookup)
         {
             normalized.Add(KeyValuePair.Create<string, string?>("handleKind", lookup.Kind));
