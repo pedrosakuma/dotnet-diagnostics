@@ -365,6 +365,18 @@ public sealed class CliOptionsTests
     }
 
     [Fact]
+    public void Parse_SafetyFlags_AreCaptured()
+    {
+        var options = CliOptions.Parse(
+            ["inspect-heap", "--source", "live", "--explain-risk", "--acknowledge-risk", "high"],
+            out var error);
+
+        error.Should().BeNull();
+        options!.ExplainRisk.Should().BeTrue();
+        options.AcknowledgeRisk.Should().Be("high");
+    }
+
+    [Fact]
     public void Parse_HeapAndDumpDefaults_AreFalseOrNull()
     {
         var options = CliOptions.Parse(new[] { "inspect-heap" }, out var error);

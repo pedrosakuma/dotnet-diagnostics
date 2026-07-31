@@ -90,7 +90,8 @@ internal sealed class SessionRepl
         TextWriter stdout,
         TextWriter stderr,
         int? initialTargetPid,
-        CancellationToken externalToken)
+        CancellationToken externalToken,
+        bool? interactiveSafetyOverride = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(artifactProvider);
@@ -99,7 +100,7 @@ internal sealed class SessionRepl
         ArgumentNullException.ThrowIfNull(stderr);
 
         var repl = new SessionRepl(initialTargetPid, externalToken);
-        return repl.LoopAsync(services, artifactProvider, stdin, stdout, stderr);
+        return repl.LoopAsync(services, artifactProvider, stdin, stdout, stderr, interactiveSafetyOverride);
     }
 
     private async Task<int> LoopAsync(
@@ -107,7 +108,8 @@ internal sealed class SessionRepl
         MutableArtifactRootProvider artifactProvider,
         TextReader stdin,
         TextWriter stdout,
-        TextWriter stderr)
+        TextWriter stderr,
+        bool? interactiveSafetyOverride)
     {
         var store = services.GetRequiredService<IDiagnosticHandleStore>() as MemoryDiagnosticHandleStore;
 
@@ -126,6 +128,7 @@ internal sealed class SessionRepl
         // read raw keys from a redirected stdin, which is exactly the case for tests, CI, and piped
         // input, all of which keep using the plain ReadLineAsync fallback below unchanged.
         var useInteractivePrompt = ownsConsole && !Console.IsOutputRedirected && !Console.IsInputRedirected;
+        var useInteractiveSafety = interactiveSafetyOverride ?? useInteractivePrompt;
         var replPromptConfig = useInteractivePrompt ? new PrettyPrompt.PromptConfiguration() : null;
         await using var replPrompt = useInteractivePrompt
             ? new PrettyPrompt.Prompt(callbacks: new SessionReplPromptCallbacks(() => _targetPid, () => _targetExited), configuration: replPromptConfig)
@@ -200,7 +203,15 @@ internal sealed class SessionRepl
                     continue;
                 }
 
-                await RunOneAsync(services, artifactProvider, store, trimmed, stdout, stderr).ConfigureAwait(false);
+                await RunOneAsync(
+                    services,
+                    artifactProvider,
+                    store,
+                    trimmed,
+                    stdin,
+                    stdout,
+                    stderr,
+                    useInteractiveSafety).ConfigureAwait(false);
             }
 
             // Capture the outcome BEFORE the finally cancels the session CTS to stop the sweep:
@@ -344,8 +355,10 @@ internal sealed class SessionRepl
         MutableArtifactRootProvider artifactProvider,
         MemoryDiagnosticHandleStore? store,
         string line,
+        TextReader stdin,
         TextWriter stdout,
-        TextWriter stderr)
+        TextWriter stderr,
+        bool interactiveSafety)
     {
         var tokens = Tokenize(line);
         if (!CliCommandExecution.TryPrepareSession(tokens, _targetPid, out var prepared, out var response))
@@ -372,6 +385,21 @@ internal sealed class SessionRepl
         BeginCommand(commandCts);
         try
         {
+            var safetyDisposition = await CliSafetyPreflight.RunAsync(
+                options,
+                store,
+                CliExecutionContext.Session,
+                interactiveSafety,
+                stdin,
+                stdout,
+                stderr,
+                artifactProvider.Root,
+                commandCts.Token).ConfigureAwait(false);
+            if (safetyDisposition != CliSafetyPreflightDisposition.Proceed)
+            {
+                return;
+            }
+
             // `query` is handled by the session-aware path (it can honour --handle against the live
             // shared store); every other command runs the same use case the one-shot CLI does.
             var outcome = await CliCommandExecution.ExecuteAsync(
@@ -812,6 +840,9 @@ internal sealed class SessionRepl
         A bound target (shown as 'diag(pid <id>)>') is overridden by an explicit --pid on any command
         — except in a session started with --launch, where the target is fixed for the session's
         lifetime and 'target'/--pid cannot change it (exit to investigate a different process).
+        High/critical commands show Core safety details and require typing the exact risk level.
+        Redirected/piped sessions never prompt; pass --acknowledge-risk high|critical instead.
+        Add --explain-risk to any command to inspect its descriptor without executing it.
         Ctrl-C cancels the running command and keeps the session alive; press it again to force-quit.
         On a real terminal: Up/Down-arrow recall history (not persisted to disk), Tab/Ctrl+Space completes.
         """;

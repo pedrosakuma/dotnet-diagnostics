@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using System.Globalization;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Safety;
 
@@ -5,7 +7,7 @@ namespace DotnetDiagnostics.Cli;
 
 /// <summary>
 /// Maps CLI syntax to the same canonical Core safety request used by MCP invocations.
-/// This foundation deliberately does not prompt or write warnings yet.
+/// <see cref="CliSafetyPreflight"/> applies the CLI interaction policy to the resolved descriptor.
 /// </summary>
 internal static class CliInvocationSafety
 {
@@ -13,6 +15,26 @@ internal static class CliInvocationSafety
         CliOptions options,
         IDiagnosticHandleStore? handles = null)
         => InvocationSafetyResolver.Resolve(CreateRequest(options, handles));
+
+    internal static InvocationSafetyDescriptor ResolveForPreflight(
+        InvocationSafetyRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        try
+        {
+            return InvocationSafetyResolver.Resolve(request);
+        }
+        catch (InvocationSafetyResolutionException)
+        {
+            var safety = InvocationSafetyRegistry.Get(request.Operation).MaximumSafety;
+            foreach (var child in request.Children)
+            {
+                safety = Merge(safety, ResolveForPreflight(child));
+            }
+
+            return safety;
+        }
+    }
 
     internal static InvocationSafetyRequest CreateRequest(
         CliOptions options,
@@ -143,4 +165,27 @@ internal static class CliInvocationSafety
             ("handleKind", handleKind),
             ("view", options.View));
     }
+
+    private static InvocationSafetyDescriptor Merge(
+        InvocationSafetyDescriptor left,
+        InvocationSafetyDescriptor right)
+        => new(
+            (InvocationRiskLevel)Math.Max((int)left.RiskLevel, (int)right.RiskLevel),
+            Union(left.TargetImpact, right.TargetImpact),
+            Union(left.DataExposure, right.DataExposure),
+            Union(left.SideEffects, right.SideEffects),
+            (InvocationApprovalPolicy)Math.Max((int)left.ApprovalPolicy, (int)right.ApprovalPolicy),
+            string.Equals(left.Reason, right.Reason, StringComparison.Ordinal)
+                ? left.Reason
+                : $"{left.Reason} {right.Reason}",
+            left.Mitigations.Concat(right.Mitigations).Distinct(StringComparer.Ordinal).ToImmutableArray());
+
+    private static ImmutableArray<T> Union<T>(
+        ImmutableArray<T> left,
+        ImmutableArray<T> right)
+        where T : struct, Enum
+        => left.Concat(right)
+            .Distinct()
+            .OrderBy(static value => Convert.ToInt32(value, CultureInfo.InvariantCulture))
+            .ToImmutableArray();
 }

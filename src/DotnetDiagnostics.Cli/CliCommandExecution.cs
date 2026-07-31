@@ -243,7 +243,8 @@ internal static class CliCommandExecution
             return false;
         }
 
-        if (string.Equals(options.Command, "completion", StringComparison.Ordinal))
+        if (string.Equals(options.Command, "completion", StringComparison.Ordinal)
+            && !options.ExplainRisk)
         {
             response = Success(CliCompletionScripts.ForShell(options.CompletionShell!));
             return false;

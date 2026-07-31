@@ -71,6 +71,7 @@ internal static class SessionReplCompletion
             "--asset" => CliCommandCatalog.ByteAssets,
             "--depth" => CliCommandCatalog.DepthValues,
             "--mode" => CliCommandCatalog.CompareModes,
+            "--acknowledge-risk" => CliCommandCatalog.AcknowledgementValues,
             "--view" when string.Equals(command, "inspect", StringComparison.Ordinal) => CliCommandCatalog.InspectViews,
             "-p" or "--pid" => boundPid is { } pid ? [pid.ToString(CultureInfo.InvariantCulture)] : [],
             _ when CliCommandCatalog.ValueFlags.Contains(prevToken, StringComparer.Ordinal) =>

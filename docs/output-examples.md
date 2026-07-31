@@ -327,7 +327,8 @@ one place — `DotnetDiagnostics.Core` (`AttachGuard` + `PtraceProbe`):
   deploy manifests (compose / k8s sidecar / Fargate / Helm) already default
   `CAP_SYS_PTRACE`, so deployed sidecars never hit this gate.
 - **Zero-privilege live attach (CLI dev mode)** — `dotnet-diagnostics-cli inspect-heap --launch
-  -- dotnet App.dll` (or `session --launch -- …`) launches the target as a child of the CLI.
+  --acknowledge-risk high -- dotnet App.dll` (or
+  `session --launch --acknowledge-risk high -- …`) launches the target as a child of the CLI.
   Under `ptrace_scope=1` a tracer may attach to its own descendants, so live attach works with
   no `CAP_SYS_PTRACE` and no host sysctl change. `capabilities` advertises this tip when it
   detects exactly that environment. (`scope=2`/`scope=3` are unaffected — use the dump fallback.)

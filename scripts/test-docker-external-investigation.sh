@@ -145,6 +145,7 @@ dotnet "$cli_dll" docker-bootstrap \
   --delegation-key "$delegation_key" \
   --apply \
   --wait 120 \
+  --acknowledge-risk high \
   --json | tee "$bootstrap_json"
 
 python3 - "$bootstrap_json" <<'PY'
@@ -222,6 +223,7 @@ dotnet "$cli_dll" docker-bootstrap \
   --delegation-key "$delegation_key" \
   --apply \
   --wait 120 \
+  --acknowledge-risk high \
   --json >"$idempotent_json"
 
 python3 - "$idempotent_json" <<'PY'

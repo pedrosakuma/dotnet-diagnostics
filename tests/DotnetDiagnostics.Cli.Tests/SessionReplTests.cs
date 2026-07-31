@@ -11,6 +11,7 @@ using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.ProcessDiscovery;
+using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Threads;
 using DotnetDiagnostics.Core.UseCases;
 using FluentAssertions;
@@ -1922,13 +1923,26 @@ public sealed class SessionReplTests
     {
         var defaultRoot = Path.Combine(Path.GetTempPath(), "session-repl-test-" + Guid.NewGuid().ToString("N"));
         var provider = new MutableArtifactRootProvider(defaultRoot);
-        using var stdin = new StringReader(input);
+        // These are command-behavior tests, not safety-policy tests. Drive the REPL as an interactive
+        // operator who deliberately approves high/critical commands, then remove the safety preamble
+        // from captured stderr so existing assertions stay focused on the command result. Dedicated
+        // interactive/non-interactive policy coverage lives in CliSafetyPreflightTests.
+        var authorizedInput = AddInteractiveSafetyAcknowledgements(input, services);
+        using var stdin = new StringReader(authorizedInput);
         var stdout = new StringWriter(new StringBuilder());
         var stderr = new StringWriter(new StringBuilder());
         try
         {
-            var exit = await SessionRepl.RunAsync(services, provider, stdin, stdout, stderr, initialTargetPid, ct);
-            return (exit, stdout.ToString(), stderr.ToString());
+            var exit = await SessionRepl.RunAsync(
+                services,
+                provider,
+                stdin,
+                stdout,
+                stderr,
+                initialTargetPid,
+                ct,
+                interactiveSafetyOverride: true);
+            return (exit, stdout.ToString(), RemoveSafetyPreamble(stderr.ToString()));
         }
         finally
         {
@@ -1937,5 +1951,76 @@ public sealed class SessionReplTests
                 Directory.Delete(defaultRoot, recursive: true);
             }
         }
+    }
+
+    private static string AddInteractiveSafetyAcknowledgements(string input, IServiceProvider services)
+    {
+        if (input.Length == 0)
+        {
+            return input;
+        }
+
+        var handles = services.GetService<IDiagnosticHandleStore>();
+        var normalized = input.Replace("\r\n", "\n", StringComparison.Ordinal);
+        var lines = normalized.Split('\n');
+        var builder = new StringBuilder(normalized.Length + 64);
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            builder.Append(line);
+            if (i < lines.Length - 1)
+            {
+                builder.Append('\n');
+            }
+
+            var tokens = SessionRepl.Tokenize(line);
+            if (!CliCommandExecution.TryPrepareSession(
+                    tokens,
+                    sessionTargetPid: null,
+                    out var prepared,
+                    out _)
+                || prepared is null)
+            {
+                continue;
+            }
+
+            var options = prepared.Options;
+            if (options.Command is null
+                || (options.Command == "dump" && !options.Confirm))
+            {
+                continue;
+            }
+
+            var request = CliInvocationSafety.CreateRequest(options, handles);
+            var safety = CliInvocationSafety.ResolveForPreflight(request);
+
+            if (safety.RiskLevel < InvocationRiskLevel.High)
+            {
+                continue;
+            }
+
+            if (builder.Length > 0 && builder[^1] != '\n')
+            {
+                builder.Append('\n');
+            }
+            builder.Append(safety.RiskLevel.ToString().ToLowerInvariant()).Append('\n');
+        }
+
+        return builder.ToString();
+    }
+
+    private static string RemoveSafetyPreamble(string stderr)
+    {
+        var lines = stderr.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        return string.Join(
+            Environment.NewLine,
+            lines.Where(static line =>
+                !line.StartsWith("SAFETY ", StringComparison.Ordinal)
+                && !line.StartsWith("reason: ", StringComparison.Ordinal)
+                && !line.StartsWith("targetImpact: ", StringComparison.Ordinal)
+                && !line.StartsWith("dataExposure: ", StringComparison.Ordinal)
+                && !line.StartsWith("sideEffects: ", StringComparison.Ordinal)
+                && !line.StartsWith("artifactPath: ", StringComparison.Ordinal)
+                && !line.StartsWith("Type '", StringComparison.Ordinal)));
     }
 }

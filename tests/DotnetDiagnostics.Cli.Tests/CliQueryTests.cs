@@ -22,13 +22,15 @@ public sealed class CliQueryTests
         exit.Should().Be(1);
         stdout.Should().Contain("NotSupported");
         stdout.Should().Contain("session");
-        stderr.Should().BeEmpty();
+        stderr.Should().Contain("SAFETY warning [moderate] query:");
     }
 
     [Fact]
     public async Task RunAsync_QueryWithHandleAndView_StillReturnsOne()
     {
-        var (exit, stdout, _) = await RunAsync("query", "--handle", "h-1", "--view", "top-types");
+        var (exit, stdout, _) = await RunAsync(
+            "query", "--handle", "h-1", "--view", "top-types",
+            "--acknowledge-risk", "critical");
 
         exit.Should().Be(1);
         stdout.Should().Contain("NotSupported");
