@@ -247,6 +247,22 @@ internal sealed class KubernetesPodAttachOrchestrator : IPodAttachOrchestrator
         string containerName,
         InvestigationProcessSelector? processSelector)
     {
+        if (reusable.State is InvestigationState.Closed or InvestigationState.Expired or InvestigationState.Failed &&
+            InvestigationCredentialCleanup.IsPending(reusable))
+        {
+            var ownedByCaller = InvestigationOwnership.IsOwnedBy(reusable, request.OwnerPrincipalKey);
+            _logger.LogInformation(
+                "Refusing to attach to {Namespace}/{Pod}/{Container} while credential cleanup remains pending for handle {HandleId}.",
+                ns, request.PodName, containerName, reusable.HandleId);
+            var retry = ownedByCaller
+                ? $"Retry detach_from_pod with handleId='{reusable.HandleId}', or wait for the cleanup reaper"
+                : "Wait for the owning session or cleanup reaper to finish";
+            throw new OrchestratorException(
+                OrchestratorErrorKinds.CredentialCleanupPending,
+                $"Credential cleanup for a prior investigation on {ns}/{request.PodName}/{containerName} " +
+                $"is still pending. {retry} before attaching again.");
+        }
+
         // H6 / B3 review (issue #164): reuse is owner-aware. A reused handle is only
         // returned to the caller when the caller owns it. Otherwise we surface a
         // structured error rather than binding the caller to another session's

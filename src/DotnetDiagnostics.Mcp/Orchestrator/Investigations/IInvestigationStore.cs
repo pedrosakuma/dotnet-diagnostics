@@ -19,14 +19,13 @@ public interface IInvestigationStore
     void Add(InvestigationHandle handle);
 
     /// <summary>
-    /// Atomically reserves a target tuple in <see cref="InvestigationState.Attaching"/>: if no
-    /// reusable handle for the target exists and reuse is allowed, the supplied <paramref name="newHandle"/>
-    /// is registered and returned via <paramref name="existing"/>=null; if a reusable handle already
-    /// exists and <paramref name="allowReuse"/> is true, it is returned via <paramref name="existing"/>;
-    /// otherwise (reuse disabled and no existing handle), the new handle is registered and
-    /// <paramref name="existing"/>=null is returned.
+    /// Atomically reserves a target tuple in <see cref="InvestigationState.Attaching"/>. An
+    /// Active/Attaching handle blocks the reservation when reuse is allowed. A terminal handle
+    /// whose credential cleanup is still pending always blocks it, regardless of reuse policy,
+    /// until revocation and Secret deletion complete. The blocking handle is returned through
+    /// <paramref name="existing"/>; otherwise the supplied <paramref name="newHandle"/> is registered.
     /// </summary>
-    /// <returns>True when the supplied <paramref name="newHandle"/> was registered; false when an existing handle was reused.</returns>
+    /// <returns>True when the supplied <paramref name="newHandle"/> was registered; false when an existing handle still reserves the target.</returns>
     bool TryReserveTarget(InvestigationHandle newHandle, bool allowReuse, out InvestigationHandle? existing);
 
     /// <summary>Updates an existing handle (e.g. state transition). Throws if the id is unknown.</summary>

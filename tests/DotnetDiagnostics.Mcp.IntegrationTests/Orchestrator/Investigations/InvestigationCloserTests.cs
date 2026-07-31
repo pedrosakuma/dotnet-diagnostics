@@ -179,19 +179,42 @@ public sealed class InvestigationCloserTests
     }
 
     [Fact]
-    public async Task CloseAsync_TransientRevocationFailure_RetryCompletesAndScrubs()
+    public async Task CloseAsync_TransientRevocationFailure_BlocksSameTargetUntilRetryCompletes()
     {
         var fx = new Fixture();
         fx.Revoker.FailuresRemaining = 1;
         var h = Active() with { InternalScopeDelegationKey = "delegation" };
         fx.Store.Add(h);
+        var replacement = Replacement(h, "h-replacement");
+        var differentTarget = Replacement(h, "h-other-target") with
+        {
+            Kubernetes = h.Kubernetes! with { PodName = "other-pod" },
+        };
 
         var first = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+        var sameTargetReserved = fx.Store.TryReserveTarget(
+            replacement,
+            allowReuse: false,
+            out var cleanupPending);
+        var differentTargetReserved = fx.Store.TryReserveTarget(
+            differentTarget,
+            allowReuse: false,
+            out var differentTargetExisting);
         var retry = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
+        var reservedAfterCleanup = fx.Store.TryReserveTarget(
+            replacement,
+            allowReuse: false,
+            out var existingAfterCleanup);
 
         first.CleanupErrorCount.Should().Be(1);
+        sameTargetReserved.Should().BeFalse();
+        cleanupPending!.HandleId.Should().Be(h.HandleId);
+        differentTargetReserved.Should().BeTrue();
+        differentTargetExisting.Should().BeNull();
         retry.CleanupErrorCount.Should().Be(0);
         retry.AlreadyTerminal.Should().BeTrue();
+        reservedAfterCleanup.Should().BeTrue();
+        existingAfterCleanup.Should().BeNull();
         fx.Revoker.RevokeCalls.Should().Equal(h.HandleId, h.HandleId);
         fx.Secrets.DeleteCalls.Should().Equal(h.HandleId);
         fx.PortForward.CloseCalls.Should().Equal(h.HandleId);
@@ -202,12 +225,13 @@ public sealed class InvestigationCloserTests
     }
 
     [Fact]
-    public async Task CloseAsync_TransientSecretDeletionFailure_RetainsOnlySecretMetadataForRetry()
+    public async Task CloseAsync_TransientSecretDeletionFailure_BlocksSameTargetUntilRetryCompletes()
     {
         var fx = new Fixture();
         fx.Secrets.FailuresRemaining = 1;
         var h = Active() with { InternalScopeDelegationKey = "delegation" };
         fx.Store.Add(h);
+        var replacement = Replacement(h, "h-after-secret-delete");
 
         var first = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
 
@@ -217,6 +241,9 @@ public sealed class InvestigationCloserTests
         pending.InternalScopeDelegationKey.Should().BeNull();
         pending.Kubernetes.CredentialSecretName.Should().Be("credential-secret");
         fx.PortForward.CloseCalls.Should().Equal(h.HandleId);
+        fx.Store.TryReserveTarget(replacement, allowReuse: false, out var cleanupPending)
+            .Should().BeFalse();
+        cleanupPending!.HandleId.Should().Be(h.HandleId);
 
         var retry = await fx.Closer.CloseAsync(h.HandleId, InvestigationState.Closed);
 
@@ -224,6 +251,9 @@ public sealed class InvestigationCloserTests
         fx.Revoker.RevokeCalls.Should().Equal(h.HandleId);
         fx.Secrets.DeleteCalls.Should().Equal(h.HandleId, h.HandleId);
         fx.Store.GetById(h.HandleId)!.Kubernetes!.CredentialSecretName.Should().BeNull();
+        fx.Store.TryReserveTarget(replacement, allowReuse: false, out var existingAfterCleanup)
+            .Should().BeTrue();
+        existingAfterCleanup.Should().BeNull();
     }
 
     [Fact]
@@ -277,6 +307,22 @@ public sealed class InvestigationCloserTests
         var winnerState = results.Single(r => !r.AlreadyTerminal).NewState;
         final.State.Should().Be(winnerState!.Value);
     }
+
+    private static InvestigationHandle Replacement(InvestigationHandle prior, string handleId)
+        => prior with
+        {
+            HandleId = handleId,
+            Kubernetes = prior.Kubernetes! with
+            {
+                EphemeralContainerName = $"diag-{handleId}",
+                PodLocalBearerToken = $"bearer-{handleId}",
+                CredentialSecretName = $"secret-{handleId}",
+                CredentialsMayBeInUse = false,
+            },
+            State = InvestigationState.Attaching,
+            FailureReason = null,
+            InternalScopeDelegationKey = $"delegation-{handleId}",
+        };
 
     private sealed class Fixture
     {

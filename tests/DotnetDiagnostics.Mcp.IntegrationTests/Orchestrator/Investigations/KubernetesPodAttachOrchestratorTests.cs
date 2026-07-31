@@ -285,6 +285,38 @@ public class KubernetesPodAttachOrchestratorTests
     }
 
     [Fact]
+    public async Task AttachAsync_ReportsCleanupPendingForTerminalHandleReservingTarget()
+    {
+        var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);
+        var (orch, store, _) = NewOrchestrator(api);
+        var now = DateTimeOffset.UtcNow;
+        store.Add(new InvestigationHandle(
+            HandleId: "inv-cleanup-pending",
+            Kubernetes: new KubernetesInvestigationTarget(
+                Ns,
+                Pod,
+                Container,
+                "diag-old",
+                "bearer-old",
+                CredentialSecretName: null,
+                CredentialsMayBeInUse: true),
+            State: InvestigationState.Closed,
+            AttachedAt: now,
+            ExpiresAt: now.AddMinutes(5)));
+
+        var act = () => orch.AttachAsync(
+            NewRequest(allowReuseExistingSession: false),
+            CancellationToken.None);
+
+        var ex = await act.Should().ThrowAsync<OrchestratorException>();
+        ex.Which.ErrorKind.Should().Be(OrchestratorErrorKinds.CredentialCleanupPending);
+        ex.Which.Message.Should().Contain("inv-cleanup-pending");
+        ex.Which.Message.Should().Contain("detach_from_pod");
+        api.PatchInvoked.Should().BeFalse();
+        store.Snapshot().Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task AttachAsync_ReusesExistingHandle_ForSameStableOwner()
     {
         var api = new StubAttachApi(pod: BuildPreparedPod(), ephemeralRunningAfter: 1);

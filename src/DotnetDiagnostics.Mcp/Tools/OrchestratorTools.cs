@@ -448,6 +448,9 @@ public sealed class OrchestratorTools
         OrchestratorErrorKinds.AttachAlreadyInProgress => new NextActionHint(
             "attach_to_pod",
             "Another attach is in flight for this Pod. Retry with allowReuseExistingSession=true."),
+        OrchestratorErrorKinds.CredentialCleanupPending => new NextActionHint(
+            "detach_from_pod",
+            "If you own the prior handle, retry detach_from_pod with the handleId reported in the error; otherwise wait for cleanup before attaching again."),
         OrchestratorErrorKinds.AttachTimeout => new NextActionHint(
             "attach_to_pod",
             "The ephemeral container did not become Running in time. Check image-pull errors on the Pod, " +

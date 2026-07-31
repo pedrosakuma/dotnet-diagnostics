@@ -178,11 +178,15 @@ orchestrator never guesses from PID ordering.
 - `PodNotRunning`
 - `PodNotPrepared`
 - `AttachAlreadyInProgress`
+- `CredentialCleanupPending`
 - `AttachFailed`
 - `AttachTimeout`
 - `PermissionDenied`
 - `PortForwardFailed`
 - `KubeApiUnavailable`
+`CredentialCleanupPending` means a terminal handle for the same target still retains runtime
+credentials or its short-lived Secret reference after a transient cleanup failure. Retry
+`detach_from_pod` with the prior handle id, or wait for the reaper, before reattaching.
 `AttachFailed` should mean the patch was accepted but the attach never became usable. `AttachTimeout` should mean the Pod may still recover and a retry is reasonable.
 ### 3.6 `detach`
 #### Proposed signature

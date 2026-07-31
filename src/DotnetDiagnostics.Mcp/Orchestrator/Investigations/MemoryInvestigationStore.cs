@@ -39,16 +39,37 @@ internal sealed class MemoryInvestigationStore :
         ArgumentNullException.ThrowIfNull(newHandle);
         lock (_gate)
         {
-            if (allowReuse && !string.IsNullOrEmpty(newHandle.ReservationKey))
+            if (!string.IsNullOrEmpty(newHandle.ReservationKey))
             {
+                InvestigationHandle? reusable = null;
                 foreach (var h in _byId.Values)
                 {
-                    if (h.State is InvestigationState.Active or InvestigationState.Attaching &&
-                        string.Equals(h.ReservationKey, newHandle.ReservationKey, StringComparison.Ordinal))
+                    if (!string.Equals(h.ReservationKey, newHandle.ReservationKey, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    var cleanupPending =
+                        h.State is InvestigationState.Closed or InvestigationState.Expired or InvestigationState.Failed &&
+                        InvestigationCredentialCleanup.IsPending(h);
+                    if (cleanupPending)
                     {
                         existing = h;
                         return false;
                     }
+
+                    if (allowReuse &&
+                        reusable is null &&
+                        h.State is InvestigationState.Active or InvestigationState.Attaching)
+                    {
+                        reusable = h;
+                    }
+                }
+
+                if (reusable is not null)
+                {
+                    existing = reusable;
+                    return false;
                 }
             }
             if (_byId.ContainsKey(newHandle.HandleId))
