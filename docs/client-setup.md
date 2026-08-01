@@ -73,7 +73,9 @@ Sanity check:
 curl -fsS http://127.0.0.1:8787/health
 # {"status":"ok"}
 
-curl -fsS http://127.0.0.1:8787/mcp -H "Authorization: Bearer $MCP_BEARER_TOKEN"
+# Auth accepted: GET lacks an MCP session, so expect an MCP 400 rather than 401.
+curl -i http://127.0.0.1:8787/mcp \
+  -H "Authorization: Bearer $MCP_BEARER_TOKEN"
 ```
 
 ## Transport security (non-loopback)
