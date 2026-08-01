@@ -1,5 +1,16 @@
 # Central MCP orchestrator design
 _Status: Phase 1 spike for [issue #20](https://github.com/pedrosakuma/dotnet-diagnostics/issues/20)._
+
+> **Current status (2026-08-01):** The orchestrator shipped through multiple implementation PRs.
+> Key shipped names and contracts differ from some proposals below — consult
+> [`docs/tool-reference.md`](./tool-reference.md) for the authoritative current surface:
+> - `detach` shipped as **`detach_from_pod`**.
+> - Session-binding (§3.8 "MCP session binding" recommendation) was superseded by explicit
+>   `investigationHandleId` / `investigationHandleIds` routing arguments (#554 / PR #559,
+>   v0.17.0). Session binding is kept only as a compatibility fallback.
+> - `list_orchestrator(kind="investigations")` is the current introspection surface.
+>
+> The design text below is preserved as historical record of the Phase 1 spike decisions.
 This document answers one question:
 **How should `dotnet-diagnostics-mcp` expose a fleet of prepared Kubernetes Pods through one MCP endpoint without changing the current diagnostic tool bodies?**
 Short answer:
@@ -233,6 +244,13 @@ Recommendation for Phase 1:
 - prefer **MCP session binding** as the default behavior,
 - allow an explicit `investigationHandle` later only if multi-target concurrency in one client session becomes a hard requirement.
 That keeps the existing tool signatures stable while the orchestrator remains an implementation detail in front of them.
+
+> **⚠️ Superseded — see current contract.** The above "MCP session binding" recommendation was
+> revised before shipping. The production implementation (#554 / PR #559, v0.17.0) went with
+> **explicit `investigationHandleId` / `investigationHandleIds` arguments** as the primary
+> routing mechanism, demoting session binding to a backward-compatibility fallback. This removes
+> the hard dependency on `Mcp-Session-Id` and aligns with the MCP draft-spec direction (SEP-2567).
+> See [`docs/research/mcp-2026-draft-migration.md`](./research/mcp-2026-draft-migration.md).
 ### 3.9 Tool count budget
 `AGENTS.md` warns that Anthropic recommends roughly **10 tools** per LLM context and notes that the repo had already grown to **20** because each added concept unlocked distinct diagnostic behavior.
 Issue #20 proposes four more tools, which takes the surface to the moral -equivalent of **24** under that same budget framing.

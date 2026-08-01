@@ -3,6 +3,14 @@
 **Issue**: #547 (Phase 16 P2) · **Branch**: `docs/method-parameter-capture-feasibility` · **Date**: 2026-07-06
 **Status**: Research spike — no production code. Output is this findings doc plus a GO / NO-GO verdict.
 
+> **Current status (2026-08-01):** Spike is complete; issue #547 is **closed**. The feature
+> shipped as `collect_sample(kind="method-params")` in **v0.17.0** (design: #556/#558;
+> production implementation: #562/#563; win-x64 follow-up: #564/#565). See
+> [`docs/design/method-parameter-capture-design.md`](../design/method-parameter-capture-design.md)
+> for the approved security design and
+> [`docs/tool-reference.md`](../tool-reference.md) for the current contract.
+> The feasibility analysis below is preserved as historical record.
+
 ## Executive summary
 
 **Verdict: GO (with guardrails).**

@@ -62,11 +62,12 @@ all EventPipe buffers flush. `/crash?mode=oom` simulates an OOM-class fatal
 termination with an unhandled exception rather than forcing the host into real
 memory exhaustion.
 
-> **Local Docker crash limitation.** The reference sidecar joins the target
-> with `--pid=container:badcode`. Docker terminates that joined container when
-> the target container exits, so `crash-guard` may lose its final MCP response
-> in this topology. This limitation is tracked in
-> [#691](https://github.com/pedrosakuma/dotnet-diagnostics/issues/691).
+> **Local Docker crash topology.** The supported topology uses an inert PID-namespace anchor
+> (see the `docker compose` command above), which keeps the sidecar alive after the target
+> exits. The old two-container `--pid=container:badcode` arrangement destroyed the sidecar
+> with the target; that limitation was fixed in
+> [#691](https://github.com/pedrosakuma/dotnet-diagnostics/issues/691) (closed, PR #717) and
+> the anchor topology is now the documented default.
 
 > **Deterministic repro + a fixed variant (scenario 4).** `/sync-over-async`
 > accepts `delaySeconds=N`, which points its fan-out at a local

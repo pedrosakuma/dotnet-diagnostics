@@ -9,6 +9,11 @@
 > [#606](https://github.com/pedrosakuma/dotnet-diagnostics/issues/606) tracked
 > the audit and fixes (PRs #607–#614). This page records **what each fix
 > actually trades away** so nobody has to re-derive it from a diff later.
+>
+> See also: [`hotpaths/README.md`](./hotpaths/README.md) (CPU/allocation hotpath
+> profile per collector — where cycles go *inside* each collector's own code) ·
+> [`production-safety.md`](./production-safety.md) (operational profiles and
+> data-exposure boundary).
 
 ## Why this matters (and what it doesn't fix)
 

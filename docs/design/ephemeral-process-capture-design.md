@@ -1,8 +1,9 @@
 # Unified Ephemeral-Process Capture — Design
 
 **Issue**: #665 · **Date**: 2026-07-21
-**Status**: Design only — no production code, no shipping tool-contract changes in
-`docs/tool-reference.md` yet. Companion issue #662 (self-contained handle eviction) is a
+**Status**: ✅ **Implemented** — all three parts shipped in **v0.19.0** (PRs #671–#680). Current contract:
+[`docs/tool-reference.md`](../tool-reference.md) (see `inspect_process`, `collect_events(kind="startup")`, `collect_batch`).
+The original design text below is preserved as historical record. Companion issue #662 (self-contained handle eviction) is a
 separate, independent fix and is not re-litigated here.
 
 ## Executive summary
