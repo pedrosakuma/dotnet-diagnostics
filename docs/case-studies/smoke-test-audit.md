@@ -334,9 +334,9 @@ added to #681.
 ## Raw run log — pre-fix historical record (2026-07-24)
 
 > **Historical record only.** The scenario-by-scenario detail below is from the pre-fix run.
-> UX notes that reflect known limitations are annotated inline; all UX issues (#691–#704) are
-> now closed except the upstream-blocked residuals #147 and #685. See the current-status
-> summary at the top and the
+> UX notes that reflect known limitations are annotated inline; all UX issues #691–#704 are
+> closed. Separately, upstream-blocked residuals #147 and #685 remain open and are outside
+> that range. See the current-status summary at the top and the
 > [Post-fix re-audit (2026-07-29)](#post-fix-re-audit-2026-07-29) for the authoritative
 > current findings.
 
