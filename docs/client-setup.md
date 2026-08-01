@@ -391,13 +391,13 @@ The MCP protocol is JSON-RPC over HTTP; the cheapest way to confirm the server
 is reachable and the token is correct is to send an `initialize` request and
 follow up with `tools/list`. This is tedious by hand — prefer one of the SDK
 or GUI options above. Use `curl` only to verify network reachability and the
-401 vs 200 boundary:
+401 vs non-401 authentication boundary:
 
 ```bash
 # 401 — wrong token, auth working
 curl -i http://127.0.0.1:8787/mcp -H "Authorization: Bearer wrong"
 
-# 200 (or 4xx from MCP, not from auth) — token accepted
+# 400 from MCP is expected for this session-less GET — token accepted
 curl -i http://127.0.0.1:8787/mcp -H "Authorization: Bearer $MCP_BEARER_TOKEN"
 ```
 

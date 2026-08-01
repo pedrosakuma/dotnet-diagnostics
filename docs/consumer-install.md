@@ -295,7 +295,8 @@ acknowledgement:
 - **Moderate** — bounded EventPipe collection. Executes with a `safetyWarnings` notice.
 - **High** — heap walks, thread snapshots, induced GC. Pauses before side effects and returns
   `safetyApproval.requiredAcknowledgement`; retry with that exact value to proceed.
-- **Critical** — process dumps, method-parameter capture. Uses MCP elicitation when the
+- **Critical** — includes process dumps, method-parameter capture, raw artifact export, and
+  sensitive-value drilldowns; see the safety matrix for the complete conditional set. Uses MCP elicitation when the
   client advertises the `elicitation` capability (preferred). Without elicitation:
   most critical tools return `safetyApproval.requiredAcknowledgement` for retry (same
   protocol as high-risk); `collect_process_dump` keeps its `confirm=true` fallback.
