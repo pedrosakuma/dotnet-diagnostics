@@ -97,9 +97,12 @@ Three distributions — pick by environment. Full walkthrough: [`docs/consumer-i
 dotnet tool install -g dotnet-diagnostics-mcp
 dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 
-# Container (no SDK needed)
+# Container — host-loopback only, local dev (container binds 0.0.0.0:8080 internally)
+# MCP_ALLOW_INSECURE_HTTP=true is required for cleartext on the container-internal non-loopback bind;
+# -p 127.0.0.1:8787:8080 restricts host access to loopback. Use TLS for production.
 docker run -d -p 127.0.0.1:8787:8080 \
   -e MCP_BEARER_TOKEN=$(openssl rand -hex 32) \
+  -e MCP_ALLOW_INSECURE_HTTP=true \
   ghcr.io/pedrosakuma/dotnet-diagnostics:latest
 
 # Self-contained binary — see Releases page

@@ -57,12 +57,18 @@ then install the new one. The legacy id has been unlisted on NuGet.org.
 
 ### 1b. Container
 
+> **Local dev only — internal cleartext.** The container image sets `ASPNETCORE_URLS=http://0.0.0.0:8080`,
+> which is a non-loopback cleartext binding. `MCP_ALLOW_INSECURE_HTTP=true` is required to start;
+> `-p 127.0.0.1:8787:8080` restricts host-side access to loopback. Do not use this recipe for
+> production — configure TLS or a trusted proxy instead (see [§ 1.6](#16-transport-security-for-non-loopback-listeners)).
+
 ```bash
 docker run -d \
   --name dotnet-diagnostics-mcp \
   --restart unless-stopped \
   -p 127.0.0.1:8787:8080 \
   -e MCP_BEARER_TOKEN=$(openssl rand -hex 32) \
+  -e MCP_ALLOW_INSECURE_HTTP=true \
   ghcr.io/pedrosakuma/dotnet-diagnostics:latest
 ```
 
@@ -245,7 +251,7 @@ Add this to your `mcp-config.json` (Claude Desktop, Claude Code, Copilot CLI, Cu
 capabilities — no EventPipe session, no ptrace, no side effects. It is always the first call
 to confirm connectivity and discover what is running:
 
-```json
+```jsonc
 // MCP call (from your client after connecting)
 { "name": "inspect_process", "arguments": { "view": "list" } }
 ```
@@ -257,8 +263,16 @@ dotnet-diagnostics-cli processes
 ```
 
 If the call returns process rows, the server is working. Move to `inspect_process(view="triage")`
-on a target PID for an evidence-backed health snapshot that classifies signals into
-`observe`, `investigate`, or `privileged-response` categories.
+on a target PID for an evidence-backed health snapshot. The response includes:
+
+- `assessment` — overall verdict: `ok`, `warning`, `critical`, or `inconclusive`
+- `observedSignals` — individual threshold crossings with evidence items
+- `hypotheses` — bounded interpretations with supporting and contradicting evidence and a suggested next step
+- `topIndicators` — scored signals ranked by severity
+
+`observe`, `investigate`, and `privileged-response` are **operating profiles** (deployment and
+workflow recommendations), not signal categories. See
+[`production-safety.md`](./production-safety.md#production-operating-profiles).
 
 ### Safety levels and acknowledgement
 
