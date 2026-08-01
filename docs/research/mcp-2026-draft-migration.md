@@ -3,6 +3,17 @@
 **Issue**: #546 (Phase 16 P1) · **Original assessment**: 2026-07-06 · **Last revalidated**: 2026-07-27
 **Status**: Pre-finalization revalidation complete. SDK `2.0.0-rc.1` released 2026-07-25; stable 2.0.0 confirmed for on or before 2026-07-28.
 
+> **Current status (2026-08-01):** Spike is complete; issue #546 is **closed**. The production
+> migration to SDK 2.0.0 has **not yet happened** — the repo remains on **SDK 1.4.0**
+> (`Directory.Packages.props`). Issue #548 (SEP-2663 Tasks watch item) remains open.
+> The orchestrator session-binding blocker identified here was resolved by #554 / PR #559
+> (v0.17.0); see the annotation in
+> [`docs/central-orchestrator-design.md`](../central-orchestrator-design.md) §3.8.
+> When the production SDK bump is planned, use this document and its migration order as
+> the starting point; all analysis below remains current unless noted otherwise.
+> The `2025-11-25` protocol version string in `DiagnosticServiceRegistration` is one of
+> the known stale items that must be updated during the real migration.
+
 ## Executive summary
 
 **Recommendation: The production migration gate is now imminent. Stable SDK 2.0.0 is confirmed for on or before 2026-07-28. All protocol and wire blockers are resolved. Plan the production bump for immediately after the stable release; begin MRTR dump-approval prep in parallel.**

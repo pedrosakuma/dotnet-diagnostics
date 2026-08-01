@@ -6,6 +6,13 @@ stable structured evidence, scored without prose matching, and replayed
 offline. This spike answers **GO**, with one explicit Linux batching
 constraint described below.
 
+> **Current status (2026-08-01):** Spike is complete; issue #646 is **closed**.
+> The evaluation test project (`tests/DotnetDiagnostics.ScenarioEvaluation.Tests`) and
+> the process-isolated launcher (`scripts/run-scenario-evaluation-isolated.sh`) shipped
+> with the spike. The Linux host-crash constraint (#147) remains an upstream-blocked
+> residual. The companion CI regression spike (#647) is also closed. The document below
+> is preserved as the authoritative design record for the evaluation surface.
+
 ## Decision
 
 **GO** for a small diagnostic-scenario evaluation surface built from existing
