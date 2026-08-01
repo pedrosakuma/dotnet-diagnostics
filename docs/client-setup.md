@@ -87,6 +87,10 @@ Supply the certificate and private key as environment variables (no file on disk
 ECS task definitions, Kubernetes Secrets, and docker-compose secrets):
 
 ```bash
+# Auth: configure scoped bearer tokens (OIDC is preferred for production — see OIDC quickstart below)
+export Auth__BearerTokens__0__Name="agent"
+export Auth__BearerTokens__0__Token="$(openssl rand -hex 32)"
+export Auth__BearerTokens__0__Scopes__0="*"
 export MCP_TLS_CERTIFICATE_PEM="$(cat /path/to/cert.pem)"
 export MCP_TLS_PRIVATE_KEY_PEM="$(cat /path/to/key.pem)"
 dotnet-diagnostics-mcp --urls https://0.0.0.0:8787
@@ -96,6 +100,9 @@ Both variables must be set together. Self-signed certificates are accepted for i
 sidecar topologies; use a CA-signed certificate when the MCP client connects from outside
 the trust boundary.
 
+> `MCP_BEARER_TOKEN` is accepted for non-loopback but emits a deprecation warning — a future
+> release refuses it. Use `Auth:BearerTokens` (as above) or OIDC for non-loopback deployments.
+
 ### Behind a trusted TLS-terminating proxy
 
 If nginx, Envoy, or a service mesh terminates TLS upstream, tell the server which proxy
@@ -103,6 +110,7 @@ IPs or CIDRs to trust for `X-Forwarded-Proto: https`. The server applies
 `ForwardedHeaders` middleware and then enforces HTTPS for non-loopback traffic:
 
 ```bash
+# Auth: configure Auth__BearerTokens__* or OIDC vars before starting (see Direct Kestrel TLS above)
 # Single proxy IP:
 export MCP_TRUSTED_PROXY_CIDRS="10.0.0.5"
 # Or a CIDR block (comma or semicolon-separated):

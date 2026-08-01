@@ -149,12 +149,17 @@ For **non-loopback deployments** (sidecar, shared host, Kubernetes), choose one:
 | **Dev override (⚠️ unsafe)** | Set `MCP_ALLOW_INSECURE_HTTP=true` | Local multi-container stacks where TLS setup is impractical — emits a warning on every start |
 
 ```bash
+# Auth (required for non-loopback): scoped bearer tokens preferred; MCP_BEARER_TOKEN accepted but deprecated
+export Auth__BearerTokens__0__Name="agent"
+export Auth__BearerTokens__0__Token="$(openssl rand -hex 32)"
+export Auth__BearerTokens__0__Scopes__0="*"
+
 # Direct TLS example (container or bare host):
 export MCP_TLS_CERTIFICATE_PEM="$(cat cert.pem)"
 export MCP_TLS_PRIVATE_KEY_PEM="$(cat key.pem)"
 dotnet-diagnostics-mcp --urls https://0.0.0.0:8787
 
-# Trusted proxy example:
+# Trusted proxy example (same Auth__BearerTokens__* set above):
 export MCP_TRUSTED_PROXY_CIDRS="10.0.0.0/8"
 dotnet-diagnostics-mcp --urls http://0.0.0.0:8787  # proxy sets X-Forwarded-Proto: https
 ```
