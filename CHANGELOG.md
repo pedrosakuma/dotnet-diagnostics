@@ -2,6 +2,87 @@
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-08-01
+
+Highlights: **production diagnostics now have an explicit safety contract.**
+The MCP server and standalone CLI resolve every concrete operation from one
+shared, fail-closed model that separates target impact, sensitive-data
+exposure, side effects, and approval policy. The same release also hardens
+non-loopback transport, Kubernetes attachment credentials, and the
+target-controlled log boundary.
+
+### Migration notes
+
+- **Non-loopback cleartext HTTP is refused by default** (#765, #768).
+  Configure direct Kestrel TLS with `MCP_TLS_CERTIFICATE_PEM` plus
+  `MCP_TLS_PRIVATE_KEY_PEM`, or place the server behind a trusted TLS
+  terminator configured through `MCP_TRUSTED_PROXY_CIDRS`. Stdio and
+  loopback-only development remain supported. `MCP_ALLOW_INSECURE_HTTP=true`
+  is an explicitly unsafe development escape hatch and emits a warning.
+- **High/critical operations now require deliberate approval** (#771, #773,
+  #778). MCP high-risk calls first return
+  `safetyApproval.requiredAcknowledgement`; clients must retry with that exact
+  request-bound value under `_dotnetDiagnostics.acknowledgement`. Critical
+  calls prefer native MCP elicitation. Without elicitation, most return an
+  exact request-bound acknowledgement fallback; `collect_process_dump` keeps
+  its separate `confirm=true` fallback contract. Every path fails closed
+  before approval, and bearer `root`/`*` scope does not count as approval.
+- **CLI automation must acknowledge high/critical risk explicitly** (#774,
+  #777). Use `--explain-risk` to inspect without executing and
+  `--acknowledge-risk high|critical` with the exact resolved level.
+  `collect_process_dump` still also requires `--confirm`. Warnings and prompts
+  go to stderr, preserving JSON stdout.
+
+### Added
+
+- **Shared invocation-safety registry and resolver** (#772, #776) — immutable
+  Core records classify every MCP/CLI operation, discriminator, handle-backed
+  drilldown, sensitive modifier, and batch child. Unknown combinations fail
+  closed; client-supplied `handleKind` cannot spoof authoritative handle
+  classification.
+- **MCP safety metadata and approval gates** (#773, #778) —
+  `tools/list` advertises static maximum risk and conditional safety; resolved
+  results expose `safety`, `safetyWarnings`, `safetyApproval`, and
+  `childSafety`. High acknowledgements are bound to the exact request, critical
+  operations prefer human elicitation, and batches inherit their riskiest
+  child without adding to the 17-tool surface.
+- **CLI risk preflight and interactive confirmation** (#774, #777) —
+  one-shot commands fail closed without the exact acknowledgement, while the
+  session REPL prompts only for high/critical operations. Low-risk observation
+  stays prompt-free and moderate EventPipe collection remains automatable with
+  a visible warning.
+- **Canonical production-safety matrix** (#775, #779) —
+  [`docs/production-safety.md`](./docs/production-safety.md) is generated from
+  the shared registry and documents `observe`, `investigate`, and
+  `privileged-response` profiles plus evidence retention, access, and disposal.
+  Automated parity checks cover operations, discriminators, modifiers, MCP
+  metadata, CLI documentation, and unsafe redaction claims.
+
+### Security
+
+- **Pod attachment credentials no longer appear as readable PodSpec values**
+  (#764, #769) — each attachment receives rotated credentials through a
+  short-lived Kubernetes Secret; the ephemeral child binds to loopback, and
+  detach/expiry revoke credentials and retry cleanup safely.
+- **Target log evidence is explicitly untrusted data** (#766, #767) — log
+  messages, exception text, categories, event names, and scopes carry a
+  machine-readable trust boundary and render as inert data rather than
+  instructions while preserving raw diagnostic evidence.
+- **EventPipe sensitivity is explicit** (#771, #775, #779) — logs,
+  exceptions, database statements, activities, EventSource payloads,
+  networking/request data, stack/type/method names, and exported summaries are
+  documented as possible PII, secrets, tenant data, or confidential
+  information. Redaction is defense in depth, never a guarantee.
+
+### Documentation and validation
+
+- **Safety-aware operator flows are smoke-tested and documented** (#780, #781)
+  — the Docker external-investigation workflow covers CLI high
+  acknowledgement, moderate external-profile routing, EventPipe batch
+  collection, detach, stale-handle rejection, and cleanup; crash-guard validates
+  structured recovery with the sidecar kept alive. Kubernetes Kind coverage
+  exercises request-bound high-risk attach acknowledgement.
+
 ## [0.21.0] — 2026-07-30
 
 Highlights: **Docker external investigations are now a one-command,
