@@ -45,9 +45,22 @@ dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 
 Upgrade: `dotnet tool update -g dotnet-diagnostics-mcp`. Uninstall: `dotnet tool uninstall -g dotnet-diagnostics-mcp`.
 
-> **Renamed in v0.2.2.** The NuGet package id was `DotnetDiagnostics.Mcp` for 0.1.0–0.2.1 and is now `dotnet-diagnostics-mcp` (matches the tool command and the sibling `dotnet-assembly-mcp`). If you have the old id installed, run `dotnet tool uninstall -g DotnetDiagnostics.Mcp` first, then install the new one. The legacy id has been unlisted on NuGet.org.
+<details>
+<summary><strong>Migrating from the legacy package id (v0.2.2)</strong></summary>
+
+The NuGet package id was `DotnetDiagnostics.Mcp` for 0.1.0–0.2.1 and is now
+`dotnet-diagnostics-mcp` (matches the tool command and the sibling `dotnet-assembly-mcp`).
+If you have the old id installed, run `dotnet tool uninstall -g DotnetDiagnostics.Mcp` first,
+then install the new one. The legacy id has been unlisted on NuGet.org.
+
+</details>
 
 ### 1b. Container
+
+> **Local dev only — internal cleartext.** The container image sets `ASPNETCORE_URLS=http://0.0.0.0:8080`,
+> which is a non-loopback cleartext binding. `MCP_ALLOW_INSECURE_HTTP=true` is required to start;
+> `-p 127.0.0.1:8787:8080` restricts host-side access to loopback. Do not use this recipe for
+> production — configure TLS or a trusted proxy instead (see [§ 1.6](#16-transport-security-for-non-loopback-listeners)).
 
 ```bash
 docker run -d \
@@ -55,6 +68,7 @@ docker run -d \
   --restart unless-stopped \
   -p 127.0.0.1:8787:8080 \
   -e MCP_BEARER_TOKEN=$(openssl rand -hex 32) \
+  -e MCP_ALLOW_INSECURE_HTTP=true \
   ghcr.io/pedrosakuma/dotnet-diagnostics:latest
 ```
 
@@ -115,6 +129,47 @@ not Linux `CAP_SYS_PTRACE`; the capture happens inside the target runtime. MCP a
 a separate boundary: the server still requires the bearer scopes `dump-write` + `ptrace` and
 human approval (`confirm=true` or MCP elicitation) before writing a dump.
 
+
+---
+
+### 1.6. Transport security for non-loopback listeners
+
+The server **refuses to start** when bound to a non-loopback address over cleartext HTTP
+without a configured trusted TLS terminator or the explicit unsafe override. For **local
+development**, always bind to loopback (`http://127.0.0.1:<port>`) — the examples in this
+guide already do this.
+
+For **non-loopback deployments** (sidecar, shared host, Kubernetes), choose one:
+
+| Approach | How | When |
+|---|---|---|
+| **Direct Kestrel TLS** | Set `MCP_TLS_CERTIFICATE_PEM` + `MCP_TLS_PRIVATE_KEY_PEM` and bind to `https://` | You own the cert lifecycle; no proxy in front |
+| **TLS-terminating proxy** | Set `MCP_TRUSTED_PROXY_CIDRS` to the proxy IPs/CIDRs; proxy forwards `X-Forwarded-Proto: https` | nginx, Envoy, service mesh, or cloud load-balancer already handles TLS |
+| **Loopback only** | Bind to `http://127.0.0.1:<port>` | Single-host / sidecar where the MCP client is on the same host |
+| **Dev override (⚠️ unsafe)** | Set `MCP_ALLOW_INSECURE_HTTP=true` | Local multi-container stacks where TLS setup is impractical — emits a warning on every start |
+
+```bash
+# Auth (required for non-loopback): scoped bearer tokens preferred; MCP_BEARER_TOKEN accepted but deprecated
+export Auth__BearerTokens__0__Name="agent"
+export Auth__BearerTokens__0__Token="$(openssl rand -hex 32)"
+export Auth__BearerTokens__0__Scopes__0="read-counters"
+
+# Direct TLS example (container or bare host):
+export MCP_TLS_CERTIFICATE_PEM="$(cat cert.pem)"
+export MCP_TLS_PRIVATE_KEY_PEM="$(cat key.pem)"
+dotnet-diagnostics-mcp --urls https://0.0.0.0:8787
+
+# Trusted proxy example (same Auth__BearerTokens__* set above):
+export MCP_TRUSTED_PROXY_CIDRS="10.0.0.0/8"
+dotnet-diagnostics-mcp --urls http://0.0.0.0:8787  # proxy sets X-Forwarded-Proto: https
+```
+
+`read-counters` is sufficient for process discovery, triage, and counters.
+Add only the scopes required by the intended diagnostics; see
+[`authorization.md`](./authorization.md).
+
+`/health` always responds regardless of scheme (needed for readiness probes).
+See [`client-setup.md` → Transport security](./client-setup.md#transport-security-non-loopback) for the complete reference.
 ---
 
 ## 2. Run it as a supervised service
@@ -194,9 +249,86 @@ Add this to your `mcp-config.json` (Claude Desktop, Claude Code, Copilot CLI, Cu
 }
 ```
 
+
 ---
 
-## 4. Optional — pair with `dotnet-assembly-mcp`
+## 4. First diagnostic and safety orientation
+
+### First diagnostic (low-risk)
+
+`inspect_process(view="list")` returns a list of running .NET processes with their PIDs and
+command lines — no EventPipe session, no ptrace, no side effects. It is the first call
+to confirm connectivity and discover what is running. (For runtime capability flags
+— CoreCLR vs NativeAOT, ptrace/PSI/perf gate availability — follow up with
+`inspect_process(view="capabilities")` on the target PID.)
+
+```jsonc
+// MCP call (from your client after connecting)
+{ "name": "inspect_process", "arguments": { "view": "list" } }
+```
+
+With the CLI:
+
+```bash
+dotnet-diagnostics-cli processes
+```
+
+If the call returns process rows, the server is working. Move to `inspect_process(view="triage")`
+on a target PID for an evidence-backed health snapshot. The response includes:
+
+- `assessment` — overall verdict: `healthy`, `degraded`, `critical`, or `inconclusive`
+- `observedSignals` — individual threshold crossings with evidence items
+- `hypotheses` — bounded interpretations with supporting and contradicting evidence and a suggested next step
+- `topIndicators` — scored signals ranked by severity
+
+`observe`, `investigate`, and `privileged-response` are **operating profiles** (deployment and
+workflow recommendations), not signal categories. See
+[`production-safety.md`](./production-safety.md#production-operating-profiles).
+
+### Safety levels and acknowledgement
+
+Operations are classified **low / moderate / high / critical** based on target impact, data
+exposure, and side effects. Most observation stays at low or moderate and requires no
+acknowledgement:
+
+- **Low** — aggregate signals, process lists, capabilities, counters. Executes immediately.
+- **Moderate** — bounded EventPipe collection. Executes with a `safetyWarnings` notice.
+- **High** — heap walks, thread snapshots, induced GC. Pauses before side effects and returns
+  `safetyApproval.requiredAcknowledgement`; retry with that exact value to proceed.
+- **Critical** — includes process dumps, method-parameter capture, raw artifact export, and
+  sensitive-value drilldowns; see the safety matrix for the complete conditional set. Uses MCP elicitation when the
+  client advertises the `elicitation` capability (preferred). Without elicitation:
+  most critical tools return `safetyApproval.requiredAcknowledgement` for retry (same
+  protocol as high-risk); `collect_process_dump` keeps its `confirm=true` fallback.
+  CLI callers must pass `--acknowledge-risk critical` (and `--confirm` for dumps). See
+  [`authorization.md`](./authorization.md#per-call-confirmation).
+
+Use `--explain-risk` with any CLI command to inspect the resolved risk level without executing:
+
+```bash
+dotnet-diagnostics-cli inspect-heap --pid 1234 --explain-risk
+```
+
+The canonical operation matrix with all risk levels and approvals is
+[`production-safety.md`](./production-safety.md).
+
+### Evidence disposal orientation
+
+Diagnostic data can contain PII, credentials, stack frames, heap values, and
+application-controlled text. Before collecting anything beyond counters:
+
+1. Confirm who needs access to the evidence and where it will be stored.
+2. Set a retention deadline before collection, not after.
+3. Delete MCP client chat history, exported summaries, and redirected CLI output when no
+   longer needed. Server-side handle expiry does not delete copies the client saved.
+4. Treat dumps and raw traces as privileged material — restrict access to the incident team.
+
+Full retention and disposal guidance:
+[`production-safety.md` → Retention, access, and disposal](./production-safety.md#retention-access-and-disposal).
+
+---
+
+## 5. Optional — pair with `dotnet-assembly-mcp`
 
 The diagnostics server resolves PDBs locally and stamps `SourceLocation` directly onto every `MethodIdentity` it emits for CPU samples (see [#28](https://github.com/pedrosakuma/dotnet-diagnostics/issues/28)). That means **in a dev environment** where the source tree is open in your editor, `dotnet-diagnostics-mcp` alone is enough to follow a hotspot to its source line.
 
@@ -234,7 +366,7 @@ And add a second entry to `mcp-config.json`:
 
 ---
 
-## 5. Verify
+## 6. Verify
 
 The CLI bundles a probe-only mode that exits 0 on a healthy 200 response from `/health` and 1 on any failure:
 

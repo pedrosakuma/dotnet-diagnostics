@@ -47,7 +47,7 @@ inspect_process(view="triage")
 ```
 
 **Response excerpt (rationales shortened):**
-```json
+```jsonc
 {
   "modelVersion": 2,
   "assessment": "critical",
@@ -75,6 +75,7 @@ inspect_process(view="triage")
   "topIndicators": [
     {"name": "threadpool-queue-length", "value": 1191, "score": 100, "level": "critical"}
   ],
+  // deprecated — kept for compatibility, scheduled for removal in v1.0; prefer topIndicators
   "verdict": "threadpool-starvation",
   "secondaryVerdicts": null
 }
@@ -96,9 +97,12 @@ Three distributions — pick by environment. Full walkthrough: [`docs/consumer-i
 dotnet tool install -g dotnet-diagnostics-mcp
 dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 
-# Container (no SDK needed)
+# Container — host-loopback only, local dev (container binds 0.0.0.0:8080 internally)
+# MCP_ALLOW_INSECURE_HTTP=true is required for cleartext on the container-internal non-loopback bind;
+# -p 127.0.0.1:8787:8080 restricts host access to loopback. Use TLS for production.
 docker run -d -p 127.0.0.1:8787:8080 \
   -e MCP_BEARER_TOKEN=$(openssl rand -hex 32) \
+  -e MCP_ALLOW_INSECURE_HTTP=true \
   ghcr.io/pedrosakuma/dotnet-diagnostics:latest
 
 # Self-contained binary — see Releases page
@@ -110,7 +114,10 @@ docker run -d -p 127.0.0.1:8787:8080 \
 | Transport | Use case | Auth |
 |-----------|----------|------|
 | **stdio** | Local dev (Copilot CLI, Claude Desktop) | None (OS-level trust) |
-| **HTTP** | Sidecar, shared host, multi-client | Bearer token |
+| **HTTP loopback** | Single-host / dev, bind to `http://127.0.0.1:<port>` | Bearer token |
+| **HTTP + TLS** | Sidecar, shared host: direct PEM TLS (`MCP_TLS_CERTIFICATE_PEM`) or trusted proxy (`MCP_TRUSTED_PROXY_CIDRS`) | Bearer token |
+
+Non-loopback cleartext HTTP is refused by default. See [`docs/client-setup.md` → Transport security](./docs/client-setup.md#transport-security-non-loopback).
 
 </details>
 
