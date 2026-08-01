@@ -10,7 +10,7 @@
 >   exact server-returned `safetyApproval.requiredAcknowledgement`. Critical operations prefer
 >   MCP elicitation. See [`authorization.md` → per-call confirmation](./authorization.md#per-call-confirmation).
 > - **CLI callers** must pass `--acknowledge-risk high|critical`; `--explain-risk` inspects
->   without executing. See [`cli-reference.md` → Risk preflight](./cli-reference.md#risk-preflight).
+>   without executing. See [`cli-reference.md` → Risk preflight](./cli-reference.md#safety-preflight).
 > - The canonical operation matrix with target impact, data exposure, and evidence lifecycle is
 >   [`production-safety.md`](./production-safety.md).
 
