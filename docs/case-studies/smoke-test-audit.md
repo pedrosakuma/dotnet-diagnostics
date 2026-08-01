@@ -3,25 +3,25 @@
 > **Current status (2026-08-01):** This document has two runs. The first run
 > (§§"Negative-path UX" through "Results") was performed against a pre-fix image and
 > is preserved as **historical evidence only** — its findings have been addressed.
-> The **current picture** is in the [Post-fix re-audit (2026-07-29)](#post-fix-re-audit----2026-07-29)
+> The **current picture** is in the [Post-fix re-audit (2026-07-29)](#post-fix-re-audit-2026-07-29)
 > section below.
 >
-> **All major UX findings from the first run are now closed:**
-> - **`isError` not set on structured failures** → fixed in #695 / PR #714 (v0.17.0). MCP
+> **All UX findings from the first run (issues #691–#704) are now closed:**
+> - **`isError` not set on structured failures** (#696 / PR #714, v0.20.0) — MCP
 >   `isError: true` is now set on every structured error envelope.
-> - **`compare_to_baseline` regression misclassification** → fixed in #692 / PR #715 (v0.17.0).
-> - **`replica_counters` cannot select per-pod process** → fixed in #694 (v0.17.0); the fan-out
->   now uses the `processSelector` passed at attach time.
-> - **Crash guard destroyed by Docker PID namespace** → fixed in #691 / PR #717 (v0.18.0);
+> - **`compare_to_baseline` regression misclassification** (#692 / PR #715, v0.20.0).
+> - **`replica_counters` cannot select per-pod process** (#694 / PR #720, v0.20.0); the
+>   fan-out now uses the `processSelector` stored on the investigation handle.
+> - **Crash guard destroyed by Docker PID namespace** (#691 / PR #717, v0.20.0);
 >   the anchored PID-namespace topology keeps the sidecar alive after the target exits.
-> - **Healthcheck depends on absent `wget`** → fixed in #700 (v0.18.0); the runtime image
->   now includes a valid health probe.
-> - **Response prioritization / inline evidence gaps** → fixed in #703 / PR #721 (v0.18.0);
->   bounded inline summaries now lead with the decisive counters.
-> - **Docker bootstrap for external investigations** → closed via #704 / PR #739 + #748 /
->   PR #750 + #755 / PR #762 (v0.20.0 – v0.21.0).
+> - **Healthcheck depends on absent `wget`** (#701 / PR #706, v0.20.0); the runtime image
+>   now uses a built-in health probe.
+> - **Response prioritization / inline evidence gaps** (#698 / PR #719 + #703 / PR #721,
+>   v0.20.0); bounded inline summaries now lead with LOH and Gen2 evidence.
+> - **Docker bootstrap for external investigations** (#704 / PRs #739 + #750 + #762,
+>   v0.20.0 – v0.21.0).
 >
-> **Remaining upstream-blocked residuals:**
+> **Remaining upstream-blocked residuals (not UX issues, not in #691–#704):**
 > - **#147** — Linux CI host crash (native runtime SIGSEGV under full-suite load). Tracked in
 >   dotnet/runtime#128525. CPU-sampler tests remain quarantined on Linux CI.
 > - **#685** — re-validate the Linux CI flake once microsoft/clrmd#1499 ships.
@@ -87,7 +87,7 @@ signals.
 
 ## Negative-path UX — pre-fix historical record
 
-> **Historical record only.** The `isError` finding below was fixed in #695 / PR #714 (v0.17.0).
+> **Historical record only.** The `isError` finding below was fixed in #696 / PR #714 (v0.20.0).
 > The topology and credential checks remain accurate for any re-run.
 
 ### Invalid bearer and missing `CAP_SYS_PTRACE`
@@ -109,15 +109,15 @@ diagnostic IPC worked and only the ptrace-dependent path was blocked.
 **UX note.** The permission envelope was actionable, but the MCP result did
 not set `isError: true`; server logs likewise reported `IsError=False`.
 Consumers that inspect only the protocol error bit could misclassify this as a
-successful tool result. **→ Fixed in #695 / PR #714 (v0.17.0).**
+successful tool result. **→ Fixed in #696 / PR #714 (v0.20.0).**
 
 ## Workflow observations — pre-fix historical record
 
-> **Historical record only.** Several findings below have been fixed in later releases:
-> `compare_to_baseline` regression (#692 / PR #715, v0.17.0); `replica_counters` per-pod
-> process selection (#694, v0.17.0); crash-guard PID-namespace topology (#691 / PR #717,
-> v0.18.0); healthcheck probe (#700, v0.18.0); response prioritization / inline evidence
-> (#703 / PR #721, v0.18.0). See the current-status summary at the top of this document.
+> **Historical record only.** All UX findings below have been fixed in v0.20.0:
+> `compare_to_baseline` regression (#692 / PR #715); `replica_counters` per-pod process
+> selection (#694 / PR #720); crash-guard PID-namespace topology (#691 / PR #717);
+> healthcheck probe (#701 / PR #706); response prioritization / inline evidence
+> (#698 / PR #719, #703 / PR #721). See the current-status summary at the top.
 
 ### Managed investigation and baseline comparison — 10 calls versus 4
 
@@ -152,7 +152,7 @@ side CPU capture primarily to satisfy the handoff contract.
 disappearing, `compare_to_baseline` classified the result as
 `regression_new_hotspot`. The comparison was therefore not a meaningful
 summary of this fix and could direct the investigation backward.
-**→ Fixed in #692 / PR #715 (v0.17.0).**
+**→ Fixed in #692 / PR #715 (v0.20.0).**
 
 ### Live heap versus dump/offline — 3 calls versus 5
 
@@ -293,7 +293,7 @@ Each pod-local error said:
 
 The explicit per-pod path can provide that PID, but the fan-out call has no
 per-replica PID input, so it cannot operate in this canonical topology.
-**→ Fixed in #694 (v0.17.0)** — `attach_to_pod` now accepts a `processSelector`
+**→ Fixed in #694 / PR #720 (v0.20.0)** — `attach_to_pod` now accepts a `processSelector`
 that the `replica_counters` fan-out uses to resolve exactly one PID per pod.
 
 **UX notes.** A detach followed by reattach also exposed stale ephemeral
@@ -309,7 +309,7 @@ catalog and a direct call correctly returned `Unknown tool`.
 ## Results — pre-fix historical record (2026-07-24)
 
 > **Historical record only.** These results reflect the pre-fix run. The post-fix re-audit
-> is in the [Post-fix re-audit (2026-07-29)](#post-fix-re-audit----2026-07-29) section below.
+> is in the [Post-fix re-audit (2026-07-29)](#post-fix-re-audit-2026-07-29) section below.
 
 | Scenario | Steps to root cause | Fix-verify step | Notes / deltas vs prior baseline | Status |
 |---|---|---|---|---|
@@ -334,9 +334,10 @@ added to #681.
 ## Raw run log — pre-fix historical record (2026-07-24)
 
 > **Historical record only.** The scenario-by-scenario detail below is from the pre-fix run.
-> UX notes that reflect known limitations are annotated inline; all tracked issues are now
-> closed. See the current-status summary at the top and the
-> [Post-fix re-audit (2026-07-29)](#post-fix-re-audit----2026-07-29) for the authoritative
+> UX notes that reflect known limitations are annotated inline; all UX issues (#691–#704) are
+> now closed except the upstream-blocked residuals #147 and #685. See the current-status
+> summary at the top and the
+> [Post-fix re-audit (2026-07-29)](#post-fix-re-audit-2026-07-29) for the authoritative
 > current findings.
 
 Entries below are appended as each scenario completes, with the exact tool
@@ -487,7 +488,7 @@ There is no dedicated `/slow-http-fixed` endpoint.
 **UX notes.** The container healthcheck reported unhealthy because the image
 does not contain `wget`, although `/health` and the MCP endpoint were both
 responsive. This did not affect collection, but it is misleading operational
-noise during setup. **→ Fixed in #700 (v0.18.0).**
+noise during setup. **→ Fixed in #701 / PR #706 (v0.20.0).**
 
 ### `exceptions` — 1 step
 
@@ -558,7 +559,7 @@ reported a Gen2 value of `1`, which is easy to misread against the GC
 collector's authoritative window count of 32. The second batch invocation was
 not diagnostically necessary, but it counts because the first inline response
 overflowed at the consumer boundary. **→ Fixed in #698 / PR #719 and #703 / PR
-#721 (v0.18.0)** — bounded inline summaries now lead with LOH and Gen2 evidence.
+#721 (v0.20.0)** — bounded inline summaries now lead with LOH and Gen2 evidence.
 
 ### `crash?mode=unhandled` — failed after 1 step
 
@@ -577,8 +578,10 @@ terminates the sidecar joined to that PID namespace. That destroys the
 reporting transport precisely when `crash-guard` needs to return its final
 envelope. The runtime exception was visible only in the target container log;
 it is not counted as MCP diagnostic evidence. **→ Fixed in #691 / PR #717
-(v0.18.0)** — the anchored PID-namespace topology replaces the two-container
+(v0.20.0)** — the anchored PID-namespace topology replaces the two-container
 arrangement and keeps the sidecar alive through target exit.
+
+<a id="post-fix-re-audit-2026-07-29"></a>
 
 ## Post-fix re-audit — 2026-07-29
 
