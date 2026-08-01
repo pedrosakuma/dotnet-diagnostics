@@ -4,14 +4,33 @@ Concrete, tool-by-tool recipes for the most common diagnostics scenarios an
 LLM (or a human) can drive through `dotnet-diagnostics-mcp`. Each playbook starts from
 a symptom and walks through the tool calls in order.
 
-> **Always start with these two calls:**
+> **Implicit process resolution and preflight:**
 >
-> 1. `inspect_process(view="list")` — discover the target's PID
-> 2. `inspect_process(view="capabilities")` — confirm runtime flavor (CoreCLR vs
->    NativeAOT) and which tools are usable
+> `processId` is optional on every tool. When omitted the server auto-resolves
+> the single visible .NET process (or returns `AmbiguousDotnetProcess` with the
+> candidate list if more than one is visible). Before any window-bound tool —
+> EventPipe collectors, samplers, heap walks — call
+> `inspect_process(view="capabilities")` or `inspect_process(view="preflight")`
+> to confirm the runtime flavor (CoreCLR vs NativeAOT) and check ptrace / perf
+> gates. Skipping it leads to "CPU sampling returned nothing" surprises on
+> NativeAOT targets, or a failed attach on a ptrace-restricted host that
+> `preflight` would have caught with a one-liner remediation.
+
+> **Safety protocol (v0.22.0 — [production-safety.md](./production-safety.md)):**
 >
-> The capability matrix gates the rest of the investigation. Skipping it leads
-> to "CPU sampling returned nothing" surprises on NativeAOT targets.
+> - **Low** — executes; no prompt, no `safetyWarnings`.
+> - **Moderate** — executes automatically; returns `safetyWarnings[]` in the
+>   response. Treat the array as operational context, not an error.
+> - **High** — blocked on first call; returns `safetyApproval.requiredAcknowledgement`.
+>   Retry with `_dotnetDiagnostics.acknowledgement` set to **exactly** that
+>   request-bound value (operation + concrete arguments + resolved descriptor).
+>   Changing the request invalidates the acknowledgement.
+> - **Critical** — uses native MCP elicitation when the client advertises it.
+>   `collect_process_dump` keeps its own `confirm=true` fallback (see
+>   [authorization](./authorization.md#per-call-confirmation)). Without elicitation,
+>   the same request-bound acknowledgement fallback applies. Every path fails
+>   closed before any side effect. Bearer `root`/`*` scope does not count as
+>   approval.
 
 ---
 
@@ -686,8 +705,9 @@ Example `playbook` for a cold high-CPU investigation on pid `4242`:
 ```
 
 For a memory-leak hypothesis the playbook chains `collect_events(counters)` →
-`collect_events(gc)` → `collect_process_dump` (the dump step's `reason` is flagged
-**approval-gated** — confirm before executing).
+`collect_events(gc)` → `collect_process_dump` (the dump step is High/Critical;
+`collect_process_dump` uses native MCP elicitation when available or the `confirm=true`
+fallback — see [authorization](./authorization.md#per-call-confirmation)).
 
 This is deterministic and **stateless**: the server only *suggests* the calls — it never
 auto-executes anything, holds no session, and runs no daemon. The client (LLM) stays in
@@ -698,8 +718,17 @@ control of the loop and owns every execution decision.
 When wiring `dotnet-diagnostics-mcp` into an LLM-driven agent, encode this priority as
 a system message:
 
-> Always call `inspect_process(view="capabilities")` before any window-bound tool.
-> Prefer `collect_events(kind="counters")` as the first observation; only escalate to CPU
-> sampling, GC events, or dumps when the counters point in that direction.
-> Never call `collect_process_dump` with `dumpType=Full` without explicit
-> human approval.
+> Call `inspect_process(view="capabilities")` before any window-bound tool to
+> confirm runtime flavor and capability gates.
+> Prefer `collect_events(kind="counters")` as the first observation; only escalate
+> to CPU sampling, GC events, or dumps when the counters point in that direction.
+> For high-risk calls the server returns `safetyApproval.requiredAcknowledgement`
+> before executing; retry with `_dotnetDiagnostics.acknowledgement` set to that exact
+> value. `collect_process_dump` requires explicit human approval (native MCP elicitation
+> when available, or `confirm=true` as fallback) — see
+> [authorization](./authorization.md#per-call-confirmation) and the canonical
+> [production-safety.md](./production-safety.md) operating profiles.
+
+See also: [resource-boundedness.md](./resource-boundedness.md) (per-collector caps and
+retention strategy) · [hotpaths/README.md](./hotpaths/README.md) (CPU/allocation
+hotpath profile per collector).

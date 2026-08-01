@@ -174,7 +174,7 @@ itself blocked. Neither correlation infers a cause; both stay drill-in pointers.
 
 ### Implicit bootstrap (`processId` is optional)
 
-Since issue #42 every tool that targets a live .NET process accepts `processId`
+Every tool that targets a live .NET process accepts `processId`
 as optional. When the caller omits it the server lists the visible .NET
 processes via the diagnostic IPC and:
 
@@ -208,13 +208,12 @@ tool calls within an investigation pay the probe cost once.
 
 ### Verbosity (`depth`)
 
-Issue [#41 slice 2c](https://github.com/pedrosakuma/dotnet-diagnostics/issues/41)
-adds a uniform `depth` parameter to every windowed collector. Values:
+Every windowed collector accepts a uniform `depth` parameter. Values:
 `Summary` (default), `Detail`, `Raw`. Contract:
 
 - `Summary` returns a small, decision-grade payload inline (the smallest piece
   of evidence the LLM needs to choose the next tool). This is the default.
-- `Detail` returns the historical pre-#41 payload (top-N hotspots, full
+- `Detail` returns the historical payload (top-N hotspots, full
   `Events[]` lists, full `Notes`, etc.).
 - `Raw` is reserved for parity with the artifact handle; today equivalent to
   `Detail` for every tool.
@@ -441,10 +440,8 @@ How it works:
   the cancellation as an `OperationCanceledException` instead of returning
   the envelope — both shapes are spec-conformant.
 
-> **Removed in Stage B (issue #211).** The legacy polling
-> bridge — `collect_sample(kind="cpu")(runAsJob=true)`, `get_collection_status(handle)`,
-> `cancel_collection(handle)` — has been removed. Clients must use MCP Tasks or
-> the in-request progress/cancel notifications described above.
+The former polling bridge (`get_collection_status`, `cancel_collection`) has been
+removed; use MCP Tasks or the in-request progress/cancel notifications described above.
 
 ### Prompts (curated playbooks)
 
@@ -847,6 +844,8 @@ unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
 
 > NativeAOT coverage detail (which symbol source per tool, per OS): see
 > [`aot-coverage.md`](./aot-coverage.md).
+> Per-collector caps and retention strategy: [`resource-boundedness.md`](./resource-boundedness.md).
+> CPU/allocation hotpath profile per collector: [`hotpaths/README.md`](./hotpaths/README.md).
 
 | Tool | Cost | Requires CoreCLR? | NativeAOT? | Side effects |
 |---|---|---|---|---|
@@ -1611,7 +1610,7 @@ opens if any single entry is unauthorized (no partial start).
 **v1 scope cuts.** No per-entry option overrides (`topN`, `symbolPath`, `depth`, provider lists,
 …) — every entry runs with that kind's own defaults; call `collect_sample`/`collect_events`
 directly for fine-grained per-kind tuning. Capped at 4 entries per call (resource-boundedness,
-see [`resource-boundedness.md`](./resource-boundedness.md)). See
+see [`resource-boundedness.md`](./resource-boundedness.md) · [`hotpaths/README.md`](./hotpaths/README.md)). See
 [`docs/design/ephemeral-process-capture-design.md`](./design/ephemeral-process-capture-design.md)
 Part C for the full design rationale, including why a dedicated tool was chosen over a bolt-on
 `alsoCollect` parameter or a `kind="batch"` value on an existing tool.
@@ -2557,7 +2556,7 @@ name and captures the events it emits in the window. Use for HTTP activity
 | `keywords` | `long` | `-1` | Keyword mask. `-1` = all (clamped to `0` for opt-in non-allowlisted providers when left at `-1`). |
 | `eventLevel` | `int` | `5` | 0=LogAlways…5=Verbose (clamped to `4` for opt-in non-allowlisted providers when left above `4`). |
 | `maxEvents` | `int` | `200` | Cap on captured events |
-| `unsafeProvider` | `bool` | `false` | Opt-in for non-allowlisted providers (issue #165 / M2). Only honoured when the server has `Diagnostics:AllowSensitiveHeapValues=true`. |
+| `unsafeProvider` | `bool` | `false` | Opt-in for non-allowlisted providers (issue #165 / M2). Honoured when the bearer holds the `eventsource-any` scope (scope-first, recommended) **or** the server has `Diagnostics:AllowSensitiveHeapValues=true` (legacy path — emits a once-per-process deprecation warning). See [Security gates](#security-gates-b4). |
 
 **Returns:** `EventSourceCapture`:
 
