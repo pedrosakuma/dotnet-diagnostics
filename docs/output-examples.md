@@ -332,11 +332,10 @@ side effect and return `safetyApproval.requiredAcknowledgement` instead of data.
 call writes nothing and returns `safetyApproval.requiredAcknowledgement`:
 
 ```jsonc
-// First call — blocked
+// First call — blocked (data field is absent, not null)
 {
   "summary": "Tool 'collect_sample' requires acknowledgement of the exact resolved safety descriptor. Retry with _dotnetDiagnostics.acknowledgement set to requiredAcknowledgement.",
   "hints": [],
-  "data": null,
   "safety": {
     "riskLevel": "high",
     "targetImpact": ["kernel-tracing", "system-wide-tracing", "sampling-overhead"],
@@ -358,35 +357,27 @@ call writes nothing and returns `safetyApproval.requiredAcknowledgement`:
     "requiredAcknowledgement": {
       "operation": "collect_sample",
       "arguments": { "kind": "off_cpu", "processId": 1234 },
-      "safety": { /* same descriptor as root safety above */ },
+      "safety": { /* exact same object as root "safety" above */ },
       "childSafety": []
     }
   }
 }
 ```
 
-Retry by copying `safetyApproval.requiredAcknowledgement` verbatim into
-`_dotnetDiagnostics.acknowledgement`. **Any change to the arguments invalidates the
-acknowledgement**; the server recomputes and blocks again.
+To retry: copy `safetyApproval.requiredAcknowledgement` **verbatim** from the blocked
+response — do not construct, edit, or cache it. Add it as `_dotnetDiagnostics.acknowledgement`
+alongside the original arguments. **Any change to the arguments or descriptor invalidates
+the acknowledgement**; the server recomputes and blocks again.
 
-```jsonc
-// Retry — acknowledged
+```
+// Pseudocode — copy the whole requiredAcknowledgement object verbatim
 {
-  "kind": "off_cpu",
-  "processId": 1234,
+  originalArguments...,                    // same kind, processId, etc.
   "_dotnetDiagnostics": {
-    "acknowledgement": {
-      "operation": "collect_sample",
-      "arguments": { "kind": "off_cpu", "processId": 1234 },
-      "safety": { /* exact copy of the blocked-call descriptor */ },
-      "childSafety": []
-    }
+    "acknowledgement": <paste safetyApproval.requiredAcknowledgement verbatim>
   }
 }
 ```
-
-The retry executes the collection and returns the normal result with `safety` decorated on
-the response and `safetyApproval` absent.
 
 ---
 

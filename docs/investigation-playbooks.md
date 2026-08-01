@@ -4,17 +4,25 @@ Concrete, tool-by-tool recipes for the most common diagnostics scenarios an
 LLM (or a human) can drive through `dotnet-diagnostics-mcp`. Each playbook starts from
 a symptom and walks through the tool calls in order.
 
-> **Implicit process resolution and preflight:**
+> **Implicit process resolution:**
 >
-> `processId` is optional on every tool. When omitted the server auto-resolves
-> the single visible .NET process (or returns `AmbiguousDotnetProcess` with the
-> candidate list if more than one is visible). Before any window-bound tool —
-> EventPipe collectors, samplers, heap walks — call
-> `inspect_process(view="capabilities")` or `inspect_process(view="preflight")`
-> to confirm the runtime flavor (CoreCLR vs NativeAOT) and check ptrace / perf
-> gates. Skipping it leads to "CPU sampling returned nothing" surprises on
-> NativeAOT targets, or a failed attach on a ptrace-restricted host that
-> `preflight` would have caught with a one-liner remediation.
+> `processId` is optional on every tool. In a single-process sidecar, omit it
+> and call the intended collector directly — no list or capabilities preflight
+> required. The server auto-resolves the single visible process.
+> If more than one process is visible, the tool returns `AmbiguousDotnetProcess`
+> with the candidate list; supply `processId` and retry.
+>
+> **Use `inspect_process(view="capabilities")` or `view="preflight"` selectively:**
+>
+> - Before tools that are **NativeAOT-incompatible** (e.g. EventPipe-based CPU
+>   sampling, allocation sampling, GC-dump heap walk) — NativeAOT processes
+>   may silently return empty results without the capability check.
+> - Before **ptrace/perf-gated** escalations (`inspect_heap(source="live")`,
+>   `collect_thread_snapshot`, `collect_sample(kind="off_cpu")`) — the
+>   `preflight` view returns an exact remediation one-liner if the gate is
+>   closed.
+> - When **troubleshooting a failed attach or an unexpected empty result** — not
+>   as a mandatory opener on every investigation.
 
 > **Safety protocol (v0.22.0 — [production-safety.md](./production-safety.md)):**
 >
@@ -29,8 +37,8 @@ a symptom and walks through the tool calls in order.
 >   `collect_process_dump` keeps its own `confirm=true` fallback (see
 >   [authorization](./authorization.md#per-call-confirmation)). Without elicitation,
 >   the same request-bound acknowledgement fallback applies. Every path fails
->   closed before any side effect. Bearer `root`/`*` scope does not count as
->   approval.
+>   closed before any side effect. Root/`*` scopes do not approve high or
+>   critical calls.
 
 ---
 
@@ -718,14 +726,21 @@ control of the loop and owns every execution decision.
 When wiring `dotnet-diagnostics-mcp` into an LLM-driven agent, encode this priority as
 a system message:
 
-> Call `inspect_process(view="capabilities")` before any window-bound tool to
-> confirm runtime flavor and capability gates.
-> Prefer `collect_events(kind="counters")` as the first observation; only escalate
-> to CPU sampling, GC events, or dumps when the counters point in that direction.
-> For high-risk calls the server returns `safetyApproval.requiredAcknowledgement`
-> before executing; retry with `_dotnetDiagnostics.acknowledgement` set to that exact
-> value. `collect_process_dump` requires explicit human approval (native MCP elicitation
-> when available, or `confirm=true` as fallback) — see
+> Omit `processId` and call the intended collector directly when only one .NET
+> process is visible (the server auto-resolves it). Use
+> `inspect_process(view="list")` only after an `AmbiguousDotnetProcess` error.
+> Use `inspect_process(view="capabilities")` or `view="preflight"` before
+> NativeAOT-incompatible tools, ptrace/perf-gated escalations, or when
+> troubleshooting an unexpected empty result or failed attach — not as a
+> mandatory opener on every investigation.
+> Prefer `collect_events(kind="counters")` as the first observation; only
+> escalate to CPU sampling, GC events, or dumps when the counters point in that
+> direction. For high-risk calls the server returns
+> `safetyApproval.requiredAcknowledgement` before executing; retry with
+> `_dotnetDiagnostics.acknowledgement` set to that exact value — copy it
+> verbatim from the blocked response, do not construct or edit it.
+> `collect_process_dump` requires explicit human approval (native MCP
+> elicitation when available, or `confirm=true` as fallback) — see
 > [authorization](./authorization.md#per-call-confirmation) and the canonical
 > [production-safety.md](./production-safety.md) operating profiles.
 
