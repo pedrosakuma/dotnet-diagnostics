@@ -1,15 +1,34 @@
 # Documentation
 
-> **Breaking change — `collect_process_dump` now requires `confirm=true` (issue #187).**
-> Existing callers that omit `confirm` will receive a structured
-> `{ "kind": "confirmation_required", ... }` envelope describing the dump that would
-> have been written (`targetPid`, `dumpType`, `outputDirectory`) and **no file is
-> written to disk**. Pass `confirm=true` (in addition to holding the existing
-> `dump-write` + `ptrace` scopes) to perform the dump. The other tools protected by the
-> `ptrace` authorization scope
-> (`capture_method_bytes`, `inspect_heap(source="live")`, `collect_thread_snapshot`) are
-> deliberately unchanged. See [`authorization.md` → per-call confirmation](./authorization.md#per-call-confirmation)
-> and [`tool-reference.md` → `collect_process_dump`](./tool-reference.md#collect_process_dump).
+> **v0.22.0 — Explicit production safety contract, transport hardening, and approval gates** ([CHANGELOG](../CHANGELOG.md#0220--2026-08-01))
+>
+> - **Non-loopback cleartext HTTP is refused by default.** Configure direct Kestrel TLS with
+>   `MCP_TLS_CERTIFICATE_PEM` + `MCP_TLS_PRIVATE_KEY_PEM`, place the server behind a trusted
+>   TLS-terminating proxy via `MCP_TRUSTED_PROXY_CIDRS`, or bind to loopback for local
+>   development. See [`client-setup.md` → Transport security](./client-setup.md#transport-security-non-loopback).
+> - **High-risk operations pause before side effects** and require the caller to retry with the
+>   exact server-returned `safetyApproval.requiredAcknowledgement`. Critical operations prefer
+>   MCP elicitation. See [`authorization.md` → per-call confirmation](./authorization.md#per-call-confirmation).
+> - **CLI callers** must pass `--acknowledge-risk high|critical`; `--explain-risk` inspects
+>   without executing. See [`cli-reference.md` → Risk preflight](./cli-reference.md#risk-preflight).
+> - The canonical operation matrix with target impact, data exposure, and evidence lifecycle is
+>   [`production-safety.md`](./production-safety.md).
+
+## New user onboarding path
+
+1. **Install and bind to loopback** for initial evaluation:
+   [`consumer-install.md` → § 1](./consumer-install.md#1-pick-a-distribution)
+2. **Run a first low-risk diagnostic** (`inspect_process(view="list")` — no acknowledgement
+   required) to confirm connectivity:
+   [`consumer-install.md` → § 4](./consumer-install.md#4-first-diagnostic-and-safety-orientation)
+3. **Read the safety model** before collecting traces or dumps — operations are classified
+   low / moderate / high / critical and high/critical require deliberate approval:
+   [`production-safety.md`](./production-safety.md)
+4. **Plan evidence retention and disposal** before the first capture — diagnostic data can
+   contain PII, credentials, and business-sensitive content:
+   [`production-safety.md` → Retention, access, and disposal](./production-safety.md#retention-access-and-disposal)
+
+---
 
 The repo ships **three deliverables** on one shared Core capture engine. Start with the track
 you're using, then reach for the cross-cutting references.

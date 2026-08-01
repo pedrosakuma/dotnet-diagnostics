@@ -47,20 +47,111 @@ spawn / tear down the process per session:
 
 ### Option B — Streamable HTTP daemon (sidecar / shared deploy)
 
+For a **source checkout**, bind to loopback so that the non-loopback cleartext refusal does
+not fire (see [Transport security](#transport-security-non-loopback) below for non-loopback options):
+
 ```bash
 export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"
-dotnet run --project src/DotnetDiagnostics.Mcp
-# Server listens on http://localhost:5000 (or whatever ASP.NET picks)
+dotnet run --project src/DotnetDiagnostics.Mcp --urls http://127.0.0.1:8787
+```
+
+For an **installed global tool or container**, the same loopback URL applies by default:
+
+```bash
+dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 ```
 
 Sanity check:
 
 ```bash
-curl -fsS http://localhost:5000/health
+curl -fsS http://127.0.0.1:8787/health
 # {"status":"ok"}
 
-curl -fsS http://localhost:5000/mcp -H "Authorization: Bearer $MCP_BEARER_TOKEN"
+curl -fsS http://127.0.0.1:8787/mcp -H "Authorization: Bearer $MCP_BEARER_TOKEN"
 ```
+
+## Transport security (non-loopback)
+
+The server **refuses to start** when bound to a non-loopback address over cleartext HTTP
+without a configured trusted TLS terminator or the explicit unsafe override. Three options:
+
+### Direct Kestrel TLS via PEM secrets
+
+Supply the certificate and private key as environment variables (no file on disk, safe for
+ECS task definitions, Kubernetes Secrets, and docker-compose secrets):
+
+```bash
+export MCP_TLS_CERTIFICATE_PEM="$(cat /path/to/cert.pem)"
+export MCP_TLS_PRIVATE_KEY_PEM="$(cat /path/to/key.pem)"
+dotnet-diagnostics-mcp --urls https://0.0.0.0:8787
+```
+
+Both variables must be set together. Self-signed certificates are accepted for internal
+sidecar topologies; use a CA-signed certificate when the MCP client connects from outside
+the trust boundary.
+
+### Behind a trusted TLS-terminating proxy
+
+If nginx, Envoy, or a service mesh terminates TLS upstream, tell the server which proxy
+IPs or CIDRs to trust for `X-Forwarded-Proto: https`. The server applies
+`ForwardedHeaders` middleware and then enforces HTTPS for non-loopback traffic:
+
+```bash
+# Single proxy IP:
+export MCP_TRUSTED_PROXY_CIDRS="10.0.0.5"
+# Or a CIDR block (comma or semicolon-separated):
+export MCP_TRUSTED_PROXY_CIDRS="10.0.0.0/8,172.16.0.0/12"
+dotnet-diagnostics-mcp --urls http://0.0.0.0:8787
+```
+
+The proxy must forward `X-Forwarded-Proto: https`; requests that resolve to cleartext after
+header validation are rejected with `{"error":{"kind":"https_required",...}}` (400).
+`/health` is always available for readiness probes regardless of scheme.
+
+### Unsafe development override
+
+For local multi-container topologies where TLS setup is impractical:
+
+```bash
+export MCP_ALLOW_INSECURE_HTTP=true   # development only — emits a prominent startup warning
+dotnet-diagnostics-mcp --urls http://0.0.0.0:8787
+```
+
+Do **not** use `MCP_ALLOW_INSECURE_HTTP=true` in production. Bearer credentials travel in
+cleartext and the server warns on every start.
+
+## Safety-aware `tools/call`
+
+After connectivity is established, inspect each tool's
+`_meta.dotnetDiagnostics.safety` from `tools/list` and the resolved `safety`
+descriptor in `tools/call` results:
+
+- low-risk calls execute directly;
+- moderate calls execute directly and return `safetyWarnings`;
+- high-risk calls stop before side effects and return
+  `safetyApproval.requiredAcknowledgement`;
+- critical calls use MCP elicitation when the client advertises it and otherwise
+  fail closed with an approval preview.
+
+For a high-risk call, preserve the original arguments, copy the complete
+server-returned acknowledgement into the reserved argument, and retry:
+
+```text
+preview = tools/call(name, arguments)
+ack = preview.structuredContent.safetyApproval.requiredAcknowledgement
+
+retryArguments = copy(arguments)
+retryArguments["_dotnetDiagnostics"] = { "acknowledgement": ack }
+result = tools/call(name, retryArguments)
+```
+
+Do not construct, edit, cache, or reuse the acknowledgement. It is bound to the
+operation, concrete arguments, resolved descriptor, and batch children; changing
+the request invalidates it. A bearer token with `root` or `*` scope authorizes
+the tool but does not approve high/critical impact. See
+[`authorization.md`](./authorization.md#per-call-confirmation) for the protocol
+contract and [`production-safety.md`](./production-safety.md) for the canonical
+matrix and evidence-handling policy.
 
 ## OIDC quickstart (HTTP transport)
 
@@ -76,7 +167,7 @@ export MCP_OIDC_REQUIRED_CLAIMS_JSON='{"azp":"diag-client"}'
 Then send the access token exactly like the legacy bearer path:
 
 ```bash
-curl -i http://localhost:5000/mcp \
+curl -i http://127.0.0.1:8787/mcp \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
@@ -225,7 +316,7 @@ using ModelContextProtocol.Client;
 
 var transport = new HttpClientTransport(new HttpClientTransportOptions
 {
-    Endpoint = new Uri("http://localhost:5000/mcp"),
+    Endpoint = new Uri("http://127.0.0.1:8787/mcp"),
     TransportMode = HttpTransportMode.StreamableHttp,
     AdditionalHeaders = new Dictionary<string, string>
     {
@@ -260,7 +351,7 @@ transport with bearer auth is:
   "mcpServers": {
     "dotnet-dbg": {
       "transport": "streamable-http",
-      "url": "http://localhost:5000/mcp",
+      "url": "http://127.0.0.1:8787/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_TOKEN_HERE"
       }
@@ -269,12 +360,12 @@ transport with bearer auth is:
 }
 ```
 
-For sidecar deployments, replace `localhost:5000` with the `kubectl port-forward`
+For sidecar deployments, replace `127.0.0.1:8787` with the `kubectl port-forward`
 target:
 
 ```bash
 kubectl -n diagnosticsmcp-demo port-forward svc/sample-api-diagnosticsmcp 8787:8787
-# then point the client at http://localhost:8787/mcp
+# then point the client at http://127.0.0.1:8787/mcp
 ```
 
 ## 4. Quick smoke test with `curl`
@@ -287,44 +378,11 @@ or GUI options above. Use `curl` only to verify network reachability and the
 
 ```bash
 # 401 — wrong token, auth working
-curl -i http://localhost:5000/mcp -H "Authorization: Bearer wrong"
+curl -i http://127.0.0.1:8787/mcp -H "Authorization: Bearer wrong"
 
 # 200 (or 4xx from MCP, not from auth) — token accepted
-curl -i http://localhost:5000/mcp -H "Authorization: Bearer $MCP_BEARER_TOKEN"
+curl -i http://127.0.0.1:8787/mcp -H "Authorization: Bearer $MCP_BEARER_TOKEN"
 ```
-
-### Safety-aware `tools/call` clients
-
-After connectivity is established, inspect each tool's
-`_meta.dotnetDiagnostics.safety` from `tools/list` and the resolved `safety`
-descriptor in `tools/call` results:
-
-- low-risk calls execute directly;
-- moderate calls execute directly and return `safetyWarnings`;
-- high-risk calls stop before side effects and return
-  `safetyApproval.requiredAcknowledgement`;
-- critical calls use MCP elicitation when the client advertises it and otherwise
-  fail closed with an approval preview.
-
-For a high-risk call, preserve the original arguments, copy the complete
-server-returned acknowledgement into the reserved argument, and retry:
-
-```text
-preview = tools/call(name, arguments)
-ack = preview.structuredContent.safetyApproval.requiredAcknowledgement
-
-retryArguments = copy(arguments)
-retryArguments["_dotnetDiagnostics"] = { "acknowledgement": ack }
-result = tools/call(name, retryArguments)
-```
-
-Do not construct, edit, cache, or reuse the acknowledgement. It is bound to the
-operation, concrete arguments, resolved descriptor, and batch children; changing
-the request invalidates it. A bearer token with `root` or `*` scope authorizes
-the tool but does not approve high/critical impact. See
-[`authorization.md`](./authorization.md#per-call-confirmation) for the protocol
-contract and [`production-safety.md`](./production-safety.md) for the canonical
-matrix and evidence-handling policy.
 
 ## Discoverability: how clients surface the server's guidance (#280)
 
@@ -360,8 +418,9 @@ out. `ServerInstructions` still describes the same hierarchy for clients that do
   Secret) and restarting the server.
 - **Set a fixed token** in production. The auto-generated ephemeral token is
   convenient for local dev but rotates on every restart.
-- **TLS termination** is not built in. Run behind a reverse proxy (nginx,
-  Envoy) or a service mesh for TLS and additional access controls.
+- **TLS** supports direct Kestrel TLS via `MCP_TLS_CERTIFICATE_PEM` + `MCP_TLS_PRIVATE_KEY_PEM`,
+  or a reverse proxy (nginx, Envoy, service mesh) configured via `MCP_TRUSTED_PROXY_CIDRS`.
+  See [Transport security](#transport-security-non-loopback) for details.
 - **Logs** are JSON-friendly via `SimpleConsole`; pipe stdout into your
   collector of choice.
 
