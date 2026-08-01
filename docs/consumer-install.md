@@ -248,8 +248,10 @@ Add this to your `mcp-config.json` (Claude Desktop, Claude Code, Copilot CLI, Cu
 ### First diagnostic (low-risk)
 
 `inspect_process(view="list")` returns a list of running .NET processes with their PIDs and
-capabilities — no EventPipe session, no ptrace, no side effects. It is always the first call
-to confirm connectivity and discover what is running:
+command lines — no EventPipe session, no ptrace, no side effects. It is the first call
+to confirm connectivity and discover what is running. (For runtime capability flags
+— CoreCLR vs NativeAOT, ptrace/PSI/perf gate availability — follow up with
+`inspect_process(view="capabilities")` on the target PID.)
 
 ```jsonc
 // MCP call (from your client after connecting)

@@ -55,11 +55,17 @@ export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"
 dotnet run --project src/DotnetDiagnostics.Mcp --urls http://127.0.0.1:8787
 ```
 
-For an **installed global tool or container**, the same loopback URL applies by default:
+For an **installed global tool or self-contained binary**, bind to loopback:
 
 ```bash
 dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 ```
+
+For a **container**, the image sets `ASPNETCORE_URLS=http://0.0.0.0:8080` internally
+(non-loopback cleartext). Use the local-dev recipe in
+[`consumer-install.md` → § 1b](./consumer-install.md#1b-container)
+(`-p 127.0.0.1:8787:8080` + `MCP_ALLOW_INSECURE_HTTP=true`) or configure production
+TLS via [§ 1.6](./consumer-install.md#16-transport-security-for-non-loopback-listeners).
 
 Sanity check:
 
