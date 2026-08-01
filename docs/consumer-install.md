@@ -265,7 +265,7 @@ dotnet-diagnostics-cli processes
 If the call returns process rows, the server is working. Move to `inspect_process(view="triage")`
 on a target PID for an evidence-backed health snapshot. The response includes:
 
-- `assessment` — overall verdict: `ok`, `warning`, `critical`, or `inconclusive`
+- `assessment` — overall verdict: `healthy`, `degraded`, `critical`, or `inconclusive`
 - `observedSignals` — individual threshold crossings with evidence items
 - `hypotheses` — bounded interpretations with supporting and contradicting evidence and a suggested next step
 - `topIndicators` — scored signals ranked by severity
@@ -284,8 +284,12 @@ acknowledgement:
 - **Moderate** — bounded EventPipe collection. Executes with a `safetyWarnings` notice.
 - **High** — heap walks, thread snapshots, induced GC. Pauses before side effects and returns
   `safetyApproval.requiredAcknowledgement`; retry with that exact value to proceed.
-- **Critical** — process dumps, method-parameter capture. Requires MCP elicitation (or
-  `confirm=true` for `collect_process_dump`). CLI callers must pass `--acknowledge-risk critical`.
+- **Critical** — process dumps, method-parameter capture. Uses MCP elicitation when the
+  client advertises the `elicitation` capability (preferred). Without elicitation:
+  most critical tools return `safetyApproval.requiredAcknowledgement` for retry (same
+  protocol as high-risk); `collect_process_dump` keeps its `confirm=true` fallback.
+  CLI callers must pass `--acknowledge-risk critical` (and `--confirm` for dumps). See
+  [`authorization.md`](./authorization.md#per-call-confirmation).
 
 Use `--explain-risk` with any CLI command to inspect the resolved risk level without executing:
 
