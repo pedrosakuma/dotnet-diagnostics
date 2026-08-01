@@ -3,9 +3,34 @@
 **Issue**: #546 (Phase 16 P1) · **Original assessment**: 2026-07-06 · **Last revalidated**: 2026-07-27
 **Status**: Pre-finalization revalidation complete. SDK `2.0.0-rc.1` released 2026-07-25; stable 2.0.0 confirmed for on or before 2026-07-28.
 
+> **Current status (2026-08-01):** Spike is complete; issue #546 is **closed**. The production
+> migration to SDK 2.0.0 has **not yet happened** — the repo remains on **SDK 1.4.0**
+> (`Directory.Packages.props`). Issue #548 (SEP-2663 Tasks watch item) remains open.
+> The orchestrator session-binding blocker identified here was resolved by #554 / PR #559
+> (v0.17.0); see the annotation in
+> [`docs/central-orchestrator-design.md`](../central-orchestrator-design.md) §3.8.
+>
+> **What remains reusable without re-reading the spec:** the repo impact map, the per-SEP
+> technical inventory ("What already fits" / "What breaks" sections), and the migration order
+> below still describe the correct starting shape for a real SDK bump. Before planning the
+> migration, perform a fresh revalidation against the then-current SDK package to confirm no
+> further breaking changes have been introduced.
+>
+> **What is historical pre-finalization guidance only:** the executive summary below
+> (timing language, "measured in hours", "migration gate is now imminent") reflects the
+> pre-finalization state as of 2026-07-27. That timing is no longer meaningful. The `2025-11-25`
+> protocol version string in `DiagnosticServiceRegistration` is one of the known stale items
+> that must be updated during the real migration.
+
 ## Executive summary
 
-**Recommendation: The production migration gate is now imminent. Stable SDK 2.0.0 is confirmed for on or before 2026-07-28. All protocol and wire blockers are resolved. Plan the production bump for immediately after the stable release; begin MRTR dump-approval prep in parallel.**
+> **⚠️ Historical pre-finalization guidance.** This section reflects the pre-finalization state
+> as of 2026-07-27. Timing language ("gate is now imminent", "hours not weeks", "immediately
+> after the stable release") no longer applies. The technical inventory in the bullet points
+> remains useful as a starting point, but should be re-validated against the then-current SDK
+> before planning the production migration.
+
+**Recommendation (2026-07-27): The production migration gate is now imminent. Stable SDK 2.0.0 is confirmed for on or before 2026-07-28. All protocol and wire blockers are resolved. Plan the production bump for immediately after the stable release; begin MRTR dump-approval prep in parallel.**
 
 The repo is in a substantially better position than at the original assessment:
 
@@ -17,7 +42,9 @@ The repo is in a substantially better position than at the original assessment:
 - **Tasks has a concrete package shape but remains gated:** `2.0.0-preview.3` moved Tasks into `ModelContextProtocol.Extensions.Tasks`; `rc.1` removed the unstable `CreateMcpTaskScope` helper; this repo does not use either API, so #548 is unaffected.
 - **RC.1 breaking changes are not applicable to this repo:** all four breaking changes in `2.0.0-rc.1` target either the Tasks extension API or the SDK's client-side OAuth flows. This repo's server surface uses its own custom bearer/OIDC middleware, and the internal `PodLocalInvestigationProxyClient` MCP client (used for pod-to-pod proxying) injects its bearer token directly via `AdditionalHeaders` rather than the SDK's OAuth machinery (`ClientOAuthProvider`, `AuthorizationRedirectDelegate`); none of the OAuth changes apply.
 
-The wait is now measured in hours, not weeks. The remaining work can be split into narrow, testable migrations immediately after stable 2.0.0 ships.
+The wait is now measured in hours, not weeks. The remaining work can be split into narrow,
+testable migrations immediately after stable 2.0.0 ships. *(Pre-finalization assessment —
+see the current-status note above.)*
 
 ## Draft changes reviewed
 

@@ -1,7 +1,10 @@
 # Method Parameter Capture — Security, UX, and Capability-Gate Design
 
 **Issue**: #556 · **Branch**: `docs/method-parameter-capture-design` · **Date**: 2026-07-06
-**Status**: Design only — no production code, no shipping tool-contract changes in `docs/tool-reference.md` yet.
+**Status**: ✅ **Implemented** — shipped in **v0.17.0** (design: #556/#558; feasibility: #547/#553;
+production implementation: #562/#563; win-x64 follow-up: #564/#565). Current contract:
+[`docs/tool-reference.md`](../tool-reference.md) (see `collect_sample(kind="method-params")`).
+The original design text below is preserved as historical record.
 
 ## Executive summary
 

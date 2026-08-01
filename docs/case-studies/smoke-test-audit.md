@@ -1,5 +1,38 @@
 # Smoke-test UX audit — steps to diagnosis, re-measured
 
+> **Current status (2026-08-01):** This document has two runs. The first run
+> (§§"Negative-path UX" through "Results") was performed against a pre-fix image and
+> is preserved as **historical evidence only** — its findings have been addressed.
+> The **current picture** is in the [Post-fix re-audit (2026-07-29)](#post-fix-re-audit-2026-07-29)
+> section below.
+>
+> **All UX findings from the first run (issues #691–#704) are now closed:**
+> - **`isError` not set on structured failures** (#696 / PR #714, v0.20.0) — MCP
+>   `isError: true` is now set on every structured error envelope.
+> - **`compare_to_baseline` regression misclassification** (#692 / PR #715, v0.20.0).
+> - **`replica_counters` cannot select per-pod process** (#694 / PR #720, v0.20.0); the
+>   fan-out now uses the `processSelector` stored on the investigation handle.
+> - **Crash guard destroyed by Docker PID namespace** (#691 / PR #717, v0.20.0);
+>   the anchored PID-namespace topology keeps the sidecar alive after the target exits.
+> - **Healthcheck depends on absent `wget`** (#701 / PR #706, v0.20.0); the runtime image
+>   now uses a built-in health probe.
+> - **Response prioritization / inline evidence gaps** (#698 / PR #719 + #703 / PR #721,
+>   v0.20.0); bounded inline summaries now lead with LOH and Gen2 evidence.
+> - **Docker bootstrap for external investigations** (#704 / PRs #739 + #750 + #762,
+>   v0.20.0 – v0.21.0).
+>
+> **Remaining upstream-blocked residuals (not UX issues, not in #691–#704):**
+> - **#147** — Linux CI host crash (native runtime SIGSEGV under full-suite load). Tracked in
+>   dotnet/runtime#128525. CPU-sampler tests remain quarantined on Linux CI.
+> - **#685** — re-validate the Linux CI flake once microsoft/clrmd#1499 ships.
+>
+> **Rerunning this audit against v0.22.0+?** The v0.22.0 safety gates require explicit
+> acknowledgement for high/critical operations (`--acknowledge-risk high|critical` on the CLI;
+> `_dotnetDiagnostics.acknowledgement` on MCP retries). `collect_process_dump` still requires
+> `confirm=true`. High-risk operations return `safetyApproval.requiredAcknowledgement` on the
+> first call; pass that exact value back on retry. See `docs/production-safety.md` and the
+> v0.22.0 migration notes in `CHANGELOG.md`.
+
 This audit re-measures how many MCP tool calls a symptom-to-root-cause
 investigation takes against `samples/BadCodeSample`, using the current tool
 surface (including the signal-grouping/findings layer and `collect_batch`).
@@ -52,7 +85,10 @@ ran at most two at a time. This isolates ports and diagnostic sockets while
 limiting host CPU contention that could invalidate relative CPU and queue
 signals.
 
-## Negative-path UX
+## Negative-path UX — pre-fix historical record
+
+> **Historical record only.** The `isError` finding below was fixed in #696 / PR #714 (v0.20.0).
+> The topology and credential checks remain accurate for any re-run.
 
 ### Invalid bearer and missing `CAP_SYS_PTRACE`
 
@@ -73,9 +109,15 @@ diagnostic IPC worked and only the ptrace-dependent path was blocked.
 **UX note.** The permission envelope was actionable, but the MCP result did
 not set `isError: true`; server logs likewise reported `IsError=False`.
 Consumers that inspect only the protocol error bit could misclassify this as a
-successful tool result.
+successful tool result. **→ Fixed in #696 / PR #714 (v0.20.0).**
 
-## Workflow observations
+## Workflow observations — pre-fix historical record
+
+> **Historical record only.** All UX findings below have been fixed in v0.20.0:
+> `compare_to_baseline` regression (#692 / PR #715); `replica_counters` per-pod process
+> selection (#694 / PR #720); crash-guard PID-namespace topology (#691 / PR #717);
+> healthcheck probe (#701 / PR #706); response prioritization / inline evidence
+> (#698 / PR #719, #703 / PR #721). See the current-status summary at the top.
 
 ### Managed investigation and baseline comparison — 10 calls versus 4
 
@@ -110,6 +152,7 @@ side CPU capture primarily to satisfy the handoff contract.
 disappearing, `compare_to_baseline` classified the result as
 `regression_new_hotspot`. The comparison was therefore not a meaningful
 summary of this fix and could direct the investigation backward.
+**→ Fixed in #692 / PR #715 (v0.20.0).**
 
 ### Live heap versus dump/offline — 3 calls versus 5
 
@@ -250,6 +293,8 @@ Each pod-local error said:
 
 The explicit per-pod path can provide that PID, but the fan-out call has no
 per-replica PID input, so it cannot operate in this canonical topology.
+**→ Fixed in #694 / PR #720 (v0.20.0)** — `attach_to_pod` now accepts a `processSelector`
+that the `replica_counters` fan-out uses to resolve exactly one PID per pod.
 
 **UX notes.** A detach followed by reattach also exposed stale ephemeral
 container state: the old process still occupied port 5130, while the new proxy
@@ -261,7 +306,10 @@ one snapshot query, five detaches, and one gated `discover_azure` probe.
 Without Azure configuration, `discover_azure` was absent from the 16-tool
 catalog and a direct call correctly returned `Unknown tool`.
 
-## Results
+## Results — pre-fix historical record (2026-07-24)
+
+> **Historical record only.** These results reflect the pre-fix run. The post-fix re-audit
+> is in the [Post-fix re-audit (2026-07-29)](#post-fix-re-audit-2026-07-29) section below.
 
 | Scenario | Steps to root cause | Fix-verify step | Notes / deltas vs prior baseline | Status |
 |---|---|---|---|---|
@@ -283,7 +331,14 @@ The external-Docker passthrough design is #704, the repeated Linux exit-139
 evidence was added to #147, and the real-MCP isolated scenario runner was
 added to #681.
 
-## Raw run log
+## Raw run log — pre-fix historical record (2026-07-24)
+
+> **Historical record only.** The scenario-by-scenario detail below is from the pre-fix run.
+> UX notes that reflect known limitations are annotated inline; all UX issues #691–#704 are
+> closed. Separately, upstream-blocked residuals #147 and #685 remain open and are outside
+> that range. See the current-status summary at the top and the
+> [Post-fix re-audit (2026-07-29)](#post-fix-re-audit-2026-07-29) for the authoritative
+> current findings.
 
 Entries below are appended as each scenario completes, with the exact tool
 calls (arguments trimmed), the observed evidence, and the step count.
@@ -433,7 +488,7 @@ There is no dedicated `/slow-http-fixed` endpoint.
 **UX notes.** The container healthcheck reported unhealthy because the image
 does not contain `wget`, although `/health` and the MCP endpoint were both
 responsive. This did not affect collection, but it is misleading operational
-noise during setup.
+noise during setup. **→ Fixed in #701 / PR #706 (v0.20.0).**
 
 ### `exceptions` — 1 step
 
@@ -503,7 +558,8 @@ LOH evidence, requiring the snapshot drilldown. Its counter summary also
 reported a Gen2 value of `1`, which is easy to misread against the GC
 collector's authoritative window count of 32. The second batch invocation was
 not diagnostically necessary, but it counts because the first inline response
-overflowed at the consumer boundary.
+overflowed at the consumer boundary. **→ Fixed in #698 / PR #719 and #703 / PR
+#721 (v0.20.0)** — bounded inline summaries now lead with LOH and Gen2 evidence.
 
 ### `crash?mode=unhandled` — failed after 1 step
 
@@ -521,7 +577,11 @@ workflow did not deliver a diagnosis.
 terminates the sidecar joined to that PID namespace. That destroys the
 reporting transport precisely when `crash-guard` needs to return its final
 envelope. The runtime exception was visible only in the target container log;
-it is not counted as MCP diagnostic evidence.
+it is not counted as MCP diagnostic evidence. **→ Fixed in #691 / PR #717
+(v0.20.0)** — the anchored PID-namespace topology replaces the two-container
+arrangement and keeps the sidecar alive through target exit.
+
+<a id="post-fix-re-audit-2026-07-29"></a>
 
 ## Post-fix re-audit — 2026-07-29
 
