@@ -23,8 +23,10 @@ target-controlled log boundary.
   #778). MCP high-risk calls first return
   `safetyApproval.requiredAcknowledgement`; clients must retry with that exact
   request-bound value under `_dotnetDiagnostics.acknowledgement`. Critical
-  calls use native MCP elicitation when available and otherwise fail closed.
-  Bearer `root`/`*` scope does not count as approval.
+  calls prefer native MCP elicitation. Without elicitation, most return an
+  exact request-bound acknowledgement fallback; `collect_process_dump` keeps
+  its separate `confirm=true` fallback contract. Every path fails closed
+  before approval, and bearer `root`/`*` scope does not count as approval.
 - **CLI automation must acknowledge high/critical risk explicitly** (#774,
   #777). Use `--explain-risk` to inspect without executing and
   `--acknowledge-risk high|critical` with the exact resolved level.
