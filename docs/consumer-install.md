@@ -152,7 +152,7 @@ For **non-loopback deployments** (sidecar, shared host, Kubernetes), choose one:
 # Auth (required for non-loopback): scoped bearer tokens preferred; MCP_BEARER_TOKEN accepted but deprecated
 export Auth__BearerTokens__0__Name="agent"
 export Auth__BearerTokens__0__Token="$(openssl rand -hex 32)"
-export Auth__BearerTokens__0__Scopes__0="*"
+export Auth__BearerTokens__0__Scopes__0="read-counters"
 
 # Direct TLS example (container or bare host):
 export MCP_TLS_CERTIFICATE_PEM="$(cat cert.pem)"
@@ -163,6 +163,10 @@ dotnet-diagnostics-mcp --urls https://0.0.0.0:8787
 export MCP_TRUSTED_PROXY_CIDRS="10.0.0.0/8"
 dotnet-diagnostics-mcp --urls http://0.0.0.0:8787  # proxy sets X-Forwarded-Proto: https
 ```
+
+`read-counters` is sufficient for process discovery, triage, and counters.
+Add only the scopes required by the intended diagnostics; see
+[`authorization.md`](./authorization.md).
 
 `/health` always responds regardless of scheme (needed for readiness probes).
 See [`client-setup.md` → Transport security](./client-setup.md#transport-security-non-loopback) for the complete reference.

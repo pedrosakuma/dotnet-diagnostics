@@ -90,7 +90,7 @@ ECS task definitions, Kubernetes Secrets, and docker-compose secrets):
 # Auth: configure scoped bearer tokens (OIDC is preferred for production — see OIDC quickstart below)
 export Auth__BearerTokens__0__Name="agent"
 export Auth__BearerTokens__0__Token="$(openssl rand -hex 32)"
-export Auth__BearerTokens__0__Scopes__0="*"
+export Auth__BearerTokens__0__Scopes__0="read-counters"
 export MCP_TLS_CERTIFICATE_PEM="$(cat /path/to/cert.pem)"
 export MCP_TLS_PRIVATE_KEY_PEM="$(cat /path/to/key.pem)"
 dotnet-diagnostics-mcp --urls https://0.0.0.0:8787
@@ -98,7 +98,8 @@ dotnet-diagnostics-mcp --urls https://0.0.0.0:8787
 
 Both variables must be set together. Self-signed certificates are accepted for internal
 sidecar topologies; use a CA-signed certificate when the MCP client connects from outside
-the trust boundary.
+the trust boundary. Add only the scopes required by the intended diagnostics; see
+[`authorization.md`](./authorization.md).
 
 > `MCP_BEARER_TOKEN` is accepted for non-loopback but emits a deprecation warning — a future
 > release refuses it. Use `Auth:BearerTokens` (as above) or OIDC for non-loopback deployments.
