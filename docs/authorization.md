@@ -147,6 +147,28 @@ Env-var binder equivalent (ASP.NET Core rules — env overrides file):
 `Auth__BearerTokens__0__Name=dashboard`, `Auth__BearerTokens__0__Token=…`,
 `Auth__BearerTokens__0__Scopes__0=read-counters`, …
 
+### Local supervisor default
+
+The shipped systemd user unit, macOS LaunchAgent, and Windows per-user Scheduled
+Task installer all configure entry `0` as:
+
+```text
+Auth__BearerTokens__0__Name=local-observer
+Auth__BearerTokens__0__Token=<generated 32-byte random secret>
+Auth__BearerTokens__0__Scopes__0=read-counters
+```
+
+That principal can discover processes, run `inspect_process(view="triage")`, and
+collect numeric counters. It cannot start broader EventPipe collections, read heaps,
+attach with ptrace, write dumps, or use modifier scopes. Additional scopes use
+consecutive indexes (`Scopes__1`, `Scopes__2`, …) and must be added intentionally;
+see [`consumer-install.md` → Scope expansion](./consumer-install.md#scope-expansion).
+
+Rotate the secret by replacing only the `Token` value and restarting both the
+supervisor and clients. Uninstall must remove the scoped configuration as well as the
+supervisor definition. Platform-specific copy/paste commands are in
+[`consumer-install.md`](./consumer-install.md#2-run-it-as-a-supervised-service).
+
 ### Helm `values.yaml`
 
 ```yaml
