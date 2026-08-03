@@ -144,11 +144,16 @@ same-UID peer attach. You will see a structured error like:
 Mitigations, in order of preference for local Docker:
 
 - Pass `--cap-add SYS_PTRACE` to the **sidecar** container (it is the one that
-  performs the ptrace call). The target container does not need it.
-- Or relax the host (affects everything on the box):
-  `sudo sysctl -w kernel.yama.ptrace_scope=0`.
-- Or run the sidecar as root **and** as a parent of the target — covers the
-  Yama "parent only" mode (`ptrace_scope=1`).
+  performs the ptrace call). This scopes the capability to the diagnostics container;
+  the target container does not need it.
+- If live memory evidence is unnecessary, omit the capability and use EventPipe collectors.
+  For heap analysis, a dump captured through diagnostic IPC can be analyzed offline with
+  `inspect_heap(source="dump")`; dump capture still requires its documented authorization
+  and approval.
+- Only on an isolated personal-development machine, you may instead run
+  `sudo sysctl -w kernel.yama.ptrace_scope=0`. This relaxes a **host-wide security boundary**
+  for all same-UID processes. Never use it on a shared or production host; see the canonical
+  [consumer-install safety note](./consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
 
 For Kubernetes, see [`deploy/k8s/sample-sidecar.yaml`](../deploy/k8s/sample-sidecar.yaml):
 add `capabilities.add: ["SYS_PTRACE"]` to the sidecar container's
@@ -156,7 +161,9 @@ add `capabilities.add: ["SYS_PTRACE"]` to the sidecar container's
 
 EventPipe-based tools (`collect_events(kind="counters")`, `collect_sample(kind="cpu")`,
 `collect_events(kind="exceptions")`, `collect_events(kind="gc")`, `collect_events(kind="activities")`, `collect_events(kind="event_source")`) do **not**
-need `CAP_SYS_PTRACE` — they go through the diagnostic IPC socket only.
+need `CAP_SYS_PTRACE` — they go through the diagnostic IPC socket only. The exception is
+`collect_sample(kind="cpu", resolveMethodInstantiations=true)`, whose optional ClrMD
+enrichment does require ptrace permission.
 
 ## Smoke-test the MCP endpoint
 

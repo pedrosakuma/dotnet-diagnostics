@@ -237,8 +237,10 @@ closed signature independently.
 > frames. When the caller sets `resolveMethodInstantiations=true`, the producer performs a
 > second **ClrMD** attach after sampling, walks the hottest frames by instruction pointer,
 > and back-fills `GenericTypeArguments.Method` + `ClosedSignature` from the resolved closed
-> runtime signature. On Linux that path requires `CAP_SYS_PTRACE` (or `ptrace_scope=0`) and
-> briefly suspends the target. Type-level instantiations (e.g. `Box<int>`) are unaffected —
+> runtime signature. On Linux that path requires kernel ptrace permission (prefer scoped
+> sidecar `CAP_SYS_PTRACE`; see the
+> [canonical safety note](./consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace))
+> and briefly suspends the target. Type-level instantiations (e.g. `Box<int>`) are unaffected —
 > the runtime-canonical `` `1[System.Int32] `` mangling is baked into the type name itself.
 
 The `(mvid, token)` pair is the only field required by the consumer. Everything else is a
