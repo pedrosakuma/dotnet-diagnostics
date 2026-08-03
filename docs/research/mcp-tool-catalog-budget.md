@@ -1,21 +1,36 @@
 # MCP tool-catalog context budget
 
-**Issue:** #628 · **Measured:** 2026-07-15 · **SDK:** ModelContextProtocol 1.4.0
+**Issue:** #791 (refreshing #628) · **Measured:** 2026-08-03
+
+**Source:** `624e7948cf8461df51b10940c201fa8ee0ee9ef6`
+(`v0.22.0-3-g624e794`) · **MCP SDK:** ModelContextProtocol 1.4.0
+
+**Runtime:** .NET SDK 10.0.302 (`global.json` roll-forward), Linux x64
 
 ## Result
 
 The maximal live registration surface (orchestrator and Azure discovery enabled)
-contains 16 tools. Its serialized `tools/list` result is:
+contains 17 tools. The normal surface with both configuration gates disabled
+contains 13 tools.
 
-- **199,760 UTF-8 bytes**
-- **approximately 49,940 tokens**, using the explicit, tokenizer-neutral estimate
+**Maximal tools:** 17 · **Default tools:** 13
+
+The serialized `tools/list` results are:
+
+- **258,477 UTF-8 bytes** for the maximal 17-tool catalog
+- **approximately 64,620 tokens**, using the explicit, tokenizer-neutral estimate
   of four UTF-8 bytes per token
-- **177,577 bytes / approximately 44,395 tokens** for the default 12-tool subset
-  when the four opt-in orchestrator/Azure tools are excluded
+- **226,320 bytes / approximately 56,580 tokens** for the default 13-tool catalog
 
 The measurement covers the `ListToolsResult` JSON object, including authorization
-metadata. It excludes the JSON-RPC envelope because its request id is
+and safety metadata. It excludes the JSON-RPC envelope because its request id is
 client-dependent and contributes only a small fixed overhead.
+
+The maximal test sets `Orchestrator__Enabled=true` and
+`AzureDiscovery__Enabled=true`. The default surface excludes the three
+orchestrator-gated tools (`attach_to_pod`, `detach_from_pod`,
+`list_orchestrator`) and the Azure-gated `discover_azure`. `collect_batch` is
+part of both surfaces.
 
 ## Reproduce
 
@@ -35,25 +50,26 @@ and prints this table:
 
 | Tool | Total bytes | Input schema* | Output schema* | Prose | Schema structure | Other metadata |
 |---|---:|---:|---:|---:|---:|---:|
-| `collect_events` | 63,351 | 10,940 | 51,417 | 9,818 | 53,261 | 272 |
-| `collect_sample` | 18,917 | 6,675 | 11,571 | 5,629 | 13,033 | 255 |
-| `collect_thread_snapshot` | 17,824 | 2,160 | 14,501 | 2,518 | 15,045 | 261 |
-| `inspect_process` | 17,625 | 2,729 | 14,194 | 2,734 | 14,622 | 269 |
-| `query_snapshot` | 10,129 | 7,387 | 2,021 | 6,502 | 3,313 | 314 |
-| `start_investigation` | 9,514 | 1,843 | 6,187 | 2,143 | 7,101 | 270 |
-| `export_investigation_summary` | 8,408 | 1,573 | 5,677 | 1,838 | 6,330 | 240 |
-| `inspect_heap` | 7,701 | 3,503 | 2,021 | 4,701 | 2,747 | 253 |
-| `capture_method_bytes` | 7,676 | 2,176 | 3,818 | 3,077 | 4,341 | 258 |
-| `list_orchestrator` | 7,571 | 2,339 | 4,097 | 2,490 | 4,794 | 287 |
-| `discover_azure` | 6,093 | 772 | 4,464 | 939 | 4,894 | 260 |
-| `get_bytes` | 5,966 | 2,204 | 2,021 | 3,098 | 2,611 | 257 |
-| `collect_process_dump` | 5,740 | 1,630 | 2,653 | 2,438 | 3,031 | 271 |
-| `attach_to_pod` | 4,731 | 978 | 2,656 | 1,408 | 3,059 | 264 |
-| `compare_to_baseline` | 4,703 | 1,814 | 2,021 | 1,972 | 2,500 | 231 |
-| `detach_from_pod` | 3,784 | 256 | 2,518 | 885 | 2,634 | 265 |
-| **All tools** | **199,733** | **48,979** | **131,837** | **52,190** | **143,316** | **4,227** |
+| `collect_events` | 70,734 | 12,314 | 55,170 | 11,347 | 57,192 | 2,195 |
+| `collect_sample` | 23,819 | 7,106 | 14,023 | 6,513 | 15,219 | 2,087 |
+| `inspect_process` | 22,915 | 3,679 | 17,230 | 4,205 | 17,456 | 1,254 |
+| `collect_thread_snapshot` | 21,502 | 2,722 | 16,182 | 3,837 | 16,460 | 1,205 |
+| `export_investigation_summary` | 13,956 | 1,924 | 9,851 | 2,744 | 10,215 | 997 |
+| `query_snapshot` | 13,330 | 8,520 | 2,585 | 8,144 | 3,701 | 1,485 |
+| `start_investigation` | 10,642 | 1,843 | 6,751 | 2,739 | 7,280 | 623 |
+| `inspect_heap` | 10,316 | 3,934 | 2,585 | 5,558 | 3,045 | 1,713 |
+| `list_orchestrator` | 9,897 | 2,406 | 5,439 | 3,290 | 5,751 | 856 |
+| `capture_method_bytes` | 9,537 | 2,607 | 4,382 | 3,999 | 4,639 | 899 |
+| `attach_to_pod` | 9,001 | 3,038 | 3,489 | 4,159 | 3,895 | 947 |
+| `get_bytes` | 8,407 | 2,635 | 2,585 | 4,147 | 2,909 | 1,351 |
+| `discover_azure` | 7,952 | 1,203 | 5,028 | 1,839 | 5,192 | 921 |
+| `collect_process_dump` | 7,348 | 1,630 | 3,217 | 3,010 | 3,210 | 1,128 |
+| `collect_batch` | 7,259 | 1,487 | 3,847 | 2,481 | 3,955 | 823 |
+| `compare_to_baseline` | 6,531 | 1,816 | 2,585 | 2,634 | 2,679 | 1,218 |
+| `detach_from_pod` | 5,303 | 256 | 3,082 | 1,756 | 2,813 | 734 |
+| **All tools** | **258,449** | **59,120** | **158,031** | **72,402** | **165,611** | **20,436** |
 
-The remaining 27 bytes are catalog framing and array separators.
+The remaining 28 bytes are catalog framing and array separators.
 
 \* Input/output schema columns are serialized schema-value sizes and include
 descriptions, so they overlap the prose column.
@@ -70,15 +86,37 @@ The exact, non-overlapping partition removes properties in a fixed order:
 
 This gives:
 
-- **143,316 bytes (71.7%) schema structure**
-- **52,190 bytes (26.1%) prose**
-- **4,227 bytes (2.1%) other per-tool metadata**
-- **27 bytes catalog framing**
+- **165,611 bytes (64.1%) schema structure**
+- **72,402 bytes (28.0%) prose**
+- **20,436 bytes (7.9%) other per-tool metadata**
+- **28 bytes catalog framing**
 
 The catalog is therefore primarily a schema-shape cost, not simply verbose tool
-descriptions. `collect_events` alone contributes 31.7%; the four largest tools
-contribute 58.9%. Its 51,417-byte output schema is the dominant single payload.
+descriptions. `collect_events` alone contributes 27.4%; the four largest tools
+contribute 53.8%. Its 55,170-byte output schema is the dominant single payload.
 Removing safety prose would not address the main cost.
+
+## Why the catalog grew
+
+The stale 2026-07-15 report predated `collect_batch`, proxy/delegated-scope
+guidance, and the current invocation-safety contract. `collect_batch` now adds
+7,259 bytes (2.8% of the maximal catalog) and is intentionally part of the
+default surface.
+
+The largest later increase is deliberate safety metadata. The pre-safety
+Phase 16 baseline was 220,804 bytes. Issue #773 raised its measured baseline to
+258,367 bytes, an increase of 37,563 bytes (17.0%), by adding:
+
+- each tool's static maximum resolved-risk summary and conditional-safety flag
+  under `_meta.dotnetDiagnostics.safety`;
+- compact `safety`, `safetyWarnings`, and `safetyApproval` result fields; and
+- the reserved acknowledgement input schema only for tools that can resolve to
+  high or critical risk.
+
+The fresh measurement is 110 bytes above that issue #773 baseline. These fields
+are client-visible safety controls, not schema-trimming candidates. This issue
+only corrects measurement and documentation parity; it does not optimize schemas
+or alter tool behavior.
 
 ## Guidance placement
 
@@ -89,7 +127,8 @@ Potential future reductions should be evidence-driven:
   client that sees one tool in isolation.
 - Exhaustive workflow examples and cross-tool navigation can live in existing
   prompts/resources/results. Valid discriminator values, required combinations,
-  authorization requirements, and defaults must remain discoverable in schemas.
+  authorization requirements, defaults, and safety controls must remain
+  discoverable in schemas.
 - Dump approval, ptrace/UID requirements, sensitive-value gates, remote symbol
   allowlisting, and target-suspension warnings are safety controls, not trimming
   candidates.
@@ -99,16 +138,21 @@ Potential future reductions should be evidence-driven:
 
 No descriptions were shortened as part of this issue.
 
-## Guardrail
+## Guardrails
 
-The integration test caps the maximal catalog at **220,000 bytes**. This is
-20,240 bytes, or 10.1%, above the measured baseline. The fixed byte budget is
+The integration test caps the maximal catalog at **270,000 bytes**. This is
+11,523 bytes, or 4.5%, above the measured baseline. The fixed byte budget is
 portable, deterministic, and independent of model tokenizer changes.
 
 An intentional increase must update both the test baseline comment and this
 document with a fresh live measurement and rationale. The guardrail is not a
 mandate to delete safety or argument semantics; exceeding it should first prompt
 inspection of generated output-schema growth and accidental new surface area.
+
+`ToolReferenceDocParityTests` also derives the maximal and default counts from
+`PodLocalToolSurfaces` and requires this document's cardinality stamp to match.
+Adding, removing, or re-gating a tool therefore cannot silently leave this
+research artifact with stale counts.
 
 ## MCP 2026 coordination
 
