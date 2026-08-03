@@ -134,6 +134,27 @@ public sealed class OutputExamplesDocumentationTests
         ReadOutputExamples().Should().Contain($"\"status\": \"{serializedValue}\"");
     }
 
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void Section_HandlesLineEndingsAndFinalSection(string newline)
+    {
+        var document = string.Join(
+            newline,
+            "# Test",
+            string.Empty,
+            "## First",
+            "first-body",
+            string.Empty,
+            "---",
+            string.Empty,
+            "## Final",
+            "final-body");
+
+        Section(document, "## First").Should().Contain("first-body").And.NotContain("final-body");
+        Section(document, "## Final").Should().Contain("final-body");
+    }
+
     private static void AssertDocumentedProperties<T>(string doc, params string[] propertyNames)
     {
         var properties = typeof(T).GetProperties(BindingFlags.Instance | BindingFlags.Public)
@@ -165,10 +186,18 @@ public sealed class OutputExamplesDocumentationTests
 
     private static string Section(string document, string heading)
     {
-        var start = document.IndexOf(heading, StringComparison.Ordinal);
+        var normalized = document.ReplaceLineEndings("\n");
+        var start = normalized.IndexOf(heading, StringComparison.Ordinal);
         start.Should().BeGreaterThanOrEqualTo(0);
-        var end = document.IndexOf("\n---\n", start, StringComparison.Ordinal);
-        end.Should().BeGreaterThan(start);
-        return document[start..end];
+        var searchStart = start + heading.Length;
+        var end = new[]
+            {
+                normalized.IndexOf("\n---\n", searchStart, StringComparison.Ordinal),
+                normalized.IndexOf("\n## ", searchStart, StringComparison.Ordinal),
+            }
+            .Where(index => index >= searchStart)
+            .DefaultIfEmpty(normalized.Length)
+            .Min();
+        return normalized[start..end];
     }
 }
