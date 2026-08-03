@@ -107,6 +107,18 @@ public sealed class OutputExamplesDocumentationTests
             nameof(InvocationSafetyAcknowledgement.Arguments),
             nameof(InvocationSafetyAcknowledgement.Safety),
             nameof(InvocationSafetyAcknowledgement.ChildSafety));
+        AssertDocumentedProperties<InvocationSafetyChildDescriptor>(
+            doc,
+            nameof(InvocationSafetyChildDescriptor.Operation),
+            nameof(InvocationSafetyChildDescriptor.Arguments),
+            nameof(InvocationSafetyChildDescriptor.Safety));
+
+        var batchSection = Section(doc, "## Concurrent collection — `collect_batch`");
+        batchSection.Should().Contain("\"childSafety\"");
+        batchSection.Should().Contain("\"operation\": \"collect_events\"");
+        batchSection.Should().Contain("\"arguments\": { \"kind\": \"counters\" }");
+        batchSection.Should().Contain("\"arguments\": { \"kind\": \"gc\" }");
+        batchSection.Should().Contain("\"arguments\": { \"kind\": \"exceptions\" }");
     }
 
     [Theory]
@@ -149,5 +161,14 @@ public sealed class OutputExamplesDocumentationTests
 
         directory.Should().NotBeNull("the test output must be beneath the repository root");
         return File.ReadAllText(Path.Combine(directory!.FullName, "docs", "output-examples.md"));
+    }
+
+    private static string Section(string document, string heading)
+    {
+        var start = document.IndexOf(heading, StringComparison.Ordinal);
+        start.Should().BeGreaterThanOrEqualTo(0);
+        var end = document.IndexOf("\n---\n", start, StringComparison.Ordinal);
+        end.Should().BeGreaterThan(start);
+        return document[start..end];
     }
 }
