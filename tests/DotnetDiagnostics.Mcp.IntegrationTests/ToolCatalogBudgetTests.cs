@@ -169,6 +169,7 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
 internal sealed record ToolCatalogMeasurement(
     int SerializedBytes,
     int EstimatedTokens,
+    int DefaultToolCount,
     int DefaultCatalogBytes,
     int DefaultCatalogEstimatedTokens,
     int CatalogOverheadBytes,
@@ -194,18 +195,20 @@ internal sealed record ToolCatalogMeasurement(
             .OrderByDescending(tool => tool.SerializedBytes)
             .ToArray();
         var catalogOverheadBytes = serializedBytes - tools.Sum(tool => tool.SerializedBytes);
+        var defaultTools = result.Tools
+            .Where(tool => !OptionalToolNames.Contains(tool.Name))
+            .ToArray();
         var defaultCatalogBytes = JsonSerializer.SerializeToUtf8Bytes(
             new ListToolsResult
             {
-                Tools = result.Tools
-                    .Where(tool => !OptionalToolNames.Contains(tool.Name))
-                    .ToArray(),
+                Tools = defaultTools,
             },
             McpJsonUtilities.DefaultOptions).Length;
 
         return new ToolCatalogMeasurement(
             serializedBytes,
             EstimateTokens(serializedBytes),
+            defaultTools.Length,
             defaultCatalogBytes,
             EstimateTokens(defaultCatalogBytes),
             catalogOverheadBytes,
@@ -220,7 +223,7 @@ internal sealed record ToolCatalogMeasurement(
             $"tools/list result: {SerializedBytes:N0} bytes (~{EstimatedTokens:N0} tokens at 4 UTF-8 bytes/token)");
         builder.AppendLine(
             CultureInfo.InvariantCulture,
-            $"default 12-tool subset: {DefaultCatalogBytes:N0} bytes (~{DefaultCatalogEstimatedTokens:N0} tokens)");
+            $"default {DefaultToolCount:N0}-tool subset: {DefaultCatalogBytes:N0} bytes (~{DefaultCatalogEstimatedTokens:N0} tokens)");
         builder.AppendLine(
             CultureInfo.InvariantCulture,
             $"catalog framing: {CatalogOverheadBytes:N0} bytes");
