@@ -127,19 +127,23 @@ Without the env var the watcher only logs a warning. See issue #75.
 
 ### Heads up: live memory readers need `CAP_SYS_PTRACE` on Linux
 
-`collect_thread_snapshot`, `inspect_heap(source="live")`, live `capture_method_bytes`,
-`get_bytes(kind="module")`, and the opt-in
+`inspect_process(view="runtime-config")`, `collect_thread_snapshot`,
+`inspect_heap(source="live")`, live `capture_method_bytes`, `get_bytes(kind="module")`,
+and the opt-in
 `collect_sample(kind="cpu", resolveMethodInstantiations=true)` enrichment attach via ClrMD,
 which under the hood issues
 `ptrace(PTRACE_ATTACH, …)`. Matching UIDs alone is **not** enough on Linux:
 the kernel's [Yama LSM](https://www.kernel.org/doc/Documentation/admin-guide/LSM/Yama.rst)
 defaults `kernel.yama.ptrace_scope=1` on Debian/Ubuntu/WSL, which blocks
-same-UID peer attach. You will see a structured error like:
+same-UID peer attach. Most tools return a structured error like:
 
 ```json
 { "error": { "kind": "PermissionDenied",
              "message": "Could not PTRACE_ATTACH to any thread of the process N." } }
 ```
+
+`inspect_process(view="runtime-config")` instead returns its non-ClrMD fields and
+records the attach failure in `notes[]`.
 
 Mitigations, in order of preference for local Docker:
 

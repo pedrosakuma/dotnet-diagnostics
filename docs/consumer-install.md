@@ -26,10 +26,12 @@ All three publish the same MCP surface (Streamable HTTP, bearer-token authentica
 > BenchmarkDotNet diagnoser do not expose this capability.
 
 > 🐧 **Linux heads-up — live memory readers need kernel ptrace permission.**
-> `collect_thread_snapshot`, `capture_method_bytes`, `inspect_heap(source="live")`, and
-> `get_bytes(kind="module")` against a live PID will fail with `PermissionDenied` /
-> `Could not PTRACE_ATTACH to any thread of the process N.` unless the diagnostics host may
-> attach. Matching the target's UID is **not** enough on Debian/Ubuntu/WSL (default
+> `inspect_process(view="runtime-config")`, `collect_thread_snapshot`,
+> `capture_method_bytes`, `inspect_heap(source="live")`, and `get_bytes(kind="module")`
+> against a live PID all require the `ptrace` bearer scope and OS permission. Most fail
+> with `PermissionDenied` / `Could not PTRACE_ATTACH to any thread of the process N.`;
+> `runtime-config` instead returns its non-ClrMD fields with an attach-failure note.
+> Matching the target's UID is **not** enough on Debian/Ubuntu/WSL (default
 > `kernel.yama.ptrace_scope=1`). See
 > [§ 1.5 Linux: enabling live memory readers](#15-linux-enabling-live-memory-readers-kernel-ptrace)
 > before wiring the server into a client. EventPipe-only tools work out of the box unless
@@ -85,15 +87,16 @@ tar -xzf dotnet-diagnostics-mcp-*-linux-x64.tar.gz -C ~/.local/bin
 
 ### 1.5. Linux: enabling live memory readers (kernel ptrace)
 
-Five live-memory paths attach to the target via `ptrace(PTRACE_ATTACH, …)`:
+These live-memory operations attach to the target via `ptrace(PTRACE_ATTACH, …)`:
 
+- `inspect_process(view="runtime-config")`
 - `collect_thread_snapshot`
 - `capture_method_bytes` against a live PID
 - `inspect_heap(source="live")`
 - `get_bytes(kind="module")` against a live PID
 - `collect_sample(kind="cpu", resolveMethodInstantiations=true)` (the optional post-sample enrichment only)
 
-Linux's [Yama LSM](https://www.kernel.org/doc/Documentation/admin-guide/LSM/Yama.rst) defaults `kernel.yama.ptrace_scope=1` on Debian, Ubuntu, WSL, GitHub Codespaces, and most desktop distros — meaning **same-UID peer attach is blocked**. The MCP server reports this as a structured `DiagnosticError`:
+Linux's [Yama LSM](https://www.kernel.org/doc/Documentation/admin-guide/LSM/Yama.rst) defaults `kernel.yama.ptrace_scope=1` on Debian, Ubuntu, WSL, GitHub Codespaces, and most desktop distros — meaning **same-UID peer attach is blocked**. Most live readers report this as a structured `DiagnosticError`:
 
 ```json
 { "error": { "kind": "PermissionDenied",
@@ -104,6 +107,10 @@ First decide whether the investigation actually needs a live memory reader. Even
 such as counters, GC, exceptions, contention, CPU, and allocation use the diagnostic IPC socket
 and do **not** need Linux ptrace permission (unless CPU sampling explicitly enables
 `resolveMethodInstantiations=true`). Offline dump analysis also avoids live attach.
+
+`inspect_process(view="runtime-config")` is deliberately best-effort after its
+`ptrace` authorization check: it returns filtered environment / runtimeconfig data and
+records the failed ClrMD attach in `notes[]`.
 
 When live attach is required, choose the narrowest permission boundary available:
 
@@ -197,14 +204,30 @@ See [`client-setup.md` → Transport security](./client-setup.md#transport-secur
 
 The server is stateless and resumable but you don't want to remember to restart it after every reboot or crash. The repo ships supervisor templates under [`deploy/supervisors/`](../deploy/supervisors).
 
+All three local supervisors create the same least-privilege bearer entry:
+
+| Setting | Default |
+|---|---|
+| Principal name | `local-observer` |
+| Scope | `read-counters` |
+| Effective access | Process discovery, `inspect_process(view="triage")`, and numeric counters |
+
+The environment keys use ASP.NET Core's array syntax exactly:
+`Auth__BearerTokens__0__Name`, `Auth__BearerTokens__0__Token`, and
+`Auth__BearerTokens__0__Scopes__0`. Double underscores map configuration
+sections and numeric segments map array indexes. Do not replace them with
+single underscores or skip indexes.
+
 ### Linux — systemd `--user`
 
 ```bash
+unit="$HOME/.config/systemd/user/dotnet-diagnostics-mcp.service"
+token="$(openssl rand -hex 32)"
 mkdir -p ~/.config/systemd/user
-curl -sSL https://raw.githubusercontent.com/pedrosakuma/dotnet-diagnostics-mcp/main/deploy/supervisors/linux/dotnet-diagnostics-mcp.service \
-  -o ~/.config/systemd/user/dotnet-diagnostics-mcp.service
-# Edit the Environment=MCP_BEARER_TOKEN line before enabling.
-$EDITOR ~/.config/systemd/user/dotnet-diagnostics-mcp.service
+curl -fsSL https://raw.githubusercontent.com/pedrosakuma/dotnet-diagnostics/main/deploy/supervisors/linux/dotnet-diagnostics-mcp.service \
+  -o "$unit"
+chmod 600 "$unit"
+sed -i "s|{{AUTH_BEARER_TOKEN}}|$token|g" "$unit"
 systemctl --user daemon-reload
 systemctl --user enable --now dotnet-diagnostics-mcp.service
 
@@ -213,38 +236,182 @@ loginctl enable-linger "$USER"
 ```
 
 Status: `systemctl --user status dotnet-diagnostics-mcp`. Logs: `journalctl --user -u dotnet-diagnostics-mcp -f`.
+The generated secret remains in `$token` for client setup in the same shell and is not
+printed by these commands.
 
 ### Windows — Scheduled Task
 
 ```powershell
 dotnet tool install -g dotnet-diagnostics-mcp
-# Then run the supervisor script (downloaded from the release page or repo):
-.\deploy\supervisors\windows\Install-Service.ps1 -Port 8787
+$installer = Join-Path $env:USERPROFILE 'Install-DotnetDiagnosticsMcp.ps1'
+Invoke-WebRequest `
+  'https://raw.githubusercontent.com/pedrosakuma/dotnet-diagnostics/main/deploy/supervisors/windows/Install-Service.ps1' `
+  -OutFile $installer
+& $installer -Port 8787
 ```
 
-The script registers a Scheduled Task that starts at logon, restarts on failure 5 times at 30s intervals, and publishes the bearer token as a user-scope environment variable.
+The script registers a Scheduled Task that starts at logon and restarts on failure 5
+times at 30-second intervals. It stores the indexed `Auth__BearerTokens__0__*`
+configuration in the current user's environment, removes the value left by the legacy
+installer, and does not print the generated secret. Non-secret settings (port, task
+name, principal name, and scopes) are retained in
+`%LOCALAPPDATA%\dotnet-diagnostics-mcp\install-state.json`; the token is not written
+there. Load it for client setup without printing it:
+
+```powershell
+$token = [Environment]::GetEnvironmentVariable(
+    'Auth__BearerTokens__0__Token',
+    'User')
+$state = Get-Content "$env:LOCALAPPDATA\dotnet-diagnostics-mcp\install-state.json" |
+  ConvertFrom-Json
+Start-ScheduledTask -TaskName $state.TaskName
+```
 
 > 🔒 **Need off-CPU sampling on Windows?** `collect_sample(kind="off_cpu")` uses the NT Kernel
 > Logger's `ContextSwitch` provider, which requires Administrator membership or
 > `SeSystemProfilePrivilege` — neither is held by the per-user Scheduled Task. For
 > production sidecar deployments that want off-CPU, see
 > [`windows-sidecar-service.md`](./windows-sidecar-service.md) (Windows Service install with
-> `LocalSystem` or a dedicated least-privilege service account). Every other tool
-> (counters, CPU sampling, exceptions, GC, EventSources, ETW NativeAOT CPU sampling) works
-> from the Scheduled Task without changes.
-
-Uninstall: `Unregister-ScheduledTask -TaskName 'dotnet-diagnostics-mcp' -Confirm:$false`.
+> `LocalSystem` or a dedicated least-privilege service account). The Scheduled Task's
+> Windows principal can run the other collectors without that OS
+> privilege, but the default bearer remains limited to `read-counters`; grant the required
+> scopes deliberately before invoking them.
 
 ### macOS — launchd `LaunchAgent`
 
 ```bash
-cp deploy/supervisors/macos/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist \
-  ~/Library/LaunchAgents/
-sed -i '' "s|{{HOME}}|$HOME|g; s|{{MCP_BEARER_TOKEN}}|$(openssl rand -hex 32)|g" \
-  ~/Library/LaunchAgents/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist
-launchctl bootstrap gui/$UID ~/Library/LaunchAgents/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist
+plist="$HOME/Library/LaunchAgents/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist"
+token="$(openssl rand -hex 32)"
+mkdir -p ~/Library/LaunchAgents
+curl -fsSL https://raw.githubusercontent.com/pedrosakuma/dotnet-diagnostics/main/deploy/supervisors/macos/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist \
+  -o "$plist"
+chmod 600 "$plist"
+sed -i '' "s|{{HOME}}|$HOME|g; s|{{AUTH_BEARER_TOKEN}}|$token|g" "$plist"
+launchctl bootstrap gui/$UID "$plist"
 launchctl enable gui/$UID/io.github.pedrosakuma.dotnet-diagnostics-mcp
 ```
+
+The generated secret remains in `$token` for client setup in the same shell and is not
+printed by these commands.
+
+### Scope expansion
+
+The observer default intentionally cannot use `inspect_process(view="runtime-config")`,
+start EventPipe samples, read heaps, attach with ptrace, write dumps, or export
+investigations. Add scopes only for a concrete workflow after reviewing
+[`authorization.md`](./authorization.md):
+
+```ini
+# Linux unit: append consecutive scope indexes under [Service], then daemon-reload + restart.
+Environment=Auth__BearerTokens__0__Scopes__1=eventpipe
+Environment=Auth__BearerTokens__0__Scopes__2=investigation-export
+```
+
+```bash
+# macOS plist: add consecutive keys, then bootout + bootstrap the LaunchAgent.
+/usr/libexec/PlistBuddy -c \
+  "Add :EnvironmentVariables:Auth__BearerTokens__0__Scopes__1 string eventpipe" \
+  "$plist"
+launchctl bootout gui/$UID/io.github.pedrosakuma.dotnet-diagnostics-mcp
+launchctl bootstrap gui/$UID "$plist"
+```
+
+```powershell
+# Windows: add scopes while preserving the token, port, task name, and existing scopes.
+$installer = Join-Path $env:USERPROFILE 'Install-DotnetDiagnosticsMcp.ps1'
+& $installer -AddScopes @('eventpipe', 'investigation-export')
+$state = Get-Content "$env:LOCALAPPDATA\dotnet-diagnostics-mcp\install-state.json" |
+  ConvertFrom-Json
+Start-ScheduledTask -TaskName $state.TaskName
+```
+
+Do not grant `ptrace`, `heap-read`, `dump-write`, or modifier scopes merely to make a
+failed call pass. Each expands data exposure or target impact; grant the exact
+combination documented for the intended tool.
+
+### Rotate
+
+Rotation changes only the `Token` value; keep the principal name and scopes stable,
+restart the supervisor, and update every client `Authorization` header before deleting
+your old client-side copy.
+
+```bash
+# Linux
+unit="$HOME/.config/systemd/user/dotnet-diagnostics-mcp.service"
+token="$(openssl rand -hex 32)"
+sed -i -E "s|^Environment=Auth__BearerTokens__0__Token=.*$|Environment=Auth__BearerTokens__0__Token=$token|" "$unit"
+systemctl --user daemon-reload
+systemctl --user restart dotnet-diagnostics-mcp.service
+```
+
+```bash
+# macOS
+plist="$HOME/Library/LaunchAgents/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist"
+token="$(openssl rand -hex 32)"
+launchctl bootout gui/$UID/io.github.pedrosakuma.dotnet-diagnostics-mcp
+/usr/libexec/PlistBuddy -c \
+  "Set :EnvironmentVariables:Auth__BearerTokens__0__Token $token" "$plist"
+launchctl bootstrap gui/$UID "$plist"
+```
+
+```powershell
+# Windows: rotate only the token; retained settings remain unchanged.
+$installer = Join-Path $env:USERPROFILE 'Install-DotnetDiagnosticsMcp.ps1'
+& $installer -RotateToken
+$token = [Environment]::GetEnvironmentVariable(
+    'Auth__BearerTokens__0__Token',
+    'User')
+$state = Get-Content "$env:LOCALAPPDATA\dotnet-diagnostics-mcp\install-state.json" |
+  ConvertFrom-Json
+Start-ScheduledTask -TaskName $state.TaskName
+```
+
+### Uninstall
+
+```bash
+# Linux
+systemctl --user disable --now dotnet-diagnostics-mcp.service
+rm ~/.config/systemd/user/dotnet-diagnostics-mcp.service
+systemctl --user daemon-reload
+```
+
+```bash
+# macOS
+launchctl bootout gui/$UID/io.github.pedrosakuma.dotnet-diagnostics-mcp
+rm ~/Library/LaunchAgents/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist
+```
+
+```powershell
+# Windows: also removes the generated launcher and user-scope auth variables.
+$installer = Join-Path $env:USERPROFILE 'Install-DotnetDiagnosticsMcp.ps1'
+& $installer -Uninstall
+```
+
+Remove the matching bearer from each MCP client configuration after uninstalling.
+
+### Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| `401 Unauthorized` after install or rotation | The client header must use the current bearer token. Reload the client after replacing the value. |
+| Server reports no configured bearer | Confirm all three indexed variables exist and that the token placeholder was replaced. On Linux, `grep -q '{{AUTH_BEARER_TOKEN}}' "$unit"` must fail. On macOS, `/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:Auth__BearerTokens__0__Token' "$plist" >/dev/null` must succeed without printing the secret. On Windows, rerun the installer. |
+| Counters work but a capture is denied | This is the expected `read-counters` boundary. Follow [Scope expansion](#scope-expansion) instead of switching to a root-like token. |
+| Rotation appears stale | Restart the supervisor and the MCP client. The Windows launcher reloads user-scope values from the registry on every task start; use `-RotateToken`, not a fresh install command. |
+| Windows update mode says no retained state exists | Run the current installer normally once to migrate the task and create the non-secret state file, then retry `-RotateToken` or `-AddScopes`. |
+
+Existing `MCP_BEARER_TOKEN` deployments remain compatible as documented in
+[`authorization.md` → Backward compatibility](./authorization.md#backward-compatibility),
+but that variable resolves to the deprecated synthetic `legacy-root` principal. New
+supervisor installs must use the named scoped configuration above.
+
+On Windows, running the current installer normally over a legacy task performs a
+one-time migration and creates retained non-secret state. A legacy
+`MCP_BEARER_TOKEN` is replaced with a new scoped observer token, so update the client
+header. If the old task used a custom port or task name, pass those values on this
+one-time migration. An already-scoped `Auth__BearerTokens__0__*` entry is preserved.
+Later normal invocations preserve the existing token and retained settings unless
+their corresponding parameters are explicitly supplied; `-RotateToken` and
+`-AddScopes` are the safer purpose-specific workflows.
 
 ### Container (already covered)
 
@@ -269,6 +436,29 @@ Add this to your `mcp-config.json` (Claude Desktop, Claude Code, Copilot CLI, Cu
   }
 }
 ```
+
+Set the header value to `Bearer ` followed by the `$token` value retained by the
+installation command. If that shell is gone, load the secret without printing it:
+
+```bash
+# Linux
+token="$(sed -n 's/^Environment=Auth__BearerTokens__0__Token=//p' \
+  ~/.config/systemd/user/dotnet-diagnostics-mcp.service)"
+
+# macOS
+token="$(/usr/libexec/PlistBuddy -c \
+  'Print :EnvironmentVariables:Auth__BearerTokens__0__Token' \
+  ~/Library/LaunchAgents/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist)"
+```
+
+```powershell
+# Windows
+$token = [Environment]::GetEnvironmentVariable(
+    'Auth__BearerTokens__0__Token',
+    'User')
+```
+
+Do not paste the token into issue text, command output, or logs.
 
 
 ---
@@ -395,4 +585,5 @@ The CLI bundles a probe-only mode that exits 0 on a healthy 200 response from `/
 dotnet-diagnostics-mcp --health-check --urls http://127.0.0.1:8787
 ```
 
-That same flag is what the systemd `ExecStartPost`, the Scheduled Task readiness gate, and the container `HEALTHCHECK` invoke under the hood.
+That same flag is what the systemd `ExecStartPost` and the container `HEALTHCHECK`
+invoke under the hood. The Windows installer prints the equivalent manual probe.

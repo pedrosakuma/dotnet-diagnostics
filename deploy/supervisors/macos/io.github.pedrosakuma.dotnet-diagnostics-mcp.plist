@@ -6,7 +6,9 @@
     cp deploy/supervisors/macos/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist \
       ~/Library/LaunchAgents/
     # Replace placeholders below before bootstrap:
-    sed -i '' "s|{{HOME}}|$HOME|g; s|{{MCP_BEARER_TOKEN}}|$(openssl rand -hex 32)|g" \
+    token="$(openssl rand -hex 32)"
+    chmod 600 ~/Library/LaunchAgents/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist
+    sed -i '' "s|{{HOME}}|$HOME|g; s|{{AUTH_BEARER_TOKEN}}|$token|g" \
       ~/Library/LaunchAgents/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist
     launchctl bootstrap gui/$UID \
       ~/Library/LaunchAgents/io.github.pedrosakuma.dotnet-diagnostics-mcp.plist
@@ -28,8 +30,12 @@
 
     <key>EnvironmentVariables</key>
     <dict>
-        <key>MCP_BEARER_TOKEN</key>
-        <string>{{MCP_BEARER_TOKEN}}</string>
+        <key>Auth__BearerTokens__0__Name</key>
+        <string>local-observer</string>
+        <key>Auth__BearerTokens__0__Token</key>
+        <string>{{AUTH_BEARER_TOKEN}}</string>
+        <key>Auth__BearerTokens__0__Scopes__0</key>
+        <string>read-counters</string>
     </dict>
 
     <key>RunAtLoad</key>

@@ -114,7 +114,7 @@ public sealed class InspectProcessTool
             "narrowed by commandLineContains); " +
             "'info' (process metadata); 'capabilities' (CoreCLR vs NativeAOT, supported collectors); " +
             "'container' (cgroup limits + signals); 'memory_trend' (working-set trend over durationSeconds/sampleEverySeconds); " +
-            "'resources' (single sample or trend); 'runtime-config' (filtered runtime env vars + best-effort ClrMD GC/ThreadPool settings); " +
+            "'resources' (single sample or trend); 'runtime-config' (filtered runtime env vars + best-effort ClrMD GC/ThreadPool settings — requires the ptrace scope); " +
             "'requests-now' (opens a short EventPipe session + captures a live thread snapshot — requires the ptrace scope). " +
             "'preflight' (environment self-diagnosis: target-optional, remediation-first readiness checks for diagnostic-socket UID, ClrMD attach/ptrace, perf — answers 'why can't I attach to this PID and how do I fix it?'). " +
             "All views except 'list' auto-resolve the lone visible .NET process when processId is omitted (except 'preflight', which runs host-only diagnosis when processId is omitted).")]
@@ -141,18 +141,19 @@ public sealed class InspectProcessTool
             return failure!;
         }
 
+        var requiredScope = ToolInvocationScopeResolver.GetInspectProcessViewScope(canonical);
         if (!ToolDispatchGuards.RequireScope(
                 principalAccessor.Current,
-                ToolInvocationScopeResolver.GetInspectProcessViewScope(canonical),
-                () => canonical == RequestsNowView
-                    ? $"view='{canonical}' requires the 'ptrace' scope because it captures a live thread snapshot."
+                requiredScope,
+                () => requiredScope == ToolInvocationScopeResolver.PtraceScope
+                    ? $"view='{canonical}' requires the 'ptrace' scope because it performs a live process attach."
                     : $"view='{canonical}' requires the 'read-counters' scope. inspect_process preserves the legacy authorization boundary of its bootstrap views.",
                 out DiagnosticResult<InspectProcessReport>? scopeFailure,
                 new NextActionHint(
                     "inspect_process",
-                    canonical == RequestsNowView
-                        ? "Retry with a bearer that also grants 'ptrace', or use one of the read-only bootstrap views."
-                        : "Retry with a bearer that grants 'read-counters', or use view='requests-now' with a ptrace-scoped bearer.",
+                    requiredScope == ToolInvocationScopeResolver.PtraceScope
+                        ? "Retry with a bearer that grants 'ptrace', or use view='triage' for a read-counters-only observation."
+                        : "Retry with a bearer that grants 'read-counters'.",
                     new Dictionary<string, object?> { ["view"] = canonical })))
         {
             return scopeFailure!;

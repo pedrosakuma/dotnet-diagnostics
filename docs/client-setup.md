@@ -51,7 +51,9 @@ For a **source checkout**, bind to loopback so that the non-loopback cleartext r
 not fire (see [Transport security](#transport-security-non-loopback) below for non-loopback options):
 
 ```bash
-export MCP_BEARER_TOKEN="$(openssl rand -hex 32)"
+export Auth__BearerTokens__0__Name="local-observer"
+export Auth__BearerTokens__0__Token="$(openssl rand -hex 32)"
+export Auth__BearerTokens__0__Scopes__0="read-counters"
 dotnet run --project src/DotnetDiagnostics.Mcp --urls http://127.0.0.1:8787
 ```
 
@@ -431,8 +433,10 @@ out. `ServerInstructions` still describes the same hierarchy for clients that do
 
 ## Operational tips
 
-- **Rotate the token** by changing `MCP_BEARER_TOKEN` (or the Kubernetes
-  Secret) and restarting the server.
+- **Rotate a scoped bearer** by changing its
+  `Auth__BearerTokens__<index>__Token` value (or backing Secret), restarting the
+  server, and updating clients. Keep the name and scope array stable unless the
+  access change is intentional.
 - **Set a fixed token** in production. The auto-generated ephemeral token is
   convenient for local dev but rotates on every restart.
 - **TLS** supports direct Kestrel TLS via `MCP_TLS_CERTIFICATE_PEM` + `MCP_TLS_PRIVATE_KEY_PEM`,

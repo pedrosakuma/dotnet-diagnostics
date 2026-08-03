@@ -12,10 +12,11 @@ ExecStart=%h/.dotnet/tools/dotnet-diagnostics-mcp --urls http://127.0.0.1:8787
 ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do %h/.dotnet/tools/dotnet-diagnostics-mcp --health-check --urls http://127.0.0.1:8787 && exit 0; sleep 1; done; exit 1'
 Restart=on-failure
 RestartSec=2s
-# Set a strong token before `systemctl --user daemon-reload`. The server will
-# generate an ephemeral one if unset, but that disappears on restart and breaks
-# clients with a hard-coded Authorization header.
-Environment=MCP_BEARER_TOKEN=change-me-to-a-long-random-hex-string
+# ASP.NET Core maps double underscores to configuration separators and numeric
+# segments to array indexes. Replace only the token placeholder before enabling.
+Environment=Auth__BearerTokens__0__Name=local-observer
+Environment=Auth__BearerTokens__0__Token={{AUTH_BEARER_TOKEN}}
+Environment=Auth__BearerTokens__0__Scopes__0=read-counters
 
 [Install]
 WantedBy=default.target

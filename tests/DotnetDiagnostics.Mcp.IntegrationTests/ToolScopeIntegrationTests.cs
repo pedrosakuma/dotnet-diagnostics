@@ -108,6 +108,22 @@ public sealed class ToolScopeIntegrationTests
     }
 
     [Fact]
+    public async Task InspectProcess_RuntimeConfig_Allows_PtraceOnly_Token()
+    {
+        await using var factory = CreateFactory(
+            ("ptrace-only", "ptrace-secret-runtime-config", new[] { "ptrace" }));
+        await using var client = await ConnectWithTokenAsync(factory, "ptrace-secret-runtime-config");
+
+        var result = await client.CallToolAsync(
+            "inspect_process",
+            arguments: new Dictionary<string, object?> { ["view"] = "runtime-config", ["processId"] = -1 },
+            cancellationToken: CancellationToken.None);
+
+        var text = result.Content.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
+        text.Should().NotContain("\"kind\":\"forbidden\"");
+    }
+
+    [Fact]
     public async Task ScopedToken_Missing_Scope_Returns_Forbidden_Envelope()
     {
         await using var factory = CreateFactory(
@@ -387,6 +403,25 @@ public sealed class ToolScopeIntegrationTests
             .Select(static scope => scope.GetString()).Should().Equal("ptrace");
         envelope.GetProperty("message").GetString().Should().Be(
             "tool requires mandatory scope 'ptrace'");
+        envelope.GetProperty("argument_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Contain("ptrace");
+    }
+
+    [Fact]
+    public async Task InspectProcess_RuntimeConfig_Denies_When_Ptrace_Is_Missing()
+    {
+        await using var factory = CreateFactory(
+            ("counters-only", "counters-secret-runtime-config-deny", new[] { "read-counters" }));
+        await using var client = await ConnectWithTokenAsync(factory, "counters-secret-runtime-config-deny");
+
+        var result = await client.CallToolAsync(
+            "inspect_process",
+            arguments: new Dictionary<string, object?> { ["view"] = "runtime-config", ["processId"] = -1 },
+            cancellationToken: CancellationToken.None);
+
+        var (_, envelope) = ParseForbidden(result);
+        envelope.GetProperty("missing_all_of_scopes").EnumerateArray()
+            .Select(static scope => scope.GetString()).Should().Equal("ptrace");
         envelope.GetProperty("argument_scopes").EnumerateArray()
             .Select(static scope => scope.GetString()).Should().Contain("ptrace");
     }
