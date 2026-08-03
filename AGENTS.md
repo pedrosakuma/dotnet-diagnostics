@@ -127,7 +127,11 @@ The .NET diagnostic IPC socket at `/tmp/dotnet-diagnostic-<pid>` inherits the **
 
 - **Docker (local)**: `--cap-add SYS_PTRACE` on the **sidecar** container.
 - **K8s**: `capabilities.add: ["SYS_PTRACE"]` on the sidecar container's `securityContext`. See [`deploy/k8s/sample-sidecar.yaml`](./deploy/k8s/sample-sidecar.yaml).
-- **Bare host**: `sudo sysctl -w kernel.yama.ptrace_scope=0`.
+- **Bare host, isolated personal-development only**: `sudo sysctl -w
+  kernel.yama.ptrace_scope=0` relaxes a host-wide security boundary for all same-UID
+  processes. Never use it on a shared or production host; prefer EventPipe, offline dump
+  analysis, or a sidecar-scoped capability. See
+  [`docs/consumer-install.md` § 1.5](./docs/consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
 
 Failure usually surfaces as a structured `PermissionDenied` envelope (see #32); `inspect_process(view="runtime-config")` is best-effort and instead records the failed ClrMD attach in `notes[]`. EventPipe-based tools do **not** need `CAP_SYS_PTRACE` unless a caller explicitly enables a ClrMD enrichment such as `resolveMethodInstantiations=true`.
 

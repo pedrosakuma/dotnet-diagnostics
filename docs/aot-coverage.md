@@ -39,8 +39,8 @@ artifact.
 `perf-replay-approx` is a **best-effort** source: it replaces a hard `❌` with a
 `⚠️`. Its weakness is staleness, not accuracy — the frames are real, they just
 reflect "where this TID last context-switched" instead of "where it is right
-now". When `ptrace_scope=0` and `CAP_SYS_PTRACE` is held the router prefers the
-live source automatically.
+now". When kernel ptrace permission is available, the router prefers the live
+source automatically.
 
 ## Tool × runtime × OS matrix
 

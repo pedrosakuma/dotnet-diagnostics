@@ -887,14 +887,12 @@ by a different bound (`call-tree` uses `--max-nodes`, `stack` selects one rank/t
 - **At an idle prompt:** Ctrl-C leaves the session (exit code 130). `exit` / `quit` / EOF leave cleanly
   (exit code 0).
 
-## Linux live-heap ptrace note
+## Linux ptrace note
 
 `inspect-heap --source live` attaches via `ptrace(2)`. On
 Debian/Ubuntu/WSL the default `kernel.yama.ptrace_scope=1` blocks same-UID peer attach, surfacing as a
-`PermissionDenied` envelope. Fixes:
+`PermissionDenied` envelope. Prefer a path that preserves the host policy:
 
-- **Bare host:** `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope`
-- **Container:** add `CAP_SYS_PTRACE` (Docker `--cap-add SYS_PTRACE`; K8s `securityContext.capabilities.add`).
 - **Zero privilege (dev):** `--launch -- <app> [args]` makes the CLI the target's parent. Under
   `ptrace_scope=1` a tracer may attach to its own descendants, so live attach works with no sysctl
   change and no capability:
@@ -909,13 +907,20 @@ Debian/Ubuntu/WSL the default `kernel.yama.ptrace_scope=1` blocks same-UID peer 
   session exits. This only helps under `ptrace_scope=1`; `scope=2` still needs `CAP_SYS_PTRACE` and
   `scope=3` forbids attach entirely — use the dump-based workflow there. When `capabilities` detects
   this exact environment it advertises the `--launch` tip.
-
-The `dump` command writes through diagnostic IPC and does not require Linux
-`CAP_SYS_PTRACE`.
+- **No live attach:** use `inspect-heap --source dump --dump-file <path>` for offline analysis,
+  or use EventPipe-backed `collect` kinds when they answer the diagnostic question. The `dump`
+  command writes through diagnostic IPC and does not require Linux `CAP_SYS_PTRACE`.
+- **Container or Kubernetes:** if live attach is required, add `CAP_SYS_PTRACE` only to the
+  diagnostics sidecar (Docker `--cap-add SYS_PTRACE`; Kubernetes
+  `securityContext.capabilities.add`).
+- **Bare host, isolated personal-development only:** `echo 0 | sudo tee
+  /proc/sys/kernel/yama/ptrace_scope` enables peer attach, but relaxes a **host-wide security
+  boundary** for every same-UID process. Never use this on a shared or production host. See the
+  canonical [consumer-install safety note](./consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
 
 The MCP sidecar must also run as the **same UID** as the target so it can open
-`/tmp/dotnet-diagnostic-<pid>`. EventPipe-based commands (`collect`, counters, GC, exceptions) need neither
-`CAP_SYS_PTRACE` nor UID matching beyond socket access.
+`/tmp/dotnet-diagnostic-<pid>`. EventPipe-based commands (`collect`, counters, GC, exceptions)
+do not need `CAP_SYS_PTRACE`, but still need access to that diagnostic socket.
 
 ## See also
 

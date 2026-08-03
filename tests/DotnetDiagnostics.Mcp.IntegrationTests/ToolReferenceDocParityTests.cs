@@ -82,6 +82,20 @@ public sealed class ToolReferenceDocParityTests
     }
 
     [Fact]
+    public void CatalogBudgetResearch_ReportsTheReflectedToolCounts()
+    {
+        var maximalCount = EnumerateToolNames().Count;
+        var defaultCount = EnumerateToolNames(
+            enableOrchestratorTools: false,
+            enableAzureDiscoveryTools: false).Count;
+        var research = ReadRepoFile(Path.Combine("docs", "research", "mcp-tool-catalog-budget.md"));
+
+        research.Should().Contain(
+            $"**Maximal tools:** {maximalCount} · **Default tools:** {defaultCount}",
+            "the measured catalog cardinality must track the shipping gated and default surfaces");
+    }
+
+    [Fact]
     public void PackageReadmesAndMetadata_StateTheRepositoryMitLicense()
     {
         ReadRepoFile("LICENSE").Should().StartWith("MIT License");
@@ -286,12 +300,14 @@ public sealed class ToolReferenceDocParityTests
             "every replayable collect_events/collect_sample hint must preserve its canonical kind instead of invoking the tool default");
     }
 
-    private static IReadOnlyList<string> EnumerateToolNames()
+    private static IReadOnlyList<string> EnumerateToolNames(
+        bool enableOrchestratorTools = true,
+        bool enableAzureDiscoveryTools = true)
     {
         var names = new SortedSet<string>(StringComparer.Ordinal);
         foreach (var type in PodLocalToolSurfaces.GetSurfaceTypes(
-                     enableOrchestratorTools: true,
-                     enableAzureDiscoveryTools: true))
+                     enableOrchestratorTools,
+                     enableAzureDiscoveryTools))
         {
             foreach (var method in type.GetMethods(
                 BindingFlags.Public | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))

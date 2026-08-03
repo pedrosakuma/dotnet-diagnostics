@@ -108,6 +108,8 @@
 - Exact blocker:
   - collector error: `kernel.yama.ptrace_scope=1 ... same-UID peer attach is blocked`
   - attempted remediation: `sudo -n sysctl -w kernel.yama.ptrace_scope=0`
+    (a host-wide relaxation suitable only for isolated personal development, never shared or
+    production hosts; unavailable here)
   - actual result: `sudo: a password is required`
 - Interpretation: no benchmark numbers from this host without `CAP_SYS_PTRACE` or a host sysctl change.
 
