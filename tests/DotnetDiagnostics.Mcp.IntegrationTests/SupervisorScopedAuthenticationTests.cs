@@ -43,23 +43,41 @@ public sealed class SupervisorScopedAuthenticationTests
     }
 
     [Fact]
-    public void WindowsInstaller_UsesIndexedScopedEnvironmentAndCleansLegacyValue()
+    public void WindowsInstaller_UsesIndexedScopedEnvironmentAndPreservesUpdateSettings()
     {
         var installer = ReadRepoFile(
             "deploy", "supervisors", "windows", "Install-Service.ps1");
 
-        installer.Should().Contain("[string]$TokenName = 'local-observer'");
-        installer.Should().Contain("[string[]]$Scopes = @('read-counters')");
         installer.Should().Contain("$configurationPrefix = 'Auth__BearerTokens__0__'");
         installer.Should().Contain("\"${configurationPrefix}Scopes__$index\"");
+        installer.Should().Contain("'local-observer'");
+        installer.Should().Contain("@('read-counters')");
+        installer.Should().Contain("[switch]$RotateToken");
+        installer.Should().Contain("[string[]]$AddScopes");
         installer.Should().Contain("[switch]$Uninstall");
-        installer.Should().Contain("Stop-ScheduledTask -TaskName $TaskName");
+        installer.Should().Contain("$statePath = Join-Path $launcherDirectory 'install-state.json'");
+        installer.Should().Contain("[int]$state.Port");
+        installer.Should().Contain("[string]$state.TokenName");
+        installer.Should().Contain("@($state.Scopes)");
+        installer.Should().Contain("$installedTaskName");
+        installer.Should().Contain("elseif (-not [string]::IsNullOrWhiteSpace($existingToken))");
+        installer.Should().Contain("$installedScopes");
+        installer.Should().Contain("$scopeCandidates += @($AddScopes)");
+        installer.Should().Contain("Stop-ScheduledTask -TaskName $Name");
         installer.Should().Contain(
             "[Environment]::SetEnvironmentVariable('MCP_BEARER_TOKEN', $null, 'User')");
         installer.Should().Contain(
             "[Environment]::SetEnvironmentVariable('MCP_BEARER_TOKEN', $null, 'Process')");
         installer.Should().NotContain(
             "[Environment]::SetEnvironmentVariable('MCP_BEARER_TOKEN', $Token, 'User')");
+        var retainedState = installer[
+            installer.IndexOf("[pscustomobject]@{", StringComparison.Ordinal)..
+            installer.IndexOf("} | ConvertTo-Json", StringComparison.Ordinal)];
+        retainedState.Should().Contain("Port = $resolvedPort");
+        retainedState.Should().Contain("TaskName = $resolvedTaskName");
+        retainedState.Should().Contain("TokenName = $resolvedTokenName");
+        retainedState.Should().Contain("Scopes = @($resolvedScopes)");
+        retainedState.Should().NotContain("Token =");
     }
 
     [Fact]
@@ -80,8 +98,12 @@ public sealed class SupervisorScopedAuthenticationTests
         consumer.Should().Contain("Uninstall");
         consumer.Should().Contain("Troubleshooting");
         consumer.Should().Contain("inspect_process(view=\"triage\")");
+        consumer.Should().Contain("-RotateToken");
+        consumer.Should().Contain("-AddScopes");
+        consumer.Should().Contain("install-state.json");
+        consumer.Should().Contain("the token is not written");
         authorization.Should().Contain("Local supervisor default");
-        authorization.Should().Contain("It cannot start broader EventPipe collections");
+        authorization.Should().Contain("It cannot use `inspect_process(view=\"runtime-config\")`");
     }
 
     private static string ReadRepoFile(params string[] segments)

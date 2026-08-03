@@ -186,7 +186,8 @@ internal static class ToolInvocationScopeResolver
     }
 
     internal static string GetInspectProcessViewScope(string? view)
-        => IsDiscriminator(view, "requests-now")
+        => IsDiscriminator(view, "requests-now") ||
+           IsDiscriminator(view, "runtime-config")
             ? PtraceScope
             : ReadCountersScope;
 

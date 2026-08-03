@@ -183,6 +183,13 @@ public sealed class ToolScopeAttributesTests
                 false
             },
             {
+                "inspect_process",
+                Arguments(new { view = "RUNTIME-CONFIG" }),
+                new[] { "read-counters" },
+                "ptrace",
+                false
+            },
+            {
                 "collect_events",
                 Arguments(new { kind = "EXCEPTIONS" }),
                 new[] { "read-counters" },

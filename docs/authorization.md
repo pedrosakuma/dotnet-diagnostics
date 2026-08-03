@@ -46,10 +46,10 @@ per-handle checks at runtime.
 
 | Scope | Grants | Representative tools |
 |---|---|---|
-| `read-counters` | Process discovery + aggregated counters (`/proc` reads, bounded numeric EventCounters). No per-event data, no ptrace. | `inspect_process` (all views), `collect_events(kind="counters")` |
+| `read-counters` | Process discovery + aggregated counters (`/proc` reads, bounded numeric EventCounters). No per-event data, no ptrace. | `inspect_process` except `runtime-config` / `requests-now`, `collect_events(kind="counters")` |
 | `eventpipe` | EventPipe sessions + the handles their collectors mint. Exposes exception messages, allocation type names, activity/EventSource payloads. | `collect_events` (gc, exceptions, threadpool, contention, db, …), `collect_sample` (cpu / off_cpu / allocation), `query_snapshot` over those handles |
 | `heap-read` | Read-only heap walks (type graphs, retention chains, addresses). | `inspect_heap(source="dump")`; **`inspect_heap(source="live")` additionally requires `ptrace`** |
-| `ptrace` | Authorization for sensitive live-memory/attach operations. Live ClrMD readers additionally need `CAP_SYS_PTRACE` (Linux) / debug privilege (Windows). `collect_process_dump` carries this bearer scope as defense in depth but writes through diagnostic IPC and does not itself require Linux `CAP_SYS_PTRACE`. | `collect_thread_snapshot`, `capture_method_bytes`, `inspect_heap(source="live")` (+`heap-read`), `collect_process_dump` (+`dump-write`) |
+| `ptrace` | Authorization for sensitive live-memory/attach operations. Live ClrMD readers additionally need `CAP_SYS_PTRACE` (Linux) / debug privilege (Windows). `collect_process_dump` carries this bearer scope as defense in depth but writes through diagnostic IPC and does not itself require Linux `CAP_SYS_PTRACE`. | `inspect_process(view="runtime-config" \| "requests-now")`, `collect_thread_snapshot`, `capture_method_bytes`, `inspect_heap(source="live")` (+`heap-read`), `collect_process_dump` (+`dump-write`) |
 | `dump-write` | Writes a full process dump (entire address space, zero redaction) to disk. **The single most dangerous scope.** Requires the separate `ptrace` bearer authorization scope as defense in depth; this does not imply a Linux kernel ptrace requirement for dump capture. | `collect_process_dump` (also needs `confirm=true` — see [below](#per-call-confirmation)) |
 | `investigation-export` | Read-only meta/planning tools + drilldown over already-collected handles. `export_investigation_summary` additionally requires each evidence handle's originating scope. | `start_investigation`, `export_investigation_summary`, `compare_to_baseline`, `query_snapshot(view="call-tree")` |
 | `orchestrator-list` | Enumerate pods the orchestrator may see. Pure discovery. | `list_orchestrator(kind="pods")` |
@@ -159,8 +159,9 @@ Auth__BearerTokens__0__Scopes__0=read-counters
 ```
 
 That principal can discover processes, run `inspect_process(view="triage")`, and
-collect numeric counters. It cannot start broader EventPipe collections, read heaps,
-attach with ptrace, write dumps, or use modifier scopes. Additional scopes use
+collect numeric counters. It cannot use `inspect_process(view="runtime-config")`,
+start broader EventPipe collections, read heaps, attach with ptrace, write dumps, or
+use modifier scopes. Additional scopes use
 consecutive indexes (`Scopes__1`, `Scopes__2`, …) and must be added intentionally;
 see [`consumer-install.md` → Scope expansion](./consumer-install.md#scope-expansion).
 

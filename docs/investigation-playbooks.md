@@ -416,6 +416,10 @@ that aren't in the sidecar image.
 
 ## 2b. "Is this Server GC / did someone override ThreadPool or tiered compilation?"
 
+This view requires the `ptrace` bearer scope because its GC / ThreadPool projection
+performs a ClrMD live attach. On Linux, the diagnostics process also needs OS ptrace
+permission; without it, the view returns the non-ClrMD fields plus an explanatory note.
+
 1. Call `inspect_process(view="runtime-config")` against the target PID.
 2. Read `gc` first:
    - `isServerGc=true` + `heapCount > 1` → Server GC is active.

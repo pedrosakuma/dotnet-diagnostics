@@ -855,7 +855,7 @@ unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
 | [`inspect_process(view="capabilities")`](#inspect_process(view="capabilities")) | ~2 s | no | ✅ | opens a short EventPipe probe |
 | [`inspect_process(view="container")`](#inspect_process(view="container")) | cheap | no | ✅ (Linux) | reads `/sys/fs/cgroup` + `/proc` files |
 | [`inspect_process(view="memory_trend")`](#inspect_process(view="memory_trend")) | window-bound | no | ✅ | reads `/proc/<pid>/smaps_rollup` + `/proc/<pid>/stat` (Linux) or `GetProcessMemoryInfo` (Windows) |
-| [`inspect_process(view="runtime-config")`](#inspect_process(view="runtime-config")) | cheap | no | ✅ (Windows env partial) | ClrMD GC / ThreadPool probe + filtered `/proc/<pid>/environ` (Linux) |
+| [`inspect_process(view="runtime-config")`](#inspect_process(view="runtime-config")) | cheap | no | ✅ (ptrace; Windows env partial) | suspending ClrMD live attach + filtered `/proc/<pid>/environ` (Linux) |
 | [`inspect_process(view="resources")`](#inspect_process(view="resources")) | cheap / window-bound | no | ✅ (Linux/Windows partial) | reads `/proc/<pid>/fd`, `/proc/<pid>/net/tcp{,6}`, `/proc/<pid>/limits`, `VmRSS` + a short `gc-heap-size` counter probe (Linux) or `GetProcessHandleCount` / `WorkingSet64` (Windows) |
 | [`inspect_process(view="requests-now")`](#inspect_process(view="requests-now")) | ~2 s | no | ✅ (ptrace required) | short EventPipe request window + live thread snapshot |
 | [`inspect_process(view="triage")`](#inspect_process) | ~5 s | no | ✅ | **Fast evidence triage.** Collects counters, separates observed signals from bounded hypotheses, and returns neutral drill-down hints. |
@@ -932,6 +932,10 @@ hint to the perf-replay fallback tracked in issue #92.
 The process bootstrap and inspection tool. Its `view` discriminator selects process
 discovery, metadata, capability, container, memory-trend, runtime-config, resource,
 in-flight-request, triage, or preflight projections under one stable envelope.
+
+**Authorization.** The static tool gate accepts `read-counters` or `ptrace`.
+`view="runtime-config"` and `view="requests-now"` require `ptrace` because they
+perform a live process attach; every other view requires `read-counters`.
 
 **Parameters:**
 
@@ -1253,9 +1257,9 @@ stack allocations.
 
 ## `inspect_process(view="runtime-config")`
 
-Cheap startup-configuration snapshot for questions like "is this Server GC?", "what are the ThreadPool min/max settings?", and "did someone override tiered compilation?".
+Startup-configuration snapshot for questions like "is this Server GC?", "what are the ThreadPool min/max settings?", and "did someone override tiered compilation?". Requires the `ptrace` bearer scope because the GC / ThreadPool projection performs a ClrMD live attach.
 
-- **GC / ThreadPool**: best-effort ClrMD live attach. On Linux, ptrace restrictions degrade to `notes[]` instead of failing the whole view.
+- **GC / ThreadPool**: best-effort ClrMD live attach. The authorization boundary requires `ptrace` before the tool runs; OS-level attach failures still degrade to `notes[]` instead of failing the whole view.
 - **Tiered compilation**: sourced from startup env overrides (`DOTNET_TieredCompilation`, `DOTNET_TC_QuickJit`, `DOTNET_TieredPGO`, plus `COMPlus_` aliases when present).
 - **Environment variables**: Linux reads `/proc/<pid>/environ`; Windows currently returns an explanatory note and an empty `envVars[]`.
 - **Security boundary**: `envVars[]` is strictly filtered to `DOTNET_`, `COMPlus_`, `ASPNETCORE_`, and `DOTNET_SYSTEM_` prefixes. Everything else is intentionally dropped.
