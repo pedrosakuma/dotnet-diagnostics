@@ -24,7 +24,10 @@
 3. **Read the safety model** before collecting traces or dumps — operations are classified
    low / moderate / high / critical and high/critical require deliberate approval:
    [`production-safety.md`](./production-safety.md)
-4. **Plan evidence retention and disposal** before the first capture — diagnostic data can
+4. **Make the production go/no-go decision** with explicit topology, transport, identity,
+   approval, evidence, smoke, and rollback pass conditions:
+   [`production-readiness checklist`](./production-safety.md#production-readiness-checklist)
+5. **Plan evidence retention and disposal** before the first capture — diagnostic data can
    contain PII, credentials, and business-sensitive content:
    [`production-safety.md` → Retention, access, and disposal](./production-safety.md#retention-access-and-disposal)
 
@@ -43,7 +46,7 @@ you're using, then reach for the cross-cutting references.
 
 | File | What it covers |
 |---|---|
-| [`production-safety.md`](./production-safety.md) | Canonical generated operation/discriminator/modifier safety matrix, production profiles, EventPipe exposure boundary, and evidence retention/access/disposal expectations |
+| [`production-safety.md`](./production-safety.md) | Production-readiness go/no-go checklist, canonical generated operation/discriminator/modifier safety matrix, production profiles, EventPipe exposure boundary, and evidence retention/access/disposal expectations |
 | [`output-examples.md`](./output-examples.md) | **What each capture actually returns** — real, trimmed output per family (counters, gc, exceptions, threadpool, contention, cpu, allocation), stamped per release |
 | [`investigation-playbooks.md`](./investigation-playbooks.md) | Step-by-step recipes for common symptoms (slow, leaking, 5xx, slow HTTP, NativeAOT) |
 | [`bad-code-scenarios.md`](./bad-code-scenarios.md) | The anti-patterns in `samples/BadCodeSample/` and the investigation flow each one exercises |

@@ -3,6 +3,9 @@
 The central orchestrator Helm chart lives at [`dotnet-diagnostics-orchestrator/`](./dotnet-diagnostics-orchestrator).
 It deploys the orchestrator surface (`list_orchestrator(kind="pods")`, `attach_to_pod`, routed diagnostics tools) behind the same HTTP auth surface as the existing sidecar: legacy/static bearer tokens, scoped opaque tokens, or OIDC/JWT validation.
 
+Before promoting a release beyond a loopback evaluation, complete the
+[`production-readiness go/no-go checklist`](../../docs/production-safety.md#production-readiness-checklist).
+
 ## Quick start: Helm
 
 ```bash

@@ -10,6 +10,8 @@ public sealed partial class ProductionSafetyDocumentationTests
 {
     private const string StartMarker = "<!-- BEGIN GENERATED SAFETY MATRIX -->";
     private const string EndMarker = "<!-- END GENERATED SAFETY MATRIX -->";
+    private const string ChecklistStartMarker = "<!-- BEGIN PRODUCTION READINESS CHECKLIST -->";
+    private const string ChecklistEndMarker = "<!-- END PRODUCTION READINESS CHECKLIST -->";
     private const string UpdateEnvironmentVariable = "DOTNET_DBG_MCP_UPDATE_SAFETY_DOCS";
 
     [Fact]
@@ -63,6 +65,80 @@ public sealed partial class ProductionSafetyDocumentationTests
 
         doc.Should().Contain("Redaction is defense in depth");
         doc.Should().Contain("does not prove that PII, secrets, or confidential data are absent");
+    }
+
+    [Fact]
+    public void ProductionReadinessChecklist_CoversRequiredGatesAndCanonicalLinks()
+    {
+        var checklist = ExtractMarkedSection(
+            File.ReadAllText(RepoFile("docs", "production-safety.md")),
+            ChecklistStartMarker,
+            ChecklistEndMarker);
+
+        foreach (var gate in new[]
+                 {
+                     "Topology and diagnostic socket",
+                     "Transport boundary",
+                     "Named least-privilege identity",
+                     "Linux live-memory privilege",
+                     "Operating profile",
+                     "MCP client approvals",
+                     "Evidence ownership",
+                     "Low-risk smoke",
+                     "High/critical approval smoke",
+                     "Rollback and cleanup",
+                 })
+        {
+            var row = checklist.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .SingleOrDefault(line => line.Contains($"**{gate}**", StringComparison.Ordinal));
+            row.Should().NotBeNull($"the checklist must contain the '{gate}' gate");
+            row.Should().Contain("**PASS:**", $"the '{gate}' gate needs an explicit pass condition");
+        }
+
+        foreach (var link in new[]
+                 {
+                     "./consumer-install.md#2-run-it-as-a-supervised-service",
+                     "../deploy/k8s/README.md#sidecar-topology-refresher",
+                     "./client-setup.md#transport-security-non-loopback",
+                     "./authorization.md#scopes",
+                     "./authorization.md#oidc--jwt-issuers-claims--scopes",
+                     "./consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace",
+                     "#production-operating-profiles",
+                     "./client-setup.md#safety-aware-toolscall",
+                     "./authorization.md#per-call-confirmation",
+                     "#retention-access-and-disposal",
+                     "./client-setup.md#4-quick-smoke-test-with-curl",
+                     "./consumer-install.md#first-diagnostic-low-risk",
+                     "./consumer-install.md#uninstall",
+                 })
+        {
+            checklist.Should().Contain($"({link})", $"the checklist must link to canonical detail '{link}'");
+        }
+
+        var introduction = ExtractMarkedSection(
+            File.ReadAllText(RepoFile("docs", "production-safety.md")),
+            "<a id=\"production-readiness-checklist\"></a>",
+            ChecklistStartMarker);
+        introduction.Should().Contain("Observe-only GO");
+        introduction.Should().Contain("Privileged-response GO");
+        checklist.Should().Contain("| Both |");
+        checklist.Should().Contain("| Privileged response |");
+    }
+
+    [Fact]
+    public void ProductionReadinessEntryPoints_LinkToTheChecklist()
+    {
+        foreach (var (relativePath, link) in new[]
+                 {
+                     ("README.md", "./docs/production-safety.md#production-readiness-checklist"),
+                     (Path.Combine("docs", "README.md"), "./production-safety.md#production-readiness-checklist"),
+                     (Path.Combine("deploy", "k8s", "README.md"), "../../docs/production-safety.md#production-readiness-checklist"),
+                     (Path.Combine("deploy", "helm", "README.md"), "../../docs/production-safety.md#production-readiness-checklist"),
+                 })
+        {
+            var doc = File.ReadAllText(RepoFile(relativePath.Split(Path.DirectorySeparatorChar)));
+            doc.Should().Contain($"({link})");
+        }
     }
 
     [Fact]
@@ -263,13 +339,16 @@ public sealed partial class ProductionSafetyDocumentationTests
             .Replace("\n", "<br>", StringComparison.Ordinal);
 
     private static string ExtractGeneratedSection(string document)
+        => ExtractMarkedSection(document, StartMarker, EndMarker);
+
+    private static string ExtractMarkedSection(string document, string startMarker, string endMarker)
     {
         var normalized = Normalize(document);
-        var start = normalized.IndexOf(StartMarker, StringComparison.Ordinal);
-        var end = normalized.IndexOf(EndMarker, StringComparison.Ordinal);
+        var start = normalized.IndexOf(startMarker, StringComparison.Ordinal);
+        var end = normalized.IndexOf(endMarker, StringComparison.Ordinal);
         start.Should().BeGreaterThanOrEqualTo(0);
         end.Should().BeGreaterThan(start);
-        return normalized[(start + StartMarker.Length)..end].Trim();
+        return normalized[(start + startMarker.Length)..end].Trim();
     }
 
     private static void ReplaceGeneratedSection(string path, string generated)
