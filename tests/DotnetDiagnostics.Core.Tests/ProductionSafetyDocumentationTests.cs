@@ -100,6 +100,7 @@ public sealed partial class ProductionSafetyDocumentationTests
                      "./consumer-install.md#2-run-it-as-a-supervised-service",
                      "../deploy/k8s/README.md#sidecar-topology-refresher",
                      "./client-setup.md#transport-security-non-loopback",
+                     "../deploy/k8s/README.md#how-the-orchestrator-reaches-the-pod-local-mcp-server",
                      "./authorization.md#scopes",
                      "./authorization.md#oidc--jwt-issuers-claims--scopes",
                      "./consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace",
@@ -123,6 +124,19 @@ public sealed partial class ProductionSafetyDocumentationTests
         introduction.Should().Contain("Privileged-response GO");
         checklist.Should().Contain("| Both |");
         checklist.Should().Contain("| Privileged response |");
+
+        var transportRow = checklist.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Single(line => line.Contains("**Transport boundary**", StringComparison.Ordinal));
+        foreach (var requiredNuance in new[]
+                 {
+                     "MCP_ALLOW_INSECURE_HTTP",
+                     "non-loopback",
+                     "loopback-only",
+                     "per-attach child",
+                 })
+        {
+            transportRow.Should().Contain(requiredNuance);
+        }
     }
 
     [Fact]
