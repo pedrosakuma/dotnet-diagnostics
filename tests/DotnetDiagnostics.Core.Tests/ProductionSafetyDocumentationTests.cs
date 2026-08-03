@@ -151,6 +151,7 @@ public sealed partial class ProductionSafetyDocumentationTests
                      Path.Combine("docs", "tool-reference.md"),
                      Path.Combine("docs", "output-examples.md"),
                      Path.Combine("docs", "local-docker-sidecar.md"),
+                     Path.Combine("src", "DotnetDiagnostics.Cli", "README.md"),
                  })
         {
             var doc = File.ReadAllText(RepoFile(relativePath.Split(Path.DirectorySeparatorChar)));

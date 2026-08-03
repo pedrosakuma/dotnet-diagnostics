@@ -433,7 +433,7 @@ one place — `DotnetDiagnostics.Core` (`AttachGuard` + `PtraceProbe`):
   [consumer-install safety note](./consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
 - **No-ptrace fallback** — analyze a pre-existing dump **offline, zero privilege**:
   `inspect_heap(source="dump")` (MCP) / `inspect-heap --source dump` (CLI). The shipped
-  deploy manifests (compose / k8s sidecar / Fargate / Helm) include scoped
+  deploy manifests for Compose, the Kubernetes sample sidecar, and Fargate include scoped
   `CAP_SYS_PTRACE` by default for live-reader coverage.
 - **Zero-privilege live attach (CLI dev mode)** — `dotnet-diagnostics-cli inspect-heap --launch
   --acknowledge-risk high -- dotnet App.dll` (or

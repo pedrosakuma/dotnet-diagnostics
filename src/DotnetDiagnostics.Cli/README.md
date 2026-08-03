@@ -92,10 +92,18 @@ diag(pid 1234)> exit
 ## Linux note (live heap inspection)
 
 `inspect-heap --source live` attaches via `ptrace(2)`. On
-Debian/Ubuntu/WSL the default `kernel.yama.ptrace_scope=1` blocks same-UID peer attach — run
-`echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope` (or grant `CAP_SYS_PTRACE` in a container).
-The `dump` command writes through diagnostic IPC and does not need that kernel capability.
-EventPipe-based tools (`collect`, counters, GC, exceptions) are also unaffected.
+Debian/Ubuntu/WSL the default `kernel.yama.ptrace_scope=1` blocks same-UID peer attach.
+Prefer `--launch -- <app> [args]` for a CLI-launched child, offline dump analysis, or
+EventPipe-based collection. If a container needs live attach, grant `CAP_SYS_PTRACE` only
+to the diagnostics container.
+
+The fallback `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope` relaxes a
+**host-wide security boundary** for every same-UID process. Use it only on an isolated
+personal-development machine, never a shared or production host. See the canonical
+[Linux ptrace safety note](https://github.com/pedrosakuma/dotnet-diagnostics/blob/main/docs/consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
+
+The `dump` command writes through diagnostic IPC and does not need Linux `CAP_SYS_PTRACE`.
+EventPipe-based commands (`collect`, counters, GC, exceptions) are also unaffected.
 
 ## License
 
