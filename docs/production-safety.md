@@ -10,6 +10,34 @@ Do not interpret a low or moderate classification as a claim that target-derived
 data is harmless. Risk levels combine target impact, data exposure, side effects,
 and the required approval policy for one concrete invocation.
 
+<a id="production-readiness-checklist"></a>
+## Production-readiness go/no-go checklist
+
+Choose the rollout boundary before checking the gates:
+
+- **Observe-only GO:** every **Both** gate passes, the low-risk smoke passes, and
+  the production identity remains limited to observation scopes. Keep
+  `ptrace`, `heap-read`, `dump-write`, raw-byte, and sensitive-value scopes out
+  of this identity.
+- **Privileged-response GO:** every gate passes, including the high/critical
+  approval smoke. Use a separate, named, time-bounded responder identity; do
+  not turn the observe-only identity into a standing break-glass credential.
+
+<!-- BEGIN PRODUCTION READINESS CHECKLIST -->
+| Gate | Applies to | Explicit pass condition | Canonical details |
+|---|---|---|---|
+| **Topology and diagnostic socket** | Both | **PASS:** the selected bare-host or sidecar design is documented and tested; the diagnostics process can see the target PID and `/tmp/dotnet-diagnostic-*`, and runs as the target socket's UID. Containers also share PID visibility and `/tmp`; host PID mode is not the default. | [Supervised service](./consumer-install.md#2-run-it-as-a-supervised-service), [Kubernetes sidecar topology](../deploy/k8s/README.md#sidecar-topology-refresher), [supported Docker topology](./local-docker-sidecar.md#run-the-supported-topology) |
+| **Transport boundary** | Both | **PASS:** every exposed or non-loopback production listener uses direct TLS or is reachable only through an explicitly allowlisted trusted TLS proxy, ingress is restricted to intended clients, and `MCP_ALLOW_INSECURE_HTTP` is absent there. The documented orchestrator per-attach child may use the override only on its short-lived loopback-only listener; never propagate it to the central or otherwise exposed endpoint. | [Transport security](./client-setup.md#transport-security-non-loopback), [orchestrator pod-local transport](../deploy/k8s/README.md#how-the-orchestrator-reaches-the-pod-local-mcp-server) |
+| **Named least-privilege identity** | Both | **PASS:** each human or workload has a named scoped bearer or pinned OIDC identity with only the scopes required for its lane; production credentials do not use legacy `MCP_BEARER_TOKEN` or standing `*` access. | [Scope taxonomy](./authorization.md#scopes), [OIDC claims to scopes](./authorization.md#oidc--jwt-issuers-claims--scopes) |
+| **Linux live-memory privilege** | Both | **PASS:** observe-only runs without `CAP_SYS_PTRACE`; if privileged response needs a live reader, `CAP_SYS_PTRACE` is granted only to the diagnostics sidecar. Otherwise the runbook selects EventPipe, offline dump analysis, or CLI `--launch`; production hosts never set `ptrace_scope=0`. | [Linux ptrace decision guide](./consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace) |
+| **Operating profile** | Both | **PASS:** the owner records `observe`, `investigate`, or `privileged-response`, and deployed scopes, capabilities, allowed collectors, and storage policy do not exceed that profile. | [Production operating profiles](#production-operating-profiles) |
+| **MCP client approvals** | Privileged response | **PASS:** the chosen client proves exact request-bound acknowledgement retry for high risk and advertises/handles elicitation for critical risk, or the documented fail-closed fallback is accepted. Decline, altered acknowledgement, and missing approval execute no side effect. | [Safety-aware `tools/call`](./client-setup.md#safety-aware-toolscall), [dump elicitation](./client-setup.md#human-approval-for-collect_process_dump-mcp-elicitation), [approval contract](./authorization.md#per-call-confirmation) |
+| **Evidence ownership** | Both | **PASS:** named owners approve what may be collected, who may access it, where exports and client/chat copies may go, the retention deadline, and verified disposal of handles, files, transcripts, replicas, and backups. | [Retention, access, and disposal](#retention-access-and-disposal) |
+| **Low-risk smoke** | Both | **PASS:** with the production observe identity, health/auth checks behave as designed, `inspect_process(view="list")` sees only expected processes, and a short counters call returns aggregate metrics without acknowledgement or added kernel capability. | [HTTP health/auth smoke](./client-setup.md#4-quick-smoke-test-with-curl), [first low-risk diagnostic](./consumer-install.md#first-diagnostic-low-risk) |
+| **High/critical approval smoke** | Privileged response | **PASS:** on a disposable canary during an approved pause window, a high-risk call stops before side effects and succeeds only after the exact acknowledgement; a critical dump approval is declined once with no file written, then explicitly approved, access-checked, and deleted. | [Per-call approval](./authorization.md#per-call-confirmation), [human approval smoke behavior](./client-setup.md#human-approval-for-collect_process_dump-mcp-elicitation) |
+| **Rollback and cleanup** | Both | **PASS:** an exercised rollback revokes bearer/OIDC access, removes non-loopback exposure and added capabilities, stops or detaches diagnostics processes, expires handles, and deletes exported evidence. The owning team can restore the previous deployment without target restart where the selected topology permits. | [Supervisor uninstall](./consumer-install.md#uninstall), [Docker teardown](./local-docker-sidecar.md#tear-down), [Kubernetes operator runbook](../deploy/k8s/README.md#operator-runbook) |
+<!-- END PRODUCTION READINESS CHECKLIST -->
+
 ## Production operating profiles
 
 These profiles are deployment and workflow recommendations, not alternative

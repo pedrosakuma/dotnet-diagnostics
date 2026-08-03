@@ -5,6 +5,9 @@ This folder now contains both Kubernetes deployment models shipped by the repo:
 - the **always-on sidecar** for direct per-Pod investigations, and
 - the **central orchestrator** for fleet mode (`list_orchestrator(kind="pods")`, `attach_to_pod`, proxied diagnostics tools).
 
+Before production exposure or privileged attach, complete the
+[`production-readiness go/no-go checklist`](../../docs/production-safety.md#production-readiness-checklist).
+
 ## Files
 
 - [`sample-sidecar.yaml`](./sample-sidecar.yaml) — Namespace, Secret, Deployment with **target app + diagnosticsmcp sidecar**, and a ClusterIP Service. Best when investigations are frequent.

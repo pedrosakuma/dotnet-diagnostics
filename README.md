@@ -224,6 +224,9 @@ as `dotnet-diagnostics-cli-<version>-<rid>`. **Full reference:** [`docs/cli-refe
 CLI reference, investigation playbooks, output examples, authorization/scopes, client setup, and
 all deployment guides (Kubernetes, Helm, Azure, AWS, GCP).
 
+Before any production rollout, complete the
+[`production-readiness go/no-go checklist`](./docs/production-safety.md#production-readiness-checklist).
+
 ---
 
 ## Goals
