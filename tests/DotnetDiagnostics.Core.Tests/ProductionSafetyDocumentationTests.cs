@@ -122,6 +122,56 @@ public sealed partial class ProductionSafetyDocumentationTests
         }
     }
 
+    [Fact]
+    public void LinuxPtraceGuidance_IsCapabilityFirstAndProductionSafe()
+    {
+        var canonical = File.ReadAllText(RepoFile("docs", "consumer-install.md"));
+        foreach (var term in new[]
+                 {
+                     "Canonical security note on `ptrace_scope=0`",
+                     "host-wide",
+                     "personal-development",
+                     "shared",
+                     "production",
+                     "CAP_SYS_PTRACE",
+                     "diagnostics sidecar",
+                     "EventPipe",
+                     "--launch",
+                     "inspect_heap(source=\"dump\")",
+                 })
+        {
+            canonical.Should().Contain(term);
+        }
+
+        foreach (var relativePath in new[]
+                 {
+                     "AGENTS.md",
+                     "README.md",
+                     Path.Combine("docs", "cli-reference.md"),
+                     Path.Combine("docs", "tool-reference.md"),
+                     Path.Combine("docs", "output-examples.md"),
+                     Path.Combine("docs", "local-docker-sidecar.md"),
+                 })
+        {
+            var doc = File.ReadAllText(RepoFile(relativePath.Split(Path.DirectorySeparatorChar)));
+            if (!doc.Contains("ptrace_scope=0", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            doc.Should().Contain("host-wide");
+            doc.Should().Contain("personal-development");
+            doc.Should().Contain("shared");
+            doc.Should().Contain("production");
+            doc.Should().Contain(
+                "consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace");
+
+            doc.IndexOf("SYS_PTRACE", StringComparison.Ordinal).Should().BeLessThan(
+                doc.IndexOf("ptrace_scope=0", StringComparison.Ordinal),
+                $"'{relativePath}' must present scoped capability guidance before host relaxation");
+        }
+    }
+
     private static string RenderMatrix()
     {
         var builder = new StringBuilder();

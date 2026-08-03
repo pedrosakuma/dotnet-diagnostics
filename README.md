@@ -124,7 +124,17 @@ Non-loopback cleartext HTTP is refused by default. See [`docs/client-setup.md` â
 <details>
 <summary><strong>Linux ptrace note</strong></summary>
 
-On Debian/Ubuntu/WSL, `kernel.yama.ptrace_scope=1` blocks ClrMD live-memory readers. Fix: `echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope`. See [`docs/consumer-install.md`](./docs/consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
+Most diagnostics, including EventPipe collectors, need no kernel ptrace permission. ClrMD
+live-memory readers are different: on Debian/Ubuntu/WSL,
+`kernel.yama.ptrace_scope=1` blocks same-UID peer attach.
+For Docker or Kubernetes, grant `CAP_SYS_PTRACE` only to the diagnostics sidecar
+(`--cap-add SYS_PTRACE` / `securityContext.capabilities.add`) rather than weakening the host.
+
+On a bare host, prefer the CLI's `--launch` descendant attach for an app you can start, offline
+dump analysis, or EventPipe collectors. The fallback
+`echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope` relaxes a **host-wide security boundary**
+and is suitable only for an isolated personal-development machine, never a shared or production
+host. See the canonical [Linux ptrace safety note](./docs/consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
 
 </details>
 
