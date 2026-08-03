@@ -85,7 +85,7 @@ tar -xzf dotnet-diagnostics-mcp-*-linux-x64.tar.gz -C ~/.local/bin
 
 ### 1.5. Linux: enabling live memory readers (kernel ptrace)
 
-Four live-memory operations attach to the target via `ptrace(PTRACE_ATTACH, …)`:
+Five live-memory paths attach to the target via `ptrace(PTRACE_ATTACH, …)`:
 
 - `collect_thread_snapshot`
 - `capture_method_bytes` against a live PID
@@ -100,23 +100,34 @@ Linux's [Yama LSM](https://www.kernel.org/doc/Documentation/admin-guide/LSM/Yama
              "message": "Could not PTRACE_ATTACH to any thread of the process N. Either the process has exited or you don't have permission." } }
 ```
 
-Pick the recipe that matches your distribution:
+First decide whether the investigation actually needs a live memory reader. EventPipe collectors
+such as counters, GC, exceptions, contention, CPU, and allocation use the diagnostic IPC socket
+and do **not** need Linux ptrace permission (unless CPU sampling explicitly enables
+`resolveMethodInstantiations=true`). Offline dump analysis also avoids live attach.
 
-| Distribution        | Recipe                                                                                       | Permission reach       |
+When live attach is required, choose the narrowest permission boundary available:
+
+| Environment | Recipe | Permission reach |
 |---------------------|----------------------------------------------------------------------------------------------|------------------------|
-| **Global tool / single-file binary** (running on the host) | `sudo sysctl -w kernel.yama.ptrace_scope=0`<br/>Persist with `echo 'kernel.yama.ptrace_scope = 0' \| sudo tee /etc/sysctl.d/10-ptrace.conf`. | Host-wide (relaxes a security default — see note below). |
 | **Container (Docker / Podman)** | Add `--cap-add SYS_PTRACE` to the `docker run` command. | Sidecar container only. |
 | **Container in compose** | Add `cap_add: [SYS_PTRACE]` to the service. The shipped [`deploy/docker-compose.yml`](../deploy/docker-compose.yml) already does this. | Service only. |
 | **Kubernetes** | `securityContext.capabilities.add: ["SYS_PTRACE"]` on the **sidecar** container. The shipped [`deploy/k8s/sample-sidecar.yaml`](../deploy/k8s/sample-sidecar.yaml) already does this. | Sidecar only. |
+| **CLI-launched child on `ptrace_scope=1`** | Use `dotnet-diagnostics-cli … --launch -- <app> [args]`; the CLI is the target's parent. See the [`--launch` CLI guidance](./cli-reference.md#linux-ptrace-note). | That descendant only; no added capability or sysctl change. |
+| **Global tool / single-file binary on an isolated personal-development host** | `sudo sysctl -w kernel.yama.ptrace_scope=0`<br/>Persist only on such a machine with `echo 'kernel.yama.ptrace_scope = 0' \| sudo tee /etc/sysctl.d/10-ptrace.conf`. | **Host-wide**; weakens isolation between all same-UID processes. |
 
-> **Security note on `ptrace_scope=0`.** This is the historical Linux default and is appropriate for personal dev workstations / Codespaces. It lets any process owned by your UID attach to any other process owned by your UID — which is precisely what the diagnostics server needs. On a shared host or anything close to production, prefer the container/K8s recipes (capability scoped to the sidecar) over relaxing the host setting.
+> **Canonical security note on `ptrace_scope=0`.** This host-wide setting lets any process
+> owned by your UID attach to any other process owned by your UID. Use it only on an isolated
+> personal-development workstation or Codespace where you accept that reduced isolation.
+> **Do not set or persist it on shared, multi-user, CI-runner, staging, or production hosts.**
+> For deployed environments, keep the host policy intact and scope `CAP_SYS_PTRACE` to the
+> diagnostics sidecar. If that capability is not acceptable, use EventPipe or offline analysis.
 
 You can verify the current Yama policy with `cat /proc/sys/kernel/yama/ptrace_scope` — `0`
 allows the attach, `1` is "scope to children", `2` is "admin-only", and `3` is "no
 attach". Anything above `0` blocks these same-UID peer attaches unless the process has the
 required kernel capability.
 
-To dodge the requirement entirely, use the dump-based workflow:
+To avoid live ptrace entirely, use the dump-based workflow:
 
 ```text
 collect_process_dump  (runs inside the target process — no ptrace needed)
@@ -128,6 +139,16 @@ inspect_heap(source="dump")          (offline analysis — no live attach)
 not Linux `CAP_SYS_PTRACE`; the capture happens inside the target runtime. MCP authorization is
 a separate boundary: the server still requires the bearer scopes `dump-write` + `ptrace` and
 human approval (`confirm=true` or MCP elicitation) before writing a dump.
+
+For a target you can launch yourself, the standalone CLI provides another no-added-privilege
+option under `ptrace_scope=1`:
+
+```bash
+dotnet-diagnostics-cli inspect-heap --launch --acknowledge-risk high -- dotnet App.dll
+```
+
+This works because the CLI is the target's parent. It does not bypass `ptrace_scope=2` or `3`;
+use offline analysis there when additional privilege is unavailable.
 
 
 ---

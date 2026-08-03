@@ -904,18 +904,21 @@ issue #32):
              "message": "Could not PTRACE_ATTACH to any thread of the process N." } }
 ```
 
-Mitigations:
+Prefer the least-privilege path that provides the evidence you need:
 
-- **Docker:** add `--cap-add SYS_PTRACE` to the **sidecar** container.
-- **Kubernetes:** set `capabilities.add: ["SYS_PTRACE"]` on the sidecar
+- **EventPipe or offline analysis:** use EventPipe collectors when possible, or
+  `collect_process_dump` + `inspect_heap(source="dump")`. Dump capture runs in the target
+  runtime through diagnostic IPC, so it does not require Linux `CAP_SYS_PTRACE`; MCP
+  authorization separately requires the `dump-write` + `ptrace` bearer scopes and human approval.
+- **Docker:** when live memory reading is required, add `--cap-add SYS_PTRACE` to the
+  **sidecar** container.
+- **Kubernetes:** when live memory reading is required, set
+  `capabilities.add: ["SYS_PTRACE"]` on the sidecar
   container's `securityContext` (see [`deploy/k8s/sample-sidecar.yaml`](../deploy/k8s/sample-sidecar.yaml)).
-- **Bare host / local dev:** `sudo sysctl -w kernel.yama.ptrace_scope=0`, or
-  run the MCP server as root.
-
-When kernel ptrace permission cannot be granted, fall back to `collect_process_dump` +
-`inspect_heap(source="dump")`. Dump capture runs in the target runtime through diagnostic
-IPC, so it does not require `CAP_SYS_PTRACE`; MCP authorization separately requires the
-`dump-write` + `ptrace` bearer scopes and human approval.
+- **Bare host, isolated personal development only:** `sudo sysctl -w
+  kernel.yama.ptrace_scope=0` relaxes a **host-wide security boundary** for every same-UID
+  process. Never use it on a shared or production host. See the canonical
+  [consumer-install safety note](./consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
 
 For **NativeAOT on Linux**, `collect_thread_snapshot` now routes to
 `eu-stack -p <pid>` (elfutils) instead of ClrMD. The snapshot payload carries
@@ -1157,6 +1160,11 @@ and a `/proc/*/status` UID read, opens no EventPipe session, and never fails.
   ]
 }
 ```
+
+The remediation string above reflects the runtime output. Its host-relaxation branch changes a
+host-wide security boundary and is for isolated personal-development machines only, never shared
+or production hosts. Prefer the sidecar capability branch or a no-ptrace workflow; see the
+canonical [consumer-install safety note](./consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
 
 **Checks:**
 
@@ -1716,7 +1724,7 @@ wait frame itself as the CPU bottleneck.
 | `resolveSourceLines` | `bool` | `true` | Resolve top hotspots to source file:line via PDB / SourceLink. |
 | `symbolPath` | `string?` | `null` | Optional symbol search path used when `resolveSourceLines=true`. **Remote symbol servers are denied by default** (issue #165 / M3): any `srv*http(s)://…` segment must point at a host listed under `Diagnostics:SymbolServerAllowlist`, otherwise the call fails with a `SymbolServerNotAllowed` envelope. Local paths always pass through. See [Security gates](#security-gates-b4). |
 | `maxResolvedSources` | `int?` | `topN` | Cap on how many hotspots get source resolution. |
-| `resolveMethodInstantiations` | `bool` | `false` | Opt-in ClrMD attach after sampling to recover closed generic method signatures for the hottest managed frames. CoreCLR only; on Linux requires `CAP_SYS_PTRACE` (or `ptrace_scope=0`) and briefly suspends the target. |
+| `resolveMethodInstantiations` | `bool` | `false` | Opt-in ClrMD attach after sampling to recover closed generic method signatures for the hottest managed frames. CoreCLR only; on Linux requires kernel ptrace permission (prefer sidecar `CAP_SYS_PTRACE`; see [Linux runtime requirements](#linux-runtime-requirements)) and briefly suspends the target. |
 | `maxResolvedMethodInstantiations` | `int?` | `topN` | Cap on how many hotspots get ClrMD generic-instantiation enrichment. |
 | `depth` | `SamplingDepth` | `Summary` | `Summary` returns the top 3 hotspots inline; `Detail` / `Raw` return the requested `topN`. |
 

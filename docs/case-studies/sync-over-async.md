@@ -161,8 +161,8 @@ attribute. That absence is itself confirmation the cost is *waiting*, not
 
 ```bash
 # thread snapshots attach via ClrMD/ptrace. On a live pid you need
-# CAP_SYS_PTRACE (or ptrace_scope=0); with the CLI you can also use
-# --launch to attach to a child with no extra privilege. MCP:
+# scoped CAP_SYS_PTRACE; with the CLI you can instead use --launch
+# to attach to a child with no extra privilege. MCP:
 # collect_thread_snapshot(pid=...) then query_snapshot(view="threads-summary").
 dotnet-diagnostics-cli collect --kind counters --pid <pid> \
   --capture-when 'threadCount>40' --capture thread-snapshot --window 30

@@ -1079,15 +1079,19 @@ one place — `DotnetDiagnostics.Core` (`AttachGuard` + `PtraceProbe`):
   - CLI: `dotnet-diagnostics-cli capabilities [--pid <id>]` (full booleans in `--json`)
 - **Tailored remediation on failure** — a denied attach returns a `PermissionDenied`
   envelope whose message is the exact fix for the *detected* environment (read live from
-  `/proc/sys/kernel/yama/ptrace_scope` + the effective capability set). Prefer the
-  least-broad remedy: scope `CAP_SYS_PTRACE` to the diagnostics sidecar/container, use the
-  CLI `--launch` descendant-attach mode for local development, or analyze an offline dump.
-  Setting `kernel.yama.ptrace_scope=0` relaxes the whole host and is suitable only for an
-  isolated personal-development machine — never a shared host or production environment.
+  `/proc/sys/kernel/yama/ptrace_scope` + the effective capability set), e.g. under the
+  WSL2/Debian/Ubuntu default `ptrace_scope=1`:
+  _"Grant the capability (`--cap-add SYS_PTRACE` / `cap_add: [SYS_PTRACE]` /
+  `capabilities.add: ['SYS_PTRACE']`) or relax the host (`sudo sysctl -w
+  kernel.yama.ptrace_scope=0`)."_
+  The quoted host-relaxation branch changes a **host-wide security boundary** and is suitable
+  only for an isolated personal-development machine, never a shared or production host. Prefer
+  the scoped sidecar capability branch; see the canonical
+  [consumer-install safety note](./consumer-install.md#15-linux-enabling-live-memory-readers-kernel-ptrace).
 - **No-ptrace fallback** — analyze a pre-existing dump **offline, zero privilege**:
   `inspect_heap(source="dump")` (MCP) / `inspect-heap --source dump` (CLI). The shipped
-  deploy manifests (compose / k8s sidecar / Fargate / Helm) already default
-  `CAP_SYS_PTRACE`, so deployed sidecars never hit this gate.
+  deploy manifests for Compose, the Kubernetes sample sidecar, and Fargate include scoped
+  `CAP_SYS_PTRACE` by default for live-reader coverage.
 - **Zero-privilege live attach (CLI dev mode)** — `dotnet-diagnostics-cli inspect-heap --launch
   --acknowledge-risk high -- dotnet App.dll` (or
   `session --launch --acknowledge-risk high -- …`) launches the target as a child of the CLI.
@@ -1095,10 +1099,10 @@ one place — `DotnetDiagnostics.Core` (`AttachGuard` + `PtraceProbe`):
   no `CAP_SYS_PTRACE` and no host sysctl change. `capabilities` advertises this tip when it
   detects exactly that environment. (`scope=2`/`scope=3` are unaffected — use the dump fallback.)
 
-> A local bare-host / WSL run under `ptrace_scope=1` is the common place this gate is felt. It is a
-> kernel boundary (Yama LSM) no userspace tool can bypass for an *unrelated* peer without privilege.
-> Prefer scoped `CAP_SYS_PTRACE`, CLI `--launch`, or an offline dump. Treat `ptrace_scope=0` only as
-> a host-wide relaxation for isolated personal development, never as shared/production remediation.
+> A bare-host / WSL peer under `ptrace_scope=1`, or a custom sidecar without the scoped
+> capability, will encounter this kernel boundary (Yama LSM). No userspace tool can bypass it
+> for an *unrelated* peer without privilege. The CLI's `--launch` descendant-attach path,
+> EventPipe collection, and offline dump analysis preserve the host policy.
 
 ---
 
