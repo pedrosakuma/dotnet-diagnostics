@@ -2733,12 +2733,13 @@ view→parameter mapping.
 parameter and was extended to `view="top-methods"`/`"call-tree"` for
 cpu-sample/allocation-sample/native-alloc-sample handles (issue #805): `"full"`
 leaves those two views' behavior exactly as it was before `depth` applied to
-them (the caller's own `topN`/`maxDepth`/`maxNodes`, hard-capped only by the
-existing `DefaultTopN`/`MaxProjectedCallTreeDepth`/`MaxProjectedCallTreeNodes`
-ceilings); `"compact"` additionally caps `top-methods` to 5 rows and
-`call-tree` to depth 3 / 16 nodes regardless of the requested `topN`/
-`maxDepth`/`maxNodes` — a deliberately small, stable first-page projection for
-large investigations.
+them — `top-methods` returns the caller's own `topN` (default `DefaultTopN`)
+uncapped, and `call-tree` returns the caller's own `maxDepth`/`maxNodes`,
+capped only by the existing `MaxProjectedCallTreeDepth`/
+`MaxProjectedCallTreeNodes` ceilings; `"compact"` additionally caps
+`top-methods` to 5 rows and `call-tree` to depth 3 / 16 nodes regardless of
+the requested `topN`/`maxDepth`/`maxNodes` — a deliberately small, stable
+first-page projection for large investigations.
 
 **Authorization.** The static gate accepts any drilldown-capable bearer; after
 resolving the handle kind the tool applies the handle-specific scope at runtime

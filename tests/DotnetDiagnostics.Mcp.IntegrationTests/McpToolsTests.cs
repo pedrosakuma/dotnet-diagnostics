@@ -1514,11 +1514,30 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     {
         await using var client = await ConnectAsync();
 
+        // Round-robin across several distinct leaf methods so the ranked top-methods
+        // list has more than CompactTopN (5) entries under depth="full" — otherwise
+        // the compact-cap assertion below would pass vacuously even without capping.
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
         var spin = Task.Run(() =>
         {
             var sink = 0L;
-            while (!cts.IsCancellationRequested) { sink += 1; }
+            var workloads = new Func<long>[]
+            {
+                () => DepthCompactWorkloadA(),
+                () => DepthCompactWorkloadB(),
+                () => DepthCompactWorkloadC(),
+                () => DepthCompactWorkloadD(),
+                () => DepthCompactWorkloadE(),
+                () => DepthCompactWorkloadF(),
+                () => DepthCompactWorkloadG(),
+                () => DepthCompactWorkloadH(),
+            };
+            var i = 0;
+            while (!cts.IsCancellationRequested)
+            {
+                sink += workloads[i % workloads.Length]();
+                i++;
+            }
             return sink;
         }, cts.Token);
 
@@ -1567,9 +1586,23 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         fullResult.IsError.Should().NotBe(true);
         var full = DeserializeStructured<TopMethodsView>(fullResult);
         full.Should().NotBeNull();
-        full!.Methods.Count.Should().BeGreaterThanOrEqualTo(compact.Methods.Count,
+        full!.Methods.Count.Should().BeGreaterThan(5,
+            "the multi-workload spin loop must produce more than CompactTopN (5) ranked methods, " +
+            "otherwise the compact cap assertion above would pass vacuously");
+        full.Methods.Count.Should().BeGreaterThanOrEqualTo(compact.Methods.Count,
             "depth=\"full\" (default) must not be more restrictive than depth=\"compact\"");
     }
+
+    // Distinct leaf methods used by QuerySnapshot_TopMethodsDepthCompact_CapsRowsAtFive
+    // to guarantee the CPU sample yields more than CompactTopN (5) ranked methods.
+    private static long DepthCompactWorkloadA() { long s = 0; for (var i = 0; i < 64; i++) s += i; return s; }
+    private static long DepthCompactWorkloadB() { long s = 1; for (var i = 0; i < 64; i++) s += i * 2; return s; }
+    private static long DepthCompactWorkloadC() { long s = 2; for (var i = 0; i < 64; i++) s += i * 3; return s; }
+    private static long DepthCompactWorkloadD() { long s = 3; for (var i = 0; i < 64; i++) s += i * 4; return s; }
+    private static long DepthCompactWorkloadE() { long s = 4; for (var i = 0; i < 64; i++) s += i * 5; return s; }
+    private static long DepthCompactWorkloadF() { long s = 5; for (var i = 0; i < 64; i++) s += i * 6; return s; }
+    private static long DepthCompactWorkloadG() { long s = 6; for (var i = 0; i < 64; i++) s += i * 7; return s; }
+    private static long DepthCompactWorkloadH() { long s = 7; for (var i = 0; i < 64; i++) s += i * 8; return s; }
 
     [Fact]
     public async Task QuerySnapshot_CallTreeDepthCompact_TightensNodeAndDepthCaps()
