@@ -745,6 +745,64 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task CollectBatch_DepthCompact_ElidesDataButKeepsHandleAndSummary()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "cpu" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
+                },
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 6,
+                ["depth"] = "compact",
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var report = DeserializeStructured<CollectBatchReport>(result);
+        report.Should().NotBeNull();
+        report!.Results.Should().HaveCount(2);
+
+        foreach (var entry in report.Results)
+        {
+            entry.Error.Should().BeNull();
+            entry.Data.Should().BeNull("depth=\"compact\" elides Data for every entry with a Handle");
+            entry.Handle.Should().NotBeNullOrEmpty();
+            entry.Summary.Should().Contain(entry.Handle);
+        }
+    }
+
+    [Fact]
+    public async Task CollectBatch_RejectsUnknownDepth()
+    {
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "cpu" },
+                },
+                ["processId"] = Environment.ProcessId,
+                ["depth"] = "not-a-real-depth",
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        var text = result.Content.OfType<ModelContextProtocol.Protocol.TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;
+        text.Should().Contain("\"kind\":\"InvalidArgument\"");
+        text.Should().Contain("depth");
+    }
+
+    [Fact]
     public async Task CollectBatch_CountersAndGc_PopulatesNarrowBoundedGen2MeterEvidence()
     {
         const int retainedEventLimit = 200;

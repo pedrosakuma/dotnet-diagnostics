@@ -86,6 +86,7 @@ public sealed class CollectBatchTool
     /// process (resource-boundedness discipline, docs/resource-boundedness.md).</summary>
     internal const int MaxEntries = 4;
 
+
     [RequireAnyScope("read-counters", "eventpipe")]
     [McpServerTool(
         Name = ToolName,
@@ -153,6 +154,14 @@ public sealed class CollectBatchTool
             "Must be >= 1. Defaults to 10. Individual entries cannot override this in v1 — call the " +
             "specific tool directly if one kind genuinely needs a different window.")]
         int durationSeconds = 10,
+        [Description("Inline verbosity for every entry's Data payload. `full` (default) preserves " +
+            "the tool's original behavior exactly — every entry's own canonical payload inline, " +
+            "unmodified, regardless of size — so existing callers that never pass this parameter " +
+            "see no change. `compact` always drops Data for every entry that carries a Handle, " +
+            "keeping the response small regardless of payload size; the Summary then names the " +
+            "byte size and the Handle to pass to query_snapshot for the full payload. Entries " +
+            "without a Handle are never elided either way.")]
+        string depth = "full",
         CancellationToken cancellationToken = default)
     {
         if (durationSeconds < 1)
@@ -160,6 +169,13 @@ public sealed class CollectBatchTool
             return DiagnosticResult.Fail<CollectBatchReport>(
                 "'durationSeconds' must be >= 1.",
                 new DiagnosticError("InvalidArgument", "'durationSeconds' must be >= 1.", nameof(durationSeconds)));
+        }
+
+        if (!TryParseDepth(depth, out var compactDepth))
+        {
+            return DiagnosticResult.Fail<CollectBatchReport>(
+                "'depth' must be either 'compact' or 'full'.",
+                new DiagnosticError("InvalidArgument", "'depth' must be either 'compact' or 'full'.", nameof(depth)));
         }
 
         if (!ValidateEntries(requests, out var canonicalEntries, out var validationFailure))
@@ -220,7 +236,7 @@ public sealed class CollectBatchTool
                         processId: pid,
                         durationSeconds: durationSeconds,
                         cancellationToken: ct).ConfigureAwait(false);
-                    return Project(tool, kind, sampleResult);
+                    return Project(tool, kind, sampleResult, compactDepth);
                 }
 
                 var eventsResult = await CollectEventsTool.CollectEvents(
@@ -262,7 +278,7 @@ public sealed class CollectBatchTool
                         ? Gen2MeterMaxTimeSeries
                         : 1000,
                     cancellationToken: ct).ConfigureAwait(false);
-                return Project(tool, kind, eventsResult);
+                return Project(tool, kind, eventsResult, compactDepth);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -410,13 +426,59 @@ public sealed class CollectBatchTool
         return true;
     }
 
-    private static CollectBatchEntryResult Project<T>(string tool, string kind, DiagnosticResult<T> result)
+    /// <summary>
+    /// Parses <c>depth</c> the same way <see cref="JourneyDiffPresentation.TryParseDepth"/> does
+    /// for <c>query_snapshot(view="diff")</c> — <c>null</c>/empty defaults to <c>full</c>, and
+    /// anything other than <c>compact</c>/<c>full</c> (case-insensitive) is rejected rather than
+    /// silently coerced.
+    /// </summary>
+    private static bool TryParseDepth(string? value, out bool compact)
+    {
+        if (string.IsNullOrWhiteSpace(value) || string.Equals(value, "full", StringComparison.OrdinalIgnoreCase))
+        {
+            compact = false;
+            return true;
+        }
+
+        if (string.Equals(value, "compact", StringComparison.OrdinalIgnoreCase))
+        {
+            compact = true;
+            return true;
+        }
+
+        compact = false;
+        return false;
+    }
+
+    private static CollectBatchEntryResult Project<T>(string tool, string kind, DiagnosticResult<T> result, bool compact)
         where T : class
     {
-        var element = result.Data is not null
-            ? JsonSerializer.SerializeToElement(result.Data, McpJsonUtilities.DefaultOptions)
-            : (JsonElement?)null;
-        return new CollectBatchEntryResult(tool, kind, result.Summary, element, result.Handle, result.HandleExpiresAt, result.Error);
+        if (result.Data is null)
+        {
+            return new CollectBatchEntryResult(tool, kind, result.Summary, Data: null, result.Handle, result.HandleExpiresAt, result.Error);
+        }
+
+        var element = JsonSerializer.SerializeToElement(result.Data, McpJsonUtilities.DefaultOptions);
+
+        // depth="full" (default) preserves the tool's original behavior exactly — every entry's
+        // canonical payload inline, unmodified, no matter its size — so existing callers that
+        // never pass `depth` see no change. depth="compact" is the opt-in (issue #805): it always
+        // elides Data for entries that carry a Handle (the standalone handle already lets the
+        // caller pull the same payload via query_snapshot), regardless of size. Entries without a
+        // Handle are never elided even in compact mode — dropping Data there would lose the
+        // evidence outright with no drill-down path.
+        if (!compact || result.Handle is not { Length: > 0 } handle)
+        {
+            return new CollectBatchEntryResult(tool, kind, result.Summary, element, result.Handle, result.HandleExpiresAt, result.Error);
+        }
+
+        var serializedLength = element.GetRawText().Length;
+        var summary = string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"{result.Summary} Inline Data omitted ({serializedLength} bytes, depth=\"compact\"); " +
+            $"pass handle='{handle}' to query_snapshot for the full payload.");
+
+        return new CollectBatchEntryResult(tool, kind, summary, Data: null, result.Handle, result.HandleExpiresAt, result.Error);
     }
 }
 
@@ -459,7 +521,9 @@ public sealed record CollectBatchGen2Evidence(
 /// ModelContextProtocol.McpJsonUtilities.DefaultOptions the MCP SDK itself uses for structured
 /// content. A counters entry paired with GC may contain the documented bounded salient LOH/GC
 /// projection; its handle still resolves to the unmodified full counter artifact. Every kind's
-/// shape is documented at docs/tool-reference.md. Null when this entry failed.</param>
+/// shape is documented at docs/tool-reference.md. Null when this entry failed, and also null
+/// when <c>depth="compact"</c> elided it — <see cref="Summary"/> then names the byte size and
+/// repeats <see cref="Handle"/> for the query_snapshot follow-up.</param>
 /// <param name="Handle">That entry's own IDiagnosticHandleStore handle, if any — pass this to
 /// query_snapshot exactly as if the entry's kind had been collected by a standalone call.</param>
 /// <param name="HandleExpiresAt">Mirrors DiagnosticResult&lt;T&gt;.HandleExpiresAt for this entry.</param>

@@ -1564,6 +1564,7 @@ call `collect_events(kind="sweep")` directly instead.
 | `requests` | `CollectBatchRequest[]` | — (required) | 1–4 entries, each `{tool, kind}`. `tool` is `collect_sample` or `collect_events`; `kind` is one of that tool's own `AllowedKinds`. Null entries, duplicate `{tool, kind}` pairs, `kind="method-params"`, and `kind="sweep"` are rejected. |
 | `processId` | `int?` | auto | Target process id. Resolved once and shared by every requested entry. |
 | `durationSeconds` | `int` | `10` | Shared collection window for every requested entry. ≥ 1. Individual entries cannot override this in v1 — call the specific tool directly if one kind genuinely needs a different window. |
+| `depth` | `string` | `"full"` | Inline verbosity for every entry's `data` (issue #805). `"full"` (default) preserves the tool's original behavior exactly — every entry's own canonical payload inline, unmodified, regardless of size — so existing callers that never pass this parameter see no change. `"compact"` always drops `data` for every entry that carries a `handle`, regardless of size; `summary` then names the byte size and repeats the handle to pass to `query_snapshot` for the full payload. Entries without a `handle` are never elided either way. |
 
 **Returns:** `CollectBatchReport` — `processId`, `durationSeconds`, and `results` (one
 `CollectBatchEntryResult` per requested entry, in request order), plus optional `gen2Evidence`
@@ -1573,7 +1574,8 @@ value since `collect_sample`/`collect_events` kinds don't share one static C# ty
 otherwise identical to calling that kind directly except for the bounded correlated counters
 projection below), `handle` / `handleExpiresAt` (pass to
 `query_snapshot` exactly as if the entry had been collected by a standalone call), and `error`
-(populated instead of `data`/`handle` when only that one entry failed).
+(populated instead of `data`/`handle` when only that one entry failed). `data` is also `null`
+when `depth="compact"` elided it — see the `depth` parameter above.
 
 ### Bounded inline counter selection
 
@@ -1619,9 +1621,10 @@ requires the same scope it would if called directly (`read-counters` for `kind="
 on — see `collect_events`'s own Authorization note above). The whole call fails before any session
 opens if any single entry is unauthorized (no partial start).
 
-**v1 scope cuts.** No per-entry option overrides (`topN`, `symbolPath`, `depth`, provider lists,
-…) — every entry runs with that kind's own defaults; call `collect_sample`/`collect_events`
-directly for fine-grained per-kind tuning. Capped at 4 entries per call (resource-boundedness,
+**v1 scope cuts.** No per-entry option overrides (`topN`, `symbolPath`, provider lists, …) —
+every entry runs with that kind's own defaults; call `collect_sample`/`collect_events` directly
+for fine-grained per-kind tuning. The `depth` parameter above is the one shared, batch-wide
+exception. Capped at 4 entries per call (resource-boundedness,
 see [`resource-boundedness.md`](./resource-boundedness.md) · [`hotpaths/README.md`](./hotpaths/README.md)). See
 [`docs/design/ephemeral-process-capture-design.md`](./design/ephemeral-process-capture-design.md)
 Part C for the full design rationale, including why a dedicated tool was chosen over a bolt-on
