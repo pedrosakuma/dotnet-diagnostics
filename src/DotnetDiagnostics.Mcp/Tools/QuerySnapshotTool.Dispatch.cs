@@ -258,11 +258,24 @@ public sealed partial class QuerySnapshotTool
             return Task.FromResult(HandleExpiredError(null, context.Handle));
         }
 
+        if (!JourneyDiffPresentation.TryParseDepth(context.Depth, out var cpuDepth))
+        {
+            return Task.FromResult(InvalidArgument("depth", "must be either 'compact' or 'full'"));
+        }
+
         var cpuView = string.IsNullOrWhiteSpace(context.View) ? CpuSampleQueryDispatcher.CallTreeView : context.View!;
         if (!string.Equals(cpuView, CpuSampleQueryDispatcher.CallTreeView, StringComparison.Ordinal)
             && CpuSampleQueryDispatcher.IsKnownView(cpuView))
         {
             var cpuTopN = context.TopN ?? CpuSampleQueryDispatcher.DefaultTopN;
+            if (string.Equals(cpuView, CpuSampleQueryDispatcher.TopMethodsView, StringComparison.Ordinal)
+                && cpuDepth == JourneyDiffDepth.Compact)
+            {
+                // depth="compact" caps top-methods to a small, stable first-page row count even
+                // when the caller's own topN would have asked for more (issue #805).
+                cpuTopN = Math.Min(cpuTopN, CpuSampleQueryDispatcher.CompactTopN);
+            }
+
             DiagnosticResult<object> result = cpuView switch
             {
                 CpuSampleQueryDispatcher.TopMethodsView => AsObjectEnvelope(
@@ -290,12 +303,23 @@ public sealed partial class QuerySnapshotTool
             return Task.FromResult(UnknownView(context.View!, context.Kind, CpuViewNames));
         }
 
+        // depth="compact" tightens the call-tree caps beyond whatever maxDepth/maxNodes the caller
+        // requested (issue #805); depth="full" (default) preserves the exact prior behavior —
+        // the caller's own maxDepth/maxNodes, hard-capped only by MaxProjectedCallTreeDepth/Nodes.
+        var effectiveMaxDepth = context.MaxDepth;
+        var effectiveMaxNodes = context.MaxNodes;
+        if (cpuDepth == JourneyDiffDepth.Compact)
+        {
+            effectiveMaxDepth = Math.Min(effectiveMaxDepth, CpuSampleQueryDispatcher.CompactMaxDepth);
+            effectiveMaxNodes = Math.Min(effectiveMaxNodes, CpuSampleQueryDispatcher.CompactMaxNodes);
+        }
+
         var callTree = CpuSampleQueryDispatcher.RenderCallTree(
             trace,
             context.Handle,
             context.RootMethodFilter,
-            context.MaxDepth,
-            context.MaxNodes);
+            effectiveMaxDepth,
+            effectiveMaxNodes);
         return Task.FromResult(AsObjectEnvelope(callTree));
     }
 
