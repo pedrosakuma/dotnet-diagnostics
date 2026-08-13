@@ -153,6 +153,32 @@ public class CpuSampleQueryDispatcherTests
     }
 
     [Fact]
+    public void RenderTopMethods_SortByRunning_PromotesBusyUserCodeOverWaitFrame()
+    {
+        // WaitForSignal has 60 exclusive samples (all waiting) vs BurnCpu's 40 (all running).
+        // rankBy="exclusive" ranks the wait frame first; rankBy="running" must flip the order (#811).
+        var outcome = CpuSampleQueryDispatcher.RenderTopMethods(ClassifiedTrace(), Handle, sortBy: "running", topN: 2);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.SortedBy.Should().Be("running");
+        outcome.Data.Methods[0].Method.Should().Be("MyApp.Worker.BurnCpu");
+        outcome.Data.Methods[0].SelfSamples.Should().Be(new SelfSampleBreakdown(40, 0));
+        outcome.Data.Methods[1].Method.Should().Be("System.Threading.LowLevelLifoSemaphore.WaitForSignal");
+        outcome.Data.Methods[1].SelfSamples.Should().Be(new SelfSampleBreakdown(0, 60));
+    }
+
+    [Fact]
+    public void RenderTopMethods_SortByRunning_NoClassification_FallsBackToExclusiveOrder()
+    {
+        // TwoPaths() has no classified leaves at all, so "running" must degrade to the same order
+        // as "exclusive" instead of reshuffling unclassified rows.
+        var outcome = CpuSampleQueryDispatcher.RenderTopMethods(TwoPaths(), Handle, sortBy: "running", topN: 1);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.Methods[0].Method.Should().Be("X"); // 100 exclusive, same leader as sortBy="exclusive"
+    }
+
+    [Fact]
     public void RenderTopMethods_InvalidSort_ReturnsInvalidArgument()
         => CpuSampleQueryDispatcher.RenderTopMethods(TwoPaths(), Handle, sortBy: "bytes", topN: 10)
             .Error!.Kind.Should().Be("InvalidArgument");

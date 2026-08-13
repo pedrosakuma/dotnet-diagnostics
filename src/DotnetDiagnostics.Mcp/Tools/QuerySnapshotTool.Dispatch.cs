@@ -282,7 +282,9 @@ public sealed partial class QuerySnapshotTool
                     CpuSampleQueryDispatcher.RenderTopMethods(
                         trace,
                         context.Handle,
-                        string.Equals(context.RankBy, "inclusive", StringComparison.OrdinalIgnoreCase) ? "inclusive" : "exclusive",
+                        string.Equals(context.RankBy, "inclusive", StringComparison.OrdinalIgnoreCase) ? "inclusive"
+                            : string.Equals(context.RankBy, "running", StringComparison.OrdinalIgnoreCase) ? "running"
+                            : "exclusive",
                         cpuTopN)),
                 CpuSampleQueryDispatcher.ByModuleView => AsObjectEnvelope(
                     CpuSampleQueryDispatcher.RenderByModule(trace, context.Handle, cpuTopN)),

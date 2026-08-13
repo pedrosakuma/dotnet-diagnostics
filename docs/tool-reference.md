@@ -623,9 +623,9 @@ trend interpretation, and the two doors) see
 The CPU drilldown views (`top-methods`, `by-module`, `by-namespace`, `hot-path`,
 `caller-callee`, issue #313) re-aggregate the already-collected merged call tree — no new
 sampling. They reuse the existing `query_snapshot` parameters: `topN` caps the number of rows
-(default `20`), `rankBy` chooses the sort/credit metric (`inclusive` selects inclusive samples;
-any other value, including the default, selects exclusive samples), and `rootMethodFilter`
-supplies the focus method substring for `caller-callee`. `hot-path` additionally accepts
+(default `20`), `rankBy` chooses the sort/credit metric for `top-methods` (`inclusive` selects
+inclusive samples; any other value, including the default, selects exclusive samples), and
+`rootMethodFilter` supplies the focus method substring for `caller-callee`. `hot-path` additionally accepts
 `hotPathThresholdPercent` (default `50`, range `0 < x <= 100`): the path descends into the
 heaviest child while each step still carries at least that percentage of its parent's inclusive
 samples. `top-methods`/`by-module`/`by-namespace` return ranked exclusive+inclusive sample
@@ -635,6 +635,16 @@ views (`top-methods`/`by-module`/`by-namespace`/`hot-path`); in `caller-callee` 
 caller named `<root>` to mark a top-level entry point (matching PerfView's ROOT pseudo-node).
 A `caller-callee` filter that matches zero methods returns `NotFound`; one that matches more
 than one distinct method returns `InvalidArgument` with the candidate list.
+
+`top-methods` also accepts `rankBy="running"` (issue #811): it re-orders the exclusive-ranked
+list by on-CPU ("running") self-time — using the same running/waiting split
+`WellKnownWaitFrameClassifier` already attaches per frame — instead of raw exclusive samples, so
+a known wait/park leaf (e.g. `LowLevelLifoSemaphore.WaitForSignal`, `Monitor.Wait`,
+`ThreadPool worker idle wait`) no longer outranks the actual busy user-code hotspot underneath
+it. Rows with no wait classification keep their exclusive count as the running score, so a trace
+with no classified leaves at all degrades to the same order as `rankBy="exclusive"`. This
+addresses the "busy user code" ranking gap only; folding async/runtime wrapper frames
+(`MoveNext`, awaiter/builder frames) into one logical operation is tracked separately in #811.
 
 The GC drilldown views (`timeline`, `longestPauses`, `byGeneration`, issue #314) re-aggregate the
 GC events already retained behind a `gc-events` handle — no new collection. `timeline` orders the

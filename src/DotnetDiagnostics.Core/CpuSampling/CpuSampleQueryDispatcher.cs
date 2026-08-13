@@ -158,13 +158,22 @@ public static class CpuSampleQueryDispatcher
         if (topN < 1) return InvalidArg<TopMethodsView>(nameof(topN), "must be >= 1");
 
         var normalizedSort = string.IsNullOrWhiteSpace(sortBy) ? "exclusive" : sortBy.Trim().ToLowerInvariant();
-        if (normalizedSort is not ("exclusive" or "inclusive"))
+        if (normalizedSort is not ("exclusive" or "inclusive" or "running"))
         {
-            return InvalidArg<TopMethodsView>(nameof(sortBy), "must be 'exclusive' or 'inclusive'");
+            return InvalidArg<TopMethodsView>(nameof(sortBy), "must be 'exclusive', 'inclusive', or 'running'");
         }
 
         var root = CallTreeIdentityProjector.Stamp(artifact.Root, artifact.MethodIdentities);
+        // "running" (issue #811) ranks "busy user code" ahead of wait-dominated exclusive leaders: it
+        // re-orders the exclusive-ranked list by on-CPU (running) self-time instead of raw exclusive
+        // samples, so a hot wait frame (e.g. LowLevelLifoSemaphore.WaitForSignal) no longer buries the
+        // actual busy hotspot underneath it.
         var ranked = CpuSampleAnalytics.RankMethods(root, artifact.TotalSamples, byInclusive: normalizedSort == "inclusive");
+        if (normalizedSort == "running")
+        {
+            ranked = CpuSampleAnalytics.RankMethodsByRunningSelf(ranked);
+        }
+
         var top = ranked.Take(topN).ToList();
         var view = new TopMethodsView(artifact.ProcessId, artifact.TotalSamples, normalizedSort, top.Count, top)
         {
@@ -173,7 +182,9 @@ public static class CpuSampleQueryDispatcher
 
         var summary = top.Count == 0
             ? "No methods aggregated — the trace captured no attributable frames."
-            : $"Top {top.Count} method(s) by {normalizedSort} samples (of {ranked.Count} total). Hottest: {top[0].Method} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive){FormatSelfSamples(top[0].SelfSamples)}.";
+            : normalizedSort == "running"
+                ? $"Top {top.Count} method(s) by running (busy) self-time (of {ranked.Count} total). Busiest: {top[0].Method} ({top[0].SelfSamples?.RunningSamples ?? top[0].ExclusiveSamples} running / {top[0].ExclusiveSamples} exclusive){FormatSelfSamples(top[0].SelfSamples)}."
+                : $"Top {top.Count} method(s) by {normalizedSort} samples (of {ranked.Count} total). Hottest: {top[0].Method} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive){FormatSelfSamples(top[0].SelfSamples)}.";
 
         return top.Count == 0
             ? DiagnosticResult.Ok(view, summary)
