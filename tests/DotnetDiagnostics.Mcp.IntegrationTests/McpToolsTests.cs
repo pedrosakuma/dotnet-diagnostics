@@ -1509,6 +1509,203 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         envelope.Hints[0].NextTool.Should().Be("inspect_process");
     }
 
+    [Fact]
+    public async Task QuerySnapshot_TopMethodsDepthCompact_CapsRowsAtFive()
+    {
+        await using var client = await ConnectAsync();
+
+        // Round-robin across several distinct leaf methods so the ranked top-methods
+        // list has more than CompactTopN (5) entries under depth="full" — otherwise
+        // the compact-cap assertion below would pass vacuously even without capping.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+        var spin = Task.Run(() =>
+        {
+            var sink = 0L;
+            var workloads = new Func<long>[]
+            {
+                () => DepthCompactWorkloadA(),
+                () => DepthCompactWorkloadB(),
+                () => DepthCompactWorkloadC(),
+                () => DepthCompactWorkloadD(),
+                () => DepthCompactWorkloadE(),
+                () => DepthCompactWorkloadF(),
+                () => DepthCompactWorkloadG(),
+                () => DepthCompactWorkloadH(),
+            };
+            var i = 0;
+            while (!cts.IsCancellationRequested)
+            {
+                sink += workloads[i % workloads.Length]();
+                i++;
+            }
+            return sink;
+        }, cts.Token);
+
+        var collectResult = await client.CallToolAsync(
+            "collect_sample",
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "cpu",
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 3,
+                ["resolveSourceLines"] = false,
+            },
+            cancellationToken: CancellationToken.None);
+
+        cts.Cancel();
+        try { await spin; } catch { /* expected */ }
+
+        collectResult.IsError.Should().NotBe(true);
+        var collectEnvelope = DeserializeEnvelope(collectResult);
+        collectEnvelope!.Handle.Should().NotBeNullOrWhiteSpace();
+
+        var compactResult = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = collectEnvelope.Handle!,
+                ["view"] = "top-methods",
+                ["topN"] = 25,
+                ["depth"] = "compact",
+            },
+            cancellationToken: CancellationToken.None);
+        compactResult.IsError.Should().NotBe(true);
+        var compact = DeserializeStructured<TopMethodsView>(compactResult);
+        compact.Should().NotBeNull();
+        compact!.Methods.Count.Should().BeLessThanOrEqualTo(5, "depth=\"compact\" caps top-methods regardless of topN");
+
+        var fullResult = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = collectEnvelope.Handle!,
+                ["view"] = "top-methods",
+                ["topN"] = 25,
+            },
+            cancellationToken: CancellationToken.None);
+        fullResult.IsError.Should().NotBe(true);
+        var full = DeserializeStructured<TopMethodsView>(fullResult);
+        full.Should().NotBeNull();
+        full!.Methods.Count.Should().BeGreaterThan(5,
+            "the multi-workload spin loop must produce more than CompactTopN (5) ranked methods, " +
+            "otherwise the compact cap assertion above would pass vacuously");
+        full.Methods.Count.Should().BeGreaterThanOrEqualTo(compact.Methods.Count,
+            "depth=\"full\" (default) must not be more restrictive than depth=\"compact\"");
+    }
+
+    // Distinct leaf methods used by QuerySnapshot_TopMethodsDepthCompact_CapsRowsAtFive
+    // to guarantee the CPU sample yields more than CompactTopN (5) ranked methods.
+    private static long DepthCompactWorkloadA() { long s = 0; for (var i = 0; i < 64; i++) s += i; return s; }
+    private static long DepthCompactWorkloadB() { long s = 1; for (var i = 0; i < 64; i++) s += i * 2; return s; }
+    private static long DepthCompactWorkloadC() { long s = 2; for (var i = 0; i < 64; i++) s += i * 3; return s; }
+    private static long DepthCompactWorkloadD() { long s = 3; for (var i = 0; i < 64; i++) s += i * 4; return s; }
+    private static long DepthCompactWorkloadE() { long s = 4; for (var i = 0; i < 64; i++) s += i * 5; return s; }
+    private static long DepthCompactWorkloadF() { long s = 5; for (var i = 0; i < 64; i++) s += i * 6; return s; }
+    private static long DepthCompactWorkloadG() { long s = 6; for (var i = 0; i < 64; i++) s += i * 7; return s; }
+    private static long DepthCompactWorkloadH() { long s = 7; for (var i = 0; i < 64; i++) s += i * 8; return s; }
+
+    [Fact]
+    public async Task QuerySnapshot_CallTreeDepthCompact_TightensNodeAndDepthCaps()
+    {
+        await using var client = await ConnectAsync();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+        var spin = Task.Run(() =>
+        {
+            var sink = 0L;
+            while (!cts.IsCancellationRequested) { sink += 1; }
+            return sink;
+        }, cts.Token);
+
+        var collectResult = await client.CallToolAsync(
+            "collect_sample",
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "cpu",
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 3,
+                ["resolveSourceLines"] = false,
+            },
+            cancellationToken: CancellationToken.None);
+
+        cts.Cancel();
+        try { await spin; } catch { /* expected */ }
+
+        collectResult.IsError.Should().NotBe(true);
+        var collectEnvelope = DeserializeEnvelope(collectResult);
+        collectEnvelope!.Handle.Should().NotBeNullOrWhiteSpace();
+
+        var compactResult = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = collectEnvelope.Handle!,
+                ["view"] = "call-tree",
+                ["maxDepth"] = 8,
+                ["maxNodes"] = 64,
+                ["depth"] = "compact",
+            },
+            cancellationToken: CancellationToken.None);
+        compactResult.IsError.Should().NotBe(true);
+        var compact = DeserializeStructured<CallTreeView>(compactResult);
+        compact.Should().NotBeNull();
+        compact!.NodeLimit.Should().Be(CpuSampleQueryDispatcher.CompactMaxNodes,
+            "depth=\"compact\" tightens the node cap even though maxNodes=64 was requested");
+        compact.DepthLimit.Should().Be(CpuSampleQueryDispatcher.CompactMaxDepth,
+            "depth=\"compact\" tightens the depth cap even though maxDepth=8 was requested");
+
+        var fullResult = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = collectEnvelope.Handle!,
+                ["view"] = "call-tree",
+                ["maxDepth"] = 8,
+                ["maxNodes"] = 64,
+            },
+            cancellationToken: CancellationToken.None);
+        fullResult.IsError.Should().NotBe(true);
+        var full = DeserializeStructured<CallTreeView>(fullResult);
+        full.Should().NotBeNull();
+        full!.NodeLimit.Should().Be(64, "depth=\"full\" (default) must leave maxNodes exactly as requested");
+        full.DepthLimit.Should().Be(8, "depth=\"full\" (default) must leave maxDepth exactly as requested");
+    }
+
+    [Fact]
+    public async Task QuerySnapshot_CpuSampleRejectsUnknownDepth()
+    {
+        await using var client = await ConnectAsync();
+
+        var collectResult = await client.CallToolAsync(
+            "collect_sample",
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "cpu",
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 1,
+                ["resolveSourceLines"] = false,
+            },
+            cancellationToken: CancellationToken.None);
+        collectResult.IsError.Should().NotBe(true);
+        var collectEnvelope = DeserializeEnvelope(collectResult);
+        collectEnvelope!.Handle.Should().NotBeNullOrWhiteSpace();
+
+        var result = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = collectEnvelope.Handle!,
+                ["view"] = "top-methods",
+                ["depth"] = "not-a-real-depth",
+            },
+            cancellationToken: CancellationToken.None);
+
+        var envelope = DeserializeEnvelope(result);
+        envelope.Should().NotBeNull();
+        envelope!.Error!.Kind.Should().Be("InvalidArgument");
+        envelope.Error.Message.Should().Contain("depth");
+    }
+
 
     [Fact]
     public async Task StartInvestigation_ReturnsColdPlan_WhenOnlySymptomProvided()

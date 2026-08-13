@@ -46,6 +46,18 @@ public static class CpuSampleQueryDispatcher
     /// <summary>Hard cap for the inline call-tree depth. Narrow with rootMethodFilter for deeper evidence.</summary>
     public const int MaxProjectedCallTreeDepth = 8;
 
+    /// <summary>
+    /// <c>depth="compact"</c> row cap for <see cref="TopMethodsView"/> (issue #805) — a deliberately
+    /// small, stable "first page" projection distinct from <see cref="DefaultTopN"/>/<see cref="MaxProjectedCallTreeNodes"/>-level requests.
+    /// </summary>
+    public const int CompactTopN = 5;
+
+    /// <summary><c>depth="compact"</c> node cap for <see cref="CallTreeView"/> (issue #805).</summary>
+    public const int CompactMaxNodes = 16;
+
+    /// <summary><c>depth="compact"</c> tree-depth cap for <see cref="CallTreeView"/> (issue #805).</summary>
+    public const int CompactMaxDepth = 3;
+
     /// <summary>Hard cap for source-tree metric traversal used by bounded call-tree ranking.</summary>
     internal const int MaxCallTreeTraversalNodes = 100_000;
 

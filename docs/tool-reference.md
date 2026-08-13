@@ -2729,6 +2729,18 @@ contract.
 `hotPathThresholdPercent`. See the tool's parameter descriptions for the exact
 view→parameter mapping.
 
+`depth` (`"full"` default or `"compact"`) started as a `view="diff"`-only
+parameter and was extended to `view="top-methods"`/`"call-tree"` for
+cpu-sample/allocation-sample/native-alloc-sample handles (issue #805): `"full"`
+leaves those two views' behavior exactly as it was before `depth` applied to
+them — `top-methods` returns the caller's own `topN` (default `DefaultTopN`)
+uncapped, and `call-tree` returns the caller's own `maxDepth`/`maxNodes`,
+capped only by the existing `MaxProjectedCallTreeDepth`/
+`MaxProjectedCallTreeNodes` ceilings; `"compact"` additionally caps
+`top-methods` to 5 rows and `call-tree` to depth 3 / 16 nodes regardless of
+the requested `topN`/`maxDepth`/`maxNodes` — a deliberately small, stable
+first-page projection for large investigations.
+
 **Authorization.** The static gate accepts any drilldown-capable bearer; after
 resolving the handle kind the tool applies the handle-specific scope at runtime
 (heap → `heap-read`, thread → `ptrace`, off-CPU → `eventpipe`, call-tree →
