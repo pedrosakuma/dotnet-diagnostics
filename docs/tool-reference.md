@@ -1622,7 +1622,8 @@ call `collect_events(kind="sweep")` directly instead.
 
 **Returns:** `CollectBatchReport` — `processId`, `durationSeconds`, and `results` (one
 `CollectBatchEntryResult` per requested entry, in request order), plus optional `gen2Evidence`
-when both counters and GC were collected. Each entry carries
+when both counters and GC were collected, and optional `investigationDigest` when cpu and/or
+allocation sampling were collected (see below). Each entry carries
 `tool`, `kind`, `summary`, `data` (that entry's own payload, serialized generically as a JSON
 value since `collect_sample`/`collect_events` kinds don't share one static C# type — the shape is
 otherwise identical to calling that kind directly except for the bounded correlated counters
@@ -1660,6 +1661,28 @@ bounded generation-tag variants).
 
 Null Meter fields mean that the target runtime did not publish the requested series during the
 window; they are never inferred from the incompatible EventCounter or GC-window values.
+
+### Cross-collector investigation digest
+
+`collect_batch` populates `investigationDigest` (issue #825) whenever the batch includes
+`collect_sample(kind="cpu")` and/or `collect_sample(kind="allocation")` with a resolved handle —
+a "first page" summary that otherwise costs two or more separate `query_snapshot` round trips:
+
+| Field | Populated when | Source |
+|---|---|---|
+| `topCpuSelfTime` | `cpu` present | Top self-time (exclusive) "busy user code" hotspots — the same ranking `query_snapshot(view="triage")` returns, capped at `CpuSampleQueryDispatcher.CompactTopN` (5). |
+| `topCpuWaitCategories` | `cpu` present | Top wait/noise categories grouped by `WaitReason`, summed by exclusive samples. |
+| `hotPathLeaf` / `hotPathDepth` | `cpu` present | The dominant hot-path leaf frame and its depth (same `hot-path` view logic, default 50% threshold). |
+| `topAllocationTypes` | `allocation` present | Top allocated types by bytes (`AllocationSample.TopByBytes`), capped at 5. |
+| `topAllocationCallsites` | `allocation` present | Top allocation call sites by attributed bytes (`AllocationSample.TopBySite`), capped at 5. |
+
+Each half is independent: a `cpu`-only batch leaves the `topAllocation*` fields `null` rather than
+empty arrays, and vice versa. `investigationDigest` itself is `null` when neither `cpu` nor
+`allocation` is in the batch (e.g. a `counters` + `gc` batch — already covered by `gen2Evidence`
+above). The digest reuses the existing call-tree artifact behind each handle — it does not open a
+new session or duplicate the ranking logic that `query_snapshot(view="triage")` uses; drill further
+into either handle with `query_snapshot` for the full call tree, caller/callee edges, or by-module
+breakdowns.
 
 **Partial-failure semantics.** A `collect_batch` call never fails outright just because one
 entry's target exited mid-window — the top-level result stays successful and `results` is always

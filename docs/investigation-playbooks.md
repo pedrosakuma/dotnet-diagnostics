@@ -167,6 +167,30 @@ needs for drilldown.
 
 ---
 
+## 1b.1. "First-pass CPU + allocation triage in one call"
+
+When both CPU and allocation are plausible suspects and you want a bounded "first page" before
+committing to separate deep dives:
+
+1. `collect_batch(requests=[{tool: "collect_sample", kind: "cpu"}, {tool: "collect_sample",
+   kind: "allocation"}], durationSeconds=10)`.
+2. Read `investigationDigest` first (issue #825) — it bundles, without any extra round trip:
+   - `topCpuSelfTime` — the top "busy user code" hotspots by exclusive/self time.
+   - `topCpuWaitCategories` — whether the busy time is actually waiting (lock/IO/threadpool) vs.
+     running.
+   - `hotPathLeaf` / `hotPathDepth` — the single dominant call chain, already walked for you.
+   - `topAllocationTypes` / `topAllocationCallsites` — the top allocated types and the call sites
+     that produced them.
+3. If `topCpuWaitCategories` dominates over running self time, this is a wait-bound issue —
+   pivot to `collect_sample(kind="contention")` or `collect_events(kind="exceptions")` instead of
+   chasing a CPU hotspot that isn't really CPU-bound.
+4. Only drop to the full per-collector handles (`query_snapshot(handle, view="call-tree"|
+   "caller-callee"|"triage")`) once the digest has pointed you at a specific method or type worth
+   walking in full depth — the digest is deliberately capped at 5 rows per list and is not a
+   replacement for the full artifacts still retained behind each handle.
+
+---
+
 ## 1c. "Post-deploy cold-start is slow"
 
 1. Start `collect_events(kind="jit", durationSeconds=10)` **before** sending the first real request after deploy / rollout.

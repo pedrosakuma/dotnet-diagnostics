@@ -329,8 +329,10 @@ public sealed class CollectBatchTool
             .ToArray();
         var results = await Task.WhenAll(tasks).ConfigureAwait(false);
 
-        var report = CollectBatchSalientEvidence.Apply(
-            new CollectBatchReport(pid, durationSeconds, results),
+        var report = CollectBatchSalientEvidence.ApplyInvestigationDigest(
+            CollectBatchSalientEvidence.Apply(
+                new CollectBatchReport(pid, durationSeconds, results),
+                handles),
             handles);
         var failureCount = results.Count(static r => r.Error is not null);
         var summary = failureCount == 0
@@ -517,11 +519,14 @@ public sealed record CollectBatchRequest(string Tool, string Kind);
 /// <param name="DurationSeconds">The shared window every entry used.</param>
 /// <param name="Results">One entry per requested {tool, kind}, in request order.</param>
 /// <param name="Gen2Evidence">Scope-labelled Gen2 correlation when counters and GC were paired.</param>
+/// <param name="InvestigationDigest">Cross-collector CPU/allocation "first page" summary when
+/// collect_sample(kind="cpu") and/or collect_sample(kind="allocation") were present.</param>
 public sealed record CollectBatchReport(
     int ProcessId,
     int DurationSeconds,
     IReadOnlyList<CollectBatchEntryResult> Results,
-    CollectBatchGen2Evidence? Gen2Evidence = null);
+    CollectBatchGen2Evidence? Gen2Evidence = null,
+    CollectBatchInvestigationDigest? InvestigationDigest = null);
 
 /// <summary>
 /// Scope-labelled Gen2 values from a paired counters + GC batch. EventCounter increments, Meter
@@ -536,6 +541,23 @@ public sealed record CollectBatchGen2Evidence(
     int GcCollectorWindowCount,
     int GcCollectorWindowSeconds,
     string Explanation);
+
+/// <summary>
+/// A "first page" cross-collector summary bundling the top CPU self-time hotspots, top CPU
+/// wait/noise categories, dominant hot-path leaf, and top allocation types/call sites — the same
+/// evidence an operator would otherwise gather from two or more separate <c>query_snapshot</c>
+/// round trips against the <c>collect_sample(kind="cpu")</c> and/or
+/// <c>collect_sample(kind="allocation")</c> handles in this batch, bundled into one. Each half is
+/// populated independently — a batch with only <c>cpu</c> yields CPU fields with allocation fields
+/// left <see langword="null"/>, and vice versa.
+/// </summary>
+public sealed record CollectBatchInvestigationDigest(
+    IReadOnlyList<MethodSampleStat>? TopCpuSelfTime,
+    IReadOnlyList<CpuWaitCategoryStat>? TopCpuWaitCategories,
+    HotPathFrame? HotPathLeaf,
+    int? HotPathDepth,
+    IReadOnlyList<AllocatedType>? TopAllocationTypes,
+    IReadOnlyList<AllocationSite>? TopAllocationCallsites);
 
 /// <param name="Tool">Echoes the request's Tool.</param>
 /// <param name="Kind">Echoes the request's Kind.</param>

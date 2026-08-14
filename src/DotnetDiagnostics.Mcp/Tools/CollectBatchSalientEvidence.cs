@@ -1,6 +1,7 @@
 using System.Text.Json;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Gc;
 using ModelContextProtocol;
@@ -15,6 +16,12 @@ internal static class CollectBatchSalientEvidence
 {
     internal const int MaxInlineCounters = 18;
     internal const int CounterIntervalSeconds = 1;
+
+    /// <summary>
+    /// Top-N cap for the allocation half of <see cref="CollectBatchInvestigationDigest"/> — matches
+    /// <see cref="CpuSampleQueryDispatcher.CompactTopN"/>'s "first page" framing on the CPU side.
+    /// </summary>
+    internal const int CompactAllocationTopN = CpuSampleQueryDispatcher.CompactTopN;
 
     private static readonly HashSet<(string Provider, string Name)> LohGcCounters =
     [
@@ -118,6 +125,84 @@ internal static class CollectBatchSalientEvidence
         var results = report.Results.ToArray();
         results[countersIndex] = enrichedEntry;
         return report with { Results = results, Gen2Evidence = evidence };
+    }
+
+    /// <summary>
+    /// Populates <see cref="CollectBatchReport.InvestigationDigest"/> (issue #825) when the batch
+    /// includes <c>collect_sample(kind="cpu")</c> and/or <c>collect_sample(kind="allocation")</c>
+    /// with a resolved handle. Each half is independent: a cpu-only batch yields CPU fields with
+    /// allocation fields left <see langword="null"/>, and vice versa. Reuses
+    /// <see cref="CpuSampleQueryDispatcher.RenderTriage"/> against the same call-tree artifact
+    /// <c>query_snapshot(view="triage")</c> would resolve, so the ranking/wait-category/hot-path
+    /// logic is not duplicated.
+    /// </summary>
+    internal static CollectBatchReport ApplyInvestigationDigest(
+        CollectBatchReport report,
+        IDiagnosticHandleStore handles)
+    {
+        IReadOnlyList<MethodSampleStat>? topCpuSelfTime = null;
+        IReadOnlyList<CpuWaitCategoryStat>? topCpuWaitCategories = null;
+        HotPathFrame? hotPathLeaf = null;
+        int? hotPathDepth = null;
+        IReadOnlyList<AllocatedType>? topAllocationTypes = null;
+        IReadOnlyList<AllocationSite>? topAllocationCallsites = null;
+
+        var cpuIndex = FindEntry(report.Results, CollectBatchTool.ToolCollectSample, "cpu");
+        if (cpuIndex >= 0)
+        {
+            var cpuEntry = report.Results[cpuIndex];
+            if (cpuEntry.Error is null && cpuEntry.Handle is not null)
+            {
+                var trace = handles.TryGet<CpuSampleTraceArtifact>(cpuEntry.Handle);
+                if (trace is not null)
+                {
+                    var triage = CpuSampleQueryDispatcher.RenderTriage(
+                        trace,
+                        cpuEntry.Handle,
+                        CpuSampleQueryDispatcher.CompactTopN,
+                        CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent);
+                    if (triage.Data is not null)
+                    {
+                        topCpuSelfTime = triage.Data.TopBusyMethods;
+                        topCpuWaitCategories = triage.Data.TopWaitCategories;
+                        hotPathLeaf = triage.Data.HotPathLeaf;
+                        hotPathDepth = triage.Data.HotPathDepth;
+                    }
+                }
+            }
+        }
+
+        var allocationIndex = FindEntry(report.Results, CollectBatchTool.ToolCollectSample, "allocation");
+        if (allocationIndex >= 0)
+        {
+            var allocationEntry = report.Results[allocationIndex];
+            if (allocationEntry.Error is null && allocationEntry.Handle is not null)
+            {
+                var artifact = handles.TryGet<AllocationSampleArtifact>(allocationEntry.Handle);
+                if (artifact is not null)
+                {
+                    topAllocationTypes = artifact.Summary.TopByBytes.Take(CompactAllocationTopN).ToList();
+                    topAllocationCallsites = artifact.Summary.TopBySite.Take(CompactAllocationTopN).ToList();
+                }
+            }
+        }
+
+        if (topCpuSelfTime is null && topCpuWaitCategories is null && hotPathLeaf is null &&
+            topAllocationTypes is null && topAllocationCallsites is null)
+        {
+            return report;
+        }
+
+        return report with
+        {
+            InvestigationDigest = new CollectBatchInvestigationDigest(
+                topCpuSelfTime,
+                topCpuWaitCategories,
+                hotPathLeaf,
+                hotPathDepth,
+                topAllocationTypes,
+                topAllocationCallsites),
+        };
     }
 
     private static int FindEntry(
