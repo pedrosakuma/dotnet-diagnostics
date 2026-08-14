@@ -148,8 +148,10 @@ public class CpuSampleQueryDispatcherTests
         outcome.Data!.SelfSamples.Should().Be(new SelfSampleBreakdown(40, 60));
         outcome.Data.Methods[0].Method.Should().Be("System.Threading.LowLevelLifoSemaphore.WaitForSignal");
         outcome.Data.Methods[0].SelfSamples.Should().Be(new SelfSampleBreakdown(0, 60));
+        outcome.Data.Methods[0].WaitReason.Should().Be("ThreadPool worker idle wait");
         outcome.Data.Methods[1].Method.Should().Be("MyApp.Worker.BurnCpu");
         outcome.Data.Methods[1].SelfSamples.Should().Be(new SelfSampleBreakdown(40, 0));
+        outcome.Data.Methods[1].WaitReason.Should().BeNull();
     }
 
     [Fact]
@@ -176,6 +178,7 @@ public class CpuSampleQueryDispatcherTests
 
         outcome.Error.Should().BeNull();
         outcome.Data!.Methods[0].Method.Should().Be("X"); // 100 exclusive, same leader as sortBy="exclusive"
+        outcome.Data.Methods[0].WaitReason.Should().BeNull(); // no classification available for this trace at all
     }
 
     [Fact]
