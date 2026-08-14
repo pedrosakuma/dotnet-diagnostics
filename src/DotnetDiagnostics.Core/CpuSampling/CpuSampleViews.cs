@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core.Memory;
+using DotnetDiagnostics.Core.Threads;
 
 namespace DotnetDiagnostics.Core.CpuSampling;
 
@@ -17,6 +18,15 @@ public sealed record MethodSampleStat(
     /// Optional split of <see cref="ExclusiveSamples"/> into running vs waiting observations.
     /// </summary>
     public SelfSampleBreakdown? SelfSamples { get; init; }
+
+    /// <summary>
+    /// Best-effort label naming the known wait/park primitive this row's leaf frame represents
+    /// (e.g. <c>"ThreadPool worker idle wait"</c>, <c>"Monitor.Wait"</c>), or <c>null</c> when the
+    /// frame is not a recognized wait pattern. Surfaces the same classification that already drives
+    /// <see cref="SelfSamples"/> so a wait-dominated row stays visible in <c>top-methods</c> but is
+    /// clearly labeled as noise instead of silently competing with real hotspots (issue #811).
+    /// </summary>
+    public string? WaitReason { get; init; }
 }
 
 /// <summary>Top-N methods ranked by exclusive (default) or inclusive samples.</summary>
@@ -276,6 +286,7 @@ internal static class CpuSampleAnalytics
                 rep.Identity)
             {
                 SelfSamples = totalSelf is null ? null : new SelfSampleBreakdown(agg.RunningSelf, agg.WaitingSelf),
+                WaitReason = totalSelf is null ? null : WellKnownWaitFrameClassifier.Classify(rep.Frame.Method)?.Reason,
             });
         }
 

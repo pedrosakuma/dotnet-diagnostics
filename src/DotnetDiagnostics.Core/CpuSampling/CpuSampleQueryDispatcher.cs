@@ -183,8 +183,8 @@ public static class CpuSampleQueryDispatcher
         var summary = top.Count == 0
             ? "No methods aggregated — the trace captured no attributable frames."
             : normalizedSort == "running"
-                ? $"Top {top.Count} method(s) by running (busy) self-time (of {ranked.Count} total). Busiest: {top[0].Method} ({top[0].SelfSamples?.RunningSamples ?? top[0].ExclusiveSamples} running / {top[0].ExclusiveSamples} exclusive){FormatSelfSamples(top[0].SelfSamples)}."
-                : $"Top {top.Count} method(s) by {normalizedSort} samples (of {ranked.Count} total). Hottest: {top[0].Method} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive){FormatSelfSamples(top[0].SelfSamples)}.";
+                ? $"Top {top.Count} method(s) by running (busy) self-time (of {ranked.Count} total). Busiest: {top[0].Method} ({top[0].SelfSamples?.RunningSamples ?? top[0].ExclusiveSamples} running / {top[0].ExclusiveSamples} exclusive){FormatSelfSamples(top[0].SelfSamples)}{FormatWaitReason(top[0].WaitReason)}."
+                : $"Top {top.Count} method(s) by {normalizedSort} samples (of {ranked.Count} total). Hottest: {top[0].Method} ({top[0].ExclusiveSamples} exclusive / {top[0].InclusiveSamples} inclusive){FormatSelfSamples(top[0].SelfSamples)}{FormatWaitReason(top[0].WaitReason)}.";
 
         return top.Count == 0
             ? DiagnosticResult.Ok(view, summary)
@@ -529,4 +529,13 @@ public static class CpuSampleQueryDispatcher
         => selfSamples is null
             ? string.Empty
             : $", self split {selfSamples.RunningSamples} running / {selfSamples.WaitingSamples} waiting";
+
+    /// <summary>
+    /// Renders the leader's <see cref="MethodSampleStat.WaitReason"/> (issue #811) as a trailing
+    /// summary clause, e.g. <c>" [known wait: Monitor.Wait]"</c>, or empty when the leader is not a
+    /// recognized wait/park frame — so a wait-dominated top row is clearly labeled as noise rather
+    /// than silently ranked as if it were busy user code.
+    /// </summary>
+    private static string FormatWaitReason(string? waitReason)
+        => string.IsNullOrEmpty(waitReason) ? string.Empty : $" [known wait: {waitReason}]";
 }

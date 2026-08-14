@@ -642,9 +642,16 @@ list by on-CPU ("running") self-time — using the same running/waiting split
 a known wait/park leaf (e.g. `LowLevelLifoSemaphore.WaitForSignal`, `Monitor.Wait`,
 `ThreadPool worker idle wait`) no longer outranks the actual busy user-code hotspot underneath
 it. Rows with no wait classification keep their exclusive count as the running score, so a trace
-with no classified leaves at all degrades to the same order as `rankBy="exclusive"`. This
-addresses the "busy user code" ranking gap only; folding async/runtime wrapper frames
-(`MoveNext`, awaiter/builder frames) into one logical operation is tracked separately in #811.
+with no classified leaves at all degrades to the same order as `rankBy="exclusive"`.
+
+Every `top-methods` row also carries an optional `waitReason` string (issue #811) naming the known
+wait/park primitive its leaf frame represents (e.g. `"Monitor.Wait"`, `"ThreadPool worker idle
+wait"`, `"Socket I/O"`), or `null` when the frame is not a recognized wait pattern. This labels a
+wait-dominated row as noise instead of removing it, so `rankBy="exclusive"` still surfaces it (with
+its reason) while `rankBy="running"` demotes it. The leader's `waitReason` (when present) is also
+appended to the `top-methods` summary string. Together these address the "busy user code" ranking
+gap only; folding async/runtime wrapper frames (`MoveNext`, awaiter/builder frames) into one logical
+operation is tracked separately in #811.
 
 The GC drilldown views (`timeline`, `longestPauses`, `byGeneration`, issue #314) re-aggregate the
 GC events already retained behind a `gc-events` handle — no new collection. `timeline` orders the
