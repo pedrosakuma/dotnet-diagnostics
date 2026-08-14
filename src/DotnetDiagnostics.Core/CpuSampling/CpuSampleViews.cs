@@ -86,6 +86,33 @@ public sealed record HotPathView(
     public SelfSampleBreakdown? SelfSamples { get; init; }
 }
 
+/// <summary>One recognized wait/park category's aggregated exclusive attribution across every
+/// method row that classified to it (issue #812 triage).</summary>
+public sealed record CpuWaitCategoryStat(
+    string WaitReason,
+    long ExclusiveSamples,
+    double ExclusivePercent,
+    int MethodCount);
+
+/// <summary>
+/// One-shot performance-triage projection for a <c>cpu-sample</c> handle (issue #812): bundles the
+/// top "busy user code" hotspots (reusing the <c>rankBy="running"</c> ordering from issue #811 part 1),
+/// the top noise/wait categories (reusing the <see cref="MethodSampleStat.WaitReason"/> tag from issue
+/// #811 part 2), and the dominant hot-path leaf — the same evidence an operator would otherwise gather
+/// across three separate round trips (<c>top-methods</c> + <c>hot-path</c>, cross-referenced by hand).
+/// </summary>
+public sealed record TriageView(
+    int ProcessId,
+    long TotalSamples,
+    string Verdict,
+    IReadOnlyList<MethodSampleStat> TopBusyMethods,
+    IReadOnlyList<CpuWaitCategoryStat> TopWaitCategories,
+    HotPathFrame? HotPathLeaf,
+    int HotPathDepth)
+{
+    public SelfSampleBreakdown? SelfSamples { get; init; }
+}
+
 /// <summary>One caller or callee edge of a focus method.</summary>
 public sealed record CallerCalleeEdge(
     string Method,

@@ -37,6 +37,13 @@ public static class CpuSampleQueryDispatcher
     /// <summary>Callers and callees of a single focus method (PerfView-style).</summary>
     public const string CallerCalleeView = "caller-callee";
 
+    /// <summary>
+    /// One-shot performance-triage projection: top busy hotspots + top wait/noise categories +
+    /// dominant hot-path leaf, one round trip instead of chaining <see cref="TopMethodsView"/> and
+    /// <see cref="HotPathView"/> by hand (issue #812).
+    /// </summary>
+    public const string TriageView = "triage";
+
     /// <summary>Default number of rows returned by the ranked CPU views.</summary>
     public const int DefaultTopN = 20;
 
@@ -66,7 +73,7 @@ public static class CpuSampleQueryDispatcher
 
     private static readonly string[] Views =
     {
-        CallTreeView, TopMethodsView, ByModuleView, ByNamespaceView, HotPathView, CallerCalleeView,
+        CallTreeView, TopMethodsView, ByModuleView, ByNamespaceView, HotPathView, CallerCalleeView, TriageView,
     };
 
     /// <summary>The view names this dispatcher can render from a trace alone (drill-down without re-sampling).</summary>
@@ -256,6 +263,118 @@ public static class CpuSampleQueryDispatcher
                     ? "Inspect the full call tree to choose a concrete method."
                     : "Lower the threshold to extend the chain, or anchor the full tree at the leaf.",
                 hintArguments));
+    }
+
+    /// <summary>
+    /// Renders the <c>triage</c> view (issue #812): the top "busy user code" hotspots (<c>rankBy=
+    /// "running"</c> order), the top wait/noise categories (grouped by <see cref="MethodSampleStat.WaitReason"/>,
+    /// summed by exclusive samples), and the dominant hot-path leaf — the same evidence an operator
+    /// would otherwise gather across <see cref="TopMethodsView"/> and <see cref="HotPathView"/> in two
+    /// separate round trips, bundled into one.
+    /// </summary>
+    public static DiagnosticResult<TriageView> RenderTriage(
+        CpuSampleTraceArtifact artifact, string handle, int topN, double hotPathThresholdPercent)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+        if (topN < 1) return InvalidArg<TriageView>(nameof(topN), "must be >= 1");
+        if (hotPathThresholdPercent <= 0d || hotPathThresholdPercent > 100d)
+        {
+            return InvalidArg<TriageView>(nameof(hotPathThresholdPercent), "must be > 0 and <= 100");
+        }
+
+        var root = CallTreeIdentityProjector.Stamp(artifact.Root, artifact.MethodIdentities);
+        var exclusiveRanked = CpuSampleAnalytics.RankMethods(root, artifact.TotalSamples, byInclusive: false);
+        var topBusy = CpuSampleAnalytics.RankMethodsByRunningSelf(exclusiveRanked).Take(topN).ToList();
+
+        var topWaitCategories = exclusiveRanked
+            .Where(m => m.WaitReason is not null)
+            .GroupBy(m => m.WaitReason!, StringComparer.Ordinal)
+            .Select(g =>
+            {
+                var exclusiveSamples = g.Sum(m => m.ExclusiveSamples);
+                return new CpuWaitCategoryStat(
+                    g.Key,
+                    exclusiveSamples,
+                    CpuSampleAnalytics.Percent(exclusiveSamples, artifact.TotalSamples),
+                    g.Count());
+            })
+            .OrderByDescending(w => w.ExclusiveSamples)
+            .Take(topN)
+            .ToList();
+
+        var (hotPathFrames, hotPathDepth) = CpuSampleAnalytics.BuildHotPath(root, artifact.TotalSamples, hotPathThresholdPercent / 100d);
+        var hotPathLeaf = hotPathFrames.Count > 0 ? hotPathFrames[^1] : null;
+        var selfSamples = artifact.SelfSamples ?? CpuSampleAnalytics.TotalSelfSamples(root);
+        var verdict = ClassifyTriageVerdict(selfSamples);
+
+        var view = new TriageView(artifact.ProcessId, artifact.TotalSamples, verdict, topBusy, topWaitCategories, hotPathLeaf, hotPathDepth)
+        {
+            SelfSamples = selfSamples,
+        };
+
+        var summary = BuildTriageSummary(verdict, topBusy, topWaitCategories, hotPathLeaf);
+        var hint = topBusy.Count > 0
+            ? new NextActionHint("query_snapshot", "Drill into the top busy method's callers/callees.",
+                new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallerCalleeView, ["rootMethodFilter"] = topBusy[0].Method })
+            : new NextActionHint("query_snapshot", "Inspect the full call tree — no attributable busy method was found.",
+                new Dictionary<string, object?> { ["handle"] = handle, ["view"] = CallTreeView });
+
+        return DiagnosticResult.Ok(view, summary, hint);
+    }
+
+    /// <summary>
+    /// Neutral, diagnosis-agnostic verdict derived from the whole-capture running/waiting self-sample
+    /// split: <c>"cpu-bound"</c> when waiting is a small minority of self time, <c>"wait-bound"</c>
+    /// when it dominates, <c>"mixed"</c> otherwise, and <c>"unclassified"</c> when the capture carries
+    /// no running/waiting classification at all (e.g. an older trace or a non-CPU sample kind).
+    /// </summary>
+    private static string ClassifyTriageVerdict(SelfSampleBreakdown? selfSamples)
+    {
+        if (selfSamples is null)
+        {
+            return "unclassified";
+        }
+
+        var total = selfSamples.RunningSamples + selfSamples.WaitingSamples;
+        if (total <= 0)
+        {
+            return "unclassified";
+        }
+
+        var waitingPercent = 100.0 * selfSamples.WaitingSamples / total;
+        return waitingPercent switch
+        {
+            >= 50d => "wait-bound",
+            < 20d => "cpu-bound",
+            _ => "mixed",
+        };
+    }
+
+    private static string BuildTriageSummary(
+        string verdict,
+        List<MethodSampleStat> topBusy,
+        List<CpuWaitCategoryStat> topWaitCategories,
+        HotPathFrame? hotPathLeaf)
+    {
+        if (topBusy.Count == 0)
+        {
+            return "No attributable methods — the trace captured no frames to triage.";
+        }
+
+        var busy = topBusy[0];
+        var summary = $"Verdict: {verdict}. Busiest user code: {busy.Method} ({busy.SelfSamples?.RunningSamples ?? busy.ExclusiveSamples} running / {busy.ExclusiveSamples} exclusive samples).";
+        if (topWaitCategories.Count > 0)
+        {
+            var wait = topWaitCategories[0];
+            summary += $" Top wait/noise category: {wait.WaitReason} ({wait.ExclusivePercent:0.#}% of samples across {wait.MethodCount} method(s)).";
+        }
+
+        if (hotPathLeaf is not null)
+        {
+            summary += $" Hot-path leaf: {hotPathLeaf.Method} ({hotPathLeaf.InclusivePercent:0.#}% inclusive).";
+        }
+
+        return summary;
     }
 
     /// <summary>Renders the <c>caller-callee</c> view for the single method matched by <paramref name="methodFilter"/>.</summary>

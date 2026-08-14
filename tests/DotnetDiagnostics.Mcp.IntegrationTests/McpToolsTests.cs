@@ -1663,6 +1663,59 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     private static long DepthCompactWorkloadH() { long s = 7; for (var i = 0; i < 64; i++) s += i * 8; return s; }
 
     [Fact]
+    public async Task QuerySnapshot_TriageView_BundlesBusyMethodsWaitCategoriesAndHotPathLeaf()
+    {
+        await using var client = await ConnectAsync();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+        var spin = Task.Run(() =>
+        {
+            var sink = 0L;
+            while (!cts.IsCancellationRequested) { sink += TriageWorkload(); }
+            return sink;
+        }, cts.Token);
+
+        var collectResult = await client.CallToolAsync(
+            "collect_sample",
+            new Dictionary<string, object?>
+            {
+                ["kind"] = "cpu",
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 3,
+                ["resolveSourceLines"] = false,
+            },
+            cancellationToken: CancellationToken.None);
+
+        cts.Cancel();
+        try { await spin; } catch { /* expected */ }
+
+        collectResult.IsError.Should().NotBe(true);
+        var collectEnvelope = DeserializeEnvelope(collectResult);
+        collectEnvelope!.Handle.Should().NotBeNullOrWhiteSpace();
+
+        var triageResult = await client.CallToolAsync(
+            "query_snapshot",
+            new Dictionary<string, object?>
+            {
+                ["handle"] = collectEnvelope.Handle!,
+                ["view"] = "triage",
+            },
+            cancellationToken: CancellationToken.None);
+        triageResult.IsError.Should().NotBe(true);
+
+        var triage = DeserializeStructured<TriageView>(triageResult);
+        triage.Should().NotBeNull();
+        triage!.Verdict.Should().NotBeNullOrWhiteSpace();
+        triage.TopBusyMethods.Should().NotBeEmpty("the spin loop must produce at least one ranked busy method");
+
+        var envelope = DeserializeEnvelope(triageResult);
+        envelope!.Summary.Should().NotBeNullOrWhiteSpace();
+        envelope.Summary.Should().Contain("Verdict:");
+    }
+
+    private static long TriageWorkload() { long s = 0; for (var i = 0; i < 128; i++) s += i * i; return s; }
+
+    [Fact]
     public async Task QuerySnapshot_CallTreeDepthCompact_TightensNodeAndDepthCaps()
     {
         await using var client = await ConnectAsync();
