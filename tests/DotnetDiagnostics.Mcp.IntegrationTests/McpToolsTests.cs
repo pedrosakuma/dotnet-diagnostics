@@ -784,6 +784,144 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task CollectBatch_CpuAndAllocation_PopulatesFullInvestigationDigest()
+    {
+        // #825: when both collect_sample(kind="cpu") and collect_sample(kind="allocation") are
+        // in the batch, InvestigationDigest should bundle the top CPU self-time hotspots, top CPU
+        // wait categories, the dominant hot-path leaf, and the top allocation types/call sites —
+        // without the caller needing separate query_snapshot round trips.
+        await using var client = await ConnectAsync();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        var driver = Task.Run(() =>
+        {
+            var sink = 0L;
+            while (!cts.IsCancellationRequested)
+            {
+                for (var i = 0; i < 10_000; i++)
+                {
+                    sink += i * i;
+                }
+
+                _ = new byte[4096];
+            }
+
+            return sink;
+        }, cts.Token);
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "cpu" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "allocation" },
+                },
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 6,
+            },
+            cancellationToken: CancellationToken.None);
+
+        cts.Cancel();
+        try { await driver; } catch { /* expected */ }
+
+        result.IsError.Should().NotBe(true);
+        var report = DeserializeStructured<CollectBatchReport>(result);
+        report.Should().NotBeNull();
+        report!.InvestigationDigest.Should().NotBeNull(
+            "cpu error={0}, allocation error={1}",
+            report.Results.FirstOrDefault(e => e.Kind == "cpu")?.Error,
+            report.Results.FirstOrDefault(e => e.Kind == "allocation")?.Error);
+
+        var digest = report.InvestigationDigest!;
+        digest.TopCpuSelfTime.Should().NotBeNullOrEmpty();
+        digest.TopCpuSelfTime!.Count.Should().BeLessOrEqualTo(CollectBatchSalientEvidence.CompactAllocationTopN);
+        digest.TopCpuWaitCategories.Should().NotBeNull();
+        digest.TopAllocationTypes.Should().NotBeNullOrEmpty();
+        digest.TopAllocationTypes!.Count.Should().BeLessOrEqualTo(CollectBatchSalientEvidence.CompactAllocationTopN);
+        digest.TopAllocationCallsites.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task CollectBatch_CpuOnly_PopulatesOnlyCpuHalfOfInvestigationDigest()
+    {
+        // #825: a cpu-only batch should populate only the CPU half of InvestigationDigest,
+        // leaving the allocation fields null rather than defaulting them to empty collections.
+        await using var client = await ConnectAsync();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+        var driver = Task.Run(() =>
+        {
+            var sink = 0L;
+            while (!cts.IsCancellationRequested)
+            {
+                for (var i = 0; i < 10_000; i++)
+                {
+                    sink += i * i;
+                }
+            }
+
+            return sink;
+        }, cts.Token);
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "cpu" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
+                },
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 4,
+            },
+            cancellationToken: CancellationToken.None);
+
+        cts.Cancel();
+        try { await driver; } catch { /* expected */ }
+
+        result.IsError.Should().NotBe(true);
+        var report = DeserializeStructured<CollectBatchReport>(result);
+        report.Should().NotBeNull();
+        report!.InvestigationDigest.Should().NotBeNull();
+
+        var digest = report.InvestigationDigest!;
+        digest.TopCpuSelfTime.Should().NotBeNullOrEmpty();
+        digest.TopAllocationTypes.Should().BeNull("no collect_sample(kind=\"allocation\") entry was in this batch");
+        digest.TopAllocationCallsites.Should().BeNull("no collect_sample(kind=\"allocation\") entry was in this batch");
+    }
+
+    [Fact]
+    public async Task CollectBatch_CountersAndGcOnly_LeavesInvestigationDigestNull()
+    {
+        // #825: InvestigationDigest is only populated when the batch includes cpu and/or
+        // allocation; a counters+gc-only batch (already covered by Gen2Evidence) must not
+        // regress by gaining an empty/placeholder digest.
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "gc" },
+                },
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 4,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var report = DeserializeStructured<CollectBatchReport>(result);
+        report.Should().NotBeNull();
+        report!.InvestigationDigest.Should().BeNull();
+    }
+
+    [Fact]
     public async Task CollectBatch_DepthCompact_ElidesDataButKeepsHandleAndSummary()
     {
         await using var client = await ConnectAsync();
