@@ -192,6 +192,42 @@ public class CpuSampleQueryDispatcherTests
             .Error!.Kind.Should().Be("InvalidArgument");
 
     [Fact]
+    public void RenderTopMethods_FoldAsyncTrue_RenamesMoveNextLeafToDeclaringMethod()
+    {
+        // foldAsync=true (issue #811 part 3) rewrites the compiler-generated MoveNext leaf to its
+        // declaring async method name and flags the row as folded.
+        var outcome = CpuSampleQueryDispatcher.RenderTopMethods(AsyncMoveNextTrace(), Handle, sortBy: "exclusive", topN: 2, foldAsync: true);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.Methods[0].Method.Should().Be("B3.Umdf.FixConflated.FixTcpClientSession.WriteLoopAsync() [async]");
+        outcome.Data.Methods[0].AsyncFolded.Should().BeTrue();
+        outcome.Data.Methods[1].Method.Should().Be("MyApp.Worker.BurnCpu");
+        outcome.Data.Methods[1].AsyncFolded.Should().BeFalse();
+    }
+
+    [Fact]
+    public void RenderTopMethods_FoldAsyncFalse_LeavesMoveNextLeafUnchanged()
+    {
+        // Default behavior (foldAsync omitted/false) must be byte-for-byte unchanged from before #811 part 3.
+        var outcome = CpuSampleQueryDispatcher.RenderTopMethods(AsyncMoveNextTrace(), Handle, sortBy: "exclusive", topN: 1);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.Methods[0].Method.Should().Be("B3.Umdf.FixConflated.FixTcpClientSession+<WriteLoopAsync>d__22.MoveNext()");
+        outcome.Data.Methods[0].AsyncFolded.Should().BeFalse();
+    }
+
+    [Fact]
+    public void RenderTopMethods_FoldAsyncTrue_NonAsyncFrameIsUnaffected()
+    {
+        // A trace with no MoveNext-shaped leaf must degrade gracefully: foldAsync=true is a no-op.
+        var outcome = CpuSampleQueryDispatcher.RenderTopMethods(TwoPaths(), Handle, sortBy: "exclusive", topN: 1, foldAsync: true);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.Methods[0].Method.Should().Be("X");
+        outcome.Data.Methods[0].AsyncFolded.Should().BeFalse();
+    }
+
+    [Fact]
     public void RenderByModule_AggregatesPerAssembly()
     {
         var outcome = CpuSampleQueryDispatcher.RenderByModule(TwoPaths(), Handle, topN: 10);
@@ -541,6 +577,25 @@ public class CpuSampleQueryDispatcherTests
         var leafA = new CallTreeNode(new SampledFrame("App.dll", "LeafA"), 40, 40, Array.Empty<CallTreeNode>());
         var leafB = new CallTreeNode(new SampledFrame("App.dll", "LeafB"), 60, 60, Array.Empty<CallTreeNode>());
         var root = new CallTreeNode(new SampledFrame("App.dll", "Root"), 100, 0, new[] { leafA, leafB });
+        return new CpuSampleTraceArtifact(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root);
+    }
+
+    private static CpuSampleTraceArtifact AsyncMoveNextTrace()
+    {
+        // Mirrors the exact shape from issue #811's motivating example: a compiler-generated async
+        // state-machine's own MoveNext is the on-CPU leaf (busy work between awaits), and TraceEvent's
+        // FullMethodName renders it as "Owner+<Method>d__NN.MoveNext()".
+        var asyncLeaf = new CallTreeNode(
+            new SampledFrame("MyApp.dll", "B3.Umdf.FixConflated.FixTcpClientSession+<WriteLoopAsync>d__22.MoveNext()"),
+            60,
+            60,
+            Array.Empty<CallTreeNode>());
+        var running = new CallTreeNode(
+            new SampledFrame("MyApp.dll", "MyApp.Worker.BurnCpu"),
+            40,
+            40,
+            Array.Empty<CallTreeNode>());
+        var root = new CallTreeNode(new SampledFrame(string.Empty, "<root>"), 100, 0, new[] { asyncLeaf, running });
         return new CpuSampleTraceArtifact(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root);
     }
 

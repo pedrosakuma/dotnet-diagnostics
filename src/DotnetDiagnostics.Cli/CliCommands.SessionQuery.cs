@@ -491,7 +491,7 @@ internal static partial class CliCommands
         switch (normalized)
         {
             case CpuSampleQueryDispatcher.TopMethodsView:
-                return BuildResult(CpuSampleQueryDispatcher.RenderTopMethods(trace, handle, options.RankBy, topN), SerializeQuery);
+                return BuildResult(CpuSampleQueryDispatcher.RenderTopMethods(trace, handle, options.RankBy, topN, options.FoldAsync), SerializeQuery);
             case CpuSampleQueryDispatcher.ByModuleView:
                 return BuildResult(CpuSampleQueryDispatcher.RenderByModule(trace, handle, topN), SerializeQuery);
             case CpuSampleQueryDispatcher.ByNamespaceView:

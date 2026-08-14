@@ -649,9 +649,22 @@ wait/park primitive its leaf frame represents (e.g. `"Monitor.Wait"`, `"ThreadPo
 wait"`, `"Socket I/O"`), or `null` when the frame is not a recognized wait pattern. This labels a
 wait-dominated row as noise instead of removing it, so `rankBy="exclusive"` still surfaces it (with
 its reason) while `rankBy="running"` demotes it. The leader's `waitReason` (when present) is also
-appended to the `top-methods` summary string. Together these address the "busy user code" ranking
-gap only; folding async/runtime wrapper frames (`MoveNext`, awaiter/builder frames) into one logical
-operation is tracked separately in #811.
+appended to the `top-methods` summary string.
+
+`top-methods` additionally accepts the opt-in `foldAsync=true` parameter (issue #811 part 3): it
+renames a compiler-generated async state-machine `MoveNext` leaf (e.g.
+`Owner+<WriteLoopAsync>d__22.MoveNext()`) to its declaring async method name (`Owner.WriteLoopAsync()
+[async]`), so on-CPU work happening directly inside an async method's own body — between its
+`await`s — reads as recognizable user code instead of unfamiliar compiler-generated plumbing.
+Folding is purely a display-name rewrite: it does not change how rows are aggregated (a given async
+method's `MoveNext` already aggregates under its own identity-derived key regardless of `foldAsync`),
+and it does not merge separate call-tree frames (e.g. `AsyncTaskMethodBuilder.Start`,
+`TaskAwaiter.GetResult`) into the folded row — that is tracked as further follow-up work. Each row
+carries a `asyncFolded` boolean reporting whether its leaf matched the recognized shape. Defaults to
+`false` so existing callers see no change; combine with `rankBy="running"` to both promote and label
+busy user code in one pass. Async **lambdas** and async **local functions** compile to a bare `d`
+state-machine suffix instead of `d__NN` (e.g. `Program+<>c+<<Main>b__0_3>d.MoveNext()`) and are
+deliberately not recognized by this pass — they are left unfolded rather than risk a false match.
 
 The GC drilldown views (`timeline`, `longestPauses`, `byGeneration`, issue #314) re-aggregate the
 GC events already retained behind a `gc-events` handle — no new collection. `timeline` orders the

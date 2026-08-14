@@ -27,6 +27,15 @@ public sealed record MethodSampleStat(
     /// clearly labeled as noise instead of silently competing with real hotspots (issue #811).
     /// </summary>
     public string? WaitReason { get; init; }
+
+    /// <summary>
+    /// <c>true</c> when <see cref="Method"/> was rewritten from a compiler-generated async
+    /// state-machine <c>MoveNext</c> leaf (e.g. <c>Type+&lt;Method&gt;d__22.MoveNext()</c>) into its
+    /// declaring async method name, via the opt-in <c>foldAsync</c> request parameter (issue #811).
+    /// <c>false</c> when folding was not requested or the row's leaf did not match the recognized
+    /// state-machine shape.
+    /// </summary>
+    public bool AsyncFolded { get; init; }
 }
 
 /// <summary>Top-N methods ranked by exclusive (default) or inclusive samples.</summary>
@@ -267,7 +276,7 @@ internal static class CpuSampleAnalytics
         }
     }
 
-    internal static IReadOnlyList<MethodSampleStat> RankMethods(CallTreeNode root, long total, bool byInclusive)
+    internal static IReadOnlyList<MethodSampleStat> RankMethods(CallTreeNode root, long total, bool byInclusive, bool foldAsync = false)
     {
         var aggregated = Aggregate(root, MethodKey);
         var totalSelf = TotalSelfSamples(root);
@@ -275,8 +284,16 @@ internal static class CpuSampleAnalytics
         foreach (var agg in aggregated.Values)
         {
             var rep = agg.Representative;
+            var method = rep.Frame.Method;
+            var folded = method;
+            var asyncFolded = foldAsync && AsyncStateMachineFrameFolder.TryFold(method, out folded);
+            if (asyncFolded)
+            {
+                method = folded;
+            }
+
             stats.Add(new MethodSampleStat(
-                rep.Frame.Method,
+                method,
                 ModuleOf(rep),
                 NamespaceOf(rep),
                 agg.Exclusive,
@@ -287,6 +304,7 @@ internal static class CpuSampleAnalytics
             {
                 SelfSamples = totalSelf is null ? null : new SelfSampleBreakdown(agg.RunningSelf, agg.WaitingSelf),
                 WaitReason = totalSelf is null ? null : WellKnownWaitFrameClassifier.Classify(rep.Frame.Method)?.Reason,
+                AsyncFolded = asyncFolded,
             });
         }
 
