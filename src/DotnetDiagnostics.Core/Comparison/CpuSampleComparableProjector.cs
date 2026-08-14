@@ -30,7 +30,7 @@ public sealed class NativeAllocSampleComparableProjector : IComparableProjector
         => CpuSampleComparableProjection.Project(artifact, label, Kind);
 }
 
-internal static class CpuSampleComparableProjection
+public static class CpuSampleComparableProjection
 {
     public static ComparableSnapshot Project(object artifact, string label, string kind)
     {

@@ -548,6 +548,16 @@ waiting hotspot plus a different running leader is therefore an improvement when
 meaningfully collapses. Scalar and row evidence are otherwise combined: two unrelated all-running
 hotspots remain regression evidence when waiting is unchanged at zero.
 
+For `cpu-sample × cpu-sample` diffs (both the `baselineHandle` pairwise path and the
+`comparisonHandles` journey path), the `Summary` line adds an explicit narrative on top of the
+raw added/removed/changed counts (issue #812): a "Top hotspot share grew/shrank: `Method` X% →
+Y% (±Z pp)" call-out for whichever method moved the most in absolute percentage points, plus a
+"Waiting/noise share grew/shrank: X% → Y% of self samples" call-out when the waiting/running self-
+sample split shifted by at least 1 percentage point. Both call-outs are omitted (falling back to
+the plain counts summary) when there is no qualifying overlap or movement is below the noise
+threshold — this lets a tuning-loop operator read the verdict from the one-line summary instead of
+scanning per-method deltas after every iteration.
+
 `heap-snapshot` `view="growth"` is the retention-aware **live heap leak hunt** (issue #463).
 Capture two live heap snapshots N seconds apart — `inspect_heap(source="live", includeRetentionPaths=true)` —
 then call `query_snapshot(handle=<later>, view="growth", baselineHandle=<earlier>)`. It ranks the
