@@ -286,6 +286,18 @@ internal static class CpuSampleAnalytics
     }
 
     /// <summary>
+    /// Re-ranks an already-aggregated exclusive-ordered method list by "busy user code" — running
+    /// (on-CPU) self-time — instead of raw exclusive samples (issue #811). Frames with no known
+    /// wait/park classification fall back to their exclusive count, so a trace with no classified
+    /// leaves at all degrades to the same order as <c>rankBy="exclusive"</c>.
+    /// </summary>
+    internal static IReadOnlyList<MethodSampleStat> RankMethodsByRunningSelf(IReadOnlyList<MethodSampleStat> exclusiveRanked)
+        => exclusiveRanked
+            .OrderByDescending(m => m.SelfSamples?.RunningSamples ?? m.ExclusiveSamples)
+            .ThenByDescending(m => m.ExclusiveSamples)
+            .ToList();
+
+    /// <summary>
     /// The global self-time (exclusive) leader across the whole merged tree, or <c>null</c> when there
     /// is no on-CPU leaf to attribute. Ranks over the full tree (not the inclusive-capped hotspots), so
     /// the true leaf is found even on a deep stack. Shared by every sampler so the inline
