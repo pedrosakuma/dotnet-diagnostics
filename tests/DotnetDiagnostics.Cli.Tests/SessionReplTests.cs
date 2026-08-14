@@ -424,6 +424,48 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_LatestOfKind_ResolvesToMostRecentlyRegisteredHandleOfThatKind()
+    {
+        var (services, store) = BuildServices();
+        store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+        var newest = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, stderr) = await RunReplAsync(
+            "query --latest-of-kind cpu-sample --view call-tree\nexit\n", services);
+
+        exit.Should().Be(0);
+        stderr.Should().BeEmpty();
+        stdout.Should().Contain("Root");
+        store.TryGetLatestByKind("cpu-sample")!.Id.Should().Be(newest.Id);
+    }
+
+    [Fact]
+    public async Task Query_LatestOfKind_NoMatchingHandle_ReturnsNotFound()
+    {
+        var (services, _) = BuildServices();
+
+        var (exit, stdout, _) = await RunReplAsync(
+            "query --latest-of-kind cpu-sample\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("NotFound");
+    }
+
+    [Fact]
+    public async Task Query_HandleAndLatestOfKindCombined_ReturnsInvalidArgument()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --latest-of-kind cpu-sample\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("InvalidArgument");
+        stdout.Should().Contain("cannot be combined");
+    }
+
+    [Fact]
     public async Task Query_CpuSampleHandle_RootMethodFilter_ReRoots()
     {
         var (services, store) = BuildServices();

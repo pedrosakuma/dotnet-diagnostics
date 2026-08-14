@@ -87,7 +87,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             ["collect_events"] = Array.Empty<string>(),
             ["collect_sample"] = Array.Empty<string>(),
             ["collect_batch"] = new[] { "requests" },
-            ["query_snapshot"] = new[] { "handle" },
+            ["query_snapshot"] = Array.Empty<string>(),
             ["inspect_heap"] = new[] { "source" },
             ["get_bytes"] = new[] { "kind" },
             ["collect_process_dump"] = Array.Empty<string>(),

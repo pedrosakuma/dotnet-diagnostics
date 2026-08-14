@@ -145,6 +145,104 @@ public sealed class ThreadSnapshotQueryTests
     }
 
     [Fact]
+    public async Task QuerySnapshot_LatestOfKind_ResolvesToMostRecentlyRegisteredHandleOfThatKind()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = CreateSnapshot();
+        store.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10), evictWhenProcessExits: false);
+        var newest = store.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10), evictWhenProcessExits: false);
+
+        var result = await QuerySnapshotTool.QuerySnapshot(
+            store,
+            null!,
+            null!,
+            null!,
+            TestPrincipalAccessors.Root,
+            null!,
+            null!,
+            handle: null,
+            view: "unique-stacks",
+            topN: 2,
+            framesToHash: 2,
+            minCount: 3,
+            latestOfKind: "thread-snapshot");
+
+        result.Error.Should().BeNull();
+        var data = result.Data.Should().BeOfType<ThreadSnapshotQueryResult>().Subject;
+        data.UniqueStacks.Should().HaveCount(2);
+
+        // TryGetLatestByKind (issue #812) always resolves to the most recently registered handle
+        // of the kind, so the alias transparently picks up `newest` without the caller ever
+        // learning its id.
+        store.TryGetLatestByKind("thread-snapshot")!.Id.Should().Be(newest.Id);
+    }
+
+    [Fact]
+    public async Task QuerySnapshot_LatestOfKind_ReturnsNotFoundWhenNoMatchingHandleExists()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+
+        var result = await QuerySnapshotTool.QuerySnapshot(
+            store,
+            null!,
+            null!,
+            null!,
+            TestPrincipalAccessors.Root,
+            null!,
+            null!,
+            handle: null,
+            latestOfKind: "cpu-sample");
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("NotFound");
+        result.Hints.Should().NotBeEmpty();
+        result.Hints.Should().Contain(h => h.NextTool == "collect_sample");
+    }
+
+    [Fact]
+    public async Task QuerySnapshot_LatestOfKind_CombinedWithHandleIsRejected()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var snapshot = CreateSnapshot();
+        var handle = store.Register(snapshot.ProcessId, "thread-snapshot", snapshot, TimeSpan.FromMinutes(10), evictWhenProcessExits: false);
+
+        var result = await QuerySnapshotTool.QuerySnapshot(
+            store,
+            null!,
+            null!,
+            null!,
+            TestPrincipalAccessors.Root,
+            null!,
+            null!,
+            handle: handle.Id,
+            latestOfKind: "thread-snapshot");
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("InvalidArgument");
+        result.Error!.Detail.Should().Be("latestOfKind");
+    }
+
+    [Fact]
+    public async Task QuerySnapshot_NeitherHandleNorLatestOfKindIsRejected()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+
+        var result = await QuerySnapshotTool.QuerySnapshot(
+            store,
+            null!,
+            null!,
+            null!,
+            TestPrincipalAccessors.Root,
+            null!,
+            null!,
+            handle: null);
+
+        result.Error.Should().NotBeNull();
+        result.Error!.Kind.Should().Be("InvalidArgument");
+        result.Error!.Detail.Should().Be("handle");
+    }
+
+    [Fact]
     public void QueryThreadSnapshot_Stack_IgnoresUniqueStackParameters()
     {
         var store = new MemoryDiagnosticHandleStore();

@@ -117,6 +117,59 @@ public class MemoryDiagnosticHandleStoreTests
     }
 
     [Fact]
+    public void TryGetLatestByKind_ReturnsMostRecentlyRegisteredHandleOfThatKind()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var older = store.Register(1, "cpu-sample", new Payload("older"), TimeSpan.FromMinutes(5));
+        var newer = store.Register(1, "cpu-sample", new Payload("newer"), TimeSpan.FromMinutes(5));
+
+        var latest = store.TryGetLatestByKind("cpu-sample");
+
+        latest.Should().NotBeNull();
+        latest!.Id.Should().Be(newer.Id, "the most recently registered handle of the kind must win, not the oldest");
+        latest.Id.Should().NotBe(older.Id);
+    }
+
+    [Fact]
+    public void TryGetLatestByKind_FiltersByKind()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        store.Register(1, "heap-snapshot", new Payload("heap"), TimeSpan.FromMinutes(5));
+        var cpu = store.Register(1, "cpu-sample", new Payload("cpu"), TimeSpan.FromMinutes(5));
+
+        store.TryGetLatestByKind("cpu-sample")!.Id.Should().Be(cpu.Id);
+        store.TryGetLatestByKind("no-such-kind").Should().BeNull();
+    }
+
+    [Fact]
+    public void TryGetLatestByKind_OptionallyFiltersByProcessId()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var forOtherProcess = store.Register(1, "cpu-sample", new Payload("pid1"), TimeSpan.FromMinutes(5));
+        var forTargetProcess = store.Register(2, "cpu-sample", new Payload("pid2"), TimeSpan.FromMinutes(5));
+
+        store.TryGetLatestByKind("cpu-sample", processId: 2)!.Id.Should().Be(forTargetProcess.Id);
+        store.TryGetLatestByKind("cpu-sample", processId: 1)!.Id.Should().Be(forOtherProcess.Id);
+        store.TryGetLatestByKind("cpu-sample", processId: 999).Should().BeNull();
+    }
+
+    [Fact]
+    public void TryGetLatestByKind_ExcludesExpiredEntries()
+    {
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        var store = new MemoryDiagnosticHandleStore(clock: clock);
+        var expiring = store.Register(1, "cpu-sample", new Payload("expiring"), TimeSpan.FromMinutes(1));
+        clock.Advance(TimeSpan.FromMinutes(2));
+        var fresh = store.Register(1, "cpu-sample", new Payload("fresh"), TimeSpan.FromMinutes(5));
+
+        var latest = store.TryGetLatestByKind("cpu-sample");
+
+        latest.Should().NotBeNull();
+        latest!.Id.Should().Be(fresh.Id);
+        latest.Id.Should().NotBe(expiring.Id);
+    }
+
+    [Fact]
     public void Register_EvictsOldestWhenCapacityReached()
     {
         var clock = new ManualClock(DateTimeOffset.UtcNow);
