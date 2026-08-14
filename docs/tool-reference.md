@@ -516,7 +516,7 @@ Views available per `kind`:
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
-| `cpu-sample` / `allocation-sample` / `native-alloc-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `diff` |
+| `cpu-sample` / `allocation-sample` / `native-alloc-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `diff` |
 
 Authorization is applied per kind at the dispatcher (`heap-read` for heap,
 `ptrace` for thread, `eventpipe` for off-CPU, `investigation-export` for
@@ -675,6 +675,20 @@ carries a `asyncFolded` boolean reporting whether its leaf matched the recognize
 busy user code in one pass. Async **lambdas** and async **local functions** compile to a bare `d`
 state-machine suffix instead of `d__NN` (e.g. `Program+<>c+<<Main>b__0_3>d.MoveNext()`) and are
 deliberately not recognized by this pass — they are left unfolded rather than risk a false match.
+
+`triage` (issue #812) bundles the same running/waiting evidence into one round trip instead of
+separate `top-methods` + `hot-path` calls: the top busy user-code hotspots (`rankBy="running"`
+order), the top wait/noise categories (grouped by `waitReason`, summed by exclusive samples and
+ranked by exclusive samples descending), and the dominant `hot-path` leaf. It reuses `topN` (default
+`5` instead of the usual `20` — triage is meant to stay a small "first look" summary — and
+`hotPathThresholdPercent` for the hot-path portion). The response also carries a top-level
+`verdict` derived from the whole-capture running/waiting self-sample split: `"cpu-bound"` when
+waiting is under 20% of self time, `"wait-bound"` when it is 50% or more, `"mixed"` otherwise, and
+`"unclassified"` when the capture carries no running/waiting classification at all (e.g. an older
+trace or a non-CPU sample kind). The summary string states the verdict, the busiest method with its
+running/exclusive sample counts, the top wait category (if any) with its percentage, and the
+hot-path leaf. The `NextActionHint` points at `caller-callee` anchored on the top busy method (or at
+`call-tree` when no attributable method was found).
 
 The GC drilldown views (`timeline`, `longestPauses`, `byGeneration`, issue #314) re-aggregate the
 GC events already retained behind a `gc-events` handle — no new collection. `timeline` orders the
@@ -1873,6 +1887,9 @@ surface the same split:
   row carries `selfSamples` beside inclusive/exclusive counts.
 - `view="by-module"` / `view="by-namespace"` — each aggregate row carries the
   summed self-time split for that bucket.
+- `view="triage"` (issue #812) — the top-level view carries the whole-capture
+  `selfSamples` split (used to derive `verdict`), and each `topBusyMethods` row
+  carries its own `selfSamples`.
 
 **Routing.** `collect_sample(kind="cpu")` dispatches based on
 `inspect_process(view="capabilities")`:
@@ -2762,7 +2779,7 @@ contract.
   `config`, `timeline`, `hillClimbing`, `requests`, `longRunning`, …
 - **cpu-sample / allocation-sample / native-alloc-sample**: `call-tree`
   (default), `top-methods`, `by-module`, `by-namespace`, `hot-path`,
-  `caller-callee`, `diff`.
+  `caller-callee`, `triage`, `diff`.
 
 **Common view-specific parameters** (each ignored outside its view):
 `rankBy` (`bytes`/`instances`), `typeFullName`, `address`,

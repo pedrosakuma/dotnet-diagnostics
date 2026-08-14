@@ -104,6 +104,7 @@ public class CpuSampleQueryDispatcherTests
             CpuSampleQueryDispatcher.ByNamespaceView,
             CpuSampleQueryDispatcher.HotPathView,
             CpuSampleQueryDispatcher.CallerCalleeView,
+            CpuSampleQueryDispatcher.TriageView,
         });
     }
 
@@ -281,6 +282,79 @@ public class CpuSampleQueryDispatcherTests
     [Fact]
     public void RenderHotPath_ThresholdOutOfRange_ReturnsInvalidArgument()
         => CpuSampleQueryDispatcher.RenderHotPath(Recursive(), Handle, thresholdPercent: 0)
+            .Error!.Kind.Should().Be("InvalidArgument");
+
+    [Fact]
+    public void RenderTriage_BundlesBusyMethodsWaitCategoriesAndHotPathLeaf()
+    {
+        var outcome = CpuSampleQueryDispatcher.RenderTriage(ClassifiedTrace(), Handle, topN: 5, hotPathThresholdPercent: 50);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.ProcessId.Should().Be(123);
+        outcome.Data.TotalSamples.Should().Be(100);
+        outcome.Data.SelfSamples.Should().Be(new SelfSampleBreakdown(40, 60));
+
+        // rankBy="running" order (#811 pt.1): BurnCpu (all running) ranks above WaitForSignal (all waiting).
+        outcome.Data.TopBusyMethods[0].Method.Should().Be("MyApp.Worker.BurnCpu");
+
+        outcome.Data.TopWaitCategories.Should().ContainSingle();
+        outcome.Data.TopWaitCategories[0].WaitReason.Should().Be("ThreadPool worker idle wait");
+        outcome.Data.TopWaitCategories[0].ExclusiveSamples.Should().Be(60);
+        outcome.Data.TopWaitCategories[0].MethodCount.Should().Be(1);
+
+        outcome.Data.HotPathLeaf.Should().NotBeNull();
+        outcome.Data.HotPathLeaf!.Method.Should().Be("System.Threading.LowLevelLifoSemaphore.WaitForSignal");
+    }
+
+    [Theory]
+    [InlineData(90, 10, "cpu-bound")]   // 10% waiting < 20% threshold
+    [InlineData(50, 50, "wait-bound")]  // 50% waiting >= 50% threshold
+    [InlineData(70, 30, "mixed")]       // between 20% and 50%
+    public void RenderTriage_ClassifiesVerdictFromRunningWaitingSplit(long running, long waiting, string expectedVerdict)
+    {
+        var leaf = new CallTreeNode(new SampledFrame("App.dll", "Leaf"), running + waiting, running + waiting, Array.Empty<CallTreeNode>())
+        {
+            SelfSamples = new SelfSampleBreakdown(running, waiting),
+        };
+        var root = new CallTreeNode(new SampledFrame(string.Empty, "<root>"), running + waiting, 0, new[] { leaf });
+        var artifact = new CpuSampleTraceArtifact(123, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), running + waiting, root)
+        {
+            SelfSamples = new SelfSampleBreakdown(running, waiting),
+        };
+
+        var outcome = CpuSampleQueryDispatcher.RenderTriage(artifact, Handle, topN: 5, hotPathThresholdPercent: 50);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.Verdict.Should().Be(expectedVerdict);
+    }
+
+    [Fact]
+    public void RenderTriage_NoSelfSampleClassification_VerdictIsUnclassified()
+    {
+        // TwoPaths() has no SelfSamples split on any node, so triage cannot classify a verdict.
+        var outcome = CpuSampleQueryDispatcher.RenderTriage(TwoPaths(), Handle, topN: 5, hotPathThresholdPercent: 50);
+
+        outcome.Error.Should().BeNull();
+        outcome.Data!.Verdict.Should().Be("unclassified");
+        outcome.Data.TopWaitCategories.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RenderTriage_SummaryMentionsVerdictBusyMethodAndWaitCategory()
+    {
+        var outcome = CpuSampleQueryDispatcher.RenderTriage(ClassifiedTrace(), Handle, topN: 5, hotPathThresholdPercent: 50);
+
+        outcome.Summary.Should().Contain("wait-bound").And.Contain("BurnCpu").And.Contain("ThreadPool worker idle wait");
+    }
+
+    [Fact]
+    public void RenderTriage_TopNBelowOne_ReturnsInvalidArgument()
+        => CpuSampleQueryDispatcher.RenderTriage(ClassifiedTrace(), Handle, topN: 0, hotPathThresholdPercent: 50)
+            .Error!.Kind.Should().Be("InvalidArgument");
+
+    [Fact]
+    public void RenderTriage_ThresholdOutOfRange_ReturnsInvalidArgument()
+        => CpuSampleQueryDispatcher.RenderTriage(ClassifiedTrace(), Handle, topN: 5, hotPathThresholdPercent: 0)
             .Error!.Kind.Should().Be("InvalidArgument");
 
     [Fact]

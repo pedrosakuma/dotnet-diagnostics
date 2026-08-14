@@ -500,6 +500,13 @@ internal static partial class CliCommands
                 return BuildResult(CpuSampleQueryDispatcher.RenderHotPath(trace, handle, options.Threshold ?? CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent), SerializeQuery);
             case CpuSampleQueryDispatcher.CallerCalleeView:
                 return BuildResult(CpuSampleQueryDispatcher.RenderCallerCallee(trace, handle, options.RootMethodFilter, topN), SerializeQuery);
+            case CpuSampleQueryDispatcher.TriageView:
+                // triage (issue #812) defaults to a small, bundled "first look" row count rather than
+                // DefaultTopN, matching the MCP query_snapshot(view="triage") default.
+                var triageTopN = ResolveQueryTopN(options, CpuSampleQueryDispatcher.CompactTopN);
+                return BuildResult(
+                    CpuSampleQueryDispatcher.RenderTriage(trace, handle, triageTopN, options.Threshold ?? CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent),
+                    SerializeQuery);
             case CpuSampleQueryDispatcher.CallTreeView:
                 break;
             default:

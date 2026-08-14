@@ -571,6 +571,20 @@ public sealed class SessionReplTests
     }
 
     [Fact]
+    public async Task Query_CpuSampleHandle_TriageView_BundlesBusyMethodsAndVerdict()
+    {
+        var (services, store) = BuildServices();
+        var handle = store.Register(Environment.ProcessId, "cpu-sample", CpuTrace(), TimeSpan.FromMinutes(10));
+
+        var (exit, stdout, _) = await RunReplAsync(
+            $"query --handle {handle.Id} --view triage\nexit\n", services);
+
+        exit.Should().Be(0);
+        stdout.Should().Contain("\"verdict\": \"wait-bound\""); // CpuTrace() is 40 running / 60 waiting overall
+        stdout.Should().Contain("LeafA"); // rankBy=running promotes the all-running leaf
+    }
+
+    [Fact]
     public async Task Query_ThreadSnapshotHandle_DefaultsToTopBlocked()
     {
         var (services, store) = BuildServices();
@@ -1125,6 +1139,7 @@ public sealed class SessionReplTests
         views.Should().Contain("by-namespace");
         views.Should().Contain("hot-path");
         views.Should().Contain("caller-callee");
+        views.Should().Contain("triage");
     }
 
     [Fact]

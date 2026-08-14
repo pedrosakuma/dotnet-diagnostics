@@ -276,6 +276,14 @@ public sealed partial class QuerySnapshotTool
                 // when the caller's own topN would have asked for more (issue #805).
                 cpuTopN = Math.Min(cpuTopN, CpuSampleQueryDispatcher.CompactTopN);
             }
+            else if (string.Equals(cpuView, CpuSampleQueryDispatcher.TriageView, StringComparison.Ordinal)
+                && context.TopN is null)
+            {
+                // triage is meant to be a small, bundled "first look" round trip (issue #812), so it
+                // defaults to the same small row count as depth="compact" rather than DefaultTopN — a
+                // caller that wants more rows can still pass an explicit topN.
+                cpuTopN = CpuSampleQueryDispatcher.CompactTopN;
+            }
 
             DiagnosticResult<object> result = cpuView switch
             {
@@ -294,6 +302,8 @@ public sealed partial class QuerySnapshotTool
                     CpuSampleQueryDispatcher.RenderByNamespace(trace, context.Handle, cpuTopN)),
                 CpuSampleQueryDispatcher.HotPathView => AsObjectEnvelope(
                     CpuSampleQueryDispatcher.RenderHotPath(trace, context.Handle, context.HotPathThresholdPercent)),
+                CpuSampleQueryDispatcher.TriageView => AsObjectEnvelope(
+                    CpuSampleQueryDispatcher.RenderTriage(trace, context.Handle, cpuTopN, context.HotPathThresholdPercent)),
                 CpuSampleQueryDispatcher.CallerCalleeView => AsObjectEnvelope(
                     CpuSampleQueryDispatcher.RenderCallerCallee(trace, context.Handle, context.RootMethodFilter, cpuTopN)),
                 _ => UnknownView(cpuView, context.Kind, CpuViewNames),
