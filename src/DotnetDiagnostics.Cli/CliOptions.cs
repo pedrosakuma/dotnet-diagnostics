@@ -202,6 +202,9 @@ internal sealed record CliOptions
     /// <summary>DATAS <c>tuning</c> query view only: emit only rows where the heap-count decision changed versus the previous GC (<c>--changes-only</c>). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public bool ChangesOnly { get; init; }
 
+    /// <summary>CPU-sample <c>top-methods</c> query view only: fold compiler-generated async state-machine <c>MoveNext</c> leaves back to their declaring async method name (<c>--fold-async</c>), e.g. <c>Owner+&lt;Method&gt;d__22.MoveNext()</c> renders as <c>Owner.Method() [async]</c>. Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
+    public bool FoldAsync { get; init; }
+
     /// <summary>Maximum call-tree depth for the CPU <c>call-tree</c> view (<c>--max-depth</c>, default 8). Honoured only by the stateful <c>session</c> <c>query</c> path.</summary>
     public int? MaxDepth { get; init; }
 
@@ -465,6 +468,7 @@ internal sealed record CliOptions
             new FlagOptionDescriptor(state => state.IncludeDuplicateStrings = true, "--include-duplicate-strings"),
             new FlagOptionDescriptor(state => state.Confirm = true, "--confirm"),
             new FlagOptionDescriptor(state => state.ChangesOnly = true, "--changes-only"),
+            new FlagOptionDescriptor(state => state.FoldAsync = true, "--fold-async"),
             new FlagOptionDescriptor(state => state.Launch = true, "--launch"),
             new FlagOptionDescriptor(state => state.SuspendStartup = true, "--suspend-startup"),
             new PidOptionDescriptor("--pid", "-p"),
@@ -661,6 +665,7 @@ internal sealed record CliOptions
         public string? ProviderFilter { get; set; }
 
         public bool ChangesOnly { get; set; }
+        public bool FoldAsync { get; set; }
 
         public int? MaxDepth { get; set; }
 
@@ -786,6 +791,7 @@ internal sealed record CliOptions
                 RootMethodFilter = RootMethodFilter,
                 ProviderFilter = ProviderFilter,
                 ChangesOnly = ChangesOnly,
+                FoldAsync = FoldAsync,
                 MaxDepth = MaxDepth,
                 MaxNodes = MaxNodes,
                 ThreadId = ThreadId,

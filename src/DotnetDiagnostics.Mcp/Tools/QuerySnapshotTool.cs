@@ -163,6 +163,7 @@ public sealed partial class QuerySnapshotTool
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         [Description("Zero-based compatibility offset for paged thread-list and lock-graph views. Values above 256 are rejected because ranked random access is quadratic. Prefer cursor continuation. Defaults to 0.")] int offset = 0,
         [Description("Opaque continuation returned by a thread page as nextThreadCursor, nextLockCursor, or nextWaiterCursor. Bound to the handle/view (and lock address for waiter pages); malformed or cross-handle cursors are rejected. Do not combine with a non-zero offset.")] string? cursor = null,
+        [Description("cpu-sample/allocation-sample/native-alloc-sample view='top-methods' only: when true, renames compiler-generated async state-machine MoveNext leaves (e.g. `Owner+<Method>d__22.MoveNext()`) to their declaring async method name (e.g. `Owner.Method() [async]`), so on-CPU work inside an async method's own body reads as recognizable user code instead of runtime plumbing. Does not merge separate call-tree frames; a row's `asyncFolded` flag reports whether it matched. Defaults to false.")] bool foldAsync = false,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(handle))
@@ -217,6 +218,7 @@ public sealed partial class QuerySnapshotTool
             Offset = offset,
             Cursor = cursor,
             RankBy = rankBy,
+            FoldAsync = foldAsync,
             TypeFullName = typeFullName,
             Address = address,
             IncludeSensitiveValues = includeSensitiveValues,
@@ -277,6 +279,7 @@ public sealed partial class QuerySnapshotTool
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         int offset = 0,
+        bool foldAsync = false,
         CancellationToken cancellationToken = default)
         => QuerySnapshotCursorPaged(
             handles,
@@ -313,6 +316,7 @@ public sealed partial class QuerySnapshotTool
             deprecation,
             offset,
             cursor: null,
+            foldAsync: foldAsync,
             cancellationToken: cancellationToken);
 
     public static Task<DiagnosticResult<object>> QuerySnapshot(
@@ -348,6 +352,7 @@ public sealed partial class QuerySnapshotTool
         double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
+        bool foldAsync = false,
         CancellationToken cancellationToken = default)
         => QuerySnapshotCursorPaged(
             handles,
@@ -384,6 +389,7 @@ public sealed partial class QuerySnapshotTool
             deprecation,
             offset: 0,
             cursor: null,
+            foldAsync: foldAsync,
             cancellationToken: cancellationToken);
 
 
@@ -1216,6 +1222,7 @@ public sealed partial class QuerySnapshotTool
         double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
+        bool foldAsync = false,
         CancellationToken cancellationToken = default)
         => QuerySnapshotCursorPaged(
             handles,
@@ -1251,6 +1258,7 @@ public sealed partial class QuerySnapshotTool
             investigationHandleId,
             deprecation,
             offset: 0,
+            foldAsync: foldAsync,
             cancellationToken: cancellationToken);
 
     // Derived from KindHandlers (QuerySnapshotTool.Dispatch.cs) so the two lists can never drift —

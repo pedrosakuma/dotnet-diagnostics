@@ -358,6 +358,7 @@ query options:
       --top-types <int>         Backward-compatible alias for --top on query views.
       --provider-filter <text>  Session query: event-catalog provider substring filter.
       --changes-only            Session query: DATAS 'tuning' view; show only heap-count changes.
+      --fold-async              Session query: CPU top-methods; fold async MoveNext leaves to their declaring method (issue #811).
       --root-method-filter <t>  Session query: CPU method filter; event-catalog event-name filter.
       --thread-id <int>         Session query: ManagedThreadId; required for thread-snapshot 'frame-vars' view.
       --offset <int>            Session query: compatibility offset 0..256 for bounded thread/lock pages.
@@ -388,6 +389,7 @@ query options:
                 "--view",
                 "--provider-filter",
                 "--changes-only",
+                "--fold-async",
                 "--root-method-filter",
                 "--rank-by",
                 "--type-filter",

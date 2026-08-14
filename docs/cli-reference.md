@@ -765,7 +765,7 @@ exposes drilldown views computed from the merged call tree without re-sampling:
 | View | What it shows | Relevant flags |
 | --- | --- | --- |
 | `call-tree` (default) | the merged inclusive/exclusive call tree; CPU handles can also carry `selfSamples` on the view and per node | `--max-depth` (tree depth, default `8`), `--max-nodes` (default `64`; larger requests are clamped to the `64`-node wire cap), `--min-count`, `--root-method-filter`, `--rank-by` |
-| `top-methods` | methods ranked by sample cost; CPU handles include per-method `selfSamples.runningSamples` vs `selfSamples.waitingSamples` | `--top` (default `20`), `--rank-by exclusive\|inclusive` |
+| `top-methods` | methods ranked by sample cost; CPU handles include per-method `selfSamples.runningSamples` vs `selfSamples.waitingSamples` | `--top` (default `20`), `--rank-by exclusive\|inclusive`, `--fold-async` (rename async `MoveNext` leaves to their declaring method) |
 | `by-module` | samples grouped by owning module | `--top`, `--rank-by` |
 | `by-namespace` | samples grouped by namespace | `--top`, `--rank-by` |
 | `hot-path` | the dominant stack from the root down; CPU handles include per-frame `selfSamples` | `--threshold` (percent, default `50`) |
@@ -775,7 +775,11 @@ For session ranked views, `--top` is preferred. The older `--top-types` remains 
 alias; when both are present, `--top` wins.
 
 `--rank-by inclusive` ranks/credits by inclusive samples; any other value (including the default) uses
-exclusive samples. `caller-callee` requires `--root-method-filter` to resolve exactly one method: zero matches
+exclusive samples. `--fold-async` (issue #811) is opt-in and only affects `top-methods`: it renames a
+compiler-generated async state-machine `MoveNext` leaf (e.g. `Owner+<Method>d__22.MoveNext()`) to its
+declaring async method name (`Owner.Method() [async]`), so on-CPU work inside an async method's own body
+reads as recognizable user code instead of unfamiliar runtime plumbing; rows include an `asyncFolded`
+flag reporting whether a match occurred. `caller-callee` requires `--root-method-filter` to resolve exactly one method: zero matches
 return a `NotFound` envelope, more than one returns `InvalidArgument` with the candidate list.
 
 For `collect --kind cpu`, interpret `selfSamples` as a **self/exclusive-time split**:

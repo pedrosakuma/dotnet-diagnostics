@@ -66,6 +66,7 @@ public sealed partial class QuerySnapshotTool
         public required int Offset { get; init; }
         public required string? Cursor { get; init; }
         public required string RankBy { get; init; }
+        public required bool FoldAsync { get; init; }
         public required string? TypeFullName { get; init; }
         public required string? Address { get; init; }
         public required bool IncludeSensitiveValues { get; init; }
@@ -285,7 +286,8 @@ public sealed partial class QuerySnapshotTool
                         string.Equals(context.RankBy, "inclusive", StringComparison.OrdinalIgnoreCase) ? "inclusive"
                             : string.Equals(context.RankBy, "running", StringComparison.OrdinalIgnoreCase) ? "running"
                             : "exclusive",
-                        cpuTopN)),
+                        cpuTopN,
+                        context.FoldAsync)),
                 CpuSampleQueryDispatcher.ByModuleView => AsObjectEnvelope(
                     CpuSampleQueryDispatcher.RenderByModule(trace, context.Handle, cpuTopN)),
                 CpuSampleQueryDispatcher.ByNamespaceView => AsObjectEnvelope(

@@ -152,7 +152,7 @@ public static class CpuSampleQueryDispatcher
 
     /// <summary>Renders the <c>top-methods</c> view: per-method exclusive/inclusive aggregation, ranked and capped.</summary>
     public static DiagnosticResult<TopMethodsView> RenderTopMethods(
-        CpuSampleTraceArtifact artifact, string handle, string? sortBy, int topN)
+        CpuSampleTraceArtifact artifact, string handle, string? sortBy, int topN, bool foldAsync = false)
     {
         ArgumentNullException.ThrowIfNull(artifact);
         if (topN < 1) return InvalidArg<TopMethodsView>(nameof(topN), "must be >= 1");
@@ -168,7 +168,10 @@ public static class CpuSampleQueryDispatcher
         // re-orders the exclusive-ranked list by on-CPU (running) self-time instead of raw exclusive
         // samples, so a hot wait frame (e.g. LowLevelLifoSemaphore.WaitForSignal) no longer buries the
         // actual busy hotspot underneath it.
-        var ranked = CpuSampleAnalytics.RankMethods(root, artifact.TotalSamples, byInclusive: normalizedSort == "inclusive");
+        // "foldAsync" (issue #811 part 3) renames compiler-generated async state-machine MoveNext
+        // leaves back to their declaring async method name, so `Owner+<Method>d__22.MoveNext()`
+        // reads as `Owner.Method() [async]` instead of unfamiliar runtime-plumbing-looking text.
+        var ranked = CpuSampleAnalytics.RankMethods(root, artifact.TotalSamples, byInclusive: normalizedSort == "inclusive", foldAsync: foldAsync);
         if (normalizedSort == "running")
         {
             ranked = CpuSampleAnalytics.RankMethodsByRunningSelf(ranked);
