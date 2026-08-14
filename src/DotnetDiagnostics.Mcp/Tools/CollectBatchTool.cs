@@ -86,6 +86,25 @@ public sealed class CollectBatchTool
     /// process (resource-boundedness discipline, docs/resource-boundedness.md).</summary>
     internal const int MaxEntries = 4;
 
+    /// <summary>
+    /// Floor applied to a <c>counters</c> entry's own effective duration when it shares a batch
+    /// with at least one other entry (#807). <c>collect_batch</c> arms every requested entry's
+    /// EventPipe/ETW session concurrently against the same pid and shares one nominal
+    /// <c>durationSeconds</c> across all of them. Per AGENTS.md, EventPipe session start alone
+    /// costs ~500ms-1s, and counter payloads only arrive at <c>EventCounterIntervalSec</c>
+    /// boundaries (default 1s) — concurrently arming 2-4 sessions against one target can push
+    /// start latency higher still. A short shared window (e.g. 1-3s, as seen against
+    /// short-lived BenchmarkDotNet child processes) can therefore close before a single counter
+    /// boundary is reached, leaving <c>CounterSnapshot.Counters</c> empty even though the summary
+    /// text still reads as useful. This floor guarantees the counters entry keeps enough margin
+    /// after startup to observe at least one boundary, mirroring the
+    /// <see cref="Core.UseCases.SweepUseCase.MinimumDurationSeconds"/> precedent for its own
+    /// nested EventPipe fan-out. It only raises the counters entry's own effective duration —
+    /// every other entry (and the batch's reported <see cref="CollectBatchReport.DurationSeconds"/>)
+    /// keeps using the caller-supplied value unchanged.
+    /// </summary>
+    internal const int CountersMinimumDurationSeconds = 3;
+
 
     [RequireAnyScope("read-counters", "eventpipe")]
     [McpServerTool(
@@ -213,6 +232,12 @@ public sealed class CollectBatchTool
         var pid = resolved.ProcessId;
         var collectGen2Meter = canonicalEntries.Contains((ToolCollectEvents, "counters")) &&
                                canonicalEntries.Contains((ToolCollectEvents, "gc"));
+        // Only raise the counters entry's own effective duration when it shares the batch with at
+        // least one other entry — a solo counters batch has no concurrent-session contention and
+        // should behave exactly like the caller-supplied durationSeconds (#807).
+        var countersDurationSeconds = canonicalEntries.Count > 1
+            ? Math.Max(durationSeconds, CountersMinimumDurationSeconds)
+            : durationSeconds;
 
         async Task<CollectBatchEntryResult> RunEntryAsync(string tool, string kind, CancellationToken ct)
         {
@@ -272,7 +297,7 @@ public sealed class CollectBatchTool
                     loggerFactory,
                     kind: kind,
                     processId: pid,
-                    durationSeconds: durationSeconds,
+                    durationSeconds: kind == "counters" ? countersDurationSeconds : durationSeconds,
                     meters: collectGen2Meter && kind == "counters" ? Gen2MeterSelection : null,
                     maxInstrumentTimeSeries: collectGen2Meter && kind == "counters"
                         ? Gen2MeterMaxTimeSeries

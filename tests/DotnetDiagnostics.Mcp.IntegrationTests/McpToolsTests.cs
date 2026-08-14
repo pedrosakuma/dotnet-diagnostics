@@ -745,6 +745,45 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task CollectBatch_CountersWithSiblingEntries_FloorsShortSharedDurationAndPopulatesCounters()
+    {
+        // Regression test for #807: a short shared durationSeconds combined with concurrent
+        // sibling entries (cpu + allocation) previously risked closing the counters EventPipe
+        // session before a single EventCounterIntervalSec boundary was reached, leaving
+        // data.counters.counters empty. collect_batch now floors the counters entry's own
+        // effective duration (CollectBatchTool.CountersMinimumDurationSeconds) when it shares the
+        // batch with other entries, while the batch's reported/caller-supplied durationSeconds
+        // stays unchanged for every other entry.
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "cpu" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "allocation" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
+                },
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 1,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var report = DeserializeStructured<CollectBatchReport>(result);
+        report.Should().NotBeNull();
+        report!.DurationSeconds.Should().Be(1, "the reported/caller-supplied durationSeconds is unchanged for every other entry");
+
+        var countersEntry = report.Results.Single(r => r.Tool == "collect_events" && r.Kind == "counters");
+        countersEntry.Error.Should().BeNull();
+        countersEntry.Data.Should().NotBeNull();
+        var countersArray = countersEntry.Data!.Value.GetProperty("counters").GetProperty("counters");
+        countersArray.GetArrayLength().Should().BeGreaterThan(0, "the counters entry's own effective duration must be floored so it observes at least one EventCounterIntervalSec boundary");
+    }
+
+    [Fact]
     public async Task CollectBatch_DepthCompact_ElidesDataButKeepsHandleAndSummary()
     {
         await using var client = await ConnectAsync();
