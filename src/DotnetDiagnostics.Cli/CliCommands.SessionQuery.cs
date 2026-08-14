@@ -155,13 +155,35 @@ internal static partial class CliCommands
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
 
-        if (string.IsNullOrWhiteSpace(options.Handle))
+        if (!string.IsNullOrWhiteSpace(options.Handle) && !string.IsNullOrWhiteSpace(options.LatestOfKind))
         {
-            return Fail("query: --handle <id> is required.", "InvalidArgument",
-                "Pass the handle printed after a collect command, e.g. query --handle <id> --view <view>.");
+            return Fail("query: --handle and --latest-of-kind cannot be combined.", "InvalidArgument",
+                "Supply exactly one of --handle <id> or --latest-of-kind <kind>.");
         }
 
         var store = services.GetRequiredService<IDiagnosticHandleStore>();
+
+        if (string.IsNullOrWhiteSpace(options.Handle) && !string.IsNullOrWhiteSpace(options.LatestOfKind))
+        {
+            var resolved = store.TryGetLatestByKind(options.LatestOfKind, options.Pid);
+            if (resolved is null)
+            {
+                var detail = options.Pid is { } pid
+                    ? $"No non-expired handle of kind '{options.LatestOfKind}' is registered for process {pid}."
+                    : $"No non-expired handle of kind '{options.LatestOfKind}' is currently registered.";
+                return Fail($"query: {detail}", "NotFound",
+                    "Collect a fresh handle of that kind first (e.g. 'collect --kind ...'), then retry.");
+            }
+
+            options = options with { Handle = resolved.Id };
+        }
+
+        if (string.IsNullOrWhiteSpace(options.Handle))
+        {
+            return Fail("query: --handle <id> is required.", "InvalidArgument",
+                "Pass the handle printed after a collect command, e.g. query --handle <id> --view <view> (or use --latest-of-kind <kind> instead).");
+        }
+
         var lookupResult = store.LookupWithKind(options.Handle);
         var lookup = lookupResult.Lookup;
         if (lookup is null)

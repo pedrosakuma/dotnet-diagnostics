@@ -239,6 +239,27 @@ public sealed class MemoryDiagnosticHandleStore : IDiagnosticHandleStore
         return processIds;
     }
 
+    public DiagnosticHandle? TryGetLatestByKind(string kind, int? processId = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+
+        List<Removal> expired;
+        DiagnosticHandle? latest;
+        lock (_gate)
+        {
+            expired = EvictExpiredLocked(_clock.GetUtcNow());
+            latest = _entries.Values
+                .Where(entry => string.Equals(entry.Handle.Kind, kind, StringComparison.Ordinal)
+                    && (processId is null || entry.Handle.ProcessId == processId.Value))
+                .OrderByDescending(static entry => entry.Sequence)
+                .Select(static entry => entry.Handle)
+                .FirstOrDefault();
+        }
+
+        ObserveRemovals(expired);
+        return latest;
+    }
+
     internal int EntryCount
     {
         get

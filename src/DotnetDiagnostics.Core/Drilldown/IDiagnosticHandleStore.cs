@@ -94,6 +94,17 @@ public interface IDiagnosticHandleStore
     /// preserved so they survive the originating PID's exit.
     /// </summary>
     int InvalidateForProcess(int processId);
+
+    /// <summary>
+    /// Resolves the most recently registered non-expired handle of <paramref name="kind"/>
+    /// (optionally narrowed to <paramref name="processId"/>), so callers can avoid round-tripping
+    /// the handle id a prior collector just returned — the "latest handle of a kind" alias for
+    /// iterative tuning loops (issue #812). Ties (same registration instant) resolve to the most
+    /// recently registered entry. Returns <c>null</c> when no matching handle currently resolves.
+    /// The default implementation returns <c>null</c> so existing <see cref="IDiagnosticHandleStore"/>
+    /// implementations remain source-compatible without opting in.
+    /// </summary>
+    DiagnosticHandle? TryGetLatestByKind(string kind, int? processId = null) => null;
 }
 
 /// <summary>

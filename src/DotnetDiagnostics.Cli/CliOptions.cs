@@ -175,6 +175,16 @@ internal sealed record CliOptions
     /// <summary>Drill-down handle (<c>--handle</c>) for the <c>query</c> command (parsed for forward-compat; the one-shot CLI cannot honour it — see #286).</summary>
     public string? Handle { get; init; }
 
+    /// <summary>
+    /// Alias for <see cref="Handle"/> in the <c>session</c> <c>query</c> command (issue #812):
+    /// <c>--latest-of-kind &lt;kind&gt;</c> resolves to the most recently registered non-expired
+    /// handle of that kind (e.g. <c>cpu-sample</c>) instead of requiring the caller to copy a handle
+    /// id from a prior <c>collect</c> — useful for iterative collect→query tuning loops. Exactly one
+    /// of <see cref="Handle"/>/<see cref="LatestOfKind"/> must be supplied. Not honoured by the
+    /// one-shot CLI (no surviving handle store — see #286).
+    /// </summary>
+    public string? LatestOfKind { get; init; }
+
     /// <summary>Drill-down view name (<c>--view</c>) for the <c>query</c> command (parsed for forward-compat; the one-shot CLI cannot honour it — see #286).</summary>
     public string? View { get; init; }
 
@@ -524,6 +534,7 @@ internal sealed record CliOptions
             new StringOptionDescriptor((state, value) => state.Mvid = value, "--mvid"),
             new StringOptionDescriptor((state, value) => state.Asset = value, "--asset"),
             new StringOptionDescriptor((state, value) => state.Handle = value, "--handle"),
+            new StringOptionDescriptor((state, value) => state.LatestOfKind = value, "--latest-of-kind"),
             new StringOptionDescriptor((state, value) => state.View = value, "--view"),
             new StringOptionDescriptor((state, value) => state.RankBy = value, "--rank-by"),
             new StringOptionDescriptor((state, value) => state.TypeFilter = value, "--type-filter"),
@@ -647,6 +658,8 @@ internal sealed record CliOptions
         public string? Asset { get; set; }
 
         public string? Handle { get; set; }
+
+        public string? LatestOfKind { get; set; }
 
         public string? View { get; set; }
 
@@ -782,6 +795,7 @@ internal sealed record CliOptions
                 Mvid = Mvid,
                 Asset = Asset,
                 Handle = Handle,
+                LatestOfKind = LatestOfKind,
                 View = View,
                 RankBy = RankBy,
                 TypeFilter = TypeFilter,

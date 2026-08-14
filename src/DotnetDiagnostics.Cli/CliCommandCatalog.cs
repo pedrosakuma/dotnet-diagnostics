@@ -30,7 +30,7 @@ internal static class CliCommandCatalog
         "-p", "--pid", "--kind", "-d", "--duration", "--depth", "--max-events", "--interval",
         "--provider", "--meter", "--source", "--category", "--min-level", "--save", "--dump-file",
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--dump-type", "--out", "--mvid",
-        "--asset", "--handle", "--view", "--provider-filter", "--root-method-filter", "--rank-by",
+        "--asset", "--handle", "--latest-of-kind", "--view", "--provider-filter", "--root-method-filter", "--rank-by",
         "--type-filter", "--address", "--offset", "--cursor", "--max-depth", "--max-nodes", "--thread-id",
         "--native-alloc-sample-period", "--max-frames-per-thread", "--watch",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
@@ -352,7 +352,9 @@ dump options:
             "Drill-down query (unsupported in the one-shot CLI — see notes).",
 """
 query options:
-      --handle <id>             Session drill-down handle.
+      --handle <id>             Session drill-down handle. Exactly one of --handle/--latest-of-kind is required.
+      --latest-of-kind <kind>   Session query: alias for --handle — resolves to the most recently registered
+                                non-expired handle of this kind (e.g. cpu-sample); narrow with --pid.
       --view <name>             Session drill-down view.
       --top <int>               Session query: cap ranked rows/groups; wins when --top-types is also set.
       --top-types <int>         Backward-compatible alias for --top on query views.
@@ -386,6 +388,7 @@ query options:
             string.Empty,
             [
                 "--handle",
+                "--latest-of-kind",
                 "--view",
                 "--provider-filter",
                 "--changes-only",

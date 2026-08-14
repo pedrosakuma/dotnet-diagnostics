@@ -643,6 +643,8 @@ envelope (exit 1) that redirects you to `dotnet-diagnostics session`, where a `c
 `dump`) issues a handle you can drill into in the same session; for a one-shot answer instead, re-run the
 originating command with `--depth detail` / `--json` to get the full result inline.
 Inside `session`, `query --handle <id> --view <view>` works against the live handle store (see below).
+An alias `query --latest-of-kind <kind> --view <view>` resolves to the most recently registered
+non-expired handle of that kind instead of requiring you to copy a handle id (see below).
 
 ### `session`
 
@@ -743,6 +745,14 @@ A `collect` or `inspect-heap` command prints a handle plus the views you can re-
 `query --handle <id> --view <view>` re-renders that artifact under the chosen view with no new collection.
 Handles are evicted when they expire (a TTL) or when the target process exits — a 5 s in-process sweep drops
 dead-target handles so you never drill into a stale trace.
+
+**`--latest-of-kind <kind>` (issue #812)** is an alias for `--handle`: instead of copying a handle id from a
+prior `collect`/`inspect-heap`, `query --latest-of-kind cpu-sample --view <view>` resolves to the most
+recently registered non-expired handle of that kind — useful for iterative collect→query tuning loops.
+Exactly one of `--handle`/`--latest-of-kind` may be supplied; combining both, or supplying neither, is
+rejected with `InvalidArgument`. If no non-expired handle of that kind is currently registered, the command
+returns `NotFound` with a hint to collect one first. In a session with handles for more than one process,
+narrow the match with `--pid <id>` (the same flag used to bind/override a target).
 
 Handles are **process-local**. A handle printed by a one-shot invocation disappears when that CLI
 process exits and cannot be queried by a later invocation; one-shot human and JSON output include

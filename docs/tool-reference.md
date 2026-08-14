@@ -2755,7 +2755,9 @@ contract.
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `handle` | `string` | — | Drilldown handle from a prior collector |
+| `handle` | `string?` | — | Drilldown handle from a prior collector. Required unless `latestOfKind` is supplied instead. |
+| `latestOfKind` | `string?` | — | Alias for `handle` (issue #812): resolves to the most recently registered non-expired handle of this kind (e.g. `"cpu-sample"`) instead of requiring the caller to copy a handle id — useful for iterative collect→query tuning loops. Exactly one of `handle`/`latestOfKind` must be supplied; supplying both or neither returns `InvalidArgument`. If no matching handle is registered, returns `NotFound` with a hint to run the appropriate collector. |
+| `latestOfKindProcessId` | `int?` | — | `latestOfKind` only: restrict resolution to handles registered for this OS process id. Omit to resolve the latest handle of the kind across all processes visible to this server — recommended when more than one process may hold handles of the same kind. |
 | `view` | `string?` | per-kind default | Kind-specific view (catalog below). Omit for the kind's default |
 | `topN` | `int?` | 50 heap/thread/collection, 25 off-CPU | Max entries in a ranked-list view |
 

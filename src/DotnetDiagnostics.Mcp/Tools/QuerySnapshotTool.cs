@@ -166,11 +166,32 @@ public sealed partial class QuerySnapshotTool
         [Description("Zero-based compatibility offset for paged thread-list and lock-graph views. Values above 256 are rejected because ranked random access is quadratic. Prefer cursor continuation. Defaults to 0.")] int offset = 0,
         [Description("Opaque continuation returned by a thread page as nextThreadCursor, nextLockCursor, or nextWaiterCursor. Bound to the handle/view (and lock address for waiter pages); malformed or cross-handle cursors are rejected. Do not combine with a non-zero offset.")] string? cursor = null,
         [Description("cpu-sample/allocation-sample/native-alloc-sample view='top-methods' only: when true, renames compiler-generated async state-machine MoveNext leaves (e.g. `Owner+<Method>d__22.MoveNext()`) to their declaring async method name (e.g. `Owner.Method() [async]`), so on-CPU work inside an async method's own body reads as recognizable user code instead of runtime plumbing. Does not merge separate call-tree frames; a row's `asyncFolded` flag reports whether it matched. Defaults to false.")] bool foldAsync = false,
+        [Description("Alias for `handle` (issue #812): resolves to the most recently registered non-expired handle of this kind (e.g. \"cpu-sample\") instead of requiring the caller to copy a handle id from a prior collector — useful for iterative tuning loops that repeatedly collect + query the same kind. Exactly one of `handle`/`latestOfKind` must be supplied. Narrow with `latestOfKindProcessId` when more than one process may hold handles of this kind.")] string? latestOfKind = null,
+        [Description("`latestOfKind` only: restrict resolution to handles registered for this OS process id. Omit to resolve the latest handle of the kind across all processes visible to this server.")] int? latestOfKindProcessId = null,
         CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(handle) && string.IsNullOrWhiteSpace(latestOfKind))
+        {
+            return InvalidArgument(nameof(handle), "is required (or supply `latestOfKind` to resolve the most recently registered handle of a kind)");
+        }
+        if (!string.IsNullOrWhiteSpace(handle) && !string.IsNullOrWhiteSpace(latestOfKind))
+        {
+            return InvalidArgument(nameof(latestOfKind), "cannot be combined with `handle` — supply exactly one");
+        }
         if (string.IsNullOrWhiteSpace(handle))
         {
-            return InvalidArgument(nameof(handle), "is required");
+            var resolved = handles.TryGetLatestByKind(latestOfKind!, latestOfKindProcessId);
+            if (resolved is null)
+            {
+                var detail = latestOfKindProcessId is { } pid
+                    ? $"No non-expired handle of kind '{latestOfKind}' is registered for process {pid}."
+                    : $"No non-expired handle of kind '{latestOfKind}' is currently registered.";
+                return DiagnosticResult.Fail<object>(
+                    $"query_snapshot: {detail}",
+                    new DiagnosticError("NotFound", detail, nameof(latestOfKind)),
+                    RecoveryHintForKind(latestOfKind!, latestOfKindProcessId));
+            }
+            handle = resolved.Id;
         }
 
         var principal = principalAccessor.Current;
@@ -256,7 +277,7 @@ public sealed partial class QuerySnapshotTool
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
         IFrameVariableResolver frameVariableResolver,
-        string handle,
+        string? handle = null,
         string? view = null,
         int? topN = null,
         string rankBy = "bytes",
@@ -282,6 +303,8 @@ public sealed partial class QuerySnapshotTool
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         int offset = 0,
         bool foldAsync = false,
+        string? latestOfKind = null,
+        int? latestOfKindProcessId = null,
         CancellationToken cancellationToken = default)
         => QuerySnapshotCursorPaged(
             handles,
@@ -319,6 +342,8 @@ public sealed partial class QuerySnapshotTool
             offset,
             cursor: null,
             foldAsync: foldAsync,
+            latestOfKind: latestOfKind,
+            latestOfKindProcessId: latestOfKindProcessId,
             cancellationToken: cancellationToken);
 
     public static Task<DiagnosticResult<object>> QuerySnapshot(
@@ -330,7 +355,7 @@ public sealed partial class QuerySnapshotTool
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
         IFrameVariableResolver frameVariableResolver,
-        string handle,
+        string? handle = null,
         string? view = null,
         int? topN = null,
         string rankBy = "bytes",
@@ -355,6 +380,8 @@ public sealed partial class QuerySnapshotTool
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         bool foldAsync = false,
+        string? latestOfKind = null,
+        int? latestOfKindProcessId = null,
         CancellationToken cancellationToken = default)
         => QuerySnapshotCursorPaged(
             handles,
@@ -392,6 +419,8 @@ public sealed partial class QuerySnapshotTool
             offset: 0,
             cursor: null,
             foldAsync: foldAsync,
+            latestOfKind: latestOfKind,
+            latestOfKindProcessId: latestOfKindProcessId,
             cancellationToken: cancellationToken);
 
 
@@ -1264,6 +1293,35 @@ public sealed partial class QuerySnapshotTool
         };
     }
 
+    private static RecoveryTarget RecoveryTargetForKind(string? kind) => kind switch
+    {
+        DiagnosticTools.HeapSnapshotKind => new RecoveryTarget("inspect_heap"),
+        DiagnosticTools.ThreadSnapshotKind => new RecoveryTarget("collect_thread_snapshot"),
+        "cpu-sample" => new RecoveryTarget("collect_sample", "cpu", Replayable: true),
+        "allocation-sample" => new RecoveryTarget("collect_sample", "allocation", Replayable: true),
+        DiagnosticTools.NativeAllocHandleKind => new RecoveryTarget("collect_sample", "native-alloc", Replayable: true),
+        DiagnosticTools.OffCpuHandleKind => new RecoveryTarget("collect_sample", "off_cpu", Replayable: true),
+        MethodParameterCaptureUseCases.HandleKind => new RecoveryTarget("collect_sample", "method-params"),
+        CollectionHandleKinds.Counters => new RecoveryTarget("collect_events", "counters", Replayable: true),
+        CollectionHandleKinds.ExceptionSnapshot => new RecoveryTarget("collect_events", "exceptions", Replayable: true),
+        CollectionHandleKinds.CrashGuardSnapshot => new RecoveryTarget("collect_events", "crash-guard", Replayable: true),
+        CollectionHandleKinds.GcEvents => new RecoveryTarget("collect_events", "gc", Replayable: true),
+        CollectionHandleKinds.GcDatas => new RecoveryTarget("collect_events", "datas", Replayable: true),
+        CollectionHandleKinds.EventCatalog => new RecoveryTarget("collect_events", "catalog", Replayable: true),
+        CollectionHandleKinds.EventSource => new RecoveryTarget("collect_events", "event_source"),
+        CollectionHandleKinds.Activities => new RecoveryTarget("collect_events", "activities", Replayable: true),
+        CollectionHandleKinds.LogSnapshot => new RecoveryTarget("collect_events", "logs", Replayable: true),
+        CollectionHandleKinds.JitSnapshot => new RecoveryTarget("collect_events", "jit", Replayable: true),
+        CollectionHandleKinds.ThreadPoolSnapshot => new RecoveryTarget("collect_events", "threadpool", Replayable: true),
+        CollectionHandleKinds.ContentionSnapshot => new RecoveryTarget("collect_events", "contention", Replayable: true),
+        CollectionHandleKinds.DbSnapshot => new RecoveryTarget("collect_events", "db", Replayable: true),
+        CollectionHandleKinds.KestrelSnapshot => new RecoveryTarget("collect_events", "kestrel", Replayable: true),
+        CollectionHandleKinds.NetworkingSnapshot => new RecoveryTarget("collect_events", "networking", Replayable: true),
+        CollectionHandleKinds.StartupSnapshot => new RecoveryTarget("collect_events", "startup", Replayable: true),
+        CollectionHandleKinds.InFlightRequests => new RecoveryTarget("collect_events", "requests", Replayable: true),
+        _ => new RecoveryTarget("inspect_process"),
+    };
+
     private static NextActionHint RecoveryHint(DiagnosticHandleTombstone? tombstone)
     {
         if (tombstone is null)
@@ -1274,34 +1332,7 @@ public sealed partial class QuerySnapshotTool
                 null);
         }
 
-        var recovery = tombstone.Kind switch
-        {
-            DiagnosticTools.HeapSnapshotKind => new RecoveryTarget("inspect_heap"),
-            DiagnosticTools.ThreadSnapshotKind => new RecoveryTarget("collect_thread_snapshot"),
-            "cpu-sample" => new RecoveryTarget("collect_sample", "cpu", Replayable: true),
-            "allocation-sample" => new RecoveryTarget("collect_sample", "allocation", Replayable: true),
-            DiagnosticTools.NativeAllocHandleKind => new RecoveryTarget("collect_sample", "native-alloc", Replayable: true),
-            DiagnosticTools.OffCpuHandleKind => new RecoveryTarget("collect_sample", "off_cpu", Replayable: true),
-            MethodParameterCaptureUseCases.HandleKind => new RecoveryTarget("collect_sample", "method-params"),
-            CollectionHandleKinds.Counters => new RecoveryTarget("collect_events", "counters", Replayable: true),
-            CollectionHandleKinds.ExceptionSnapshot => new RecoveryTarget("collect_events", "exceptions", Replayable: true),
-            CollectionHandleKinds.CrashGuardSnapshot => new RecoveryTarget("collect_events", "crash-guard", Replayable: true),
-            CollectionHandleKinds.GcEvents => new RecoveryTarget("collect_events", "gc", Replayable: true),
-            CollectionHandleKinds.GcDatas => new RecoveryTarget("collect_events", "datas", Replayable: true),
-            CollectionHandleKinds.EventCatalog => new RecoveryTarget("collect_events", "catalog", Replayable: true),
-            CollectionHandleKinds.EventSource => new RecoveryTarget("collect_events", "event_source"),
-            CollectionHandleKinds.Activities => new RecoveryTarget("collect_events", "activities", Replayable: true),
-            CollectionHandleKinds.LogSnapshot => new RecoveryTarget("collect_events", "logs", Replayable: true),
-            CollectionHandleKinds.JitSnapshot => new RecoveryTarget("collect_events", "jit", Replayable: true),
-            CollectionHandleKinds.ThreadPoolSnapshot => new RecoveryTarget("collect_events", "threadpool", Replayable: true),
-            CollectionHandleKinds.ContentionSnapshot => new RecoveryTarget("collect_events", "contention", Replayable: true),
-            CollectionHandleKinds.DbSnapshot => new RecoveryTarget("collect_events", "db", Replayable: true),
-            CollectionHandleKinds.KestrelSnapshot => new RecoveryTarget("collect_events", "kestrel", Replayable: true),
-            CollectionHandleKinds.NetworkingSnapshot => new RecoveryTarget("collect_events", "networking", Replayable: true),
-            CollectionHandleKinds.StartupSnapshot => new RecoveryTarget("collect_events", "startup", Replayable: true),
-            CollectionHandleKinds.InFlightRequests => new RecoveryTarget("collect_events", "requests", Replayable: true),
-            _ => new RecoveryTarget("inspect_process"),
-        };
+        var recovery = RecoveryTargetForKind(tombstone.Kind);
 
         Dictionary<string, object?>? arguments = null;
         if (recovery.Replayable)
@@ -1332,6 +1363,36 @@ public sealed partial class QuerySnapshotTool
         return new NextActionHint(recovery.Tool, reason, arguments);
     }
 
+    private static NextActionHint RecoveryHintForKind(string kind, int? processId)
+    {
+        var recovery = RecoveryTargetForKind(kind);
+        Dictionary<string, object?>? arguments = null;
+        if (recovery.Replayable)
+        {
+            arguments = new Dictionary<string, object?>();
+            if (recovery.Kind is not null)
+            {
+                arguments["kind"] = recovery.Kind;
+            }
+            if (processId is { } pid)
+            {
+                arguments["processId"] = pid;
+            }
+        }
+
+        var reason = recovery switch
+        {
+            { Replayable: true, Kind: not null } =>
+                $"Collect a fresh '{kind}' handle with {recovery.Tool}(kind=\"{recovery.Kind}\"), then retry query_snapshot(latestOfKind=\"{kind}\") or pass the returned handle explicitly.",
+            { Replayable: true } =>
+                $"Collect a fresh '{kind}' handle with {recovery.Tool}, then retry.",
+            _ =>
+                $"Collect a '{kind}' handle with {recovery.Tool} first.",
+        };
+
+        return new NextActionHint(recovery.Tool, reason, arguments);
+    }
+
     private sealed record RecoveryTarget(string Tool, string? Kind = null, bool Replayable = false);
 
     private static DiagnosticResult<object> InvalidKindPair(string currentKind, string baselineKind)
@@ -1351,7 +1412,7 @@ public sealed partial class QuerySnapshotTool
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
         IFrameVariableResolver frameVariableResolver,
-        string handle,
+        string? handle = null,
         string? view = null,
         int? topN = null,
         string rankBy = "bytes",
@@ -1376,6 +1437,8 @@ public sealed partial class QuerySnapshotTool
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         bool foldAsync = false,
+        string? latestOfKind = null,
+        int? latestOfKindProcessId = null,
         CancellationToken cancellationToken = default)
         => QuerySnapshotCursorPaged(
             handles,
@@ -1412,6 +1475,8 @@ public sealed partial class QuerySnapshotTool
             deprecation,
             offset: 0,
             foldAsync: foldAsync,
+            latestOfKind: latestOfKind,
+            latestOfKindProcessId: latestOfKindProcessId,
             cancellationToken: cancellationToken);
 
     // Derived from KindHandlers (QuerySnapshotTool.Dispatch.cs) so the two lists can never drift —
