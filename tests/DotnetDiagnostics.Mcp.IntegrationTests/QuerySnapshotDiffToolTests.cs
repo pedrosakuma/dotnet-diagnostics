@@ -51,6 +51,80 @@ public sealed class QuerySnapshotDiffToolTests
     }
 
     [Fact]
+    public async Task Diff_CpuHandle_SummaryCallsOutHotspotShareAndWaitingTrend()
+    {
+        // Issue #812: the summary should read as an actionable tuning-loop narrative, not just
+        // raw added/removed/changed counts.
+        var store = new MemoryDiagnosticHandleStore();
+        var baselineHandle = store.Register(123, "cpu-sample", CpuArtifact(2, runningSamples: 90, waitingSamples: 10), TimeSpan.FromMinutes(10));
+        var currentHandle = store.Register(123, "cpu-sample", CpuArtifact(6, runningSamples: 60, waitingSamples: 40), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, currentHandle.Id, baselineHandle.Id);
+
+        result.Error.Should().BeNull();
+        result.Summary.Should().Contain("Top hotspot share grew: MyApp.Worker.DoWork");
+        result.Summary.Should().Contain("Waiting/noise share grew");
+    }
+
+    [Fact]
+    public async Task Diff_CpuComparisonHandles_SummaryCallsOutHotspotShareAndWaitingTrend()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var first = store.Register(123, "cpu-sample", CpuArtifact(2, runningSamples: 95, waitingSamples: 5), TimeSpan.FromMinutes(10));
+        var second = store.Register(123, "cpu-sample", CpuArtifact(4, runningSamples: 80, waitingSamples: 20), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, "cpu-sample", CpuArtifact(6, runningSamples: 60, waitingSamples: 40), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, comparisonHandles: [first.Id, second.Id]);
+
+        result.Error.Should().BeNull();
+        result.Summary.Should().Contain("Top hotspot share grew: MyApp.Worker.DoWork");
+        result.Summary.Should().Contain("Waiting/noise share grew");
+    }
+
+    [Fact]
+    public async Task Diff_CpuHandle_HotspotNarrative_PicksLargestAbsolutePercentagePointMover_NotLargestRelativeMover()
+    {
+        // Regression test: MethodB moves 1% -> 2% (+1pp but +100% relative) while MethodA moves
+        // 50% -> 60% (+10pp but only +20% relative). diff.Changed is sorted/truncated by *relative*
+        // percent delta upstream (ComparablePairwiseSampleDiff), so with topN=1 only MethodB survives
+        // truncation — the narrative must still name MethodA, the true largest pp mover, by
+        // re-deriving from the full untruncated projection rather than diff.Changed.
+        var store = new MemoryDiagnosticHandleStore();
+        var baselineHandle = store.Register(
+            123,
+            "cpu-sample",
+            CpuArtifact(("MyApp.Worker.MethodA", 500), ("MyApp.Worker.MethodB", 10)),
+            TimeSpan.FromMinutes(10));
+        var currentHandle = store.Register(
+            123,
+            "cpu-sample",
+            CpuArtifact(("MyApp.Worker.MethodA", 600), ("MyApp.Worker.MethodB", 20)),
+            TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, currentHandle.Id, baselineHandle.Id, topN: 1);
+
+        result.Error.Should().BeNull();
+        result.Summary.Should().Contain("Top hotspot share grew: MyApp.Worker.MethodA 50.0% \u2192 60.0% (+10.0pp)");
+    }
+
+    [Fact]
+    public async Task Diff_CpuComparisonHandles_DispersionMode_SummaryOmitsTrendNarrative()
+    {
+        // Dispersion mode compares unordered replicas; a "grew/shrank" first->last narrative would
+        // be meaningless (and order-dependent), so it must not be appended for mode="dispersion".
+        var store = new MemoryDiagnosticHandleStore();
+        var first = store.Register(123, "cpu-sample", CpuArtifact(2, runningSamples: 95, waitingSamples: 5), TimeSpan.FromMinutes(10));
+        var second = store.Register(123, "cpu-sample", CpuArtifact(4, runningSamples: 80, waitingSamples: 20), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, "cpu-sample", CpuArtifact(6, runningSamples: 60, waitingSamples: 40), TimeSpan.FromMinutes(10));
+
+        var result = await QuerySnapshot(store, current.Id, comparisonHandles: [first.Id, second.Id], mode: "dispersion");
+
+        result.Error.Should().BeNull();
+        result.Summary.Should().NotContain("Top hotspot share");
+        result.Summary.Should().NotContain("Waiting/noise share");
+    }
+
+    [Fact]
     public async Task Diff_HeapHandle_ReturnsSampleDiffEnvelope()
     {
         var store = new MemoryDiagnosticHandleStore();
@@ -487,7 +561,7 @@ public sealed class QuerySnapshotDiffToolTests
                 row.id,
                 [new MetricValue(new MetricDefinition("exclusivePercent", MetricRole.Primary, BetterDirection.Lower, MetricAggregation.Point, MetricNormalization.None, "%"), row.value)])).ToArray());
 
-    private static CpuSampleTraceArtifact CpuArtifact(long exclusiveSamples)
+    private static CpuSampleTraceArtifact CpuArtifact(long exclusiveSamples, long? runningSamples = null, long? waitingSamples = null)
         => new(
             123,
             DateTimeOffset.UtcNow,
@@ -497,7 +571,28 @@ public sealed class QuerySnapshotDiffToolTests
                 new SampledFrame(string.Empty, "<root>"),
                 100,
                 0,
-                [new CallTreeNode(new SampledFrame("MyApp.dll", "MyApp.Worker.DoWork"), exclusiveSamples, exclusiveSamples, Array.Empty<CallTreeNode>())]));
+                [new CallTreeNode(new SampledFrame("MyApp.dll", "MyApp.Worker.DoWork"), exclusiveSamples, exclusiveSamples, Array.Empty<CallTreeNode>())]))
+        {
+            SelfSamples = runningSamples is null && waitingSamples is null
+                ? null
+                : new SelfSampleBreakdown(runningSamples ?? 0, waitingSamples ?? 0),
+        };
+
+    /// <summary>Multi-method CPU artifact, total exclusive samples always 1000 so relative-percent
+    /// deltas can be engineered independently of absolute percentage-point deltas.</summary>
+    private static CpuSampleTraceArtifact CpuArtifact(params (string method, long exclusiveSamples)[] methods)
+        => new(
+            123,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(5),
+            1000,
+            new CallTreeNode(
+                new SampledFrame(string.Empty, "<root>"),
+                1000,
+                0,
+                methods
+                    .Select(m => (CallTreeNode)new CallTreeNode(new SampledFrame("MyApp.dll", m.method), m.exclusiveSamples, m.exclusiveSamples, Array.Empty<CallTreeNode>()))
+                    .ToArray()));
 
     private static HeapSnapshotArtifact HeapSnapshot(params (string typeName, long bytes, long instances)[] rows)
     {

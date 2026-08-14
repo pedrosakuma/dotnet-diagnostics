@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Collection;
@@ -866,7 +867,7 @@ public sealed partial class QuerySnapshotTool
                 => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
 
             "cpu-sample" when currentLookup.Artifact is CpuSampleTraceArtifact current && baselineLookup.Value.Artifact is CpuSampleTraceArtifact baseline
-                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
+                => WrapCpuDiff(baselineHandle!, handle, baseline, current, ComparablePairwiseSampleDiff.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
 
             DiagnosticTools.NativeAllocHandleKind when currentLookup.Artifact is CpuSampleTraceArtifact current && baselineLookup.Value.Artifact is CpuSampleTraceArtifact baseline
                 => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
@@ -971,11 +972,162 @@ public sealed partial class QuerySnapshotTool
     private static DiagnosticResult<object> WrapDiff<TKey, TMetric>(string kind, string baselineHandle, string currentHandle, SampleDiff<TKey, TMetric> diff)
         => AsObjectEnvelope(DiagnosticResult.Ok(diff, BuildDiffSummary(kind, baselineHandle, currentHandle, diff)));
 
+    private static DiagnosticResult<object> WrapCpuDiff(
+        string baselineHandle,
+        string currentHandle,
+        CpuSampleTraceArtifact baseline,
+        CpuSampleTraceArtifact current,
+        SampleDiff<MethodDiffKey, CpuDiffMetric> diff)
+        => AsObjectEnvelope(DiagnosticResult.Ok(diff, BuildCpuDiffSummary(baselineHandle, currentHandle, baseline, current, diff)));
+
     private static string BuildDiffSummary<TKey, TMetric>(string kind, string baselineHandle, string currentHandle, SampleDiff<TKey, TMetric> diff)
         => $"Compared {kind} handle '{currentHandle}' against baseline '{baselineHandle}': {diff.TotalAdded} added, {diff.TotalRemoved} removed, {diff.TotalChanged} changed — verdict {diff.Verdict}.";
 
+    /// <summary>
+    /// Issue #812 (scenario B/C): the plain add/remove/change counts above tell an operator
+    /// running a tuning loop nothing about which method actually moved or whether the process got
+    /// noisier. This appends an explicit "hotspot share moved from X% to Y%" call-out for the
+    /// largest exclusivePercent mover plus a waiting/running self-sample trend, reusing data that
+    /// already exists on <see cref="CpuSampleTraceArtifact.SelfSamples"/> (issue #811 part 2) — no
+    /// new collection, just a narrative composed from already-available fields.
+    /// </summary>
+    private static string BuildCpuDiffSummary(
+        string baselineHandle,
+        string currentHandle,
+        CpuSampleTraceArtifact baseline,
+        CpuSampleTraceArtifact current,
+        SampleDiff<MethodDiffKey, CpuDiffMetric> diff)
+    {
+        var baseSummary = BuildDiffSummary("cpu-sample", baselineHandle, currentHandle, diff);
+        var narrative = BuildCpuHotspotNarrative(baseline, current, baseline.SelfSamples, current.SelfSamples);
+        return narrative is null ? baseSummary : $"{baseSummary} {narrative}";
+    }
+
+    /// <summary>
+    /// Finds the largest percentage-point mover directly from the full (untruncated) per-method
+    /// projection rather than <c>diff.Changed</c> — that list is sorted by <em>relative</em>
+    /// percent delta and capped at <c>topN</c> (default 25) by <see cref="ComparablePairwiseSampleDiff"/>,
+    /// so the largest absolute-percentage-point mover could be ranked outside the top N by relative
+    /// delta and silently excluded. Reprojecting is cheap (same aggregation
+    /// <see cref="ComparablePairwiseSampleDiff.Compare(CpuSampleTraceArtifact, string, CpuSampleTraceArtifact, string, double, int)"/>
+    /// already performs internally) and guarantees the narrative's claim is actually the top mover.
+    /// </summary>
+    private static string? BuildCpuHotspotNarrative(
+        CpuSampleTraceArtifact baseline,
+        CpuSampleTraceArtifact current,
+        SelfSampleBreakdown? baselineSelf,
+        SelfSampleBreakdown? currentSelf)
+    {
+        var parts = new List<string>(2);
+
+        var baselineRows = CpuSampleComparableProjection.ProjectTyped(baseline, "cpu-sample");
+        var currentRows = CpuSampleComparableProjection.ProjectTyped(current, "cpu-sample");
+        var topMover = baselineRows
+            .Where(kv => currentRows.ContainsKey(kv.Key))
+            .Select(kv => (Key: kv.Key, Baseline: kv.Value, Current: currentRows[kv.Key]))
+            .OrderByDescending(row => Math.Abs(row.Current.ExclusivePercent - row.Baseline.ExclusivePercent))
+            .FirstOrDefault();
+        if (topMover.Key is not null)
+        {
+            var deltaAbs = Math.Round(topMover.Current.ExclusivePercent - topMover.Baseline.ExclusivePercent, 1);
+            var direction = deltaAbs >= 0 ? "grew" : "shrank";
+            parts.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"Top hotspot share {direction}: {topMover.Key.Symbol.MethodFullName} {topMover.Baseline.ExclusivePercent:F1}% \u2192 {topMover.Current.ExclusivePercent:F1}% ({(deltaAbs >= 0 ? "+" : string.Empty)}{deltaAbs:F1}pp)."));
+        }
+
+        if (TryDescribeWaitingTrend(baselineSelf, currentSelf, out var waitingNarrative))
+        {
+            parts.Add(waitingNarrative);
+        }
+
+        return parts.Count == 0 ? null : string.Join(" ", parts);
+    }
+
+    private static bool TryDescribeWaitingTrend(SelfSampleBreakdown? baselineSelf, SelfSampleBreakdown? currentSelf, out string narrative)
+    {
+        narrative = string.Empty;
+        if (baselineSelf is null || currentSelf is null)
+        {
+            return false;
+        }
+
+        var baselineTotal = baselineSelf.RunningSamples + baselineSelf.WaitingSamples;
+        var currentTotal = currentSelf.RunningSamples + currentSelf.WaitingSamples;
+        if (baselineTotal <= 0 || currentTotal <= 0)
+        {
+            return false;
+        }
+
+        var baselineWaitingPct = 100.0 * baselineSelf.WaitingSamples / baselineTotal;
+        var currentWaitingPct = 100.0 * currentSelf.WaitingSamples / currentTotal;
+        var deltaAbs = currentWaitingPct - baselineWaitingPct;
+        // Suppress the call-out below a 1 percentage-point shift — noise, not signal.
+        if (Math.Abs(deltaAbs) < 1.0)
+        {
+            return false;
+        }
+
+        var direction = deltaAbs >= 0 ? "grew" : "shrank";
+        narrative = string.Create(
+            CultureInfo.InvariantCulture,
+            $"Waiting/noise share {direction}: {baselineWaitingPct:F1}% \u2192 {currentWaitingPct:F1}% of self samples.");
+        return true;
+    }
+
     private static string BuildJourneyDiffSummary(SnapshotJourneyDiff diff, string currentHandle, string[] comparisonHandles)
-        => $"Compared {diff.Kind} handle '{currentHandle}' across {comparisonHandles.Length + 1} captures: {diff.MetricSeries.Count} metric series, {diff.KeyMatrix.Count} key rows — verdict {diff.Verdict}.";
+    {
+        var baseSummary = $"Compared {diff.Kind} handle '{currentHandle}' across {comparisonHandles.Length + 1} captures: {diff.MetricSeries.Count} metric series, {diff.KeyMatrix.Count} key rows — verdict {diff.Verdict}.";
+        // Dispersion mode compares unordered replicas (issue #812 narrative only makes sense for an
+        // ordered first→last trend); leave dispersion summaries as plain counts.
+        if (!string.Equals(diff.Kind, "cpu-sample", StringComparison.Ordinal) || diff.Mode != JourneyMode.Trend)
+        {
+            return baseSummary;
+        }
+
+        var narrative = BuildCpuJourneyNarrative(diff);
+        return narrative is null ? baseSummary : $"{baseSummary} {narrative}";
+    }
+
+    /// <summary>
+    /// Journey-path (N-ary <c>comparisonHandles</c>) counterpart to <see cref="BuildCpuDiffSummary"/>
+    /// — same narrative intent (issue #812 scenario B/C), sourced from the kind-agnostic
+    /// <see cref="SnapshotJourneyDiff"/> shape instead of the legacy typed pairwise diff. Series/row
+    /// deltas here are always first-capture-to-last-capture (see <c>SnapshotDiffer</c>), matching the
+    /// "moved from X to Y" phrasing even when more than two captures are compared.
+    /// </summary>
+    private static string? BuildCpuJourneyNarrative(SnapshotJourneyDiff diff)
+    {
+        var parts = new List<string>(2);
+
+        var topRow = diff.KeyMatrix
+            .Where(row => row.DeltaAbs is not null && row.Values.Count > 0 && row.Values[0] is not null && row.Values[^1] is not null)
+            .OrderByDescending(row => Math.Abs(row.DeltaAbs!.Value))
+            .FirstOrDefault();
+        if (topRow is not null)
+        {
+            var first = topRow.Values[0]!.Value;
+            var last = topRow.Values[^1]!.Value;
+            var direction = topRow.DeltaAbs >= 0 ? "grew" : "shrank";
+            parts.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"Top hotspot share {direction}: {topRow.DisplayName} {first:F1}% \u2192 {last:F1}% ({(topRow.DeltaAbs >= 0 ? "+" : string.Empty)}{topRow.DeltaAbs:F1}pp)."));
+        }
+
+        var waitingSeries = diff.MetricSeries.FirstOrDefault(series => string.Equals(series.Definition.Name, "waitingSelfPercent", StringComparison.Ordinal));
+        if (waitingSeries is { Values.Count: > 0 }
+            && waitingSeries.Values[0] is { } waitingFirst
+            && waitingSeries.Values[^1] is { } waitingLast
+            && Math.Abs(waitingLast - waitingFirst) >= 1.0)
+        {
+            var direction = waitingLast >= waitingFirst ? "grew" : "shrank";
+            parts.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"Waiting/noise share {direction}: {waitingFirst:F1}% \u2192 {waitingLast:F1}% across the capture set."));
+        }
+
+        return parts.Count == 0 ? null : string.Join(" ", parts);
+    }
 
     private static DiagnosticResult<object> HandleExpiredError(string? side, string handle)
         => HandleUnavailableError(
