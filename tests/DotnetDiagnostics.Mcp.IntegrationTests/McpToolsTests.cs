@@ -745,6 +745,45 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     }
 
     [Fact]
+    public async Task CollectBatch_CountersWithSiblingEntries_FloorsShortSharedDurationAndPopulatesCounters()
+    {
+        // Regression test for #807: a short shared durationSeconds combined with concurrent
+        // sibling entries (cpu + allocation) previously risked closing the counters EventPipe
+        // session before a single EventCounterIntervalSec boundary was reached, leaving
+        // data.counters.counters empty. collect_batch now floors the counters entry's own
+        // effective duration (CollectBatchTool.CountersMinimumDurationSeconds) when it shares the
+        // batch with other entries, while the batch's reported/caller-supplied durationSeconds
+        // stays unchanged for every other entry.
+        await using var client = await ConnectAsync();
+
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
+                {
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "cpu" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_sample", ["kind"] = "allocation" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
+                },
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 1,
+            },
+            cancellationToken: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var report = DeserializeStructured<CollectBatchReport>(result);
+        report.Should().NotBeNull();
+        report!.DurationSeconds.Should().Be(1, "the reported/caller-supplied durationSeconds is unchanged for every other entry");
+
+        var countersEntry = report.Results.Single(r => r.Tool == "collect_events" && r.Kind == "counters");
+        countersEntry.Error.Should().BeNull();
+        countersEntry.Data.Should().NotBeNull();
+        var countersArray = countersEntry.Data!.Value.GetProperty("counters").GetProperty("counters");
+        countersArray.GetArrayLength().Should().BeGreaterThan(0, "the counters entry's own effective duration must be floored so it observes at least one EventCounterIntervalSec boundary");
+    }
+
+    [Fact]
     public async Task CollectBatch_DepthCompact_ElidesDataButKeepsHandleAndSummary()
     {
         await using var client = await ConnectAsync();
@@ -806,8 +845,16 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     public async Task CollectBatch_CountersAndGc_PopulatesNarrowBoundedGen2MeterEvidence()
     {
         const int retainedEventLimit = 200;
+        // Generous safety cap only — not a pacing budget. #823 previously interleaved fixed
+        // Task.Delay(500ms) pauses every 25 forced collections, which ate ~12s of the 20s shared
+        // window and left too little time for 600 blocking Gen2 GCs to complete on a loaded
+        // Windows CI runner (observed landing consistently around 120-131, well under
+        // retainedEventLimit — a regression, not the original occasional flake). Drive forced
+        // Gen2 collections back-to-back with no artificial pacing, adaptively polling
+        // GC.CollectionCount(2) so the loop naturally keeps forcing collections for the whole
+        // window regardless of how long each blocking GC actually takes on the host, and stops
+        // early only once a comfortable safety margin over retainedEventLimit is reached (#822).
         const int forcedCollectionLimit = retainedEventLimit * 3;
-        const int collectionBatchSize = 25;
         await using var client = await ConnectAsync();
         using var driverCts = new CancellationTokenSource();
         var driver = Task.Run(async () =>
@@ -815,17 +862,12 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             try
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(1500), driverCts.Token);
-                for (var forcedCollections = 0;
-                     forcedCollections < forcedCollectionLimit && !driverCts.IsCancellationRequested;
-                     forcedCollections++)
+                var startingGen2Count = GC.CollectionCount(2);
+                while (!driverCts.IsCancellationRequested &&
+                       GC.CollectionCount(2) - startingGen2Count < forcedCollectionLimit)
                 {
                     _ = new byte[128 * 1024];
                     GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
-
-                    if ((forcedCollections + 1) % collectionBatchSize == 0)
-                    {
-                        await Task.Delay(TimeSpan.FromMilliseconds(500), driverCts.Token);
-                    }
                 }
             }
             catch (OperationCanceledException) when (driverCts.IsCancellationRequested)
