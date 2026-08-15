@@ -48,6 +48,35 @@ public sealed class PerfStatOutputParserTests
     }
 
     [Fact]
+    public void ModifierSuffix_IsStrippedFromEventNameKey()
+    {
+        // Regression for issue #828 follow-up: `perf stat -e page-faults -p <pid>` (no `-a`) is
+        // implicitly user-space-only and perf echoes that back as "page-faults:u" in the
+        // event-name column, even though PerfStatCpuEfficiencySampler.Events never requests a
+        // modifier explicitly. Confirmed against a real perf binary on a live process — without
+        // stripping the suffix, CpuEfficiencyAggregator.Build's bare-name lookups silently miss
+        // every successfully-counted event (not just the hardware ones gated behind "<not
+        // supported>"), so PageFaults/ContextSwitches/CpuMigrations (and cycles/instructions on a
+        // host with a real vPMU) never populate.
+        const string csv = """
+            1234567,,cycles:u,1000000000,100.00,,
+            0,,page-faults:u,1000000000,100.00,,
+            0,,context-switches:u,1000000000,100.00,,
+            0,,cpu-migrations:u,1000000000,100.00,,
+            <not supported>,,stalled-cycles-frontend:u,1000000000,100.00,,
+            """;
+
+        var result = PerfStatOutputParser.Parse(csv);
+
+        result.Values.Should().Contain(new KeyValuePair<string, long>("cycles", 1234567));
+        result.Values.Should().Contain(new KeyValuePair<string, long>("page-faults", 0));
+        result.Values.Should().Contain(new KeyValuePair<string, long>("context-switches", 0));
+        result.Values.Should().Contain(new KeyValuePair<string, long>("cpu-migrations", 0));
+        result.UnavailableEvents.Should().ContainSingle(n => n.Contains("stalled-cycles-frontend", StringComparison.Ordinal)
+            && n.Contains("not supported", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void NotSupportedToken_SurfacesAsUnavailableNote_NotAValue()
     {
         // vPMU-less host (e.g. a virtualized CI runner): the kernel doesn't expose this generic
