@@ -793,6 +793,36 @@ reads as recognizable user code instead of unfamiliar runtime plumbing; rows inc
 flag reporting whether a match occurred. `caller-callee` requires `--root-method-filter` to resolve exactly one method: zero matches
 return a `NotFound` envelope, more than one returns `InvalidArgument` with the candidate list.
 
+#### Cross-collector investigation digest (issue #827)
+
+Rather than a new multi-kind `collect` verb, the `session` REPL surfaces the same cross-collector
+"investigation digest" the MCP server's `collect_batch` tool computes (issue #825) **automatically**:
+once both `collect --kind cpu` and `collect --kind allocation` have run against the same bound pid in
+one session (in either order), the next `cpu`/`allocation` collect prints a compact correlated summary
+right after its handle line — the top CPU self-time hotspots, top CPU wait/noise categories, the
+dominant hot-path leaf, and the top allocation types/call sites, in one place instead of two separate
+`query --view triage` / `query --view call-tree` round trips:
+
+```text
+diag(pid 1234)> collect --kind cpu --duration 10
+... cpu summary ...
+  → handle 1TA2... (expires 23:12:04Z) — query --handle 1TA2... --view <call-tree|top-methods|...>
+diag(pid 1234)> collect --kind allocation --duration 10
+... allocation summary ...
+  → handle 1TB3... (expires 23:12:18Z) — query --handle 1TB3... --view <call-tree|top-methods|...>
+  → investigation digest (cpu + allocation correlated):
+    top cpu self-time: MyApp.Worker.Crunch (61.4%), MyApp.Worker.Parse (12.8%)
+    top wait categories: ThreadPool worker idle wait (9.1%)
+    hot-path leaf: MyApp.Worker.Crunch (depth 3, 61.4% inclusive)
+    top allocation types (bytes): MyApp.Widget (612,000 bytes), MyApp.Gadget (88,400 bytes)
+    top allocation call sites: MyApp.Worker.Allocate (612,000 bytes)
+```
+
+Collecting only one of the two kinds prints no digest — it is only worth surfacing once it correlates
+both collectors. This reuses the exact same `DotnetDiagnostics.Core.CpuSampling.InvestigationDigestBuilder`
+logic the MCP tool and the BenchmarkDotNet diagnoser's exported report call (see that package's README),
+so the ranking/gating is not duplicated per surface.
+
 For `collect --kind cpu`, interpret `selfSamples` as a **self/exclusive-time split**:
 `runningSamples` are leaf frames that do not match a known wait primitive; `waitingSamples`
 are leaf frames such as `Monitor.Wait`, `WaitHandle.Wait*`, `LowLevelLifoSemaphore.*`,

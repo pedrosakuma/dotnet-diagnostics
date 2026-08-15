@@ -1,4 +1,5 @@
 using DotnetDiagnostics.BenchmarkDotNet;
+using DotnetDiagnostics.Core.CpuSampling;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.BenchmarkDotNet.Tests;
@@ -44,5 +45,59 @@ public class DotnetDiagnosticsReportExporterTests
         var md = DotnetDiagnosticsReportExporter.BuildMarkdown(entries);
 
         md.Should().Contain("a \\| b \\| c");
+    }
+
+    [Fact]
+    public void Digest_CpuAndAllocationBothPresent_RendersCorrelatedSection()
+    {
+        // Issue #827: when a benchmark carries both [DiagnosticKind("cpu")] and
+        // [DiagnosticKind("allocation")], the exported report should include the same
+        // cross-collector correlation the MCP collect_batch tool computes (issue #825), reusing
+        // InvestigationDigestBuilder rather than reimplementing it.
+        var entries = new[]
+        {
+            new BenchmarkDiagnosticEntry("Workload.Combined", "cpu", false, "cpu ok", "cpu ok", "/x/c.cpu.json"),
+            new BenchmarkDiagnosticEntry("Workload.Combined", "allocation", false, "alloc ok", "alloc ok", "/x/c.allocation.json"),
+        };
+        var digest = new InvestigationDigest(
+            TopCpuSelfTime:
+            [
+                new MethodSampleStat("MyApp.Worker.Crunch", "MyApp.dll", "MyApp", 300, 300, 75d, 75d, Identity: null),
+            ],
+            TopCpuWaitCategories: null,
+            HotPathLeaf: new HotPathFrame("MyApp.Worker.Crunch", "MyApp.dll", 300, 300, 75d, 100d, Identity: null),
+            HotPathDepth: 2,
+            TopAllocationTypes:
+            [
+                new AllocatedType("MyApp.Widget", 3000, 6, HeapKind.Small),
+            ],
+            TopAllocationCallsites:
+            [
+                new AllocationSite(new SampledFrame("MyApp.dll", "MyApp.Worker.Allocate"), 3000, 6, HeapKind.Small),
+            ]);
+        var digests = new Dictionary<string, InvestigationDigest>(StringComparer.Ordinal)
+        {
+            ["Workload.Combined"] = digest,
+        };
+
+        var md = DotnetDiagnosticsReportExporter.BuildMarkdown(entries, digests);
+
+        md.Should().Contain("### Cross-collector investigation digest (cpu + allocation)");
+        md.Should().Contain("MyApp.Worker.Crunch");
+        md.Should().Contain("MyApp.Widget");
+        md.Should().Contain("MyApp.Worker.Allocate");
+    }
+
+    [Fact]
+    public void Digest_Absent_OmitsCorrelatedSection()
+    {
+        var entries = new[]
+        {
+            new BenchmarkDiagnosticEntry("Workload.CpuOnly", "cpu", false, "cpu ok", "cpu ok", "/x/c.cpu.json"),
+        };
+
+        var md = DotnetDiagnosticsReportExporter.BuildMarkdown(entries);
+
+        md.Should().NotContain("Cross-collector investigation digest");
     }
 }

@@ -419,6 +419,7 @@ internal sealed class SessionRepl
             if (outcome.Result?.Handle is { } handleId)
             {
                 await SurfaceHandleAsync(store, handleId, outcome.Result.HandleExpiresAt, stdout).ConfigureAwait(false);
+                await TryPrintInvestigationDigestAsync(store, handleId, outcome.Options.Pid, stdout).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (commandCts.IsCancellationRequested && !_sessionCts.IsCancellationRequested)
@@ -643,6 +644,47 @@ internal sealed class SessionRepl
             CultureInfo.InvariantCulture,
             $"  → handle {handleId}{expiry} — drill-down for this artifact is not available in the session yet."))
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Issue #827: after a <c>collect --kind cpu</c> or <c>collect --kind allocation</c> command
+    /// registers a new handle, checks whether the *other* kind is also already present for the same
+    /// pid in this session and, if so, prints the same cross-collector "investigation digest"
+    /// <c>collect_batch</c>'s MCP tool computes (issue #825) — without adding a new multi-kind
+    /// <c>collect</c> verb. No-op for every other handle kind, and a silent no-op when only one of
+    /// the two kinds is present.
+    /// </summary>
+    /// <summary>Internal (not <c>private</c>) so it is directly unit-testable (issue #827) against a
+    /// pre-seeded <see cref="MemoryDiagnosticHandleStore"/> without driving the full REPL loop.</summary>
+    internal static async Task TryPrintInvestigationDigestAsync(
+        MemoryDiagnosticHandleStore? store,
+        string handleId,
+        int? processId,
+        TextWriter stdout)
+    {
+        if (store is null || processId is not { } pid)
+        {
+            return;
+        }
+
+        var lookup = store.TryGetWithKind(handleId);
+        if (lookup is not { } found ||
+            (found.Kind != CliInvestigationDigestFormatter.CpuSampleKind &&
+             found.Kind != CliInvestigationDigestFormatter.AllocationSampleKind))
+        {
+            return;
+        }
+
+        var digest = CliInvestigationDigestFormatter.TryBuild(store, pid);
+        if (digest is null)
+        {
+            return;
+        }
+
+        foreach (var line in CliInvestigationDigestFormatter.Render(digest))
+        {
+            await stdout.WriteLineAsync(line).ConfigureAwait(false);
+        }
     }
 
     // --- Cancellation state machine -----------------------------------------------------------

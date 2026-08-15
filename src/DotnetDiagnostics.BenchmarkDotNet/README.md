@@ -137,6 +137,19 @@ EventPipe collectors must not run concurrently against one PID, so multiple kind
 are collected **sequentially** within the measurement window. Keep the count small (1–2) and the
 per-kind duration short relative to the job's actual-run length.
 
+### Cross-collector investigation digest (`cpu` + `allocation`)
+
+When a benchmark method carries both `[DiagnosticKind("cpu")]` and `[DiagnosticKind("allocation")]`
+(e.g. via `[DiagnosticKind("cpu,allocation")]` or two separate attributes), the exported
+`*-dotnet-diagnostics-report.md` adds a `### Cross-collector investigation digest (cpu + allocation)`
+section for that benchmark: the top CPU self-time hotspots, top CPU wait/noise categories, the
+dominant hot-path leaf, and the top allocation types/call sites — the same evidence you'd otherwise
+gather from two separate drill-down round trips, bundled into one. This reuses the exact same
+`InvestigationDigestBuilder` correlation the MCP server's `collect_batch` tool computes (issue #825)
+and the standalone CLI's `session` REPL prints (issue #827) — the ranking/gating logic lives once in
+`DotnetDiagnostics.Core` and is not reimplemented per surface. A benchmark tagged with only one of the
+two kinds gets no digest section, exactly as before.
+
 ## Not captured (intentionally out of scope)
 
 These diagnostic kinds exist in the engine but are deliberately **not** exposed by the diagnoser,

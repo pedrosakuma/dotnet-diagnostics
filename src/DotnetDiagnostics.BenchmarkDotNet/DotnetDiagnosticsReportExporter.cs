@@ -2,6 +2,7 @@ using System.Text;
 using BenchmarkDotNet.Exporters;
 using BenchmarkDotNet.Loggers;
 using BenchmarkDotNet.Reports;
+using DotnetDiagnostics.Core.CpuSampling;
 
 namespace DotnetDiagnostics.BenchmarkDotNet;
 
@@ -24,7 +25,7 @@ public sealed class DotnetDiagnosticsReportExporter : IExporter
     public void ExportToLog(Summary summary, ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(logger);
-        logger.WriteLine(BuildMarkdown(_diagnoser.Entries));
+        logger.WriteLine(BuildMarkdown(_diagnoser.Entries, _diagnoser.Digests));
     }
 
     public IEnumerable<string> ExportToFiles(Summary summary, ILogger consoleLogger)
@@ -32,12 +33,15 @@ public sealed class DotnetDiagnosticsReportExporter : IExporter
         ArgumentNullException.ThrowIfNull(summary);
 
         var path = Path.Combine(summary.ResultsDirectoryPath, $"{summary.Title}-dotnet-diagnostics-report.md");
-        File.WriteAllText(path, BuildMarkdown(_diagnoser.Entries));
+        File.WriteAllText(path, BuildMarkdown(_diagnoser.Entries, _diagnoser.Digests));
         return new[] { path };
     }
 
-    internal static string BuildMarkdown(IReadOnlyCollection<BenchmarkDiagnosticEntry> entries)
+    internal static string BuildMarkdown(
+        IReadOnlyCollection<BenchmarkDiagnosticEntry> entries,
+        IReadOnlyDictionary<string, InvestigationDigest>? digests = null)
     {
+        digests ??= new Dictionary<string, InvestigationDigest>(StringComparer.Ordinal);
         var sb = new StringBuilder();
         sb.AppendLine("# dotnet-diagnostics — biggest offenders");
         sb.AppendLine();
@@ -68,9 +72,63 @@ public sealed class DotnetDiagnosticsReportExporter : IExporter
             }
 
             sb.AppendLine();
+
+            if (digests.TryGetValue(group.Key, out var digest))
+            {
+                AppendDigest(sb, digest);
+            }
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Renders the cross-collector "investigation digest" (issue #827) for a benchmark that carried
+    /// both <c>cpu</c> and <c>allocation</c> <see cref="DiagnosticKindAttribute"/>s — the same
+    /// correlation <c>InvestigationDigestBuilder</c> renders for the MCP <c>collect_batch</c> tool
+    /// (issue #825) and the CLI <c>session</c> REPL, reused here instead of reimplemented.
+    /// </summary>
+    private static void AppendDigest(StringBuilder sb, InvestigationDigest digest)
+    {
+        sb.AppendLine("### Cross-collector investigation digest (cpu + allocation)");
+        sb.AppendLine();
+
+        if (digest.TopCpuSelfTime is { Count: > 0 } topCpu)
+        {
+            sb.Append("- **Top CPU self-time:** ")
+                .AppendLine(Escape(string.Join(", ", topCpu.Select(m =>
+                    FormattableString.Invariant($"{m.Method} ({m.ExclusivePercent:N1}%)")))));
+        }
+
+        if (digest.TopCpuWaitCategories is { Count: > 0 } topWait)
+        {
+            sb.Append("- **Top wait categories:** ")
+                .AppendLine(Escape(string.Join(", ", topWait.Select(w =>
+                    FormattableString.Invariant($"{w.WaitReason} ({w.ExclusivePercent:N1}%)")))));
+        }
+
+        if (digest.HotPathLeaf is { } leaf)
+        {
+            sb.Append("- **Hot-path leaf:** ")
+                .AppendLine(Escape(FormattableString.Invariant(
+                    $"{leaf.Method} (depth {digest.HotPathDepth}, {leaf.InclusivePercent:N1}% inclusive)")));
+        }
+
+        if (digest.TopAllocationTypes is { Count: > 0 } topTypes)
+        {
+            sb.Append("- **Top allocation types (bytes):** ")
+                .AppendLine(Escape(string.Join(", ", topTypes.Select(t =>
+                    FormattableString.Invariant($"{t.TypeName} ({t.TotalBytes:N0} bytes)")))));
+        }
+
+        if (digest.TopAllocationCallsites is { Count: > 0 } topSites)
+        {
+            sb.Append("- **Top allocation call sites:** ")
+                .AppendLine(Escape(string.Join(", ", topSites.Select(s =>
+                    FormattableString.Invariant($"{s.Frame.Method} ({s.TotalBytes:N0} bytes)")))));
+        }
+
+        sb.AppendLine();
     }
 
     private static string Escape(string value)

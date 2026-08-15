@@ -10,6 +10,7 @@ using BenchmarkDotNet.Loggers;
 using BenchmarkDotNet.Reports;
 using BenchmarkDotNet.Running;
 using BenchmarkDotNet.Validators;
+using DotnetDiagnostics.Core.CpuSampling;
 
 namespace DotnetDiagnostics.BenchmarkDotNet;
 
@@ -32,12 +33,23 @@ public sealed class DotnetDiagnosticsDiagnoser : IDiagnoser, IDisposable
     private readonly InProcessDiagnosticCollector _collector = new();
     private readonly ConcurrentDictionary<string, RunningCapture> _inFlight = new();
     private readonly ConcurrentBag<BenchmarkDiagnosticEntry> _entries = new();
+    private readonly ConcurrentDictionary<string, InvestigationDigest> _digests = new(StringComparer.Ordinal);
     private readonly List<string> _resultLines = new();
     private string? _artifactsDir;
     private int _captureSequence;
 
     /// <summary>The diagnostic entries captured across the whole run, consumed by the report exporter.</summary>
     public IReadOnlyCollection<BenchmarkDiagnosticEntry> Entries => _entries;
+
+    /// <summary>
+    /// Issue #827: per-benchmark (by <see cref="BenchmarkDiagnosticEntry.Benchmark"/> display label)
+    /// cross-collector "investigation digest" — the same correlation
+    /// <c>InvestigationDigestBuilder</c> renders for the MCP <c>collect_batch</c> tool (issue #825)
+    /// and the CLI <c>session</c> REPL, populated when a single benchmark carries both
+    /// <see cref="BenchmarkDiagnosticKind.Cpu"/> and <see cref="BenchmarkDiagnosticKind.Allocation"/>
+    /// <see cref="DiagnosticKindAttribute"/>s. Consumed by <see cref="DotnetDiagnosticsReportExporter"/>.
+    /// </summary>
+    public IReadOnlyDictionary<string, InvestigationDigest> Digests => _digests;
 
     public IEnumerable<string> Ids => new[] { "dotnet-diagnostics" };
 
@@ -174,6 +186,26 @@ public sealed class DotnetDiagnosticsDiagnoser : IDiagnoser, IDisposable
                 File.WriteAllText(path, capt.Json);
                 _entries.Add(new BenchmarkDiagnosticEntry(label, kind, capt.IsError, capt.Summary, capt.Headline, path));
                 _resultLines.Add($"{label} [{kind}] {(capt.IsError ? "⚠ " : string.Empty)}{capt.Headline} -> {path}");
+            }
+
+            // Issue #827: pass the exact handle ids *this* capture produced (when its cpu/allocation
+            // kind ran and did not error) rather than resolving "latest handle of this kind for this
+            // pid" — with the in-process toolchain every benchmark shares Environment.ProcessId, so a
+            // pid-only lookup could silently combine this capture's artifact with a stale one left
+            // behind by a completely unrelated earlier benchmark.
+            var cpuHandleId = capture.Captures.TryGetValue("cpu", out var cpuCapture) && !cpuCapture.IsError
+                ? cpuCapture.Handle
+                : null;
+            var allocationHandleId = capture.Captures.TryGetValue("allocation", out var allocationCapture) && !allocationCapture.IsError
+                ? allocationCapture.Handle
+                : null;
+            if (cpuHandleId is not null && allocationHandleId is not null)
+            {
+                var digest = _collector.TryBuildInvestigationDigest(cpuHandleId, allocationHandleId);
+                if (digest is not null)
+                {
+                    _digests[label] = digest;
+                }
             }
         }
     }
