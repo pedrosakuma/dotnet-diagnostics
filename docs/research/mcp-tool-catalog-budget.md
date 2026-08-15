@@ -140,9 +140,14 @@ No descriptions were shortened as part of this issue.
 
 ## Guardrails
 
-The integration test caps the maximal catalog at **270,000 bytes**. This is
-11,523 bytes, or 4.5%, above the measured baseline. The fixed byte budget is
-portable, deterministic, and independent of model tokenizer changes.
+The integration test caps the maximal catalog at **280,000 bytes**. Issues #828
+(`collect_sample(kind="cpu-efficiency")`) and #830
+(`collect_sample(kind="native-lock-contention")`) each added a new kind
+discriminator value, parameter, and description to the already-large
+`collect_sample` schema; combined, the measured catalog is 271,316 bytes.
+280,000 restores roughly 3% headroom above that measured baseline. The fixed
+byte budget is portable, deterministic, and independent of model tokenizer
+changes.
 
 An intentional increase must update both the test baseline comment and this
 document with a fresh live measurement and rationale. The guardrail is not a

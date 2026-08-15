@@ -19,9 +19,13 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
     // 220,804 bytes. Issue #773 deliberately adds one static resolved-risk summary
     // per tool, conditional-safety flags, compact result fields, and the reserved
     // acknowledgement schema only where high/critical resolution is possible:
-    // 258,367 bytes. 270,000 leaves ~4.5% headroom while continuing to catch
-    // accidental catalog growth.
-    private const int MaximumCatalogBytes = 270_000;
+    // 258,367 bytes. 270,000 left ~4.5% headroom while continuing to catch
+    // accidental catalog growth. Issues #828 (collect_sample(kind="cpu-efficiency"))
+    // and #830 (collect_sample(kind="native-lock-contention")) each add a new kind
+    // discriminator value, parameter, and description to the already-large
+    // collect_sample schema; combined, the measured catalog is 271,316 bytes.
+    // 280,000 restores ~3% headroom above that measured baseline.
+    private const int MaximumCatalogBytes = 280_000;
 
     private readonly FullCatalogFactory _factory;
     private readonly ITestOutputHelper _output;
