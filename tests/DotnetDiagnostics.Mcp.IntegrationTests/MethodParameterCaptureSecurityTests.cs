@@ -179,6 +179,7 @@ public sealed class MethodParameterCaptureSecurityTests
             allocationSampler: null!,
             nativeAllocSampler: null!,
             methodParameterCollector: new StubMethodParameterCollector(),
+            cpuEfficiencySampler: null!,
             handles: new MemoryDiagnosticHandleStore(),
             resolver: new EchoResolver(),
             symbolServerAllowlist: new SymbolServerAllowlist(null),

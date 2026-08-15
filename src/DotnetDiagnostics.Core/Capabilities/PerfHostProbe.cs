@@ -26,7 +26,8 @@ public static class PerfHostProbe
                 HasCapPerfmon: false,
                 HasCapSysAdmin: false,
                 PerfEventParanoid: null,
-                CanTraceSchedSwitch: false);
+                CanTraceSchedSwitch: false,
+                CanRunPerfStatCounting: false);
         }
 
         return DetectLinux(
@@ -49,13 +50,25 @@ public static class PerfHostProbe
         var perfEventParanoid = TryReadPerfEventParanoid(readAllText, fileExists);
         var perfInstalled = resolvePerfPath() is not null;
         var canTraceSchedSwitch = perfInstalled && (hasCapPerfmon || hasCapSysAdmin || perfEventParanoid is <= -1);
+        // perf_event_paranoid <= 2 (the default on virtually every distro) already permits
+        // per-process hardware/software counting for a same-UID target — unlike sched_switch
+        // tracing above, this does NOT need CAP_PERFMON/CAP_SYS_ADMIN or a negative paranoid
+        // value. This assumes the diagnostics sidecar runs as the SAME UID as the target
+        // process, which is the repo-wide convention (see AGENTS.md "Diagnostic socket UID").
+        // A cross-UID target would additionally need CAP_SYS_PTRACE / ptrace_scope=0 (see
+        // PtraceProbe); we don't duplicate that check here since same-UID is the supported
+        // topology. The vPMU-absent case (common on cloud VMs/CI) is NOT detected by this probe
+        // at all — perf stat runs successfully but reports "<not supported>" per event, which
+        // PerfStatOutputParser surfaces as a per-metric note rather than a capability failure.
+        var canRunPerfStat = perfInstalled && perfEventParanoid is null or <= 2;
 
         return new PerfHostProbeResult(
             PerfInstalled: perfInstalled,
             HasCapPerfmon: hasCapPerfmon,
             HasCapSysAdmin: hasCapSysAdmin,
             PerfEventParanoid: perfEventParanoid,
-            CanTraceSchedSwitch: canTraceSchedSwitch);
+            CanTraceSchedSwitch: canTraceSchedSwitch,
+            CanRunPerfStatCounting: canRunPerfStat);
     }
 
     private static ulong? TryReadCapEff(Func<string, string> readAllText)
@@ -118,4 +131,5 @@ public sealed record PerfHostProbeResult(
     bool HasCapPerfmon,
     bool HasCapSysAdmin,
     int? PerfEventParanoid,
-    bool CanTraceSchedSwitch);
+    bool CanTraceSchedSwitch,
+    bool CanRunPerfStatCounting = false);

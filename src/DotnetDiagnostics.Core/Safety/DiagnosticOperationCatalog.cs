@@ -178,6 +178,7 @@ public static class DiagnosticOperationCatalog
         public const string Allocation = "allocation";
         public const string NativeAlloc = "native-alloc";
         public const string MethodParameters = "method-params";
+        public const string CpuEfficiency = "cpu-efficiency";
 
         public static IReadOnlyList<string> All { get; } =
         [
@@ -186,6 +187,7 @@ public static class DiagnosticOperationCatalog
             Allocation,
             NativeAlloc,
             MethodParameters,
+            CpuEfficiency,
         ];
 
         public static IReadOnlyList<string> Cli { get; } =
@@ -195,6 +197,7 @@ public static class DiagnosticOperationCatalog
             OffCpuCliAlias,
             Allocation,
             NativeAlloc,
+            CpuEfficiency,
         ];
     }
 

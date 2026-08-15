@@ -163,6 +163,8 @@ internal static partial class CliCommands
 
             "native-alloc" => await CollectNativeAllocSampleAsync(services, options, cancellationToken).ConfigureAwait(false),
 
+            "cpu-efficiency" => await CollectCpuEfficiencySampleAsync(services, options, cancellationToken).ConfigureAwait(false),
+
             "thread-snapshot" => await CollectThreadSnapshotAsync(services, options, cancellationToken).ConfigureAwait(false),
 
             _ => throw new ArgumentException($"Unknown collect kind '{options.Kind}'.", nameof(options)),
@@ -236,6 +238,19 @@ internal static partial class CliCommands
             options.Top ?? 25,
             options.NativeAllocSamplePeriod ?? 1000,
             cancellationToken).ConfigureAwait(false));
+
+    private static async Task<CliCommandResult> CollectCpuEfficiencySampleAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+        => Wrap(options, await SamplerUseCases.CollectCpuEfficiencySample(
+            services.GetRequiredService<DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler>(),
+            services.GetRequiredService<IDiagnosticHandleStore>(),
+            services.GetRequiredService<IProcessContextResolver>(),
+            options.Pid,
+            options.DurationSeconds ?? 10,
+            cancellationToken).ConfigureAwait(false));
+
 
     private static async Task<CliCommandResult> CollectThreadSnapshotAsync(
         IServiceProvider services,

@@ -130,7 +130,7 @@ public sealed class CliCollectValidationTests
         {
             "counters", "exceptions", "crash-guard", "gc", "datas", "catalog", "event_source", "activities",
             "logs", "jit", "threadpool", "contention", "db", "kestrel", "networking", "requests", "startup", "sweep",
-            "cpu", "allocation", "off_cpu", "off-cpu", "native-alloc", "thread-snapshot",
+            "cpu", "allocation", "off_cpu", "off-cpu", "native-alloc", "thread-snapshot", "cpu-efficiency",
         });
     }
 

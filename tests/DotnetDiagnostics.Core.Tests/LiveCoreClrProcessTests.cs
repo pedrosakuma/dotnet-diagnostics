@@ -120,6 +120,43 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
         caps.CanReadEventCounters.Should().BeTrue();
     }
 
+    [SkipIfPerfStatCountingUnavailableFact]
+    public async Task CollectCpuEfficiencySample_Linux_ReportsIpcOrDegradesGracefully()
+    {
+        // Issue #828: [SkipIfPerfStatCountingUnavailableFact] produces a genuine, green "Skipped"
+        // result (evaluated at test-discovery time) when perf isn't installed or
+        // perf_event_paranoid blocks per-process counting mode — common on CI runners and
+        // dev-container/virtualized sandboxes with no PMU passthrough. We must NEVER hard-fail
+        // the suite on that. Once discovery lets the test run at all, there is still a second,
+        // narrower degradation tier this test asserts directly rather than skipping: perf itself
+        // starts fine, but the (possibly virtual) CPU doesn't support one/all of the requested
+        // generic event aliases, so every value comes back "<not supported>"/"<not counted>" —
+        // PerfStatCpuEfficiencySampler still returns a fully successful CpuEfficiencySample with
+        // populated Notes for that case, which is asserted as a pass below (not a skip).
+        var sampler = new DotnetDiagnostics.Core.CpuEfficiency.PerfStatCpuEfficiencySampler();
+
+        EnsureSampleRunning();
+
+        var sample = await sampler.SampleAsync(Pid, TimeSpan.FromSeconds(3), CancellationToken.None);
+
+        sample.ProcessId.Should().Be(Pid);
+        sample.Backend.Should().Be("perf-stat");
+
+        if (sample.Notes is { Count: > 0 })
+        {
+            // vPMU-less host: perf ran, but every requested event came back unavailable.
+            // Assert the degradation is well-formed rather than silently empty.
+            sample.Notes.Should().OnlyContain(n => !string.IsNullOrWhiteSpace(n));
+            return;
+        }
+
+        // A host with real PMU access should report at least cycles/instructions, and IPC
+        // should be a small positive number (never negative, never absurdly large).
+        sample.Cycles.Should().NotBeNull();
+        sample.Instructions.Should().NotBeNull();
+        sample.InstructionsPerCycle.Should().NotBeNull().And.BeGreaterThan(0);
+    }
+
     [LinuxOrWindowsOnlyFact(skipReason: "method-parameter capture V1 requires linux-x64 or win-x64 profiler payloads.", Timeout = 120_000)]
     public async Task MethodParameterCapture_CapturesKnownValuesAndBounds_EndToEnd()
     {

@@ -1550,7 +1550,7 @@ dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `kind` | `string` | `cpu` | One of `cpu`, `off_cpu`, `allocation`, `native-alloc`, `method-params`. Case-sensitive. |
+| `kind` | `string` | `cpu` | One of `cpu`, `off_cpu`, `allocation`, `native-alloc`, `method-params`, `cpu-efficiency`. Case-sensitive. |
 | `processId` | `int?` | auto | Target process id. |
 | `durationSeconds` | `int` | `10` | Sampling window. ≥ 1. |
 | `topN` | `int` | `25` | Top hotspots / blocking stacks / types. |
@@ -1569,7 +1569,7 @@ dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc
 
 **Returns:** `CollectSampleEnvelope` — a polymorphic record carrying the
 `kind` discriminator plus exactly one populated payload field
-(`cpu` / `offCpu` / `allocation` / `nativeAlloc` / `methodParams`). The envelope's `summary`, `hints`,
+(`cpu` / `offCpu` / `allocation` / `nativeAlloc` / `methodParams` / `cpuEfficiency`). The envelope's `summary`, `hints`,
 `handle`, `handleExpiresAt`, and `resolvedProcess` are passed through from
 the underlying sampler verbatim, so `query_snapshot(view="call-tree")` and
 `query_snapshot` drilldowns continue to work unchanged.
@@ -1622,6 +1622,45 @@ for the retained invocation rows.
 `maxResolvedMethodInstantiations`, `nativeAotMapFile`, `exportTrace`,
 `nativeAllocSamplePeriod`) with `InvalidArgument` — only the method-parameter contract
 above is accepted for V1.
+
+**`kind="cpu-efficiency"` (issue #828).** Captures an **aggregate, whole-window** CPU
+microarchitecture-efficiency snapshot — IPC (instructions per cycle), cache-miss rate, branch-miss
+rate, stalled-cycles-frontend/backend breakdown, TLB miss rate, page faults, and
+context-switches/cpu-migrations — answering "is this CPU-bound process efficient or stalled?" for
+a **live** process. This is deliberately a single number per metric for the whole capture window,
+not per-method/per-frame attribution (use `kind="cpu"` for that), and it is not something either
+this tool's own `kind="cpu"` sampling or the offline-only `dotnet-diagnostics-benchmarkdotnet`
+diagnoser previously answered for a running process.
+
+- **Linux** backend runs `perf stat -x, -e <events> -p <pid> -- sleep <duration>` — an **aggregate
+  counting** invocation (distinct from every other `perf` usage in this tool, which is
+  sampling-mode `perf record`). Requires the `perf` binary in `PATH` and
+  `perf_event_paranoid <= 2` (the near-universal distro default) for a same-UID target — a lower
+  bar than `kind="off_cpu"`'s `CAP_PERFMON`/negative-paranoid requirement, since per-process
+  counting (unlike system-wide `sched_switch` tracing) doesn't need elevated tracing capabilities.
+  Requests the kernel/perf **generic** event aliases (`cycles`, `instructions`, `cache-misses`,
+  `branch-misses`, `stalled-cycles-frontend`, `stalled-cycles-backend`, `dTLB-load-misses`,
+  `iTLB-load-misses`, `page-faults`, `context-switches`, `cpu-migrations`), which are already
+  vendor-normalized (Intel vs. AMD) by the kernel in most cases, rather than raw `cpu/…/`
+  vendor-specific syntax.
+- **Windows** backend uses an ETW kernel session with the `PMCProfile` keyword
+  (`TraceEventProfileSources` from `Microsoft.Diagnostics.Tracing.TraceEvent`) plus `ThreadCSwitch`
+  and `MemoryHardFault` events for context-switches and page faults. Requires administrative
+  elevation / `SeSystemProfilePrivilege`, the same gate as `kind="off_cpu"`'s kernel session, and
+  shares the same process-wide exclusive kernel-session gate (only one NT Kernel Logger session can
+  be active system-wide on older Windows versions). Because ETW PMC is fundamentally
+  **sampling**-based (unlike Linux's true hardware counting), Windows counts are order-of-magnitude
+  estimates (`sample count × configured interval`) rather than exact tallies, and
+  `stalledCyclesFrontend`/`stalledCyclesBackend`/`tlbMissRate`/`cpuMigrations` are unavailable there
+  (no commonly-exposed profile source) — surfaced as null fields plus a `notes` entry.
+
+**Every metric is independently nullable.** vPMU-less hosts (common on cloud VMs and CI
+runners/virtualized environments) are the expected common case, not an error: on Linux, `perf stat`
+reports the literal token `<not supported>` (event doesn't exist on this CPU) or `<not counted>`
+(couldn't be scheduled) per event, which is parsed into a null field plus a `notes` entry — the call
+still succeeds. On Windows, a PMC session that fails outright (e.g. under Hyper-V/most VMs) also
+degrades to a structured `notes` entry rather than crashing. Gated by
+`inspect_process(view="capabilities")`'s `CanSampleCpuEfficiency` / `CpuEfficiencySource`.
 
 **Authorization.** `collect_sample` itself is gated by `RequireScope("eventpipe")`. The
 `method-params` branch adds two more gates: the deployment must opt in with

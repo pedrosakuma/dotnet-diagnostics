@@ -345,7 +345,7 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 
 | Option | Meaning |
 |---|---|
-| `--kind <kind>` | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`, `sweep`, `cpu`, `allocation`, `off_cpu` (alias `off-cpu`), `native-alloc`, `thread-snapshot`. |
+| `--kind <kind>` | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`, `sweep`, `cpu`, `allocation`, `off_cpu` (alias `off-cpu`), `native-alloc`, `thread-snapshot`, `cpu-efficiency`. |
 | `-d, --duration <int>` | Window in seconds (default: `counters` 5, `datas` 15, `sweep` 6, others 10). |
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
 | `--top <n>` | Top-N cap for sampler kinds (`cpu`, `allocation`, `off_cpu`, `native-alloc`) and session query pages/ranked views. |
@@ -416,6 +416,7 @@ The standalone CLI now exposes the same **Core-only** sampler families the MCP s
 | `allocation` | Managed allocation samples (`GCAllocationTick`) with top types by bytes/count and call-tree drilldown. | `--top` | top types by bytes/count, plus `signals[]` such as `allocations.by-type` / `allocations.by-site` |
 | `off_cpu` / `off-cpu` | Off-CPU stacks (where threads wait / block) via perf or ETW backend. | `--top`, `--symbol-path` | top blocking stacks ranked by off-CPU time |
 | `native-alloc` | Native allocator-call hotspots (`malloc` / `calloc` / `realloc`) via perf/ETW backend. Counts are sampled **calls**, not bytes. | `--top`, `--native-alloc-sample-period` | top allocator stacks + shared call-tree handle |
+| `cpu-efficiency` | Aggregate, whole-window CPU microarchitecture-efficiency snapshot (IPC, cache/branch/TLB miss rates, stalled-cycle breakdown, page faults, context-switches/cpu-migrations) via `perf stat` counting mode (Linux) or ETW PMC sampling (Windows). Every metric is independently nullable — unsupported metrics on this host surface as null + a `notes` entry, never a failure. | none (aggregate only; no `--top`/`--symbol-path`) | headline IPC / cache-miss-rate / branch-miss-rate plus the full metric set; no call-tree drilldown (aggregate, not per-method) |
 | `thread-snapshot` | Point-in-time managed threads + lock graph from a live pid or dump. | `--dump-file`, `--max-frames-per-thread`, `--include-runtime-frames`, `--include-native-frames`, `--symbol-path` | decisive threads inline (`summary`) or bounded thread/lock pages (`detail`/`raw`); continue through the session `query` command |
 
 Examples:

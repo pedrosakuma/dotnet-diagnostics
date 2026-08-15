@@ -580,6 +580,17 @@ public static class InvocationSafetyRegistry
                     [DataExposure.ParameterValues, DataExposure.TypeNames, DataExposure.MethodNames, DataExposure.PossiblePii, DataExposure.PossibleSecrets, DataExposure.PossibleConfidentialData],
                     [],
                     ["Allowlist only the exact methods required.", "Use the shortest duration and lowest capture limit.", .. SensitiveValueMitigations])),
+            DiagnosticOperationCatalog.CollectSampleKinds.CpuEfficiency => Profile(
+                kind,
+                [("kind", kind)],
+                Descriptor(
+                    InvocationRiskLevel.Moderate,
+                    InvocationApprovalPolicy.Warn,
+                    "Aggregate CPU-efficiency counting uses privileged kernel PMC tracing (perf stat / ETW PMCProfile) but only exposes whole-window numeric ratios, never stack, type, or method names.",
+                    [TargetImpact.KernelTracing, TargetImpact.SamplingOverhead, TargetImpact.BoundedRuntimeOverhead],
+                    [DataExposure.AggregatedMetrics],
+                    [],
+                    ["Use the shortest useful duration.", "Expect null metrics and a notes entry on hosts without real PMU access (common on cloud VMs/CI runners)."])),
             _ => throw new InvocationSafetyResolutionException(
                 DiagnosticOperationCatalog.CollectSample,
                 $"Sample kind '{kind}' has no safety profile."),
