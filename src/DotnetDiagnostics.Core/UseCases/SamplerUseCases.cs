@@ -26,6 +26,7 @@ public static class SamplerUseCases
     public const string OffCpuHandleKind = "off-cpu-snapshot";
     public const string NativeAllocHandleKind = "native-alloc-sample";
     public const string ThreadSnapshotKind = "thread-snapshot";
+    public const string CpuEfficiencyHandleKind = "cpu-efficiency-sample";
 
     public static async Task<DiagnosticResult<CpuSample>> CollectCpuSample(
         ICpuSampler sampler,
@@ -657,4 +658,104 @@ public static class SamplerUseCases
             with
         { Signals = signals.Count > 0 ? signals : null };
     }
+
+    /// <summary>
+    /// Captures an aggregate CPU microarchitecture-efficiency snapshot (IPC, cache/branch/TLB miss
+    /// rates, stalled-cycle breakdown, page faults, context-switches/cpu-migrations) for the target
+    /// process. Every metric is independently nullable — a metric unavailable on the current host
+    /// (vendor, virtualization, missing vPMU access) surfaces as a null field plus an explanatory
+    /// entry in <see cref="DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample.Notes"/> rather
+    /// than failing the whole call. Backed by 'perf stat' aggregate counting mode on Linux and an
+    /// ETW kernel PMC-profiling session on Windows (see
+    /// <see cref="DotnetDiagnostics.Core.CpuEfficiency.RoutingCpuEfficiencySampler"/>).
+    /// </summary>
+    public static async Task<DiagnosticResult<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>> CollectCpuEfficiencySample(
+        DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler sampler,
+        IDiagnosticHandleStore handles,
+        IProcessContextResolver resolver,
+        int? processId = null,
+        int durationSeconds = 10,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>(nameof(durationSeconds), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+        var ctx = resolved.Context;
+
+        DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample sample;
+        try
+        {
+            sample = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), cancellationToken).ConfigureAwait(false);
+        }
+        catch (NotSupportedException ex)
+        {
+            return DiagnosticResult.Fail<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>(
+                ex.Message,
+                new DiagnosticError("NotSupported", ex.Message, ex.GetType().FullName),
+                new NextActionHint("inspect_process",
+                    "Confirm which signals are available on this host before retrying.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return DiagnosticResult.Fail<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>(
+                $"collect_sample(kind=\"cpu-efficiency\") could not start the ETW kernel PMC session for pid {pid}: Windows denied access.",
+                new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
+                new NextActionHint("inspect_process",
+                    "After granting either BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance') to the sidecar account and restarting the Windows service, re-check capabilities before retrying.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("perf", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("paranoid", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("PMU", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("Hyper-V", StringComparison.OrdinalIgnoreCase))
+        {
+            return DiagnosticResult.Fail<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>(
+                ex.Message,
+                new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
+                new NextActionHint("inspect_process",
+                    "Check capability matrix; install linux-perf (Linux) or run elevated (Windows) before retrying.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return DiagnosticResult.Fail<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>(
+                ex.Message,
+                new DiagnosticError("CollectionFailed", ex.Message, ex.GetType().FullName),
+                new NextActionHint("collect_sample",
+                    "Retry — the target process may have exited mid-capture.",
+                    new Dictionary<string, object?> { ["kind"] = "cpu-efficiency", ["processId"] = pid, ["durationSeconds"] = durationSeconds }));
+        }
+
+        var handle = handles.Register(
+            pid,
+            CpuEfficiencyHandleKind,
+            sample,
+            SampleHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
+
+        var degraded = sample.Notes is { Count: > 0 };
+        var summaryText = sample.InstructionsPerCycle is { } ipc
+            ? $"Captured an aggregate CPU efficiency snapshot ({sample.Backend}) over {durationSeconds}s: IPC={ipc:F2}" +
+              (sample.CacheMissRate is { } cacheMiss ? $", cache-miss rate={cacheMiss:P1}" : string.Empty) +
+              (sample.BranchMissRate is { } branchMiss ? $", branch-miss rate={branchMiss:P1}" : string.Empty) +
+              (degraded ? $". {sample.Notes!.Count} metric(s) were unavailable on this host — see notes." : ".")
+            : degraded
+                ? $"Captured a CPU efficiency snapshot ({sample.Backend}) over {durationSeconds}s, but no hardware counters were available on this host " +
+                  "(common under virtualization/CI runners with no vPMU exposed to the guest) — see notes for the per-metric reason."
+                : $"Captured a CPU efficiency snapshot ({sample.Backend}) over {durationSeconds}s but produced no metrics.";
+
+        var ok = DiagnosticResult.OkWithHandle(
+            sample,
+            summaryText,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint("collect_sample", "Cross-reference with per-method hotspots to see WHERE the stalled/inefficient cycles are spent.",
+                new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }));
+        return WithContext(ok, ctx);
+    }
 }
+

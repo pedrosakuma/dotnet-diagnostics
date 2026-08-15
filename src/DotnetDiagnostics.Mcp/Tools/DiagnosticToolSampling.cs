@@ -221,6 +221,98 @@ internal static class DiagnosticToolSampling
         return WithContext(ok, ctx);
     }
 
+    public static async Task<DiagnosticResult<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>> CollectCpuEfficiencySample(
+        DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler sampler,
+        IDiagnosticHandleStore handles,
+        IProcessContextResolver resolver,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Counting window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>(nameof(durationSeconds), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+        var ctx = resolved.Context;
+
+        DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample sample;
+        try
+        {
+            sample = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), cancellationToken).ConfigureAwait(false);
+        }
+        catch (NotSupportedException ex)
+        {
+            return DiagnosticResult.Fail<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>(
+                ex.Message,
+                new DiagnosticError("NotSupported", ex.Message, ex.GetType().FullName),
+                new NextActionHint("inspect_process",
+                    "Confirm which signals are available on this host before retrying.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return DiagnosticResult.Fail<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>(
+                $"collect_sample(kind=\"cpu-efficiency\") could not start the ETW kernel PMC session for pid {pid}: Windows denied access.",
+                new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
+                new NextActionHint("inspect_process",
+                    "After granting either BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance') to the sidecar account and restarting the Windows service, re-check capabilities before retrying.",
+                    new Dictionary<string, object?> { ["processId"] = pid }),
+                new NextActionHint("collect_sample",
+                    "Retry after the sidecar account has one of the two supported Windows paths: BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance').",
+                    new Dictionary<string, object?> { ["kind"] = "cpu-efficiency", ["processId"] = pid, ["durationSeconds"] = durationSeconds }));
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("perf", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("paranoid", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("PMU", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("Hyper-V", StringComparison.OrdinalIgnoreCase))
+        {
+            return DiagnosticResult.Fail<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>(
+                ex.Message,
+                new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
+                new NextActionHint("inspect_process",
+                    "Check capability matrix; install linux-perf (Linux) or run elevated (Windows) before retrying.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return DiagnosticResult.Fail<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>(
+                ex.Message,
+                new DiagnosticError("CollectionFailed", ex.Message, ex.GetType().FullName),
+                new NextActionHint("collect_sample",
+                    "Retry — the target process may have exited mid-capture.",
+                    new Dictionary<string, object?> { ["kind"] = "cpu-efficiency", ["processId"] = pid, ["durationSeconds"] = durationSeconds }));
+        }
+
+        var handle = handles.Register(
+            pid,
+            "cpu-efficiency-sample",
+            sample,
+            CpuSampleHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
+
+        var degraded = sample.Notes is { Count: > 0 };
+        var summaryText = sample.InstructionsPerCycle is { } ipc
+            ? $"Captured an aggregate CPU efficiency snapshot ({sample.Backend}) over {durationSeconds}s: IPC={ipc:F2}" +
+              (sample.CacheMissRate is { } cacheMiss ? $", cache-miss rate={cacheMiss:P1}" : string.Empty) +
+              (sample.BranchMissRate is { } branchMiss ? $", branch-miss rate={branchMiss:P1}" : string.Empty) +
+              (degraded ? $". {sample.Notes!.Count} metric(s) were unavailable on this host — see notes." : ".")
+            : degraded
+                ? $"Captured a CPU efficiency snapshot ({sample.Backend}) over {durationSeconds}s, but no hardware counters were available on this host " +
+                  "(common under virtualization/CI runners with no vPMU exposed to the guest) — see notes for the per-metric reason."
+                : $"Captured a CPU efficiency snapshot ({sample.Backend}) over {durationSeconds}s but produced no metrics.";
+
+        var ok = DiagnosticResult.OkWithHandle(
+            sample,
+            summaryText,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint("collect_sample", "Cross-reference with per-method hotspots to see WHERE the stalled/inefficient cycles are spent.",
+                new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }));
+        return WithContext(ok, ctx);
+    }
+
     public static DiagnosticResult<CallTreeView> GetCallTree(
         IDiagnosticHandleStore handles,
         [Description("Handle returned by a prior collect_sample(kind='cpu') call.")] string handle,

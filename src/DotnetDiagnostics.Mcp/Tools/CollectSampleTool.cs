@@ -39,6 +39,7 @@ public sealed class CollectSampleTool
     internal const string KindAllocation = DiagnosticOperationCatalog.CollectSampleKinds.Allocation;
     internal const string KindNativeAlloc = DiagnosticOperationCatalog.CollectSampleKinds.NativeAlloc;
     internal const string KindMethodParams = DiagnosticOperationCatalog.CollectSampleKinds.MethodParameters;
+    internal const string KindCpuEfficiency = DiagnosticOperationCatalog.CollectSampleKinds.CpuEfficiency;
 
     /// <summary>Allowed values for the <c>kind</c> discriminator. Order is preserved when
     /// rendered by <see cref="DiscriminatorDispatch"/> in failure envelopes.</summary>
@@ -63,6 +64,7 @@ public sealed class CollectSampleTool
         EventPipeAllocationSampler allocationSampler,
         INativeAllocSampler nativeAllocSampler,
         IMethodParameterCaptureCollector methodParameterCollector,
+        DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler cpuEfficiencySampler,
         IDiagnosticHandleStore handles,
         IProcessContextResolver resolver,
         SymbolServerAllowlist symbolServerAllowlist,
@@ -75,7 +77,8 @@ public sealed class CollectSampleTool
             "'off_cpu' (where threads are blocked and for how long — Linux sched_switch via perf, Windows ContextSwitch via NT Kernel Logger), " +
             "'allocation' (managed GCAllocationTick rolled up by type — TypeName is empty on NativeAOT), " +
             "'native-alloc' (unmanaged allocations — Linux uprobes libc malloc/calloc/realloc via perf (needs CAP_SYS_ADMIN); Windows captures NT Kernel Logger VirtualAlloc via ETW (needs admin elevation); sampled call counts, not bytes), " +
-            "'method-params' (security-sensitive live parameter capture for explicitly-filtered methods on .NET 8+ CoreCLR; requires `sensitive-parameter-read`, `Diagnostics:AllowMethodParameterCapture=true`, and `includeSensitiveValues=true`). " +
+            "'method-params' (security-sensitive live parameter capture for explicitly-filtered methods on .NET 8+ CoreCLR; requires `sensitive-parameter-read`, `Diagnostics:AllowMethodParameterCapture=true`, and `includeSensitiveValues=true`), " +
+            "'cpu-efficiency' (aggregate whole-window CPU microarchitecture-efficiency snapshot — IPC, cache/branch-miss rate, stall-cycle breakdown, TLB miss rate, page faults, context-switches/cpu-migrations; Linux via 'perf stat' aggregate counting, Windows via ETW kernel PMC sampling; per-metric fields are nullable and degrade gracefully when the host's vPMU is unavailable, e.g. under virtualization). " +
             "Long-running collections expose MCP-native progress/cancellation or can be promoted to an MCP Task.")]
         string kind = KindCpu,
         // Shared options.
@@ -208,6 +211,17 @@ public sealed class CollectSampleTool
                 methods,
                 requestContext,
                 cancellationToken).ConfigureAwait(false),
+
+            KindCpuEfficiency => Project(
+                await DiagnosticTools.CollectCpuEfficiencySample(
+                    cpuEfficiencySampler,
+                    handles,
+                    resolver,
+                    processId,
+                    durationSeconds,
+                    cancellationToken).ConfigureAwait(false),
+                KindCpuEfficiency,
+                (env, data) => env with { CpuEfficiency = data }),
 
             // Unreachable — TryValidate narrowed canonicalKind to the AllowedKinds set above.
             _ => DiagnosticResult.Fail<CollectSampleEnvelope>(
@@ -427,4 +441,5 @@ public sealed record CollectSampleEnvelope(
     OffCpuSnapshot? OffCpu = null,
     AllocationSample? Allocation = null,
     NativeAllocSample? NativeAlloc = null,
-    MethodParameterCaptureSample? MethodParams = null);
+    MethodParameterCaptureSample? MethodParams = null,
+    DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample? CpuEfficiency = null);

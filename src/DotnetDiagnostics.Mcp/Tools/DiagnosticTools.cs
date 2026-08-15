@@ -301,6 +301,37 @@ public sealed class DiagnosticTools
             topN,
             cancellationToken).ConfigureAwait(false);
 
+    [RequireScope("eventpipe")]
+    [Description(
+        "Captures an AGGREGATE CPU microarchitecture-efficiency snapshot for the target process — IPC (instructions " +
+        "per cycle), cache-miss rate, branch-miss rate, stalled-cycles-frontend/backend breakdown, TLB miss rate, " +
+        "page faults, and context-switches/cpu-migrations over the sampling window. Answers 'is this CPU-bound " +
+        "process efficient or stalled?' — a question neither per-method CPU sampling nor offline BenchmarkDotNet " +
+        "answer for a live process. " +
+        "Backend: Linux runs 'perf stat' in aggregate counting mode (NOT sampling) against the target pid for " +
+        "durationSeconds; requires the perf binary in PATH and perf_event_paranoid <= 2 (same-UID target). " +
+        "Windows uses an ETW kernel session with PMC (performance monitoring counter) profiling; requires " +
+        "Administrators membership or SeSystemProfilePrivilege, and only one kernel ETW session may be active " +
+        "system-wide (shared with collect_sample(kind='cpu'|'off_cpu')). Windows counts are sampling-derived " +
+        "estimates, not exact hardware tallies, and stalled-cycles/TLB-miss-rate/cpu-migrations are unavailable " +
+        "there. Every metric is independently nullable — unsupported/unavailable metrics on a given host (common " +
+        "under virtualization with no vPMU exposed to the guest) surface as null fields plus a Notes entry " +
+        "explaining why, rather than failing the whole call.")]
+    public static async Task<DiagnosticResult<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>> CollectCpuEfficiencySample(
+        DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler sampler,
+        IDiagnosticHandleStore handles,
+        IProcessContextResolver resolver,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Counting window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
+        CancellationToken cancellationToken = default)
+        => await DiagnosticToolSampling.CollectCpuEfficiencySample(
+            sampler,
+            handles,
+            resolver,
+            processId,
+            durationSeconds,
+            cancellationToken).ConfigureAwait(false);
+
     [RequireScope("investigation-export")]
     [Description(
         "Returns a pruned caller→callee tree from a prior collect_sample(kind='cpu'|'allocation') run, " +

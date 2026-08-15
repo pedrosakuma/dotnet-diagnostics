@@ -31,6 +31,7 @@ public sealed class PerfHostProbeTests
         result.HasCapSysAdmin.Should().BeFalse();
         result.PerfEventParanoid.Should().Be(2);
         result.CanTraceSchedSwitch.Should().BeTrue();
+        result.CanRunPerfStatCounting.Should().BeTrue();
     }
 
     [Fact]
@@ -49,6 +50,7 @@ public sealed class PerfHostProbeTests
         result.HasCapSysAdmin.Should().BeTrue();
         result.PerfEventParanoid.Should().Be(3);
         result.CanTraceSchedSwitch.Should().BeTrue();
+        result.CanRunPerfStatCounting.Should().BeFalse();
     }
 
     [Fact]
@@ -67,6 +69,7 @@ public sealed class PerfHostProbeTests
         result.HasCapSysAdmin.Should().BeFalse();
         result.PerfEventParanoid.Should().Be(-1);
         result.CanTraceSchedSwitch.Should().BeTrue();
+        result.CanRunPerfStatCounting.Should().BeTrue();
     }
 
     [Fact]
@@ -84,5 +87,22 @@ public sealed class PerfHostProbeTests
         result.HasCapPerfmon.Should().BeFalse();
         result.PerfEventParanoid.Should().Be(-1);
         result.CanTraceSchedSwitch.Should().BeFalse();
+        result.CanRunPerfStatCounting.Should().BeFalse();
+    }
+
+    [Fact]
+    public void MissingParanoidFile_DefaultsCanRunPerfStatCounting_ToTrue()
+    {
+        // Some minimal/sandboxed containers lack the sysctl file entirely; treat that as
+        // permissive for the (lower-privilege) counting-mode gate, mirroring "null or <= 2".
+        var files = new Dictionary<string, string>
+        {
+            [PerfHostProbe.ProcSelfStatusPath] = StatusWithoutCaps,
+        };
+
+        var result = PerfHostProbe.DetectLinux(ReadAllText(files), FileExists(files), () => "/usr/bin/perf");
+
+        result.PerfEventParanoid.Should().BeNull();
+        result.CanRunPerfStatCounting.Should().BeTrue();
     }
 }

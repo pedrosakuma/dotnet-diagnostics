@@ -148,4 +148,22 @@ public sealed record DiagnosticCapabilities(
     /// host (administrative elevation / <c>SeSystemProfilePrivilege</c>). Mirrors the ETW half
     /// of the kernel capability matrix; false on non-Windows hosts.</summary>
     public bool EtwKernelOk { get; init; }
+
+    /// <summary>
+    /// True when <c>collect_sample(kind="cpu-efficiency")</c> is expected to succeed against this
+    /// sidecar before the LLM commits to the (whole-window, privileged) capture. On Linux it
+    /// requires <c>perf</c> in <c>PATH</c> plus <c>perf_event_paranoid &lt;= 2</c> (the
+    /// near-universal distro default for same-UID target counting); on Windows it requires the
+    /// same elevation as <see cref="CanSampleOffCpu"/> (administrative elevation or
+    /// <c>SeSystemProfilePrivilege</c>) so the NT Kernel Logger PMCProfile provider can be
+    /// enabled. True here does NOT guarantee the host's CPU actually exposes a vPMU to the guest
+    /// — many cloud VMs/CI runners report per-metric "not supported"/degradation instead of a
+    /// hard failure; see <see cref="CpuEfficiencySource"/> for which backend served the result.
+    /// </summary>
+    public bool CanSampleCpuEfficiency { get; init; }
+
+    /// <summary>Identifier of the backend expected to serve
+    /// <c>collect_sample(kind="cpu-efficiency")</c> when <see cref="CanSampleCpuEfficiency"/> is
+    /// true (<c>perf-stat</c> on Linux, <c>etw-pmc</c> on Windows). Null when unavailable.</summary>
+    public string? CpuEfficiencySource { get; init; }
 }

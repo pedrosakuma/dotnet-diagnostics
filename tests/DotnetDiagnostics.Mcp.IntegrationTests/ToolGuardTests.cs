@@ -125,6 +125,76 @@ public sealed class ToolGuardTests
     }
 
     [Fact]
+    public async Task CollectCpuEfficiencySample_WindowsPrivilegeDenied_TranslatesToPermissionDenied()
+    {
+        const string message = "NT Kernel Logger PMC session requires either BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance'). Grant one of those rights to the diagnostics sidecar account and restart the service.";
+        var handles = new MemoryDiagnosticHandleStore();
+        var sampler = new ThrowingCpuEfficiencySampler(new UnauthorizedAccessException(message));
+
+        var result = await DiagnosticTools.CollectCpuEfficiencySample(
+            sampler, handles, EchoResolver(), processId: 1234, cancellationToken: default);
+
+        result.IsError.Should().BeTrue();
+        result.Error!.Kind.Should().Be("PermissionDenied");
+        result.Summary.Should().Contain("ETW kernel PMC session");
+        result.Hints.Should().Contain(h => h.Reason.Contains("BUILTIN\\Administrators", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CollectCpuEfficiencySample_LinuxPerfUnsupported_TranslatesToPermissionDenied()
+    {
+        // Mirrors the vPMU-less-host case (issue #828): perf itself fails to start (as opposed to
+        // reporting per-event "<not supported>", which is graceful degradation handled inside the
+        // parser/aggregator and never throws).
+        const string message = "perf stat failed to start: perf_event_paranoid=3 blocks per-process counting for this pid.";
+        var handles = new MemoryDiagnosticHandleStore();
+        var sampler = new ThrowingCpuEfficiencySampler(new InvalidOperationException(message));
+
+        var result = await DiagnosticTools.CollectCpuEfficiencySample(
+            sampler, handles, EchoResolver(), processId: 1234, cancellationToken: default);
+
+        result.IsError.Should().BeTrue();
+        result.Error!.Kind.Should().Be("PermissionDenied");
+        result.Error.Message.Should().Contain("perf_event_paranoid");
+    }
+
+    [Fact]
+    public async Task CollectCpuEfficiencySample_TargetExitedMidCapture_TranslatesToCollectionFailed()
+    {
+        var handles = new MemoryDiagnosticHandleStore();
+        var sampler = new ThrowingCpuEfficiencySampler(new InvalidOperationException("target process exited during the counting window"));
+
+        var result = await DiagnosticTools.CollectCpuEfficiencySample(
+            sampler, handles, EchoResolver(), processId: 1234, cancellationToken: default);
+
+        result.IsError.Should().BeTrue();
+        result.Error!.Kind.Should().Be("CollectionFailed");
+    }
+
+    [Fact]
+    public async Task CollectCpuEfficiencySample_DegradedHost_SurfacesNotesWithoutFailing()
+    {
+        // vPMU-less host: perf stat itself succeeds, but every requested event came back
+        // "<not supported>" — the whole call must still succeed with null metrics + notes.
+        var handles = new MemoryDiagnosticHandleStore();
+        var sample = new DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample(
+            ProcessId: 1234,
+            StartedAt: DateTimeOffset.UtcNow,
+            Duration: TimeSpan.FromSeconds(10),
+            Backend: "perf-stat",
+            Notes: new[] { "cycles: not supported by this CPU/host (no vPMU exposed to the guest)." });
+        var sampler = new StubCpuEfficiencySampler(sample);
+
+        var result = await DiagnosticTools.CollectCpuEfficiencySample(
+            sampler, handles, EchoResolver(), processId: 1234, cancellationToken: default);
+
+        result.IsError.Should().BeFalse();
+        result.Data!.Notes.Should().NotBeNull();
+        result.Summary.Should().Contain("no hardware counters were available");
+        result.Handle.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
     public async Task InspectLiveHeap_OperationNotPermitted_TranslatesToPermissionDenied()
     {
         // Canonical EPERM message that ClrMD can produce when the kernel rejects ptrace
@@ -362,5 +432,29 @@ public sealed class ToolGuardTests
 
         public Task<OffCpuSampleResult> SampleAsync(int processId, TimeSpan duration, int topN = 25, string? symbolPath = null, CancellationToken cancellationToken = default)
             => throw _ex;
+    }
+
+    private sealed class ThrowingCpuEfficiencySampler : DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler
+    {
+        private readonly Exception _ex;
+
+        public ThrowingCpuEfficiencySampler(Exception ex) => _ex = ex;
+
+        public bool IsAvailable() => true;
+
+        public Task<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample> SampleAsync(int processId, TimeSpan duration, CancellationToken cancellationToken = default)
+            => throw _ex;
+    }
+
+    private sealed class StubCpuEfficiencySampler : DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler
+    {
+        private readonly DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample _sample;
+
+        public StubCpuEfficiencySampler(DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample sample) => _sample = sample;
+
+        public bool IsAvailable() => true;
+
+        public Task<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample> SampleAsync(int processId, TimeSpan duration, CancellationToken cancellationToken = default)
+            => Task.FromResult(_sample);
     }
 }

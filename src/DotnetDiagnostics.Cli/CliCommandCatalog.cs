@@ -179,7 +179,7 @@ collect options:
                                 catalog, event_source, activities, logs, jit, threadpool,
                                 contention, db, kestrel, networking, requests, startup, sweep,
                                 cpu, allocation, off_cpu (alias off-cpu), native-alloc,
-                                thread-snapshot.
+                                thread-snapshot, cpu-efficiency.
   -d, --duration <int>          Collection window in seconds (default: counters 5, datas 15, sweep 6, others 10).
       --depth <level>           Verbosity: summary, detail (default), raw.
       --top <int>               Top-N rows / hotspots for cpu, allocation, off_cpu, native-alloc.

@@ -27,6 +27,7 @@ public sealed class CapabilityDetector : ICapabilityDetector
     private readonly IContainerSignalsCollector? _containerSignals;
     private readonly IOffCpuSampler? _offCpuSampler;
     private readonly INativeAllocSampler? _nativeAllocSampler;
+    private readonly DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler? _cpuEfficiencySampler;
 
     public CapabilityDetector(
         ILogger<CapabilityDetector>? logger = null,
@@ -34,7 +35,8 @@ public sealed class CapabilityDetector : ICapabilityDetector
         EtwNativeAotCpuSampler? etwSampler = null,
         IContainerSignalsCollector? containerSignals = null,
         IOffCpuSampler? offCpuSampler = null,
-        INativeAllocSampler? nativeAllocSampler = null)
+        INativeAllocSampler? nativeAllocSampler = null,
+        DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler? cpuEfficiencySampler = null)
     {
         _logger = logger ?? NullLogger<CapabilityDetector>.Instance;
         _perfSampler = perfSampler;
@@ -42,6 +44,7 @@ public sealed class CapabilityDetector : ICapabilityDetector
         _containerSignals = containerSignals;
         _offCpuSampler = offCpuSampler;
         _nativeAllocSampler = nativeAllocSampler;
+        _cpuEfficiencySampler = cpuEfficiencySampler;
     }
 
     public async Task<DiagnosticCapabilities> DetectAsync(int processId, CancellationToken cancellationToken = default)
@@ -70,6 +73,16 @@ public sealed class CapabilityDetector : ICapabilityDetector
             : _nativeAllocSampler is not null && _nativeAllocSampler.IsAvailable();
         var ptrace = PtraceProbe.Detect();
         var euStackAvailable = IsEuStackAvailable();
+        // cpu-efficiency mirrors off-CPU's split between "sampler class present + elevated" and
+        // "the specific host capability the sampler needs" — perf stat needs perf_event_paranoid
+        // <= 2 (near-universal default for same-UID counting), not the negative-paranoid/CAP_PERFMON
+        // bar sched_switch tracing requires. Windows reuses the same elevation gate as off-CPU.
+        var canSampleCpuEfficiency = OperatingSystem.IsLinux()
+            ? _cpuEfficiencySampler is not null && _cpuEfficiencySampler.IsAvailable() && perfHost.CanRunPerfStatCounting
+            : _cpuEfficiencySampler is not null && _cpuEfficiencySampler.IsAvailable();
+        var cpuEfficiencySource = canSampleCpuEfficiency
+            ? (OperatingSystem.IsLinux() ? "perf-stat" : OperatingSystem.IsWindows() ? "etw-pmc" : null)
+            : null;
         var (canCollectThreadSnapshot, threadSnapshotSource, threadSnapshotPreconditions) =
             EvaluateThreadSnapshotSupport(runtime, ptrace, euStackAvailable, etwAvailable, canSampleOffCpu);
         // CoreCLR always supports SampleProfiler; whether the 2-second probe happened to
@@ -138,6 +151,8 @@ public sealed class CapabilityDetector : ICapabilityDetector
             CanReadProcFs = canReadProcFs,
             CanReadHandleCount = canReadHandleCount,
             EtwKernelOk = etwAvailable,
+            CanSampleCpuEfficiency = canSampleCpuEfficiency,
+            CpuEfficiencySource = cpuEfficiencySource,
         };
     }
 
