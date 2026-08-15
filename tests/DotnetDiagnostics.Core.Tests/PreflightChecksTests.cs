@@ -118,6 +118,24 @@ public sealed class PreflightChecksTests
         Assert.False(report.HasBlocker);
         Assert.Equal(PreflightStatus.Degraded, Find(report, "offcpu-perf").Status);
         Assert.Equal(PreflightStatus.Degraded, Find(report, "native-alloc").Status);
+        Assert.Equal(PreflightStatus.Degraded, Find(report, "native-lock-contention").Status);
+    }
+
+    [Fact]
+    public void Windows_marks_native_lock_contention_degraded_not_not_applicable()
+    {
+        // Unlike native-alloc (which has a working Windows ETW backend and reports
+        // NotApplicable on non-Linux), native-lock-contention has no Windows backend at all —
+        // it must surface as Degraded on Windows so the gap stays visible.
+        var report = PreflightChecks.Build(
+            processId: 4242,
+            isLinux: false, isWindows: true, isMacOs: false,
+            ptrace: new PtraceProbeResult(CanAttach: true, Reason: "Windows: attach allowed."),
+            perf: new PerfHostProbeResult(false, false, false, null, false),
+            selfUid: null, targetUid: null);
+
+        Assert.Equal(PreflightStatus.Degraded, Find(report, "native-lock-contention").Status);
+        Assert.Equal(PreflightStatus.NotApplicable, Find(report, "native-alloc").Status);
     }
 
     [Fact]
@@ -134,7 +152,10 @@ public sealed class PreflightChecksTests
         Assert.Equal(PreflightStatus.NotApplicable, Find(report, "socket-uid").Status);
         Assert.Equal(PreflightStatus.NotApplicable, Find(report, "offcpu-perf").Status);
         Assert.Equal(PreflightStatus.NotApplicable, Find(report, "native-alloc").Status);
+        Assert.Equal(PreflightStatus.Degraded, Find(report, "native-lock-contention").Status);
         Assert.Equal(PreflightStatus.Ok, Find(report, "clrmd-attach").Status);
-        Assert.Equal(PreflightStatus.Ok, report.Overall);
+        // Overall is Degraded (not Ok) purely because native-lock-contention has no Windows
+        // backend — this is the intended visible gap, not a regression of the other checks.
+        Assert.Equal(PreflightStatus.Degraded, report.Overall);
     }
 }

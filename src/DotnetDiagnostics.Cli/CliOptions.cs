@@ -142,6 +142,13 @@ internal sealed record CliOptions
     public long? NativeAllocSamplePeriod { get; init; }
 
     /// <summary>
+    /// Native lock-contention sampler period (<c>--native-lock-contention-sample-period</c>). Null
+    /// applies the default (5000) — mutex calls are typically far more frequent than allocator
+    /// calls, so the default period is higher than the native-allocation sampler's.
+    /// </summary>
+    public long? NativeLockContentionSamplePeriod { get; init; }
+
+    /// <summary>
     /// Thread-snapshot frame cap (<c>--max-frames-per-thread</c>). Null applies the default (64).
     /// </summary>
     public int? MaxFramesPerThread { get; init; }
@@ -525,6 +532,7 @@ internal sealed record CliOptions
             new FlagOptionDescriptor(state => state.ResolveSourceLines = false, "--no-resolve-source-lines"),
             new FlagOptionDescriptor(state => state.ResolveMethodInstantiations = true, "--resolve-method-instantiations"),
             new LongOptionDescriptor((state, value) => state.NativeAllocSamplePeriod = value, "--native-alloc-sample-period"),
+            new LongOptionDescriptor((state, value) => state.NativeLockContentionSamplePeriod = value, "--native-lock-contention-sample-period"),
             new IntOptionDescriptor((state, value) => state.MaxFramesPerThread = value, "--max-frames-per-thread"),
             new FlagOptionDescriptor(state => state.NoSysPtrace = true, "--no-sys-ptrace"),
             new FlagOptionDescriptor(state => state.IncludeRuntimeFrames = true, "--include-runtime-frames"),
@@ -640,6 +648,8 @@ internal sealed record CliOptions
         public bool ResolveMethodInstantiations { get; set; }
 
         public long? NativeAllocSamplePeriod { get; set; }
+
+        public long? NativeLockContentionSamplePeriod { get; set; }
 
         public int? MaxFramesPerThread { get; set; }
 
@@ -786,6 +796,7 @@ internal sealed record CliOptions
                 ResolveSourceLines = ResolveSourceLines,
                 ResolveMethodInstantiations = ResolveMethodInstantiations,
                 NativeAllocSamplePeriod = NativeAllocSamplePeriod,
+                NativeLockContentionSamplePeriod = NativeLockContentionSamplePeriod,
                 MaxFramesPerThread = MaxFramesPerThread,
                 IncludeRuntimeFrames = IncludeRuntimeFrames,
                 IncludeNativeFrames = IncludeNativeFrames,

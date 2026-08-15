@@ -27,6 +27,7 @@ using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Requests;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.NativeAlloc;
+using DotnetDiagnostics.Core.NativeLockContention;
 using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.Preflight;
 using DotnetDiagnostics.Core.ProcessDiscovery;
@@ -392,6 +393,10 @@ public sealed class DiagnosticTools
     /// (a <see cref="CpuSampleTraceArtifact"/>); walked with <c>query_snapshot(view="call-tree")</c>.</summary>
     public const string NativeAllocHandleKind = DiagnosticToolSampling.NativeAllocHandleKind;
 
+    /// <summary>Canonical kind tag for handles backing a native-lock-contention call tree
+    /// (a <see cref="CpuSampleTraceArtifact"/>); walked with <c>query_snapshot(view="call-tree")</c>.</summary>
+    public const string NativeLockContentionHandleKind = DiagnosticToolSampling.NativeLockContentionHandleKind;
+
     [RequireScope("eventpipe")]
     [Description(
         "Attributes NATIVE (unmanaged) allocations to a call site by uprobing the target's libc " +
@@ -417,6 +422,46 @@ public sealed class DiagnosticTools
         [Description("perf sample period — record one callchain per this many allocator hits. Must be >= 1. Defaults to 1000. Higher reduces overhead and resolution; it throttles recorded samples but not the per-call trap cost.")] long samplePeriod = 1000,
         CancellationToken cancellationToken = default)
         => await DiagnosticToolSampling.CollectNativeAllocSample(
+            sampler,
+            handles,
+            resolver,
+            processId,
+            durationSeconds,
+            topN,
+            samplePeriod,
+            cancellationToken).ConfigureAwait(false);
+
+    [RequireScope("eventpipe")]
+    [Description(
+        "Attributes NATIVE/OS-level lock contention (pthread_mutex_lock/pthread_mutex_unlock calls) " +
+        "to a call site by uprobing the target's libc with perf and DWARF unwinding. Companion to " +
+        "collect_events(kind='contention'): the managed collector only sees CLR-instrumented " +
+        "Monitor.Enter/lock contention; this sees native blocking the CLR never observes — a native " +
+        "library's own internal locking reached via P/Invoke, or a construct the CLR doesn't wrap in " +
+        "a managed monitor. " +
+        "Narrow first cut (issue #830): only pthread_mutex_lock/pthread_mutex_unlock are probed — " +
+        "condition variables, semaphores, and reader-writer locks are out of scope. " +
+        "Hotspot-only, call-frequency based: counts are sampled mutex-call hits, NOT measured wait " +
+        "time — an uncontended fast-path acquisition is indistinguishable from a genuinely blocked " +
+        "one at this uprobe; corroborate with collect_sample(kind='off_cpu') to confirm actual " +
+        "blocking. " +
+        "Linux only: uprobes on libc pthread_mutex_lock/pthread_mutex_unlock (needs the perf binary " +
+        "plus permission to create a uprobe — CAP_SYS_ADMIN / tracefs write access). There is no " +
+        "Windows backend in this release — Windows ETW has no supported enablement path for native " +
+        "critical-section contention tracing (see WindowsNativeLockContentionSampler for the full " +
+        "investigation); use kind='off_cpu' on Windows instead. " +
+        "Returns the top-N contended call-stack sites inline and a handle for the query_snapshot " +
+        "call-tree drilldown.")]
+    public static async Task<DiagnosticResult<NativeLockContentionSample>> CollectNativeLockContentionSample(
+        INativeLockContentionSampler sampler,
+        IDiagnosticHandleStore handles,
+        IProcessContextResolver resolver,
+        [Description("Operating system process id of the target .NET process. Optional — server auto-selects when only one .NET process is visible.")] int? processId = null,
+        [Description("Sampling window in seconds. Must be >= 1. Defaults to 10. Keep short on mutex-hot workloads — uprobe overhead is per-call.")] int durationSeconds = 10,
+        [Description("Maximum number of contended call sites returned inline (the full call tree lives behind the handle). Defaults to 25.")] int topN = 25,
+        [Description("perf sample period — record one callchain per this many mutex-call hits. Must be >= 1. Defaults to 5000 (higher than native-alloc's 1000: mutex fast-path calls are typically far more frequent than allocator calls). Linux only.")] long samplePeriod = 5000,
+        CancellationToken cancellationToken = default)
+        => await DiagnosticToolSampling.CollectNativeLockContentionSample(
             sampler,
             handles,
             resolver,

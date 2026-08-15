@@ -30,6 +30,19 @@ public sealed class NativeAllocSampleComparableProjector : IComparableProjector
         => CpuSampleComparableProjection.Project(artifact, label, Kind);
 }
 
+/// <summary>
+/// Projects a native lock-contention call tree into key-set rows keyed by native frame.
+/// </summary>
+public sealed class NativeLockContentionSampleComparableProjector : IComparableProjector
+{
+    public string Kind => "native-lock-contention-sample";
+
+    public bool CanProject(object artifact) => artifact is CpuSampleTraceArtifact;
+
+    public ComparableSnapshot Project(object artifact, string label)
+        => CpuSampleComparableProjection.Project(artifact, label, Kind);
+}
+
 public static class CpuSampleComparableProjection
 {
     public static ComparableSnapshot Project(object artifact, string label, string kind)

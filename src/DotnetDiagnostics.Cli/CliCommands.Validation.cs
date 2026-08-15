@@ -294,9 +294,10 @@ internal static partial class CliCommands
             || string.Equals(options.Kind, "off-cpu", StringComparison.Ordinal);
         var isAllocation = string.Equals(options.Kind, "allocation", StringComparison.Ordinal);
         var isNativeAlloc = string.Equals(options.Kind, "native-alloc", StringComparison.Ordinal);
+        var isNativeLockContention = string.Equals(options.Kind, "native-lock-contention", StringComparison.Ordinal);
         var isThreadSnapshot = string.Equals(options.Kind, "thread-snapshot", StringComparison.Ordinal);
 
-        if ((isCpu || isOffCpu || isAllocation || isNativeAlloc) && options.Top is < 1)
+        if ((isCpu || isOffCpu || isAllocation || isNativeAlloc || isNativeLockContention) && options.Top is < 1)
         {
             error = "--top must be >= 1.";
             return false;
@@ -305,6 +306,12 @@ internal static partial class CliCommands
         if (isNativeAlloc && options.NativeAllocSamplePeriod is < 1)
         {
             error = "--native-alloc-sample-period must be >= 1.";
+            return false;
+        }
+
+        if (isNativeLockContention && options.NativeLockContentionSamplePeriod is < 1)
+        {
+            error = "--native-lock-contention-sample-period must be >= 1.";
             return false;
         }
 

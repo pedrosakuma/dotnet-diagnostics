@@ -130,7 +130,7 @@ public sealed class CliCollectValidationTests
         {
             "counters", "exceptions", "crash-guard", "gc", "datas", "catalog", "event_source", "activities",
             "logs", "jit", "threadpool", "contention", "db", "kestrel", "networking", "requests", "startup", "sweep",
-            "cpu", "allocation", "off_cpu", "off-cpu", "native-alloc", "thread-snapshot", "cpu-efficiency",
+            "cpu", "allocation", "off_cpu", "off-cpu", "native-alloc", "native-lock-contention", "thread-snapshot", "cpu-efficiency",
         });
     }
 
@@ -154,6 +154,17 @@ public sealed class CliCollectValidationTests
 
         CliCommands.TryValidateCollect(options, out var error).Should().BeFalse();
         error.Should().Contain("--native-alloc-sample-period must be >= 1");
+    }
+
+    [Fact]
+    public void TryValidateCollect_NativeLockContentionSamplePeriodZero_Fails()
+    {
+        var options = CliOptions.Parse(
+            ["collect", "--kind", "native-lock-contention", "--native-lock-contention-sample-period", "0"],
+            out _)!;
+
+        CliCommands.TryValidateCollect(options, out var error).Should().BeFalse();
+        error.Should().Contain("--native-lock-contention-sample-period must be >= 1");
     }
 
     private static async Task<(int Exit, string Stdout, string Stderr)> RunAsync(params string[] args)

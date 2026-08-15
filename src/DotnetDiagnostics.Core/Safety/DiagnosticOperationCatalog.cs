@@ -177,6 +177,7 @@ public static class DiagnosticOperationCatalog
         public const string OffCpuCliAlias = "off-cpu";
         public const string Allocation = "allocation";
         public const string NativeAlloc = "native-alloc";
+        public const string NativeLockContention = "native-lock-contention";
         public const string MethodParameters = "method-params";
         public const string CpuEfficiency = "cpu-efficiency";
 
@@ -186,6 +187,7 @@ public static class DiagnosticOperationCatalog
             OffCpu,
             Allocation,
             NativeAlloc,
+            NativeLockContention,
             MethodParameters,
             CpuEfficiency,
         ];
@@ -197,6 +199,7 @@ public static class DiagnosticOperationCatalog
             OffCpuCliAlias,
             Allocation,
             NativeAlloc,
+            NativeLockContention,
             CpuEfficiency,
         ];
     }
@@ -324,6 +327,7 @@ public static class DiagnosticOperationCatalog
             CpuSample,
             AllocationSample,
             SamplerUseCases.NativeAllocHandleKind,
+            SamplerUseCases.NativeLockContentionHandleKind,
             CollectionHandleKinds.Counters,
             CollectionHandleKinds.EventCatalog,
             CollectionHandleKinds.GcDatas,

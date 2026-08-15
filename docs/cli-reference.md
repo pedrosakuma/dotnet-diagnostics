@@ -287,7 +287,9 @@ dotnet-diagnostics-cli doctor --json
 ```
 
 Checks: `socket-uid` (UID mismatch blocks **all** tools), `clrmd-attach` (ptrace — blocks
-thread snapshot / heap / dump), `offcpu-perf` and `native-alloc` (optional samplers). Status
+thread snapshot / heap / dump), `offcpu-perf`, `native-alloc`, and `native-lock-contention`
+(optional samplers — `native-lock-contention` reports `Degraded` on Windows since there is no
+Windows backend for it in this release, unlike `native-alloc`). Status
 ladder: `Ok` < `Degraded` < `Blocked`.
 
 **Exit code:** `doctor` exits **non-zero (1)** when a hard blocker (`Blocked`) is present and
@@ -345,10 +347,10 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 
 | Option | Meaning |
 |---|---|
-| `--kind <kind>` | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`, `sweep`, `cpu`, `allocation`, `off_cpu` (alias `off-cpu`), `native-alloc`, `thread-snapshot`, `cpu-efficiency`. |
+| `--kind <kind>` | One of `counters`, `exceptions`, `crash-guard`, `gc`, `datas`, `catalog`, `event_source`, `activities`, `logs`, `jit`, `threadpool`, `contention`, `db`, `kestrel`, `networking`, `requests`, `startup`, `sweep`, `cpu`, `allocation`, `off_cpu` (alias `off-cpu`), `native-alloc`, `native-lock-contention`, `thread-snapshot`, `cpu-efficiency`. |
 | `-d, --duration <int>` | Window in seconds (default: `counters` 5, `datas` 15, `sweep` 6, others 10). |
 | `--depth <level>` | Verbosity: `summary`, `detail` (default), `raw`. |
-| `--top <n>` | Top-N cap for sampler kinds (`cpu`, `allocation`, `off_cpu`, `native-alloc`) and session query pages/ranked views. |
+| `--top <n>` | Top-N cap for sampler kinds (`cpu`, `allocation`, `off_cpu`, `native-alloc`, `native-lock-contention`) and session query pages/ranked views. |
 | `--max-events <int>` | Per-kind cap (events / exceptions / activities / catalog occurrence sample). |
 | `--interval <int>` | Refresh interval in seconds (`counters`, `db`, `kestrel`, `networking`). Default 1. |
 | `--watch <seconds>` | Re-run the command every N seconds, clear/redraw the human output, and stop cleanly on Ctrl-C. Not compatible with `--json`. With `--capture-when` it is reinterpreted as the metric **sample interval** for the bounded gated watch (no redraw loop). |
@@ -361,6 +363,7 @@ Open an EventPipe session and collect a window of events. `--kind` is required.
 | `--resolve-method-instantiations` | `cpu`: opt in to a second ClrMD attach after sampling to recover closed generic method signatures for the hottest managed frames. |
 | `--native-aot-map <file>` | `cpu` (and gated `--capture cpu-sample`) against a **NativeAOT** target: resolve method names from a `.map.xml` file (the AOT compiler's symbol map) so hot frames show managed method identities instead of raw addresses. Ignored for CoreCLR targets, which resolve symbols from runtime metadata. |
 | `--native-alloc-sample-period <n>` | `native-alloc`: perf sample period (default `1000`) — record one call chain per this many allocator hits. Higher values reduce output volume at the cost of resolution. |
+| `--native-lock-contention-sample-period <n>` | `native-lock-contention` on Linux only (no Windows backend): perf sample period (default `5000`, higher than `native-alloc`'s default because mutex fast-path calls are typically far more frequent than allocator calls) — record one call chain per this many `pthread_mutex_lock`/`unlock` hits. |
 | `--dump-file <path>` | `thread-snapshot`: inspect a previously-captured dump instead of attaching to a live pid. Mutually exclusive with `--pid`. |
 | `--max-frames-per-thread <n>` | `thread-snapshot`: cap captured frames per thread (default `64`, hard cap `512`). |
 | `--include-runtime-frames` | `thread-snapshot`: include CLR/runtime helper frames. Default off. |
@@ -383,6 +386,7 @@ dotnet-diagnostics-cli collect --kind cpu --pid 1234 --top 20 --export-trace
 dotnet-diagnostics-cli collect --kind allocation --pid 1234 --top 15
 dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --symbol-path /symbols --acknowledge-risk high
 dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500 --acknowledge-risk high
+dotnet-diagnostics-cli collect --kind native-lock-contention --pid 1234 --native-lock-contention-sample-period 2000 --acknowledge-risk high
 dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128 --acknowledge-risk high
 dotnet-diagnostics-cli collect --kind thread-snapshot --dump-file ./app.dmp
 dotnet-diagnostics-cli collect --kind datas --pid 1234 --duration 30 --save ./before.json
@@ -416,6 +420,7 @@ The standalone CLI now exposes the same **Core-only** sampler families the MCP s
 | `allocation` | Managed allocation samples (`GCAllocationTick`) with top types by bytes/count and call-tree drilldown. | `--top` | top types by bytes/count, plus `signals[]` such as `allocations.by-type` / `allocations.by-site` |
 | `off_cpu` / `off-cpu` | Off-CPU stacks (where threads wait / block) via perf or ETW backend. | `--top`, `--symbol-path` | top blocking stacks ranked by off-CPU time |
 | `native-alloc` | Native allocator-call hotspots (`malloc` / `calloc` / `realloc`) via perf/ETW backend. Counts are sampled **calls**, not bytes. | `--top`, `--native-alloc-sample-period` | top allocator stacks + shared call-tree handle |
+| `native-lock-contention` | Native mutex-call hotspots (`pthread_mutex_lock` / `pthread_mutex_unlock`) via a Linux uprobe (no Windows backend in this release). Counts are sampled **calls**, not confirmed blocking waits — corroborate with `off_cpu`. | `--top`, `--native-lock-contention-sample-period` | top mutex-call stacks + shared call-tree handle |
 | `cpu-efficiency` | Aggregate, whole-window CPU microarchitecture-efficiency snapshot (IPC, cache/branch/TLB miss rates, stalled-cycle breakdown, page faults, context-switches/cpu-migrations) via `perf stat` counting mode (Linux) or ETW PMC sampling (Windows). Every metric is independently nullable — unsupported metrics on this host surface as null + a `notes` entry, never a failure. | none (aggregate only; no `--top`/`--symbol-path`) | headline IPC / cache-miss-rate / branch-miss-rate plus the full metric set; no call-tree drilldown (aggregate, not per-method) |
 | `thread-snapshot` | Point-in-time managed threads + lock graph from a live pid or dump. | `--dump-file`, `--max-frames-per-thread`, `--include-runtime-frames`, `--include-native-frames`, `--symbol-path` | decisive threads inline (`summary`) or bounded thread/lock pages (`detail`/`raw`); continue through the session `query` command |
 
@@ -433,6 +438,9 @@ dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --acknowledge-
 
 # Native allocation hotspots (calls, not bytes):
 dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500 --acknowledge-risk high
+
+# Native mutex contention hotspots (Linux only; calls, not confirmed waits):
+dotnet-diagnostics-cli collect --kind native-lock-contention --pid 1234 --native-lock-contention-sample-period 2000 --acknowledge-risk high
 
 # Live or dump-based thread snapshot:
 dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128 --acknowledge-risk high
@@ -631,7 +639,7 @@ dotnet-diagnostics-cli collect --kind cpu --pid 1234 --json
 #   method dominates exclusive self-time
 ```
 
-`off_cpu` and `native-alloc` do **not** currently emit dedicated `signals[]` groupings; their value is
+`off_cpu` and `native-alloc`/`native-lock-contention` do **not** currently emit dedicated `signals[]` groupings; their value is
 the ranked stack output and the shared `session query` drilldowns.
 
 ### `query`
@@ -770,7 +778,7 @@ four-per-entry tombstone set lets `query` distinguish `HandleExpired`,
 re-run the originating command and name the capacity setting. No evicted
 artifact is retained for this diagnosis.
 
-For CPU/allocation sample handles (`cpu-sample`, `allocation-sample`, `native-alloc-sample`), the session
+For CPU/allocation sample handles (`cpu-sample`, `allocation-sample`, `native-alloc-sample`, `native-lock-contention-sample`), the session
 exposes drilldown views computed from the merged call tree without re-sampling:
 
 | View | What it shows | Relevant flags |

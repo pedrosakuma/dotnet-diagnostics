@@ -32,7 +32,7 @@ internal static class CliCommandCatalog
         "--top-types", "--retention-path-limit", "--symbol-path", "--native-aot-map", "--dump-type", "--out", "--mvid",
         "--asset", "--handle", "--latest-of-kind", "--view", "--provider-filter", "--root-method-filter", "--rank-by",
         "--type-filter", "--address", "--offset", "--cursor", "--max-depth", "--max-nodes", "--thread-id",
-        "--native-alloc-sample-period", "--max-frames-per-thread", "--watch",
+        "--native-alloc-sample-period", "--native-lock-contention-sample-period", "--max-frames-per-thread", "--watch",
         "--frames-to-hash", "--min-count", "--top", "--threshold", "--mode", "--stack-rank",
         "--symptom", "--hypothesis", "--max-tool-calls", "--top-hotspots",
         "--capture-when", "--capture", "--window", "--max-captures", "--command-line-contains",
@@ -179,10 +179,11 @@ collect options:
                                 catalog, event_source, activities, logs, jit, threadpool,
                                 contention, db, kestrel, networking, requests, startup, sweep,
                                 cpu, allocation, off_cpu (alias off-cpu), native-alloc,
-                                thread-snapshot, cpu-efficiency.
+                                native-lock-contention, thread-snapshot, cpu-efficiency.
   -d, --duration <int>          Collection window in seconds (default: counters 5, datas 15, sweep 6, others 10).
       --depth <level>           Verbosity: summary, detail (default), raw.
-      --top <int>               Top-N rows / hotspots for cpu, allocation, off_cpu, native-alloc.
+      --top <int>               Top-N rows / hotspots for cpu, allocation, off_cpu, native-alloc,
+                                native-lock-contention.
       --max-events <int>        Per-kind cap (events / exceptions / activities).
       --interval <int>          Refresh interval in seconds (counters, db, kestrel, networking). Default 1.
       --symbol-path <path>      NT_SYMBOL_PATH-style search path for cpu, off_cpu and
@@ -194,6 +195,9 @@ collect options:
                                 cpu: opt in to ClrMD generic-instantiation enrichment.
       --native-alloc-sample-period <int>
                                 native-alloc: perf sample period (default 1000).
+      --native-lock-contention-sample-period <int>
+                                native-lock-contention (Linux only; no Windows backend): perf
+                                sample period (default 5000).
       --dump-file <path>        thread-snapshot: inspect a previously-captured dump instead of a live pid.
       --max-frames-per-thread <int>
                                 thread-snapshot: cap frames captured per thread (default 64).
@@ -234,6 +238,7 @@ collect options:
   dotnet-diagnostics-cli collect --kind off_cpu --pid 1234 --top 10 --symbol-path /symbols --acknowledge-risk high
   dotnet-diagnostics-cli collect --kind allocation --pid 1234 --top 15
   dotnet-diagnostics-cli collect --kind native-alloc --pid 1234 --native-alloc-sample-period 500 --acknowledge-risk high
+  dotnet-diagnostics-cli collect --kind native-lock-contention --pid 1234 --native-lock-contention-sample-period 2000 --acknowledge-risk high
   dotnet-diagnostics-cli collect --kind thread-snapshot --pid 1234 --max-frames-per-thread 128 --acknowledge-risk high
   dotnet-diagnostics-cli collect --kind datas --pid 1234 --save ./before.json
   dotnet-diagnostics-cli collect --kind event_source --provider System.Net.Http --pid 1234
@@ -254,6 +259,7 @@ collect options:
                 "--no-resolve-source-lines",
                 "--resolve-method-instantiations",
                 "--native-alloc-sample-period",
+                "--native-lock-contention-sample-period",
                 "--dump-file",
                 "--max-frames-per-thread",
                 "--include-runtime-frames",

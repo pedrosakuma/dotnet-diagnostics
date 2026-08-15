@@ -18,6 +18,7 @@ public sealed class QuerySnapshotHandleSecurityTests
             { "cpu-sample", "collect_sample", "cpu" },
             { "allocation-sample", "collect_sample", "allocation" },
             { DiagnosticTools.NativeAllocHandleKind, "collect_sample", "native-alloc" },
+            { DiagnosticTools.NativeLockContentionHandleKind, "collect_sample", "native-lock-contention" },
             { DiagnosticTools.OffCpuHandleKind, "collect_sample", "off_cpu" },
             { CollectionHandleKinds.Counters, "collect_events", "counters" },
             { CollectionHandleKinds.ExceptionSnapshot, "collect_events", "exceptions" },

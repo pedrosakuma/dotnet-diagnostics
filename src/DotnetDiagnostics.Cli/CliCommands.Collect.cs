@@ -15,6 +15,7 @@ using DotnetDiagnostics.Core.Jit;
 using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.NativeAlloc;
+using DotnetDiagnostics.Core.NativeLockContention;
 using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.ProcessDiscovery;
@@ -164,6 +165,7 @@ internal static partial class CliCommands
             "native-alloc" => await CollectNativeAllocSampleAsync(services, options, cancellationToken).ConfigureAwait(false),
 
             "cpu-efficiency" => await CollectCpuEfficiencySampleAsync(services, options, cancellationToken).ConfigureAwait(false),
+            "native-lock-contention" => await CollectNativeLockContentionSampleAsync(services, options, cancellationToken).ConfigureAwait(false),
 
             "thread-snapshot" => await CollectThreadSnapshotAsync(services, options, cancellationToken).ConfigureAwait(false),
 
@@ -251,6 +253,19 @@ internal static partial class CliCommands
             options.DurationSeconds ?? 10,
             cancellationToken).ConfigureAwait(false));
 
+    private static async Task<CliCommandResult> CollectNativeLockContentionSampleAsync(
+        IServiceProvider services,
+        CliOptions options,
+        CancellationToken cancellationToken)
+        => Wrap(options, await SamplerUseCases.CollectNativeLockContentionSample(
+            services.GetRequiredService<INativeLockContentionSampler>(),
+            services.GetRequiredService<IDiagnosticHandleStore>(),
+            services.GetRequiredService<IProcessContextResolver>(),
+            options.Pid,
+            options.DurationSeconds ?? 10,
+            options.Top ?? 25,
+            options.NativeLockContentionSamplePeriod ?? 5000,
+            cancellationToken).ConfigureAwait(false));
 
     private static async Task<CliCommandResult> CollectThreadSnapshotAsync(
         IServiceProvider services,

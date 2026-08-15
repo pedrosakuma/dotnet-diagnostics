@@ -83,6 +83,18 @@ public sealed record DiagnosticCapabilities(
     /// </summary>
     public bool CanSampleNativeAlloc { get; init; }
 
+    /// <summary>
+    /// True when <c>collect_sample(kind="native-lock-contention")</c> is expected to succeed
+    /// against this sidecar. Linux only in this release — requires <c>perf</c> in <c>PATH</c>
+    /// plus <c>CAP_SYS_ADMIN</c> (same gate as <see cref="CanSampleNativeAlloc"/>, since both
+    /// create a dynamic libc uprobe). Always false on Windows: there is no supported ETW
+    /// enablement path for native critical-section contention tracing (see
+    /// <c>WindowsNativeLockContentionSampler</c>'s remarks for the investigation) — this is a
+    /// deliberate, documented exception to the platform, unlike <see cref="CanSampleNativeAlloc"/>
+    /// which does have a working Windows backend.
+    /// </summary>
+    public bool CanSampleNativeLockContention { get; init; }
+
     /// <summary>True when the Linux sidecar currently holds <c>CAP_SYS_PTRACE</c>. False on
     /// non-Linux hosts and when the capability is absent. Exposed separately from
     /// <see cref="CanAttachClrMD"/> because <c>ptrace_scope=0</c> also enables attach without
