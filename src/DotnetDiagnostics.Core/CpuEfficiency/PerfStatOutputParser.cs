@@ -60,6 +60,19 @@ internal static class PerfStatOutputParser
                 continue;
             }
 
+            // perf echoes back the effective modifier it applied even when the caller didn't
+            // request one explicitly — e.g. `-e page-faults -p <pid>` (no `-a`) is implicitly
+            // user-space-only and comes back as "page-faults:u" in the event-name column. We
+            // never request modifiers ourselves (see PerfStatCpuEfficiencySampler.Events), so
+            // strip any ":<modifier>" suffix to keep this the same key CpuEfficiencyAggregator
+            // looks up by — otherwise every successfully-counted event (not just the
+            // "<not supported>"/"<not counted>" ones) would silently fail to map through.
+            var modifierIndex = eventName.IndexOf(':');
+            if (modifierIndex >= 0)
+            {
+                eventName = eventName[..modifierIndex];
+            }
+
             if (string.Equals(rawValue, NotSupportedToken, StringComparison.Ordinal))
             {
                 unavailable.Add($"{eventName}: not supported by this CPU/host (no vPMU exposed to the guest, or the kernel doesn't expose this generic event alias).");
