@@ -569,6 +569,17 @@ public static class InvocationSafetyRegistry
                     StackNameExposure,
                     [],
                     ["Use a conservative sampling period and the shortest useful duration.", .. SensitiveOutputMitigations])),
+            DiagnosticOperationCatalog.CollectSampleKinds.NativeLockContention => Profile(
+                kind,
+                [("kind", kind)],
+                Descriptor(
+                    InvocationRiskLevel.High,
+                    InvocationApprovalPolicy.Acknowledge,
+                    "Native lock-contention sampling uses privileged kernel tracing (perf uprobes) and may impose per-mutex-call probe overhead. Linux only; there is no Windows backend.",
+                    [TargetImpact.KernelTracing, TargetImpact.SystemWideTracing, TargetImpact.SamplingOverhead],
+                    StackNameExposure,
+                    [],
+                    ["Use a conservative sampling period and the shortest useful duration.", .. SensitiveOutputMitigations])),
             DiagnosticOperationCatalog.CollectSampleKinds.MethodParameters => Profile(
                 kind,
                 [("kind", kind)],
@@ -694,7 +705,8 @@ public static class InvocationSafetyRegistry
             SamplerUseCases.OffCpuHandleKind or
             DiagnosticOperationCatalog.QuerySnapshotHandleKinds.CpuSample or
             DiagnosticOperationCatalog.QuerySnapshotHandleKinds.AllocationSample or
-            SamplerUseCases.NativeAllocHandleKind =>
+            SamplerUseCases.NativeAllocHandleKind or
+            SamplerUseCases.NativeLockContentionHandleKind =>
                 StackNameExposure,
             CollectionHandleKinds.ExceptionSnapshot or CollectionHandleKinds.CrashGuardSnapshot =>
                 [DataExposure.ExceptionMessages, DataExposure.StackNames, DataExposure.TypeNames, DataExposure.MethodNames, DataExposure.PossiblePii, DataExposure.PossibleSecrets, DataExposure.PossibleConfidentialData],

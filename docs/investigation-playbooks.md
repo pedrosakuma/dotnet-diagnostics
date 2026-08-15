@@ -145,6 +145,18 @@ needs for drilldown.
    stack's `syscallBreakdown` (issue #829): a lock/monitor wait shows up as `futex` (Linux) or the
    normalized `Sync` bucket (Windows); a stack dominated by `read`/`recvfrom` or `FileIO:Read`/
    `TcpIp:Recv` instead points at a downstream I/O dependency, not in-process contention.
+7. **P/Invoke-heavy code blocked in native mutex contention (issue #830).** `collect_events(kind="contention")`
+   only sees *managed* `Monitor.Enter`/`lock` waits — if `totalEvents` stays low but threads still
+   look blocked (thread snapshots show native frames, or `collect_sample(kind="off_cpu")` shows
+   blocking under a P/Invoke boundary), the lock is likely a **native** `pthread_mutex_lock` held
+   by unmanaged code (a native library, driver, or the runtime itself), invisible to the managed
+   contention provider. On Linux, escalate to `collect_sample(kind="native-lock-contention",
+   durationSeconds=10)` to attribute the mutex hits to a call site with `query_snapshot(view="call-tree")`
+   — remember it counts **calls**, not confirmed waits, so corroborate a suspiciously hot call site
+   with `collect_sample(kind="off_cpu")` before concluding it's actually blocking. There is no
+   Windows backend for this capability yet (see [`tool-reference.md`](./tool-reference.md#collect_sample)
+   for the investigated-and-rejected ETW path); on Windows, `collect_sample(kind="off_cpu")` remains
+   the best available signal for native blocking.
 
 - **Endpoint-specific latency with DB suspicion** → `collect_events(kind="db")`
   for 10–15 s while driving the slow request. Check `summary` / `byCommand` for

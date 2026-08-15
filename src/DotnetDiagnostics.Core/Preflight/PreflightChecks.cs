@@ -22,6 +22,7 @@ public static class PreflightChecks
     private static readonly string[] AllTools = { "all tools" };
     private static readonly string[] OffCpuTools = { "collect_sample(kind=\"off_cpu\")" };
     private static readonly string[] NativeAllocTools = { "collect_sample(kind=\"native-alloc\")" };
+    private static readonly string[] NativeLockContentionTools = { "collect_sample(kind=\"native-lock-contention\")" };
 
     /// <summary>
     /// Builds a <see cref="PreflightReport"/> from already-gathered probe results. <paramref name="targetUid"/>
@@ -44,6 +45,7 @@ public static class PreflightChecks
             BuildClrMdAttachCheck(ptrace),
             BuildOffCpuCheck(isLinux, perf),
             BuildNativeAllocCheck(isLinux, perf),
+            BuildNativeLockContentionCheck(isLinux, isWindows, perf),
         };
 
         // Surface the most actionable findings first: Blocked, then Degraded, then Ok, then N/A.
@@ -185,6 +187,48 @@ public static class PreflightChecks
 
         return new PreflightCheck(id, title, PreflightStatus.Ok,
             "perf is installed and CAP_SYS_ADMIN is held; native allocation sampling is available.");
+    }
+
+    private static PreflightCheck BuildNativeLockContentionCheck(bool isLinux, bool isWindows, PerfHostProbeResult perf)
+    {
+        const string id = "native-lock-contention";
+        const string title = "Native lock-contention sampling (uprobe)";
+
+        if (isWindows)
+        {
+            // Unlike native-alloc, there is genuinely no Windows backend for this capability in
+            // this release (see WindowsNativeLockContentionSampler's remarks) — report Degraded
+            // rather than NotApplicable so the gap is visible instead of silently omitted.
+            return new PreflightCheck(id, title, PreflightStatus.Degraded,
+                "Windows has no supported ETW enablement path for native critical-section contention tracing; this capability is Linux-only in this release.",
+                Remediation: "Run this capture from a Linux host/sidecar, or use collect_sample(kind=\"off_cpu\") to see blocked-thread stacks on Windows.",
+                AffectedTools: NativeLockContentionTools);
+        }
+
+        if (!isLinux)
+        {
+            return new PreflightCheck(id, title, PreflightStatus.NotApplicable,
+                "Linux-only check.");
+        }
+
+        if (!perf.PerfInstalled)
+        {
+            return new PreflightCheck(id, title, PreflightStatus.Degraded,
+                "perf is not resolvable on PATH / linux-tools, so the libc mutex uprobe cannot be created.",
+                Remediation: "Install linux-tools (or use the non -lean sidecar image).",
+                AffectedTools: NativeLockContentionTools);
+        }
+
+        if (!perf.HasCapSysAdmin)
+        {
+            return new PreflightCheck(id, title, PreflightStatus.Degraded,
+                "Creating a dynamic uprobe on the libc mutex entry points writes to kernel tracefs, which requires CAP_SYS_ADMIN (strictly stronger than the CAP_PERFMON off-CPU needs).",
+                Remediation: "Grant CAP_SYS_ADMIN to the sidecar (docker: --cap-add SYS_ADMIN; k8s: capabilities.add: [\"SYS_ADMIN\"]).",
+                AffectedTools: NativeLockContentionTools);
+        }
+
+        return new PreflightCheck(id, title, PreflightStatus.Ok,
+            "perf is installed and CAP_SYS_ADMIN is held; native lock-contention sampling is available.");
     }
 
     private static string Format(int? value) =>

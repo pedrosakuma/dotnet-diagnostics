@@ -1173,6 +1173,7 @@ public sealed class SessionReplTests
         CliCommands.SessionViewsFor("cpu-sample").Should().Equal(CpuSampleQueryDispatcher.SessionViews);
         CliCommands.SessionViewsFor("allocation-sample").Should().Equal(CpuSampleQueryDispatcher.SessionViews);
         CliCommands.SessionViewsFor("native-alloc-sample").Should().Equal(CpuSampleQueryDispatcher.SessionViews);
+        CliCommands.SessionViewsFor("native-lock-contention-sample").Should().Equal(CpuSampleQueryDispatcher.SessionViews);
 
         var views = CliCommands.SessionViewsFor("cpu-sample");
         views.Should().Contain(CpuSampleQueryDispatcher.CallTreeView);

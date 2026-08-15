@@ -36,7 +36,7 @@ namespace DotnetDiagnostics.Mcp.Tools;
 ///   <item><description>heap-snapshot → <c>heap-read</c></description></item>
 ///   <item><description>thread-snapshot → <c>ptrace</c></description></item>
 ///   <item><description>off-cpu-snapshot → <c>eventpipe</c></description></item>
-///   <item><description>cpu-sample / allocation-sample / native-alloc-sample (call-tree view) → <c>investigation-export</c></description></item>
+///   <item><description>cpu-sample / allocation-sample / native-alloc-sample / native-lock-contention-sample (call-tree view) → <c>investigation-export</c></description></item>
 ///   <item><description>counters → <c>read-counters</c>; exception-snapshot / crash-guard-snapshot / gc-events / event-source / activities / log-snapshot / jit-snapshot / threadpool-snapshot / contention-snapshot / db-snapshot / kestrel-snapshot / networking-snapshot / in-flight-requests / startup-snapshot → <c>eventpipe</c></description></item>
 ///   <item><description>method-params-capture → <c>eventpipe</c> plus the explicit <c>sensitive-parameter-read</c> modifier scope for every view</description></item>
 /// </list>
@@ -60,7 +60,7 @@ public sealed partial class QuerySnapshotTool
     // (issue #463 — leak hunting). Like `diff`, it needs a second handle (baselineHandle).
     internal const string GrowthView = "growth";
 
-    // Every view the cpu-sample / allocation-sample / native-alloc-sample kinds accept (analytics
+    // Every view the cpu-sample / allocation-sample / native-alloc-sample / native-lock-contention-sample kinds accept (analytics
     // views from #313 plus the original call-tree and the server-only diff).
     private static readonly string[] CpuViewNames =
     {
@@ -97,6 +97,7 @@ public sealed partial class QuerySnapshotTool
         new HeapSnapshotComparableProjector(),
         new CpuSampleComparableProjector(),
         new NativeAllocSampleComparableProjector(),
+        new NativeLockContentionSampleComparableProjector(),
         new AllocationSampleComparableProjector(),
         new ContentionComparableProjector(),
         new ThreadPoolComparableProjector(),
@@ -138,8 +139,8 @@ public sealed partial class QuerySnapshotTool
         IPrincipalAccessor principalAccessor,
         INativeAddressResolver addressResolver,
         IFrameVariableResolver frameVariableResolver,
-        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_sample(kind=\"cpu\"|\"off_cpu\"|\"allocation\"|\"native-alloc\"|\"method-params\"), or collect_events(kind=\"counters\"|\"exceptions\"|\"crash-guard\"|\"gc\"|\"datas\"|\"catalog\"|\"event_source\"|\"activities\"|\"logs\"|\"jit\"|\"threadpool\"|\"contention\"|\"db\"|\"kestrel\"|\"networking\"|\"requests\"|\"startup\")). Required unless `latestOfKind` is supplied instead.")] string? handle = null,
-        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff|growth. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|wait-chains|threadpool|resolve-address|frame-vars. Thread wait-chains includes CoreCLR monitor waiter→owner edges, async continuations, ThreadPool starvation, and inferred cycle candidates with per-edge source/confidence; deadlocks exposes the same inference metadata. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|exceptions|stack|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns|requests|longRunning. cpu-sample/allocation-sample/native-alloc-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|triage|diff. `triage` (issue #812) bundles top busy hotspots (rankBy='running' order) + top wait/noise categories + the dominant hot-path leaf in one round trip, defaulting topN to 5 unless overridden. Omit to use the kind's default view.")] string? view = null,
+        [Description("Drilldown handle returned by a prior collector (inspect_heap, collect_thread_snapshot, collect_sample(kind=\"cpu\"|\"off_cpu\"|\"allocation\"|\"native-alloc\"|\"native-lock-contention\"|\"method-params\"), or collect_events(kind=\"counters\"|\"exceptions\"|\"crash-guard\"|\"gc\"|\"datas\"|\"catalog\"|\"event_source\"|\"activities\"|\"logs\"|\"jit\"|\"threadpool\"|\"contention\"|\"db\"|\"kestrel\"|\"networking\"|\"requests\"|\"startup\")). Required unless `latestOfKind` is supplied instead.")] string? handle = null,
+        [Description("Kind-specific view. Heap: top-types|retention-paths|roots-by-kind|finalizer-queue|fragmentation|static-fields|delegate-targets|duplicate-strings|gchandles|timers|alc|object|gcroot|objsize|async|diff|growth. Thread: threads-summary|stack|lock-graph|deadlocks|top-blocked|unique-stacks|async-stalls|wait-chains|threadpool|resolve-address|frame-vars. Thread wait-chains includes CoreCLR monitor waiter→owner edges, async continuations, ThreadPool starvation, and inferred cycle candidates with per-edge source/confidence; deadlocks exposes the same inference metadata. Off-CPU: topStacks|byThread|stack. Collection: summary|byProvider|byType|recent|exceptions|stack|events|catalog|pauseHistogram|longestPauses|byGeneration|heap-stats|byEventName|bySource|byOperation|activities|byCategory|byLevel|errors|timeline|hillClimbing|workItemOrigins|byCallSite|byOwner|byCommand|n+1|connectionPool|queues|queue|tls|config|dns|requests|longRunning. cpu-sample/allocation-sample/native-alloc-sample/native-lock-contention-sample: call-tree|top-methods|by-module|by-namespace|hot-path|caller-callee|triage|diff. `triage` (issue #812) bundles top busy hotspots (rankBy='running' order) + top wait/noise categories + the dominant hot-path leaf in one round trip, defaulting topN to 5 unless overridden. Omit to use the kind's default view.")] string? view = null,
         [Description("Requested entries for ranked-list views. Omit for per-kind defaults (50 heap/thread/collection, 25 off-CPU). LLM projections remain hard-bounded: thread lists 8 rows, lock graph 12, retention paths 10; full evidence stays behind the handle. For view=diff, defaults to 25 rows per bucket.")] int? topN = null,
         [Description("Ranking for ranked views. Heap view='top-types'/'growth': 'bytes' (default) or 'instances'. CPU-sample view='top-methods': 'exclusive' (self-time, default), 'inclusive', or 'running' (busy/on-CPU user code first, demoting wait-dominated exclusive leaders — issue #811).")] string rankBy = "bytes",
         [Description("Heap view='retention-paths' only: case-insensitive substring matched against TypeFullName.")] string? typeFullName = null,
@@ -157,7 +158,7 @@ public sealed partial class QuerySnapshotTool
         [Description("Diff view: baseline handle to compare against the current `handle`. Required for legacy pairwise diff unless `comparisonHandles` is supplied. Heap view='growth': required — the EARLIER live heap snapshot handle to diff the current (later) one against.")] string? baselineHandle = null,
         [Description("Diff view only: ordered handles to compare before the current `handle` for N-way journey diffs. Do not combine with `baselineHandle`; the current handle is appended as the final capture.")] string[]? comparisonHandles = null,
         [Description("Diff/growth views: minimum absolute delta percentage required for a row to surface. Defaults to 5.0.")] double minDeltaPct = 5.0,
-        [Description("Diff view: inline verbosity for comparable journey diffs. `full` returns the full matrix; local large results may use a journey://diff/{handle} Resource link, while proxied results stay inline because dynamic pod Resources are not forwarded. `compact` returns verdict/headline/counts/notes plus top-N deltas. cpu-sample/allocation-sample/native-alloc-sample view='top-methods': `compact` caps rows to 5 regardless of `topN` (issue #805). Same kinds view='call-tree': `compact` further tightens `maxDepth`/`maxNodes` to 3/16 regardless of the requested values. `full` (default) leaves top-methods/call-tree behavior exactly as before this parameter existed. Defaults to `full`.")] string depth = "full",
+        [Description("Diff view: inline verbosity for comparable journey diffs. `full` returns the full matrix; local large results may use a journey://diff/{handle} Resource link, while proxied results stay inline because dynamic pod Resources are not forwarded. `compact` returns verdict/headline/counts/notes plus top-N deltas. cpu-sample/allocation-sample/native-alloc-sample/native-lock-contention-sample view='top-methods': `compact` caps rows to 5 regardless of `topN` (issue #805). Same kinds view='call-tree': `compact` further tightens `maxDepth`/`maxNodes` to 3/16 regardless of the requested values. `full` (default) leaves top-methods/call-tree behavior exactly as before this parameter existed. Defaults to `full`.")] string depth = "full",
         [Description("Diff view only: journey interpretation mode. `trend` (default) compares ordered captures over time; `dispersion` compares unordered replicas for outliers and requires N-way comparable captures via comparisonHandles.")] string? mode = null,
         [Description("cpu-sample/allocation-sample 'hot-path' view only: a child must carry at least this percent of its parent's inclusive samples to extend the chain. Defaults to 50.")] double hotPathThresholdPercent = CpuSampleQueryDispatcher.DefaultHotPathThresholdPercent,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
@@ -165,7 +166,7 @@ public sealed partial class QuerySnapshotTool
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
         [Description("Zero-based compatibility offset for paged thread-list and lock-graph views. Values above 256 are rejected because ranked random access is quadratic. Prefer cursor continuation. Defaults to 0.")] int offset = 0,
         [Description("Opaque continuation returned by a thread page as nextThreadCursor, nextLockCursor, or nextWaiterCursor. Bound to the handle/view (and lock address for waiter pages); malformed or cross-handle cursors are rejected. Do not combine with a non-zero offset.")] string? cursor = null,
-        [Description("cpu-sample/allocation-sample/native-alloc-sample view='top-methods' only: when true, renames compiler-generated async state-machine MoveNext leaves (e.g. `Owner+<Method>d__22.MoveNext()`) to their declaring async method name (e.g. `Owner.Method() [async]`), so on-CPU work inside an async method's own body reads as recognizable user code instead of runtime plumbing. Does not merge separate call-tree frames; a row's `asyncFolded` flag reports whether it matched. Defaults to false.")] bool foldAsync = false,
+        [Description("cpu-sample/allocation-sample/native-alloc-sample/native-lock-contention-sample view='top-methods' only: when true, renames compiler-generated async state-machine MoveNext leaves (e.g. `Owner+<Method>d__22.MoveNext()`) to their declaring async method name (e.g. `Owner.Method() [async]`), so on-CPU work inside an async method's own body reads as recognizable user code instead of runtime plumbing. Does not merge separate call-tree frames; a row's `asyncFolded` flag reports whether it matched. Defaults to false.")] bool foldAsync = false,
         [Description("Alias for `handle` (issue #812): resolves to the most recently registered non-expired handle of this kind (e.g. \"cpu-sample\") instead of requiring the caller to copy a handle id from a prior collector — useful for iterative tuning loops that repeatedly collect + query the same kind. Exactly one of `handle`/`latestOfKind` must be supplied. Narrow with `latestOfKindProcessId` when more than one process may hold handles of this kind.")] string? latestOfKind = null,
         [Description("`latestOfKind` only: restrict resolution to handles registered for this OS process id. Omit to resolve the latest handle of the kind across all processes visible to this server.")] int? latestOfKindProcessId = null,
         CancellationToken cancellationToken = default)
@@ -533,6 +534,7 @@ public sealed partial class QuerySnapshotTool
         "cpu-sample",
         "allocation-sample",
         DiagnosticTools.NativeAllocHandleKind,
+        DiagnosticTools.NativeLockContentionHandleKind,
     };
 
     // A grouped-collection handle kind is diffable via view='diff' iff a comparable projector is
@@ -908,6 +910,9 @@ public sealed partial class QuerySnapshotTool
             DiagnosticTools.NativeAllocHandleKind when currentLookup.Artifact is CpuSampleTraceArtifact current && baselineLookup.Value.Artifact is CpuSampleTraceArtifact baseline
                 => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
 
+            DiagnosticTools.NativeLockContentionHandleKind when currentLookup.Artifact is CpuSampleTraceArtifact current && baselineLookup.Value.Artifact is CpuSampleTraceArtifact baseline
+                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
+
             "allocation-sample" when currentLookup.Artifact is AllocationSampleArtifact current && baselineLookup.Value.Artifact is AllocationSampleArtifact baseline
                 => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline.Summary, baselineHandle!, current.Summary, handle, minDeltaPct, effectiveTopN)),
 
@@ -1234,7 +1239,7 @@ public sealed partial class QuerySnapshotTool
             return RequireScope(principal, ScopeEventPipe, out failure);
         }
 
-        if (kind is "cpu-sample" or "allocation-sample" or DiagnosticTools.NativeAllocHandleKind)
+        if (kind is "cpu-sample" or "allocation-sample" or DiagnosticTools.NativeAllocHandleKind or DiagnosticTools.NativeLockContentionHandleKind)
         {
             return RequireScope(principal, ScopeInvestigationExport, out failure);
         }
@@ -1300,6 +1305,7 @@ public sealed partial class QuerySnapshotTool
         "cpu-sample" => new RecoveryTarget("collect_sample", "cpu", Replayable: true),
         "allocation-sample" => new RecoveryTarget("collect_sample", "allocation", Replayable: true),
         DiagnosticTools.NativeAllocHandleKind => new RecoveryTarget("collect_sample", "native-alloc", Replayable: true),
+        DiagnosticTools.NativeLockContentionHandleKind => new RecoveryTarget("collect_sample", "native-lock-contention", Replayable: true),
         DiagnosticTools.OffCpuHandleKind => new RecoveryTarget("collect_sample", "off_cpu", Replayable: true),
         MethodParameterCaptureUseCases.HandleKind => new RecoveryTarget("collect_sample", "method-params"),
         CollectionHandleKinds.Counters => new RecoveryTarget("collect_events", "counters", Replayable: true),

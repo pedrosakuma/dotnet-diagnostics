@@ -94,6 +94,9 @@ public static class DiagnosticCoreServiceRegistration
         services.AddSingleton<DotnetDiagnostics.Core.CpuEfficiency.PerfStatCpuEfficiencySampler>();
         services.AddSingleton<DotnetDiagnostics.Core.CpuEfficiency.EtwPmcCpuEfficiencySampler>();
         services.AddSingleton<DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler, DotnetDiagnostics.Core.CpuEfficiency.RoutingCpuEfficiencySampler>();
+        services.AddSingleton<DotnetDiagnostics.Core.NativeLockContention.PerfNativeLockContentionSampler>();
+        services.AddSingleton<DotnetDiagnostics.Core.NativeLockContention.WindowsNativeLockContentionSampler>();
+        services.AddSingleton<DotnetDiagnostics.Core.NativeLockContention.INativeLockContentionSampler, DotnetDiagnostics.Core.NativeLockContention.RoutingNativeLockContentionSampler>();
         services.AddSingleton<IExceptionCollector, EventPipeExceptionCollector>();
         services.AddSingleton<IGcCollector, EventPipeGcCollector>();
         services.AddSingleton<IGcDatasCollector, EventPipeGcDatasCollector>();

@@ -178,6 +178,7 @@ public sealed class MethodParameterCaptureSecurityTests
             offCpuSampler: null!,
             allocationSampler: null!,
             nativeAllocSampler: null!,
+            nativeLockContentionSampler: null!,
             methodParameterCollector: new StubMethodParameterCollector(),
             cpuEfficiencySampler: null!,
             handles: new MemoryDiagnosticHandleStore(),

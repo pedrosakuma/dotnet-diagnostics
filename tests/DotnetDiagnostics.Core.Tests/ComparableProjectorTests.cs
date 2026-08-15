@@ -390,6 +390,25 @@ public sealed class ComparableProjectorTests
     }
 
     [Fact]
+    public void NativeLockContentionProjector_UsesExclusivePercentAsLowerBetterPrimary_WithNativeKind()
+    {
+        var baseline = new NativeLockContentionSampleComparableProjector().Project(CpuTraceForProjector("libc.so.6", "pthread_mutex_lock", identity: null, exclusiveSamples: 5, totalSamples: 100), "baseline");
+        var current = new NativeLockContentionSampleComparableProjector().Project(CpuTraceForProjector("libc.so.6", "pthread_mutex_lock", identity: null, exclusiveSamples: 20, totalSamples: 100), "current");
+
+        baseline.Kind.Should().Be("native-lock-contention-sample");
+        var row = baseline.Rows.Should().ContainSingle().Subject;
+        row.Key.Kind.Should().Be("native-lock-contention-sample");
+        row.Key.StableId.Should().Be("libc.so.6!pthread_mutex_lock");
+        var primary = row.Metrics.Single(m => m.Definition.Role == MetricRole.Primary);
+        primary.Definition.Name.Should().Be("exclusivePercent");
+        primary.Definition.BetterDirection.Should().Be(BetterDirection.Lower);
+        primary.Value.Should().Be(5);
+
+        SnapshotDiffer.Compare(new[] { baseline, current }).Verdict.Should().Be("regression");
+        SnapshotDiffer.Compare(new[] { current, baseline }).Verdict.Should().Be("improvement");
+    }
+
+    [Fact]
     public void AllocationProjector_UsesBytesPerSecondAsLowerBetterPrimary_AndTypeKeys()
     {
         var mvid = Guid.Parse("33333333-3333-3333-3333-333333333333");

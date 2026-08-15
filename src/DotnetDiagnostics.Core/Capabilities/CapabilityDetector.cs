@@ -3,6 +3,7 @@ using DotnetDiagnostics.Core.Container;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Internal;
 using DotnetDiagnostics.Core.NativeAlloc;
+using DotnetDiagnostics.Core.NativeLockContention;
 using DotnetDiagnostics.Core.OffCpu;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Extensions.Logging;
@@ -28,6 +29,7 @@ public sealed class CapabilityDetector : ICapabilityDetector
     private readonly IOffCpuSampler? _offCpuSampler;
     private readonly INativeAllocSampler? _nativeAllocSampler;
     private readonly DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler? _cpuEfficiencySampler;
+    private readonly INativeLockContentionSampler? _nativeLockContentionSampler;
 
     public CapabilityDetector(
         ILogger<CapabilityDetector>? logger = null,
@@ -36,7 +38,8 @@ public sealed class CapabilityDetector : ICapabilityDetector
         IContainerSignalsCollector? containerSignals = null,
         IOffCpuSampler? offCpuSampler = null,
         INativeAllocSampler? nativeAllocSampler = null,
-        DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler? cpuEfficiencySampler = null)
+        DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler? cpuEfficiencySampler = null,
+        INativeLockContentionSampler? nativeLockContentionSampler = null)
     {
         _logger = logger ?? NullLogger<CapabilityDetector>.Instance;
         _perfSampler = perfSampler;
@@ -45,6 +48,7 @@ public sealed class CapabilityDetector : ICapabilityDetector
         _offCpuSampler = offCpuSampler;
         _nativeAllocSampler = nativeAllocSampler;
         _cpuEfficiencySampler = cpuEfficiencySampler;
+        _nativeLockContentionSampler = nativeLockContentionSampler;
     }
 
     public async Task<DiagnosticCapabilities> DetectAsync(int processId, CancellationToken cancellationToken = default)
@@ -71,6 +75,15 @@ public sealed class CapabilityDetector : ICapabilityDetector
               && _nativeAllocSampler.IsAvailable()
               && perfHost.HasCapSysAdmin
             : _nativeAllocSampler is not null && _nativeAllocSampler.IsAvailable();
+        // Native lock-contention sampling uses the identical perf-uprobe mechanism as
+        // native-alloc (same CAP_SYS_ADMIN gate on Linux). There is no Windows backend at all
+        // (see WindowsNativeLockContentionSampler) — IsAvailable() already returns false there,
+        // so no separate elevation probe is needed on that branch.
+        var canSampleNativeLockContention = OperatingSystem.IsLinux()
+            ? _nativeLockContentionSampler is not null
+              && _nativeLockContentionSampler.IsAvailable()
+              && perfHost.HasCapSysAdmin
+            : _nativeLockContentionSampler is not null && _nativeLockContentionSampler.IsAvailable();
         var ptrace = PtraceProbe.Detect();
         var euStackAvailable = IsEuStackAvailable();
         // cpu-efficiency mirrors off-CPU's split between "sampler class present + elevated" and
@@ -141,6 +154,7 @@ public sealed class CapabilityDetector : ICapabilityDetector
             PsiAvailable = psiAvailable,
             CanSampleOffCpu = canSampleOffCpu,
             CanSampleNativeAlloc = canSampleNativeAlloc,
+            CanSampleNativeLockContention = canSampleNativeLockContention,
             HasCapSysPtrace = ptrace.HasCapSysPtrace,
             PtraceScope = ptrace.PtraceScope,
             CanAttachClrMD = ptrace.CanAttach,

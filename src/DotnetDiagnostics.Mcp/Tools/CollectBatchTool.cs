@@ -18,6 +18,7 @@ using DotnetDiagnostics.Core.Kestrel;
 using DotnetDiagnostics.Core.Logs;
 using DotnetDiagnostics.Core.MethodParameters;
 using DotnetDiagnostics.Core.NativeAlloc;
+using DotnetDiagnostics.Core.NativeLockContention;
 using DotnetDiagnostics.Core.Networking;
 using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.ProcessDiscovery;
@@ -130,6 +131,7 @@ public sealed class CollectBatchTool
         IOffCpuSampler offCpuSampler,
         EventPipeAllocationSampler allocationSampler,
         INativeAllocSampler nativeAllocSampler,
+        INativeLockContentionSampler nativeLockContentionSampler,
         IMethodParameterCaptureCollector methodParameterCollector,
         DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler cpuEfficiencySampler,
         ICounterCollector counterCollector,
@@ -251,6 +253,7 @@ public sealed class CollectBatchTool
                         offCpuSampler,
                         allocationSampler,
                         nativeAllocSampler,
+                        nativeLockContentionSampler,
                         methodParameterCollector,
                         cpuEfficiencySampler,
                         handles,

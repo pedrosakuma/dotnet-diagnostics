@@ -63,6 +63,13 @@ public sealed class DiagnosticPrompts
                  - `time-in-gc` > 20% or `gc-heap-size` climbing → jump to the `diagnose-memory-growth` prompt.
                  - `monitor-lock-contention-count` rising OR `threadpool-queue-length` > 0 sustained →
                    `collect_events(kind="event_source", providerName="System.Threading.Tasks.TplEventSource", {{pid.Arg}}durationSeconds={{dur}}, maxEvents=500)`.
+                   If the process P/Invokes into native libraries and the blocked stacks resolve to
+                   native frames rather than `Monitor.Enter`, `monitor-lock-contention-count` will NOT
+                   see it — escalate to `collect_sample(kind="off_cpu", {{pid.Arg}}durationSeconds={{dur}})`
+                   to confirm the blocking, then on a Linux host/sidecar whose capabilities report
+                   `canSampleNativeLockContention`, `collect_sample(kind="native-lock-contention", {{pid.Arg}}durationSeconds={{dur}})`
+                   to attribute native `pthread_mutex_lock`/`pthread_mutex_unlock` contention to a call
+                   site (hotspot-only: sampled mutex-call hits, not measured wait time).
                  - High request duration but low CPU → likely downstream. `collect_events(kind="event_source", providerName="System.Net.Http", {{pid.Arg}}durationSeconds={{dur}}, maxEvents=300)`
                    to time outbound calls, then cross-reference with `Microsoft.AspNetCore.Hosting` for in-pipeline latency.
                  - `exception-count` climbing → jump to the `diagnose-5xx-errors` prompt.

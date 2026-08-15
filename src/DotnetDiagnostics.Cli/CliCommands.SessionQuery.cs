@@ -52,10 +52,11 @@ internal static partial class CliCommands
     /// Handle kinds backing a <see cref="CpuSampleTraceArtifact"/> (directly, or wrapped in an
     /// <see cref="AllocationSampleArtifact"/>) whose session drill-down is the host-neutral
     /// <c>call-tree</c> view. Keep in sync with the server's <c>cpu-sample</c> /
-    /// <c>allocation-sample</c> / <c>native-alloc-sample</c> handle registrations.
+    /// <c>allocation-sample</c> / <c>native-alloc-sample</c> / <c>native-lock-contention-sample</c>
+    /// handle registrations.
     /// </summary>
     private static readonly HashSet<string> CpuSampleSessionKinds =
-        new(StringComparer.Ordinal) { "cpu-sample", "allocation-sample", "native-alloc-sample" };
+        new(StringComparer.Ordinal) { "cpu-sample", "allocation-sample", "native-alloc-sample", "native-lock-contention-sample" };
 
     /// <summary>
     /// Handle kind backing a <see cref="ThreadSnapshotArtifact"/> whose session drill-down is served by

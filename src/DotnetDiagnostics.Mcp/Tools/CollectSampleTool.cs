@@ -5,6 +5,7 @@ using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.MethodParameters;
 using DotnetDiagnostics.Core.NativeAlloc;
+using DotnetDiagnostics.Core.NativeLockContention;
 using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
@@ -38,6 +39,7 @@ public sealed class CollectSampleTool
     internal const string KindOffCpu = DiagnosticOperationCatalog.CollectSampleKinds.OffCpu;
     internal const string KindAllocation = DiagnosticOperationCatalog.CollectSampleKinds.Allocation;
     internal const string KindNativeAlloc = DiagnosticOperationCatalog.CollectSampleKinds.NativeAlloc;
+    internal const string KindNativeLockContention = DiagnosticOperationCatalog.CollectSampleKinds.NativeLockContention;
     internal const string KindMethodParams = DiagnosticOperationCatalog.CollectSampleKinds.MethodParameters;
     internal const string KindCpuEfficiency = DiagnosticOperationCatalog.CollectSampleKinds.CpuEfficiency;
 
@@ -49,7 +51,7 @@ public sealed class CollectSampleTool
     [RequireScope("eventpipe")]
     [McpServerTool(
         Name = ToolName,
-        Title = "Collect a bounded-time sample (cpu | off_cpu | allocation | native-alloc | method-params)",
+        Title = "Collect a bounded-time sample (cpu | off_cpu | allocation | native-alloc | native-lock-contention | method-params)",
         Destructive = false,
         ReadOnly = true,
         Idempotent = false,
@@ -57,12 +59,13 @@ public sealed class CollectSampleTool
         TaskSupport = ToolTaskSupport.Optional)]
     [Description(
         "Unified bounded-time sampler. Choose the sampler via the 'kind' parameter " +
-        "(cpu, off_cpu, allocation, native-alloc, method-params). Returns a drilldown handle.")]
+        "(cpu, off_cpu, allocation, native-alloc, native-lock-contention, method-params). Returns a drilldown handle.")]
     public static async Task<DiagnosticResult<CollectSampleEnvelope>> CollectSample(
         ICpuSampler cpuSampler,
         IOffCpuSampler offCpuSampler,
         EventPipeAllocationSampler allocationSampler,
         INativeAllocSampler nativeAllocSampler,
+        INativeLockContentionSampler nativeLockContentionSampler,
         IMethodParameterCaptureCollector methodParameterCollector,
         DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler cpuEfficiencySampler,
         IDiagnosticHandleStore handles,
@@ -77,6 +80,7 @@ public sealed class CollectSampleTool
             "'off_cpu' (where threads are blocked and for how long — Linux sched_switch via perf, Windows ContextSwitch via NT Kernel Logger), " +
             "'allocation' (managed GCAllocationTick rolled up by type — TypeName is empty on NativeAOT), " +
             "'native-alloc' (unmanaged allocations — Linux uprobes libc malloc/calloc/realloc via perf (needs CAP_SYS_ADMIN); Windows captures NT Kernel Logger VirtualAlloc via ETW (needs admin elevation); sampled call counts, not bytes), " +
+            "'native-lock-contention' (native/OS-level lock contention — Linux uprobes libc pthread_mutex_lock/pthread_mutex_unlock via perf (needs CAP_SYS_ADMIN); no Windows backend yet — Windows ETW has no supported enablement path for native critical-section tracing; sampled call counts, not measured wait time), " +
             "'method-params' (security-sensitive live parameter capture for explicitly-filtered methods on .NET 8+ CoreCLR; requires `sensitive-parameter-read`, `Diagnostics:AllowMethodParameterCapture=true`, and `includeSensitiveValues=true`), " +
             "'cpu-efficiency' (aggregate whole-window CPU microarchitecture-efficiency snapshot — IPC, cache/branch-miss rate, stall-cycle breakdown, TLB miss rate, page faults, context-switches/cpu-migrations; Linux via 'perf stat' aggregate counting, Windows via ETW kernel PMC sampling; per-metric fields are nullable and degrade gracefully when the host's vPMU is unavailable, e.g. under virtualization). " +
             "Long-running collections expose MCP-native progress/cancellation or can be promoted to an MCP Task.")]
@@ -96,7 +100,7 @@ public sealed class CollectSampleTool
         bool includeSensitiveValues = false,
         [Description("kind='method-params' only. Explicit method filters to instrument. Each filter requires moduleName, typeName, methodName, and may optionally add genericArity, signature, and moduleVersionId. Between 1 and 10 filters are allowed.")]
         IReadOnlyList<MethodFilter>? methods = null,
-        [Description("Verbosity (summary|detail|raw). Applies to kind='cpu' and kind='off_cpu' — see the legacy collectors for semantics. Ignored by kind='allocation', kind='native-alloc', and kind='method-params'.")]
+        [Description("Verbosity (summary|detail|raw). Applies to kind='cpu' and kind='off_cpu' — see the legacy collectors for semantics. Ignored by kind='allocation', kind='native-alloc', kind='native-lock-contention', and kind='method-params'.")]
         SamplingDepth depth = SamplingDepth.Summary,
         // kind=cpu / kind=off_cpu
         [Description("kind='cpu' or kind='off_cpu'. Optional NT_SYMBOL_PATH-style search path forwarded to symbol-resolving backends. Precedence: symbolPath > MCP_SYMBOL_PATH > _NT_SYMBOL_PATH > target MainModule directory. **Remote symbol servers are OFF by default (issue #165 / M3)** — any `srv*http(s)://…` segment must point at a host on `Diagnostics:SymbolServerAllowlist`. Ignored by kind='allocation' and by kind='cpu' when resolveSourceLines=false.")]
@@ -116,6 +120,8 @@ public sealed class CollectSampleTool
         bool exportTrace = false,
         [Description("kind='native-alloc' on Linux only. perf sample period — record one callchain per this many allocator hits. Must be >= 1. Defaults to 1000. Higher reduces overhead and resolution; throttles recorded samples but not the per-call uprobe trap cost. Ignored by the Windows ETW VirtualAlloc backend, which records every allocation.")]
         long nativeAllocSamplePeriod = 1000,
+        [Description("kind='native-lock-contention' on Linux only (there is no Windows backend). perf sample period — record one callchain per this many pthread_mutex_lock/unlock hits. Must be >= 1. Defaults to 5000 — higher than nativeAllocSamplePeriod's default because mutex fast-path calls are typically far more frequent than allocator calls on lock-heavy workloads.")]
+        long nativeLockContentionSamplePeriod = 5000,
         [Description("Optional orchestrator investigation handle returned by attach_to_pod. When supplied, the orchestrator routes this diagnostic call through that attached Pod instead of inferring routing from the current MCP session binding.")]
         string? investigationHandleId = null,
         LegacyDiagnosticsFlagDeprecation? deprecation = null,
@@ -195,6 +201,19 @@ public sealed class CollectSampleTool
                     cancellationToken).ConfigureAwait(false),
                 KindNativeAlloc,
                 (env, data) => env with { NativeAlloc = data }),
+
+            KindNativeLockContention => Project(
+                await DiagnosticTools.CollectNativeLockContentionSample(
+                    nativeLockContentionSampler,
+                    handles,
+                    resolver,
+                    processId,
+                    durationSeconds,
+                    topN,
+                    nativeLockContentionSamplePeriod,
+                    cancellationToken).ConfigureAwait(false),
+                KindNativeLockContention,
+                (env, data) => env with { NativeLockContention = data }),
 
             KindMethodParams => await CollectMethodParametersAsync(
                 methodParameterCollector,
@@ -381,6 +400,7 @@ public sealed class CollectSampleTool
                      "nativeAotMapFile",
                      "exportTrace",
                      "nativeAllocSamplePeriod",
+                     "nativeLockContentionSamplePeriod",
                  })
         {
             if (arguments.ContainsKey(key))
@@ -441,5 +461,6 @@ public sealed record CollectSampleEnvelope(
     OffCpuSnapshot? OffCpu = null,
     AllocationSample? Allocation = null,
     NativeAllocSample? NativeAlloc = null,
+    NativeLockContentionSample? NativeLockContention = null,
     MethodParameterCaptureSample? MethodParams = null,
     DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample? CpuEfficiency = null);

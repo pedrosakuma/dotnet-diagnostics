@@ -2,6 +2,7 @@ using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.NativeAlloc;
+using DotnetDiagnostics.Core.NativeLockContention;
 using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
@@ -25,6 +26,7 @@ public static class SamplerUseCases
 
     public const string OffCpuHandleKind = "off-cpu-snapshot";
     public const string NativeAllocHandleKind = "native-alloc-sample";
+    public const string NativeLockContentionHandleKind = "native-lock-contention-sample";
     public const string ThreadSnapshotKind = "thread-snapshot";
     public const string CpuEfficiencyHandleKind = "cpu-efficiency-sample";
 
@@ -406,6 +408,92 @@ public static class SamplerUseCases
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = 8, ["maxNodes"] = 200 }),
             new NextActionHint("inspect_process", "Correlate with the memory trend (RSS / anonymous pages) to confirm native growth.",
                 new Dictionary<string, object?> { ["processId"] = pid, ["view"] = "memory_trend" }));
+        return WithContext(ok, resolved.Context);
+    }
+
+    public static async Task<DiagnosticResult<NativeLockContentionSample>> CollectNativeLockContentionSample(
+        INativeLockContentionSampler sampler,
+        IDiagnosticHandleStore handles,
+        IProcessContextResolver resolver,
+        int? processId = null,
+        int durationSeconds = 10,
+        int topN = 25,
+        long samplePeriod = 5000,
+        CancellationToken cancellationToken = default)
+    {
+        if (durationSeconds < 1) return InvalidArg<NativeLockContentionSample>(nameof(durationSeconds), "must be >= 1");
+        if (topN < 1) return InvalidArg<NativeLockContentionSample>(nameof(topN), "must be >= 1");
+        if (samplePeriod < 1) return InvalidArg<NativeLockContentionSample>(nameof(samplePeriod), "must be >= 1");
+
+        var resolved = await ResolveContextAsync<NativeLockContentionSample>(resolver, processId, cancellationToken).ConfigureAwait(false);
+        if (resolved.Failure is not null) return resolved.Failure;
+        var pid = resolved.ProcessId;
+
+        NativeLockContentionSampleResult result;
+        try
+        {
+            result = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, samplePeriod, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (PlatformNotSupportedException ex)
+        {
+            return DiagnosticResult.Fail<NativeLockContentionSample>(
+                ex.Message,
+                new DiagnosticError("NotSupported", ex.Message, ex.GetType().FullName),
+                new NextActionHint("collect_sample",
+                    "Run this capture from a Linux host/sidecar (perf uprobes on pthread_mutex_lock/pthread_mutex_unlock), or fall back to kind=\"off_cpu\" to see blocked-thread stacks on Windows.",
+                    new Dictionary<string, object?> { ["kind"] = "off_cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }));
+        }
+        catch (NotSupportedException ex)
+        {
+            return DiagnosticResult.Fail<NativeLockContentionSample>(
+                ex.Message,
+                new DiagnosticError("NotSupported", ex.Message, ex.GetType().FullName),
+                new NextActionHint("inspect_process",
+                    "Confirm the target is a dynamically-linked glibc/musl process; statically-linked or custom-threading-library targets aren't supported by the libc uprobe path.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("perf", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("uprobe", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("tracefs", StringComparison.OrdinalIgnoreCase)
+                                                   || ex.Message.Contains("CAP_", StringComparison.OrdinalIgnoreCase))
+        {
+            return DiagnosticResult.Fail<NativeLockContentionSample>(
+                ex.Message,
+                new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
+                new NextActionHint("inspect_process",
+                    "Check the capability matrix; install linux-perf and add CAP_SYS_ADMIN to the sidecar securityContext.",
+                    new Dictionary<string, object?> { ["processId"] = pid }));
+        }
+
+        var sample = result.Summary;
+        var handle = handles.Register(
+            pid,
+            NativeLockContentionHandleKind,
+            result.Artifact,
+            SampleHandleTtl,
+            evictWhenProcessExits: false,
+            origin: HandleOrigin.Live);
+
+        var topSite = sample.TopContendedCallSites.Count > 0 ? sample.TopContendedCallSites[0] : null;
+        var summaryText = topSite is not null
+            ? $"Captured {sample.TotalSampledLockCalls} sampled native mutex-call(s) over {durationSeconds}s " +
+              $"(probed {string.Join("/", sample.ProbedFunctions)} in {sample.LibcPath}, samplePeriod={sample.SamplePeriod}). " +
+              $"Top contended call site: {topSite.Frame.Method} ({topSite.InclusiveSamples} inclusive hits). " +
+              $"Counts are calls, not confirmed blocking waits. Drill into call sites with query_snapshot(handle=\"{handle.Id}\", view=\"call-tree\")."
+            : $"Probed {string.Join("/", sample.ProbedFunctions)} in {sample.LibcPath} but captured no native " +
+              $"mutex-call samples in {durationSeconds}s — the workload may not use native pthread mutexes, or samplePeriod " +
+              "is too high. Drive the suspect load during the window or lower samplePeriod.";
+
+        var ok = DiagnosticResult.OkWithHandle(
+            sample,
+            summaryText,
+            handle.Id,
+            handle.ExpiresAt,
+            new NextActionHint("query_snapshot", "Walk the native lock-contention call tree to find which code paths touch the mutex the most.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = 8, ["maxNodes"] = 200 }),
+            new NextActionHint("collect_sample", "Corroborate with off-CPU sampling to confirm the top call site actually blocked (vs. an uncontended fast-path lock).",
+                new Dictionary<string, object?> { ["kind"] = "off_cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }));
         return WithContext(ok, resolved.Context);
     }
 

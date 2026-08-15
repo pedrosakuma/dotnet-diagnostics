@@ -29,6 +29,7 @@ public sealed partial class QuerySnapshotTool
             [DiagnosticOperationCatalog.QuerySnapshotHandleKinds.CpuSample] = HandleCpuSampleAsync,
             [DiagnosticOperationCatalog.QuerySnapshotHandleKinds.AllocationSample] = HandleCpuSampleAsync,
             [DiagnosticTools.NativeAllocHandleKind] = HandleCpuSampleAsync,
+            [DiagnosticTools.NativeLockContentionHandleKind] = HandleCpuSampleAsync,
             [CollectionHandleKinds.Counters] = HandleCountersCollectionAsync,
             [CollectionHandleKinds.EventCatalog] = HandleEventCatalogAsync,
             [CollectionHandleKinds.GcDatas] = HandleGcDatasAsync,

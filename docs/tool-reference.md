@@ -384,7 +384,7 @@ As of the `2025-11-25` protocol bump, the server registers an
 `IMcpTaskStore`, advertises `capabilities.tasks.{list,cancel,requests.tools.call}`
 and marks these tools with `execution.taskSupport: "optional"` in `tools/list`:
 
-- `collect_sample` (every `kind` — cpu, off_cpu, allocation, native-alloc)
+- `collect_sample` (every `kind` — cpu, off_cpu, allocation, native-alloc, native-lock-contention)
 - `collect_events` (every `kind` — counters, exceptions, crash-guard, gc, …)
 - `inspect_heap` (both `source="live"` and `source="dump"`)
 
@@ -420,7 +420,7 @@ same `tools/call` request — no second round-trip, no polling. This is the
 
 Tools wired up:
 
-- `collect_sample` (every `kind` — cpu, off_cpu, allocation, native-alloc)
+- `collect_sample` (every `kind` — cpu, off_cpu, allocation, native-alloc, native-lock-contention)
 - `collect_events` (every `kind` — counters, exceptions, crash-guard, gc, datas, catalog, event_source, activities, logs, jit, threadpool, contention, db, kestrel, networking, requests, startup)
 - `inspect_heap` (both `source="live"` and `source="dump"` — emits an **indeterminate** heartbeat, since a ClrMD heap walk has no a-priori duration, plus a terminal `progress=100` on success)
 
@@ -490,7 +490,7 @@ query_snapshot(handle="01H...XY", view="byType")
 `query_snapshot` is the single drilldown verb — it dispatches on the `kind` the
 handle carries and covers every kind emitted by the collectors above plus heap
 (`heap-snapshot`), thread (`thread-snapshot`), off-CPU (`off-cpu-snapshot`) and
-call-tree (`cpu-sample` / `allocation-sample` / `native-alloc-sample`).
+call-tree (`cpu-sample` / `allocation-sample` / `native-alloc-sample` / `native-lock-contention-sample`).
 
 Views available per `kind`:
 
@@ -516,7 +516,7 @@ Views available per `kind`:
 | `heap-snapshot` | `inspect_heap` / `inspect_heap(source="live")` / `inspect_heap(source="dump")` / `inspect_heap(source="gcdump")` | `top-types` (default), `retention-paths`, `roots-by-kind`, `finalizer-queue`, `fragmentation`, `static-fields`, `delegate-targets`, `duplicate-strings`, `gchandles`, `timers`, `alc`, `object`, `gcroot`, `objsize`, `async`, `diff`, `growth` |
 | `thread-snapshot` | `collect_thread_snapshot` | `top-blocked` (default), `threads-summary`, `stack`, `lock-graph`, `deadlocks`, `unique-stacks`, `async-stalls`, `wait-chains`, `threadpool`, `resolve-address`, `frame-vars` |
 | `off-cpu-snapshot` | `collect_sample(kind="off_cpu")` | `topStacks` (default), `byThread`, `stack` |
-| `cpu-sample` / `allocation-sample` / `native-alloc-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `diff` |
+| `cpu-sample` / `allocation-sample` / `native-alloc-sample` / `native-lock-contention-sample` | `collect_sample(kind="cpu")` / `collect_sample(kind="allocation")` / `collect_sample(kind="native-alloc")` / `collect_sample(kind="native-lock-contention")` | `call-tree`, `top-methods`, `by-module`, `by-namespace`, `hot-path`, `caller-callee`, `triage`, `diff` |
 
 Authorization is applied per kind at the dispatcher (`heap-read` for heap,
 `ptrace` for thread, `eventpipe` for off-CPU, `investigation-export` for
@@ -950,11 +950,11 @@ syscalls (e.g. "80% `futex`, 20% `read`").
 | [`inspect_process(view="resources")`](#inspect_process(view="resources")) | cheap / window-bound | no | ✅ (Linux/Windows partial) | reads `/proc/<pid>/fd`, `/proc/<pid>/net/tcp{,6}`, `/proc/<pid>/limits`, `VmRSS` + a short `gc-heap-size` counter probe (Linux) or `GetProcessHandleCount` / `WorkingSet64` (Windows) |
 | [`inspect_process(view="requests-now")`](#inspect_process(view="requests-now")) | ~2 s | no | ✅ (ptrace required) | short EventPipe request window + live thread snapshot |
 | [`inspect_process(view="triage")`](#inspect_process) | ~5 s | no | ✅ | **Fast evidence triage.** Collects counters, separates observed signals from bounded hypotheses, and returns neutral drill-down hints. |
-| [`inspect_process(view="preflight")`](#inspect_process(view="preflight")) | cheap | no | ✅ | **Phase 13 environment self-diagnosis.** Target-optional, remediation-first readiness checks (diagnostic-socket UID, ClrMD attach/ptrace, perf off-CPU, native-alloc). Answers *"why can't I attach to this PID and how do I fix it?"* before paying for a failed collect. |
+| [`inspect_process(view="preflight")`](#inspect_process(view="preflight")) | cheap | no | ✅ | **Phase 13 environment self-diagnosis.** Target-optional, remediation-first readiness checks (diagnostic-socket UID, ClrMD attach/ptrace, perf off-CPU, native-alloc, native-lock-contention). Answers *"why can't I attach to this PID and how do I fix it?"* before paying for a failed collect. |
 | `collect_sample(kind="off_cpu")` (Linux/Windows) | window-bound | no | ✅ (Linux) | system-wide `perf record` (Linux) / NT Kernel Logger CSwitch (Windows, admin) |
 | `query_snapshot` | cheap | no | ✅ | drilldown on handle from `collect_sample(kind="off_cpu")` |
 | [`collect_events`](#collect_events) | window-bound | no | ✅ (mostly — see kind) | Dispatches by `kind` to counters/exceptions/crash-guard/gc/datas/catalog/event_source/activities/logs/jit/threadpool/contention/db/kestrel/networking/requests/startup. |
-| [`collect_sample`](#collect_sample) | window-bound | depends on kind | ✅ (mostly — see kind) | Dispatches by `kind` to cpu/off_cpu/allocation/native-alloc/method-params. |
+| [`collect_sample`](#collect_sample) | window-bound | depends on kind | ✅ (mostly — see kind) | Dispatches by `kind` to cpu/off_cpu/allocation/native-alloc/native-lock-contention/method-params. |
 | [`collect_events(kind="counters")`](#collect_events(kind="counters")) | window-bound | no | ✅ | opens an EventPipe session |
 | [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")) | window-bound | no | ✅ (perf/ETW, native frames) | EventPipe + temp `.nettrace` on disk |
 | [`collect_sample(kind="allocation")`](#collect_sample(kind="allocation")) | window-bound | no | ⚠️ TypeName empty | EventPipe session |
@@ -1269,11 +1269,18 @@ canonical [consumer-install safety note](./consumer-install.md#15-linux-enabling
 | `clrmd-attach` | **Blocked** | `collect_thread_snapshot`, `inspect_heap(source="live")`, `capture_method_bytes`, `get_bytes(kind="module")`, `collect_sample(kind="cpu", resolveMethodInstantiations=true)` |
 | `offcpu-perf` | Degraded | `collect_sample(kind="off_cpu")` |
 | `native-alloc` | Degraded | `collect_sample(kind="native-alloc")` |
+| `native-lock-contention` | Degraded | `collect_sample(kind="native-lock-contention")` |
 
 **Status ladder:** `Ok` < `Degraded` (optional capability missing; core diagnostics still
 work) < `Blocked` (hard blocker). `NotApplicable` checks (Linux-only checks on Windows, the
 socket-UID check with no target) are excluded from `overall`. The most severe check is
 surfaced first.
+
+`native-lock-contention` deliberately reports **Degraded** (not `NotApplicable`) on Windows,
+unlike `native-alloc` — Windows has no supported ETW enablement path for native
+critical-section contention tracing in this release (see `collect_sample(kind="native-lock-contention")`
+below), so the capability gap stays visible on every host instead of being silently
+omitted from the report.
 
 **Notes:** the standalone CLI exposes the same engine as
 [`dotnet-diagnostics doctor`](./cli-reference.md#doctor), which additionally exits non-zero
@@ -1544,13 +1551,13 @@ every other kind requires `eventpipe` (`event_source` additionally honors the ex
 ## `collect_sample`
 
 The bounded-time sampler
-dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc / method-params sampler.
+dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc / native-lock-contention / method-params sampler.
 
 **Parameters:**
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `kind` | `string` | `cpu` | One of `cpu`, `off_cpu`, `allocation`, `native-alloc`, `method-params`, `cpu-efficiency`. Case-sensitive. |
+| `kind` | `string` | `cpu` | One of `cpu`, `off_cpu`, `allocation`, `native-alloc`, `native-lock-contention`, `method-params`, `cpu-efficiency`. Case-sensitive. |
 | `processId` | `int?` | auto | Target process id. |
 | `durationSeconds` | `int` | `10` | Sampling window. ≥ 1. |
 | `topN` | `int` | `25` | Top hotspots / blocking stacks / types. |
@@ -1558,18 +1565,19 @@ dispatches by `kind` to the underlying CPU / off-CPU / allocation / native-alloc
 | `previewCount` | `int` | `10` | `method-params` only. Inline preview rows returned directly from `collect_sample`. 1–25. |
 | `includeSensitiveValues` | `bool` | `false` | `method-params` only. **Required to be `true`** as an explicit acknowledgement that parameter values may contain secrets / PII. |
 | `methods` | `MethodFilter[]?` | `null` | `method-params` only. Explicit filters (`moduleName`, `typeName`, `methodName`, optional `genericArity`, `signature`, `moduleVersionId`). 1–10 filters. |
-| `depth` | `SamplingDepth` | `Summary` | Verbosity; applies to `cpu` / `off_cpu`. Ignored by `allocation`, `native-alloc`, and `method-params`. |
+| `depth` | `SamplingDepth` | `Summary` | Verbosity; applies to `cpu` / `off_cpu`. Ignored by `allocation`, `native-alloc`, `native-lock-contention`, and `method-params`. |
 | `symbolPath` | `string?` | `null` | `cpu` / `off_cpu` only. Symbol search path; remote `srv*http(s)://…` segments are denied unless allowlisted (issue #165 / M3). |
 | `resolveSourceLines` | `bool` | `true` | `cpu` only. Same as [`collect_sample(kind="cpu")`](#collect_sample(kind="cpu")). |
 | `maxResolvedSources` | `int?` | `topN` | `cpu` only. |
 | `resolveMethodInstantiations` / `maxResolvedMethodInstantiations` | — | — | `cpu` only. Same as `collect_sample(kind="cpu")`. |
 | `nativeAotMapFile` | `string?` | `null` | `cpu` on NativeAOT only. Path to the ILC `*.map.xml` (`<IlcGenerateMapFile>true</IlcGenerateMapFile>`). Emits a name-based `MethodIdentity` (TypeFullName + MethodName; MVID/token `null`) for hot managed AOT methods so the `dotnet-native-mcp` disassembly handoff works. Ignored on CoreCLR. See [`aot-coverage.md`](./aot-coverage.md) and [`handoff-contract.md`](./handoff-contract.md#nativeaot-identity--name-based-issue-395). |
 | `nativeAllocSamplePeriod` | `long` | `1000` | `native-alloc` on **Linux** only. Record one callchain per N allocator hits (throttles recorded samples, not the per-call uprobe trap cost). Ignored by the Windows ETW VirtualAlloc backend, which records every committed allocation. |
+| `nativeLockContentionSamplePeriod` | `long` | `5000` | `native-lock-contention` on **Linux** only (no Windows backend — see below). Record one callchain per N `pthread_mutex_lock`/`pthread_mutex_unlock` calls. Defaults **5x higher** than `nativeAllocSamplePeriod` because mutex fast-path acquisitions are typically far more frequent than allocator calls on lock-heavy workloads, so a lower period would multiply uprobe trap overhead without adding attribution value. |
 | `exportTrace` | `bool` | `false` | `cpu` only. When `true`, the raw `.nettrace` (normally deleted after parsing) is kept under `MCP_ARTIFACT_ROOT/traces/` and its relative path returned on the result. Fetch the bytes with `get_bytes(kind="trace")` for offline PerfView/Speedscope/Perfetto analysis. |
 
 **Returns:** `CollectSampleEnvelope` — a polymorphic record carrying the
 `kind` discriminator plus exactly one populated payload field
-(`cpu` / `offCpu` / `allocation` / `nativeAlloc` / `methodParams` / `cpuEfficiency`). The envelope's `summary`, `hints`,
+(`cpu` / `offCpu` / `allocation` / `nativeAlloc` / `nativeLockContention` / `methodParams` / `cpuEfficiency`). The envelope's `summary`, `hints`,
 `handle`, `handleExpiresAt`, and `resolvedProcess` are passed through from
 the underlying sampler verbatim, so `query_snapshot(view="call-tree")` and
 `query_snapshot` drilldowns continue to work unchanged.
@@ -1606,6 +1614,46 @@ when RSS / anonymous pages climb while the managed heap stays flat. On an unsupp
 `NotSupported` envelope — never a crash; a missing `CAP_SYS_ADMIN` (Linux) or denied ETW
 access (Windows) instead surfaces as `PermissionDenied`.
 
+**`kind="native-lock-contention"` (issue #830).** Attributes **native/OS-level** mutex
+contention — `pthread_mutex_lock`/`pthread_mutex_unlock` calls made by P/Invoke code, native
+libraries, or the runtime itself — to a call site. Companion to `collect_events(kind="contention")`,
+which only sees *managed* `Monitor.Enter`/`lock` contention via the CLR `Contention` EventPipe
+provider; that managed-only collector is unchanged by this feature.
+
+- **Linux** dynamically uprobes `pthread_mutex_lock` (mandatory) and, best-effort,
+  `pthread_mutex_unlock` in the target's libc with `perf probe -x <libc> ...` + `perf record
+  --call-graph dwarf -c <nativeLockContentionSamplePeriod> -p <pid>` — the exact same
+  probe-create/record/parse/teardown mechanism `kind="native-alloc"` uses against
+  `malloc`/`calloc`/`realloc`, just targeting a different libc symbol pair. Needs the `perf`
+  binary plus `CAP_SYS_ADMIN` / tracefs write access to create the uprobe (same requirement as
+  `native-alloc`).
+- **Windows has no backend in this release.** `collect_sample(kind="native-lock-contention")`
+  always returns `NotSupported` on Windows. This was a **deliberate investigation finding**,
+  not an oversight: TraceEvent (`Microsoft.Diagnostics.Tracing.TraceEvent`) does ship a classic
+  (MOF) `CritSecTraceProviderTraceEventParser` capable of *decoding*
+  `CritSecCollisionTraceData`/`CritSecInitTraceData` from a pre-recorded ETL — the genuine
+  Windows analog to native critical-section contention — but the only supported enablement
+  API this codebase uses, `TraceEventSession.EnableKernelProvider(KernelTraceEventParser.Keywords, ...)`,
+  has **no CritSec member** in its `Keywords` flags enum. Historically that classic-provider
+  group is enabled via `xperf -on Latency` (Windows Performance Toolkit), an external tool
+  outside this codebase's supported dependency surface — materially heavier than the single
+  `perf` binary the Linux side needs. If a future release finds a supported enablement path,
+  the Windows backend can be added following the same "split collector, unified handle" shape
+  as `native-alloc`'s ETW `VirtualAlloc` backend.
+- **Narrowed scope, by design (issue #830):** only `pthread_mutex_lock`/`pthread_mutex_unlock`
+  are probed. Condition variables, semaphores, and reader-writer locks are explicitly
+  out of scope for this release — expand only if there's demonstrated future need.
+- **Call-count caveat:** a plain uprobe on `pthread_mutex_lock` counts *calls*, not confirmed
+  blocking waits — an uncontended fast-path acquisition (single CAS, no futex syscall) is
+  indistinguishable from a genuinely blocked one at this uprobe. Corroborate with
+  `collect_sample(kind="off_cpu")` before concluding a hot call site is actually blocking.
+
+Gated by `inspect_process(view="capabilities")`'s `CanSampleNativeLockContention`
+(Linux-only, unlike `CanSampleNativeAlloc`). **Hotspot-only**, same shape as `native-alloc`:
+call-site hit counts, not measured wait time, and no acquire/release pairing. Drill into the
+merged call tree with `query_snapshot(view="call-tree")`; compare two windows with
+`query_snapshot(view="diff")`.
+
 **`kind="method-params"` (issue #562).** Live-captures rendered parameter values for an
 explicit allowlist of managed methods by temporarily enabling the vendored dotnet-monitor
 notify-only + mutating profilers plus the startup hook inside a **.NET 8+ CoreCLR**
@@ -1620,8 +1668,8 @@ for the retained invocation rows.
 `method-params` rejects the knobs inherited from the other sampler kinds (`topN`, `depth`,
 `symbolPath`, `resolveSourceLines`, `maxResolvedSources`, `resolveMethodInstantiations`,
 `maxResolvedMethodInstantiations`, `nativeAotMapFile`, `exportTrace`,
-`nativeAllocSamplePeriod`) with `InvalidArgument` — only the method-parameter contract
-above is accepted for V1.
+`nativeAllocSamplePeriod`, `nativeLockContentionSamplePeriod`) with `InvalidArgument` — only
+the method-parameter contract above is accepted for V1.
 
 **`kind="cpu-efficiency"` (issue #828).** Captures an **aggregate, whole-window** CPU
 microarchitecture-efficiency snapshot — IPC (instructions per cycle), cache-miss rate, branch-miss
@@ -2842,7 +2890,7 @@ evaluate inferred wait-for cycle candidates with `query_snapshot(view="deadlocks
 ## `query_snapshot`
 
 The single **drilldown surface**. Every collector that captures a reusable
-artifact (heap, thread, off-CPU, event collection, CPU/allocation/native-alloc
+artifact (heap, thread, off-CPU, event collection, CPU/allocation/native-alloc/native-lock-contention
 sample) registers a handle in the shared handle store; `query_snapshot` answers
 parameterized follow-up questions against that handle without re-paying the
 collection cost. It is the only registered drilldown tool; the former per-family
@@ -2878,7 +2926,7 @@ contract.
   per-kind views such as `byProvider`, `byType`, `exceptions`, `pauseHistogram`,
   `byGeneration`, `heap-stats`, `n+1`, `connectionPool`, `queues`, `dns`,
   `config`, `timeline`, `hillClimbing`, `requests`, `longRunning`, …
-- **cpu-sample / allocation-sample / native-alloc-sample**: `call-tree`
+- **cpu-sample / allocation-sample / native-alloc-sample / native-lock-contention-sample**: `call-tree`
   (default), `top-methods`, `by-module`, `by-namespace`, `hot-path`,
   `caller-callee`, `triage`, `diff`.
 
@@ -2892,7 +2940,7 @@ view→parameter mapping.
 
 `depth` (`"full"` default or `"compact"`) started as a `view="diff"`-only
 parameter and was extended to `view="top-methods"`/`"call-tree"` for
-cpu-sample/allocation-sample/native-alloc-sample handles (issue #805): `"full"`
+cpu-sample/allocation-sample/native-alloc-sample/native-lock-contention-sample handles (issue #805): `"full"`
 leaves those two views' behavior exactly as it was before `depth` applied to
 them — `top-methods` returns the caller's own `topN` (default `DefaultTopN`)
 uncapped, and `call-tree` returns the caller's own `maxDepth`/`maxNodes`,
