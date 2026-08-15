@@ -27,6 +27,25 @@ namespace DotnetDiagnostics.Core.OffCpu;
 /// </summary>
 /// <remarks>
 /// <para>
+/// Issue #829 syscall/wait-reason attribution: the same kernel session additionally enables the
+/// <c>FileIOInit</c>/<c>FileIO</c>/<c>NetworkTCPIP</c> keywords (a second NT Kernel Logger session
+/// is not an option — see <see cref="KernelEtwSessionGate"/>). Unlike the Linux
+/// <c>raw_syscalls:sys_enter</c>/<c>sys_exit</c> pairing (which brackets a syscall with an exact
+/// enter/exit interval), Windows kernel FileIO/TcpIp events do not consistently pair start/end
+/// records across all their subtypes, so this sampler uses a looser "most recent qualifying I/O
+/// event on this thread within a short lookback window before the CSwitch OUT" heuristic keyed off
+/// the event's generic <c>TaskName:OpcodeName</c> (e.g. <c>FileIO:Read</c>, <c>TcpIp:Send</c>) —
+/// see <see cref="TryGetIoLabel"/>. When no such event correlates, the span instead falls back to
+/// a normalized bucket derived from the existing <c>OldThreadWaitReason</c> (<c>KWAIT_REASON</c>)
+/// already surfaced as <see cref="OffCpuSpan.PrevState"/> — see <see cref="NormalizeWaitReason"/>.
+/// This intentionally documents the Linux/Windows asymmetry: Linux syscall names are precise and
+/// only present when a syscall was actually in flight (<see langword="null"/> otherwise), while
+/// Windows always yields a label because every CSwitch OUT carries a wait reason. Both platforms
+/// populate the SAME <see cref="OffCpuSpan.Syscall"/> field so downstream <c>query_snapshot</c>
+/// views stay platform-agnostic, per the design constraint documented on
+/// <see cref="RoutingOffCpuSampler"/>.
+/// </para>
+/// <para>
 /// Requirements (validated by <see cref="IsAvailable"/>): Windows host with administrative elevation
 /// (or <c>SeSystemProfilePrivilege</c>). Kernel ETW sessions are inherently system-wide so concurrent
 /// captures are serialized through a static gate to keep buffer pressure predictable.
@@ -181,13 +200,26 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
             //   turn it on now so the ETL is forward-compatible for slice 2c without re-capture.
             // ImageLoad/Process/Thread: required for module → symbol resolution and
             //   thread-name population by the TraceLog conversion.
+            // FileIOInit/FileIO/NetworkTCPIP (issue #829): a single process can generally only
+            //   drive one active NT Kernel Logger session (see KernelEtwSessionGate), so the
+            //   syscall/wait-reason attribution enrichment extends THIS session's keyword mask
+            //   rather than starting a second kernel session. These keywords are lower-volume than
+            //   ContextSwitch and we deliberately do NOT request stack walks for them (see
+            //   stackKeywords below) — we only need the generic Task/Opcode name (e.g.
+            //   "FileIO:Read", "TcpIp:Send") to correlate against the most recent CSwitch OUT for
+            //   the same thread, not another callstack.
             var keywords = KernelTraceEventParser.Keywords.ContextSwitch |
                            KernelTraceEventParser.Keywords.Dispatcher |
                            KernelTraceEventParser.Keywords.ImageLoad |
                            KernelTraceEventParser.Keywords.Process |
-                           KernelTraceEventParser.Keywords.Thread;
+                           KernelTraceEventParser.Keywords.Thread |
+                           KernelTraceEventParser.Keywords.FileIOInit |
+                           KernelTraceEventParser.Keywords.FileIO |
+                           KernelTraceEventParser.Keywords.NetworkTCPIP;
             // Walk stacks specifically on ContextSwitch: stack captured at switch-out time IS the
-            // blocking call chain we want to surface.
+            // blocking call chain we want to surface. FileIO/TcpIp events are consulted only for
+            // their Task/Opcode name and timestamp, so no stack walk is requested for them —
+            // this keeps the added overhead of the syscall-attribution enrichment low.
             var stackKeywords = KernelTraceEventParser.Keywords.ContextSwitch;
 
             session.EnableKernelProvider(keywords, stackKeywords);
@@ -289,40 +321,58 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
         long switches = 0;
         double maxTs = double.MinValue;
 
+        // Issue #829: per-thread "most recently observed FileIO/TcpIp event" — a single entry per
+        // TID (overwritten by newer events, never appended), so this is O(distinct thread count)
+        // for the whole capture and needs no separate resource-boundedness cap. Only entries whose
+        // timestamp falls within IoLookbackWindowSeconds of the CSwitch OUT are actually consulted;
+        // events are visited in time order, so by the time a CSwitch is processed every I/O event
+        // that could plausibly precede it has already been recorded.
+        var lastIoByThread = new Dictionary<int, (double Ts, string Label)>();
+
         foreach (var ev in traceLog.Events)
         {
-            if (ev is not CSwitchTraceData cs) continue;
-            var ts = cs.TimeStampRelativeMSec / 1000.0;
-            if (ts > maxTs) maxTs = ts;
-
-            // OUT side: the thread leaving the CPU belongs to the target.
-            if (cs.OldProcessID == processId)
+            if (ev is CSwitchTraceData cs)
             {
-                switches++;
-                var stack = ExtractStack(cs.CallStack(), mvidReader);
-                pending[cs.OldThreadID] = (
-                    Ts: ts,
-                    State: cs.OldThreadWaitReason.ToString(),
-                    Stack: stack,
-                    Comm: SafeProcessName(cs.OldProcessName));
-            }
+                var ts = cs.TimeStampRelativeMSec / 1000.0;
+                if (ts > maxTs) maxTs = ts;
 
-            // IN side: the thread coming on CPU belongs to the target — close the matching OUT.
-            if (cs.NewProcessID == processId)
-            {
-                if (pending.Remove(cs.NewThreadID, out var p))
+                // OUT side: the thread leaving the CPU belongs to the target.
+                if (cs.OldProcessID == processId)
                 {
-                    var micros = (long)Math.Round((ts - p.Ts) * 1_000_000.0);
-                    if (micros > 0)
+                    switches++;
+                    var stack = ExtractStack(cs.CallStack(), mvidReader);
+                    pending[cs.OldThreadID] = (
+                        Ts: ts,
+                        State: cs.OldThreadWaitReason.ToString(),
+                        Stack: stack,
+                        Comm: SafeProcessName(cs.OldProcessName));
+                }
+
+                // IN side: the thread coming on CPU belongs to the target — close the matching OUT.
+                if (cs.NewProcessID == processId)
+                {
+                    if (pending.Remove(cs.NewThreadID, out var p))
                     {
-                        builder.AddSpan(new OffCpuSpan(
-                            Tid: cs.NewThreadID,
-                            Comm: p.Comm,
-                            DurationMicros: micros,
-                            PrevState: p.State,
-                            BlockingStack: p.Stack));
+                        var micros = (long)Math.Round((ts - p.Ts) * 1_000_000.0);
+                        if (micros > 0)
+                        {
+                            builder.AddSpan(new OffCpuSpan(
+                                Tid: cs.NewThreadID,
+                                Comm: p.Comm,
+                                DurationMicros: micros,
+                                PrevState: p.State,
+                                BlockingStack: p.Stack,
+                                Syscall: ResolveSyscallLabel(cs.NewThreadID, p.Ts, p.State, lastIoByThread)));
+                        }
                     }
                 }
+
+                continue;
+            }
+
+            if (ev.ProcessID == processId && TryGetIoLabel(ev, out var ioLabel))
+            {
+                lastIoByThread[ev.ThreadID] = (ev.TimeStampRelativeMSec / 1000.0, ioLabel);
             }
         }
 
@@ -340,7 +390,8 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
                         DurationMicros: micros,
                         PrevState: kv.Value.State,
                         BlockingStack: kv.Value.Stack,
-                        IsCensored: true));
+                        IsCensored: true,
+                        Syscall: ResolveSyscallLabel(kv.Key, kv.Value.Ts, kv.Value.State, lastIoByThread)));
                 }
             }
         }
@@ -354,6 +405,83 @@ public sealed class EtwOffCpuSampler : IOffCpuSampler
             symbolSource: "etw-cswitch-pdb",
             notes: notes.Count > 0 ? notes : null);
     }
+
+    /// <summary>
+    /// Issue #829: how far back (from a CSwitch OUT) we'll look for a FileIO/TcpIp event on the
+    /// same thread before treating it as "not correlated" and falling back to the normalized
+    /// wait-reason bucket. Chosen to be generous enough to catch the common "issue I/O, then block"
+    /// pattern (the kernel logs the I/O-start event essentially synchronously with the syscall that
+    /// initiates it) while staying short enough that an unrelated I/O op from seconds earlier on a
+    /// reused/idle thread can't be mistaken for the cause of the current block.
+    /// </summary>
+    private const double IoLookbackWindowSeconds = 0.010;
+
+    /// <summary>
+    /// Best-effort syscall/wait-reason label for a span that blocked on thread <paramref name="tid"/>
+    /// at time <paramref name="blockedAtTs"/>. Prefers the most recent FileIO/TcpIp event recorded
+    /// for that thread if it falls inside <see cref="IoLookbackWindowSeconds"/> (the specific,
+    /// precise case); otherwise falls back to <see cref="NormalizeWaitReason"/> applied to the
+    /// kernel's own <c>KWAIT_REASON</c> (already captured as <paramref name="waitReason"/>/
+    /// <see cref="OffCpuSpan.PrevState"/>). Unlike the Linux path, this fallback means a Windows
+    /// span (almost) always gets a non-null label — see the class remarks for why this asymmetry
+    /// is intentional rather than a bug.
+    /// </summary>
+    internal static string? ResolveSyscallLabel(
+        int tid,
+        double blockedAtTs,
+        string waitReason,
+        Dictionary<int, (double Ts, string Label)> lastIoByThread)
+    {
+        if (lastIoByThread.TryGetValue(tid, out var io) &&
+            blockedAtTs - io.Ts is >= 0 and <= IoLookbackWindowSeconds)
+        {
+            return io.Label;
+        }
+
+        return NormalizeWaitReason(waitReason);
+    }
+
+    /// <summary>
+    /// Extracts a generic <c>TaskName:OpcodeName</c> label (e.g. <c>FileIO:Read</c>,
+    /// <c>TcpIp:Send</c>, <c>TcpIp:Connect</c>) from a FileIO or TcpIp kernel event without needing
+    /// to hard-code every concrete TraceEvent subtype (<c>FileIOReadWriteTraceData</c>,
+    /// <c>TcpIpSendTraceData</c>, <c>TcpIpV6ConnectTraceData</c>, ...) — TraceEvent already
+    /// populates <see cref="TraceEvent.TaskName"/>/<see cref="TraceEvent.OpcodeName"/> generically
+    /// for every kernel event, and only FileIO/TcpIp tasks can appear here because those are the
+    /// only extra keywords this sampler enables (see <see cref="CaptureEtwAsync"/>).
+    /// </summary>
+    internal static bool TryGetIoLabel(TraceEvent ev, out string label)
+    {
+        if (ev.TaskName is "FileIO" or "TcpIp")
+        {
+            label = $"{ev.TaskName}:{ev.OpcodeName}";
+            return true;
+        }
+
+        label = string.Empty;
+        return false;
+    }
+
+    /// <summary>
+    /// Reduces the .NET <c>System.Diagnostics.ThreadWaitReason</c> enum (TraceEvent's own mapping
+    /// of the kernel <c>KWAIT_REASON</c>) to the shared cross-platform vocabulary
+    /// (<c>Network</c>/<c>Disk</c>/<c>Sync</c>/<c>Sleep</c>/<c>Other</c>) called out as an option in
+    /// issue #829. We chose normalization over surfacing the raw enum names verbatim because
+    /// <c>KWAIT_REASON</c> is materially coarser than a Linux syscall name (e.g. it cannot
+    /// distinguish a socket read from a pipe read — both are <c>UserRequest</c>), so exposing it
+    /// unnormalized next to precise Linux syscall names in the same field would misleadingly imply
+    /// a level of detail Windows doesn't have. <c>Network</c> is intentionally unreachable from this
+    /// mapping alone (KWAIT_REASON can't identify network waits) — it is only ever produced by the
+    /// more specific <see cref="TryGetIoLabel"/> correlation above.
+    /// </summary>
+    internal static string NormalizeWaitReason(string waitReason) => waitReason switch
+    {
+        "ExecutionDelay" => "Sleep",
+        "UserRequest" or "EventPairHigh" or "EventPairLow" or "LpcReceive" or "LpcReply" => "Sync",
+        "PageIn" or "PageOut" => "Disk",
+        "FreePage" or "SystemAllocation" or "VirtualMemory" or "Executive" or "Suspended" => "Other",
+        _ => "Other",
+    };
 
     private static List<OffCpuFrame> ExtractStack(TraceCallStack? stack, MvidReader mvidReader)
     {

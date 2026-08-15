@@ -30,12 +30,39 @@ public sealed record OffCpuSnapshot(
     IReadOnlyList<string>? Notes = null);
 
 /// <summary>A blocking stack ranked by the total micros spent off-CPU below it.</summary>
+/// <param name="LeafFrame">Innermost frame in the blocking stack (module!method, or just method for kernel frames).</param>
+/// <param name="OffCpuMicros">Total off-CPU microseconds attributed to this stack group.</param>
+/// <param name="OccurrenceCount">Number of distinct off-CPU spans folded into this stack group.</param>
+/// <param name="DominantState">Most common <c>PrevState</c> (Linux <c>S/D/R/...</c> character, or Windows <c>KWAIT_REASON</c> name) across the group's spans.</param>
+/// <param name="Stack">Full root→leaf stack for this group.</param>
+/// <param name="SyscallBreakdown">
+/// Syscall/wait-reason attribution for this stack group, ranked by total off-CPU micros
+/// attributed to each label (issue #829). Aggregated per stack group rather than per individual
+/// span — cheaper to compute/return and the issue's own design note calls a per-stack rollup
+/// ("this hot off-CPU stack is 80% futex, 20% read") "probably sufficient" for root-causing.
+/// <c>null</c> when no span in this stack group could be correlated to a syscall/wait-reason
+/// (e.g. Linux: no matching perf.data <c>raw_syscalls</c> event; Windows: correlation is
+/// best-effort, see <c>EtwOffCpuSampler</c>).
+/// </param>
 public sealed record OffCpuStackHotspot(
     string LeafFrame,
     long OffCpuMicros,
     long OccurrenceCount,
     string DominantState,
-    IReadOnlyList<OffCpuFrame> Stack);
+    IReadOnlyList<OffCpuFrame> Stack,
+    IReadOnlyList<OffCpuSyscallAttribution>? SyscallBreakdown = null);
+
+/// <summary>
+/// One syscall/wait-reason label's share of a stack group's off-CPU time (issue #829).
+/// <see cref="Name"/> is a real syscall name on Linux (e.g. <c>futex</c>, <c>epoll_wait</c>,
+/// <c>read</c>) resolved from the raw syscall number via <see cref="SyscallTable"/>. On Windows,
+/// <see cref="Name"/> is either a specific <c>FileIO:*</c> / <c>TcpIp:*</c> label when a
+/// correlated kernel File/Network ETW event was found near the block point, or a normalized
+/// wait-reason bucket (<c>Network</c>, <c>Disk</c>, <c>Sync</c>, <c>Sleep</c>, <c>Other</c>)
+/// derived from the coarser <c>KWAIT_REASON</c> enum when no such event correlates — see
+/// <c>EtwOffCpuSampler</c>'s remarks for the full platform-asymmetry rationale.
+/// </summary>
+public sealed record OffCpuSyscallAttribution(string Name, long Count, long Micros);
 
 /// <summary>A single resolved stack frame (kernel or user, demangled when possible).
 /// <para><see cref="Identity"/> is populated for managed frames where the backend could

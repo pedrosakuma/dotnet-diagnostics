@@ -150,6 +150,53 @@ public sealed class PerfSchedAggregateTests
         top.Stack[1].Identity.Should().BeNull("native libc frame stays Identity=null");
         top.Stack[2].Identity.Should().BeNull("kernel frame stays Identity=null");
     }
+
+    [Fact]
+    public void SyscallBreakdown_AggregatesPerStackGroup_RankedByMicros()
+    {
+        // Issue #829: per-aggregated-stack-group syscall breakdown, not per-span. Two spans on
+        // the same stack blocked in different syscalls should roll up into one ranked list.
+        var stack = new List<OffCpuFrame> { new("[kernel.kallsyms]", "schedule") };
+        var spans = new List<OffCpuSpan>
+        {
+            new(Tid: 1, Comm: "w1", DurationMicros: 800_000, PrevState: "S", BlockingStack: stack, Syscall: "futex"),
+            new(Tid: 2, Comm: "w2", DurationMicros: 200_000, PrevState: "S", BlockingStack: stack, Syscall: "read"),
+            new(Tid: 3, Comm: "w3", DurationMicros: 100_000, PrevState: "S", BlockingStack: stack, Syscall: "futex"),
+        };
+
+        var result = PerfSchedOffCpuSampler.Aggregate(
+            processId: 1, startedAt: DateTimeOffset.UtcNow, duration: TimeSpan.FromSeconds(1),
+            spans: spans, schedSwitches: 3, topN: 5);
+
+        var top = result.Summary.TopBlockingStacks.Single();
+        top.SyscallBreakdown.Should().NotBeNull();
+        top.SyscallBreakdown!.Should().HaveCount(2);
+        top.SyscallBreakdown[0].Name.Should().Be("futex", "futex has the larger total (900_000µs) across its two spans");
+        top.SyscallBreakdown[0].Count.Should().Be(2);
+        top.SyscallBreakdown[0].Micros.Should().Be(900_000);
+        top.SyscallBreakdown[1].Name.Should().Be("read");
+        top.SyscallBreakdown[1].Micros.Should().Be(200_000);
+    }
+
+    [Fact]
+    public void SyscallBreakdown_IsNull_WhenNoSpanCorrelatedToASyscall()
+    {
+        // Backward compatibility: existing spans without a Syscall label (e.g. preempted while
+        // running user code, or Syscall correlation unavailable) must not synthesize an empty
+        // breakdown list — the field stays null so callers can distinguish "no data" from
+        // "labeled but empty".
+        var stack = new List<OffCpuFrame> { new("[kernel.kallsyms]", "schedule") };
+        var spans = new List<OffCpuSpan>
+        {
+            new(Tid: 1, Comm: "w1", DurationMicros: 100_000, PrevState: "R", BlockingStack: stack),
+        };
+
+        var result = PerfSchedOffCpuSampler.Aggregate(
+            processId: 1, startedAt: DateTimeOffset.UtcNow, duration: TimeSpan.FromSeconds(1),
+            spans: spans, schedSwitches: 1, topN: 5);
+
+        result.Summary.TopBlockingStacks.Single().SyscallBreakdown.Should().BeNull();
+    }
 }
 
 public sealed class PerfSchedScriptParserEnrichmentTests

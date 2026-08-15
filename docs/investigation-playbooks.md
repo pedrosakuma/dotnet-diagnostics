@@ -140,6 +140,11 @@ needs for drilldown.
    - `distinctMonitors == 1` → one hot gate is serializing the path.
 4. Drill with `query_snapshot(handle, view="byCallSite")` to find the hottest contended method, then `view="byOwner"` to see which owner thread is repeatedly holding the monitor.
 5. If contention is severe but the call site remains framework-heavy, pair it with `collect_thread_snapshot(view="lock-graph")` while the incident is live.
+6. To confirm the blocking is genuinely a **lock** rather than disk/network I/O masquerading as
+   contention, run `collect_sample(kind="off_cpu")` over the same window and inspect each hot
+   stack's `syscallBreakdown` (issue #829): a lock/monitor wait shows up as `futex` (Linux) or the
+   normalized `Sync` bucket (Windows); a stack dominated by `read`/`recvfrom` or `FileIO:Read`/
+   `TcpIp:Recv` instead points at a downstream I/O dependency, not in-process contention.
 
 - **Endpoint-specific latency with DB suspicion** → `collect_events(kind="db")`
   for 10–15 s while driving the slow request. Check `summary` / `byCommand` for

@@ -180,4 +180,94 @@ public sealed class PerfSchedScriptParserTests
         spans[0].Tid.Should().Be(1000);
         spans[0].DurationMicros.Should().Be(500_000, "1.500000 − 1.000000 = 0.5s lower bound");
     }
+
+    [Fact]
+    public void EmittedSpans_CarryTheOutEventTimestamp()
+    {
+        // Issue #829: PerfSchedOffCpuSampler correlates spans against the syscall interval index
+        // using this timestamp — verify it survives both the paired-IN and the flushPending path.
+        const string script = """
+                    target  1000 [001]   1.000000: sched:sched_switch: prev_comm=target prev_pid=1000 prev_prio=120 prev_state=S ==> next_comm=swapper/1 next_pid=0 next_prio=120
+
+                   swapper     0 [001]   1.250000: sched:sched_switch: prev_comm=swapper/1 prev_pid=0 prev_prio=120 prev_state=R ==> next_comm=target next_pid=1000 next_prio=120
+
+            """;
+
+        var (spans, _) = PerfSchedScriptParser.Parse(script, new HashSet<int> { 1000 });
+
+        spans.Should().ContainSingle();
+        spans[0].OutTimestampSeconds.Should().Be(1.000000);
+    }
+}
+
+/// <summary>
+/// End-to-end test proving <see cref="PerfSchedOffCpuSampler.AggregateScriptAsync"/> correlates
+/// each emitted span against a <see cref="SyscallIntervalIndex"/> and that the label rolls up
+/// into the stack group's <see cref="OffCpuStackHotspot.SyscallBreakdown"/> (issue #829).
+/// </summary>
+public sealed class PerfSchedOffCpuSyscallCorrelationTests
+{
+    [Fact]
+    public async Task AggregateScriptAsync_LabelsSpan_WhenSyscallWasInFlightAtBlockTime()
+    {
+        const string script = """
+                    target  1000 [001]   1.000000: sched:sched_switch: prev_comm=target prev_pid=1000 prev_prio=120 prev_state=S ==> next_comm=swapper/1 next_pid=0 next_prio=120
+                            ffffffff81234567 schedule+0x0 ([kernel.kallsyms])
+                            ffffffff81234890 futex_wait_queue+0x10 ([kernel.kallsyms])
+
+                   swapper     0 [001]   1.250000: sched:sched_switch: prev_comm=swapper/1 prev_pid=0 prev_prio=120 prev_state=R ==> next_comm=target next_pid=1000 next_prio=120
+
+            """;
+        // Thread 1000 entered futex (syscall 202) at t=0.9s and is still inside it when it goes
+        // off-CPU at t=1.0s (the sched_switch OUT event above) — the interval stays open past
+        // the OUT timestamp (closes at t=1.5s, well after the block point).
+        var syscallEvents = new List<PerfSyscallScriptParser.SyscallEvent>
+        {
+            new(Tid: 1000, TimestampSeconds: 0.900, SyscallId: 202, IsEnter: true),
+            new(Tid: 1000, TimestampSeconds: 1.500, SyscallId: 202, IsEnter: false),
+        };
+        var syscallIndex = SyscallIntervalIndex.Build(syscallEvents, captureEndTs: 2.0);
+
+        using var reader = new StringReader(script);
+        var result = await PerfSchedOffCpuSampler.AggregateScriptAsync(
+            reader,
+            processId: 4242,
+            startedAt: DateTimeOffset.UtcNow,
+            duration: TimeSpan.FromSeconds(5),
+            topN: 10,
+            targetTids: new HashSet<int> { 1000 },
+            syscallIndex: syscallIndex);
+
+        var top = result.Summary.TopBlockingStacks.Single();
+        top.SyscallBreakdown.Should().NotBeNull();
+        top.SyscallBreakdown!.Single().Name.Should().Be("futex");
+        top.SyscallBreakdown.Single().Micros.Should().Be(250_000);
+    }
+
+    [Fact]
+    public async Task AggregateScriptAsync_LeavesSpanUnlabeled_WhenNoSyscallWasInFlight()
+    {
+        const string script = """
+                    target  1000 [001]   1.000000: sched:sched_switch: prev_comm=target prev_pid=1000 prev_prio=120 prev_state=S ==> next_comm=swapper/1 next_pid=0 next_prio=120
+                            ffffffff81234567 schedule+0x0 ([kernel.kallsyms])
+
+                   swapper     0 [001]   1.250000: sched:sched_switch: prev_comm=swapper/1 prev_pid=0 prev_prio=120 prev_state=R ==> next_comm=target next_pid=1000 next_prio=120
+
+            """;
+        // No syscall events at all for tid 1000 — e.g. preempted mid user-code, not blocked
+        // inside a syscall.
+        var syscallIndex = SyscallIntervalIndex.Build(new List<PerfSyscallScriptParser.SyscallEvent>(), captureEndTs: 2.0);
+
+        using var reader = new StringReader(script);
+        var result = await PerfSchedOffCpuSampler.AggregateScriptAsync(
+            reader,
+            processId: 4242,
+            startedAt: DateTimeOffset.UtcNow,
+            duration: TimeSpan.FromSeconds(5),
+            topN: 10,
+            targetTids: new HashSet<int> { 1000 },
+            syscallIndex: syscallIndex);
+
+        result.Summary.TopBlockingStacks.Single().SyscallBreakdown.Should().BeNull();
+    }
 }

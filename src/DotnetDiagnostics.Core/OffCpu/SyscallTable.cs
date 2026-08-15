@@ -1,0 +1,251 @@
+using System.Runtime.InteropServices;
+
+namespace DotnetDiagnostics.Core.OffCpu;
+
+/// <summary>
+/// Resolves a raw Linux syscall number (as reported by the <c>raw_syscalls:sys_enter</c> /
+/// <c>raw_syscalls:sys_exit</c> tracepoints, which only carry the numeric <c>id</c> — no name)
+/// to its human-readable name, using a small per-architecture static table.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Unlike the individual <c>syscalls:sys_enter_&lt;name&gt;</c> tracepoints (one per syscall,
+/// ~450 of them), the generic <c>raw_syscalls:sys_enter</c> tracepoint the off-CPU sampler
+/// already piggy-backs on (see <see cref="PerfSchedOffCpuSampler"/>) only exposes the raw
+/// numeric syscall id. Turning that into a name requires an architecture-specific lookup table
+/// (there is no cross-arch syscall numbering — x86_64 and arm64 assign different numbers to the
+/// same syscall). We only ship the subset of syscalls that plausibly show up as the "active"
+/// syscall when a thread blocks (futex/IO/sync/sleep/poll families) — an unrecognized id falls
+/// back to <c>syscall_&lt;id&gt;</c> rather than throwing, so an incomplete table degrades
+/// gracefully instead of breaking attribution for the whole capture.
+/// </para>
+/// <para>
+/// Table sourced from the public, stable Linux ABI syscall numbering
+/// (<c>arch/x86/entry/syscalls/syscall_64.tbl</c> and the arm64 generic
+/// <c>include/uapi/asm-generic/unistd.h</c> table) — these numbers are a long-term stable kernel
+/// ABI contract, not implementation detail, so the table does not need to track kernel versions.
+/// </para>
+/// </remarks>
+internal static class SyscallTable
+{
+    /// <summary>Resolves <paramref name="id"/> to a syscall name for the current process architecture, or <c>"syscall_&lt;id&gt;"</c> if unknown.</summary>
+    public static string Resolve(long id)
+    {
+        var table = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.Arm64 => Arm64,
+            _ => X64,
+        };
+        return table.TryGetValue(id, out var name) ? name : $"syscall_{id}";
+    }
+
+    // x86_64 (arch/x86/entry/syscalls/syscall_64.tbl) — subset relevant to off-CPU blocking:
+    // networking, file/pipe IO, futex/synchronization, sleep, polling and process wait.
+    private static readonly Dictionary<long, string> X64 = new()
+    {
+        [0] = "read",
+        [1] = "write",
+        [2] = "open",
+        [3] = "close",
+        [7] = "poll",
+        [8] = "lseek",
+        [16] = "ioctl",
+        [17] = "pread64",
+        [18] = "pwrite64",
+        [19] = "readv",
+        [20] = "writev",
+        [22] = "pipe",
+        [23] = "select",
+        [24] = "sched_yield",
+        [32] = "dup",
+        [33] = "dup2",
+        [34] = "pause",
+        [35] = "nanosleep",
+        [41] = "socket",
+        [42] = "connect",
+        [43] = "accept",
+        [44] = "sendto",
+        [45] = "recvfrom",
+        [46] = "sendmsg",
+        [47] = "recvmsg",
+        [48] = "shutdown",
+        [61] = "wait4",
+        [62] = "kill",
+        [78] = "getdents",
+        [82] = "rename",
+        [83] = "mkdir",
+        [86] = "link",
+        [87] = "unlink",
+        [90] = "chmod",
+        [95] = "umask",
+        [99] = "sysinfo",
+        [130] = "rt_sigsuspend",
+        [131] = "sigaltstack",
+        [133] = "mknod",
+        [137] = "statfs",
+        [142] = "sched_setparam",
+        [143] = "sched_getparam",
+        [144] = "sched_setscheduler",
+        [145] = "sched_getscheduler",
+        [146] = "sched_get_priority_max",
+        [147] = "sched_get_priority_min",
+        [148] = "sched_rr_get_interval",
+        [162] = "sync",
+        [186] = "gettid",
+        [187] = "readahead",
+        [188] = "setxattr",
+        [200] = "tkill",
+        [202] = "futex",
+        [203] = "sched_setaffinity",
+        [204] = "sched_getaffinity",
+        [205] = "set_thread_area",
+        [206] = "io_setup",
+        [207] = "io_destroy",
+        [208] = "io_getevents",
+        [209] = "io_submit",
+        [210] = "io_cancel",
+        [221] = "fadvise64",
+        [227] = "clock_settime",
+        [228] = "clock_gettime",
+        [229] = "clock_getres",
+        [230] = "clock_nanosleep",
+        [232] = "epoll_wait",
+        [233] = "epoll_ctl",
+        [240] = "semtimedop",
+        [247] = "waitid",
+        [253] = "inotify_init",
+        [254] = "inotify_add_watch",
+        [270] = "pselect6",
+        [271] = "ppoll",
+        [275] = "splice",
+        [276] = "tee",
+        [277] = "sync_file_range",
+        [278] = "vmsplice",
+        [281] = "epoll_pwait",
+        [289] = "signalfd",
+        [290] = "timerfd_create",
+        [291] = "eventfd",
+        [292] = "fallocate",
+        [293] = "timerfd_settime",
+        [294] = "timerfd_gettime",
+        [295] = "accept4",
+        [296] = "signalfd4",
+        [297] = "eventfd2",
+        [299] = "pipe2",
+        [304] = "recvmmsg",
+        [306] = "syncfs",
+        [307] = "sendmmsg",
+        [316] = "renameat2",
+        [318] = "getrandom",
+        [319] = "memfd_create",
+        [322] = "execveat",
+        [323] = "userfaultfd",
+        [324] = "membarrier",
+        [326] = "copy_file_range",
+        [327] = "preadv2",
+        [328] = "pwritev2",
+        [332] = "statx",
+        [335] = "clock_adjtime",
+        [424] = "pidfd_send_signal",
+        [425] = "io_uring_setup",
+        [426] = "io_uring_enter",
+        [427] = "io_uring_register",
+        [428] = "open_tree",
+        [434] = "pidfd_open",
+        [439] = "faccessat2",
+        [440] = "process_madvise",
+        [441] = "epoll_pwait2",
+        [442] = "mount_setattr",
+        [446] = "landlock_restrict_self",
+        [449] = "futex_waitv",
+    };
+
+    // arm64 / generic syscall table (include/uapi/asm-generic/unistd.h) — same subset as X64.
+    private static readonly Dictionary<long, string> Arm64 = new()
+    {
+        [24] = "dup3",
+        [25] = "fcntl",
+        [29] = "ioctl",
+        [56] = "openat",
+        [57] = "close",
+        [59] = "pipe2",
+        [61] = "getdents64",
+        [63] = "read",
+        [64] = "write",
+        [65] = "readv",
+        [66] = "writev",
+        [67] = "pread64",
+        [68] = "pwrite64",
+        [72] = "pselect6",
+        [73] = "ppoll",
+        [74] = "signalfd4",
+        [76] = "splice",
+        [77] = "tee",
+        [78] = "readlinkat",
+        [79] = "newfstatat",
+        [93] = "exit",
+        [94] = "exit_group",
+        [95] = "waitid",
+        [96] = "set_tid_address",
+        [98] = "futex",
+        [101] = "nanosleep",
+        [113] = "clock_gettime",
+        [114] = "clock_getres",
+        [115] = "clock_nanosleep",
+        [124] = "sched_yield",
+        [131] = "tkill",
+        [133] = "rt_sigsuspend",
+        [173] = "getppid",
+        [178] = "gettid",
+        [198] = "socket",
+        [199] = "socketpair",
+        [200] = "bind",
+        [201] = "listen",
+        [202] = "accept",
+        [203] = "connect",
+        [204] = "getsockname",
+        [205] = "getpeername",
+        [206] = "sendto",
+        [207] = "recvfrom",
+        [208] = "setsockopt",
+        [209] = "getsockopt",
+        [210] = "shutdown",
+        [211] = "sendmsg",
+        [212] = "recvmsg",
+        [213] = "readahead",
+        [220] = "clone",
+        [221] = "execve",
+        [222] = "mmap",
+        [223] = "fadvise64",
+        [232] = "mincore",
+        [233] = "madvise",
+        [240] = "rt_tgsigqueueinfo",
+        [241] = "perf_event_open",
+        [242] = "accept4",
+        [243] = "recvmmsg",
+        [260] = "wait4",
+        [261] = "prlimit64",
+        [266] = "clock_adjtime",
+        [267] = "syncfs",
+        [269] = "sendmmsg",
+        [274] = "sched_setattr",
+        [275] = "sched_getattr",
+        [276] = "renameat2",
+        [278] = "getrandom",
+        [279] = "memfd_create",
+        [281] = "execveat",
+        [282] = "userfaultfd",
+        [283] = "membarrier",
+        [285] = "copy_file_range",
+        [286] = "preadv2",
+        [287] = "pwritev2",
+        [291] = "statx",
+        [425] = "io_uring_setup",
+        [426] = "io_uring_enter",
+        [427] = "io_uring_register",
+        [437] = "openat2",
+        [438] = "pidfd_getfd",
+        [439] = "faccessat2",
+        [449] = "futex_waitv",
+    };
+}
