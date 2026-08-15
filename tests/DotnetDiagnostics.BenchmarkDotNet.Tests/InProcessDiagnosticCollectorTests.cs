@@ -1,7 +1,10 @@
 using System.Globalization;
+using System.Reflection;
 using DotnetDiagnostics.BenchmarkDotNet;
 using DotnetDiagnostics.Core.CpuSampling;
+using DotnetDiagnostics.Core.Drilldown;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace DotnetDiagnostics.BenchmarkDotNet.Tests;
 
@@ -292,5 +295,92 @@ public class InProcessDiagnosticCollectorTests
         {
             CultureInfo.CurrentCulture = originalCulture;
         }
+    }
+
+    [Fact]
+    public void TryBuildInvestigationDigest_NoCapturesYet_ReturnsNull()
+    {
+        // Issue #827: before any kind has ever run against this collector instance, its lazily
+        // initialized handle store has not been created — TryBuildInvestigationDigest must not force
+        // it into existence just to answer "no captures yet" with a clean null.
+        using var collector = new InProcessDiagnosticCollector();
+
+        collector.TryBuildInvestigationDigest(cpuHandleId: null, allocationHandleId: null).Should().BeNull();
+    }
+
+    [Fact]
+    public void TryBuildInvestigationDigest_MissingHandleId_ReturnsNullWithoutCreatingProvider()
+    {
+        // Passing null for either handle id (the kind didn't run, or its capture errored) must not
+        // force the lazily initialized handle store into existence just to answer null.
+        using var collector = new InProcessDiagnosticCollector();
+
+        collector.TryBuildInvestigationDigest(cpuHandleId: "cpu-1", allocationHandleId: null).Should().BeNull();
+        collector.TryBuildInvestigationDigest(cpuHandleId: null, allocationHandleId: "alloc-1").Should().BeNull();
+    }
+
+    [Fact]
+    public void TryBuildInvestigationDigest_IgnoresStaleSameProcessHandle_UsesOnlyExactIds()
+    {
+        // Regression test for the code-review finding fixed in issue #827: the in-process
+        // BenchmarkDotNet toolchain runs every benchmark in the SAME process, so
+        // Environment.ProcessId is identical across unrelated benchmarks. Before the fix,
+        // TryBuildInvestigationDigest(int processId) resolved "latest handle of this kind for this
+        // pid" via IDiagnosticHandleStore.TryGetLatestByKind — which could silently pair the
+        // current benchmark's cpu-sample with a stale allocation-sample handle left behind by a
+        // completely unrelated earlier benchmark that happened to share the same pid. The fixed
+        // signature instead takes the exact handle ids the CURRENT capture produced, so a stale
+        // same-pid handle that isn't one of those two ids must never be pulled in.
+        using var collector = new InProcessDiagnosticCollector();
+        var handles = GetHandleStore(collector);
+        var pid = Environment.ProcessId;
+
+        // "Earlier benchmark" leaves a stale allocation-sample handle registered for this pid.
+        var staleAllocation = handles.Register(pid, "allocation-sample", StaleAllocation(), TimeSpan.FromMinutes(5));
+
+        // "Current benchmark" only produced a cpu-sample; its allocation kind never ran (or errored),
+        // so FinishCapture passes allocationHandleId: null — it must not fall back to the stale handle.
+        var currentCpu = handles.Register(pid, "cpu-sample", Trace(), TimeSpan.FromMinutes(5));
+
+        var digestWithoutAllocation = collector.TryBuildInvestigationDigest(currentCpu.Id, allocationHandleId: null);
+
+        digestWithoutAllocation.Should().NotBeNull();
+        digestWithoutAllocation!.TopCpuSelfTime.Should().NotBeNullOrEmpty();
+        digestWithoutAllocation.TopAllocationTypes.Should().BeNull("the stale same-pid allocation-sample handle must not be pulled in implicitly");
+        digestWithoutAllocation.TopAllocationCallsites.Should().BeNull();
+
+        // Sanity check: explicitly passing the stale handle's own id DOES combine it — proving the
+        // above digest omitted allocation data because it wasn't requested, not because the artifact
+        // is somehow unreadable.
+        var digestWithExplicitStaleHandle = collector.TryBuildInvestigationDigest(currentCpu.Id, staleAllocation.Id);
+        digestWithExplicitStaleHandle.Should().NotBeNull();
+        digestWithExplicitStaleHandle!.TopAllocationTypes.Should().NotBeNullOrEmpty();
+    }
+
+    private static IDiagnosticHandleStore GetHandleStore(InProcessDiagnosticCollector collector)
+    {
+        var providerField = typeof(InProcessDiagnosticCollector).GetField("_provider", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var lazyProvider = (Lazy<ServiceProvider>)providerField.GetValue(collector)!;
+        return lazyProvider.Value.GetRequiredService<IDiagnosticHandleStore>();
+    }
+
+    private static CpuSampleTraceArtifact Trace()
+    {
+        var leaf = new CallTreeNode(new SampledFrame("App.dll", "Leaf"), 100, 100, Array.Empty<CallTreeNode>());
+        var root = new CallTreeNode(new SampledFrame("App.dll", "Root"), 100, 0, new[] { leaf });
+        return new CpuSampleTraceArtifact(Environment.ProcessId, DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5), 100, root);
+    }
+
+    private static AllocationSampleArtifact StaleAllocation()
+    {
+        var summary = new AllocationSample(
+            Environment.ProcessId,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromSeconds(5),
+            TotalEvents: 10,
+            TotalBytes: 4096,
+            TopByBytes: [new AllocatedType("Stale.Widget", 4096, 10, HeapKind.Small)],
+            TopByCount: [new AllocatedType("Stale.Widget", 4096, 10, HeapKind.Small)]);
+        return new AllocationSampleArtifact(summary, Trace());
     }
 }

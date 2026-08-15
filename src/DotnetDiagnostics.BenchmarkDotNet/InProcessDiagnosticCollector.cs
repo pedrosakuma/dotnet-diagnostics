@@ -152,7 +152,7 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
         var headline = result.IsError
             ? $"{result.Error!.Kind}: {result.Error.Message}"
             : result.Summary;
-        return new KindCapture(kind, result.IsError, result.Summary, headline, json);
+        return new KindCapture(kind, result.IsError, result.Summary, headline, json, result.Handle);
     }
 
     /// <summary>
@@ -393,6 +393,33 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
         return services.BuildServiceProvider();
     }
 
+    /// <summary>
+    /// Issue #827: resolves the exact <c>cpu-sample</c> and <c>allocation-sample</c> handles this
+    /// capture registered (identified by <paramref name="cpuHandleId"/> / <paramref name="allocationHandleId"/>)
+    /// and builds the same cross-collector "investigation digest" the MCP <c>collect_batch</c> tool
+    /// computes (issue #825), via the shared host-neutral <see cref="InvestigationDigestBuilder"/>.
+    /// Deliberately does <b>not</b> fall back to "latest handle of this kind for this pid": with the
+    /// in-process toolchain every benchmark shares <see cref="Environment.ProcessId"/>, so a
+    /// pid-only lookup could silently combine this capture's artifact with a stale one left behind
+    /// by a completely unrelated earlier benchmark. Returns <see langword="null"/> when either
+    /// handle id is <see langword="null"/> (that kind did not run, or its capture errored) or no
+    /// longer resolves (evicted/expired).
+    /// </summary>
+    internal InvestigationDigest? TryBuildInvestigationDigest(string? cpuHandleId, string? allocationHandleId)
+    {
+        if (!_provider.IsValueCreated || (cpuHandleId is null && allocationHandleId is null))
+        {
+            return null;
+        }
+
+        var handles = _provider.Value.GetRequiredService<IDiagnosticHandleStore>();
+        var cpuTrace = cpuHandleId is null ? null : handles.TryGet<CpuSampleTraceArtifact>(cpuHandleId);
+        var allocationSummary = allocationHandleId is null
+            ? null
+            : handles.TryGet<AllocationSampleArtifact>(allocationHandleId)?.Summary;
+        return InvestigationDigestBuilder.Build(cpuTrace, allocationSummary);
+    }
+
     public void Dispose()
     {
         if (_provider.IsValueCreated)
@@ -406,7 +433,7 @@ internal sealed class InProcessDiagnosticCollector : IDisposable
 /// The projection of a single in-process collection: the Core envelope's summary plus a serialized
 /// JSON artifact and a one-line headline suitable for the offenders report.
 /// </summary>
-internal sealed record KindCapture(string Kind, bool IsError, string Summary, string Headline, string Json)
+internal sealed record KindCapture(string Kind, bool IsError, string Summary, string Headline, string Json, string? Handle = null)
 {
     public static KindCapture Unsupported(string kind) => new(
         kind,
