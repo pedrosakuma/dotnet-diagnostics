@@ -148,7 +148,8 @@ internal static class PerfSchedScriptParser
                     Comm: pendingOut.Comm,
                     DurationMicros: durMicros,
                     PrevState: pendingOut.State,
-                    BlockingStack: pendingOut.Stack));
+                    BlockingStack: pendingOut.Stack,
+                    OutTimestampSeconds: pendingOut.Ts));
             }
 
             if (prevIsTarget)
@@ -180,7 +181,8 @@ internal static class PerfSchedScriptParser
                     DurationMicros: durMicros,
                     PrevState: pendingOut.State,
                     BlockingStack: pendingOut.Stack,
-                    IsCensored: true));
+                    IsCensored: true,
+                    OutTimestampSeconds: pendingOut.Ts));
             }
         }
 
@@ -396,4 +398,33 @@ internal static class PerfSchedScriptParser
 }
 
 /// <summary>One paired off-CPU span: thread went OUT at <c>ts</c> with <c>BlockingStack</c>, came back IN <c>DurationMicros</c> µs later.</summary>
-internal sealed record OffCpuSpan(int Tid, string Comm, long DurationMicros, string PrevState, IReadOnlyList<OffCpuFrame> BlockingStack, bool IsCensored = false);
+/// <param name="Tid">Kernel thread id that went off-CPU.</param>
+/// <param name="Comm">Thread/process comm name reported by perf at the OUT event.</param>
+/// <param name="DurationMicros">Off-CPU duration in microseconds.</param>
+/// <param name="PrevState">Scheduler state character at the OUT event (<c>S</c>/<c>D</c>/<c>R</c>/...).</param>
+/// <param name="BlockingStack">Leaf→root stack captured at the OUT event.</param>
+/// <param name="IsCensored">True when this span's IN event was never observed (duration is a lower bound).</param>
+/// <param name="OutTimestampSeconds">
+/// Wall-clock-relative timestamp of the sched_switch OUT event (perf's <c>perf script</c> time
+/// column, seconds). Populated by <see cref="PerfSchedScriptParser"/> so
+/// <see cref="PerfSchedOffCpuSampler"/> can correlate the span against the
+/// <see cref="SyscallIntervalIndex"/> built from the co-recorded <c>raw_syscalls</c>
+/// tracepoints (issue #829). <c>null</c> on the Windows/ETW path, which has no equivalent
+/// perf-relative clock and correlates syscalls differently (see <c>EtwOffCpuSampler</c>).
+/// </param>
+/// <param name="Syscall">
+/// Name of the syscall the thread was inside when it went off-CPU (e.g. <c>futex</c>,
+/// <c>epoll_wait</c>, <c>read</c>), resolved via <see cref="SyscallTable"/>, or <c>null</c> when
+/// no syscall was in flight (e.g. preempted while running user code) or none could be
+/// correlated. Set by the caller (not by the parser itself) once the
+/// <see cref="SyscallIntervalIndex"/> is available.
+/// </param>
+internal sealed record OffCpuSpan(
+    int Tid,
+    string Comm,
+    long DurationMicros,
+    string PrevState,
+    IReadOnlyList<OffCpuFrame> BlockingStack,
+    bool IsCensored = false,
+    double? OutTimestampSeconds = null,
+    string? Syscall = null);

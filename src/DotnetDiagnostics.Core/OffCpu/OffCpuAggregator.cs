@@ -47,7 +47,11 @@ internal static class OffCpuAggregator
 
 internal sealed class OffCpuAggregationBuilder
 {
-    private readonly Dictionary<string, (long Micros, long Count, Dictionary<string, long> States, List<OffCpuFrame> Frames)> _byStack
+    // Per-stack syscall breakdown is a label, not a full latency histogram (explicitly out of
+    // scope for issue #829) — cap the number of distinct syscalls reported per stack group.
+    private const int MaxSyscallsPerStack = 8;
+
+    private readonly Dictionary<string, (long Micros, long Count, Dictionary<string, long> States, List<OffCpuFrame> Frames, Dictionary<string, (long Count, long Micros)> Syscalls)> _byStack
         = new(StringComparer.Ordinal);
     private readonly Dictionary<int, (string Comm, long Micros, long Switches, Dictionary<string, long> LeafCounts)> _byThread = [];
     private long _totalMicros;
@@ -74,12 +78,17 @@ internal sealed class OffCpuAggregationBuilder
 
         if (!_byStack.TryGetValue(key, out var agg))
         {
-            agg = (0, 0, new Dictionary<string, long>(StringComparer.Ordinal), frames);
+            agg = (0, 0, new Dictionary<string, long>(StringComparer.Ordinal), frames, new Dictionary<string, (long, long)>(StringComparer.Ordinal));
         }
 
         agg.Micros += span.DurationMicros;
         agg.Count += 1;
         agg.States[span.PrevState] = agg.States.GetValueOrDefault(span.PrevState) + 1;
+        if (!string.IsNullOrEmpty(span.Syscall))
+        {
+            var (prevCount, prevMicros) = agg.Syscalls.TryGetValue(span.Syscall, out var existing) ? existing : (0L, 0L);
+            agg.Syscalls[span.Syscall] = (prevCount + 1, prevMicros + span.DurationMicros);
+        }
         _byStack[key] = agg;
 
         if (!_byThread.TryGetValue(span.Tid, out var threadAgg))
@@ -108,12 +117,23 @@ internal sealed class OffCpuAggregationBuilder
             {
                 var dominant = kv.Value.States.OrderByDescending(s => s.Value).FirstOrDefault().Key ?? "?";
                 var leaf = kv.Value.Frames.Count > 0 ? kv.Value.Frames[^1] : new OffCpuFrame(string.Empty, "[no-stack]");
+                IReadOnlyList<OffCpuSyscallAttribution>? syscallBreakdown = kv.Value.Syscalls.Count > 0
+                    ? kv.Value.Syscalls
+                        .Select(s => new OffCpuSyscallAttribution(s.Key, s.Value.Count, s.Value.Micros))
+                        .OrderByDescending(s => s.Micros)
+                        // Bounded per stack group regardless of how many distinct syscalls were
+                        // observed — keeps the enrichment a label, not a full histogram (out of
+                        // scope per issue #829).
+                        .Take(MaxSyscallsPerStack)
+                        .ToList()
+                    : null;
                 return new OffCpuStackHotspot(
                     LeafFrame: string.IsNullOrEmpty(leaf.Module) ? leaf.Method : $"{leaf.Module}!{leaf.Method}",
                     OffCpuMicros: kv.Value.Micros,
                     OccurrenceCount: kv.Value.Count,
                     DominantState: dominant,
-                    Stack: kv.Value.Frames);
+                    Stack: kv.Value.Frames,
+                    SyscallBreakdown: syscallBreakdown);
             })
             .OrderByDescending(s => s.OffCpuMicros)
             .ToList();

@@ -863,7 +863,7 @@ ETW backends *are* true on-core profilers. The CPU sample result now exposes a
 see when a hot self-time frame is wait-dominated, but use `collect_sample(kind="off_cpu")`
 or `collect_thread_snapshot` for genuine wait-chain / blocking analysis.
 
-- **Linux:** uses `perf record -a -e sched:sched_switch --call-graph dwarf`
+- **Linux:** uses `perf record -a -e sched:sched_switch,raw_syscalls:sys_enter,raw_syscalls:sys_exit --call-graph dwarf`
   system-wide (the `sched_switch` tracepoint only fires on the thread leaving
   CPU, so restricting by PID misses the IN event). Spans are filtered
   post-collection by the target's `/proc/<pid>/task/*`. Requires `CAP_PERFMON` (kernel
@@ -871,9 +871,10 @@ or `collect_thread_snapshot` for genuine wait-chain / blocking analysis.
   (`linux-tools-common` / `linux-tools-$(uname -r)` on Debian/Ubuntu).
   `SymbolSource: "perf-sched-dwarf"`.
 - **Windows:** uses the NT Kernel Logger session via `TraceEvent` with
-  `ContextSwitch + Dispatcher + ImageLoad/Process/Thread`, with a stack walk on
-  `ContextSwitch` (the stack captured at switch-out time is exactly the
-  blocking call). The kernel wait reason
+  `ContextSwitch + Dispatcher + ImageLoad/Process/Thread + FileIOInit/FileIO/NetworkTCPIP`,
+  with a stack walk on `ContextSwitch` only (the stack captured at switch-out time is
+  exactly the blocking call; the FileIO/TcpIp keywords are consulted purely for their
+  event name/timing, no extra stack walk). The kernel wait reason
   (`UserRequest` / `WrLpcReceive` / `WrQueue`...) becomes the span's `PrevState`,
   a direct mirror of Linux's `S/D/I`. Spans still pending at the end of the window become
   censored (`IsCensored=true`) with a lower-bound duration, same as Linux.
@@ -892,6 +893,42 @@ summary, top}` with the stacks that spent the most time off-CPU.
 unified drilldown** pattern: `view="topStacks"` (default), `view="byThread"`
 (aggregated by TID with `TopBlockingLeaf` + dominant state), or
 `view="stack"` with `stackRank=N` (1-based) to export the full stack.
+
+**Syscall / wait-reason attribution (issue #829).** Each aggregated stack group
+in `topStacks` may carry a `syscallBreakdown` — up to the top 8 (`Name`, `Count`,
+`Micros`) syscalls/wait-reasons observed while spans in that group were blocked,
+sorted by total time descending; `null` when nothing correlated. This is a
+**per-stack-group** breakdown (not per-span) — the issue calls per-stack-group
+"probably sufficient" and it is materially cheaper than tagging every individual
+span, since a hot off-CPU stack typically block on a small, repeating set of
+syscalls (e.g. "80% `futex`, 20% `read`").
+
+- **Linux** correlates the co-recorded `raw_syscalls:sys_enter`/`sys_exit`
+  tracepoints (single `perf record -e ...` invocation — cheaper than two
+  separate captures and keeps both tracepoint families on the same wall clock)
+  against each span's tid + `[in, out]` timestamp window, so `Name` is an
+  actual syscall name (e.g. `futex`, `read`, `epoll_wait`, or `syscall_<nr>` for
+  an unrecognized number on the current architecture). A span with no syscall
+  in flight at block time gets no attribution. The syscall interval index used
+  for correlation is bounded (`MaxIntervals` — default 500,000 open/closed
+  intervals) and capped **at insertion time**; hitting the cap adds a `notes[]`
+  entry naming the cap and the drop count, never silently truncating after the
+  fact (per [`resource-boundedness.md`](./resource-boundedness.md)).
+- **Windows** does not have precise, uniformly-paired I/O start/end events
+  across every FileIO/TcpIp event subtype, so it uses a looser heuristic: the
+  most recent FileIO/TcpIp event on the same thread within a short lookback
+  window before the block is used verbatim as `Name` (e.g. `FileIO:Read`,
+  `TcpIp:Send`, `TcpIp:Connect`). When nothing correlates, it falls back to a
+  **normalized** bucket derived from the existing `KWAIT_REASON` (already
+  surfaced as `PrevState`): `Sleep`, `Sync`, `Disk`, or `Other` (`Network` is
+  reachable only via the more specific FileIO/TcpIp correlation, since
+  `KWAIT_REASON` alone cannot distinguish a network wait). This means Windows
+  spans (almost) always carry *some* label, while Linux spans only carry one
+  when a syscall was genuinely in flight — an intentional, documented
+  asymmetry so Windows's coarser `KWAIT_REASON` vocabulary isn't presented
+  side-by-side with Linux's precise syscall names as if they were equally
+  granular. See the class remarks on `EtwOffCpuSampler` / doc comments on
+  `PerfSchedOffCpuSampler` for the full design rationale.
 
 
 ## Quick index
