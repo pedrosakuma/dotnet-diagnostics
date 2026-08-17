@@ -488,6 +488,15 @@ internal static class DiagnosticToolSampling
                     "After granting either BUILTIN\\Administrators membership or SeSystemProfilePrivilege ('Profile system performance') to the sidecar account and restarting the Windows service, re-check capabilities before retrying.",
                     new Dictionary<string, object?> { ["processId"] = pid }));
         }
+        catch (TimeoutException ex)
+        {
+            return DiagnosticResult.Fail<NativeAllocSample>(
+                ex.Message,
+                new DiagnosticError("CaptureTimeout", ex.Message, ex.GetType().FullName),
+                new NextActionHint("collect_sample",
+                    "The bounded perf subprocess was stopped. Retry with a shorter window; if timeouts persist, inspect the host perf/tracefs health.",
+                    new Dictionary<string, object?> { ["kind"] = "native-alloc", ["processId"] = pid, ["durationSeconds"] = Math.Min(durationSeconds, 5) }));
+        }
         catch (InvalidOperationException ex) when (ex.Message.Contains("perf", StringComparison.OrdinalIgnoreCase)
                                                    || ex.Message.Contains("uprobe", StringComparison.OrdinalIgnoreCase)
                                                    || ex.Message.Contains("tracefs", StringComparison.OrdinalIgnoreCase)
@@ -575,6 +584,15 @@ internal static class DiagnosticToolSampling
                 new NextActionHint("inspect_process",
                     "Confirm the target is a dynamically-linked glibc/musl process; statically-linked or custom-threading-library targets aren't supported by the libc uprobe path.",
                     new Dictionary<string, object?> { ["processId"] = pid }));
+        }
+        catch (TimeoutException ex)
+        {
+            return DiagnosticResult.Fail<NativeLockContentionSample>(
+                ex.Message,
+                new DiagnosticError("CaptureTimeout", ex.Message, ex.GetType().FullName),
+                new NextActionHint("collect_sample",
+                    "The bounded perf subprocess was stopped. Retry with a shorter window; if timeouts persist, inspect the host perf/tracefs health.",
+                    new Dictionary<string, object?> { ["kind"] = "native-lock-contention", ["processId"] = pid, ["durationSeconds"] = Math.Min(durationSeconds, 5) }));
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("perf", StringComparison.OrdinalIgnoreCase)
                                                    || ex.Message.Contains("uprobe", StringComparison.OrdinalIgnoreCase)

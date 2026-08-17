@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using DotnetDiagnostics.Core.CpuSampling;
@@ -36,6 +37,47 @@ public class PerfScriptParserTests
     {
         PerfNativeAotCpuSampler.FormatPerfFileSize(12345)
             .Should().Be("12345");
+    }
+
+    [Fact]
+    public async Task BoundedProcessExecution_InternalDeadline_ThrowsTimeout()
+    {
+        using var process = new Process();
+
+        var act = async () => await BoundedProcessExecution.RunAsync(
+            process,
+            TimeSpan.FromMilliseconds(20),
+            "test operation",
+            async token =>
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return 0;
+            },
+            CancellationToken.None);
+
+        (await act.Should().ThrowAsync<TimeoutException>())
+            .Which.Message.Should().Contain("test operation");
+    }
+
+    [Fact]
+    public async Task BoundedProcessExecution_ClientCancellation_RemainsCancellation()
+    {
+        using var process = new Process();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var act = async () => await BoundedProcessExecution.RunAsync(
+            process,
+            TimeSpan.FromSeconds(1),
+            "test operation",
+            async token =>
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return 0;
+            },
+            cancellation.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact]
