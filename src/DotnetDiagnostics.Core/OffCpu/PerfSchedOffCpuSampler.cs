@@ -94,8 +94,11 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         }
         var initialTidCount = targetTids.Count;
 
-        var perfDataPath = Path.Combine(Path.GetTempPath(),
-            $"diagnosticsmcp-offcpu-{processId}-{Guid.NewGuid():N}.data");
+        var captureId = Guid.NewGuid().ToString("N");
+        var schedPerfDataPath = Path.Combine(Path.GetTempPath(),
+            $"diagnosticsmcp-offcpu-sched-{processId}-{captureId}.data");
+        var syscallPerfDataPath = Path.Combine(Path.GetTempPath(),
+            $"diagnosticsmcp-offcpu-syscalls-{processId}-{captureId}.data");
         var startedAt = DateTimeOffset.UtcNow;
         var notes = new List<string>();
         // Hoisted above the try so the finally block can clean up the perf-map even when
@@ -124,7 +127,13 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
                 _logger.LogDebug(ex, "JIT perf-map emission failed for pid {Pid} (continuing without managed names).", processId);
             }
 
-            await RecordAsync(perfDataPath, duration, cancellationToken).ConfigureAwait(false);
+            var recordResult = await RecordAsync(
+                processId,
+                schedPerfDataPath,
+                syscallPerfDataPath,
+                duration,
+                notes,
+                cancellationToken).ConfigureAwait(false);
 
             // Re-snapshot TIDs post-record and union: catches threads that were created
             // during the sampling window. Short-lived threads that both start and exit
@@ -140,22 +149,28 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
                 notes.Add($"{newTidCount} thread(s) appeared after capture start; their pre-creation off-CPU events (if any) are excluded. Short-lived threads that ended before the post-capture rescan are not attributed.");
             }
 
-            // perf.data size sanity check — system-wide sched_switch + DWARF is expensive on busy hosts.
-            try
+            AddPerfDataCapNote(
+                schedPerfDataPath,
+                SchedPerfDataMaxBytes,
+                "sched_switch perf.data",
+                $"off-CPU stack capture stopped early — results cover less than the requested {duration.TotalSeconds:F0}s. Consider a shorter window on busy hosts.",
+                notes);
+            if (recordResult.SyscallCaptureSucceeded)
             {
-                var sizeBytes = new FileInfo(perfDataPath).Length;
-                if (sizeBytes >= PerfDataMaxBytes)
-                {
-                    notes.Add($"perf.data hit the {PerfDataMaxBytes / (1024 * 1024)} MiB cap; capture stopped early — results cover less than the requested {duration.TotalSeconds:F0}s. Consider a shorter window on busy hosts.");
-                }
+                AddPerfDataCapNote(
+                    syscallPerfDataPath,
+                    SyscallPerfDataMaxBytes,
+                    "raw_syscalls perf.data",
+                    "syscall attribution is truncated; base off-CPU stacks remain available but some spans may be missing syscall labels.",
+                    notes);
             }
-            catch { /* best effort */ }
 
             Func<ulong, DotnetDiagnostics.Core.Memory.MethodIdentity?>? resolver = jitMap is null
                 ? null
                 : jitMap.Resolve;
             return await RunScriptAsync(
-                perfDataPath,
+                schedPerfDataPath,
+                recordResult.SyscallCaptureSucceeded ? syscallPerfDataPath : null,
                 processId,
                 startedAt,
                 duration,
@@ -167,7 +182,8 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         }
         finally
         {
-            TryDelete(perfDataPath);
+            TryDelete(schedPerfDataPath);
+            TryDelete(syscallPerfDataPath);
             // Delete /tmp/perf-<pid>.map so a recycled PID can't pick up stale managed
             // symbols on the next capture (the OS would otherwise leave it until reboot).
             if (jitMap is not null)
@@ -177,9 +193,16 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         }
     }
 
-    // 512 MiB is generous for the default 10s window but bounds disaster on a multi-minute
-    // capture on a 96-core box doing thousands of context switches per second.
-    private const long PerfDataMaxBytes = 512L * 1024 * 1024;
+    // Independent hard file caps for the split capture. The sched side keeps DWARF callchains
+    // for stack quality; raw syscalls are target-scoped and stackless so they should stay much
+    // smaller, but still get their own cap instead of sharing a global 512 MiB failure mode.
+    internal const long SchedPerfDataMaxBytes = 128L * 1024 * 1024;
+    internal const long SyscallPerfDataMaxBytes = 64L * 1024 * 1024;
+    private static readonly TimeSpan PerfRecordGrace = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan PerfScriptTimeout = TimeSpan.FromMinutes(2);
+
+    private readonly record struct SplitRecordResult(bool SyscallCaptureSucceeded);
+    private readonly record struct PerfProcessResult(int ExitCode, string Stdout, string Stderr);
 
     private static HashSet<int> ReadTargetTids(int pid)
     {
@@ -207,63 +230,117 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         return set;
     }
 
-    private async Task RecordAsync(string outputPath, TimeSpan duration, CancellationToken ct)
+    private async Task<SplitRecordResult> RecordAsync(
+        int pid,
+        string schedOutputPath,
+        string syscallOutputPath,
+        TimeSpan duration,
+        List<string> notes,
+        CancellationToken ct)
     {
-        var seconds = Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
-        // -a: system-wide (mandatory for sched_switch IN-side pairing).
-        // -e sched:sched_switch,raw_syscalls:sys_enter,raw_syscalls:sys_exit: sched_switch closes
-        // off-CPU spans; the two raw_syscalls tracepoints let us label each span with the
-        // syscall that was active at block time (issue #829). perf natively supports multiple
-        // comma-separated -e events writing into one perf.data — recording them together in this
-        // single invocation is cheaper than a second, separately-triggered `perf record` pass
-        // (one -a system-wide window instead of two) and keeps all three tracepoints on the same
-        // wall clock, which the tid+timestamp correlation in SyscallIntervalIndex relies on.
-        // --call-graph dwarf: user-space DWARF unwinding so we capture user frames, not just the
-        // first kernel frame. Bigger perf.data but accuracy-critical for blocking-stack attribution.
-        // It also applies to the raw_syscalls events (no cheaper "stackless" per-event modifier is
-        // used here for simplicity/portability across perf versions); we intentionally don't parse
-        // those callchains — see PerfSyscallScriptParser's -G note — so the extra frames are inert
-        // record-time cost, still bounded by the same --max-size cap below.
-        var args = $"record -a -e sched:sched_switch,raw_syscalls:sys_enter,raw_syscalls:sys_exit --call-graph dwarf --max-size={PerfNativeAotCpuSampler.FormatPerfFileSize(PerfDataMaxBytes)} -o \"{outputPath}\" -- sleep {seconds}";
-        _logger.LogDebug("Spawning perf for off-CPU capture: {Bin} {Args}", ResolvePerfPath()!, args);
+        ArgumentNullException.ThrowIfNull(notes);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var timeout = duration + PerfRecordGrace;
+        var schedTask = RunPerfAsync(
+            BuildSchedRecordArguments(schedOutputPath, duration),
+            timeout,
+            "perf record (sched)",
+            linkedCts.Token);
+        var syscallTask = RunPerfAsync(
+            BuildSyscallRecordArguments(pid, syscallOutputPath, duration),
+            timeout,
+            "perf record (syscalls)",
+            linkedCts.Token);
 
-        using var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = ResolvePerfPath()!,
-                Arguments = args,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            },
-            EnableRaisingEvents = true,
-        };
-
-        process.Start();
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
-        var stderrTask = process.StandardError.ReadToEndAsync(ct);
+        PerfProcessResult schedResult;
         try
         {
-            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            schedResult = await schedTask.ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch
         {
-            try { process.Kill(true); } catch { /* best effort */ }
+            linkedCts.Cancel();
+            await ObserveCanceledSyscallCaptureAsync(syscallTask).ConfigureAwait(false);
             throw;
         }
 
-        await stdoutTask.ConfigureAwait(false);
-        var stderr = await stderrTask.ConfigureAwait(false);
-        if (process.ExitCode != 0)
+        if (schedResult.ExitCode != 0)
         {
+            linkedCts.Cancel();
+            await ObserveCanceledSyscallCaptureAsync(syscallTask).ConfigureAwait(false);
             throw new InvalidOperationException(
-                $"perf record (sched) exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
+                $"perf record (sched) exited with code {schedResult.ExitCode}. stderr: {schedResult.Stderr.Trim()}");
+        }
+
+        var syscallSucceeded = await TryCompleteSyscallCaptureAsync(syscallTask, notes, ct).ConfigureAwait(false);
+        return new SplitRecordResult(syscallSucceeded);
+    }
+
+    internal static IReadOnlyList<string> BuildSchedRecordArguments(string outputPath, TimeSpan duration)
+    {
+        var seconds = GetRecordSeconds(duration);
+        return
+        [
+            "record",
+            "-a",
+            "-e", "sched:sched_switch",
+            "--call-graph", "dwarf",
+            "--max-size", PerfNativeAotCpuSampler.FormatPerfFileSize(SchedPerfDataMaxBytes),
+            "-o", outputPath,
+            "--", "sleep", seconds.ToString(CultureInfo.InvariantCulture),
+        ];
+    }
+
+    internal static IReadOnlyList<string> BuildSyscallRecordArguments(int pid, string outputPath, TimeSpan duration)
+    {
+        var seconds = GetRecordSeconds(duration);
+        return
+        [
+            "record",
+            "-p", pid.ToString(CultureInfo.InvariantCulture),
+            "-e", "raw_syscalls:sys_enter,raw_syscalls:sys_exit",
+            "--max-size", PerfNativeAotCpuSampler.FormatPerfFileSize(SyscallPerfDataMaxBytes),
+            "-o", outputPath,
+            "--", "sleep", seconds.ToString(CultureInfo.InvariantCulture),
+        ];
+    }
+
+    private static int GetRecordSeconds(TimeSpan duration) =>
+        Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
+
+    private async Task<bool> TryCompleteSyscallCaptureAsync(
+        Task<PerfProcessResult> syscallTask,
+        List<string> notes,
+        CancellationToken ct)
+    {
+        try
+        {
+            var result = await syscallTask.ConfigureAwait(false);
+            if (result.ExitCode == 0)
+            {
+                return true;
+            }
+
+            notes.Add(
+                $"Syscall companion capture failed with exit code {result.ExitCode}; base off-CPU stacks were returned without syscall labels. stderr: {TrimForNote(result.Stderr)}");
+            return false;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Syscall companion capture failed for off-CPU capture; spans will not be labeled with a syscall.");
+            notes.Add(
+                $"Syscall companion capture failed ({ex.GetType().Name}: {TrimForNote(ex.Message)}); base off-CPU stacks were returned without syscall labels.");
+            return false;
         }
     }
 
     private async Task<OffCpuSampleResult> RunScriptAsync(
-        string perfDataPath,
+        string schedPerfDataPath,
+        string? syscallPerfDataPath,
         int processId,
         DateTimeOffset startedAt,
         TimeSpan duration,
@@ -273,95 +350,101 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         List<string> notes,
         CancellationToken ct)
     {
-        // Best-effort syscall correlation pass (issue #829) BEFORE the sched_switch script pass:
+        // Best-effort syscall correlation pass (issue #829/#839) BEFORE the sched_switch script pass:
         // the interval index must be fully built before any span is emitted so each span can be
         // labeled at insertion time rather than buffering all spans for a later enrichment pass
         // (keeping PerfSchedScriptParser's streaming design — see resource-boundedness.md — intact).
         SyscallIntervalIndex? syscallIndex = null;
-        try
+        if (syscallPerfDataPath is not null)
         {
-            var buildResult = await BuildSyscallIntervalIndexAsync(perfDataPath, targetTids, ct).ConfigureAwait(false);
-            syscallIndex = buildResult.Index;
-            if (buildResult.ParserHitCap)
+            try
             {
-                notes.Add(
-                    $"Syscall correlation stopped parsing raw_syscalls events after reaching the {PerfSyscallScriptParser.MaxParsedEvents:N0}-event budget; " +
-                    $"{buildResult.ParserDroppedCount} event(s) beyond that point were ignored, so some off-CPU spans may be missing a syscall label.");
+                var buildResult = await BuildSyscallIntervalIndexAsync(syscallPerfDataPath, targetTids, ct).ConfigureAwait(false);
+                syscallIndex = buildResult.Index;
+                if (buildResult.ParserHitCap)
+                {
+                    notes.Add(
+                        $"Syscall correlation stopped parsing raw_syscalls events after reaching the {PerfSyscallScriptParser.MaxParsedEvents:N0}-event budget; " +
+                        $"{buildResult.ParserDroppedCount} event(s) beyond that point were ignored, so some off-CPU spans may be missing a syscall label.");
+                }
+                if (syscallIndex is { HitCap: true })
+                {
+                    notes.Add(
+                        $"Syscall correlation hit the {SyscallIntervalIndex.MaxIntervals}-interval cap; " +
+                        $"{syscallIndex.DroppedCount} syscall interval(s) were dropped, so some off-CPU spans may be missing a syscall label.");
+                }
+                if (syscallIndex is null)
+                {
+                    notes.Add("Syscall companion capture produced no target raw_syscalls events; base off-CPU stacks were returned without syscall labels.");
+                }
             }
-            if (syscallIndex is { HitCap: true })
+            catch (OperationCanceledException)
             {
-                notes.Add(
-                    $"Syscall correlation hit the {SyscallIntervalIndex.MaxIntervals}-interval cap; " +
-                    $"{syscallIndex.DroppedCount} syscall interval(s) were dropped, so some off-CPU spans may be missing a syscall label.");
+                throw;
             }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Syscall correlation pass failed for off-CPU capture on pid {Pid}; spans will not be labeled with a syscall.", processId);
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Syscall correlation pass failed for off-CPU capture on pid {Pid}; spans will not be labeled with a syscall.", processId);
+                notes.Add(
+                    $"Syscall correlation failed ({ex.GetType().Name}: {TrimForNote(ex.Message)}); base off-CPU stacks were returned without syscall labels.");
+            }
         }
 
-        var args = $"script -i \"{perfDataPath}\" --no-inline";
-        using var process = new Process
+        var startInfo = new ProcessStartInfo
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = ResolvePerfPath()!,
-                Arguments = args,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            },
+            FileName = ResolvePerfPath()!,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
         };
+        startInfo.ArgumentList.Add("script");
+        startInfo.ArgumentList.Add("-i");
+        startInfo.ArgumentList.Add(schedPerfDataPath);
+        startInfo.ArgumentList.Add("--no-inline");
 
+        _logger.LogDebug("Spawning perf: {Bin} script -i {PerfDataPath} --no-inline", startInfo.FileName, schedPerfDataPath);
+        using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         process.Start();
-        var stderrTask = process.StandardError.ReadToEndAsync(ct);
-        try
-        {
-            var result = await AggregateScriptAsync(
-                process.StandardOutput,
-                processId,
-                startedAt,
-                duration,
-                topN,
-                targetTids,
-                addressResolver,
-                notes,
-                syscallIndex,
-                ct).ConfigureAwait(false);
-            await process.WaitForExitAsync(ct).ConfigureAwait(false);
-            var stderr = await stderrTask.ConfigureAwait(false);
-            if (process.ExitCode != 0)
+        var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+        return await BoundedProcessExecution.RunAsync(
+            process,
+            PerfScriptTimeout,
+            "perf script (sched)",
+            async boundedToken =>
             {
-                throw new InvalidOperationException(
-                    $"perf script exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
-            }
+                var result = await AggregateScriptAsync(
+                    process.StandardOutput,
+                    processId,
+                    startedAt,
+                    duration,
+                    topN,
+                    targetTids,
+                    addressResolver,
+                    notes,
+                    syscallIndex,
+                    boundedToken).ConfigureAwait(false);
+                await process.WaitForExitAsync(boundedToken).ConfigureAwait(false);
+                var stderr = await stderrTask.ConfigureAwait(false);
+                if (process.ExitCode != 0)
+                {
+                    throw new InvalidOperationException(
+                        $"perf script exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
+                }
 
-            return result;
-        }
-        catch (OperationCanceledException)
-        {
-            try { process.Kill(true); } catch { /* best effort */ }
-            throw;
-        }
-        catch
-        {
-            try { if (!process.HasExited) process.Kill(true); } catch { /* best effort */ }
-            throw;
-        }
+                return result;
+            },
+            ct).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Runs a second, independent <c>perf script</c> pass over the same <c>perf.data</c> file to
-    /// extract the co-recorded <c>raw_syscalls:sys_enter</c>/<c>sys_exit</c> events and correlate
-    /// them into a <see cref="SyscallIntervalIndex"/> (issue #829). Best-effort: any failure here
-    /// (perf version renders the tracepoints unexpectedly, process error, etc.) returns <c>null</c>
-    /// rather than failing the whole off-CPU capture — a missing syscall label degrades the
-    /// enrichment, not the underlying off-CPU span data the sampler already provided pre-#829.
-    /// <c>-G</c>/<c>--hide-call-graph</c> suppresses the (potentially large) DWARF call chains
-    /// perf would otherwise interleave under every event in this pass — we only need the flat
-    /// event lines here, not stacks, which keeps <see cref="PerfSyscallScriptParser"/> a simple
-    /// line-oriented parser instead of needing the frame-consumption state machine
-    /// <see cref="PerfSchedScriptParser"/> uses for DWARF-unwound sched_switch stacks.
+    /// Runs a second, independent <c>perf script</c> pass over the companion <c>perf.data</c> file to
+    /// extract the target-scoped <c>raw_syscalls:sys_enter</c>/<c>sys_exit</c> events and correlate
+    /// them into a <see cref="SyscallIntervalIndex"/> (issue #829/#839). Best-effort: failures are
+    /// caught by the caller and surfaced as degradation notes rather than failing the whole off-CPU
+    /// capture — a missing syscall label degrades the enrichment, not the underlying off-CPU span
+    /// data. <c>-G</c>/<c>--hide-call-graph</c> is retained defensively; the companion raw-syscall
+    /// capture itself is stackless so it does not carry the global DWARF callchains that caused the
+    /// issue #839 data-volume spike.
     /// </summary>
     /// <summary>Result of the best-effort syscall correlation pre-pass: the interval index (if any events were found) plus whether the raw per-event parse budget was hit.</summary>
     private readonly record struct SyscallIntervalBuildResult(SyscallIntervalIndex? Index, bool ParserHitCap, long ParserDroppedCount);
@@ -371,45 +454,41 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         HashSet<int> targetTids,
         CancellationToken ct)
     {
-        var args = $"script -i \"{perfDataPath}\" --no-inline -G";
-        using var process = new Process
+        var startInfo = new ProcessStartInfo
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = ResolvePerfPath()!,
-                Arguments = args,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            },
+            FileName = ResolvePerfPath()!,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
         };
+        startInfo.ArgumentList.Add("script");
+        startInfo.ArgumentList.Add("-i");
+        startInfo.ArgumentList.Add(perfDataPath);
+        startInfo.ArgumentList.Add("--no-inline");
+        startInfo.ArgumentList.Add("-G");
 
+        _logger.LogDebug("Spawning perf: {Bin} script -i {PerfDataPath} --no-inline -G", startInfo.FileName, perfDataPath);
+        using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         process.Start();
-        var stderrTask = process.StandardError.ReadToEndAsync(ct);
-        PerfSyscallScriptParser.ParseResult parseResult;
-        try
-        {
-            parseResult = await PerfSyscallScriptParser.ParseAsync(process.StandardOutput, targetTids, ct).ConfigureAwait(false);
-            await process.WaitForExitAsync(ct).ConfigureAwait(false);
-            var stderr = await stderrTask.ConfigureAwait(false);
-            if (process.ExitCode != 0)
+        var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+        var parseResult = await BoundedProcessExecution.RunAsync(
+            process,
+            PerfScriptTimeout,
+            "perf script (syscalls)",
+            async boundedToken =>
             {
-                _logger.LogDebug(
-                    "perf script (syscalls) exited with code {Code}; off-CPU spans will not be labeled with a syscall. stderr: {Stderr}",
-                    process.ExitCode, stderr.Trim());
-                return default;
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            try { process.Kill(true); } catch { /* best effort */ }
-            throw;
-        }
-        catch
-        {
-            try { if (!process.HasExited) process.Kill(true); } catch { /* best effort */ }
-            throw;
-        }
+                var parsed = await PerfSyscallScriptParser.ParseAsync(process.StandardOutput, targetTids, boundedToken).ConfigureAwait(false);
+                await process.WaitForExitAsync(boundedToken).ConfigureAwait(false);
+                var stderr = await stderrTask.ConfigureAwait(false);
+                if (process.ExitCode != 0)
+                {
+                    throw new InvalidOperationException(
+                        $"perf script (syscalls) exited with code {process.ExitCode}. stderr: {stderr.Trim()}");
+                }
+
+                return parsed;
+            },
+            ct).ConfigureAwait(false);
 
         if (parseResult.Events.Count == 0)
         {
@@ -425,12 +504,62 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         // very last line in this pass's output is later than every OUT event). Using
         // PositiveInfinity for the open-interval end means "still in flight through the rest of
         // the capture", which is always safe: every lookup timestamp we're ever asked about
-        // (`span.OutTimestampSeconds`) comes from a real event inside the same perf.data, i.e.
-        // strictly less than "the rest of time", so this cannot fabricate a false correlation
-        // beyond the capture window.
+        // (`span.OutTimestampSeconds`) comes from a real sched_switch event inside the paired
+        // capture window, i.e. strictly less than "the rest of time", so this cannot fabricate a
+        // false correlation beyond the capture window.
         var captureEndTs = double.PositiveInfinity;
         var index = SyscallIntervalIndex.Build(parseResult.Events, captureEndTs);
         return new SyscallIntervalBuildResult(index, parseResult.HitCap, parseResult.DroppedCount);
+    }
+
+    private async Task<PerfProcessResult> RunPerfAsync(
+        IReadOnlyList<string> args,
+        TimeSpan timeout,
+        string operation,
+        CancellationToken ct)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = ResolvePerfPath()!,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        foreach (var arg in args)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        _logger.LogDebug("Spawning perf: {Bin} {Args}", startInfo.FileName, string.Join(' ', args));
+        using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+        process.Start();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+        var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+        return await BoundedProcessExecution.RunAsync(
+            process,
+            timeout,
+            operation,
+            async boundedToken =>
+            {
+                await process.WaitForExitAsync(boundedToken).ConfigureAwait(false);
+                return new PerfProcessResult(
+                    process.ExitCode,
+                    await stdoutTask.ConfigureAwait(false),
+                    await stderrTask.ConfigureAwait(false));
+            },
+            ct).ConfigureAwait(false);
+    }
+
+    private static async Task ObserveCanceledSyscallCaptureAsync(Task<PerfProcessResult> syscallTask)
+    {
+        try
+        {
+            await syscallTask.ConfigureAwait(false);
+        }
+        catch
+        {
+            // The required sched capture already failed/canceled; preserve that original outcome.
+        }
     }
 
     internal static async Task<OffCpuSampleResult> AggregateScriptAsync(
@@ -486,5 +615,33 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
     private static void TryDelete(string path)
     {
         try { if (File.Exists(path)) File.Delete(path); } catch { /* best effort */ }
+    }
+
+    private static void AddPerfDataCapNote(
+        string path,
+        long maxBytes,
+        string label,
+        string impact,
+        List<string> notes)
+    {
+        try
+        {
+            var sizeBytes = new FileInfo(path).Length;
+            if (sizeBytes >= maxBytes)
+            {
+                notes.Add($"{label} hit the {maxBytes / (1024 * 1024)} MiB cap; {impact}");
+            }
+        }
+        catch
+        {
+            // Best-effort diagnostic note only; missing file errors surface through perf/script failures.
+        }
+    }
+
+    private static string TrimForNote(string value)
+    {
+        const int MaxChars = 400;
+        var trimmed = value.Trim();
+        return trimmed.Length <= MaxChars ? trimmed : trimmed[..MaxChars] + "...";
     }
 }

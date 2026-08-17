@@ -1,14 +1,13 @@
 using DotnetDiagnostics.Core.OffCpu;
 using FluentAssertions;
+using System.Globalization;
 
 namespace DotnetDiagnostics.Core.Tests;
 
 /// <summary>
 /// Drives <see cref="PerfSyscallScriptParser"/> against representative <c>perf script -G</c>
-/// output captured from the co-recorded <c>raw_syscalls:sys_enter</c>/<c>sys_exit</c>
-/// tracepoints (issue #829). Fixtures mirror the header shape already validated by
-/// <see cref="PerfSchedScriptParserTests"/> for sched_switch, since both tracepoints are
-/// recorded in the same <c>perf record</c> invocation and rendered by the same tool.
+/// output captured from the target-scoped companion <c>raw_syscalls:sys_enter</c>/<c>sys_exit</c>
+/// tracepoints (issues #829/#839).
 /// </summary>
 public sealed class PerfSyscallScriptParserTests
 {
@@ -47,6 +46,22 @@ public sealed class PerfSyscallScriptParserTests
 
         events.Should().ContainSingle();
         events[0].Tid.Should().Be(1000);
+    }
+
+    [Fact]
+    public async Task ParsesPidSlashTidHeader_ForTargetScopedPerfRecord()
+    {
+        const string script = """
+                    target  1234/1000 [001]   1.000000: raw_syscalls:sys_enter: NR 202 (7ffd728cd07c, 0, 0, 0, 0, 0)
+
+            """;
+        using var reader = new StringReader(script);
+
+        var events = (await PerfSyscallScriptParser.ParseAsync(reader, new HashSet<int> { 1000 })).Events;
+
+        events.Should().ContainSingle();
+        events[0].Tid.Should().Be(1000);
+        events[0].SyscallId.Should().Be(202);
     }
 
     [Fact]
@@ -97,7 +112,7 @@ public sealed class PerfSyscallScriptParserTests
         var lines = new System.Text.StringBuilder(PerfSyscallScriptParser.MaxParsedEvents * 64);
         for (var i = 0; i < PerfSyscallScriptParser.MaxParsedEvents + overBy; i++)
         {
-            lines.Append($"target  1000 [001]   {1.0 + i * 0.000001:F6}: raw_syscalls:sys_enter: NR 0 (0, 0, 0, 0, 0, 0)\n");
+            lines.Append(CultureInfo.InvariantCulture, $"target  1000 [001]   {1.0 + i * 0.000001:F6}: raw_syscalls:sys_enter: NR 0 (0, 0, 0, 0, 0, 0)\n");
         }
         using var reader = new StringReader(lines.ToString());
 
