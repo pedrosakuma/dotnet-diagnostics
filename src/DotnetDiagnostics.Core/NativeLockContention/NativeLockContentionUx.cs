@@ -175,6 +175,7 @@ internal static class NativeLockContentionUx
         var module = hotspot.Frame.Module ?? string.Empty;
         if (string.IsNullOrWhiteSpace(method) ||
             string.Equals(method, "[unknown]", StringComparison.OrdinalIgnoreCase) ||
+            method.StartsWith("[unknown]", StringComparison.OrdinalIgnoreCase) ||
             method.StartsWith("0x", StringComparison.Ordinal) ||
             method.StartsWith("[0x", StringComparison.Ordinal))
         {

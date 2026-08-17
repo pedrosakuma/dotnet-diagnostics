@@ -795,3 +795,27 @@ For a different target whose native-lock top list contains a useful
 application/native caller below `[unknown]`, perf plumbing, or the pthread entry
 points, PR2 now reports that first useful caller inline and omits the call-tree
 hint unless the useful frame was displaced or no useful caller exists.
+
+### Positive native-caller smoke
+
+After the ambiguous `BadCodeSample` result, a second WSL-only smoke used a
+session-artifact synthetic .NET target that P/Invoked a small
+`libnativecontention.so` built with frame pointers and native symbols. Its
+native hot path repeatedly called:
+
+`native_lock_hot_loop -> checkout_mutex_hot_path -> pthread_mutex_lock/unlock`
+
+This captured the success path that `BadCodeSample` does not expose:
+
+| Run | MCP calls counted | Result |
+|---|---:|---|
+| Initial PR2 current positive smoke | 1 | Captured **58,570** sampled mutex calls, but inline selected `First useful caller: [unknown] (/memfd:doublemapper)` instead of the visible native caller. This exposed a real filtering bug: the useful-caller filter rejected exact `[unknown]` but not perf's bracketed `[unknown] (...)` spelling. |
+| PR2 current after the filter fix | 1 | Captured **56,136** sampled mutex calls and selected `First useful caller: native_lock_hot_loop (55,246 inclusive hits)`. The response also reported that the top sampled frame was `[unknown] (/memfd:doublemapper` and kept the calls-not-waits caveat. |
+
+The follow-up call-tree confirmed the same native stack:
+
+`[unknown] (/memfd:doublemapper -> native_lock_hot_loop -> checkout_mutex_hot_path -> pthread_mutex_lock/unlock`
+
+with **56,136 running / 0 waiting** samples, so this was a successful useful
+caller selection smoke, not proof of blocking wait time. The off-CPU
+corroboration caveat remains required.

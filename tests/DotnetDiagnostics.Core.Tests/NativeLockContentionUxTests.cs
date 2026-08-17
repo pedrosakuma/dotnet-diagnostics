@@ -175,6 +175,24 @@ public sealed class NativeLockContentionUxTests
     }
 
     [Fact]
+    public async Task CollectNativeLockContentionSample_SkipsUnknownMemfdFrame_ForNativeCaller()
+    {
+        var result = await SamplerUseCases.CollectNativeLockContentionSample(
+            new StubNativeLockContentionSampler(
+                new Hotspot(new SampledFrame("deleted)", "[unknown] (/memfd:doublemapper"), InclusiveSamples: 25, ExclusiveSamples: 1),
+                new Hotspot(new SampledFrame("libnativecontention.so", "native_lock_hot_loop"), InclusiveSamples: 18, ExclusiveSamples: 4),
+                new Hotspot(new SampledFrame("libnativecontention.so", "checkout_mutex_hot_path"), InclusiveSamples: 18, ExclusiveSamples: 4)),
+            new MemoryDiagnosticHandleStore(),
+            new FixedProcessContextResolver(canSampleNativeLockContention: true),
+            processId: Pid,
+            durationSeconds: 5);
+
+        result.Error.Should().BeNull();
+        result.Summary.Should().Contain("First useful caller: native_lock_hot_loop");
+        result.Summary.Should().Contain("Top sampled frame was [unknown] (/memfd:doublemapper");
+    }
+
+    [Fact]
     public async Task CollectNativeLockContentionSample_PreservesHonestOutput_WhenNoUsefulCallerExists()
     {
         var result = await SamplerUseCases.CollectNativeLockContentionSample(
