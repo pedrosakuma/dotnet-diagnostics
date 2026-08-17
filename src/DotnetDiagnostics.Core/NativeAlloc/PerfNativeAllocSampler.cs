@@ -34,6 +34,9 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
     // 512 MiB cap mirrors the off-CPU sampler: bounds disaster on an allocator-hot multi-minute run.
     private const long PerfDataMaxBytes = 512L * 1024 * 1024;
     private const long PerfScriptSampleBudget = 250_000;
+    private static readonly TimeSpan PerfProbeTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan PerfProbeCleanupTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan PerfScriptTimeout = TimeSpan.FromMinutes(2);
 
     private readonly ILogger<PerfNativeAllocSampler> _logger;
     private readonly JitMapEmitter _jitMapEmitter;
@@ -150,7 +153,10 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
             {
                 var eventName = BuildEventName(fn, runToken);
                 var (exit, stdout, stderr) = await RunPerfAsync(
-                    new[] { "probe", "-x", libc.HostPath, $"{eventName}={fn}" }, cancellationToken).ConfigureAwait(false);
+                    new[] { "probe", "-x", libc.HostPath, $"{eventName}={fn}" },
+                    PerfProbeTimeout,
+                    $"perf probe creation for {fn}",
+                    cancellationToken).ConfigureAwait(false);
                 if (exit == 0)
                 {
                     var tracepoint = ParseCreatedTracepoint(stdout + "\n" + stderr) ?? $"probe_libc:{eventName}";
@@ -233,7 +239,11 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
                 {
                     // Best-effort teardown of the global kernel uprobe. CancellationToken.None so
                     // cleanup still runs when the caller cancelled the sampling window.
-                    await RunPerfAsync(new[] { "probe", "-d", probe }, CancellationToken.None).ConfigureAwait(false);
+                    await RunPerfAsync(
+                        new[] { "probe", "-d", probe },
+                        PerfProbeCleanupTimeout,
+                        $"perf probe teardown for {probe}",
+                        CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -299,12 +309,16 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
             "--call-graph", "dwarf",
             "-c", samplePeriod.ToString(CultureInfo.InvariantCulture),
             "-p", pid.ToString(CultureInfo.InvariantCulture),
-            "--max-size", PerfDataMaxBytes.ToString(CultureInfo.InvariantCulture),
+            "--max-size", PerfNativeAotCpuSampler.FormatPerfFileSize(PerfDataMaxBytes),
             "-o", outputPath,
             "--", "sleep", seconds.ToString(CultureInfo.InvariantCulture),
         });
 
-        var (exit, _, stderr) = await RunPerfAsync(args, ct).ConfigureAwait(false);
+        var (exit, _, stderr) = await RunPerfAsync(
+            args,
+            duration + TimeSpan.FromSeconds(15),
+            "perf record (native-alloc)",
+            ct).ConfigureAwait(false);
         if (exit != 0)
         {
             throw new InvalidOperationException(
@@ -330,21 +344,25 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
 
         using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         process.Start();
-        var stderrTask = process.StandardError.ReadToEndAsync(ct);
-        try
-        {
+        var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+        return await BoundedProcessExecution.RunAsync(
+            process,
+            PerfScriptTimeout,
+            "perf script (native-alloc)",
+            async boundedToken =>
+            {
             var aggregate = await PerfNativeAotCpuSampler.AggregateAsync(
                 process.StandardOutput,
                 processId: 0,
                 topN: topN,
                 sampleBudget: PerfScriptSampleBudget,
-                cancellationToken: ct).ConfigureAwait(false);
+                cancellationToken: boundedToken).ConfigureAwait(false);
             if (aggregate.Truncated && !process.HasExited)
             {
                 try { process.Kill(true); } catch { /* best effort */ }
             }
 
-            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            await process.WaitForExitAsync(boundedToken).ConfigureAwait(false);
             var stderr = await stderrTask.ConfigureAwait(false);
             if (process.ExitCode != 0 && !aggregate.Truncated)
             {
@@ -353,21 +371,15 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
             }
 
             return aggregate;
-        }
-        catch (OperationCanceledException)
-        {
-            try { process.Kill(true); } catch { /* best effort */ }
-            throw;
-        }
-        catch
-        {
-            try { if (!process.HasExited) process.Kill(true); } catch { /* best effort */ }
-            throw;
-        }
+            },
+            ct).ConfigureAwait(false);
     }
 
     private async Task<(int ExitCode, string Stdout, string Stderr)> RunPerfAsync(
-        IReadOnlyList<string> args, CancellationToken ct)
+        IReadOnlyList<string> args,
+        TimeSpan timeout,
+        string operation,
+        CancellationToken ct)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -382,21 +394,21 @@ public sealed partial class PerfNativeAllocSampler : INativeAllocSampler
 
         using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         process.Start();
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
-        var stderrTask = process.StandardError.ReadToEndAsync(ct);
-        try
-        {
-            await process.WaitForExitAsync(ct).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            try { process.Kill(true); } catch { /* best effort */ }
-            throw;
-        }
-
-        var stdout = await stdoutTask.ConfigureAwait(false);
-        var stderr = await stderrTask.ConfigureAwait(false);
-        return (process.ExitCode, stdout, stderr);
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+        var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+        return await BoundedProcessExecution.RunAsync(
+            process,
+            timeout,
+            operation,
+            async boundedToken =>
+            {
+                await process.WaitForExitAsync(boundedToken).ConfigureAwait(false);
+                return (
+                    process.ExitCode,
+                    await stdoutTask.ConfigureAwait(false),
+                    await stderrTask.ConfigureAwait(false));
+            },
+            ct).ConfigureAwait(false);
     }
 
     private static void TryDelete(string path)

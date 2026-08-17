@@ -261,7 +261,7 @@ public sealed class PerfReplayThreadSnapshotInspector : IThreadSnapshotInspector
         process.StartInfo.ArgumentList.Add("sched:sched_switch");
         process.StartInfo.ArgumentList.Add("--call-graph");
         process.StartInfo.ArgumentList.Add("dwarf");
-        process.StartInfo.ArgumentList.Add($"--max-size={PerfDataMaxBytes}");
+        process.StartInfo.ArgumentList.Add($"--max-size={PerfNativeAotCpuSampler.FormatPerfFileSize(PerfDataMaxBytes)}");
         process.StartInfo.ArgumentList.Add("-o");
         process.StartInfo.ArgumentList.Add(outputPath);
         process.StartInfo.ArgumentList.Add("--");

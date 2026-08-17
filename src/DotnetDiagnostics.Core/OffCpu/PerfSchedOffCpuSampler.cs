@@ -224,7 +224,7 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         // used here for simplicity/portability across perf versions); we intentionally don't parse
         // those callchains — see PerfSyscallScriptParser's -G note — so the extra frames are inert
         // record-time cost, still bounded by the same --max-size cap below.
-        var args = $"record -a -e sched:sched_switch,raw_syscalls:sys_enter,raw_syscalls:sys_exit --call-graph dwarf --max-size={PerfDataMaxBytes} -o \"{outputPath}\" -- sleep {seconds}";
+        var args = $"record -a -e sched:sched_switch,raw_syscalls:sys_enter,raw_syscalls:sys_exit --call-graph dwarf --max-size={PerfNativeAotCpuSampler.FormatPerfFileSize(PerfDataMaxBytes)} -o \"{outputPath}\" -- sleep {seconds}";
         _logger.LogDebug("Spawning perf for off-CPU capture: {Bin} {Args}", ResolvePerfPath()!, args);
 
         using var process = new Process
