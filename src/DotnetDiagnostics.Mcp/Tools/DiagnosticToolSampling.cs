@@ -443,6 +443,10 @@ internal static class DiagnosticToolSampling
                 new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "byThread" }),
             new NextActionHint("collect_sample", "Cross-reference with on-CPU hotspots to separate compute from wait.",
                 new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = 10 }));
+        if (NativeLockContentionUx.BuildOffCpuFollowUpHint(summary, resolved.Context, handle.Id, pid, durationSeconds) is { } lockHint)
+        {
+            ok = ok with { Hints = ok.Hints.Prepend(lockHint).ToArray() };
+        }
         return WithContext(ok, resolved.Context);
     }
 
@@ -616,25 +620,27 @@ internal static class DiagnosticToolSampling
             evictWhenProcessExits: false,
             origin: HandleOrigin.Live);
 
-        var topSite = sample.TopContendedCallSites.Count > 0 ? sample.TopContendedCallSites[0] : null;
-        var summaryText = topSite is not null
-            ? $"Captured {sample.TotalSampledLockCalls} sampled native mutex-call(s) over {durationSeconds}s " +
-              $"(probed {string.Join("/", sample.ProbedFunctions)} in {sample.LibcPath}, samplePeriod={sample.SamplePeriod}). " +
-              $"Top contended call site: {topSite.Frame.Method} ({topSite.InclusiveSamples} inclusive hits). " +
-              $"Counts are calls, not confirmed blocking waits. Drill into call sites with query_snapshot(handle=\"{handle.Id}\", view=\"call-tree\")."
-            : $"Probed {string.Join("/", sample.ProbedFunctions)} in {sample.LibcPath} but captured no native " +
-              $"mutex-call samples in {durationSeconds}s — the workload may not use native pthread mutexes, or samplePeriod " +
-              "is too high. Drive the suspect load during the window or lower samplePeriod.";
+        var callerSelection = NativeLockContentionUx.SelectInlineCaller(sample.TopContendedCallSites);
+        var summaryText = NativeLockContentionUx.BuildSummary(sample, durationSeconds, handle.Id, callerSelection);
+
+        var hints = new List<NextActionHint>
+        {
+            new("collect_sample", "Corroborate with off-CPU sampling to confirm the top call site actually blocked (vs. an uncontended fast-path lock).",
+                new Dictionary<string, object?> { ["kind"] = "off_cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
+        };
+        if (NativeLockContentionUx.ShouldRecommendCallTree(callerSelection))
+        {
+            hints.Insert(0, new NextActionHint("query_snapshot", "Inline native-lock evidence is unresolved or displaced by plumbing; walk the call tree to find the first useful caller.",
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes })
+            { Priority = NextActionHintPriority.High });
+        }
 
         var ok = DiagnosticResult.OkWithHandle(
             sample,
             summaryText,
             handle.Id,
             handle.ExpiresAt,
-            new NextActionHint("query_snapshot", "Walk the native lock-contention call tree to find which code paths touch the mutex the most.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["view"] = "call-tree", ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes }),
-            new NextActionHint("collect_sample", "Corroborate with off-CPU sampling to confirm the top call site actually blocked (vs. an uncontended fast-path lock).",
-                new Dictionary<string, object?> { ["kind"] = "off_cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }));
+            [.. hints]);
         return WithContext(ok, resolved.Context);
     }
 

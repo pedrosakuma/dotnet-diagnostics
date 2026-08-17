@@ -146,6 +146,22 @@ public sealed class CliHintProjectionTests
     }
 
     [Fact]
+    public void TryProjectHint_ProjectsNativeLockContentionFollowUp_ToCollect()
+    {
+        var hint = new NextActionHint(
+            "collect_sample",
+            "Off-CPU evidence includes native synchronization waits (for example futex/mutex); run the Linux native-lock-contention sampler to attribute mutex-call sites, then corroborate because it counts calls rather than waits.",
+            new Dictionary<string, object?> { ["kind"] = "native-lock-contention", ["processId"] = 42 });
+
+        CliHintProjection.TryProjectHint(hint, out var projected).Should().BeTrue();
+
+        projected.NextTool.Should().Be("collect");
+        projected.Reason.Should().Contain("native-lock-contention").And.NotContain("collect_sample");
+        projected.SuggestedArguments.Should().BeNull();
+        AssertNoLeak(projected.NextTool + " " + projected.Reason);
+    }
+
+    [Fact]
     public void Project_RenderedHints_NeverContainAnyLeakToken()
     {
         // A representative cross-section of the real Core hints (tool + reason), projected, must be

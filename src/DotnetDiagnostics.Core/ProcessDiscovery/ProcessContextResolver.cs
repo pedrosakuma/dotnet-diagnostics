@@ -176,7 +176,11 @@ public sealed class ProcessContextResolver : IProcessContextResolver
             CanCollectGcDump: caps.CanCollectGcDump,
             AutoResolved: autoResolved,
             RuntimeVersion: string.IsNullOrEmpty(caps.RuntimeVersion) ? null : caps.RuntimeVersion,
-            BindingSource: source);
+            BindingSource: source)
+        {
+            CanSampleOffCpu = caps.CanSampleOffCpu,
+            CanSampleNativeLockContention = caps.CanSampleNativeLockContention,
+        };
 
         _cache[pid] = new CacheEntry(context, _clock.GetUtcNow() + _ttl);
         TrimExpiredEntriesIfNeeded();
