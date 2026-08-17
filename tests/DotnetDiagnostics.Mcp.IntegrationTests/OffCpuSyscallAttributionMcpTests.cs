@@ -2,6 +2,8 @@ using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.OffCpu;
+using DotnetDiagnostics.Core.Capabilities;
+using DotnetDiagnostics.Core.ProcessDiscovery;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Symbols;
 using DotnetDiagnostics.Core.Threads;
@@ -54,6 +56,28 @@ public sealed class OffCpuSyscallAttributionMcpTests
         hotspot.SyscallBreakdown![0].Micros.Should().Be(800);
         hotspot.SyscallBreakdown![1].Name.Should().Be("read");
         hotspot.SyscallBreakdown![1].Micros.Should().Be(200);
+    }
+
+    [Fact]
+    public async Task CollectOffCpuSample_WithFutexEvidence_EmitsNativeLockContentionHintWhenCapabilityAllows()
+    {
+        var sampler = new StubOffCpuSampler();
+        var store = new MemoryDiagnosticHandleStore();
+
+        var result = await DiagnosticTools.CollectOffCpuSample(
+            sampler,
+            store,
+            new FixedCapabilityResolver(canSampleNativeLockContention: true),
+            new SymbolServerAllowlist(null),
+            TestPrincipalAccessors.Root,
+            processId: Pid,
+            durationSeconds: 1);
+
+        result.Error.Should().BeNull();
+        result.Hints.Any(h => h.NextTool == "collect_sample" &&
+                              h.SuggestedArguments is not null &&
+                              h.SuggestedArguments.TryGetValue("kind", out var kind) &&
+                              Equals(kind, "native-lock-contention")).Should().BeTrue();
     }
 
     [Fact]
@@ -151,6 +175,25 @@ public sealed class OffCpuSyscallAttributionMcpTests
                 SchedSwitches: artifact.SchedSwitches,
                 SymbolSource: artifact.SymbolSource);
             return Task.FromResult(new OffCpuSampleResult(summary, artifact));
+        }
+    }
+
+    private sealed class FixedCapabilityResolver(bool canSampleNativeLockContention) : IProcessContextResolver
+    {
+        public Task<ProcessContextResolution> ResolveAsync(int? requestedProcessId, CancellationToken cancellationToken = default)
+        {
+            var pid = requestedProcessId.GetValueOrDefault(Pid);
+            var context = new ProcessContext(
+                pid,
+                RuntimeFlavor.CoreClr,
+                CanSampleCpu: true,
+                CanCollectGcDump: true,
+                AutoResolved: requestedProcessId is null)
+            {
+                CanSampleOffCpu = true,
+                CanSampleNativeLockContention = canSampleNativeLockContention,
+            };
+            return Task.FromResult(new ProcessContextResolution(context, Error: null));
         }
     }
 

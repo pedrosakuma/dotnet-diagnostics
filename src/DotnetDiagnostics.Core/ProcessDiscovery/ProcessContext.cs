@@ -28,4 +28,18 @@ public sealed record ProcessContext(
     bool CanCollectGcDump,
     bool AutoResolved,
     string? RuntimeVersion = null,
-    string? BindingSource = null);
+    string? BindingSource = null)
+{
+    /// <summary>
+    /// True when the compact capability digest says <c>collect_sample(kind="off_cpu")</c>
+    /// is expected to work from this diagnostics host.
+    /// </summary>
+    public bool CanSampleOffCpu { get; init; }
+
+    /// <summary>
+    /// True when the compact capability digest says
+    /// <c>collect_sample(kind="native-lock-contention")</c> is expected to work from this
+    /// diagnostics host.
+    /// </summary>
+    public bool CanSampleNativeLockContention { get; init; }
+}

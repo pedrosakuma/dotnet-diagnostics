@@ -4,7 +4,8 @@
 > (§§"Negative-path UX" through "Results") was performed against a pre-fix image and
 > is preserved as **historical evidence only** — its findings have been addressed.
 > The **current picture** is in the [Post-fix re-audit (2026-07-29)](#post-fix-re-audit-2026-07-29)
-> section below.
+> section below, with a native lock-contention PR2 addendum in
+> [Native lock-contention UX PR2 audit (2026-08-17)](#native-lock-contention-pr2-audit-2026-08-17).
 >
 > **All UX findings from the first run (issues #691–#704) are now closed:**
 > - **`isError` not set on structured failures** (#696 / PR #714, v0.20.0) — MCP
@@ -730,3 +731,67 @@ and detach—not only through sidecar health.
 - `collect_batch` is materially better for LOH churn now that its bounded inline
   summary keeps the Gen2 / LOH evidence up front rather than forcing an
   immediate drilldown for the basic story.
+
+<a id="native-lock-contention-pr2-audit-2026-08-17"></a>
+
+## Native lock-contention UX PR2 audit — 2026-08-17
+
+This addendum re-measured the issue #830 PR2 native-contention UX against the
+pushed PR1 branch (`pedrosakuma-smoke-test-830`, commit `ccb300a`) and the PR2
+worktree (`pedrosakuma-native-contention-ux`). Both sides were cross-published
+from Windows as self-contained `linux-x64` binaries, then run under WSL2 as
+root with a shared `TMPDIR` diagnostic socket directory:
+
+- PR1 baseline MCP + `BadCodeSample`: rebuilt from `ccb300a`.
+- PR2 current MCP + `BadCodeSample`: rebuilt from the worktree before the final
+  smoke.
+- Workload: repeated `GET /lock-storm?seconds=8&blockers=64` while the MCP
+  server sampled the target process by explicit PID.
+- Host capabilities: `/sys/kernel/tracing` was writable, `perf_event_paranoid`
+  was `-1`, and the server resolved the installed
+  `/usr/lib/linux-tools/6.8.0-137-generic/perf` binary instead of the WSL
+  `/usr/bin/perf` wrapper.
+
+### Off-CPU gate behavior
+
+The healthy path still does **not** require a separate
+`inspect_process(view="capabilities")` or preflight call. The new off-CPU
+native-lock follow-up is computed from the successful diagnostic response's
+compact process-context capability digest and the off-CPU evidence itself.
+
+This WSL host could not produce a clean multi-second off-CPU capture for the
+lock-storm workload: 2s and 5s runs hit the sampler's bounded perf data cap at
+about 513 MB before analysis (`perf size limit reached`, 63k samples), which is
+an environment/capture-volume limit rather than a UX regression. A 1s capture
+completed without error but closed no wait spans:
+
+| Run | MCP calls counted | Result |
+|---|---:|---|
+| PR2 current, `collect_sample(kind="off_cpu", durationSeconds=1)` | 1 | Completed with `Captured 0 switches but no off-CPU spans closed within the window`; no native-lock suggestion was emitted because there was no futex/mutex evidence. |
+| PR2 current, `collect_sample(kind="off_cpu", durationSeconds=2 or 5)` | 1 | Failed boundedly with the perf size cap; fallback hint was capability/preflight-oriented because no analyzed off-CPU evidence was available. |
+
+Focused unit and MCP integration coverage supplies the positive evidence path:
+when a successful off-CPU response contains futex/native synchronization
+evidence and `CanSampleNativeLockContention=true`, the first hint is
+`collect_sample(kind="native-lock-contention")`; when the capability is false
+or there is no native synchronization evidence, no dead-end native-lock command
+is suggested.
+
+### Native-lock inline evidence and drilldown
+
+The native-lock sampler itself completed on both builds without a separate
+preflight call. The measured path from the native-lock symptom to a safe causal
+hypothesis was two MCP invocations in both runs: collect the sample, then use
+call-tree because inline evidence was unresolved. PR2 materially improves the
+quality of the first response by not presenting `[unknown]` as a useful
+contended call site.
+
+| Build | Step 1: `collect_sample(kind="native-lock-contention", durationSeconds=5, topN=5)` | Step 2: `query_snapshot(view="call-tree")` | Outcome |
+|---|---|---|---|
+| PR1 baseline (`ccb300a`) | Captured **42,324** sampled mutex calls. Inline summary said `Top contended call site: [unknown] (42324 inclusive hits)` and unconditionally suggested call-tree at normal priority. | Root had **42,324** inclusive samples; bounded tree was truncated at 64 nodes and remained dominated by `[unknown]`, `libcoreclr.so` unresolved frames, and `pthread_mutex_lock` / `pthread_mutex_unlock`; self split was **42,324 running / 0 waiting**. | 2 calls, but the inline wording implied `[unknown]` was a contended site. No confirmed wait attribution. |
+| PR2 current | Captured **42,039** sampled mutex calls. Inline summary said `Top sampled frame: [unknown] ... but no clearer application/native caller surfaced inline`, kept the calls-not-waits caveat, and elevated call-tree only because the inline evidence was unresolved. | Root had **42,039** inclusive samples; bounded tree was truncated at 64 nodes and likewise remained runtime/libc dominated; self split was **42,039 running / 0 waiting**. | 2 calls to the same safe hypothesis: native pthread mutex-call activity was observed, but this smoke did **not** expose a useful application/native caller or confirmed blocking wait. PR2 avoids fabricating certainty. |
+
+For a different target whose native-lock top list contains a useful
+application/native caller below `[unknown]`, perf plumbing, or the pthread entry
+points, PR2 now reports that first useful caller inline and omits the call-tree
+hint unless the useful frame was displaced or no useful caller exists.
