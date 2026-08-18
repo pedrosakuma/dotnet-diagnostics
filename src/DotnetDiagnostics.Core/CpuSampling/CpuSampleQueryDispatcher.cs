@@ -1,4 +1,5 @@
 using DotnetDiagnostics.Core;
+using DotnetDiagnostics.Core.NativeLockContention;
 
 namespace DotnetDiagnostics.Core.CpuSampling;
 
@@ -92,6 +93,7 @@ public static class CpuSampleQueryDispatcher
     {
         CpuSampleTraceArtifact trace => trace,
         AllocationSampleArtifact alloc => alloc.TraceArtifact,
+        NativeLockContentionArtifact nativeLock => nativeLock.TraceArtifact,
         _ => null,
     };
 

@@ -431,6 +431,91 @@ public sealed class NativeLockContentionUxTests
         result.Context.CanSampleNativeLockContention.Should().BeTrue();
     }
 
+    // --- CorrelateBatchEvidence (issue #855: collect_batch native-lock + off-cpu correlation) ----
+
+    private static NativeContentionEvidence ActivityEvidence(long sampledLockCallCount = 40)
+        => new(
+            NativeContentionEvidenceLevels.Activity,
+            "sampled pthread mutex entry points are lock activity only; this sampler does not measure wait duration or prove blocking.",
+            SampledLockCallCount: sampledLockCallCount,
+            EvidenceSources: ["perf uprobes on pthread_mutex_lock/pthread_mutex_unlock"]);
+
+    private static NativeContentionEvidence ConfirmedBlockingEvidence()
+        => new(
+            NativeContentionEvidenceLevels.ConfirmedBlocking,
+            "closed futex span(s) confirm the thread blocked in the kernel.",
+            NativeSyncSpanCount: 3,
+            ClosedNativeSyncSpanCount: 3,
+            NativeSyncOffCpuMicros: 45_000,
+            ClosedNativeSyncOffCpuMicros: 45_000,
+            EvidenceSources: ["perf sched_switch + raw_syscalls correlation"]);
+
+    private static NativeContentionEvidence NoneEvidence()
+        => new(NativeContentionEvidenceLevels.None, "No native synchronization off-CPU evidence observed in this window.");
+
+    [Fact]
+    public void CorrelateBatchEvidence_BothPresent_UsesOffCpuLevelAndAddsLockCallCount()
+    {
+        var lockEvidence = ActivityEvidence(sampledLockCallCount: 128);
+        var offCpuEvidence = ConfirmedBlockingEvidence();
+
+        var merged = NativeLockContentionUx.CorrelateBatchEvidence(lockEvidence, offCpuEvidence);
+
+        merged.Level.Should().Be(NativeContentionEvidenceLevels.ConfirmedBlocking,
+            "only off-CPU evidence can confirm blocking; native-lock activity never elevates the level");
+        merged.SampledLockCallCount.Should().Be(128);
+        merged.ClosedNativeSyncSpanCount.Should().Be(3);
+        merged.ClosedNativeSyncOffCpuMicros.Should().Be(45_000);
+        merged.Summary.Should().Contain("Correlated with 128 sampled native mutex-call(s)");
+        merged.ConfidenceRationale.Should().Contain(note => note.Contains("does not itself raise or lower the level", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CorrelateBatchEvidence_UncontendedWorkload_StaysActivityOnly_NotMislabeledAsBlocking()
+    {
+        var lockEvidence = ActivityEvidence(sampledLockCallCount: 500);
+        var offCpuEvidence = NoneEvidence();
+
+        var merged = NativeLockContentionUx.CorrelateBatchEvidence(lockEvidence, offCpuEvidence);
+
+        merged.Level.Should().Be(NativeContentionEvidenceLevels.None,
+            "heavy sampled lock activity alone, with no off-CPU blocking evidence, must never be reported as blocking");
+        merged.SampledLockCallCount.Should().Be(500);
+    }
+
+    [Fact]
+    public void CorrelateBatchEvidence_OnlyNativeLockRan_KeepsActivityLevelAndNotesMissingOffCpu()
+    {
+        var lockEvidence = ActivityEvidence(sampledLockCallCount: 64);
+
+        var merged = NativeLockContentionUx.CorrelateBatchEvidence(lockEvidence, offCpuEvidence: null);
+
+        merged.Level.Should().Be(NativeContentionEvidenceLevels.Activity);
+        merged.SampledLockCallCount.Should().Be(64);
+        merged.Summary.Should().Contain("off_cpu did not run");
+    }
+
+    [Fact]
+    public void CorrelateBatchEvidence_OnlyOffCpuRan_KeepsItsOwnLevelAndNotesMissingNativeLock()
+    {
+        var offCpuEvidence = ConfirmedBlockingEvidence();
+
+        var merged = NativeLockContentionUx.CorrelateBatchEvidence(lockEvidence: null, offCpuEvidence);
+
+        merged.Level.Should().Be(NativeContentionEvidenceLevels.ConfirmedBlocking);
+        merged.SampledLockCallCount.Should().Be(0);
+        merged.Summary.Should().Contain("native-lock-contention did not run");
+    }
+
+    [Fact]
+    public void CorrelateBatchEvidence_NeitherRan_ReturnsNoneLevel()
+    {
+        var merged = NativeLockContentionUx.CorrelateBatchEvidence(lockEvidence: null, offCpuEvidence: null);
+
+        merged.Level.Should().Be(NativeContentionEvidenceLevels.None);
+        merged.Summary.Should().Contain("Neither native-lock-contention nor off_cpu produced usable evidence");
+    }
+
     private static OffCpuSnapshot OffCpuSnapshotWith(params OffCpuStackHotspot[] stacks)
         => new(
             ProcessId: Pid,

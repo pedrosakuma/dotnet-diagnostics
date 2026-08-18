@@ -200,6 +200,79 @@ internal static class NativeLockContentionUx
             UncertaintyNotes: sample.Notes);
     }
 
+    /// <summary>
+    /// Merges a <c>native-lock-contention</c> sampler evidence result with an <c>off_cpu</c>
+    /// sampler evidence result captured in the same <c>collect_batch</c> window (issue #855).
+    /// Preserves the evidence taxonomy exactly: the returned <see cref="NativeContentionEvidence.Level"/>
+    /// is always driven by <paramref name="offCpuEvidence"/> alone — sampled native-lock activity
+    /// is never allowed to elevate a level from <c>activity</c> to <c>probable-blocking</c>/
+    /// <c>confirmed-blocking</c>, since a sampled mutex-call entry point cannot, by itself, prove a
+    /// wait occurred. <paramref name="lockEvidence"/> only ever contributes its own
+    /// <see cref="NativeContentionEvidence.SampledLockCallCount"/> and evidence-source/rationale
+    /// notes to the merged result.
+    /// </summary>
+    /// <param name="lockEvidence">Evidence from the batch's <c>native-lock-contention</c> entry, or
+    /// <see langword="null"/> when that entry was not requested or failed.</param>
+    /// <param name="offCpuEvidence">Evidence from the batch's <c>off_cpu</c> entry, or
+    /// <see langword="null"/> when that entry was not requested or failed.</param>
+    public static NativeContentionEvidence CorrelateBatchEvidence(
+        NativeContentionEvidence? lockEvidence,
+        NativeContentionEvidence? offCpuEvidence)
+    {
+        if (lockEvidence is null && offCpuEvidence is null)
+        {
+            return new NativeContentionEvidence(
+                NativeContentionEvidenceLevels.None,
+                "Neither native-lock-contention nor off_cpu produced usable evidence in this batch window.");
+        }
+
+        if (offCpuEvidence is null)
+        {
+            // Only native-lock-contention ran (or off_cpu was requested but failed/degraded). The
+            // level stays exactly what native-lock reported on its own — activity at best — because
+            // there is no off-CPU evidence available in this batch to confirm or rule out blocking.
+            return lockEvidence! with
+            {
+                Summary = lockEvidence.Summary +
+                    " off_cpu did not run (or failed) in this batch, so blocking could not be confirmed or ruled out.",
+            };
+        }
+
+        if (lockEvidence is null)
+        {
+            // Only off_cpu ran (or native-lock-contention was requested but failed/unsupported on
+            // this platform). Its own evidence level stands unmodified; native-lock's sampled
+            // mutex-call attribution is simply unavailable to corroborate call sites.
+            return offCpuEvidence with
+            {
+                Summary = offCpuEvidence.Summary +
+                    " native-lock-contention did not run (or failed) in this batch, so sampled mutex-call attribution is unavailable.",
+            };
+        }
+
+        // Both ran: merge. The level is taken from offCpuEvidence exclusively — lock activity being
+        // present alongside off-CPU evidence must never itself upgrade the level.
+        var evidenceSources = (offCpuEvidence.EvidenceSources ?? [])
+            .Concat(lockEvidence.EvidenceSources ?? [])
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var confidenceRationale = (offCpuEvidence.ConfidenceRationale ?? [])
+            .Append(
+                "native-lock-contention sampled mutex-call activity was captured over the same shared " +
+                "batch window and is temporally aligned with this off-CPU evidence, but does not itself " +
+                "raise or lower the level above — only closed off-CPU futex/native-sync spans do that.")
+            .ToArray();
+
+        return offCpuEvidence with
+        {
+            SampledLockCallCount = lockEvidence.SampledLockCallCount,
+            EvidenceSources = evidenceSources,
+            ConfidenceRationale = confidenceRationale,
+            Summary = offCpuEvidence.Summary +
+                $" Correlated with {lockEvidence.SampledLockCallCount} sampled native mutex-call(s) from the same batch window (activity only; does not change this level).",
+        };
+    }
+
     public static IReadOnlyList<NextActionHint> BuildNativeLockHints(
         NativeLockCallerSelection callerSelection,
         ProcessContext? context,

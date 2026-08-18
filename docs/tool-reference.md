@@ -1773,8 +1773,9 @@ call `collect_events(kind="sweep")` directly instead.
 
 **Returns:** `CollectBatchReport` — `processId`, `durationSeconds`, and `results` (one
 `CollectBatchEntryResult` per requested entry, in request order), plus optional `gen2Evidence`
-when both counters and GC were collected, and optional `investigationDigest` when cpu and/or
-allocation sampling were collected (see below). Each entry carries
+when both counters and GC were collected, optional `investigationDigest` when cpu and/or
+allocation sampling were collected, and optional `nativeContentionEvidence` when
+`native-lock-contention` and/or `off_cpu` were collected (see below). Each entry carries
 `tool`, `kind`, `summary`, `data` (that entry's own payload, serialized generically as a JSON
 value since `collect_sample`/`collect_events` kinds don't share one static C# type — the shape is
 otherwise identical to calling that kind directly except for the bounded correlated counters
@@ -1840,6 +1841,48 @@ entry's target exited mid-window — the top-level result stays successful and `
 returned once dispatch begins; each entry independently carries its own `error` when it failed.
 The top-level call only fails outright (no `results` at all) for request-shape validation,
 pre-authorization, or `processId`-resolution failures — nothing has started yet in those cases.
+
+### Native-lock + off-CPU contention correlation
+
+`collect_batch` populates `nativeContentionEvidence` (issue #855) whenever the batch includes
+`collect_sample(kind="native-lock-contention")` and/or `collect_sample(kind="off_cpu")`, resolving
+the target process once and starting both eligible collectors concurrently against the same
+shared duration window — eliminating the extra round trip and workload-phase drift of issuing them
+as two separate `collect_sample` calls.
+
+The merged `nativeContentionEvidence` record has the exact same shape as the `contentionEvidence` /
+`nativeContentionEvidence` field already returned by the standalone `native-lock-contention` and
+`off_cpu` kinds (`level`, `summary`, `sampledLockCallCount`, the native-sync span/micros counters,
+`evidenceSources`, `confidenceRationale`, `uncertaintyNotes`) — it is a merge of both entries'
+evidence, not a new shape to learn:
+
+- **`level` is always taken from the `off_cpu` entry alone.** Sampled native-lock-contention
+  activity is lock-*call* activity only — it cannot, by itself, prove a thread actually blocked —
+  so its presence (even a very high `sampledLockCallCount`) never elevates `level` above whatever
+  `off_cpu`'s own syscall-correlated span classification already produced. Only qualifying closed
+  off-CPU futex/native-sync spans can raise `level` to `probable-blocking` or `confirmed-blocking`
+  (see the `native-lock-contention` and `off_cpu` kind sections above for the full taxonomy). An
+  uncontended workload with heavy sampled mutex-call activity but no off-CPU blocking evidence
+  stays `activity` (or `none`) — never mislabeled as blocking.
+- **`sampledLockCallCount` always comes from the `native-lock-contention` entry** (`0`/absent when
+  that entry did not run or failed).
+- Span counts and micros counters come from the `off_cpu` entry's own evidence. `evidenceSources`
+  and `confidenceRationale` may additionally note the native-lock entry's sampled activity for
+  context (e.g. naming it as corroborating but non-elevating) — that context never changes
+  `level`, which stays exactly what `off_cpu` alone produced.
+
+**Partial success.** When only one of the two entries succeeded — the other was not requested, is
+unsupported on this host/platform, or failed/timed out — `nativeContentionEvidence` still reflects
+the successful entry's own evidence (unmodified `level`), with a trailing `summary` clause naming
+which collector did not run or failed. This is in addition to (not a replacement for) that entry's
+own `error` field, which already reports the failure itself. `nativeContentionEvidence` is `null`
+only when **both** requested entries failed or neither kind was requested at all — there is
+nothing to correlate.
+
+Both collectors keep their own independent caps, timeout behavior, degradation notes, and
+`query_snapshot`-compatible drilldown handles exactly as they would standalone — this correlation
+never trades those away, it only adds one bounded, fixed-shape merged record. See
+[`docs/resource-boundedness.md`](./resource-boundedness.md) for the full accounting.
 
 **Authorization.** `collect_batch` itself is gated by `RequireAnyScope("read-counters",
 "eventpipe")`, mirroring `collect_events`. Before opening any session it additionally

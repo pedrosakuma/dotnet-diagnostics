@@ -420,6 +420,7 @@ internal sealed class SessionRepl
             {
                 await SurfaceHandleAsync(store, handleId, outcome.Result.HandleExpiresAt, stdout).ConfigureAwait(false);
                 await TryPrintInvestigationDigestAsync(store, handleId, outcome.Options.Pid, stdout).ConfigureAwait(false);
+                await TryPrintNativeContentionCorrelationAsync(store, handleId, outcome.Options.Pid, stdout).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (commandCts.IsCancellationRequested && !_sessionCts.IsCancellationRequested)
@@ -685,6 +686,44 @@ internal sealed class SessionRepl
         {
             await stdout.WriteLineAsync(line).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Issue #855's session-REPL counterpart to <see cref="TryPrintInvestigationDigestAsync"/>: after
+    /// a <c>collect --kind native-lock-contention</c> or <c>collect --kind off_cpu</c> command
+    /// registers a new handle, checks whether the *other* kind is also already present for the same
+    /// pid in this session and, if so, prints the same correlated native-contention evidence
+    /// <c>collect_batch</c>'s MCP tool computes. No-op for every other handle kind, and a silent
+    /// no-op when only one of the two kinds is present.
+    /// </summary>
+    /// <summary>Internal (not <c>private</c>) so it is directly unit-testable against a pre-seeded
+    /// <see cref="MemoryDiagnosticHandleStore"/> without driving the full REPL loop.</summary>
+    internal static async Task TryPrintNativeContentionCorrelationAsync(
+        MemoryDiagnosticHandleStore? store,
+        string handleId,
+        int? processId,
+        TextWriter stdout)
+    {
+        if (store is null || processId is not { } pid)
+        {
+            return;
+        }
+
+        var lookup = store.TryGetWithKind(handleId);
+        if (lookup is not { } found ||
+            (found.Kind != CliNativeContentionCorrelation.NativeLockContentionKind &&
+             found.Kind != CliNativeContentionCorrelation.OffCpuKind))
+        {
+            return;
+        }
+
+        var evidence = CliNativeContentionCorrelation.TryBuild(store, pid);
+        if (evidence is null)
+        {
+            return;
+        }
+
+        await stdout.WriteLineAsync(CliNativeContentionCorrelation.Render(evidence)).ConfigureAwait(false);
     }
 
     // --- Cancellation state machine -----------------------------------------------------------

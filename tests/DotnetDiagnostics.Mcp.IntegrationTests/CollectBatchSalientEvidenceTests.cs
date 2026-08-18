@@ -1,8 +1,12 @@
 using System.Text.Json;
+using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Collection;
 using DotnetDiagnostics.Core.Counters;
+using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Gc;
+using DotnetDiagnostics.Core.NativeLockContention;
+using DotnetDiagnostics.Core.OffCpu;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
 using ModelContextProtocol;
@@ -157,6 +161,206 @@ public sealed class CollectBatchSalientEvidenceTests
             MaxPauseTime: TimeSpan.FromMilliseconds(80),
             Generations: [new GenerationStats(2, 32)],
             Events: Array.Empty<GcEvent>());
+
+    // --- ApplyNativeContentionEvidence (issue #855) ----------------------------------------------
+
+    [Fact]
+    public void ApplyNativeContentionEvidence_BothSucceed_MergesEvidenceWithoutElevatingLevel()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var lockHandle = RegisterNativeLockSample(store, sampledLockCalls: 200);
+        var offCpuHandle = RegisterOffCpuSnapshot(store, ConfirmedBlockingEvidence());
+        var report = NativeContentionBatchReport(lockHandle, offCpuHandle);
+
+        var projected = CollectBatchSalientEvidence.ApplyNativeContentionEvidence(report, store);
+
+        projected.NativeContentionEvidence.Should().NotBeNull();
+        projected.NativeContentionEvidence!.Level.Should().Be(NativeContentionEvidenceLevels.ConfirmedBlocking);
+        projected.NativeContentionEvidence.SampledLockCallCount.Should().Be(200);
+        projected.NativeContentionEvidence.ClosedNativeSyncSpanCount.Should().Be(3);
+    }
+
+    [Fact]
+    public void ApplyNativeContentionEvidence_UncontendedWorkload_StaysActivityOnly()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var lockHandle = RegisterNativeLockSample(store, sampledLockCalls: 900);
+        var offCpuHandle = RegisterOffCpuSnapshot(store, NoneEvidence());
+        var report = NativeContentionBatchReport(lockHandle, offCpuHandle);
+
+        var projected = CollectBatchSalientEvidence.ApplyNativeContentionEvidence(report, store);
+
+        projected.NativeContentionEvidence.Should().NotBeNull();
+        projected.NativeContentionEvidence!.Level.Should().Be(
+            NativeContentionEvidenceLevels.None,
+            "heavy sampled mutex-call activity alone must never be mislabeled as blocking");
+    }
+
+    [Fact]
+    public void ApplyNativeContentionEvidence_NativeLockEntryFailed_KeepsOffCpuEvidence_PartialSuccess()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var offCpuHandle = RegisterOffCpuSnapshot(store, ConfirmedBlockingEvidence());
+        var report = new CollectBatchReport(
+            ProcessId: 123,
+            DurationSeconds: 6,
+            Results:
+            [
+                new CollectBatchEntryResult(
+                    "collect_sample", "native-lock-contention", "failed: perf permission denied",
+                    Data: null, Handle: null, HandleExpiresAt: null,
+                    Error: new DiagnosticError("PermissionDenied", "perf permission denied", null)),
+                new CollectBatchEntryResult(
+                    "collect_sample", "off_cpu", "off-cpu summary",
+                    JsonSerializer.SerializeToElement(new object()), offCpuHandle.Id, offCpuHandle.ExpiresAt, Error: null),
+            ]);
+
+        var projected = CollectBatchSalientEvidence.ApplyNativeContentionEvidence(report, store);
+
+        projected.NativeContentionEvidence.Should().NotBeNull("partial success must still surface the successful collector's evidence");
+        projected.NativeContentionEvidence!.Level.Should().Be(NativeContentionEvidenceLevels.ConfirmedBlocking);
+        projected.NativeContentionEvidence.SampledLockCallCount.Should().Be(0);
+        projected.NativeContentionEvidence.Summary.Should().Contain("native-lock-contention did not run (or failed)");
+        projected.Results.Single(r => r.Kind == "native-lock-contention").Error.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void ApplyNativeContentionEvidence_OffCpuEntryTimedOut_KeepsNativeLockEvidence_PartialSuccess()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var lockHandle = RegisterNativeLockSample(store, sampledLockCalls: 77);
+        var report = new CollectBatchReport(
+            ProcessId: 123,
+            DurationSeconds: 6,
+            Results:
+            [
+                new CollectBatchEntryResult(
+                    "collect_sample", "native-lock-contention", "native-lock summary",
+                    JsonSerializer.SerializeToElement(new object()), lockHandle.Id, lockHandle.ExpiresAt, Error: null),
+                new CollectBatchEntryResult(
+                    "collect_sample", "off_cpu", "failed: bounded perf subprocess timed out",
+                    Data: null, Handle: null, HandleExpiresAt: null,
+                    Error: new DiagnosticError("CaptureTimeout", "bounded perf subprocess timed out", null)),
+            ]);
+
+        var projected = CollectBatchSalientEvidence.ApplyNativeContentionEvidence(report, store);
+
+        projected.NativeContentionEvidence.Should().NotBeNull("partial success must still surface the successful collector's evidence");
+        projected.NativeContentionEvidence!.Level.Should().Be(NativeContentionEvidenceLevels.Activity);
+        projected.NativeContentionEvidence.SampledLockCallCount.Should().Be(77);
+        projected.NativeContentionEvidence.Summary.Should().Contain("off_cpu did not run (or failed)");
+    }
+
+    [Fact]
+    public void ApplyNativeContentionEvidence_BothEntriesFailed_LeavesNativeContentionEvidenceNull()
+    {
+        var report = new CollectBatchReport(
+            ProcessId: 123,
+            DurationSeconds: 6,
+            Results:
+            [
+                new CollectBatchEntryResult(
+                    "collect_sample", "native-lock-contention", "failed: cancelled",
+                    Data: null, Handle: null, HandleExpiresAt: null,
+                    Error: new DiagnosticError("CollectorFailed", "cancelled", null)),
+                new CollectBatchEntryResult(
+                    "collect_sample", "off_cpu", "failed: cancelled",
+                    Data: null, Handle: null, HandleExpiresAt: null,
+                    Error: new DiagnosticError("CollectorFailed", "cancelled", null)),
+            ]);
+
+        var projected = CollectBatchSalientEvidence.ApplyNativeContentionEvidence(report, new MemoryDiagnosticHandleStore());
+
+        projected.NativeContentionEvidence.Should().BeNull(
+            "both entries failed (e.g. cancellation/timeout of the whole batch) — the per-entry Error already explains why");
+    }
+
+    [Fact]
+    public void ApplyNativeContentionEvidence_NeitherKindRequested_IsNoOp()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var counters = LohCounterSnapshot();
+        var countersHandle = store.Register(123, CollectionHandleKinds.Counters, counters, TimeSpan.FromMinutes(10));
+        var report = new CollectBatchReport(
+            ProcessId: 123,
+            DurationSeconds: 6,
+            Results:
+            [
+                new CollectBatchEntryResult(
+                    "collect_events", "counters", "counter summary",
+                    JsonSerializer.SerializeToElement(new CollectEventsEnvelope("counters")),
+                    countersHandle.Id, countersHandle.ExpiresAt, Error: null),
+            ]);
+
+        var projected = CollectBatchSalientEvidence.ApplyNativeContentionEvidence(report, store);
+
+        projected.NativeContentionEvidence.Should().BeNull();
+    }
+
+    private static NativeContentionEvidence ConfirmedBlockingEvidence()
+        => new(
+            NativeContentionEvidenceLevels.ConfirmedBlocking,
+            "closed futex span(s) confirm the thread blocked in the kernel.",
+            NativeSyncSpanCount: 3,
+            ClosedNativeSyncSpanCount: 3,
+            NativeSyncOffCpuMicros: 45_000,
+            ClosedNativeSyncOffCpuMicros: 45_000);
+
+    private static NativeContentionEvidence NoneEvidence()
+        => new(NativeContentionEvidenceLevels.None, "No native synchronization off-CPU evidence observed in this window.");
+
+    private static DiagnosticHandle RegisterNativeLockSample(MemoryDiagnosticHandleStore store, long sampledLockCalls)
+    {
+        var trace = new CpuSampleTraceArtifact(123, StartedAt, TimeSpan.FromSeconds(6), sampledLockCalls, new CallTreeNode(new SampledFrame("root", "root"), 0, 0, []));
+        var sample = new NativeLockContentionSample(
+            123,
+            StartedAt,
+            TimeSpan.FromSeconds(6),
+            sampledLockCalls,
+            TopContendedCallSites: [],
+            ProbedFunctions: ["pthread_mutex_lock", "pthread_mutex_unlock"],
+            LibcPath: "/lib/x86_64-linux-gnu/libc.so.6",
+            SamplePeriod: 5000,
+            SymbolSource: "PdbResolved",
+            ContentionEvidence: new NativeContentionEvidence(
+                NativeContentionEvidenceLevels.Activity,
+                "sampled pthread mutex entry points are lock activity only.",
+                SampledLockCallCount: sampledLockCalls));
+        return store.Register(
+            123,
+            "native-lock-contention-sample",
+            new NativeLockContentionArtifact(sample, trace),
+            TimeSpan.FromMinutes(10));
+    }
+
+    private static DiagnosticHandle RegisterOffCpuSnapshot(MemoryDiagnosticHandleStore store, NativeContentionEvidence evidence)
+    {
+        var artifact = new OffCpuSnapshotArtifact(
+            123,
+            StartedAt,
+            TimeSpan.FromSeconds(6),
+            TotalOffCpuMicros: 45_000,
+            SchedSwitches: 10,
+            Stacks: [],
+            Threads: [],
+            SymbolSource: "PdbResolved",
+            NativeContentionEvidence: evidence);
+        return store.Register(123, "off-cpu-snapshot", artifact, TimeSpan.FromMinutes(10));
+    }
+
+    private static CollectBatchReport NativeContentionBatchReport(DiagnosticHandle lockHandle, DiagnosticHandle offCpuHandle)
+        => new(
+            ProcessId: 123,
+            DurationSeconds: 6,
+            Results:
+            [
+                new CollectBatchEntryResult(
+                    "collect_sample", "native-lock-contention", "native-lock summary",
+                    JsonSerializer.SerializeToElement(new object()), lockHandle.Id, lockHandle.ExpiresAt, Error: null),
+                new CollectBatchEntryResult(
+                    "collect_sample", "off_cpu", "off-cpu summary",
+                    JsonSerializer.SerializeToElement(new object()), offCpuHandle.Id, offCpuHandle.ExpiresAt, Error: null),
+            ]);
 
     private static CounterValue Counter(
         string name,

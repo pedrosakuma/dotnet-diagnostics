@@ -495,7 +495,7 @@ public static class SamplerUseCases
         var handle = handles.Register(
             pid,
             NativeLockContentionHandleKind,
-            result.Artifact,
+            new NativeLockContentionArtifact(sample, result.Artifact),
             SampleHandleTtl,
             evictWhenProcessExits: false,
             origin: HandleOrigin.Live);
