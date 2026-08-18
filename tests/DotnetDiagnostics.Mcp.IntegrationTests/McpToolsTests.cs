@@ -986,11 +986,10 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         const int retainedLohBlockCount = 16;
         const int lohBlockSize = 128 * 1024;
         // Keep the workload active for the whole collector call instead of stopping after a finite
-        // burst. Concurrent collect_batch EventPipe sessions can take longer than the fixed startup
-        // delay to arm on loaded Windows runners, so an early finite burst is partly or entirely
-        // missed. A small pace also avoids flooding the stream and turning shutdown drain into the
-        // thing under test.
-        var collectionPace = TimeSpan.FromMilliseconds(20);
+        // burst (#853). Concurrent collect_batch EventPipe sessions can take longer than the fixed
+        // startup delay to arm on loaded Windows runners, so an early finite burst is partly or
+        // entirely missed. A small pace also avoids flooding the stream and turning shutdown drain
+        // into the thing under test.
         var retainedLohBlocks = new byte[retainedLohBlockCount][];
         for (var i = 0; i < retainedLohBlocks.Length; i++)
         {
@@ -998,47 +997,31 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         }
 
         await using var client = await ConnectAsync();
-        using var driverCts = new CancellationTokenSource();
-        var driver = Task.Run(async () =>
-        {
-            try
+        await using var driver = LiveTestCoordination.StartBackgroundWorkload(
+            token =>
             {
-                await Task.Delay(TimeSpan.FromMilliseconds(1500), driverCts.Token);
-                while (!driverCts.IsCancellationRequested)
-                {
-                    _ = new byte[lohBlockSize];
-                    GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
-                    await Task.Delay(collectionPace, driverCts.Token);
-                }
-            }
-            catch (OperationCanceledException) when (driverCts.IsCancellationRequested)
-            {
-            }
-        });
+                _ = new byte[lohBlockSize];
+                GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
+                return Task.CompletedTask;
+            },
+            initialDelay: TimeSpan.FromMilliseconds(1500),
+            pace: TimeSpan.FromMilliseconds(20));
 
-        ModelContextProtocol.Protocol.CallToolResult result;
-        try
-        {
-            result = await client.CallToolAsync(
-                "collect_batch",
-                new Dictionary<string, object?>
+        var result = await client.CallToolAsync(
+            "collect_batch",
+            new Dictionary<string, object?>
+            {
+                ["requests"] = new object[]
                 {
-                    ["requests"] = new object[]
-                    {
-                        new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
-                        new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "gc" },
-                    },
-                    ["processId"] = Environment.ProcessId,
-                    ["durationSeconds"] = 20,
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "counters" },
+                    new Dictionary<string, object?> { ["tool"] = "collect_events", ["kind"] = "gc" },
                 },
-                cancellationToken: CancellationToken.None);
-        }
-        finally
-        {
-            driverCts.Cancel();
-        }
+                ["processId"] = Environment.ProcessId,
+                ["durationSeconds"] = 20,
+            },
+            cancellationToken: CancellationToken.None);
 
-        await driver;
+        await driver.StopAsync();
         GC.KeepAlive(retainedLohBlocks);
 
         result.IsError.Should().NotBe(true);
@@ -1304,6 +1287,27 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     {
         await using var client = await ConnectAsync();
 
+        // Keep throwing/catching for the whole collection window instead of a fixed pre-dispatch
+        // burst (#853): a finite burst can complete before the exceptions EventPipe session
+        // finishes arming (~500ms-1s), leaving TotalExceptions at 0 and the assertion below
+        // trivially true regardless of whether the collector actually captured anything.
+        await using var driver = LiveTestCoordination.StartBackgroundWorkload(
+            _ =>
+            {
+                try
+                {
+                    throw new InvalidOperationException("CollectExceptions_RunsAgainstSelfHost synthetic exception");
+                }
+                catch (InvalidOperationException)
+                {
+                    // Caught deliberately: the exceptions collector observes the first-chance
+                    // throw, not whether it propagates.
+                }
+
+                return Task.CompletedTask;
+            },
+            pace: TimeSpan.FromMilliseconds(100));
+
         var result = await client.CallToolAsync(
             "collect_events",
             new Dictionary<string, object?>
@@ -1315,12 +1319,16 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        await driver.StopAsync();
+
         result.IsError.Should().NotBe(true);
         var envelope = DeserializeStructured<CollectEventsEnvelope>(result);
         envelope.Should().NotBeNull();
         envelope!.Exceptions.Should().NotBeNull();
         envelope.Exceptions!.ProcessId.Should().Be(Environment.ProcessId);
-        envelope.Exceptions.TotalExceptions.Should().BeGreaterThanOrEqualTo(0);
+        envelope.Exceptions.TotalExceptions.Should().BeGreaterThan(
+            0,
+            "the background workload keeps throwing/catching InvalidOperationException for the whole collection window");
     }
 
     [Fact]
@@ -1352,11 +1360,17 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     {
         await using var client = await ConnectAsync();
 
-        // Encourage at least one GC so the test exercises the parsing path.
-        for (var i = 0; i < 3; i++)
-        {
-            GC.Collect(2, GCCollectionMode.Forced, blocking: true);
-        }
+        // Force gen2 collections for the whole collection window instead of a fixed pre-dispatch
+        // burst plus a fire-and-forget task started only after the call already returned (#853):
+        // the latter runs entirely after the 3s window closes, so it never contributed evidence
+        // and the assertion below could not have relied on it.
+        await using var driver = LiveTestCoordination.StartBackgroundWorkload(
+            _ =>
+            {
+                GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+                return Task.CompletedTask;
+            },
+            pace: TimeSpan.FromMilliseconds(200));
 
         var result = await client.CallToolAsync(
             "collect_events",
@@ -1369,20 +1383,16 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             },
             cancellationToken: CancellationToken.None);
 
+        await driver.StopAsync();
+
         result.IsError.Should().NotBe(true);
         var envelope = DeserializeStructured<CollectEventsEnvelope>(result);
         envelope.Should().NotBeNull();
         envelope!.Gc.Should().NotBeNull();
         envelope.Gc!.ProcessId.Should().Be(Environment.ProcessId);
-        // Force a few more during the window so events actually land.
-        _ = Task.Run(() =>
-        {
-            for (var i = 0; i < 3; i++)
-            {
-                Thread.Sleep(200);
-                GC.Collect(2, GCCollectionMode.Forced, blocking: true);
-            }
-        });
+        envelope.Gc.TotalCollections.Should().BeGreaterThan(
+            0,
+            "the background workload forces gen2 collections for the whole collection window");
     }
 
     [Fact]
