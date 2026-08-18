@@ -111,6 +111,10 @@ public sealed class EventPipeCounterCollector : ICounterCollector
         // First-observed value per counter key, so the signal-grouping layer (#527) can derive an
         // intra-window delta/trend (latestCounters[key] - firstCounters[key]) without a second pass.
         var firstCounters = new ConcurrentDictionary<string, CounterValue>(StringComparer.Ordinal);
+        // Maximum-observed value per counter key across every tick of the window, so transient churn
+        // (e.g. LOH size that peaks mid-window and is already collected back down by the final tick)
+        // is observable even though `latestCounters` only ever reflects the last sample (#858).
+        var maxCounters = new ConcurrentDictionary<string, CounterValue>(StringComparer.Ordinal);
         var instrumentMetadata = new ConcurrentDictionary<int, InstrumentMetadata>();
         var latestMeters = new ConcurrentDictionary<string, MeterInstrumentValue>(StringComparer.Ordinal);
         var notes = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
@@ -163,6 +167,10 @@ public sealed class EventPipeCounterCollector : ICounterCollector
                     var value = payload with { Provider = traceEvent.ProviderName };
                     latestCounters[key] = value;
                     firstCounters.TryAdd(key, value);
+                    maxCounters.AddOrUpdate(
+                        key,
+                        value,
+                        (_, existing) => value.Value > existing.Value ? value : existing);
                 };
 
                 source.Process();
@@ -203,11 +211,17 @@ public sealed class EventPipeCounterCollector : ICounterCollector
         var firstCounterValues = counters
             .Select(c => firstCounters.TryGetValue($"{c.Provider}/{c.Name}", out var first) ? first : c)
             .ToList();
+        // Same order/keys as `counters`, but the maximum-observed value per key across the whole
+        // window (equal to `counters` when only one tick fired, or when the counter never dropped).
+        var maxCounterValues = counters
+            .Select(c => maxCounters.TryGetValue($"{c.Provider}/{c.Name}", out var max) ? max : c)
+            .ToList();
 
         return new CounterSnapshot(processId, startedAt, duration, counters, meterValues, orderedNotes)
         {
             ProcessorCount = targetProcessorCount,
             FirstCounters = firstCounterValues,
+            MaxCounters = maxCounterValues,
         };
     }
 

@@ -39,6 +39,11 @@
     },
     {
       "name": "loh-size",
+      "value": 0,
+      "unit": "B"
+    },
+    {
+      "name": "loh-size-max",
       "value": 3601008,
       "unit": "B"
     },

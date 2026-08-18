@@ -32,7 +32,7 @@
     {
       "id": "loh-size-elevated",
       "kind": "counterComparison",
-      "metric": "loh-size",
+      "metric": "loh-size-max",
       "comparison": "greaterThanOrEqual",
       "threshold": 1000000
     },
@@ -46,7 +46,8 @@
     }
   ],
   "misleadingSignals": [
-    "CPU can look moderate even when pause frequency and LOH growth are driving latency instability."
+    "CPU can look moderate even when pause frequency and LOH growth are driving latency instability.",
+    "Retained LOH size at the final sample can read as 0 B even under sustained churn, because a gen2 collection can reclaim the LOH between the last allocation burst and the final counter tick; use the windowed peak (loh-size-max), not the final value, as evidence."
   ],
   "temptingWrongHypotheses": [ "cpu-hot-loop", "thread-wait-contention" ],
   "acceptableHypotheses": [ "gc-pause-pressure-from-loh-churn" ],

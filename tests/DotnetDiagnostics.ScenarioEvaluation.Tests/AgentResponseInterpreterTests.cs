@@ -69,7 +69,7 @@ public sealed class AgentResponseInterpreterTests
 
         result.Interpretation.EvidenceIds.Should().Contain(["gen2-counter-elevated", "loh-size-elevated", "gen2-share-signal"]);
         result.EvidenceCitations.Should().Contain(citation =>
-            citation.EvidencePath == "metrics[name=loh-size]"
+            citation.EvidencePath == "metrics[name=loh-size-max]"
             && citation.SupportedEvidenceIds.Contains("loh-size-elevated", StringComparer.Ordinal));
         result.Uncertainty.Disposition.Should().Be(AgentResponseUncertaintyDisposition.Hedged);
     }
