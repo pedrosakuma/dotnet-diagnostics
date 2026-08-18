@@ -1,4 +1,5 @@
 using System.Globalization;
+using DotnetDiagnostics.Core.CpuSampling;
 
 namespace DotnetDiagnostics.Core.OffCpu;
 
@@ -39,19 +40,16 @@ internal static class PerfSchedScriptParser
     /// which would otherwise vanish from the report. Default <c>false</c> preserves the strict
     /// closed-pair semantics for unit tests.
     /// </param>
-    /// <param name="addressResolver">
-    /// Optional callback that maps a frame's raw program-counter address (the leading hex token
-    /// in each <c>perf script</c> stack line) to its canonical
-    /// <see cref="DotnetDiagnostics.Core.Memory.MethodIdentity"/> handoff payload. Resolution
-    /// is by address — not by symbol string — so overloaded methods that share a rendered
-    /// <c>Type.Method</c> name still get their own correct identity. Frames whose address
-    /// falls outside any JIT'd range keep <c>Identity = null</c> (native, kernel, unresolved JIT).
+    /// <param name="frameEnricher">
+    /// Optional callback that receives the parsed frame including its raw program-counter address.
+    /// Callers use this to stamp managed JIT identities by address — not by perf-rendered symbol
+    /// text — while native/kernel/unresolved frames keep <c>Identity = null</c>.
     /// </param>
     public static (IReadOnlyList<OffCpuSpan> Spans, long SchedSwitches) Parse(
         string output,
         HashSet<int> targetTids,
         bool flushPending = false,
-        Func<ulong, DotnetDiagnostics.Core.Memory.MethodIdentity?>? addressResolver = null)
+        Func<PerfFrame, PerfFrame>? frameEnricher = null)
     {
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(targetTids);
@@ -63,7 +61,7 @@ internal static class PerfSchedScriptParser
             targetTids,
             span => spans.Add(span),
             flushPending,
-            addressResolver,
+            frameEnricher,
             CancellationToken.None).GetAwaiter().GetResult();
         return (spans, switches);
     }
@@ -73,7 +71,7 @@ internal static class PerfSchedScriptParser
         HashSet<int> targetTids,
         Action<OffCpuSpan> onSpan,
         bool flushPending = false,
-        Func<ulong, DotnetDiagnostics.Core.Memory.MethodIdentity?>? addressResolver = null,
+        Func<PerfFrame, PerfFrame>? frameEnricher = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(reader);
@@ -145,7 +143,7 @@ internal static class PerfSchedScriptParser
                     break;
                 }
 
-                var frame = ParseFrame(frameLine, addressResolver);
+                var frame = ParseFrame(frameLine, frameEnricher);
                 if (frame is not null)
                 {
                     ev.Stack.Add(frame);
@@ -401,53 +399,15 @@ internal static class PerfSchedScriptParser
 
     private static OffCpuFrame? ParseFrame(
         string line,
-        Func<ulong, DotnetDiagnostics.Core.Memory.MethodIdentity?>? addressResolver = null)
+        Func<PerfFrame, PerfFrame>? frameEnricher = null)
     {
-        var trimmed = line.TrimStart();
-        if (trimmed.Length == 0) return null;
-
-        var lastOpen = trimmed.LastIndexOf('(');
-        var lastClose = trimmed.LastIndexOf(')');
-        string module;
-        string symbolPart;
-        if (lastOpen >= 0 && lastClose > lastOpen)
+        var parsed = PerfScriptFrameParser.Parse(line);
+        if (parsed is null) return null;
+        var frame = frameEnricher?.Invoke(parsed) ?? parsed;
+        return new OffCpuFrame(Module: frame.Module, Method: frame.Symbol, Identity: frame.Identity)
         {
-            module = trimmed.Substring(lastOpen + 1, lastClose - lastOpen - 1);
-            symbolPart = trimmed[..lastOpen].TrimEnd();
-        }
-        else
-        {
-            module = string.Empty;
-            symbolPart = trimmed;
-        }
-
-        var firstSpace = symbolPart.IndexOf(' ');
-        ulong? address = null;
-        string symbol;
-        if (firstSpace > 0)
-        {
-            var addrToken = symbolPart[..firstSpace];
-            if (ulong.TryParse(addrToken, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var addr))
-            {
-                address = addr;
-            }
-            symbol = symbolPart[(firstSpace + 1)..].TrimStart();
-        }
-        else
-        {
-            symbol = symbolPart;
-        }
-
-        var plus = symbol.LastIndexOf("+0x", StringComparison.Ordinal);
-        if (plus > 0) symbol = symbol[..plus];
-
-        if (symbol.Length == 0) return null;
-        DotnetDiagnostics.Core.Memory.MethodIdentity? identity = null;
-        if (address.HasValue && addressResolver is not null)
-        {
-            identity = addressResolver(address.Value);
-        }
-        return new OffCpuFrame(Module: module, Method: symbol, Identity: identity);
+            InstructionPointer = frame.Address,
+        };
     }
 }
 

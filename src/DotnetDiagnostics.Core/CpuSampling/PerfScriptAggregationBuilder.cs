@@ -1,3 +1,4 @@
+using System.Globalization;
 using DotnetDiagnostics.Core.Memory;
 
 namespace DotnetDiagnostics.Core.CpuSampling;
@@ -8,6 +9,9 @@ internal readonly record struct PerfScriptAggregationResult(
     CallTreeNode Root,
     NativeAotSymbolDemangler.SymbolSource SymbolSource,
     IReadOnlyDictionary<SymbolRef, MethodIdentity> Identities,
+    long JitCandidateFrames = 0,
+    long ResolvedJitFrames = 0,
+    long UnresolvedJitCandidateFrames = 0,
     bool Truncated = false);
 
 internal sealed class PerfScriptAggregationBuilder
@@ -15,6 +19,8 @@ internal sealed class PerfScriptAggregationBuilder
     private readonly Dictionary<string, long> _inclusive = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _exclusive = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _modules = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _displays = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, MethodIdentity> _identityByKey = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _displayCache = new(StringComparer.Ordinal);
     private readonly Dictionary<SymbolRef, MethodIdentity> _identities = new();
     private readonly CallTreeBuilder _callTree = new();
@@ -45,16 +51,21 @@ internal sealed class PerfScriptAggregationBuilder
 
         TotalSamples++;
 
-        var rootToLeaf = new List<(string Key, string Module, string Display)>(sample.Frames.Count);
+        var rootToLeaf = new List<(string Key, string Module, string Display, MethodIdentity? Identity)>(sample.Frames.Count);
         for (var i = sample.Frames.Count - 1; i >= 0; i--)
         {
             var frame = sample.Frames[i];
-            var classification = NativeAotSymbolDemangler.Classify(frame.Symbol);
+            var classification = frame.Identity is null
+                ? NativeAotSymbolDemangler.Classify(frame.Symbol)
+                : NativeAotSymbolDemangler.SymbolSource.Unknown;
             _symbolSource = NativeAotSymbolDemangler.Combine(_symbolSource, classification);
-            if (!_displayCache.TryGetValue(frame.Symbol, out var demangled))
+            var cacheKey = frame.Identity is null ? frame.Symbol : "\0jit:" + frame.Symbol;
+            if (!_displayCache.TryGetValue(cacheKey, out var demangled))
             {
-                demangled = NativeAotSymbolDemangler.Demangle(frame.Symbol);
-                _displayCache[frame.Symbol] = demangled;
+                demangled = frame.Identity is null
+                    ? NativeAotSymbolDemangler.Demangle(frame.Symbol)
+                    : frame.Symbol;
+                _displayCache[cacheKey] = demangled;
                 if (classification == NativeAotSymbolDemangler.SymbolSource.ElfMangled &&
                     !ReferenceEquals(demangled, frame.Symbol) &&
                     !string.Equals(demangled, frame.Symbol, StringComparison.Ordinal))
@@ -63,9 +74,16 @@ internal sealed class PerfScriptAggregationBuilder
                 }
             }
 
-            var key = string.IsNullOrEmpty(frame.Module) ? demangled : frame.Module + "!" + demangled;
-            rootToLeaf.Add((key, frame.Module, demangled));
+            var key = BuildAggregationKey(frame.Module, demangled, frame.Identity);
+            rootToLeaf.Add((key, frame.Module, demangled, frame.Identity));
             _modules.TryAdd(key, frame.Module);
+            _displays.TryAdd(key, demangled);
+
+            if (frame.Identity is not null)
+            {
+                _identityByKey.TryAdd(key, frame.Identity);
+                _identities.TryAdd(new SymbolRef(frame.Module, demangled), frame.Identity);
+            }
 
             if (_methodMap is not null && _methodMap.ContainsMethod(frame.Symbol))
             {
@@ -85,7 +103,7 @@ internal sealed class PerfScriptAggregationBuilder
         _exclusive[leafKey] = _exclusive.GetValueOrDefault(leafKey) + 1;
 
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var (key, _, _) in rootToLeaf)
+        foreach (var (key, _, _, _) in rootToLeaf)
         {
             if (seen.Add(key))
             {
@@ -104,10 +122,12 @@ internal sealed class PerfScriptAggregationBuilder
             .Select(kv =>
             {
                 var module = _modules.GetValueOrDefault(kv.Key, string.Empty);
-                var display = !string.IsNullOrEmpty(module) && kv.Key.StartsWith(module + "!", StringComparison.Ordinal)
-                    ? kv.Key[(module.Length + 1)..]
-                    : kv.Key;
-                _identities.TryGetValue(new SymbolRef(module, display), out var identity);
+                var display = _displays.GetValueOrDefault(kv.Key, kv.Key);
+                if (!_identityByKey.TryGetValue(kv.Key, out var identity))
+                {
+                    _identities.TryGetValue(new SymbolRef(module, display), out identity);
+                }
+
                 return new Hotspot(
                     Frame: new SampledFrame(Module: module, Method: display),
                     InclusiveSamples: kv.Value,
@@ -134,5 +154,29 @@ internal sealed class PerfScriptAggregationBuilder
             SymbolSource: _symbolSource,
             Identities: identityView,
             Truncated: truncated);
+    }
+
+    private static string BuildAggregationKey(string module, string display, MethodIdentity? identity)
+    {
+        var key = string.IsNullOrEmpty(module) ? display : module + "!" + display;
+        if (identity is null)
+        {
+            return key;
+        }
+
+        return string.Concat(
+            key,
+            "\0jit:",
+            identity.ModuleVersionId,
+            ':',
+            identity.MetadataToken?.ToString(CultureInfo.InvariantCulture),
+            ':',
+            identity.ModulePath,
+            ':',
+            identity.TypeFullName,
+            ':',
+            identity.MethodName,
+            ':',
+            identity.GenericArity.ToString(CultureInfo.InvariantCulture));
     }
 }

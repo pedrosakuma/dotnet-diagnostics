@@ -165,9 +165,7 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
                     notes);
             }
 
-            Func<ulong, DotnetDiagnostics.Core.Memory.MethodIdentity?>? resolver = jitMap is null
-                ? null
-                : jitMap.Resolve;
+            var symbolizer = new PerfJitFrameSymbolizer(jitMap);
             return await RunScriptAsync(
                 schedPerfDataPath,
                 recordResult.SyscallCaptureSucceeded ? syscallPerfDataPath : null,
@@ -176,7 +174,7 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
                 duration,
                 topN,
                 targetTids,
-                resolver,
+                symbolizer,
                 notes,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -346,7 +344,7 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         TimeSpan duration,
         int topN,
         HashSet<int> targetTids,
-        Func<ulong, DotnetDiagnostics.Core.Memory.MethodIdentity?>? addressResolver,
+        PerfJitFrameSymbolizer? jitSymbolizer,
         List<string> notes,
         CancellationToken ct)
     {
@@ -390,6 +388,7 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
             }
         }
 
+        Func<PerfFrame, PerfFrame>? frameEnricher = jitSymbolizer is null ? null : jitSymbolizer.Symbolize;
         var startInfo = new ProcessStartInfo
         {
             FileName = ResolvePerfPath()!,
@@ -419,10 +418,11 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
                     duration,
                     topN,
                     targetTids,
-                    addressResolver,
+                    frameEnricher,
                     notes,
                     syscallIndex,
-                    boundedToken).ConfigureAwait(false);
+                    jitSymbolizer: jitSymbolizer,
+                    cancellationToken: boundedToken).ConfigureAwait(false);
                 await process.WaitForExitAsync(boundedToken).ConfigureAwait(false);
                 var stderr = await stderrTask.ConfigureAwait(false);
                 if (process.ExitCode != 0)
@@ -569,9 +569,10 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
         TimeSpan duration,
         int topN,
         HashSet<int> targetTids,
-        Func<ulong, DotnetDiagnostics.Core.Memory.MethodIdentity?>? addressResolver = null,
+        Func<PerfFrame, PerfFrame>? frameEnricher = null,
         IReadOnlyList<string>? notes = null,
         SyscallIntervalIndex? syscallIndex = null,
+        PerfJitFrameSymbolizer? jitSymbolizer = null,
         CancellationToken cancellationToken = default)
     {
         var builder = OffCpuAggregator.CreateBuilder();
@@ -583,8 +584,12 @@ public sealed class PerfSchedOffCpuSampler : IOffCpuSampler
             targetTids,
             onSpan,
             flushPending: true,
-            addressResolver: addressResolver,
+            frameEnricher: frameEnricher,
             cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (notes is List<string> mutableNotes && jitSymbolizer is not null)
+        {
+            PerfJitSymbolizationNotes.Add(mutableNotes, jitSymbolizer.CandidateFrames, jitSymbolizer.ResolvedFrames, jitSymbolizer.UnresolvedCandidateFrames);
+        }
         return builder.Build(processId, startedAt, duration, switches, topN, "perf-sched-dwarf", notes);
     }
 

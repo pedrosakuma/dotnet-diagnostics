@@ -78,7 +78,10 @@ public sealed record OffCpuSyscallAttribution(string Name, long Count, long Micr
 public sealed record OffCpuFrame(
     string Module,
     string Method,
-    DotnetDiagnostics.Core.Memory.MethodIdentity? Identity = null);
+    DotnetDiagnostics.Core.Memory.MethodIdentity? Identity = null)
+{
+    public ulong? InstructionPointer { get; init; }
+}
 
 /// <summary>
 /// Full off-CPU data set retained behind a handle for drill-down queries. Keeps the per-thread

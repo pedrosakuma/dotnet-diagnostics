@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics.Tracing;
 using System.Globalization;
 using System.Text;
+using System.Threading;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Memory;
 using DotnetDiagnostics.Core.Internal;
@@ -192,10 +193,12 @@ public sealed class JitMapEmitter
         IEnumerable<PendingJitMethod> methods,
         ConcurrentDictionary<long, string> modulePaths)
     {
-        // Sort by start address so JitMapResult.Resolve can binary-search.
+        // Sort by start address so JitMapResult.Resolve can binary-search. Equal starts are
+        // secondary-sorted by size so overlapping/tiered synthetic tests stay deterministic.
         var ordered = methods
             .Where(m => m.StartAddress != 0 && m.Size > 0)
             .OrderBy(m => m.StartAddress)
+            .ThenBy(m => m.Size)
             .ToList();
 
         var ranges = new List<JitMapRange>(ordered.Count);
@@ -230,7 +233,7 @@ public sealed class JitMapEmitter
             {
                 GenericTypeArguments = parsed.GenericTypeArguments,
             };
-            ranges.Add(new JitMapRange(m.StartAddress, (uint)m.Size, identity));
+            ranges.Add(new JitMapRange(m.StartAddress, (uint)m.Size, identity, symbol));
         }
 
         return ranges;
@@ -314,6 +317,8 @@ public sealed record JitMapResult(
     IReadOnlyList<JitMapRange> Methods,
     int MethodCount)
 {
+    private ulong[]? _prefixMaxEndExclusive;
+
     /// <summary>
     /// Returns the <see cref="MethodIdentity"/> whose range <c>[StartAddress, StartAddress+Size)</c>
     /// contains <paramref name="address"/>, or <c>null</c> when the address is not within any
@@ -321,10 +326,14 @@ public sealed record JitMapResult(
     /// </summary>
     /// <remarks>
     /// Binary search assumes <see cref="Methods"/> is sorted by <see cref="JitMapRange.StartAddress"/>
-    /// ascending — <see cref="JitMapEmitter"/> guarantees that ordering. Code-heap ranges are
-    /// non-overlapping by construction (the JIT allocates contiguous bytes per method body).
+    /// ascending — <see cref="JitMapEmitter"/> guarantees that ordering. Runtime code-heap ranges
+    /// are normally non-overlapping, but lookup is deterministic for overlap/same-start test cases:
+    /// the greatest containing start address wins, with smaller size as the same-start tie-breaker.
     /// </remarks>
     public MethodIdentity? Resolve(ulong address)
+        => ResolveFrame(address)?.Identity;
+
+    public JitMapResolvedFrame? ResolveFrame(ulong address)
     {
         if (Methods.Count == 0) return null;
         int lo = 0, hi = Methods.Count - 1, found = -1;
@@ -342,12 +351,86 @@ public sealed record JitMapResult(
             }
         }
         if (found < 0) return null;
-        var m = Methods[found];
-        return address < m.StartAddress + m.Size ? m.Identity : null;
+        JitMapRange? best = null;
+        var prefixMaxEndExclusive = GetPrefixMaxEndExclusive();
+        for (var i = found; i >= 0; i--)
+        {
+            var candidate = Methods[i];
+            if (candidate.StartAddress > address)
+            {
+                continue;
+            }
+
+            if (!Contains(candidate, address))
+            {
+                if (i == 0 || prefixMaxEndExclusive[i - 1] <= address)
+                {
+                    break;
+                }
+
+                continue;
+            }
+
+            if (best is null ||
+                candidate.StartAddress > best.Value.StartAddress ||
+                (candidate.StartAddress == best.Value.StartAddress && candidate.Size < best.Value.Size))
+            {
+                best = candidate;
+            }
+
+            if (i == 0 || Methods[i - 1].StartAddress < best.Value.StartAddress)
+            {
+                break;
+            }
+
+            if (prefixMaxEndExclusive[i - 1] <= address)
+            {
+                break;
+            }
+        }
+
+        return best is null
+            ? null
+            : new JitMapResolvedFrame(best.Value.Identity, best.Value.DisplayName);
+    }
+
+    private static bool Contains(JitMapRange range, ulong address)
+    {
+        var start = range.StartAddress;
+        var end = EndExclusive(range);
+        return address >= start && address < end;
+    }
+
+    private ulong[] GetPrefixMaxEndExclusive()
+        => LazyInitializer.EnsureInitialized(
+            ref _prefixMaxEndExclusive,
+            () =>
+            {
+                var prefix = new ulong[Methods.Count];
+                var max = 0UL;
+                for (var i = 0; i < Methods.Count; i++)
+                {
+                    max = Math.Max(max, EndExclusive(Methods[i]));
+                    prefix[i] = max;
+                }
+
+                return prefix;
+            });
+
+    private static ulong EndExclusive(JitMapRange range)
+    {
+        var end = range.StartAddress + range.Size;
+        return end >= range.StartAddress ? end : ulong.MaxValue;
     }
 }
 
 /// <summary>One JIT'd managed method body: covers byte range
 /// <c>[<see cref="StartAddress"/>, <see cref="StartAddress"/> + <see cref="Size"/>)</c>.
 /// Distinct ranges per overload — even when the formatted symbol string collides.</summary>
-public readonly record struct JitMapRange(ulong StartAddress, uint Size, MethodIdentity Identity);
+public readonly record struct JitMapRange(
+    ulong StartAddress,
+    uint Size,
+    MethodIdentity Identity,
+    string? DisplayName = null);
+
+public readonly record struct JitMapResolvedFrame(MethodIdentity Identity, string? DisplayName);

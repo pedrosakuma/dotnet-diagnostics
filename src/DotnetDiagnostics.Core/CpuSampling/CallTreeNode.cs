@@ -34,7 +34,12 @@ public static class CallTreeIdentityProjector
 
         CallTreeNode Walk(CallTreeNode node)
         {
-            identities.TryGetValue(new SymbolRef(node.Frame.Module, node.Frame.Method), out var identity);
+            var identity = node.Identity;
+            if (identity is null)
+            {
+                identities.TryGetValue(new SymbolRef(node.Frame.Module, node.Frame.Method), out identity);
+            }
+
             if (node.Children.Count == 0)
             {
                 return node with { Identity = identity };

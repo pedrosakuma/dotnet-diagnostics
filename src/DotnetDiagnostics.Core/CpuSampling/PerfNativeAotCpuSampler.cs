@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using DotnetDiagnostics.Core.Memory;
+using DotnetDiagnostics.Core.OffCpu;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -33,6 +34,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
     private const long PerfDataMaxBytes = 512L * 1024 * 1024;
 
     private readonly ILogger<PerfNativeAotCpuSampler> _logger;
+    private readonly JitMapEmitter _jitMapEmitter;
     private readonly string _configuredPath;
     private readonly int _samplingFrequencyHz;
     private string? _resolvedPath;
@@ -42,11 +44,13 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
     public PerfNativeAotCpuSampler(
         ILogger<PerfNativeAotCpuSampler>? logger = null,
         string perfPath = "perf",
-        int samplingFrequencyHz = 99)
+        int samplingFrequencyHz = 99,
+        JitMapEmitter? jitMapEmitter = null)
     {
         _logger = logger ?? NullLogger<PerfNativeAotCpuSampler>.Instance;
         _configuredPath = perfPath;
         _samplingFrequencyHz = samplingFrequencyHz;
+        _jitMapEmitter = jitMapEmitter ?? new JitMapEmitter();
     }
 
     private string? ResolvePerfPath()
@@ -127,9 +131,19 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         var perfDataPath = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-perf-{processId}-{Guid.NewGuid():N}.data");
         var startedAt = DateTimeOffset.UtcNow;
         var totalStopwatch = Stopwatch.StartNew();
+        JitMapResult? jitMap = null;
 
         try
         {
+            try
+            {
+                jitMap = await _jitMapEmitter.EmitAsync(processId, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "JIT perf-map emission failed for pid {Pid} (continuing without managed JIT identities).", processId);
+            }
+
             var captureStopwatch = Stopwatch.StartNew();
             await RecordAsync(processId, perfDataPath, duration, cancellationToken).ConfigureAwait(false);
             var captureDuration = captureStopwatch.Elapsed;
@@ -141,6 +155,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
                 methodMap,
                 moduleName,
                 modulePath,
+                jitMap,
                 cancellationToken).ConfigureAwait(false);
             var symbolicationDuration = postProcessingStopwatch.Elapsed;
             var stampedRoot = CallTreeIdentityProjector.Stamp(aggregate.Root, aggregate.Identities);
@@ -171,6 +186,10 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         finally
         {
             TryDelete(perfDataPath);
+            if (jitMap is not null)
+            {
+                TryDelete(jitMap.MapPath);
+            }
         }
     }
 
@@ -273,6 +292,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         NativeAotMethodMap? methodMap,
         string? moduleName,
         string? modulePath,
+        JitMapResult? jitMap,
         CancellationToken ct)
     {
         // --no-inline keeps line cost predictable; symbols are already demangled by default.
@@ -301,6 +321,7 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
                 methodMap,
                 moduleName,
                 modulePath,
+                jitMap,
                 cancellationToken: ct).ConfigureAwait(false);
             await process.WaitForExitAsync(ct).ConfigureAwait(false);
             var stderr = await stderrTask.ConfigureAwait(false);
@@ -326,10 +347,11 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
 
     internal static (long Total, IReadOnlyList<Hotspot> Hotspots, CallTreeNode Root, NativeAotSymbolDemangler.SymbolSource SymbolSource, IReadOnlyDictionary<SymbolRef, MethodIdentity> Identities) Aggregate(
         string perfScriptOutput, int processId, int topN,
-        NativeAotMethodMap? methodMap = null, string? moduleName = null, string? modulePath = null)
+        NativeAotMethodMap? methodMap = null, string? moduleName = null, string? modulePath = null,
+        JitMapResult? jitMap = null)
     {
         using var reader = new StringReader(perfScriptOutput);
-        var aggregate = AggregateAsync(reader, processId, topN, methodMap, moduleName, modulePath)
+        var aggregate = AggregateAsync(reader, processId, topN, methodMap, moduleName, modulePath, jitMap)
             .GetAwaiter()
             .GetResult();
         return (aggregate.Total, aggregate.Hotspots, aggregate.Root, aggregate.SymbolSource, aggregate.Identities);
@@ -342,10 +364,12 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
         NativeAotMethodMap? methodMap = null,
         string? moduleName = null,
         string? modulePath = null,
+        JitMapResult? jitMap = null,
         long? sampleBudget = null,
         CancellationToken cancellationToken = default)
     {
         var builder = new PerfScriptAggregationBuilder(methodMap, moduleName, modulePath);
+        var symbolizer = new PerfJitFrameSymbolizer(jitMap);
         var parseResult = await PerfScriptParser.ParseAsync(
             reader,
             processId,
@@ -354,8 +378,14 @@ public sealed class PerfNativeAotCpuSampler : ICpuSampler
                 builder.AddSample(sample);
                 return sampleBudget is null || builder.TotalSamples < sampleBudget.Value;
             },
+            symbolizer.Symbolize,
             cancellationToken).ConfigureAwait(false);
-        return builder.Build(topN, truncated: !parseResult.Completed);
+        return builder.Build(topN, truncated: !parseResult.Completed) with
+        {
+            JitCandidateFrames = symbolizer.CandidateFrames,
+            ResolvedJitFrames = symbolizer.ResolvedFrames,
+            UnresolvedJitCandidateFrames = symbolizer.UnresolvedCandidateFrames,
+        };
     }
 
     /// <summary>

@@ -215,11 +215,12 @@ public sealed partial class PerfNativeLockContentionSampler : INativeLockContent
             }
             catch { /* best effort */ }
 
-            var aggregate = await RunScriptAsync(perfDataPath, topN, cancellationToken).ConfigureAwait(false);
+            var aggregate = await RunScriptAsync(perfDataPath, topN, jitMap, cancellationToken).ConfigureAwait(false);
             if (aggregate.Truncated)
             {
                 notes.Add($"Stopped parsing perf script after {PerfScriptSampleBudget:N0} samples to keep mutex-hot captures bounded; hotspots reflect the processed prefix only.");
             }
+            PerfJitSymbolizationNotes.Add(notes, aggregate.JitCandidateFrames, aggregate.ResolvedJitFrames, aggregate.UnresolvedJitCandidateFrames);
 
             if (aggregate.Total == 0)
             {
@@ -227,7 +228,8 @@ public sealed partial class PerfNativeLockContentionSampler : INativeLockContent
                           "called pthread_mutex_lock/unlock natively, or samplePeriod is too high for a quiet process.");
             }
 
-            var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, aggregate.Total, aggregate.Root, null, null, aggregate.SymbolSource);
+            var stampedRoot = CallTreeIdentityProjector.Stamp(aggregate.Root, aggregate.Identities);
+            var artifact = new CpuSampleTraceArtifact(processId, startedAt, duration, aggregate.Total, stampedRoot, null, aggregate.Identities, aggregate.SymbolSource);
             var summary = new NativeLockContentionSample(
                 processId,
                 startedAt,
@@ -300,7 +302,7 @@ public sealed partial class PerfNativeLockContentionSampler : INativeLockContent
         }
     }
 
-    private async Task<PerfScriptAggregationResult> RunScriptAsync(string perfDataPath, int topN, CancellationToken ct)
+    private async Task<PerfScriptAggregationResult> RunScriptAsync(string perfDataPath, int topN, JitMapResult? jitMap, CancellationToken ct)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -329,6 +331,7 @@ public sealed partial class PerfNativeLockContentionSampler : INativeLockContent
                 process.StandardOutput,
                 processId: 0,
                 topN: topN,
+                jitMap: jitMap,
                 sampleBudget: PerfScriptSampleBudget,
                 cancellationToken: boundedToken).ConfigureAwait(false);
             if (aggregate.Truncated && !process.HasExited)
