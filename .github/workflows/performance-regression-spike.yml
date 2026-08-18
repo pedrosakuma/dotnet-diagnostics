@@ -9,6 +9,14 @@ on:
       - src/DotnetDiagnostics.BenchmarkDotNet/**
       - src/DotnetDiagnostics.Core/**
   workflow_dispatch:
+    inputs:
+      force_attribution:
+        description: >-
+          Run the separate EventPipe attribution step regardless of the measurement-only signal
+          (for investigations).
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -63,9 +71,31 @@ jobs:
               --candidate-commit "${GITHUB_SHA}"
           done
 
+      # Deterministic, versioned decision made only from the three clean measurements above (no
+      # diagnostic run is consulted). Skips the ~3.5-minute EventPipe attribution step below when
+      # there is no regression signal above threshold; `force_attribution` (manual dispatch only)
+      # always requests it for investigations. An incompatible or incomplete measurement result is
+      # a fail-safe: attribution runs rather than being silently skipped.
+      - name: Decide whether EventPipe attribution is needed
+        id: decision
+        shell: bash
+        run: |
+          force="${{ inputs.force_attribution || false }}"
+          dotnet run --project benchmarks/DiagnosedBenchmarks \
+            --configuration Release --no-build -- \
+            perf-regression decide \
+            --run artifacts/perf-regression/measurement-1.json \
+            --run artifacts/perf-regression/measurement-2.json \
+            --run artifacts/perf-regression/measurement-3.json \
+            --force-attribution "${force}" \
+            --output artifacts/perf-regression/decision.json
+          attribution_requested=$(jq -r '.attributionRequested' artifacts/perf-regression/decision.json)
+          echo "attribution_requested=${attribution_requested}" >> "$GITHUB_OUTPUT"
+
       # This is a separate process and BenchmarkDotNet job. Its five-second
       # timings are diagnostic windows and never enter the measurement report.
       - name: Run separate EventPipe attribution
+        if: ${{ steps.decision.outputs.attribution_requested == 'true' }}
         run: |
           dotnet run --project benchmarks/DiagnosedBenchmarks \
             --configuration Release --no-build -- \
@@ -80,15 +110,20 @@ jobs:
       - name: Build advisory regression report
         shell: bash
         run: |
+          args=(
+            --run artifacts/perf-regression/measurement-1.json
+            --run artifacts/perf-regression/measurement-2.json
+            --run artifacts/perf-regression/measurement-3.json
+            --decision artifacts/perf-regression/decision.json
+            --output-json artifacts/perf-regression/report.json
+            --output-markdown artifacts/perf-regression/report.md
+          )
+          if [ -f artifacts/perf-regression/diagnostic.json ]; then
+            args+=(--diagnostic artifacts/perf-regression/diagnostic.json)
+          fi
           dotnet run --project benchmarks/DiagnosedBenchmarks \
             --configuration Release --no-build -- \
-            perf-regression report \
-            --run artifacts/perf-regression/measurement-1.json \
-            --run artifacts/perf-regression/measurement-2.json \
-            --run artifacts/perf-regression/measurement-3.json \
-            --diagnostic artifacts/perf-regression/diagnostic.json \
-            --output-json artifacts/perf-regression/report.json \
-            --output-markdown artifacts/perf-regression/report.md
+            perf-regression report "${args[@]}"
           cat artifacts/perf-regression/report.md >> "$GITHUB_STEP_SUMMARY"
 
       # Advisory-only: a regression verdict does not change the command's exit
@@ -100,10 +135,21 @@ jobs:
           name: performance-regression-signals-${{ github.run_attempt }}
           path: |
             artifacts/perf-regression/measurement-*.json
-            artifacts/perf-regression/diagnostic.json
+            artifacts/perf-regression/decision.json
             artifacts/perf-regression/report.json
             artifacts/perf-regression/report.md
           if-no-files-found: error
+          retention-days: 90
+
+      # Only present when the decision step requested attribution (or it was forced), so a
+      # missing match here is expected on no-signal runs and must not fail the job.
+      - name: Upload compact diagnostic-attribution evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: performance-regression-diagnostic-${{ github.run_attempt }}
+          path: artifacts/perf-regression/diagnostic.json
+          if-no-files-found: ignore
           retention-days: 90
 
       - name: Upload short-lived raw captures
@@ -111,8 +157,17 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: performance-regression-raw-${{ github.run_attempt }}
-          path: |
-            artifacts/perf-regression/clean-*
-            artifacts/perf-regression/diagnostic
+          path: artifacts/perf-regression/clean-*
           if-no-files-found: error
+          retention-days: 30
+
+      # Only present when the EventPipe attribution step ran; ignored otherwise so no-signal
+      # runs still upload valid compact evidence without failing the job.
+      - name: Upload short-lived raw diagnostic captures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: performance-regression-raw-diagnostic-${{ github.run_attempt }}
+          path: artifacts/perf-regression/diagnostic
+          if-no-files-found: ignore
           retention-days: 30

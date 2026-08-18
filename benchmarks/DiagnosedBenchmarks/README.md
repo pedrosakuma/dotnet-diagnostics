@@ -102,6 +102,32 @@ report can be regenerated from those immutable compact inputs and refuses incomp
 duplicate-capture comparisons. A gate recommendation also requires a complete, stable unchanged
 control and compatible runner-image provenance.
 
+### Conditional attribution (issue #859)
+
+The ~3.5-minute `diagnose` step is expensive relative to the ~5m30s of clean measurement, so the CI
+workflow (`.github/workflows/performance-regression-spike.yml`) runs a `decide` step between
+`measure` and `diagnose` to skip attribution when the three clean measurements show no signal:
+
+```bash
+dotnet run --project benchmarks/DiagnosedBenchmarks -c Release -- \
+  perf-regression decide \
+  --run artifacts/perf/measurement-1.json \
+  --run artifacts/perf/measurement-2.json \
+  --run artifacts/perf/measurement-3.json \
+  --force-attribution false \
+  --output artifacts/perf/decision.json
+```
+
+`decide` re-runs `PerfRegressionAnalyzer.Analyze` over the clean measurements only (no diagnostic
+run involved) and writes a versioned `dotnet-diagnostics/perf-attribution-decision/v1` artifact with
+a deterministic `attributionRequested` flag and a human-readable `reason`. `--force-attribution
+true` (wired to the workflow's `workflow_dispatch` boolean input) always requests attribution
+regardless of the measured signal, for investigations. An incompatible or incomplete measurement
+result (fewer than the policy's minimum repetitions, or environment/workload mismatches) is a
+fail-safe: `decide` requests attribution rather than silently skipping it. `report` accepts an
+optional `--decision <decision.json>` to fold the decision's reason into the final report's notes
+even when `--diagnostic` was omitted because attribution was skipped.
+
 ### Paired-ref experiment
 
 Issue #651 adds a manual, advisory-only workflow at

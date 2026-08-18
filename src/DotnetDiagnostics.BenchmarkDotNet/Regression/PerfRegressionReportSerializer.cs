@@ -48,6 +48,19 @@ public static class PerfRegressionReportSerializer
         return JsonSerializer.Serialize(report, JsonOptions);
     }
 
+    public static string SerializeDecision(PerfAttributionDecision decision)
+    {
+        ArgumentNullException.ThrowIfNull(decision);
+        return JsonSerializer.Serialize(decision, JsonOptions);
+    }
+
+    public static PerfAttributionDecision DeserializeDecision(string json)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+        return JsonSerializer.Deserialize<PerfAttributionDecision>(json, JsonOptions)
+            ?? throw new JsonException("Attribution decision JSON was empty.");
+    }
+
     public static string SerializeFeasibility(PerfExperimentFeasibility feasibility)
     {
         ArgumentNullException.ThrowIfNull(feasibility);
@@ -124,6 +137,30 @@ public static class PerfRegressionReportSerializer
         ArgumentException.ThrowIfNullOrWhiteSpace(json);
         return JsonSerializer.Deserialize<PerfCalibrationReport>(json, JsonOptions)
             ?? throw new JsonException("Calibration report JSON was empty.");
+    }
+
+    public static string BuildDecisionMarkdown(PerfAttributionDecision decision)
+    {
+        ArgumentNullException.ThrowIfNull(decision);
+
+        var sb = new StringBuilder();
+        sb.AppendLine("# Attribution decision");
+        sb.AppendLine();
+        sb.Append("- Attribution requested: **").Append(decision.AttributionRequested ? "yes" : "no").AppendLine("**");
+        sb.Append("- Forced via manual dispatch: **").Append(decision.Forced ? "yes" : "no").AppendLine("**");
+        sb.Append("- Measurement-only verdict: **").Append(decision.MeasurementVerdict).AppendLine("**");
+        sb.Append("- Reason: ").AppendLine(EscapeInline(decision.Reason));
+        if (decision.Notes.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Notes");
+            sb.AppendLine();
+            foreach (var note in decision.Notes)
+            {
+                sb.Append("- ").AppendLine(note);
+            }
+        }
+        return sb.ToString();
     }
 
     public static string BuildMarkdown(PerfRegressionReport report)
