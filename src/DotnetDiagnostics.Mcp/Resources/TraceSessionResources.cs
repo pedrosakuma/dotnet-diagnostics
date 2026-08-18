@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
+using DotnetDiagnostics.Core.NativeLockContention;
 using ModelContextProtocol.Server;
 
 namespace DotnetDiagnostics.Mcp.Resources;
@@ -38,6 +39,12 @@ public sealed class TraceSessionResources
         if (allocation is not null)
         {
             return SerializeSession("allocation-sample", allocation.TraceArtifact);
+        }
+
+        var nativeLock = handles.TryGet<NativeLockContentionArtifact>(handle);
+        if (nativeLock is not null)
+        {
+            return SerializeSession("native-lock-contention-sample", nativeLock.TraceArtifact);
         }
 
         return JsonSerializer.Serialize(

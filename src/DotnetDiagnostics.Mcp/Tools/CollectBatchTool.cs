@@ -334,9 +334,11 @@ public sealed class CollectBatchTool
             .ToArray();
         var results = await Task.WhenAll(tasks).ConfigureAwait(false);
 
-        var report = CollectBatchSalientEvidence.ApplyInvestigationDigest(
-            CollectBatchSalientEvidence.Apply(
-                new CollectBatchReport(pid, durationSeconds, results),
+        var report = CollectBatchSalientEvidence.ApplyNativeContentionEvidence(
+            CollectBatchSalientEvidence.ApplyInvestigationDigest(
+                CollectBatchSalientEvidence.Apply(
+                    new CollectBatchReport(pid, durationSeconds, results),
+                    handles),
                 handles),
             handles);
         var failureCount = results.Count(static r => r.Error is not null);
@@ -526,12 +528,21 @@ public sealed record CollectBatchRequest(string Tool, string Kind);
 /// <param name="Gen2Evidence">Scope-labelled Gen2 correlation when counters and GC were paired.</param>
 /// <param name="InvestigationDigest">Cross-collector CPU/allocation "first page" summary when
 /// collect_sample(kind="cpu") and/or collect_sample(kind="allocation") were present.</param>
+/// <param name="NativeContentionEvidence">Cross-collector native-synchronization evidence (issue
+/// #855) when at least one of collect_sample(kind="native-lock-contention") /
+/// collect_sample(kind="off_cpu") was present in the batch. Preserves the taxonomy exactly:
+/// <see cref="Core.NativeLockContention.NativeContentionEvidence.Level"/> is always driven by the
+/// off_cpu entry alone — native-lock activity being present never elevates it to
+/// probable/confirmed blocking. Present but degraded (activity-only, or a trailing note naming the
+/// missing collector) when only one of the two entries succeeded — see
+/// <see cref="CollectBatchSalientEvidence.ApplyNativeContentionEvidence"/>.</param>
 public sealed record CollectBatchReport(
     int ProcessId,
     int DurationSeconds,
     IReadOnlyList<CollectBatchEntryResult> Results,
     CollectBatchGen2Evidence? Gen2Evidence = null,
-    CollectBatchInvestigationDigest? InvestigationDigest = null);
+    CollectBatchInvestigationDigest? InvestigationDigest = null,
+    NativeContentionEvidence? NativeContentionEvidence = null);
 
 /// <summary>
 /// Scope-labelled Gen2 values from a paired counters + GC batch. EventCounter increments, Meter

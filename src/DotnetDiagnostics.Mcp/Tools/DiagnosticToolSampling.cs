@@ -618,7 +618,7 @@ internal static class DiagnosticToolSampling
         var handle = handles.Register(
             pid,
             NativeLockContentionHandleKind,
-            result.Artifact,
+            new NativeLockContentionArtifact(sample, result.Artifact),
             CpuSampleHandleTtl,
             evictWhenProcessExits: false,
             origin: HandleOrigin.Live);
@@ -689,7 +689,8 @@ internal static class DiagnosticToolSampling
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(handle);
         return handles.TryGet<CpuSampleTraceArtifact>(handle)
-            ?? handles.TryGet<AllocationSampleArtifact>(handle)?.TraceArtifact;
+            ?? handles.TryGet<AllocationSampleArtifact>(handle)?.TraceArtifact
+            ?? handles.TryGet<NativeLockContentionArtifact>(handle)?.TraceArtifact;
     }
 
     private static DiagnosticResult<CpuSample> BuildCpuSampleResult(

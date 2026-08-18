@@ -46,3 +46,15 @@ public sealed record NativeLockContentionSample(
 /// the shared call-tree pipeline).
 /// </summary>
 public sealed record NativeLockContentionSampleResult(NativeLockContentionSample Summary, CpuSampleTraceArtifact Artifact);
+
+/// <summary>
+/// Handle-store artifact for <c>native-lock-contention-sample</c>, pairing the compact
+/// <see cref="NativeLockContentionSample"/> summary (evidence level, sampled lock-call count) with
+/// its companion call-tree trace — mirrors the <c>AllocationSampleArtifact</c> precedent
+/// (issue #827) that exists for exactly the same reason: some cross-collector projection (here,
+/// issue #855's <c>collect_batch</c> native-lock + off-CPU correlation) needs the summary's own
+/// fields without a second round trip, while every existing call-tree/diff consumer keeps working
+/// unmodified via <see cref="Core.CpuSampling.CpuSampleQueryDispatcher.ResolveTrace"/>, which
+/// unwraps this exactly like it already unwraps <c>AllocationSampleArtifact</c>.
+/// </summary>
+public sealed record NativeLockContentionArtifact(NativeLockContentionSample Summary, CpuSampleTraceArtifact TraceArtifact);

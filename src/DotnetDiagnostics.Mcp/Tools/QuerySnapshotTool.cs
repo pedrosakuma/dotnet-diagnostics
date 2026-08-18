@@ -11,6 +11,7 @@ using DotnetDiagnostics.Core.Dump;
 using DotnetDiagnostics.Core.EventSources;
 using DotnetDiagnostics.Core.Gc;
 using DotnetDiagnostics.Core.MethodParameters;
+using DotnetDiagnostics.Core.NativeLockContention;
 using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Core.Safety;
 using DotnetDiagnostics.Core.Symbols;
@@ -916,8 +917,8 @@ public sealed partial class QuerySnapshotTool
             DiagnosticTools.NativeAllocHandleKind when currentLookup.Artifact is CpuSampleTraceArtifact current && baselineLookup.Value.Artifact is CpuSampleTraceArtifact baseline
                 => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
 
-            DiagnosticTools.NativeLockContentionHandleKind when currentLookup.Artifact is CpuSampleTraceArtifact current && baselineLookup.Value.Artifact is CpuSampleTraceArtifact baseline
-                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline, baselineHandle!, current, handle, minDeltaPct, effectiveTopN)),
+            DiagnosticTools.NativeLockContentionHandleKind when currentLookup.Artifact is NativeLockContentionArtifact current && baselineLookup.Value.Artifact is NativeLockContentionArtifact baseline
+                => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline.TraceArtifact, baselineHandle!, current.TraceArtifact, handle, minDeltaPct, effectiveTopN)),
 
             "allocation-sample" when currentLookup.Artifact is AllocationSampleArtifact current && baselineLookup.Value.Artifact is AllocationSampleArtifact baseline
                 => WrapDiff(currentLookup.Kind, baselineHandle!, handle, ComparablePairwiseSampleDiff.Compare(baseline.Summary, baselineHandle!, current.Summary, handle, minDeltaPct, effectiveTopN)),
