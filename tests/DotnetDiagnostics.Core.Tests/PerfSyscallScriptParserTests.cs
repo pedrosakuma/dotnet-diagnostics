@@ -109,18 +109,31 @@ public sealed class PerfSyscallScriptParserTests
         // truncate. Generate MaxParsedEvents + 7 valid enter lines for a single tid and confirm
         // the parser retains exactly the cap and reports the exact overflow count.
         const int overBy = 7;
-        var lines = new System.Text.StringBuilder(PerfSyscallScriptParser.MaxParsedEvents * 64);
-        for (var i = 0; i < PerfSyscallScriptParser.MaxParsedEvents + overBy; i++)
-        {
-            lines.Append(CultureInfo.InvariantCulture, $"target  1000 [001]   {1.0 + i * 0.000001:F6}: raw_syscalls:sys_enter: NR 0 (0, 0, 0, 0, 0, 0)\n");
-        }
-        using var reader = new StringReader(lines.ToString());
+        using var reader = new StringReader(BuildCappedEnterLinesScript(overBy));
 
         var result = await PerfSyscallScriptParser.ParseAsync(reader, new HashSet<int> { 1000 });
 
         result.Events.Should().HaveCount(PerfSyscallScriptParser.MaxParsedEvents);
         result.HitCap.Should().BeTrue();
         result.DroppedCount.Should().Be(overBy);
+    }
+
+    /// <summary>
+    /// Generates <see cref="PerfSyscallScriptParser.MaxParsedEvents"/> + <paramref name="overBy"/>
+    /// synthetic <c>raw_syscalls:sys_enter</c> lines for tid 1000, each with a distinct
+    /// fractional-second timestamp. Uses <see cref="CultureInfo.InvariantCulture"/> explicitly (issue
+    /// #854) so the generated fixture text always uses a dot decimal separator for the timestamp,
+    /// regardless of the ambient thread culture the test process happens to be running under.
+    /// </summary>
+    internal static string BuildCappedEnterLinesScript(int overBy)
+    {
+        var lines = new System.Text.StringBuilder(PerfSyscallScriptParser.MaxParsedEvents * 64);
+        for (var i = 0; i < PerfSyscallScriptParser.MaxParsedEvents + overBy; i++)
+        {
+            lines.Append(CultureInfo.InvariantCulture, $"target  1000 [001]   {1.0 + i * 0.000001:F6}: raw_syscalls:sys_enter: NR 0 (0, 0, 0, 0, 0, 0)\n");
+        }
+
+        return lines.ToString();
     }
 
     [Fact]
@@ -136,5 +149,52 @@ public sealed class PerfSyscallScriptParserTests
 
         result.HitCap.Should().BeFalse();
         result.DroppedCount.Should().Be(0);
+    }
+}
+
+/// <summary>
+/// Regression coverage for issue #854: a generated perf-script fixture timestamp was formatted
+/// with the ambient thread culture (rendering a comma decimal separator on e.g. a pt-BR machine),
+/// which desyncs the synthetic fixture text from what <see cref="PerfSyscallScriptParser"/> expects
+/// (a dot-decimal <c>raw_syscalls</c> timestamp) and can corrupt or drop events depending on how the
+/// parser's numeric tokenizer reacts to the unexpected separator. Runs non-parallel (dedicated
+/// collection) because it mutates process-global culture state.
+/// </summary>
+[Collection(nameof(PerfSyscallScriptParserCultureTests))]
+[CollectionDefinition(nameof(PerfSyscallScriptParserCultureTests), DisableParallelization = true)]
+public sealed class PerfSyscallScriptParserCultureTests
+{
+    [Theory]
+    [InlineData("pt-BR")]
+    [InlineData("fr-FR")]
+    public async Task CapsParsedEventCount_ProducesIdenticalResults_UnderCommaDecimalCulture(string cultureName)
+    {
+        var originalCurrent = CultureInfo.CurrentCulture;
+        var originalUi = CultureInfo.CurrentUICulture;
+        try
+        {
+            var commaDecimalCulture = CultureInfo.GetCultureInfo(cultureName);
+            CultureInfo.CurrentCulture = commaDecimalCulture;
+            CultureInfo.CurrentUICulture = commaDecimalCulture;
+            // Sanity: this culture really does format with a comma, so the assertions below are
+            // meaningful (i.e. they would fail if the fixture builder regressed to ambient-culture
+            // interpolation).
+            (1.5).ToString("F1", CultureInfo.CurrentCulture).Should().Be("1,5");
+
+            const int overBy = 7;
+            using var reader = new StringReader(PerfSyscallScriptParserTests.BuildCappedEnterLinesScript(overBy));
+
+            var result = await PerfSyscallScriptParser.ParseAsync(reader, new HashSet<int> { 1000 });
+
+            result.Events.Should().HaveCount(PerfSyscallScriptParser.MaxParsedEvents);
+            result.HitCap.Should().BeTrue();
+            result.DroppedCount.Should().Be(overBy);
+            result.Events[0].TimestampSeconds.Should().Be(1.000000);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCurrent;
+            CultureInfo.CurrentUICulture = originalUi;
+        }
     }
 }
