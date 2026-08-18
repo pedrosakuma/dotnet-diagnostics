@@ -490,3 +490,181 @@ public sealed class PerfRegressionAnalyzerTests
             ],
         }).ToArray();
 }
+
+public sealed class PerfAttributionDecisionTests
+{
+    [Fact]
+    public void NoRegressionSignal_SkipsAttribution()
+    {
+        var runs = Runs(
+            baselineTimes: [100, 100, 100],
+            candidateTimes: [100, 101, 99],
+            baselineAllocations: [64, 64, 64],
+            candidateAllocations: [64, 64, 64]);
+
+        var decision = PerfRegressionAnalyzer.DecideAttribution(runs);
+
+        decision.AttributionRequested.Should().BeFalse();
+        decision.Forced.Should().BeFalse();
+        decision.MeasurementVerdict.Should().NotBe(PerfRegressionVerdict.Regression);
+        decision.Reason.Should().Contain("no regression signal above threshold");
+        decision.Schema.Should().Be(PerfAttributionDecision.SchemaV1);
+    }
+
+    [Fact]
+    public void RegressionSignal_RequestsAttribution()
+    {
+        var runs = Runs(
+            baselineTimes: [100, 100, 100],
+            candidateTimes: [120, 120, 120],
+            baselineAllocations: [64, 64, 64],
+            candidateAllocations: [64, 64, 64]);
+
+        var decision = PerfRegressionAnalyzer.DecideAttribution(runs);
+
+        decision.AttributionRequested.Should().BeTrue();
+        decision.Forced.Should().BeFalse();
+        decision.MeasurementVerdict.Should().Be(PerfRegressionVerdict.Regression);
+        decision.Reason.Should().Contain("crossed the regression threshold");
+    }
+
+    [Fact]
+    public void ForcedDispatch_AlwaysRequestsAttribution_RegardlessOfMeasuredSignal()
+    {
+        var runs = Runs(
+            baselineTimes: [100, 100, 100],
+            candidateTimes: [100, 101, 99],
+            baselineAllocations: [64, 64, 64],
+            candidateAllocations: [64, 64, 64]);
+
+        var decision = PerfRegressionAnalyzer.DecideAttribution(runs, forceAttribution: true);
+
+        decision.AttributionRequested.Should().BeTrue();
+        decision.Forced.Should().BeTrue();
+        decision.Reason.Should().Contain("Manual workflow_dispatch input forced");
+        // Forcing attribution must not suppress the real measurement analysis: the genuinely
+        // no-signal run set above still yields the actual computed verdict (Inconclusive), not a
+        // placeholder value.
+        decision.MeasurementVerdict.Should().Be(PerfRegressionVerdict.Inconclusive);
+        decision.Reason.Should().Contain("Inconclusive");
+    }
+
+    [Fact]
+    public void ForcedDispatch_WithGenuineRegressionSignal_StillReportsTheRealMeasurementVerdict()
+    {
+        var runs = Runs(
+            baselineTimes: [100, 100, 100],
+            candidateTimes: [120, 120, 120],
+            baselineAllocations: [64, 64, 64],
+            candidateAllocations: [64, 64, 64]);
+
+        var decision = PerfRegressionAnalyzer.DecideAttribution(runs, forceAttribution: true);
+
+        decision.AttributionRequested.Should().BeTrue();
+        decision.Forced.Should().BeTrue();
+        decision.MeasurementVerdict.Should().Be(PerfRegressionVerdict.Regression);
+        decision.Reason.Should().Contain("Regression");
+    }
+
+    [Fact]
+    public void IncompatibleMeasurementRuns_RequestAttributionAsFailSafe()
+    {
+        var run = Runs(
+            baselineTimes: [100],
+            candidateTimes: [120],
+            baselineAllocations: [64],
+            candidateAllocations: [64]).Single();
+
+        var decision = PerfRegressionAnalyzer.DecideAttribution([run, run, run]);
+
+        decision.AttributionRequested.Should().BeTrue();
+        decision.Forced.Should().BeFalse();
+        decision.Reason.Should().Contain("incompatible");
+        decision.Notes.Should().Contain(note => note.Contains("duplicate captures", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void FewerThanMinimumRepetitions_RequestAttributionAsFailSafe()
+    {
+        var runs = Runs(
+            baselineTimes: [100],
+            candidateTimes: [120],
+            baselineAllocations: [64],
+            candidateAllocations: [96]);
+
+        var decision = PerfRegressionAnalyzer.DecideAttribution(runs);
+
+        decision.AttributionRequested.Should().BeTrue();
+        decision.Forced.Should().BeFalse();
+        decision.Reason.Should().Contain("incomplete");
+    }
+
+    [Fact]
+    public void Decision_RoundTripsJson()
+    {
+        var runs = Runs(
+            baselineTimes: [100, 100, 100],
+            candidateTimes: [120, 120, 120],
+            baselineAllocations: [64, 64, 64],
+            candidateAllocations: [64, 64, 64]);
+        var decision = PerfRegressionAnalyzer.DecideAttribution(runs);
+
+        var json = PerfRegressionReportSerializer.SerializeDecision(decision);
+        var restored = PerfRegressionReportSerializer.DeserializeDecision(json);
+        var markdown = PerfRegressionReportSerializer.BuildDecisionMarkdown(decision);
+
+        restored.Should().BeEquivalentTo(decision);
+        json.Should().Contain(PerfAttributionDecision.SchemaV1);
+        markdown.Should().Contain("Attribution requested");
+    }
+
+    private static PerfMeasurementRun[] Runs(
+        IReadOnlyList<double> baselineTimes,
+        IReadOnlyList<double> candidateTimes,
+        IReadOnlyList<double> baselineAllocations,
+        IReadOnlyList<double> candidateAllocations)
+    {
+        baselineTimes.Count.Should().Be(candidateTimes.Count);
+        baselineTimes.Count.Should().Be(baselineAllocations.Count);
+        baselineTimes.Count.Should().Be(candidateAllocations.Count);
+
+        var environment = new PerfEnvironmentProvenance(
+            "10.0.0",
+            "Ubuntu 24.04",
+            "linux-x64",
+            "X64",
+            "workstation",
+            "github-hosted-ubuntu");
+        var workload = new PerfWorkloadProvenance(
+            "issue-859-attribution-decision",
+            "v1",
+            new Dictionary<string, string> { ["input-size"] = "1000" });
+        var baselineBuild = new PerfBuildIdentity("baseline", "aaaa");
+        var candidateBuild = new PerfBuildIdentity("candidate", "bbbb");
+
+        return Enumerable.Range(0, baselineTimes.Count)
+            .Select(index => new PerfMeasurementRun(
+                PerfMeasurementRun.SchemaV1,
+                $"run-{index + 1}",
+                new DateTimeOffset(2026, 8, 18, 0, 0, index, TimeSpan.Zero),
+                baselineBuild,
+                candidateBuild,
+                environment,
+                workload,
+                [
+                    new PerfBenchmarkObservation(
+                        "cpu-lookup",
+                        PerfMeasurementRun.BaselineVariant,
+                        false,
+                        baselineTimes[index],
+                        baselineAllocations[index]),
+                    new PerfBenchmarkObservation(
+                        "cpu-lookup",
+                        PerfMeasurementRun.CandidateVariant,
+                        false,
+                        candidateTimes[index],
+                        candidateAllocations[index]),
+                ]))
+            .ToArray();
+    }
+}

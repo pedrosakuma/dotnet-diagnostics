@@ -153,6 +153,22 @@ public sealed record PerfDiagnosticRun(
     public const string SchemaV1 = "dotnet-diagnostics/perf-diagnostic-run/v1";
 }
 
+/// <summary>
+/// Deterministic, versioned decision on whether the separate EventPipe attribution step should run,
+/// made immediately after the three independent clean measurements and before any diagnostic capture.
+/// </summary>
+public sealed record PerfAttributionDecision(
+    string Schema,
+    DateTimeOffset CreatedAt,
+    bool AttributionRequested,
+    bool Forced,
+    PerfRegressionVerdict MeasurementVerdict,
+    string Reason,
+    IReadOnlyList<string> Notes)
+{
+    public const string SchemaV1 = "dotnet-diagnostics/perf-attribution-decision/v1";
+}
+
 /// <summary>Thresholds and confidence requirements used to analyze independent runs.</summary>
 public sealed record PerfRegressionPolicy(
     int MinimumRepetitions = 3,

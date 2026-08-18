@@ -129,6 +129,92 @@ public static class PerfRegressionAnalyzer
             notes);
     }
 
+    /// <summary>
+    /// Decides whether the separate, ~3.5-minute EventPipe attribution step should run, using only the
+    /// three independent clean measurements (no diagnostic run is required or consulted). The decision is
+    /// deterministic and reuses the same regression thresholds that <see cref="Analyze"/> applies to
+    /// clean observations, so a measurement-only "signal" and a diagnostic-attribution "signal" always
+    /// agree. An incomplete or incompatible measurement result is treated as a fail-safe: attribution runs
+    /// rather than being silently skipped.
+    /// </summary>
+    public static PerfAttributionDecision DecideAttribution(
+        IReadOnlyList<PerfMeasurementRun> runs,
+        bool forceAttribution = false,
+        PerfRegressionPolicy? policy = null)
+    {
+        ArgumentNullException.ThrowIfNull(runs);
+        policy ??= new PerfRegressionPolicy();
+
+        var measurementOnly = Analyze(runs, diagnosticRun: null, policy);
+
+        if (forceAttribution)
+        {
+            var notes = new List<string>(measurementOnly.Notes)
+            {
+                "Forced attribution bypasses the measurement-only threshold check.",
+            };
+            return new PerfAttributionDecision(
+                PerfAttributionDecision.SchemaV1,
+                DateTimeOffset.UtcNow,
+                AttributionRequested: true,
+                Forced: true,
+                MeasurementVerdict: measurementOnly.Verdict,
+                Reason: "Manual workflow_dispatch input forced EventPipe attribution regardless of the measured "
+                    + $"signal (measurement-only verdict: {measurementOnly.Verdict}).",
+                notes);
+        }
+
+        if (!measurementOnly.Compatibility.Compatible)
+        {
+            return new PerfAttributionDecision(
+                PerfAttributionDecision.SchemaV1,
+                DateTimeOffset.UtcNow,
+                AttributionRequested: true,
+                Forced: false,
+                MeasurementVerdict: measurementOnly.Verdict,
+                Reason: "Measurement runs were incompatible; the signal could not be determined so attribution "
+                    + "runs as a fail-safe.",
+                measurementOnly.Compatibility.Mismatches);
+        }
+
+        if (runs.Count < policy.MinimumRepetitions)
+        {
+            return new PerfAttributionDecision(
+                PerfAttributionDecision.SchemaV1,
+                DateTimeOffset.UtcNow,
+                AttributionRequested: true,
+                Forced: false,
+                MeasurementVerdict: measurementOnly.Verdict,
+                Reason: $"Only {runs.Count} of {policy.MinimumRepetitions} required independent clean measurement "
+                    + "runs were available; attribution runs as a fail-safe because the measurement result is "
+                    + "incomplete.",
+                measurementOnly.Notes);
+        }
+
+        if (measurementOnly.Verdict == PerfRegressionVerdict.Regression)
+        {
+            return new PerfAttributionDecision(
+                PerfAttributionDecision.SchemaV1,
+                DateTimeOffset.UtcNow,
+                AttributionRequested: true,
+                Forced: false,
+                MeasurementVerdict: measurementOnly.Verdict,
+                Reason: "The three clean measurements crossed the regression threshold; separate EventPipe "
+                    + "attribution will run to explain the signal.",
+                measurementOnly.Notes);
+        }
+
+        return new PerfAttributionDecision(
+            PerfAttributionDecision.SchemaV1,
+            DateTimeOffset.UtcNow,
+            AttributionRequested: false,
+            Forced: false,
+            MeasurementVerdict: measurementOnly.Verdict,
+            Reason: "The three clean measurements showed no regression signal above threshold; separate "
+                + "EventPipe attribution was skipped.",
+            measurementOnly.Notes);
+    }
+
     private static PerfCompatibilityResult CheckCompatibility(
         IReadOnlyList<PerfMeasurementRun> runs,
         PerfDiagnosticRun? diagnosticRun)

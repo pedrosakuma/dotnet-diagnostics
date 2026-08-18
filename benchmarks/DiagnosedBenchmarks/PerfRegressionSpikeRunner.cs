@@ -69,6 +69,7 @@ internal static class PerfRegressionSpikeRunner
         {
             "measure" => Measure(options),
             "diagnose" => Diagnose(options),
+            "decide" => Decide(options),
             "report" => Report(options),
             _ => Usage($"Unknown mode '{args[0]}'."),
         };
@@ -183,6 +184,34 @@ internal static class PerfRegressionSpikeRunner
         return 0;
     }
 
+    private static int Decide(Options options)
+    {
+        var runPaths = options.Values("run");
+        if (runPaths.Count == 0)
+        {
+            throw new ArgumentException("At least one --run <measurement.json> is required.");
+        }
+
+        var runs = runPaths
+            .Select(path => PerfRegressionReportSerializer.DeserializeRun(File.ReadAllText(path)))
+            .ToArray();
+        var forceAttribution = ParseBool(options.ValueOrDefault("force-attribution", "false"));
+        var output = options.RequiredSingle("output");
+
+        var decision = PerfRegressionAnalyzer.DecideAttribution(runs, forceAttribution);
+        Write(output, PerfRegressionReportSerializer.SerializeDecision(decision));
+
+        var markdown = PerfRegressionReportSerializer.BuildDecisionMarkdown(decision);
+        Console.WriteLine(markdown);
+        var markdownPath = options.Single("output-markdown");
+        if (markdownPath is not null)
+        {
+            Write(markdownPath, markdown);
+        }
+
+        return 0;
+    }
+
     private static int Report(Options options)
     {
         var runPaths = options.Values("run");
@@ -199,6 +228,18 @@ internal static class PerfRegressionSpikeRunner
             ? null
             : PerfRegressionReportSerializer.DeserializeDiagnosticRun(File.ReadAllText(diagnosticPath));
         var report = PerfRegressionAnalyzer.Analyze(runs, diagnostic);
+
+        var decisionPath = options.Single("decision");
+        if (decisionPath is not null)
+        {
+            var decision = PerfRegressionReportSerializer.DeserializeDecision(File.ReadAllText(decisionPath));
+            var decisionNote = decision.Forced
+                ? $"EventPipe attribution was forced via manual workflow dispatch. {decision.Reason}"
+                : decision.AttributionRequested
+                    ? $"EventPipe attribution ran because the measurement-only decision requested it. {decision.Reason}"
+                    : $"EventPipe attribution was skipped because the measurement-only decision did not request it. {decision.Reason}";
+            report = report with { Notes = [.. report.Notes, decisionNote] };
+        }
 
         var jsonPath = options.RequiredSingle("output-json");
         var markdownPath = options.RequiredSingle("output-markdown");
@@ -389,6 +430,10 @@ internal static class PerfRegressionSpikeRunner
         return signals;
     }
 
+    private static bool ParseBool(string value)
+        => string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "1", StringComparison.Ordinal);
+
     private static double Percent(long value, long total)
         => total == 0 ? 0 : Math.Round(value * 100.0 / total, 2);
 
@@ -433,10 +478,11 @@ internal static class PerfRegressionSpikeRunner
     {
         Console.Error.WriteLine(error);
         Console.Error.WriteLine(
-            "Usage: perf-regression measure|diagnose|report|paired-report|calibration-report [--key value]. "
+            "Usage: perf-regression measure|diagnose|decide|report|paired-report|calibration-report [--key value]. "
             + "Measure requires --run-id, --output, --artifacts, --baseline-build-id, --candidate-build-id. "
             + "Diagnose requires --output, --artifacts, --candidate-build-id. "
-            + "Report requires repeated --run, optional --diagnostic, --output-json, --output-markdown. "
+            + "Decide requires repeated --run, --output, optional --force-attribution, --output-markdown. "
+            + "Report requires repeated --run, optional --diagnostic, --decision, --output-json, --output-markdown. "
             + "Paired-report requires repeated --pair plus stage metrics and output paths.");
         return 2;
     }
