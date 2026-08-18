@@ -1341,37 +1341,63 @@ public class LiveCoreClrProcessTests : IAsyncLifetime
     [Fact(Timeout = 60_000)]
     public async Task DumpInspector_QueryTimersView_FindsLeakedTimers_FromBadCodeSample()
     {
+        const int leakedTimerCount = 32;
+        const int maxSnapshotAttempts = 4;
         await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
         using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
-        using var response = await http.GetAsync("/timer-leak?count=32", CancellationToken.None);
+        using var response = await http.GetAsync($"/timer-leak?count={leakedTimerCount}", CancellationToken.None);
         response.EnsureSuccessStatusCode();
-        // 1500ms (not the original 500ms) — see issue #667: CI CPU contention from parallel
-        // non-live test collections can otherwise delay the fixture's timer state settling
-        // before the heap walk runs.
-        await Task.Delay(1500, CancellationToken.None);
-
-        HeapSnapshotArtifact snapshot;
-        try
+        using (var payload = JsonDocument.Parse(await response.Content.ReadAsStringAsync(CancellationToken.None)))
         {
-            snapshot = await new ClrMdDumpInspector().InspectLiveAsync(
-                badSample.ProcessId,
-                new DumpInspectionOptions(TopTypes: 25),
-                CancellationToken.None);
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            throw SkipException.ForReason($"ptrace/ClrMD attach unavailable in this environment: {ex.Message}");
+            payload.RootElement.GetProperty("totalLeaked").GetInt32().Should().BeGreaterThanOrEqualTo(leakedTimerCount);
         }
 
-        var projection = HeapSnapshotQueryDispatcher.Dispatch(snapshot, "timer-test", "timers", topN: 10, rankBy: "bytes", typeFullName: null);
+        HeapSnapshotQueryResult? observed = null;
+        string? observedSummary = null;
+        for (var attempt = 1; attempt <= maxSnapshotAttempts; attempt++)
+        {
+            var snapshot = await InspectLiveOrSkipAsync(badSample.ProcessId);
+            var projection = HeapSnapshotQueryDispatcher.Dispatch(snapshot, "timer-test", "timers", topN: 10, rankBy: "bytes", typeFullName: null);
 
-        projection.Result.Should().NotBeNull();
-        projection.Result!.IsError.Should().BeFalse();
-        projection.Result.Data.Should().NotBeNull();
-        projection.Result.Data!.Timers.Should().NotBeNull();
-        projection.Result.Data.Timers!.TotalTimers.Should().BeGreaterThanOrEqualTo(32);
-        projection.Result.Data.Timers.TimersByCallback.Should().NotBeEmpty();
-        projection.Result.Summary.Should().Contain("task/timer leak candidates");
+            projection.Result.Should().NotBeNull();
+            projection.Result!.IsError.Should().BeFalse();
+            projection.Result.Data.Should().NotBeNull();
+            observed = projection.Result.Data;
+            observedSummary = projection.Result.Summary;
+            if (observed!.Timers is { TotalTimers: >= leakedTimerCount, TimersByCallback.Count: > 0 })
+            {
+                break;
+            }
+
+            if (attempt < maxSnapshotAttempts)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), CancellationToken.None);
+            }
+        }
+
+        observed.Should().NotBeNull();
+        observed!.Timers.Should().NotBeNull();
+        observed.Timers!.TotalTimers.Should().BeGreaterThanOrEqualTo(
+            leakedTimerCount,
+            "the /timer-leak fixture reported at least {0} live timers before bounded heap polling began",
+            leakedTimerCount);
+        observed.Timers.TimersByCallback.Should().NotBeEmpty();
+        observedSummary.Should().Contain("task/timer leak candidates");
+
+        static async Task<HeapSnapshotArtifact> InspectLiveOrSkipAsync(int processId)
+        {
+            try
+            {
+                return await new ClrMdDumpInspector().InspectLiveAsync(
+                    processId,
+                    new DumpInspectionOptions(TopTypes: 25),
+                    CancellationToken.None);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                throw SkipException.ForReason($"ptrace/ClrMD attach unavailable in this environment: {ex.Message}");
+            }
+        }
     }
 
     [Fact(Timeout = 60_000)]
