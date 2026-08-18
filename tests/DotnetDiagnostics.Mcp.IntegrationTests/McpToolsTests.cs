@@ -982,13 +982,21 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
     [Fact]
     public async Task CollectBatch_CountersAndGc_PopulatesNarrowBoundedGen2MeterEvidence()
     {
-        const int retainedEventLimit = 200;
+        const int gcEventRetentionLimit = 200;
+        const int retainedLohBlockCount = 16;
+        const int lohBlockSize = 128 * 1024;
         // Keep the workload active for the whole collector call instead of stopping after a finite
         // burst. Concurrent collect_batch EventPipe sessions can take longer than the fixed startup
         // delay to arm on loaded Windows runners, so an early finite burst is partly or entirely
         // missed. A small pace also avoids flooding the stream and turning shutdown drain into the
         // thing under test.
         var collectionPace = TimeSpan.FromMilliseconds(20);
+        var retainedLohBlocks = new byte[retainedLohBlockCount][];
+        for (var i = 0; i < retainedLohBlocks.Length; i++)
+        {
+            retainedLohBlocks[i] = new byte[lohBlockSize];
+        }
+
         await using var client = await ConnectAsync();
         using var driverCts = new CancellationTokenSource();
         var driver = Task.Run(async () =>
@@ -998,7 +1006,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
                 await Task.Delay(TimeSpan.FromMilliseconds(1500), driverCts.Token);
                 while (!driverCts.IsCancellationRequested)
                 {
-                    _ = new byte[128 * 1024];
+                    _ = new byte[lohBlockSize];
                     GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
                     await Task.Delay(collectionPace, driverCts.Token);
                 }
@@ -1031,6 +1039,7 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         }
 
         await driver;
+        GC.KeepAlive(retainedLohBlocks);
 
         result.IsError.Should().NotBe(true);
         var report = DeserializeStructured<CollectBatchReport>(result);
@@ -1039,15 +1048,45 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
             "counters error={0}, gc error={1}",
             report.Results.FirstOrDefault(e => e.Kind == "counters")?.Error,
             report.Results.FirstOrDefault(e => e.Kind == "gc")?.Error);
-        report.Gen2Evidence!.MeterRatePerSecond.Should().NotBeNull();
-        report.Gen2Evidence.MeterProcessCumulative.Should().BeGreaterThan(0);
-        report.Gen2Evidence.GcCollectorWindowCount.Should().BeGreaterThan(retainedEventLimit);
+        report.InvestigationDigest.Should().BeNull("counters+gc-only batches expose scoped Gen2 evidence, not the CPU/allocation digest");
+        var evidence = report.Gen2Evidence!;
+        evidence.EventCounterIntervalDelta.Should().NotBeNull();
+        evidence.EventCounterIntervalDelta!.Value.Should().BeGreaterThan(0);
+        evidence.EventCounterIntervalSeconds.Should().Be(CollectBatchSalientEvidence.CounterIntervalSeconds);
+        evidence.MeterRatePerSecond.Should().NotBeNull();
+        evidence.MeterRatePerSecond!.Value.Should().BeGreaterThan(0);
+        evidence.MeterProcessCumulative.Should().NotBeNull();
+        evidence.MeterProcessCumulative!.Value.Should().BeGreaterThan(0);
+        evidence.GcCollectorWindowCount.Should().BeGreaterThan(0);
+        evidence.GcCollectorWindowSeconds.Should().Be(report.DurationSeconds);
+        evidence.Explanation.Should().Contain("not interchangeable");
+
+        var countersEntry = report.Results
+            .Single(static entry => entry.Tool == "collect_events" && entry.Kind == "counters");
+        countersEntry.Error.Should().BeNull();
+        countersEntry.Data.Should().NotBeNull();
+        countersEntry.Handle.Should().NotBeNullOrWhiteSpace();
+        var inlineCounters = countersEntry.Data!.Value.GetProperty("counters");
+        var inlineCounterValues = inlineCounters.GetProperty("counters").EnumerateArray().ToArray();
+        inlineCounterValues.Should().HaveCountLessThanOrEqualTo(CollectBatchSalientEvidence.MaxInlineCounters);
+        CounterValue(inlineCounterValues, "gen-2-gc-count").Should().Be(evidence.EventCounterIntervalDelta.Value);
+        CounterValue(inlineCounterValues, "loh-size").Should().BeGreaterThan(0);
+        inlineCounters.GetProperty("notes").EnumerateArray().Select(static note => note.GetString()).Should()
+            .Contain(note => note != null && note.Contains("BatchGen2Scopes", StringComparison.Ordinal));
 
         var gcEntry = report.Results
             .Single(static entry => entry.Tool == "collect_events" && entry.Kind == "gc");
+        gcEntry.Error.Should().BeNull();
+        gcEntry.Data.Should().NotBeNull();
+        gcEntry.Handle.Should().NotBeNullOrWhiteSpace();
         var gcData = gcEntry.Data!.Value.GetProperty("gc");
-        gcData.GetProperty("totalCollections").GetInt32().Should().BeGreaterThan(retainedEventLimit);
-        gcData.GetProperty("droppedEvents").GetInt32().Should().BeGreaterThan(0);
+        var totalCollections = gcData.GetProperty("totalCollections").GetInt32();
+        totalCollections.Should().BeGreaterThanOrEqualTo(evidence.GcCollectorWindowCount);
+        var inlineGen2Count = gcData.GetProperty("generations").EnumerateArray()
+            .Single(static generation => generation.GetProperty("generation").GetInt32() == 2)
+            .GetProperty("count")
+            .GetInt32();
+        inlineGen2Count.Should().Be(evidence.GcCollectorWindowCount);
         var gcQuery = await client.CallToolAsync(
             "query_snapshot",
             new Dictionary<string, object?>
@@ -1062,14 +1101,16 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         var gcSnapshot = DeserializeStructured<CollectionQueryResult>(gcQuery);
         gcSnapshot.Should().NotBeNull();
         var gcPayload = gcSnapshot!.Payload.Should().BeOfType<JsonElement>().Subject;
-        gcPayload.GetProperty("retained").GetInt32().Should().Be(retainedEventLimit);
-        gcPayload.GetProperty("dropped").GetInt32().Should().BeGreaterThan(0);
-        gcPayload.GetProperty("returned").GetInt32().Should().Be(retainedEventLimit);
-        gcPayload.GetProperty("events").GetArrayLength().Should().Be(retainedEventLimit);
+        gcPayload.GetProperty("totalCollections").GetInt32().Should().Be(totalCollections);
+        var retained = gcPayload.GetProperty("retained").GetInt32();
+        var dropped = gcPayload.GetProperty("dropped").GetInt32();
+        var returned = gcPayload.GetProperty("returned").GetInt32();
+        retained.Should().BeInRange(1, gcEventRetentionLimit);
+        (retained + dropped).Should().Be(totalCollections);
+        returned.Should().Be(retained);
+        gcPayload.GetProperty("events").GetArrayLength().Should().Be(returned);
 
-        var countersHandle = report.Results
-            .Single(static entry => entry.Tool == "collect_events" && entry.Kind == "counters")
-            .Handle;
+        var countersHandle = countersEntry.Handle;
         countersHandle.Should().NotBeNullOrWhiteSpace();
         var query = await client.CallToolAsync(
             "query_snapshot",
@@ -1086,8 +1127,37 @@ public sealed class McpToolsTests : IClassFixture<McpToolsTests.AuthedFactory>
         var payload = snapshot!.Payload.Should().BeOfType<JsonElement>().Subject;
         payload.GetProperty("meterCount").GetInt32().Should()
             .BeInRange(1, CollectBatchTool.Gen2MeterMaxTimeSeries);
-        payload.GetProperty("meters").EnumerateArray().Should().OnlyContain(meter =>
-            meter.GetProperty("instrument").GetString() == "dotnet.gc.collections");
+        var meters = payload.GetProperty("meters").EnumerateArray().ToArray();
+        meters.Should().HaveCount(payload.GetProperty("meterCount").GetInt32());
+        foreach (var meter in meters)
+        {
+            meter.GetProperty("instrument").GetString().Should().Be("dotnet.gc.collections");
+        }
+
+        var gen2Meter = meters.Where(IsGen2CollectionMeter).Should().ContainSingle().Subject;
+        gen2Meter.GetProperty("rate").GetDouble().Should().Be(evidence.MeterRatePerSecond.Value);
+        gen2Meter.GetProperty("lastValue").GetDouble().Should().Be(evidence.MeterProcessCumulative.Value);
+
+        static double CounterValue(IReadOnlyList<JsonElement> counters, string name)
+            => counters
+                .Single(counter =>
+                    counter.GetProperty("provider").GetString() == "System.Runtime" &&
+                    counter.GetProperty("name").GetString() == name)
+                .GetProperty("value")
+                .GetDouble();
+
+        static bool IsGen2CollectionMeter(JsonElement meter)
+        {
+            if (meter.GetProperty("instrument").GetString() != "dotnet.gc.collections")
+            {
+                return false;
+            }
+
+            var tags = meter.GetProperty("tags");
+            return (tags.TryGetProperty("gc.heap.generation", out var generation) ||
+                    tags.TryGetProperty("generation", out generation)) &&
+                   (generation.GetString() == "gen2" || generation.GetString() == "2");
+        }
     }
 
     [Fact]
